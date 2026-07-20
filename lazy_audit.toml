@@ -194,24 +194,24 @@ reason = "Mutation-planning boundary for instantiation: spawning copies requires
 
 [[entries]]
 path = "src/archetype/missions/coding_agents/resources.py"
-line = 103
+line = 109
 method = "to_pylist"
 reason = "Post-commit sandbox dispatch boundary: the frame is restricted to newly DISPATCHED attempts and joined to their mission relationship before only the bounded ready-task intents enter the async sandbox resource protocol; repository execution cannot remain a lazy DataFrame operation."
 
 [[entries]]
 path = "src/archetype/app/missions/agent_service.py"
-line = 249
+line = 307
 method = "to_pylist"
 reason = "Single-mission control-loop boundary: the frame is filtered to one submitted mission and only its persisted status enters Python to decide whether the application service should tick again or return; no mission payload rows are materialized."
 
 [[entries]]
 path = "src/archetype/app/missions/agent_service.py"
-line = 266
+line = 324
 method = "to_pylist"
 reason = "Terminal mission result boundary: the frame is filtered to one terminal mission whose scalar repository, branch, status, and reason must become the immutable MissionResult returned by the public runtime API."
 
 [[entries]]
 path = "src/archetype/app/missions/agent_service.py"
-line = 274
+line = 332
 method = "to_pylist"
 reason = "Terminal task result boundary: the frame is filtered to the explicit finite task ids submitted for one mission, and those scalar terminal states become the immutable TaskResult values returned by the public runtime API."

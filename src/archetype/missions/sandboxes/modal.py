@@ -15,6 +15,7 @@ from typing import Any
 from archetype.missions.contracts import (
     ExecutionOutcome,
     Friction,
+    RepositoryPublicationPolicy,
     TaskExecutionReceipt,
     TaskExecutionRequest,
     ValidatorResult,
@@ -39,7 +40,6 @@ class ModalAgentSandboxConfig:
     sandbox_timeout_seconds: int = 4 * 60 * 60
     idle_timeout_seconds: int = 20 * 60
     agent_timeout_seconds: int = 45 * 60
-    push: bool = True
     git_author_name: str = "Archetype Coding Agent"
     git_author_email: str = "coding-agent@archetype.local"
 
@@ -49,8 +49,8 @@ class ModalAgentSandboxConfig:
             raise ValueError("workspace must be a non-root absolute path")
         if self.sandbox_timeout_seconds < 1 or self.agent_timeout_seconds < 1:
             raise ValueError("Modal sandbox and agent timeouts must be positive")
-        if self.push and not self.github_secret_name:
-            raise ValueError("push=True requires a GitHub secret")
+        if not self.github_secret_name:
+            raise ValueError("commit-and-push policy requires a GitHub secret")
 
 
 @dataclass(frozen=True)
@@ -175,6 +175,8 @@ class _ModalMissionSession:
             or request.base_ref != self.base_ref
         ):
             raise ValueError("task request changed its mission repository identity")
+        if request.publication_policy is not RepositoryPublicationPolicy.COMMIT_AND_PUSH:
+            raise ValueError("unsupported repository publication policy")
         async with self._lock:
             if self._closed:
                 raise RuntimeError("Modal mission sandbox is closed")
@@ -204,7 +206,7 @@ class _ModalMissionSession:
                         accepted = False
                         error = "validators passed but the task produced no new commit"
                         commit_sha = ""
-                    elif self.config.push:
+                    else:
                         await self._push()
                         pushed = True
             if not accepted:

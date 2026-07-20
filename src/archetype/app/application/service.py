@@ -28,6 +28,8 @@ from archetype.app.models import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from archetype.app.artifacts.interfaces import (
         iArtifactBundleService,
         iArtifactService,
@@ -36,6 +38,7 @@ if TYPE_CHECKING:
     from archetype.app.audit.interfaces import iAuditLog
     from archetype.app.commands.interfaces import iCommandScheduler
     from archetype.app.evaluation.interfaces import iEvaluationService
+    from archetype.app.missions.interfaces import iAgentMissionService
     from archetype.app.query.interfaces import iQueryService
     from archetype.app.research.interfaces import iResearchService
     from archetype.app.world.interfaces import iMutationService, iSimulationService, iWorldService
@@ -80,6 +83,7 @@ class RuntimeApplication:
         artifacts: iArtifactService | None = None,
         artifact_bundles: iArtifactBundleService | None = None,
         evaluations: iEvaluationService | None = None,
+        agent_missions: Callable[..., iAgentMissionService] | None = None,
     ) -> None:
         self._mutations = mutations
         self._worlds = worlds
@@ -92,6 +96,7 @@ class RuntimeApplication:
         self._artifacts = artifacts
         self._artifact_bundles = artifact_bundles
         self._evaluations = evaluations
+        self._agent_missions = agent_missions
 
         self._state_lock = asyncio.Lock()
         self._drained = asyncio.Event()
@@ -100,6 +105,15 @@ class RuntimeApplication:
         self._accepting = True
         self._lanes: dict[str, _WorldLane] = {}
         self._create_lock = asyncio.Lock()
+
+    def agent_mission_service(self, **kwargs) -> iAgentMissionService:
+        """Compose the internal mission workflow port for a trusted runtime handle."""
+
+        if not self._accepting:
+            raise RuntimeError("RuntimeApplication is shutting down")
+        if self._agent_missions is None:
+            raise RuntimeError("agent mission service is not wired")
+        return self._agent_missions(**kwargs)
 
     @asynccontextmanager
     async def _admit(self):

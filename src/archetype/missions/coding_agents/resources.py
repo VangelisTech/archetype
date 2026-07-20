@@ -15,6 +15,7 @@ from archetype.core.hooks import PostTick
 from archetype.missions.coding_agents.components import (
     AgentTaskAttempt,
     AgentTaskEvidence,
+    AgentTaskPolicy,
     AgentTaskRecord,
     AgentTaskState,
     AgentTaskValidators,
@@ -24,7 +25,11 @@ from archetype.missions.coding_agents.transitions import (
     AgentAttemptStatus,
     AgentTaskStatus,
 )
-from archetype.missions.contracts import AgentMissionSandbox, TaskExecutionRequest
+from archetype.missions.contracts import (
+    AgentMissionSandbox,
+    RepositoryPublicationPolicy,
+    TaskExecutionRequest,
+)
 from archetype.missions.relationships import PartOfMission
 
 
@@ -71,6 +76,7 @@ class TaskExecutionOutbox:
         AgentTaskState,
         AgentTaskAttempt,
         AgentTaskEvidence,
+        AgentTaskPolicy,
     )
 
     def __init__(self) -> None:
@@ -107,6 +113,7 @@ class TaskExecutionOutbox:
         workspace = AgentTaskWorkspace.get_prefix()
         validators = AgentTaskValidators.get_prefix()
         evidence = AgentTaskEvidence.get_prefix()
+        policy = AgentTaskPolicy.get_prefix()
         for row in rows:
             attempt_id = str(row[f"{attempt}attempt_id"])
             if attempt_id in self._seen_attempts:
@@ -131,6 +138,9 @@ class TaskExecutionOutbox:
                     base_ref=str(row[f"{workspace}base_ref"]),
                     prompt=str(row[f"{record}prompt"]),
                     validators=validator_set,
+                    publication_policy=RepositoryPublicationPolicy(
+                        str(row[f"{policy}publication_policy"])
+                    ),
                     attempt_id=attempt_id,
                     attempt_index=int(row[f"{attempt}attempt_index"]),
                     previous_session_id=str(row[f"{attempt}agent_session_id"]),

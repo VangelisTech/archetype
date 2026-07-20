@@ -12,9 +12,11 @@ from archetype.missions import (
     AgentTask,
     CommandValidator,
     MissionSubmission,
+    RepositoryPublicationPolicy,
 )
 from archetype.missions.coding_agents import (
     AgentTaskEvidence,
+    AgentTaskPolicy,
     AgentTaskValidators,
     agent_mission_processors,
 )
@@ -45,6 +47,11 @@ def test_submission_is_an_explicit_typed_dag_without_a_planner_switch() -> None:
     )
 
     assert submission.tasks[1].depends_on == ("regression",)
+    assert all(
+        task.publication_policy is RepositoryPublicationPolicy.COMMIT_AND_PUSH
+        for task in submission.tasks
+    )
+    assert AgentTaskPolicy().publication_policy == RepositoryPublicationPolicy.COMMIT_AND_PUSH.value
     assert "decompose" not in AgentTask.__dataclass_fields__
     assert [type(processor).__name__ for processor in agent_mission_processors()] == [
         "TaskGateProcessor",

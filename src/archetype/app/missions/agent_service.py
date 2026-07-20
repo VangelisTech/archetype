@@ -5,13 +5,21 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Protocol, cast
 
 from daft import DataFrame, Expression, col
 
 from archetype.core.component import Component
+from archetype.core.config import StorageConfig
+from archetype.core.hooks import PostTick
 from archetype.graph import GraphView
+from archetype.missions.coding_agents import (
+    AgentMissionSandboxResource,
+    TaskExecutionOutbox,
+    agent_mission_processors,
+)
 from archetype.missions.coding_agents.components import (
     AgentMissionRecord,
     AgentMissionState,
@@ -23,14 +31,14 @@ from archetype.missions.coding_agents.components import (
     AgentTaskValidators,
     AgentTaskWorkspace,
 )
-from archetype.missions.coding_agents.resources import TaskExecutionOutbox
 from archetype.missions.coding_agents.transitions import AgentMissionStatus
 from archetype.missions.contracts import (
-    AgentMissionSandbox,
+    AgentMissionConfig,
     AgentTask,
     ExecutionOutcome,
     MissionResult,
     MissionSubmission,
+    RepositoryPublicationPolicy,
     SubmittedMission,
     TaskExecutionReceipt,
     TaskResult,
@@ -55,32 +63,53 @@ class MissionWorld(Protocol):
 
     async def info(self) -> MissionWorldInfo: ...
 
+    async def shutdown(self) -> None: ...
+
+    @property
+    def world_id(self) -> object: ...
+
 
 class MissionWorldInfo(Protocol):
     tick: int
 
 
 class AgentMissionService:
-    """Materialize task graphs and drive committed intents through a sandbox resource.
+    """Compose and drive the batteries-included coding-agent mission workflow.
 
     Transition policy remains in the installed family processors. This service
-    owns only graph materialization, post-commit I/O, and typed result projection.
+    owns bundle and world lifecycle, graph materialization, post-commit I/O, and
+    typed result projection.
     """
 
     def __init__(
         self,
         *,
-        world: MissionWorld,
-        view: GraphView,
-        outbox: TaskExecutionOutbox,
-        sandbox: AgentMissionSandbox,
-        max_ticks: int,
+        world_factory: Callable[..., MissionWorld],
+        name: str,
+        config: AgentMissionConfig,
+        storage: str | Path | StorageConfig | None = None,
     ) -> None:
+        view = GraphView()
+        outbox = TaskExecutionOutbox()
+        world = world_factory(
+            name,
+            storage=storage,
+            processors=list(agent_mission_processors()),
+            resources=[
+                view,
+                outbox,
+                AgentMissionSandboxResource(config.sandbox),
+            ],
+            hooks=[
+                (PostTick, view.on_post_tick),
+                (PostTick, outbox.on_post_tick),
+            ],
+        )
         self._world = world
         self._view = view
         self._outbox = outbox
-        self._sandbox = sandbox
-        self._max_ticks = max_ticks
+        self._sandbox = config.sandbox
+        self._max_ticks = config.max_ticks
 
     async def submit(
         self,
@@ -126,7 +155,10 @@ class AgentMissionService:
                     branch=submission.branch,
                     base_ref=submission.base_ref,
                 ),
-                AgentTaskPolicy(max_attempts=task.max_attempts),
+                AgentTaskPolicy(
+                    max_attempts=task.max_attempts,
+                    publication_policy=task.publication_policy.value,
+                ),
                 AgentTaskValidators.from_specs(task.validators),
                 AgentTaskState(),
                 AgentTaskAttempt(),
@@ -180,7 +212,28 @@ class AgentMissionService:
         )
 
     async def close(self) -> None:
-        await self._sandbox.close()
+        failures: list[BaseException] = []
+        for close in (self._sandbox.close, self._world.shutdown):
+            try:
+                await close()
+            except BaseException as exc:
+                failures.append(exc)
+        if failures:
+            raise BaseExceptionGroup(
+                f"Agent Missions shutdown failed for {len(failures)} operation(s)",
+                failures,
+            )
+
+    async def query(self, *components: type[Component]) -> DataFrame:
+        """Query persisted mission state through the mission-world read path."""
+
+        return await self._world.query(*components)
+
+    @property
+    def world_id(self) -> object:
+        """Return the mission world's durable identity."""
+
+        return self._world.world_id
 
     async def _execute(self, requests):
         try:
@@ -238,6 +291,11 @@ class AgentMissionService:
                     raise ValueError("accepted receipt contains invalid validator evidence")
             if not receipt.commit_sha:
                 raise ValueError("accepted coding task receipt requires a commit SHA")
+            if (
+                request.publication_policy is RepositoryPublicationPolicy.COMMIT_AND_PUSH
+                and not receipt.pushed
+            ):
+                raise ValueError("accepted coding task receipt must satisfy commit-and-push policy")
 
     def _mission_status(self, mission_id: int) -> AgentMissionStatus | None:
         frame = self._view.frame(AgentMissionState)

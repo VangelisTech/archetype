@@ -41,7 +41,6 @@ MISSION_CONFIG = AgentMissionConfig(
             auth_volume_name="archetype-codex-auth",
             github_secret_name="archetype-github",
             model=os.environ.get("CODING_AGENT_MODEL", ""),
-            push=True,
         )
     ),
     max_ticks=40,

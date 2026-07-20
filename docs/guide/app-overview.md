@@ -67,8 +67,9 @@ and settles tick-deferred commands. It does not own RBAC.
 **AgentMissionService** composes the mission family's task entities,
 relationships, processors, committed-intent outbox, and sandbox resource. The
 processors own transitions; the service owns graph materialization and the
-tick-to-external-I/O loop. Its current direct `RuntimeMissions` construction is
-a documented V1 composition gap, not a general runtime-to-service pattern.
+tick-to-external-I/O loop. `ServiceContainer` injects its factory into
+`RuntimeApplication`; `RuntimeMissions` consumes the resulting
+`iAgentMissionService` port without importing the concrete service.
 
 **RuntimeApplication** is the actor-free application facade consumed by the
 runtime and gateway. **CommandGateway** is the only ActorCtx-aware application

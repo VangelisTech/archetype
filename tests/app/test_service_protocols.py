@@ -29,9 +29,11 @@ from archetype.app.evaluation.interfaces import iEvaluationService
 from archetype.app.evaluation.service import EvaluationService
 from archetype.app.gateway.interfaces import iCommandGateway
 from archetype.app.gateway.service import CommandGateway
+from archetype.app.missions.agent_service import AgentMissionService
 from archetype.app.missions.claim_service import MissionAttemptClaimService
 from archetype.app.missions.execution_service import MissionAttemptExecutionService
 from archetype.app.missions.interfaces import (
+    iAgentMissionService,
     iMissionArtifactFinalizer,
     iMissionAttemptClaimService,
     iMissionAttemptExecutionService,
@@ -67,6 +69,7 @@ SERVICE_PROTOCOLS = (
     (ArtifactTableService, iArtifactTableService),
     (ArtifactBundleService, iArtifactBundleService),
     (MissionService, iMissionService),
+    (AgentMissionService, iAgentMissionService),
     (MissionAttemptClaimService, iMissionAttemptClaimService),
     (MissionAttemptExecutionService, iMissionAttemptExecutionService),
     (MissionArtifactFinalizer, iMissionArtifactFinalizer),

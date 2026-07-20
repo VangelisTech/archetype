@@ -7,6 +7,7 @@ from archetype.app.missions.agent_service import AgentMissionService
 from archetype.app.missions.claim_service import MissionAttemptClaimService
 from archetype.app.missions.execution_service import MissionAttemptExecutionService
 from archetype.app.missions.interfaces import (
+    iAgentMissionService,
     iMissionArtifactFinalizer,
     iMissionAttemptClaimService,
     iMissionAttemptExecutionService,
@@ -66,6 +67,7 @@ __all__ = [
     "MissionService",
     "ProviderExecutionCapabilities",
     "iMissionService",
+    "iAgentMissionService",
     "iMissionAttemptClaimService",
     "iMissionAttemptExecutionService",
     "iMissionArtifactFinalizer",

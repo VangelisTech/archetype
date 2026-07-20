@@ -26,7 +26,7 @@ Processors are the transition authority. A sandbox is an execution resource.
 |---|---|
 | World | Persists every mission, task, edge, attempt, and transition by tick. |
 | Mission entity | Names the repository work and rolls related task state into one terminal result. |
-| Task entity | Holds one atomic goal, its validators, attempt budget, current state, and latest evidence. |
+| Task entity | Holds one atomic goal, validators, attempt and publication policy, current state, and latest evidence. |
 | `DependsOn` edge | Says that the source task may run only after the target task was accepted. |
 | `PartOfMission` edge | Relates a task to the mission whose result includes it. |
 | Processors | Decide readiness, dispatch, acceptance, retry, exhaustion, and mission rollup. |
@@ -70,7 +70,6 @@ MISSION_CONFIG = AgentMissionConfig(
         ModalAgentSandboxConfig(
             auth_volume_name="archetype-codex-auth",
             github_secret_name="archetype-github",
-            push=True,
         )
     ),
     max_ticks=40,
@@ -145,6 +144,7 @@ uv run --extra coding-agent python examples/11_coding_agent_mission.py --dry-run
 - non-empty prompts;
 - at least one validator per task;
 - positive attempt budgets;
+- the V1 `commit_and_push` repository publication policy;
 - dependencies that name tasks in the same submission; and
 - an acyclic dependency graph.
 
@@ -157,7 +157,9 @@ V1 deliberately does not include that planner.
 ```mermaid
 flowchart LR
     Author[Mission author] --> Runtime[RuntimeMissions]
-    Runtime --> Service[AgentMissionService]
+    Runtime --> Application[iRuntimeApplication]
+    Application --> Port[iAgentMissionService]
+    Port -. implemented by .-> Service[AgentMissionService]
     Service --> World[Mission world]
 
     subgraph Family[archetype.missions]
@@ -222,12 +224,16 @@ sequenceDiagram
     autonumber
     actor Author
     participant Runtime as RuntimeMissions
+    participant Application as iRuntimeApplication
     participant Service as AgentMissionService
     participant World
     participant Pipeline as Mission processors
     participant Outbox as PostTick outbox
     participant Sandbox as AgentMissionSandbox
 
+    Author->>Runtime: runtime.missions(config)
+    Runtime->>Application: agent_mission_service(world factory, config)
+    Application-->>Runtime: iAgentMissionService
     Author->>Runtime: submit(repository, branch, tasks)
     Runtime->>Service: materialize typed task graph
     Service->>World: stage mission, tasks, and relation entities
@@ -283,6 +289,11 @@ Attempt state is separate from task state. An attempt moves from `idle` to
 prevents the gate from consuming the same receipt twice. Earlier attempt and
 evidence values remain available in world history by tick.
 
+`AgentTaskPolicy` persists both the retry budget and repository-publication
+policy. V1 has one publication edge: `commit_and_push`. The outbox copies that
+policy from committed graph state into every `TaskExecutionRequest`; it is not
+an optional Modal configuration flag.
+
 ### Previous-tick relationship visibility
 
 Readiness and mission rollup use `GraphView`, which exposes strictly
@@ -318,7 +329,8 @@ class AgentMissionSandbox(Protocol):
 
 `TaskExecutionRequest` is processor-authorized work. It contains the mission
 and task identities, repository coordinates, prompt, validators, attempt
-identity, and prior session/evidence needed for a repair turn.
+identity, publication policy, and prior session/evidence needed for a repair
+turn.
 
 `TaskExecutionReceipt` is an observation, not authority. It may report:
 
@@ -332,7 +344,8 @@ identity, and prior session/evidence needed for a repair turn.
 Before staging an accepted receipt, the application service requires matching
 mission/task/attempt identity, one result for every requested validator,
 matching validator commands, every result marked passed, and a non-empty
-commit SHA. The next tick's gate—not the sandbox—turns that evidence into an
+commit SHA. For V1's `commit_and_push` policy, it also requires pushed branch
+evidence. The next tick's gate—not the sandbox—turns that evidence into an
 accepted task.
 
 ### Repository validators are authority
@@ -347,7 +360,7 @@ The Modal adapter:
 1. lets the agent edit without committing, pushing, or opening a PR;
 2. runs the authored validator commands itself;
 3. compares each observed return code with `expected_returncode`;
-4. commits and optionally pushes only when every validator passes; and
+4. commits and pushes only when every validator passes; and
 5. preserves rejected work, session identity, and validator evidence for the
    next attempt.
 
@@ -419,6 +432,7 @@ fleet coordination, or arbitrary provider behavior.
 - processor-owned acceptance, retry, exhaustion, and rollup;
 - post-commit sandbox dispatch;
 - repository-authored validators, including expected nonzero results;
+- graph-owned `commit_and_push` publication policy;
 - same-worktree and same-session repair turns;
 - typed attempt, evidence, artifact-reference, and friction state;
 - a Modal/Codex resource; and
@@ -447,7 +461,7 @@ repository cleanup removes or deliberately reuses them.
 
 | Gap | Consequence | Intended direction |
 |---|---|---|
-| Runtime composition constructs `AgentMissionService` directly. | It is a bounded exception to the normal `RuntimeApplication`/container flow. | Move bundle construction behind the actor-free application family and keep runtime as a thin handle. |
+| `RuntimeMissions` is async-only. | Mission authoring does not yet have the sync parity of ordinary world handles. | Add a sync wrapper over the same `iAgentMissionService` workflow without duplicating transition policy. |
 | The post-tick outbox remembers dispatched attempt IDs in process memory. | An active mission has no cold-resume guarantee. | Persist an execution receipt/admission identity before claiming recovery. |
 | A third-party sandbox reports `ValidatorResult.passed`. | The service matches commands and requires `passed`, but does not independently recompute it from the reported return code and requested expectation. | Recompute at the application boundary before accepting the receipt. |
 | `PartOfMission` is not yet exclusive. | The intended one-mission-per-task membership is authoring convention, not a relation constraint. | Adopt the graph family's exclusive-edge constraint if the invariant remains correct. |
@@ -462,7 +476,7 @@ These gaps are cleanup inputs, not reasons to obscure the V1 mental model.
 |---|---|
 | `archetype/missions/contracts.py` | Typed authoring, request, receipt, sandbox protocol, configuration, and result values. |
 | `archetype/missions/relationships.py` | `PartOfMission` and `DependsOn` edge types. |
-| `archetype/missions/coding_agents/components.py` | Persisted mission/task/workspace/policy/attempt/evidence schemas. |
+| `archetype/missions/coding_agents/components.py` | Persisted mission/task/workspace/retry/publication/attempt/evidence schemas. |
 | `archetype/missions/coding_agents/transitions.py` | Small persisted mission, task, and attempt vocabularies. |
 | `archetype/missions/coding_agents/processors.py` | Gate, readiness, dispatch, and rollup authority. |
 | `archetype/missions/coding_agents/resources.py` | Sandbox resource wrapper and committed-intent outbox. |

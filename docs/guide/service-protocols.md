@@ -49,6 +49,7 @@ iRuntimeApplication
   -> iCommandScheduler
   -> iAuditLog
   -> iResearchService
+  -> iAgentMissionService
 
 iEvaluationService -> iQueryService + iArtifactService
 iArtifactBundleService -> iRedactionService + iStorageService + iWorldService
@@ -63,7 +64,8 @@ iCommandScheduler  -> iWorldService + iMutationService
 iResearchService   -> iWorldService + iSimulationService
 iAuditLog          -> iStorageService
 
-RuntimeMissions -> AgentMissionService -> AgentMissionSandbox
+RuntimeMissions -> iRuntimeApplication -> iAgentMissionService
+iAgentMissionService -> AgentMissionSandbox
 
 # Legacy mission-attempt compatibility stack
 iMissionService    -> typed mission rows (no service dependency)
@@ -78,8 +80,8 @@ iSandboxService    -> registered iSandboxBackend providers
 `ServiceContainer` selects concrete implementations across families. In the
 legacy stack, the mission execution service receives both mission authorities
 through their protocols and accepts a structural sandbox runner per attempt;
-it is orchestration, not another composition root. V1's composition exception
-is tracked separately below.
+it is orchestration, not another composition root. V1 reaches its container-
+selected mission workflow through the actor-free application facade.
 
 ## 3. Active mapping
 
@@ -100,8 +102,8 @@ is tracked separately below.
 | `iCommandScheduler` | `CommandScheduler` | application | Durable admission, leasing, dispatch, retry, settlement and outbox inspection |
 | `iAuditLog` | `AuditLog` | application, gateway, query | Append-only access rows and command-outbox projection |
 | `iResearchService` | `AutoResearchService` | application | Multi-run autoresearch workflow and research ledger |
+| `iAgentMissionService` | `AgentMissionService` | application, `RuntimeMissions` | Materialize task graphs, own the batteries-included world bundle, coordinate committed I/O, validate receipts, and project terminal results |
 | Family resource port `AgentMissionSandbox` | `ModalAgentMissionSandbox` | `AgentMissionService` | V1 isolated execution and typed receipts; no task-transition authority |
-| **CURRENT GAP:** no V1 app port | `AgentMissionService` | `RuntimeMissions` | Materialize task graphs, coordinate committed I/O, validate receipts, and project terminal results |
 | Legacy `iMissionService` | `MissionService` | legacy attempt orchestration | Single-row validator normalization, transition graph, retry/exhaustion, and outcome application |
 | Legacy `iMissionAttemptClaimService` | `MissionAttemptClaimService` | legacy attempt orchestration and recovery workers | Pre-durability redaction, durable claims, fencing, recovery decisions, acknowledgement, settlement, and terminal-winner reread |
 | Legacy `iMissionArtifactFinalizer` | application-owned `MissionArtifactFinalizer` | legacy attempt execution and recovery workers | Prepared artifact publication and reconciliation feedback |
@@ -152,15 +154,17 @@ family. Its `run_many`, `close_mission`, and `close` methods exchange typed
 `TaskExecutionRequest` and `TaskExecutionReceipt` values. The sandbox reports
 observations; mission processors remain transition authority.
 
-`AgentMissionService` is app-internal composition over a structural mission
-world and that resource. It owns graph materialization, the post-commit I/O
-loop, receipt validation, and terminal projection. It does not own readiness,
-acceptance, retry, exhaustion, or rollup policy.
+`iAgentMissionService` is the app-internal workflow port implemented by
+`AgentMissionService`. The service composes a structural mission world with the
+built-in Components, processors, relationships, graph view, committed-intent
+outbox, and sandbox resource. It owns graph materialization, the post-commit I/O
+loop, receipt validation, lifecycle, and terminal projection. It does not own
+readiness, acceptance, retry, exhaustion, or rollup policy.
 
-**CURRENT GAP:** the service has no `iAgentMissionService` app port and is
-constructed by `RuntimeMissions`. Graduation moves construction into the
-container/application path without moving Components, processors, relations,
-or sandbox resources into `app`.
+`ServiceContainer` injects the concrete service factory into
+`RuntimeApplication`. `RuntimeMissions` supplies only its runtime-owned world
+factory and supported configuration, then consumes the returned port. No
+Component, processor, relation, or sandbox implementation moves into `app`.
 
 See [Agent Missions V1](agent-missions.md).
 
@@ -326,6 +330,8 @@ wiring root. It exposes:
 ```text
 application:      iRuntimeApplication
 command_gateway:  iCommandGateway
+application.agent_mission_service(...):
+  iAgentMissionService
 mission_attempt_workflow(storage_config):
   iMissionService + iMissionAttemptClaimService
   + iMissionArtifactFinalizer + iMissionAttemptExecutionService
@@ -339,10 +345,10 @@ before a world has been opened in that process. There is no advertised
 unbound/default-catalog mission finalizer. Focused implementation tests may
 inspect internal members without creating compatibility.
 
-Agent Missions V1 is the current exception: `RuntimeMissions` constructs its
-application service directly. The target cleanup adds an actor-free app port
-and container-owned composition; it does not expose the service or container
-to mission authors.
+Agent Missions V1 follows the same rule. The container injects the concrete
+mission factory into `RuntimeApplication`; the runtime implementation consumes
+only `iRuntimeApplication` and the returned `iAgentMissionService`. Neither the
+concrete service nor the container is exposed to mission authors.
 
 Shutdown stops new application admission, closes retained sandbox handles,
 flushes the audit projection, then closes container-owned world/storage

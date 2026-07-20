@@ -29,6 +29,7 @@ from archetype.app.commands.service import CommandScheduler
 from archetype.app.evaluation.service import EvaluationService
 from archetype.app.gateway.auth import reset_tick_counters
 from archetype.app.gateway.service import CommandGateway
+from archetype.app.missions.agent_service import AgentMissionService
 from archetype.app.missions.claim_service import MissionAttemptClaimService
 from archetype.app.missions.execution_service import MissionAttemptExecutionService
 from archetype.app.missions.service import MissionService
@@ -132,6 +133,7 @@ class ServiceContainer:
             artifact_bundles=self.artifact_bundle_service,
             evaluations=self.evaluation_service,
             research=self.autoresearch_service,
+            agent_missions=AgentMissionService,
         )
         self.command_gateway = CommandGateway(self.application, self.audit_log)
         self.simulation_service.set_command_drain(self.application.drain_and_apply)

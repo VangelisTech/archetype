@@ -5,9 +5,9 @@
 
 Ordinary runtime/world operations depend on the actor-free
 `iRuntimeApplication` port. They never depend on the command gateway or
-authorization models. Agent Missions V1 currently has one explicit composition
-gap, recorded in R16, where its specialized runtime handle constructs the
-mission application service directly.
+authorization models. Agent Missions follows the same boundary: its specialized
+runtime handle receives an `iAgentMissionService` workflow through
+`iRuntimeApplication`, while the container selects the concrete service.
 
 ## 1. Purpose
 
@@ -210,11 +210,10 @@ sandbox resource and its world handle; closing it does not close the parent
 runtime. A terminal run closes that mission's provider session. Runtime
 shutdown remains the outer process boundary.
 
-**CURRENT GAP:** `RuntimeMissions` constructs `AgentMissionService` directly
-instead of obtaining a mission workflow through `iRuntimeApplication` and the
-container. V1 is also async-only, so it does not yet satisfy R1 and R5 as a
-graduated runtime capability. The behavior is supported for the dogfood, but
-the composition exception is not the target architecture. See
+`RuntimeMissions` obtains its internal `iAgentMissionService` through
+`iRuntimeApplication`; it neither imports the concrete service nor receives the
+container. V1 is still async-only, so sync parity under R5 remains a hardening
+gap. See
 [Agent Missions V1, current hardening gaps](agent-missions.md#current-hardening-gaps).
 
 ## 3. Canonical surface

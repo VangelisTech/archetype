@@ -20,6 +20,7 @@ from archetype.missions.contracts import (
     ArtifactRef,
     CommandValidator,
     Friction,
+    RepositoryPublicationPolicy,
     TaskExecutionReceipt,
     ValidatorResult,
 )
@@ -62,9 +63,10 @@ class AgentTaskWorkspace(Component):
 
 
 class AgentTaskPolicy(Component):
-    """Attempt budget for one task."""
+    """Attempt and repository-publication policy for one task."""
 
     max_attempts: int = 3
+    publication_policy: str = RepositoryPublicationPolicy.COMMIT_AND_PUSH.value
 
     @field_validator("max_attempts")
     @classmethod
@@ -72,6 +74,11 @@ class AgentTaskPolicy(Component):
         if value < 1:
             raise ValueError("max_attempts must be positive")
         return value
+
+    @field_validator("publication_policy")
+    @classmethod
+    def _valid_publication_policy(cls, value: str) -> str:
+        return RepositoryPublicationPolicy(value).value
 
 
 class AgentTaskValidators(Component):

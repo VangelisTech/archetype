@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Protocol, runtime_checkable
+
+from daft import DataFrame
 
 from archetype.app.missions.models import (
     AttemptArtifactProjection,
@@ -22,7 +24,38 @@ from archetype.app.missions.models import (
     ProviderExecutionCapabilities,
 )
 from archetype.app.redaction.models import RedactedRecord
+from archetype.core.component import Component
+from archetype.missions.contracts import AgentTask, MissionResult, SubmittedMission
 from archetype.missions.transitions import AttemptStatus
+
+
+@runtime_checkable
+class iAgentMissionService(Protocol):
+    """Materialize and drive one persisted coding-agent task graph."""
+
+    async def submit(
+        self,
+        *,
+        repository: str,
+        branch: str,
+        tasks: Sequence[AgentTask],
+        name: str = "agent-mission",
+        base_ref: str = "main",
+    ) -> SubmittedMission: ...
+
+    async def run(
+        self,
+        mission: SubmittedMission,
+        *,
+        max_ticks: int | None = None,
+    ) -> MissionResult: ...
+
+    async def close(self) -> None: ...
+
+    async def query(self, *components: type[Component]) -> DataFrame: ...
+
+    @property
+    def world_id(self) -> object: ...
 
 
 @runtime_checkable

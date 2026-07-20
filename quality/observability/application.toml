@@ -47,6 +47,7 @@ operations = [
   "interfaces.iRuntimeApplication.reconcile_artifact_bundles",
   "interfaces.iRuntimeApplication.run_graders",
   "interfaces.iRuntimeApplication.evaluate",
+  "interfaces.iRuntimeApplication.agent_mission_service",
 ]
 signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome"]

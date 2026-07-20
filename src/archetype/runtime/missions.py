@@ -10,15 +10,7 @@ from typing import TYPE_CHECKING
 
 from daft import DataFrame
 
-from archetype.app.missions.agent_service import AgentMissionService
 from archetype.core.config import StorageConfig
-from archetype.core.hooks import PostTick
-from archetype.graph import GraphView
-from archetype.missions.coding_agents import (
-    AgentMissionSandboxResource,
-    TaskExecutionOutbox,
-    agent_mission_processors,
-)
 from archetype.missions.contracts import (
     AgentMissionConfig,
     AgentTask,
@@ -44,29 +36,11 @@ class RuntimeMissions:
         config: AgentMissionConfig,
         storage: str | Path | StorageConfig | None = None,
     ) -> None:
-        view = GraphView()
-        outbox = TaskExecutionOutbox()
-        world = runtime.world(
-            name,
+        self._service = runtime._agent_mission_service(
+            world_factory=runtime.world,
+            name=name,
+            config=config,
             storage=storage,
-            processors=list(agent_mission_processors()),
-            resources=[
-                view,
-                outbox,
-                AgentMissionSandboxResource(config.sandbox),
-            ],
-            hooks=[
-                (PostTick, view.on_post_tick),
-                (PostTick, outbox.on_post_tick),
-            ],
-        )
-        self._world = world
-        self._service = AgentMissionService(
-            world=world,
-            view=view,
-            outbox=outbox,
-            sandbox=config.sandbox,
-            max_ticks=config.max_ticks,
         )
         self._closed = False
 
@@ -107,28 +81,18 @@ class RuntimeMissions:
         if self._closed:
             return
         self._closed = True
-        failures: list[BaseException] = []
-        for close in (self._service.close, self._world.shutdown):
-            try:
-                await close()
-            except BaseException as exc:
-                failures.append(exc)
-        if failures:
-            raise BaseExceptionGroup(
-                f"Agent Missions shutdown failed for {len(failures)} operation(s)",
-                failures,
-            )
+        await self._service.close()
 
     async def query(self, *components: type[Component]) -> DataFrame:
         """Query persisted mission state through the underlying world read path."""
 
-        return await self._world.query(*components)
+        return await self._service.query(*components)
 
     @property
     def world_id(self):
         """Return the activated world's durable identity."""
 
-        return self._world.world_id
+        return self._service.world_id
 
 
 __all__ = ["RuntimeMissions"]

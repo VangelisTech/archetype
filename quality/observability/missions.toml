@@ -4,6 +4,20 @@ family = "missions"
 
 [[disposition]]
 operations = [
+  "interfaces.iAgentMissionService.submit",
+  "interfaces.iAgentMissionService.run",
+  "interfaces.iAgentMissionService.close",
+  "interfaces.iAgentMissionService.query",
+  "interfaces.iAgentMissionService.world_id",
+  "agent_service.MissionWorld.info",
+  "agent_service.MissionWorld.query",
+  "agent_service.MissionWorld.reserve_ids",
+  "agent_service.MissionWorld.spawn",
+  "agent_service.MissionWorld.spawn_reserved",
+  "agent_service.MissionWorld.step",
+  "agent_service.MissionWorld.shutdown",
+  "agent_service.MissionWorld.update",
+  "agent_service.MissionWorld.world_id",
   "interfaces.iMissionService.prepare_attempt",
   "interfaces.iMissionService.apply_attempt",
   "interfaces._iMissionExecutionProjection._apply_settled_attempt",

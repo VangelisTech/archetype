@@ -208,7 +208,7 @@ def test_app_authority_stays_internal_while_consuming_the_top_level_domain() -> 
     assert mission_artifacts.FinalizationPhase is transitions.FinalizationPhase
 
 
-def test_architecture_manifest_registers_a_leaf_family_without_legacy_exceptions() -> None:
+def test_architecture_manifest_registers_the_mission_graph_dependency_without_exceptions() -> None:
     # Family rules and exceptions live in quality/architecture.d fragments
     # (#611); the contract holds over the merged manifest, the same view
     # scripts/check_architecture.py assembles.
@@ -222,5 +222,5 @@ def test_architecture_manifest_registers_a_leaf_family_without_legacy_exceptions
     rules = {
         rule["consumer"]: rule["allowed_families"] for rule in manifest["top_level_family_rule"]
     }
-    assert rules["archetype.missions"] == []
+    assert rules["archetype.missions"] == ["archetype.graph"]
     assert all(exception.get("issue") != 559 for exception in manifest.get("exception", []))

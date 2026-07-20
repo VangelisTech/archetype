@@ -8,6 +8,7 @@ from __future__ import annotations
 import pytest
 
 from archetype import ArchetypeRuntime
+from archetype.app.missions.agent_service import AgentMissionService
 from archetype.core.config import StorageConfig
 from archetype.missions import (
     AgentMissionConfig,
@@ -15,10 +16,12 @@ from archetype.missions import (
     CommandValidator,
     DependsOn,
     ExecutionOutcome,
+    RepositoryPublicationPolicy,
     TaskExecutionReceipt,
+    TaskExecutionRequest,
     ValidatorResult,
 )
-from archetype.missions.coding_agents import AgentTaskState
+from archetype.missions.coding_agents import AgentTaskPolicy, AgentTaskState
 
 
 class _Sandbox:
@@ -61,6 +64,7 @@ class _Sandbox:
                     commit_sha=(
                         f"{request.task_name}-sha-{request.attempt_index}" if accepted else ""
                     ),
+                    pushed=accepted,
                     error="" if accepted else "focused gate failed",
                 )
             )
@@ -118,6 +122,17 @@ async def test_explicit_task_relationships_drive_retry_and_downstream_readiness(
             ("regression", 2),
             ("implementation", 1),
         ]
+        assert all(
+            request.publication_policy is RepositoryPublicationPolicy.COMMIT_AND_PUSH
+            for batch in sandbox.batches
+            for request in batch
+        )
+
+        policy_rows = (await missions.query(AgentTaskPolicy)).to_pylist()
+        policy = AgentTaskPolicy.get_prefix()
+        assert {
+            str(row[f"{policy}publication_policy"]) for row in policy_rows if row["is_active"]
+        } == {RepositoryPublicationPolicy.COMMIT_AND_PUSH.value}
 
         relationships = (await missions.query(DependsOn)).to_pylist()
         dependency = DependsOn.get_prefix()
@@ -144,3 +159,40 @@ async def test_explicit_task_relationships_drive_retry_and_downstream_readiness(
             state_ticks[(submitted.task_id("implementation"), "dispatched")]
         )
         assert implementation_dispatched > regression_accepted
+
+
+def test_commit_and_push_policy_rejects_an_unpushed_accepted_receipt() -> None:
+    validator = CommandValidator("focused", ("pytest", "-q"))
+    request = TaskExecutionRequest(
+        mission_id=1,
+        task_id=2,
+        task_name="implementation",
+        repository="VangelisTech/archetype",
+        branch="agent/policy",
+        base_ref="main",
+        prompt="Implement the fix.",
+        validators=(validator,),
+        publication_policy=RepositoryPublicationPolicy.COMMIT_AND_PUSH,
+        attempt_id="attempt-1",
+        attempt_index=1,
+    )
+    receipt = TaskExecutionReceipt(
+        mission_id=1,
+        task_id=2,
+        attempt_id="attempt-1",
+        attempt_index=1,
+        outcome=ExecutionOutcome.ACCEPTED,
+        validator_results=(
+            ValidatorResult(
+                name=validator.name,
+                command=validator.command,
+                returncode=0,
+                passed=True,
+            ),
+        ),
+        commit_sha="abc123",
+        pushed=False,
+    )
+
+    with pytest.raises(ValueError, match="commit-and-push policy"):
+        AgentMissionService._validate_receipt(request, receipt)

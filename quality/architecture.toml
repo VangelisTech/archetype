@@ -418,6 +418,7 @@ allowed_interfaces = [
   "archetype.app.audit.interfaces.iAuditLog",
   "archetype.app.commands.interfaces.iCommandScheduler",
   "archetype.app.evaluation.interfaces.iEvaluationService",
+  "archetype.app.missions.interfaces.iAgentMissionService",
   "archetype.app.query.interfaces.iQueryService",
   "archetype.app.research.interfaces.iResearchService",
   "archetype.app.world.interfaces.iMutationService",

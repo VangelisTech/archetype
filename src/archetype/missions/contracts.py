@@ -56,6 +56,12 @@ class Friction:
     message: str
 
 
+class RepositoryPublicationPolicy(StrEnum):
+    """Repository finalization required before a task may be accepted."""
+
+    COMMIT_AND_PUSH = "commit_and_push"
+
+
 @dataclass(frozen=True)
 class AgentTask:
     """One explicitly authored task and its incoming dependency names."""
@@ -65,6 +71,7 @@ class AgentTask:
     validators: tuple[CommandValidator, ...]
     depends_on: tuple[str, ...] = ()
     max_attempts: int = 3
+    publication_policy: RepositoryPublicationPolicy = RepositoryPublicationPolicy.COMMIT_AND_PUSH
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -75,6 +82,11 @@ class AgentTask:
             raise ValueError(f"task {self.name!r} requires at least one validator")
         if self.max_attempts < 1:
             raise ValueError(f"task {self.name!r} max_attempts must be positive")
+        try:
+            policy = RepositoryPublicationPolicy(self.publication_policy)
+        except ValueError as exc:
+            raise ValueError(f"task {self.name!r} has an unsupported publication policy") from exc
+        object.__setattr__(self, "publication_policy", policy)
         if len(set(self.depends_on)) != len(self.depends_on):
             raise ValueError(f"task {self.name!r} contains duplicate dependencies")
 
@@ -145,10 +157,18 @@ class TaskExecutionRequest:
     base_ref: str
     prompt: str
     validators: tuple[CommandValidator, ...]
+    publication_policy: RepositoryPublicationPolicy
     attempt_id: str
     attempt_index: int
     previous_session_id: str = ""
     previous_validator_results: tuple[ValidatorResult, ...] = ()
+
+    def __post_init__(self) -> None:
+        try:
+            policy = RepositoryPublicationPolicy(self.publication_policy)
+        except ValueError as exc:
+            raise ValueError("unsupported repository publication policy") from exc
+        object.__setattr__(self, "publication_policy", policy)
 
 
 class ExecutionOutcome(StrEnum):

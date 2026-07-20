@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import pytest
 
-from archetype.missions.sandboxes.modal import _ModalMissionSession
+from archetype.missions.sandboxes.modal import (
+    ModalAgentSandboxConfig,
+    _ModalMissionSession,
+)
 
 
 class _AsyncMethod:
@@ -56,3 +59,9 @@ async def test_codex_exec_closes_modal_stdin_before_waiting() -> None:
     assert sandbox.process.stdin.eof is True
     assert result.returncode == 0
     assert result.stdout == "out"
+
+
+def test_modal_adapter_has_no_commit_without_push_mode() -> None:
+    assert "push" not in ModalAgentSandboxConfig.__dataclass_fields__
+    with pytest.raises(ValueError, match="commit-and-push policy"):
+        ModalAgentSandboxConfig(github_secret_name="")

@@ -178,6 +178,11 @@ class ArchetypeRuntime:
 
         return RuntimeMissions(self, name, config=config, storage=storage)
 
+    def _agent_mission_service(self, **kwargs):
+        """Reach the mission workflow only through the actor-free application facade."""
+
+        return self._application.agent_mission_service(**kwargs)
+
     async def resume(
         self,
         world_id: str | UUID,

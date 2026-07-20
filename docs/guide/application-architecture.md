@@ -352,6 +352,7 @@ implementations across families. It constructs both outward application paths:
 ```text
 container.application -> RuntimeApplication
 container.command_gateway -> CommandGateway
+container -> RuntimeApplication.agent_mission_service -> iAgentMissionService
 container.mission_attempt_workflow(storage_config)
   -> storage-bound claim + artifact finalizer + execution services
 ```
@@ -359,11 +360,12 @@ container.mission_attempt_workflow(storage_config)
 Runtime and API lifespan code may construct or receive the internal container,
 but ordinary runtime and route modules consume only their approved port.
 
-**CURRENT GAP:** `RuntimeMissions` currently installs the V1 processor/resource
-bundle and constructs `AgentMissionService` itself. The target is a thin
-runtime handle over an actor-free application workflow composed by the
-container. This bounded exception is documented rather than generalized into
-permission for runtime modules to assemble arbitrary app services.
+For Agent Missions V1, the container injects the concrete `AgentMissionService`
+factory into `RuntimeApplication`. `RuntimeMissions` supplies a runtime-owned
+world factory and supported mission configuration, then consumes only the
+returned `iAgentMissionService` port. The app service installs the built-in
+processor/resource bundle and owns mission-world lifecycle; the runtime handle
+does not import or construct a concrete app service.
 
 `app/missions/execution_service.py` is a family-internal orchestrator, not a
 composition root. It receives `iMissionService` and
