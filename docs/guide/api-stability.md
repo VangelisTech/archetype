@@ -39,14 +39,17 @@ experimental may change without the compatibility guarantees of the main API.
 ### Provisional capability packages
 
 `archetype.experiments` is not a supported application surface merely because
-its modules are importable. It contains working prototypes, but its package
-boundary will disappear as physical-AI and mission capabilities settle. The
-import-boundary checker constrains what the package may depend on; it does not
-promote it to public API.
+its remaining transcript loader is importable. Its package boundary will
+disappear when transcript publication moves behind its durable artifact
+boundary. The import-boundary checker now prohibits every application import
+from this package; it does not promote the loader to public API.
 
 `archetype.physical_ai` is the reviewed owner for reusable physical state,
-policy contracts, and external-step processors. Its current prototype symbols
-remain provisional until a focused specification graduates an explicit surface.
+policy contracts, external-step processors, typed evaluation values, and pure
+instruction optimization. `PhysicalTaskEvalConfig`, `PhysicalTaskEvalReport`,
+`InstructionSweepConfig`, `InstructionSweepReport`, `TrialOutcome`, and
+`VariantOutcome` are supported top-level runtime contracts. The concrete
+application service remains internal.
 
 The target ownership is recorded in
 [Agent Missions V1, section 9](agent-missions.md#9-family-direction-after-v1),
@@ -56,10 +59,11 @@ gone. The former `archetype.htn` resolver now lives under
 `archetype.missions.planning`; its future adapter to mission task entities is
 not yet a supported authoring surface. The mixed `experiments` package is
 being staged out: trajectory schemas and transforms now live under
-`archetype.missions.trajectories`; physical state and processors have moved to
-`physical_ai`; and research ledger state and its pure runner decoder live in
-`archetype.research`. The surviving family paths remain provisional until an
-implementation issue explicitly graduates a surface.
+`archetype.missions.trajectories`; physical state and pure behavior live in
+`physical_ai`; its rollout/sweep orchestration now lives behind
+`RuntimeApplication`; and research ledger state and its pure runner decoder
+live in `archetype.research`. Only the transcript loader remains inside the
+mixed experiments umbrella.
 
 Do not build a compatibility promise around those module paths yet. New
 applications use `ArchetypeRuntime` and supported extension types. A future

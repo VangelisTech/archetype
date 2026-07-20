@@ -167,6 +167,7 @@ src/archetype/app/
   audit/             journals, outboxes, projections
   research/          autoresearch and multi-run research workflows
   missions/          mission composition; legacy claim/fence compatibility stack
+  physical_ai/       batched evaluation and instruction-sweep workflow
   sandboxes/         legacy app-level attempt kernel pending cleanup
   errors.py          cross-family application error contracts
   container.py       sole concrete cross-family wiring root
@@ -181,10 +182,12 @@ helpers now live in the registered `archetype.physical_ai` family. Research
 ledger Components and the pure runner decoder live in `archetype.research`,
 while `archetype.app.research` retains workflow authority. Typed trajectory
 schemas and pure transforms live under `archetype.missions.trajectories`; the
-mission trajectory service composes query and evaluation ports. The remaining
-work removes transcript and physical-workflow code from the experiments
-umbrella. The current source tree and machine manifest remain implementation
-truth until each move lands.
+mission trajectory service composes query and evaluation ports. Physical
+evaluation values and pure instruction optimization live under
+`archetype.physical_ai`, while `archetype.app.physical_ai` composes the world,
+mutation, simulation, and evaluation ports. The remaining experiments cleanup
+is the transcript-ingestion boundary. The current source tree and machine
+manifest remain implementation truth until that move lands.
 
 Every application family co-locates its internal protocols, boundary models,
 and authority implementation. It imports reusable domain values from their
@@ -500,14 +503,12 @@ digests live in `archetype.evaluation.contracts`, and
 `archetype.app.evaluation` retains orchestration and receipt-write authority
 while importing those domain definitions inward.
 
-The remaining reverse edges from provisional `archetype.experiments` are
-preserved only by exact migration entries for rollout/sweep orchestration under
-Issue #589. The research, trajectory, physical-AI, ontology, and HTN namespace
-stages have landed; transcript publication, physical workflow, and final
-umbrella-removal work remains. No architecture exception remains owned by
-Issues #561, #585, or #586. Mission Components and pure world transitions moved
-under Issue #559, so no mission migration exception remains. These entries make
-no app symbol supported.
+The research, trajectory, physical-AI, physical-workflow, ontology, and HTN
+namespace stages have landed. The physical workflow is reachable only through
+`RuntimeApplication` and `ArchetypeRuntime`; its former raw-service bridges and
+all six Issue #589 architecture exceptions are gone. Transcript publication
+and final removal of the provisional `archetype.experiments` umbrella remain.
+The architecture manifest currently has no owned migration exceptions.
 
 Independent manifests under `quality/observability/` declare each family's
 operation dispositions. `scripts/check_observability.py` enforces their exact

@@ -71,6 +71,12 @@ tick-to-external-I/O loop. `ServiceContainer` injects its factory into
 `RuntimeApplication`; `RuntimeMissions` consumes the resulting
 `iAgentMissionService` port without importing the concrete service.
 
+**PhysicalAIService** turns typed task-evaluation and instruction-sweep
+requests into one batched world, drives a bounded episode, and projects
+terminal results from persisted `ManipStatus` rows. Environment and policy
+providers remain family-owned resources; callers reach this workflow through
+`ArchetypeRuntime`, never through raw service parameters.
+
 **RuntimeApplication** is the actor-free application facade consumed by the
 runtime and gateway. **CommandGateway** is the only ActorCtx-aware application
 boundary and is consumed by API/untrusted adapters only.

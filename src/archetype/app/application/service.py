@@ -39,9 +39,18 @@ if TYPE_CHECKING:
     from archetype.app.commands.interfaces import iCommandScheduler
     from archetype.app.evaluation.interfaces import iEvaluationService
     from archetype.app.missions.interfaces import iAgentMissionService, iTrajectoryService
+    from archetype.app.physical_ai.interfaces import iPhysicalAIService
     from archetype.app.query.interfaces import iQueryService
     from archetype.app.research.interfaces import iResearchService
     from archetype.app.world.interfaces import iMutationService, iSimulationService, iWorldService
+    from archetype.physical_ai.contracts import (
+        InstructionSweepConfig,
+        InstructionSweepReport,
+        PhysicalTaskEvalConfig,
+        PhysicalTaskEvalReport,
+    )
+    from archetype.physical_ai.manipulation import EnvClient
+    from archetype.physical_ai.policy import PolicyClient
 
 
 _ACTIVE_APPLICATION: ContextVar[RuntimeApplication | None] = ContextVar(
@@ -84,6 +93,7 @@ class RuntimeApplication:
         artifact_bundles: iArtifactBundleService | None = None,
         evaluations: iEvaluationService | None = None,
         trajectories: iTrajectoryService | None = None,
+        physical_ai: iPhysicalAIService | None = None,
         agent_missions: Callable[..., iAgentMissionService] | None = None,
     ) -> None:
         self._mutations = mutations
@@ -98,6 +108,7 @@ class RuntimeApplication:
         self._artifact_bundles = artifact_bundles
         self._evaluations = evaluations
         self._trajectories = trajectories
+        self._physical_ai = physical_ai
         self._agent_missions = agent_missions
 
         self._state_lock = asyncio.Lock()
@@ -294,6 +305,42 @@ class RuntimeApplication:
                 prepare_candidate=prepare_candidate,
                 lab_world_id=lab_world_id,
                 on_iteration=on_iteration,
+            )
+
+    async def evaluate_physical_task(
+        self,
+        config: PhysicalTaskEvalConfig,
+        *,
+        env_client: EnvClient,
+        policy_client: PolicyClient | None = None,
+    ) -> PhysicalTaskEvalReport:
+        """Run one ledger-backed physical evaluation through its owning service."""
+
+        if self._physical_ai is None:
+            raise RuntimeError("physical AI service is not wired")
+        async with self._admit():
+            return await self._physical_ai.evaluate_task(
+                config,
+                env_client=env_client,
+                policy_client=policy_client,
+            )
+
+    async def sweep_physical_instructions(
+        self,
+        config: InstructionSweepConfig,
+        *,
+        env_client: EnvClient,
+        policy_client: PolicyClient,
+    ) -> InstructionSweepReport:
+        """Run one paired-seed instruction sweep through its owning service."""
+
+        if self._physical_ai is None:
+            raise RuntimeError("physical AI service is not wired")
+        async with self._admit():
+            return await self._physical_ai.sweep_instructions(
+                config,
+                env_client=env_client,
+                policy_client=policy_client,
             )
 
     # Query and introspection ----------------------------------------

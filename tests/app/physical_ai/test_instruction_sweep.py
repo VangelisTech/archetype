@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Instruction-perturbation eval + self-improving optimizer (archetype.experiments.instruction_sweep).
+"""Paired instruction sweeps plus the pure physical-AI optimizer.
 
 SCOPE — this is a MECHANISM CHECK, not evidence for the scientific claim.
 ``InstructionConditionedReachPolicy`` defines its effective gain *as*
@@ -25,15 +25,15 @@ from __future__ import annotations
 
 import pytest
 
+from archetype import ArchetypeRuntime, InstructionSweepConfig
 from archetype.app.container import ServiceContainer
 from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.core.config import StorageConfig
-from archetype.experiments.instruction_sweep import (
+from archetype.physical_ai.manipulation import ManipStatus, ManipTask, ScriptedReachEnv
+from archetype.physical_ai.optimization import (
     TemplatePerturbation,
     optimize_instruction,
-    run_instruction_sweep,
 )
-from archetype.physical_ai.manipulation import ManipStatus, ManipTask, ScriptedReachEnv
 from archetype.physical_ai.policy import (
     InstructionConditionedReachPolicy,
     instruction_quality,
@@ -49,7 +49,7 @@ TOL = 0.02
 MAX_STEPS = 7
 CONTROL_STEPS = MAX_STEPS - 1
 SEEDS = 5
-TASK_ID = 0  # run_instruction_sweep derives seed = TASK_ID * 1000 + env_key
+TASK_ID = 0  # the workflow derives seed = TASK_ID * 1000 + seed_slot
 # Per-seed target distance (along +x). The spread makes the success threshold
 # cross gradually as the instruction's effective gain rises, so success-rate is
 # graded in instruction quality (0 -> 0.2 -> 0.8 -> 1.0), not a binary cliff.
@@ -135,18 +135,17 @@ async def test_instruction_sweep_grades_success_rate_per_variant(tmp_path):
         # qualities: 0, 1/3, 2/3, 1  ->  graded success-rates.
         variants = ["", "reach", "reach red", "reach red block"]
 
-        report = await run_instruction_sweep(
-            world_service=container.world_service,
-            simulation_service=container.simulation_service,
-            evaluation_service=container.evaluation_service,
+        report = await container.application.sweep_physical_instructions(
+            InstructionSweepConfig(
+                suite="scripted",
+                task_id=TASK_ID,
+                variants=tuple(variants),
+                seeds_per_variant=SEEDS,
+                max_steps=MAX_STEPS,
+                storage=storage,
+            ),
             env_client=env,
             policy_client=policy,
-            suite="scripted",
-            task_id=TASK_ID,
-            variants=variants,
-            seeds_per_variant=SEEDS,
-            max_steps=MAX_STEPS,
-            storage=storage,
         )
 
         assert [o.instruction for o in report.variants] == variants
@@ -165,11 +164,8 @@ async def test_instruction_sweep_grades_success_rate_per_variant(tmp_path):
         assert report.best is not None and report.best.instruction == "reach red block"
 
         # A2 addressability: every trial persists under one (world_id, run_id).
-        df = await container.evaluation_service.query_components(
-            [ManipStatus, ManipTask],
-            world_id=report.world_id,
-            run_id=report.run_id,
-            storage_config=storage,
+        df = await container.application.query_components(
+            [ManipStatus, ManipTask], report.world_id, report.run_id, storage
         )
         rows = df.collect().to_pylist()
         assert len({r["entity_id"] for r in rows}) == len(variants) * SEEDS
@@ -192,18 +188,17 @@ async def test_optimize_instruction_climbs_from_vague_to_precise(tmp_path):
         )
 
         async def evaluate(instructions: list[str]) -> dict[str, float]:
-            report = await run_instruction_sweep(
-                world_service=container.world_service,
-                simulation_service=container.simulation_service,
-                evaluation_service=container.evaluation_service,
+            report = await container.application.sweep_physical_instructions(
+                InstructionSweepConfig(
+                    suite="scripted",
+                    task_id=TASK_ID,
+                    variants=tuple(instructions),
+                    seeds_per_variant=SEEDS,
+                    max_steps=MAX_STEPS,
+                    storage=storage,
+                ),
                 env_client=env,
                 policy_client=policy,
-                suite="scripted",
-                task_id=TASK_ID,
-                variants=instructions,
-                seeds_per_variant=SEEDS,
-                max_steps=MAX_STEPS,
-                storage=storage,
             )
             return report.scores
 
@@ -249,18 +244,17 @@ async def test_sweep_is_paired_and_position_invariant(tmp_path):
         )
 
         async def sweep(variants):
-            report = await run_instruction_sweep(
-                world_service=container.world_service,
-                simulation_service=container.simulation_service,
-                evaluation_service=container.evaluation_service,
+            report = await container.application.sweep_physical_instructions(
+                InstructionSweepConfig(
+                    suite="scripted",
+                    task_id=TASK_ID,
+                    variants=tuple(variants),
+                    seeds_per_variant=SEEDS,
+                    max_steps=MAX_STEPS,
+                    storage=storage,
+                ),
                 env_client=env,
                 policy_client=policy,
-                suite="scripted",
-                task_id=TASK_ID,
-                variants=variants,
-                seeds_per_variant=SEEDS,
-                max_steps=MAX_STEPS,
-                storage=storage,
             )
             return report.scores
 
@@ -277,7 +271,7 @@ async def test_sweep_is_paired_and_position_invariant(tmp_path):
 
 @pytest.mark.asyncio
 async def test_sweep_resets_policy_state_between_runs(tmp_path):
-    """``run_instruction_sweep`` must drop a stateful policy's per-env buffers at
+    """The sweep must drop a stateful policy's per-env buffers at
     each sweep boundary, so a reused env_key never replays a prior sweep's
     recurrent state (the VlaJepaPolicyClient chunk-leak). Locks the reset() call."""
     container = ServiceContainer()
@@ -296,18 +290,17 @@ async def test_sweep_resets_policy_state_between_runs(tmp_path):
             targets=targets, required_keywords=REQUIRED, gain=GAIN, max_step=MAX_STEP
         )
         for _ in range(2):
-            await run_instruction_sweep(
-                world_service=container.world_service,
-                simulation_service=container.simulation_service,
-                evaluation_service=container.evaluation_service,
+            await container.application.sweep_physical_instructions(
+                InstructionSweepConfig(
+                    suite="scripted",
+                    task_id=TASK_ID,
+                    variants=("reach red",),
+                    seeds_per_variant=SEEDS,
+                    max_steps=MAX_STEPS,
+                    storage=storage,
+                ),
                 env_client=env,
                 policy_client=policy,
-                suite="scripted",
-                task_id=TASK_ID,
-                variants=["reach red"],
-                seeds_per_variant=SEEDS,
-                max_steps=MAX_STEPS,
-                storage=storage,
             )
         assert _SpyPolicy.resets == 2, "each sweep must reset the policy's per-env state"
     finally:
@@ -315,10 +308,8 @@ async def test_sweep_resets_policy_state_between_runs(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_sweep_runtime_path_matches_service_bridge_without_access_audit(tmp_path):
-    """Actor-free runtime sweep grades match the deprecated service bridge."""
-    from archetype import ArchetypeRuntime
-
+async def test_sweep_runtime_path_is_ledger_backed_without_access_audit(tmp_path):
+    """The actor-free runtime exposes the workflow without a raw-service bridge."""
     targets = _targets()
     variants = ["", "reach red block"]
 
@@ -327,16 +318,18 @@ async def test_sweep_runtime_path_matches_service_bridge_without_access_audit(tm
         policy = InstructionConditionedReachPolicy(
             targets=targets, required_keywords=REQUIRED, gain=GAIN, max_step=MAX_STEP
         )
-        report = await run_instruction_sweep(
-            runtime,
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="isweeprt")
+        report = await runtime.sweep_physical_instructions(
+            InstructionSweepConfig(
+                suite="scripted",
+                task_id=TASK_ID,
+                variants=tuple(variants),
+                seeds_per_variant=SEEDS,
+                max_steps=MAX_STEPS,
+                storage=storage,
+            ),
             env_client=env,
             policy_client=policy,
-            suite="scripted",
-            task_id=TASK_ID,
-            variants=variants,
-            seeds_per_variant=SEEDS,
-            max_steps=MAX_STEPS,
-            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="isweeprt"),
         )
         for vidx, variant in enumerate(variants):
             expected = _expected_success_rate(variant, vidx * 3, targets)
@@ -344,7 +337,7 @@ async def test_sweep_runtime_path_matches_service_bridge_without_access_audit(tm
 
         audit = runtime.attach(
             report.world_id,
-            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="isweeprt"),
+            storage=storage,
         )
         rows = (await audit.history(limit=200)).collect().to_pylist()
         assert rows == []

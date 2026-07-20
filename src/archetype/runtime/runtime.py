@@ -35,6 +35,14 @@ from archetype.runtime.world import RuntimeWorld, SyncRuntimeWorld, _RuntimeWorl
 
 if TYPE_CHECKING:
     from archetype.missions.contracts import AgentMissionConfig
+    from archetype.physical_ai.contracts import (
+        InstructionSweepConfig,
+        InstructionSweepReport,
+        PhysicalTaskEvalConfig,
+        PhysicalTaskEvalReport,
+    )
+    from archetype.physical_ai.manipulation import EnvClient
+    from archetype.physical_ai.policy import PolicyClient
     from archetype.runtime.missions import RuntimeMissions
 
 
@@ -182,6 +190,38 @@ class ArchetypeRuntime:
         """Reach the mission workflow only through the actor-free application facade."""
 
         return self._application.agent_mission_service(**kwargs)
+
+    async def evaluate_physical_task(
+        self,
+        config: PhysicalTaskEvalConfig,
+        *,
+        env_client: EnvClient,
+        policy_client: PolicyClient | None = None,
+    ) -> PhysicalTaskEvalReport:
+        """Run and grade one batched physical task evaluation."""
+
+        self._ensure_open()
+        return await self._application.evaluate_physical_task(
+            config,
+            env_client=env_client,
+            policy_client=policy_client,
+        )
+
+    async def sweep_physical_instructions(
+        self,
+        config: InstructionSweepConfig,
+        *,
+        env_client: EnvClient,
+        policy_client: PolicyClient,
+    ) -> InstructionSweepReport:
+        """Compare instruction variants on paired seeds in one world."""
+
+        self._ensure_open()
+        return await self._application.sweep_physical_instructions(
+            config,
+            env_client=env_client,
+            policy_client=policy_client,
+        )
 
     async def resume(
         self,
@@ -376,6 +416,40 @@ class SyncArchetypeRuntime:
             hooks=hooks,
         )
         return SyncRuntimeWorld(rw, self)
+
+    def evaluate_physical_task(
+        self,
+        config: PhysicalTaskEvalConfig,
+        *,
+        env_client: EnvClient,
+        policy_client: PolicyClient | None = None,
+    ) -> PhysicalTaskEvalReport:
+        """Synchronous physical task evaluation."""
+
+        return self._dispatch(
+            self._runtime.evaluate_physical_task(
+                config,
+                env_client=env_client,
+                policy_client=policy_client,
+            )
+        )
+
+    def sweep_physical_instructions(
+        self,
+        config: InstructionSweepConfig,
+        *,
+        env_client: EnvClient,
+        policy_client: PolicyClient,
+    ) -> InstructionSweepReport:
+        """Synchronous paired-seed instruction sweep."""
+
+        return self._dispatch(
+            self._runtime.sweep_physical_instructions(
+                config,
+                env_client=env_client,
+                policy_client=policy_client,
+            )
+        )
 
     def discover(self, storage=None) -> list[WorldInfo]:
         """List durable worlds through the synchronous facade."""

@@ -133,6 +133,28 @@ PAGES: tuple[ReferencePage, ...] = (
         ),
     ),
     ReferencePage(
+        "physical-ai",
+        "Physical AI",
+        "Recommended API",
+        "Run batched physical-policy evaluations and paired instruction sweeps through "
+        "the runtime, while retaining queryable world/run evidence.",
+        (
+            "PhysicalTaskEvalConfig",
+            "PhysicalTaskEvalReport",
+            "InstructionSweepConfig",
+            "InstructionSweepReport",
+            "TrialOutcome",
+            "VariantOutcome",
+            "EnvClient",
+            "PolicyClient",
+            "PerturbationStrategy",
+            "TemplatePerturbation",
+            "RoundRecord",
+            "OptimizationResult",
+            "optimize_instruction",
+        ),
+    ),
+    ReferencePage(
         "commands",
         "Command models",
         "Integration API",
@@ -203,6 +225,22 @@ SUPPLEMENTAL: dict[str, tuple[str, str]] = {
     "HookHandle": ("archetype.core.hooks", "HookHandle"),
     "HookInfo": ("archetype.app.models", "HookInfo"),
     "IterationResult": ("archetype.app.research.contracts", "IterationResult"),
+    "EnvClient": ("archetype.physical_ai.manipulation", "EnvClient"),
+    "OptimizationResult": ("archetype.physical_ai.optimization", "OptimizationResult"),
+    "PerturbationStrategy": (
+        "archetype.physical_ai.optimization",
+        "PerturbationStrategy",
+    ),
+    "PolicyClient": ("archetype.physical_ai.policy", "PolicyClient"),
+    "RoundRecord": ("archetype.physical_ai.optimization", "RoundRecord"),
+    "TemplatePerturbation": (
+        "archetype.physical_ai.optimization",
+        "TemplatePerturbation",
+    ),
+    "optimize_instruction": (
+        "archetype.physical_ai.optimization",
+        "optimize_instruction",
+    ),
     "ProcessorInfo": ("archetype.app.models", "ProcessorInfo"),
     "ResourceInfo": ("archetype.app.models", "ResourceInfo"),
     "StorageBackend": ("archetype.core.config", "StorageBackend"),
@@ -259,6 +297,14 @@ RECORDS = frozenset(
         "Outcome",
         "GraderContract",
         "EvalReceipt",
+        "PhysicalTaskEvalConfig",
+        "PhysicalTaskEvalReport",
+        "InstructionSweepConfig",
+        "InstructionSweepReport",
+        "TrialOutcome",
+        "VariantOutcome",
+        "OptimizationResult",
+        "RoundRecord",
     }
 )
 
@@ -269,6 +315,8 @@ EXPLICIT_MEMBERS: dict[str, tuple[str, ...]] = {
     "ArtifactBundleRequest": ("canonical_json", "digest"),
     "ArtifactStoreConfig": ("local", "retention_seconds"),
     "GraderContract": ("digest",),
+    "PhysicalTaskEvalReport": ("success_rate", "mean_length"),
+    "InstructionSweepReport": ("scores", "best"),
 }
 
 COMPATIBILITY_CLASSES = frozenset(

@@ -108,6 +108,13 @@ __all__ = [
     "BoundedArtifactSourceResolver",
     "ArtifactStoreConfig",
     "MaterializedArtifact",
+    # Physical-AI workflow values
+    "PhysicalTaskEvalConfig",
+    "PhysicalTaskEvalReport",
+    "InstructionSweepConfig",
+    "InstructionSweepReport",
+    "TrialOutcome",
+    "VariantOutcome",
     # Models
     "Command",
     "CommandType",
@@ -192,6 +199,25 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     ),
     "ArtifactStoreConfig": ("archetype.artifacts.bundles", "ArtifactStoreConfig"),
     "MaterializedArtifact": ("archetype.artifacts.bundles", "MaterializedArtifact"),
+    # Physical-AI workflow values
+    "PhysicalTaskEvalConfig": (
+        "archetype.physical_ai.contracts",
+        "PhysicalTaskEvalConfig",
+    ),
+    "PhysicalTaskEvalReport": (
+        "archetype.physical_ai.contracts",
+        "PhysicalTaskEvalReport",
+    ),
+    "InstructionSweepConfig": (
+        "archetype.physical_ai.contracts",
+        "InstructionSweepConfig",
+    ),
+    "InstructionSweepReport": (
+        "archetype.physical_ai.contracts",
+        "InstructionSweepReport",
+    ),
+    "TrialOutcome": ("archetype.physical_ai.contracts", "TrialOutcome"),
+    "VariantOutcome": ("archetype.physical_ai.contracts", "VariantOutcome"),
     # Command models used by supported host adapters
     "Command": ("archetype.app.models", "Command"),
     "CommandType": ("archetype.app.models", "CommandType"),

@@ -178,8 +178,8 @@ Experiment state gets the same operational properties as any other simulation in
 ## LIBERO on the ledger
 
 The same lab-world pattern extends to robotics benchmarks. The external
-`everettVT/robot-evals` harness runs batched LIBERO evals against Archetype's
-packaged experiment services:
+`everettVT/robot-evals` harness supplies LIBERO environment and policy
+providers to Archetype's typed [Physical AI](physical-ai.md) runtime workflow:
 
 - **One control-plane world per task, N trial entities** keyed by `env_key`. The env
   client batches by `env_key`, so one tick steps every live trial at once; finished
@@ -192,10 +192,9 @@ packaged experiment services:
   service**, not computed in the driver, so there is no summary component to drift
   from the ledger. (The old `eval_driver.py` / `EvalTrialResult` stack had exactly
   that drift problem and was removed.)
-- In robot-evals, `src/robot_evals/in_process.py` runs LIBERO envs in-process;
-  `src/robot_evals/instruction_sweep.py` layers instruction optimization on
-  top, and `src/robot_evals/in_process_policy.py` colocates a VLA policy with
-  the env.
+- In robot-evals, `src/robot_evals/in_process.py` runs LIBERO envs in-process,
+  and `src/robot_evals/in_process_policy.py` colocates a VLA policy with the
+  env. Archetype owns the provider-neutral world/episode/ledger workflow.
 
 The [robot-evals extraction record](../reports/2026-07-16-robot-evals-extraction.md)
 preserves the historical boundary and retained Archetype interfaces. The large benchmark sweeps are **user-triggered actions**
@@ -206,6 +205,7 @@ preserves the historical boundary and retained Archetype interfaces. The large b
 - Andrej Karpathy's framing of autonomous software optimization and branch-frontier agent workflows
 - `src/archetype/research/` — research ledger Components and runner decoder
 - `archetype-runner` — the agent-in-VM runner whose registry feeds this schema
-- `src/archetype/experiments/eval_rollouts.py` — packaged batched rollout orchestration
+- `src/archetype/app/physical_ai/` — internal batched evaluation orchestration
+- `src/archetype/physical_ai/` — supported values, state, processors, and provider contracts
 - `everettVT/robot-evals` — external LIBERO harness, GPU entrypoints, and run ledgers
 - `docs/reports/2026-07-16-robot-evals-extraction.md` — historical extraction boundary

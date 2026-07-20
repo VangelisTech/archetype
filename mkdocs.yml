@@ -69,6 +69,7 @@ nav:
       - Token Quotas: guide/token-quotas.md
       - Running a Server: guide/api-layer.md
       - Trajectories: guide/trajectories.md
+      - Physical AI: guide/physical-ai.md
       - AutoResearch: guide/autoresearch.md
       - Agent Missions: guide/agent-missions.md
       - Tragedy of the Commons: experiments/tragedy-of-the-commons.md
@@ -83,6 +84,7 @@ nav:
           - Hooks and Identity: reference/python/hooks.md
           - Configuration: reference/python/configuration.md
           - AutoResearch and Evaluation: reference/python/autoresearch.md
+          - Physical AI: reference/python/physical-ai.md
           - Command Models: reference/python/commands.md
           - Core Engine: reference/python/core.md
           - Storage Backends: reference/python/storage.md

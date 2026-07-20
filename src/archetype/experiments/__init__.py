@@ -12,11 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Provisional trajectory helpers awaiting their mission-family owner.
+"""Provisional local-transcript adapter awaiting artifact-owned ingestion.
 
-This package is not a supported application API. Its current contents are
-being relocated under missions. Import paths and groupings may change before
-v1; supported applications enter through :class:`ArchetypeRuntime`.
+This package is not a supported application API. Its remaining loader reads a
+local source artifact and projects mission trajectory values, but it does not
+yet provide the required redaction, quarantine, and durable publication
+boundary. Import paths may change before v1; supported applications enter
+through :class:`ArchetypeRuntime`.
 """
 
 from archetype.experiments.claude_sessions import (

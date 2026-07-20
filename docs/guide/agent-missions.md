@@ -508,7 +508,8 @@ archetype.app.missions
 ├── agent_service.py       # composition and durable workflow boundary
 └── trajectory_service.py  # query/evaluation composition
 
-archetype.physical_ai  # physical state, policies, and external-step processors
+archetype.physical_ai      # physical state, policies, contracts, pure optimization
+archetype.app.physical_ai  # world/simulation/evaluation workflow composition
 
 archetype.research     # research ledger state and pure runner decoding
 ```
@@ -521,7 +522,7 @@ The cleanup direction is:
 | Former `archetype.datasets` | Removed; retained evidence identity now lives in `archetype.evaluation.contracts`. |
 | `archetype.experiments` | Remove; keep only code with a clear owner under missions, research, or physical AI. |
 | Trajectory helpers | Moved under `archetype.missions.trajectories`; the app service composes query and evaluation without owning evidence or transitions. |
-| Physical-AI prototypes | Moved into the registered `archetype.physical_ai` family; application rollout/evaluation workflows remain separate. |
+| Physical-AI prototypes | State and pure behavior moved into `archetype.physical_ai`; rollout/evaluation composition moved behind `archetype.app.physical_ai` and the supported runtime. |
 | Research ledger state | Moved into `archetype.research`; `archetype.app.research` retains world/simulation orchestration. |
 | Former `archetype.contrib` observability shim | Removed; retained vendor-neutral vocabulary lives in `archetype._obs`. |
 

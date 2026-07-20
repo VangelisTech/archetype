@@ -468,7 +468,7 @@ class InstructionConditionedReachPolicy:
     plays for the provenance contract, extended along the instruction axis.
 
     Conforms to the ``PolicyClient`` protocol, so it drops into
-    ``PolicyActionProcessor`` and ``run_instruction_sweep`` exactly where a
+    ``PolicyActionProcessor`` and the physical instruction-sweep workflow where a
     direct model policy such as ``InProcessVlaJepaPolicy`` goes.
     """
 

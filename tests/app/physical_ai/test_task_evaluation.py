@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Batched control-plane eval contract (archetype.experiments.eval_rollouts).
+"""Batched physical-task evaluation through the application/runtime boundary.
 
 Proves the redesign that replaces the old per-trial-world driver, using the
 in-process scripted env+policy (no Modal, no LIBERO) — the exact same
@@ -24,10 +24,10 @@ from __future__ import annotations
 
 import pytest
 
+from archetype import ArchetypeRuntime, PhysicalTaskEvalConfig
 from archetype.app.container import ServiceContainer
 from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.core.config import StorageConfig
-from archetype.experiments.eval_rollouts import run_task_eval
 from archetype.physical_ai.manipulation import ManipStatus, ManipTask, ScriptedReachEnv
 from archetype.physical_ai.policy import ScriptedReachPolicy
 
@@ -81,17 +81,16 @@ async def test_batched_control_plane_eval_is_addressable_and_graded(tmp_path):
         env = ScriptedReachEnv(targets=TARGETS, tolerance=TOL)
         policy = ScriptedReachPolicy(targets=TARGETS, gain=GAIN, max_step=MAX_STEP)
 
-        report = await run_task_eval(
-            world_service=container.world_service,
-            simulation_service=container.simulation_service,
-            evaluation_service=container.evaluation_service,
+        report = await container.application.evaluate_physical_task(
+            PhysicalTaskEvalConfig(
+                suite="scripted",
+                task_id=0,
+                trials=4,
+                max_steps=MAX_STEPS,
+                storage=storage,
+            ),
             env_client=env,
             policy_client=policy,
-            suite="scripted",
-            task_id=0,
-            trials=4,
-            max_steps=MAX_STEPS,
-            storage=storage,
         )
 
         # Independent replay (seed = task_id*1000 + env_key = env_key for task 0).
@@ -110,11 +109,8 @@ async def test_batched_control_plane_eval_is_addressable_and_graded(tmp_path):
         assert report.world_id and report.run_id
 
         # A2: every trial's trajectory is addressable by the one (world_id, run_id).
-        df = await container.evaluation_service.query_components(
-            [ManipStatus, ManipTask],
-            world_id=report.world_id,
-            run_id=report.run_id,
-            storage_config=storage,
+        df = await container.application.query_components(
+            [ManipStatus, ManipTask], report.world_id, report.run_id, storage
         )
         rows = df.collect().to_pylist()
         assert len({r["entity_id"] for r in rows}) == 4, "all 4 trials must persist, none orphaned"
@@ -125,22 +121,21 @@ async def test_batched_control_plane_eval_is_addressable_and_graded(tmp_path):
 @pytest.mark.asyncio
 async def test_runtime_path_matches_replay_without_gateway_access_audit(tmp_path):
     """Trusted runtime evaluation matches replay without fabricating an actor."""
-    from archetype import ArchetypeRuntime
-
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="evalrt")
     async with ArchetypeRuntime() as runtime:
         env = ScriptedReachEnv(targets=TARGETS, tolerance=TOL)
         policy = ScriptedReachPolicy(targets=TARGETS, gain=GAIN, max_step=MAX_STEP)
 
-        report = await run_task_eval(
-            runtime,
+        report = await runtime.evaluate_physical_task(
+            PhysicalTaskEvalConfig(
+                suite="scripted",
+                task_id=0,
+                trials=4,
+                max_steps=MAX_STEPS,
+                storage=storage,
+            ),
             env_client=env,
             policy_client=policy,
-            suite="scripted",
-            task_id=0,
-            trials=4,
-            max_steps=MAX_STEPS,
-            storage=storage,
         )
 
         expected = {ek: _simulate(TARGETS[ek], ek) for ek in TARGETS}
@@ -160,44 +155,36 @@ async def test_runtime_path_matches_replay_without_gateway_access_audit(tmp_path
         assert rows == []
 
 
-@pytest.mark.asyncio
-async def test_service_bridge_is_deprecated(tmp_path):
-    container = ServiceContainer()
-    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="evaldep")
-    try:
-        env = ScriptedReachEnv(targets={0: TARGETS[0]}, tolerance=TOL)
-        policy = ScriptedReachPolicy(targets={0: TARGETS[0]}, gain=GAIN, max_step=MAX_STEP)
-        with pytest.warns(DeprecationWarning, match="bypasses the RuntimeApplication facade"):
-            await run_task_eval(
-                world_service=container.world_service,
-                simulation_service=container.simulation_service,
-                evaluation_service=container.evaluation_service,
-                env_client=env,
-                policy_client=policy,
+def test_sync_runtime_exposes_the_same_typed_workflow(tmp_path):
+    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="evalsync")
+    env = ScriptedReachEnv(targets={0: TARGETS[0]}, tolerance=TOL)
+    policy = ScriptedReachPolicy(targets={0: TARGETS[0]}, gain=GAIN, max_step=MAX_STEP)
+
+    with ArchetypeRuntime.sync() as runtime:
+        report = runtime.evaluate_physical_task(
+            PhysicalTaskEvalConfig(
                 suite="scripted",
                 task_id=0,
                 trials=1,
                 max_steps=MAX_STEPS,
                 storage=storage,
-            )
-    finally:
-        await container.shutdown()
-
-
-def test_runtime_or_services_required():
-    with pytest.raises(TypeError, match="requires `runtime"):
-        import asyncio
-
-        asyncio.get_event_loop_policy()
-        coro = run_task_eval(
-            env_client=object(),
-            suite="s",
-            task_id=0,
-            trials=1,
-            max_steps=1,
-            storage=StorageConfig(uri="/tmp/x", namespace="x"),
+            ),
+            env_client=env,
+            policy_client=policy,
         )
-        try:
-            coro.send(None)
-        finally:
-            coro.close()
+
+    assert report.world_id and report.run_id
+    assert len(report.trials) == 1
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"suite": "", "trials": 1, "max_steps": 1}, "suite"),
+        ({"suite": "s", "trials": 0, "max_steps": 1}, "trials"),
+        ({"suite": "s", "trials": 1, "max_steps": 0}, "max_steps"),
+    ],
+)
+def test_task_eval_config_rejects_invalid_work(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        PhysicalTaskEvalConfig(task_id=0, **kwargs)

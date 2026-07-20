@@ -76,15 +76,13 @@ def test_experiments_scope_blocks_service_imports(tmp_path, monkeypatch):
     assert "allowed app imports for experiments" in violations[0]
 
 
-def test_experiments_scope_allows_models(tmp_path, monkeypatch):
+def test_experiments_scope_blocks_application_models(tmp_path, monkeypatch):
     monkeypatch.setattr(checker, "ROOT", tmp_path)
     path = _write(tmp_path, "from archetype.app.models import EpisodeConfig\n")
-    assert (
-        checker._import_violations(
-            path, checker.ALLOWED_APP_IMPORTS_EXPERIMENTS, set(), "experiments"
-        )
-        == []
+    violations = checker._import_violations(
+        path, checker.ALLOWED_APP_IMPORTS_EXPERIMENTS, set(), "experiments"
     )
+    assert len(violations) == 1
 
 
 def test_import_scope_ignores_dotted_sibling_packages(tmp_path, monkeypatch):

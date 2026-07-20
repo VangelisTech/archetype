@@ -135,6 +135,13 @@ EvaluationService itself.
 execution must not hold a runtime handle lock that would deadlock reentrant
 runtime operations.
 
+`runtime.evaluate_physical_task(...)` and
+`runtime.sweep_physical_instructions(...)` delegate typed requests to the
+physical-AI application workflow. The runtime does not install processors,
+reset provider state, spawn trial entities, run episodes, or collect terminal
+rows itself. Returned reports carry the durable world/run identity from which
+their values were derived. The sync runtime exposes the same operations.
+
 ### R12 — Artifacts, not generic artifacts
 
 The supported target vocabulary is artifact/evidence publication. Runtime

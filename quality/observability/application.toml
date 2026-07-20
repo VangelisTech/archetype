@@ -28,6 +28,8 @@ operations = [
   "interfaces.iRuntimeApplication.run_episode",
   "interfaces.iRuntimeApplication.run_rollout",
   "interfaces.iRuntimeApplication.autoresearch",
+  "interfaces.iRuntimeApplication.evaluate_physical_task",
+  "interfaces.iRuntimeApplication.sweep_physical_instructions",
   "interfaces.iRuntimeApplication.query_components",
   "interfaces.iRuntimeApplication.query_archetype",
   "interfaces.iRuntimeApplication.list_signatures",

@@ -9,10 +9,11 @@
 public/internal classification, wiring, and enforcement. This document owns the
 purpose and active mapping of each family port.
 
-Agent Missions V1 currently uses one family-owned resource protocol,
-`AgentMissionSandbox`, while its application workflow has not yet moved behind
-an app-family port. That explicit gap is described below; the older
-`iMission*` and `iSandbox*` ports are a separate compatibility subsystem.
+Agent Missions V1 uses the family-owned `AgentMissionSandbox` resource protocol
+behind the app-owned `iAgentMissionService` workflow. Physical evaluation uses
+the same ownership pattern: family-owned environment/policy protocols beneath
+the app-owned `iPhysicalAIService`. The older `iMission*` and `iSandbox*` ports
+are a separate compatibility subsystem.
 
 ## 1. Policy
 
@@ -50,6 +51,7 @@ iRuntimeApplication
   -> iAuditLog
   -> iResearchService
   -> iAgentMissionService
+  -> iPhysicalAIService
 
 iEvaluationService -> iQueryService + iArtifactService
 iArtifactBundleService -> iRedactionService + iStorageService + iWorldService
@@ -62,6 +64,9 @@ iMutationService   -> iWorldService
 iSimulationService -> iWorldService + injected callbacks
 iCommandScheduler  -> iWorldService + iMutationService
 iResearchService   -> iWorldService + iSimulationService
+iPhysicalAIService
+  -> iWorldService + iMutationService + iSimulationService
+  -> iEvaluationService
 iAuditLog          -> iStorageService
 
 RuntimeMissions -> iRuntimeApplication -> iAgentMissionService
@@ -90,19 +95,20 @@ selected mission workflow through the actor-free application facade.
 | `iRuntimeApplication` | `RuntimeApplication` | runtime, `CommandGateway` | Actor-free canonical product operations and per-world serialization |
 | `iCommandGateway` | `CommandGateway` | FastAPI and other untrusted adapters | RBAC/quota authorization, delegation, access audit |
 | `iStorageService` | `StorageService` | world, query, artifacts, audit | Store pooling, catalog/control-authority and storage-context lifetime |
-| `iWorldService` | `WorldService` | mutation, simulation, commands, artifacts, research, application | Live-world lifecycle, durable discovery, coordinate lookup |
-| `iMutationService` | `MutationService` | application, commands | Entity/component/processor mutation staging |
-| `iSimulationService` | `SimulationService` | application, research | Step, run, episode and rollout execution |
+| `iWorldService` | `WorldService` | mutation, simulation, commands, artifacts, research, physical AI, application | Live-world lifecycle, durable discovery, coordinate lookup |
+| `iMutationService` | `MutationService` | application, commands, physical AI | Entity/component/processor mutation staging |
+| `iSimulationService` | `SimulationService` | application, research, physical AI | Step, run, episode and rollout execution |
 | `iQueryService` | `QueryService` | application, evaluation | Persisted ECS reads, signature/lineage discovery and compatibility history |
 | `iArtifactService` | `ArtifactService` | application, evaluation | Claim-backed component publication and immutable snapshot pinning |
 | `iArtifactTableService` | `ArtifactTableService` | application | Typed file/row ingestion and contextual reads |
 | `iArtifactBundleService` | `ArtifactBundleService` | application | Portable evidence publication, indexing, and reconciliation |
 | `iRedactionService` | `RedactionService` | artifact bundles, mission attempt claims; future telemetry/proxy adapters | Provider-neutral pre-durability scanning, deterministic text redaction, safe receipts, and quarantine |
-| `iEvaluationService` | `EvaluationService` | application | Query, grade, validate and publish evaluation evidence |
+| `iEvaluationService` | `EvaluationService` | application, physical AI | Query, grade, validate and publish evaluation evidence |
 | `iCommandScheduler` | `CommandScheduler` | application | Durable admission, leasing, dispatch, retry, settlement and outbox inspection |
 | `iAuditLog` | `AuditLog` | application, gateway, query | Append-only access rows and command-outbox projection |
 | `iResearchService` | `AutoResearchService` | application | Multi-run autoresearch workflow and research ledger |
 | `iAgentMissionService` | `AgentMissionService` | application, `RuntimeMissions` | Materialize task graphs, own the batteries-included world bundle, coordinate committed I/O, validate receipts, and project terminal results |
+| `iPhysicalAIService` | `PhysicalAIService` | application | Create batched evaluation worlds, install physical processors, run episodes, and derive typed reports from persisted state |
 | Family resource port `AgentMissionSandbox` | `ModalAgentMissionSandbox` | `AgentMissionService` | V1 isolated execution and typed receipts; no task-transition authority |
 | Legacy `iMissionService` | `MissionService` | legacy attempt orchestration | Single-row validator normalization, transition graph, retry/exhaustion, and outcome application |
 | Legacy `iMissionAttemptClaimService` | `MissionAttemptClaimService` | legacy attempt orchestration and recovery workers | Pre-durability redaction, durable claims, fencing, recovery decisions, acknowledgement, settlement, and terminal-winner reread |
@@ -167,6 +173,23 @@ factory and supported configuration, then consumes the returned port. No
 Component, processor, relation, or sandbox implementation moves into `app`.
 
 See [Agent Missions V1](agent-missions.md).
+
+### Physical AI
+
+`EnvClient` and `PolicyClient` belong to the top-level physical-AI family
+because external simulator and model resources are implementations beneath
+that capability. `iPhysicalAIService` is the app-internal workflow port. Its
+implementation composes world lifecycle, entity/processor mutation, episode
+execution, and persisted evaluation reads; it does not own those authorities.
+
+`RuntimeApplication` is the only consumer exposed to the runtime. The
+application service has no public constructor contract, accepts no gateway or
+actor context, and emits no parallel summary Component. It returns typed
+reports carrying the authoritative `(world_id, run_id)` coordinates. The
+credential-free contract tests prove paired seeds, complete denominators,
+policy reset, runtime/sync parity, and ledger addressability.
+
+See [Physical AI](physical-ai.md).
 
 ### Legacy mission-attempt ports
 
@@ -310,15 +333,17 @@ authoring values, and structural transforms live under
 `archetype.missions.trajectories`; `iTrajectoryService` composes only query and
 evaluation ports.
 
-- physical-AI rollout/sweep orchestration remains under #589, as adjudicated by
-  #561; and
-- the root `app/models.py` boundary-model split remains owned by #560.
+The physical-AI split completed #589: typed request/report values and pure
+optimization live under `archetype.physical_ai`, while
+`iPhysicalAIService` composes world, mutation, simulation, and evaluation
+ports under `archetype.app.physical_ai`. The root `app/models.py`
+boundary-model split remains owned by #560.
 
-The exact temporary edges are recorded in `quality/architecture.toml`; no
-wildcard compatibility package is implied. Redaction, audit, sandbox,
-command, world, and other authority-specific models remain with their app
-owners unless a focused specification classifies an individual value as a
-reusable family contract.
+`quality/architecture.toml` currently carries no migration exceptions; no
+wildcard compatibility package is implied. Redaction, audit, sandbox, command,
+world, and other authority-specific models remain with their app owners unless
+a focused specification classifies an individual value as a reusable family
+contract.
 
 The V1 mission split is the implemented example: Components, processors,
 relations, authoring/receipt values, and sandbox resources live under

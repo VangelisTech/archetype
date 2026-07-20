@@ -34,6 +34,7 @@ from archetype.app.missions.claim_service import MissionAttemptClaimService
 from archetype.app.missions.execution_service import MissionAttemptExecutionService
 from archetype.app.missions.service import MissionService
 from archetype.app.missions.trajectory_service import TrajectoryService
+from archetype.app.physical_ai.service import PhysicalAIService
 from archetype.app.query.service import QueryService
 from archetype.app.redaction.interfaces import iRedactionService
 from archetype.app.redaction.service import RedactionService
@@ -117,6 +118,12 @@ class ServiceContainer:
         # Services that depend on WorldService
         self.mutation_service = MutationService(self.world_service)
         self.simulation_service = SimulationService(self.world_service)
+        self.physical_ai_service = PhysicalAIService(
+            self.world_service,
+            self.mutation_service,
+            self.simulation_service,
+            self.evaluation_service,
+        )
         self.command_scheduler = CommandScheduler(self.world_service, self.mutation_service)
         self.audit_log.set_outbox_source(
             self.command_scheduler.read_outbox,
@@ -139,6 +146,7 @@ class ServiceContainer:
             evaluations=self.evaluation_service,
             trajectories=self.trajectory_service,
             research=self.autoresearch_service,
+            physical_ai=self.physical_ai_service,
             agent_missions=AgentMissionService,
         )
         self.command_gateway = CommandGateway(self.application, self.audit_log)
