@@ -498,7 +498,6 @@ three existing gateway decorators remain children, and Issue #515 owns
 coherent ingress roots. The existing footgun reviewer complements this
 deterministic audit with semantic observability review.
 
-
 Other deliberately retained implementation seams are documented rather than
 hidden: `QueryService` uses `iAuditLog` for compatibility history reads, and
 the root `app/models.py` holds cross-family boundary models. Changing either is

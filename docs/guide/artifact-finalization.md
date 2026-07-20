@@ -31,12 +31,14 @@ and may compose this service later as an explicit handoff.
 
 One logical publication is identified within a world run by:
 
-    publication_key = SHA256(
-        "archetype.catalog.v1",
-        world_id,
-        run_id,
-        idempotency_key,
-    )
+```text
+publication_key = SHA256(
+    "archetype.catalog.v1",
+    world_id,
+    run_id,
+    idempotency_key,
+)
+```
 
 ArtifactBundleRequest.canonical_json() is the exact replay request.
 request_digest authenticates that complete JSON, including the bound redaction
@@ -49,9 +51,11 @@ no transition authority.
 
 Portable objects use deterministic content-addressed placement:
 
-    <object-root>/
-      worlds/<world_id>/runs/<run_id>/attempts/<attempt_id>/
-      bundles/<bundle_id>/objects/<artifact_id>/<generated-file-name>
+```text
+<object-root>/
+  worlds/<world_id>/runs/<run_id>/attempts/<attempt_id>/
+  bundles/<bundle_id>/objects/<artifact_id>/<generated-file-name>
+```
 
 If a worker crashes after upload but before catalog update, a later worker may
 reuse an object only after reading it back and verifying its bytes and size.
@@ -131,12 +135,14 @@ redacted; they retain rule identifiers, never matched secret text.
 
 The artifact catalog records the canonical request before external I/O:
 
-                 upload every declared object
-    PENDING  ───────────────────────────────────▶  UPLOADED
-       │                                                │
-       │ retry window elapsed                          │ append/confirm index rows
-       ▼                                                ▼
-    EXPIRED                                          INDEXED
+```text
+             upload every declared object
+PENDING  ───────────────────────────────────▶  UPLOADED
+   │                                                │
+   │ retry window elapsed                          │ append/confirm index rows
+   ▼                                                ▼
+EXPIRED                                          INDEXED
+```
 
 - PENDING: request identity is durable; source materialization or upload may
   still be required.
