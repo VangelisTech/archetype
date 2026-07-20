@@ -506,6 +506,8 @@ archetype.missions
 
 archetype.app.missions
 └── agent_service.py   # composition and durable workflow boundary
+
+archetype.physical_ai  # physical state, policies, and external-step processors
 ```
 
 The cleanup direction is:
@@ -516,7 +518,7 @@ The cleanup direction is:
 | Former `archetype.datasets` | Removed; retained evidence identity now lives in `archetype.evaluation.contracts`. |
 | `archetype.experiments` | Remove; keep only code with a clear owner under missions, research, or physical AI. |
 | Trajectory helpers | Keep pure projections under missions; compose query- and evaluation-backed workflows in the app layer. |
-| Physical-AI prototypes | Give them a dedicated `archetype.physical_ai` family rather than an experiments umbrella. |
+| Physical-AI prototypes | Moved into the registered `archetype.physical_ai` family; application rollout/evaluation workflows remain separate. |
 | Former `archetype.contrib` observability shim | Removed; retained vendor-neutral vocabulary lives in `archetype._obs`. |
 
 Those moves are not prerequisites for V1 and should not be smuggled into its

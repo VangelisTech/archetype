@@ -5,7 +5,7 @@
 [[top_level_family_rule]]
 name = "experiments-domain-family"
 consumer = "archetype.experiments"
-allowed_families = []
+allowed_families = ["archetype.physical_ai"]
 
 [[exception]]
 rule = "top_level_family_outward_dependency"

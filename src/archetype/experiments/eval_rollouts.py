@@ -54,7 +54,7 @@ import uuid_utils as uuid
 from archetype._api import public_api
 from archetype.app.models import EpisodeConfig
 from archetype.core.config import StorageConfig, WorldConfig
-from archetype.experiments.manipulation import (
+from archetype.physical_ai.manipulation import (
     ACTION_DIM,
     EnvStepProcessor,
     FramedEnvStepProcessor,
@@ -271,7 +271,7 @@ async def _run_task_eval_runtime(
     # second variance run on the same (suite, task_id) would otherwise crash.
     world = runtime.world(name=f"eval:{suite}:t{task_id}:{uuid.uuid7()}", storage=storage)
     if policy_client is not None:
-        from archetype.experiments.policy import PolicyActionProcessor  # noqa: PLC0415
+        from archetype.physical_ai.policy import PolicyActionProcessor  # noqa: PLC0415
 
         await world.add_processor(PolicyActionProcessor(policy_client))
     processor = FramedEnvStepProcessor(env_client) if with_frames else EnvStepProcessor(env_client)
@@ -348,7 +348,7 @@ async def _run_task_evaluation_services(
         WorldConfig(name=f"eval:{suite}:t{task_id}:{uuid.uuid7()}"), storage
     )
     if policy_client is not None:
-        from archetype.experiments.policy import PolicyActionProcessor  # noqa: PLC0415
+        from archetype.physical_ai.policy import PolicyActionProcessor  # noqa: PLC0415
 
         await world.add_processor(PolicyActionProcessor(policy_client))
     processor = FramedEnvStepProcessor(env_client) if with_frames else EnvStepProcessor(env_client)

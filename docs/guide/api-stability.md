@@ -44,6 +44,10 @@ boundary will disappear as physical-AI and mission capabilities settle. The
 import-boundary checker constrains what the package may depend on; it does not
 promote it to public API.
 
+`archetype.physical_ai` is the reviewed owner for reusable physical state,
+policy contracts, and external-step processors. Its current prototype symbols
+remain provisional until a focused specification graduates an explicit surface.
+
 The target ownership is recorded in
 [Agent Missions V1, section 9](agent-missions.md#9-family-direction-after-v1),
 and is landing incrementally. Dataset evidence identity now lives in
@@ -51,9 +55,10 @@ and is landing incrementally. Dataset evidence identity now lives in
 gone. The former `archetype.htn` resolver now lives under
 `archetype.missions.planning`; its future adapter to mission task entities is
 not yet a supported authoring surface. The mixed `experiments` package is
-staged into research, mission-owned trajectory modules, and `physical_ai`, then
-removed. The surviving future family paths remain provisional until an
-implementation issue explicitly graduates a surface.
+being staged into research and mission-owned trajectory modules; its physical
+state and processors have already moved to `physical_ai`. The surviving future
+family paths remain provisional until an implementation issue explicitly
+graduates a surface.
 
 Do not build a compatibility promise around those module paths yet. New
 applications use `ArchetypeRuntime` and supported extension types. A future

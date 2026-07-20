@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""External-boundary helpers for Archetype processors.
+"""External-boundary helpers for physical-AI processors.
 
 Every external boundary in Archetype (MuJoCo physics, robosuite/LIBERO env
 step, policy inference) shares a structural pattern:

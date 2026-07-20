@@ -18,7 +18,7 @@ import pytest
 
 from archetype.core.aio import AsyncSystem
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
-from archetype.experiments.manipulation import (
+from archetype.physical_ai.manipulation import (
     ACTION_DIM,
     FramedEnvStepProcessor,
     ManipAction,

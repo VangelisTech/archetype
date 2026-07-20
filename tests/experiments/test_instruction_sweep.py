@@ -33,8 +33,8 @@ from archetype.experiments.instruction_sweep import (
     optimize_instruction,
     run_instruction_sweep,
 )
-from archetype.experiments.manipulation import ManipStatus, ManipTask, ScriptedReachEnv
-from archetype.experiments.policy import (
+from archetype.physical_ai.manipulation import ManipStatus, ManipTask, ScriptedReachEnv
+from archetype.physical_ai.policy import (
     InstructionConditionedReachPolicy,
     instruction_quality,
 )

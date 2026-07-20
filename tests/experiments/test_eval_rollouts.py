@@ -28,8 +28,8 @@ from archetype.app.container import ServiceContainer
 from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.core.config import StorageConfig
 from archetype.experiments.eval_rollouts import run_task_eval
-from archetype.experiments.manipulation import ManipStatus, ManipTask, ScriptedReachEnv
-from archetype.experiments.policy import ScriptedReachPolicy
+from archetype.physical_ai.manipulation import ManipStatus, ManipTask, ScriptedReachEnv
+from archetype.physical_ai.policy import ScriptedReachPolicy
 
 # Proportional-controller params shared by the policy, the env, and the replay.
 GAIN = 0.5

@@ -14,7 +14,7 @@ import pytest
 
 from archetype.core.aio import AsyncSystem
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
-from archetype.experiments.mujoco_cartpole import (
+from archetype.physical_ai.mujoco_cartpole import (
     CartpoleState,
     CartpoleStepProcessor,
     raw_rollout,

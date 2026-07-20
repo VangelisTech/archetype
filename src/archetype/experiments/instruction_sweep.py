@@ -45,13 +45,13 @@ from archetype.experiments.eval_rollouts import _final_row_per_entity, _trial_co
 if TYPE_CHECKING:  # runtime imports app at module scope; keep this edge type-only
     from archetype.runtime import ArchetypeRuntime
 from archetype._api import public_api
-from archetype.experiments.manipulation import (
+from archetype.physical_ai.manipulation import (
     EnvStepProcessor,
     FramedEnvStepProcessor,
     ManipStatus,
     ManipTask,
 )
-from archetype.experiments.policy import PolicyActionProcessor
+from archetype.physical_ai.policy import PolicyActionProcessor
 
 # ---------------------------------------------------------------------------
 # Per-variant graded outcome

@@ -1,0 +1,8 @@
+# Architecture policy fragment: physical_ai.
+# Merged into quality/architecture.toml by scripts/check_architecture.py;
+# fragments may declare only rule/exception arrays, never scalar policy.
+
+[[top_level_family_rule]]
+name = "physical-ai-domain-family"
+consumer = "archetype.physical_ai"
+allowed_families = []

@@ -176,9 +176,11 @@ The mission-adjacent cleanup direction is recorded in
 [Agent Missions V1, section 9](agent-missions.md#9-family-direction-after-v1).
 Dataset evidence identity has moved into evaluation and the datasets umbrella
 is gone. HTN resolution now lives under `archetype.missions.planning`. The
-remaining work moves mission trajectory projections, removes the experiments
-umbrella, and gives physical AI a named family. The current source tree and
-machine manifest remain implementation truth until each move lands.
+physical-AI Components, processors, policy contracts, and external-boundary
+helpers now live in the registered `archetype.physical_ai` family. The remaining
+work moves mission trajectory projections and removes the experiments umbrella.
+The current source tree and machine manifest remain implementation truth until
+each move lands.
 
 Every application family co-locates its internal protocols, boundary models,
 and authority implementation. It imports reusable domain values from their
@@ -498,11 +500,11 @@ remaining Components under app-family `models.py` are preserved only by exact
 migration entries. The design gate in #561 has been adjudicated: research
 Components and runner imports now point to #585, trajectory recorder imports
 point to #586, and physical-AI rollout/sweep reverse imports point to #589.
-The transcript, physical-AI domain, ontology, HTN-adapter, and final
-umbrella-removal stages are Issues #587, #588, #590, #591, and #592. No
-architecture exception remains owned by Issue #561. Mission Components and
-pure world transitions moved under Issue #559, so no mission migration
-exception remains. These entries make no app symbol supported.
+The physical-AI domain, ontology, and HTN namespace stages have landed; the
+transcript, workflow, and final umbrella-removal work remains. No architecture
+exception remains owned by Issue #561. Mission Components and pure world
+transitions moved under Issue #559, so no mission migration exception remains.
+These entries make no app symbol supported.
 
 Independent manifests under `quality/observability/` declare each family's
 operation dispositions. `scripts/check_observability.py` enforces their exact

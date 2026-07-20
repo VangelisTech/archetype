@@ -46,7 +46,7 @@ from daft import DataType, Series, col
 
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
-from archetype.experiments.boundary import (
+from archetype.physical_ai.boundary import (
     external_call_indices,
     series_to_rows,
     unpack_struct,

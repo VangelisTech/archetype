@@ -127,7 +127,7 @@ dev = [
     "httpx>=0.27",
     "pre-commit>=4.0",
     "mutmut>=3.5",
-    "mujoco>=3.2",  # physics parity tests (tests/experiments/test_mujoco_rollout.py)
+    "mujoco>=3.2",  # physics parity tests (tests/physical_ai/test_mujoco_rollout.py)
     "pytest-xdist>=3.8.0",
     # Dev keeps the optional Logfire backend installed so CI can exercise the
     # explicit host adapter; the published base package remains vendor-neutral.

@@ -30,7 +30,7 @@ import pytest
 
 from archetype.core.aio import AsyncSystem
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
-from archetype.experiments.manipulation import (
+from archetype.physical_ai.manipulation import (
     ACTION_DIM,
     EnvClientSpec,
     EnvStepProcessor,
@@ -40,7 +40,7 @@ from archetype.experiments.manipulation import (
     ManipTask,
     ScriptedReachEnv,
 )
-from archetype.experiments.policy import (
+from archetype.physical_ai.policy import (
     PolicyActionProcessor,
     PolicyClientSpec,
 )

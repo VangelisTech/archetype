@@ -24,7 +24,7 @@ the previous observation and the observation that action produced:
 That makes every rollout self-documenting: replaying the policy against
 the ledger's own observation column must reproduce the action column
 exactly (the provenance contract tested in
-``tests/experiments/test_policy_loop.py``).
+``tests/physical_ai/test_policy_loop.py``).
 
 ``PolicyClient`` mirrors ``EnvClient``: in-process scripted policies for
 contract tests and direct in-interpreter GPU policies such as VLA-JEPA for the
@@ -66,7 +66,7 @@ from daft import DataType, Series, col
 
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.resources import Resources
-from archetype.experiments.boundary import external_call_indices, series_to_rows
+from archetype.physical_ai.boundary import external_call_indices, series_to_rows
 
 from .manipulation import (
     ACTION_DIM,
