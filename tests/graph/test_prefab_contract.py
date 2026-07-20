@@ -31,6 +31,7 @@ from archetype.graph import (  # noqa: E402
     GraphView,
     IsA,
     Prefab,
+    Relation,
     edges,
     instantiate,
     instantiate_sync,
@@ -276,6 +277,101 @@ def test_marker_and_relation_overrides_are_rejected(tmp_path):
             twin_marker = _make_prefab_twin()
             with pytest.raises(ValueError, match="not copyable"):
                 await instantiate(world, view, template, overrides=[twin_marker(name="ghost")])
+            return True
+
+    assert _run(go())
+
+
+def test_lineage_is_version_pinned_and_same_world_is_empty(tmp_path):
+    async def go():
+        view = GraphView()
+        async with ArchetypeRuntime() as runtime:
+            world = _world(runtime, "pinned", tmp_path, view)
+            template = await world.spawn(Prefab(name="t"), Chassis(armor=4))
+            await world.step()
+            pinned_tick = view.tick
+
+            inst = await instantiate(world, view, template)
+            await world.step()
+
+            latest = (await world.info()).tick - 1
+            lineage = (await edges(world, IsA, at=latest)).to_pylist()
+            assert len(lineage) == 1
+            assert lineage[0]["isa__source"] == inst
+            assert lineage[0]["isa__at_tick"] == pinned_tick
+            assert lineage[0]["isa__world"] == ""  # same-world lineage
+            return True
+
+    assert _run(go())
+
+
+def test_cross_world_instantiation_records_source_world(tmp_path):
+    """R1's seam plus R2's payload: import from a library world and keep
+    globally unambiguous lineage."""
+
+    async def go():
+        library_view = GraphView()
+        async with ArchetypeRuntime() as runtime:
+            library = runtime.world(
+                "library",
+                storage=_storage(tmp_path),
+                resources=[library_view],
+                hooks=[(PostTick, library_view.on_post_tick)],
+            )
+            consumer = runtime.world("consumer", storage=_storage(tmp_path))
+
+            template = await library.spawn(Prefab(name="unit"), Chassis(armor=13))
+            await library.step()
+
+            inst = await instantiate(consumer, library_view, template)
+            await consumer.step()
+
+            latest = (await consumer.info()).tick - 1
+            rows = (await consumer.query(Chassis)).where(col("tick") == latest).to_pylist()
+            assert {r["entity_id"]: r["chassis__armor"] for r in rows}[inst] == 13
+
+            lineage = (await edges(consumer, IsA, at=latest)).to_pylist()
+            assert len(lineage) == 1
+            library_id = str((await library.info()).world_id)
+            assert lineage[0]["isa__world"] == library_id
+            assert lineage[0]["isa__target"] == template  # id valid IN that world
+            return True
+
+    assert _run(go())
+
+
+class Wired(Relation):
+    """Arbitrary domain relation for the negative contract."""
+
+
+def test_arbitrary_relations_are_not_copied(tmp_path):
+    """The relation-copy boundary (R7): only ChildOf wiring is rebuilt; any
+    other relation between prefab entities stays on the originals."""
+
+    async def go():
+        view = GraphView()
+        async with ArchetypeRuntime() as runtime:
+            world = _world(runtime, "boundary", tmp_path, view)
+            body = await world.spawn(Prefab(name="body"), Chassis(armor=1))
+            gun = await world.spawn(Prefab(name="gun"), Turret(caliber=20))
+            await link(world, ChildOf(source=gun, target=body))
+            await link(world, Wired(source=body, target=gun))
+            await world.step()
+
+            inst = await instantiate(world, view, body)
+            await world.step()
+
+            latest = (await world.info()).tick - 1
+            new_ids = {inst} | {
+                row["childof__source"]
+                for row in (await edges(world, ChildOf, at=latest)).to_pylist()
+                if row["childof__target"] == inst
+            }
+            wired = (await edges(world, Wired, at=latest)).to_pylist()
+            assert len(wired) == 1  # exactly the original edge
+            touched = {wired[0]["wired__source"], wired[0]["wired__target"]}
+            assert touched == {body, gun}
+            assert not (touched & new_ids)
             return True
 
     assert _run(go())

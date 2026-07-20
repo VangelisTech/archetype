@@ -60,6 +60,7 @@ class GraphView:
     def __init__(self) -> None:
         self._frames: dict[ArchetypeSignature, DataFrame] = {}
         self.tick: int = -1
+        self.world_id: str = ""
 
     async def on_post_tick(self, event: PostTick) -> None:
         """Async hook handler: capture the tick's persisted frames."""
@@ -72,6 +73,7 @@ class GraphView:
     def _capture(self, event: PostTick) -> None:
         self._frames = dict(event.results)
         self.tick = event.tick - 1  # PostTick.tick is the next tick
+        self.world_id = event.world_id
 
     def frames(self) -> list[tuple[ArchetypeSignature, DataFrame]]:
         """The RAW captured (signature, frame) pairs.

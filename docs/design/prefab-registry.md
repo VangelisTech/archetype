@@ -86,6 +86,17 @@ eval-suite reference is mandatory; `FLAG`-style validations (cycle checks,
 schema drift, orphaned lineage) run as evals over the library world, and a
 version without evidence receipts is visibly ungraded in the index.
 
+### R7 — The relation-copy boundary
+
+`instantiate` copies component values, recursively copies the `ChildOf`
+subtree, rebuilds only `ChildOf` edges, and records `IsA` provenance. It
+copies no other relation — catalog structure, assignments, sockets, supply
+lines — and exposes no source-to-instance id map. Domain wiring belongs in
+rule entities interpreted by a driver or service after instantiation. If
+enough families need arbitrary graph cloning, the sanctioned broadening is a
+separate `InstantiationResult(root_id, id_map)` API with explicit
+relation-copy policies; `instantiate` is never silently widened.
+
 ---
 
 ## 4. What stays out

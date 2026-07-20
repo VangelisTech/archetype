@@ -24,6 +24,7 @@ from archetype.graph.view import GraphView
 
 class _InfoLike(Protocol):
     tick: int
+    world_id: str
 
 
 class SyncWorldLike(Protocol):

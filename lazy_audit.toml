@@ -188,6 +188,6 @@ reason = "Mutation-planning boundary for cascade: despawn takes concrete ids, so
 
 [[entries]]
 path = "src/archetype/graph/prefab.py"
-line = 54
+line = 63
 method = "to_pylist"
 reason = "Mutation-planning boundary for instantiation: spawning copies requires the template's concrete component values and child prefab ids; _rows is the single funnel and every entity filter runs in the lazy plan before it."

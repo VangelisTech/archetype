@@ -26,6 +26,7 @@ from archetype.graph.frames import live_edge_ids, live_edge_ids_from
 
 class _InfoLike(Protocol):
     tick: int
+    world_id: str
 
 
 class WorldLike(Protocol):

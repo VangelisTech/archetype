@@ -42,7 +42,16 @@ class Prefab(Component):
 
 
 class IsA(Relation):
-    """Lineage: ``source`` (the instance) was instantiated from ``target``."""
+    """Lineage: ``source`` (the instance) was instantiated from ``target``.
+
+    ``world`` and ``at_tick`` make the lineage globally unambiguous and
+    version-pinned (registry design R2): ``world`` is the source world id
+    when the template lives in a different world (empty for same-world), and
+    ``at_tick`` is the captured tick the copy was taken from.
+    """
+
+    world: str = ""
+    at_tick: int = -1
 
 
 def _rows(frame: DataFrame) -> list[dict]:
@@ -123,6 +132,16 @@ def _overlay(components: list[Component], overrides: Sequence[Component]) -> lis
     return out + remaining
 
 
+_BOUNDARY = """The relation-copy boundary (registry design R7): instantiate
+copies component values, recursively copies the ``ChildOf`` subtree, rebuilds
+only ``ChildOf`` edges, and records ``IsA`` provenance. No other relation —
+catalog structure, assignments, sockets, supply lines — is copied, and no
+source-to-instance id map is exposed. Domain wiring belongs in rule entities
+interpreted by a driver after instantiation; broadening this function is a
+deliberate future API (``InstantiationResult(root_id, id_map)``), never a
+silent change."""
+
+
 async def instantiate(
     world: WorldLike,
     view: GraphView,
@@ -135,15 +154,34 @@ async def instantiate(
 
     Returns the new root's entity id. ``overrides`` overlay the root's
     components by type; subtree copies are verbatim. Every new entity gets an
-    ``IsA`` edge to the prefab entity it was copied from, and the subtree's
+    ``IsA`` edge to the prefab entity it was copied from — carrying the
+    source world (when it differs) and the captured tick — and the subtree's
     ``ChildOf`` wiring is rebuilt between the new ids.
     """
     _require_async(world, "spawn")
+    target_world = str((await world.info()).world_id)
+    source_world = "" if view.world_id in ("", target_world) else view.world_id
+    return await _instantiate(world, view, prefab, overrides, max_depth, source_world)
+
+
+instantiate.__doc__ = (instantiate.__doc__ or "") + "\n\n    " + _BOUNDARY
+
+
+async def _instantiate(
+    world: WorldLike,
+    view: GraphView,
+    prefab: int,
+    overrides: Sequence[Component],
+    max_depth: int,
+    source_world: str,
+) -> int:
+    lineage = IsA(target=prefab, world=source_world, at_tick=view.tick)
     new_id = await world.spawn(*_overlay(_entity_components(view, prefab), overrides))
-    await link(world, IsA(source=new_id, target=prefab))
+    lineage.source = new_id
+    await link(world, lineage)
     if max_depth > 0:
         for child in _child_prefabs(view, prefab):
-            new_child = await instantiate(world, view, child, max_depth=max_depth - 1)
+            new_child = await _instantiate(world, view, child, (), max_depth - 1, source_world)
             await link(world, ChildOf(source=new_child, target=new_id))
     return new_id
 
@@ -158,10 +196,28 @@ def instantiate_sync(
 ) -> int:
     """Blocking counterpart of :func:`instantiate` (runtime.md R5 parity)."""
     _require_sync(world, "spawn")
+    target_world = str(world.info().world_id)
+    source_world = "" if view.world_id in ("", target_world) else view.world_id
+    return _instantiate_sync(world, view, prefab, overrides, max_depth, source_world)
+
+
+instantiate_sync.__doc__ = (instantiate_sync.__doc__ or "") + "\n\n    " + _BOUNDARY
+
+
+def _instantiate_sync(
+    world: SyncWorldLike,
+    view: GraphView,
+    prefab: int,
+    overrides: Sequence[Component],
+    max_depth: int,
+    source_world: str,
+) -> int:
+    lineage = IsA(target=prefab, world=source_world, at_tick=view.tick)
     new_id = world.spawn(*_overlay(_entity_components(view, prefab), overrides))
-    link_sync(world, IsA(source=new_id, target=prefab))
+    lineage.source = new_id
+    link_sync(world, lineage)
     if max_depth > 0:
         for child in _child_prefabs(view, prefab):
-            new_child = instantiate_sync(world, view, child, max_depth=max_depth - 1)
+            new_child = _instantiate_sync(world, view, child, (), max_depth - 1, source_world)
             link_sync(world, ChildOf(source=new_child, target=new_id))
     return new_id
