@@ -1,76 +1,71 @@
 # Agent Missions V1
 
-**Document type:** Normative V1 contract with measured dogfood evidence.
+**Document type:** Normative V1 contract.
 
-**Status:** Implemented and dogfooded. The explicit V1 gaps on this page are
-not production guarantees.
+**Status:** Accepted target; implementation migration is in progress.
 
-Agent Missions turns a repository, a branch, an explicit task graph, and the
-repository's own validators into a small software factory.
+Agent Missions is Archetype's first software factory. An author submits a
+repository, a branch, and a graph of coding tasks guarded by the repository's
+own validators. Archetype records the graph, commits every decision as world
+state, and advances work only when current evidence permits the transition.
 
-Archetype does not decide how an agent writes code. It decides **when work may
-start, which evidence may advance it, and what state is committed at every
-boundary**. The world is the state machine. Tasks and relationships are data.
-Processors are the transition authority. A sandbox is an execution resource.
+Archetype does not own how an agent writes code. It owns **when work may
+start, which observations may advance it, and why every transition occurred**.
 
 > **The V1 contract**
 >
-> Submit typed tasks and validators. Archetype persists the task graph,
-> dispatches only committed work, retries failed validation with the prior
-> evidence, and succeeds only when every task is accepted by the repository
-> harness.
+> Tasks and validators are entities. Dependencies are relations. Processors
+> are the transition authority. A dispatch is committed intent. Agent and
+> sandbox activity are observations. Only validator results bound to the
+> current dispatch and repository revision can accept a task.
 
 ## 1. The contract in one view
 
 | Primitive | Responsibility |
 |---|---|
-| World | Persists every mission, task, edge, attempt, and transition by tick. |
-| Mission entity | Names the repository work and rolls related task state into one terminal result. |
-| Task entity | Holds one atomic goal, validators, attempt and publication policy, current state, and latest evidence. |
-| `DependsOn` edge | Says that the source task may run only after the target task was accepted. |
-| `PartOfMission` edge | Relates a task to the mission whose result includes it. |
-| Processors | Decide readiness, dispatch, acceptance, retry, exhaustion, and mission rollup. |
-| Post-tick outbox | Converts a **committed** `dispatched` row into an execution request. |
-| Sandbox resource | Runs the agent and validators, then returns typed observations. It never advances task state. |
-| Validators | Define acceptance using the repository's executable harness. |
-| Application service | Materializes the graph, crosses the post-commit I/O boundary, stages receipts, and returns projections. |
-| Runtime handle | Gives mission authors one configured, batteries-included entry point. |
+| World | The durable state machine for missions, tasks, relations, dispatches, executions, and outputs. |
+| Mission | Names one repository objective and rolls its task graph into one result. |
+| Task | Holds one atomic goal, workflow state, retry policy, and repository coordinates. |
+| Validator | Describes one executable acceptance check; `Guards` relates it to a task. |
+| Relations | Express membership, dependencies, execution placement, and provenance without serialized plans. |
+| Processors | Decide readiness, dispatch, retry, failure, acceptance, and mission rollup. |
+| `TaskDispatch` | Records committed permission to perform a particular task revision. It is intent, not an attempt object. |
+| `AgentExecution` | Records what an agent process did for a dispatch. It never says whether the task was accepted. |
+| Sandbox | Records the lifecycle of an isolated filesystem and process container. It never says whether the task was accepted. |
+| Outputs | Record validator results, commits, checkpoints, manifests, friction, and published artifacts. |
+| Sandbox service | Owns backend selection and live session lifetime; it has no workflow authority. |
+| Application service | Materializes the graph, crosses committed I/O boundaries, stages observations, and returns projections. |
 
-The important separation is simple:
+The governing separation is:
 
 ```text
-Archetype owns transition authority as data.
-The sandbox owns isolated execution as a resource.
+Archetype owns transitions as data.
+The sandbox owns isolated filesystem and process capabilities.
+The agent execution records what happened.
 The repository harness owns acceptance.
 ```
 
-Daft evaluates the world-state transforms and relationship joins. It does not
-schedule a Modal sandbox or keep an agent process alive. External execution
-begins only after the tick containing its intent has committed.
+Daft evaluates state transforms and joins. It does not keep an agent process
+alive or schedule a Modal sandbox. External work begins only after the tick
+containing its dispatch has committed.
 
 ## 2. Public authoring surface
 
-Configuration happens once, near the top of the script. Mission submission is
-typed; authors do not construct ECS Components, wire processors, or pass a raw
-JSON plan.
+Configuration happens once. Authors submit typed values; they do not construct
+Components, wire processors, manage `GraphView`, or serialize a plan.
 
 ```python
 import asyncio
 
 from archetype import ArchetypeRuntime
 from archetype.missions import AgentMissionConfig, AgentTask, CommandValidator
-from archetype.missions.sandboxes import (
-    ModalAgentMissionSandbox,
-    ModalAgentSandboxConfig,
-)
+from archetype.missions.sandboxes.modal import ModalSandboxBackend
 
 
 MISSION_CONFIG = AgentMissionConfig(
-    sandbox=ModalAgentMissionSandbox(
-        ModalAgentSandboxConfig(
-            auth_volume_name="archetype-codex-auth",
-            github_secret_name="archetype-github",
-        )
+    sandbox_backend=ModalSandboxBackend(
+        auth_volume_name="archetype-codex-auth",
+        github_secret_name="archetype-github",
     ),
     max_ticks=40,
 )
@@ -112,445 +107,429 @@ async def main() -> None:
             config=MISSION_CONFIG,
             storage=".context/agent-missions/data",
         ) as missions:
-            submitted = await missions.submit(
+            mission = await missions.submit(
                 repository="VangelisTech/archetype",
                 branch="agent/fix-bug",
                 tasks=TASKS,
             )
-            result = await missions.run(submitted)
+            result = await missions.run(mission)
 
     print(result.status)
     for task in result.tasks:
-        print(task.name, task.status, task.attempts, task.commit_sha)
+        print(task.name, task.status, task.dispatches, task.commit_shas)
 
 
 asyncio.run(main())
 ```
 
-The complete live example is
-[`examples/11_coding_agent_mission.py`](https://github.com/VangelisTech/archetype/blob/main/examples/11_coding_agent_mission.py).
-Inspect its authored graph without creating external resources:
-
-```bash
-uv run --extra coding-agent python examples/11_coding_agent_mission.py --dry-run
-```
+`CommandValidator` and `AgentTask` are authoring values. Submission compiles
+them into Validator and Task entities plus relations. The convenient surface
+does not turn validator definitions or task dependencies back into JSON blobs.
 
 ### Submission contract
 
-`missions.submit(...)` accepts a sequence of `AgentTask` values. V1 requires:
+`missions.submit(...)` accepts `list[AgentTask]` or any finite sequence of
+tasks. V1 requires:
 
-- a non-empty repository, branch, base ref, and task sequence;
-- unique, non-empty task names;
-- non-empty prompts;
-- at least one validator per task;
-- positive attempt budgets;
-- the V1 `commit_and_push` repository publication policy;
-- dependencies that name tasks in the same submission; and
-- an acyclic dependency graph.
+- non-empty repository, branch, base ref, and task sequence;
+- unique, non-empty task and validator names;
+- non-empty prompts and at least one validator per task;
+- positive dispatch budgets;
+- dependencies that name tasks in the same submission;
+- an acyclic dependency graph; and
+- a pinned sandbox environment plus an explicit publication policy.
 
-The task list is already the seam a planner will use. A future planner may take
-one large task and emit many `AgentTask` values plus `DependsOn` relationships.
-V1 deliberately does not include that planner.
+The sequence is already the planner seam. A later planner may take one large
+task and emit many tasks and relationships. Task decomposition is not part of
+V1.
 
 ## 3. Architecture and ownership
 
 ```mermaid
 flowchart LR
     Author[Mission author] --> Runtime[RuntimeMissions]
-    Runtime --> Application[iRuntimeApplication]
-    Application --> Port[iAgentMissionService]
-    Port -. implemented by .-> Service[AgentMissionService]
-    Service --> World[Mission world]
+    Runtime --> App[MissionService]
+    App --> World[Mission world]
 
-    subgraph Family[archetype.missions]
-        State[Components + transitions]
-        Graph[PartOfMission + DependsOn]
-        Pipeline[Gate + readiness + dispatch + rollup]
-        Outbox[PostTick execution outbox]
-        SandboxPort[AgentMissionSandbox protocol]
+    subgraph Domain[archetype.missions]
+        State[Components + relations]
+        Behavior[Processors + transitions]
+        Agents[Coding-agent harness]
+        Sandboxes[Sandbox service + backends + sessions]
     end
 
     World --> State
-    World --> Graph
-    World --> Pipeline
-    World --> Outbox
-    Outbox --> Service
-    Service --> SandboxPort
-    SandboxPort --> Provider[Modal / future providers]
-    Provider --> Service
-    Service --> World
+    World --> Behavior
+    App --> Agents
+    Agents --> Sandboxes
+    Sandboxes --> Provider[Modal / future providers]
+    App --> World
 ```
 
-The top-level `archetype.missions` family owns reusable mission behavior:
+`archetype.missions` owns the reusable family:
 
-- typed authoring and execution values;
-- mission and task Components;
-- relationship types;
-- pure, DataFrame-first transition processors;
-- the committed-intent outbox; and
-- sandbox implementations that satisfy the family-owned resource protocol.
+- mission, task, validator, sandbox, execution, and output Components;
+- relations and pure DataFrame transition logic;
+- built-in processors and projections;
+- coding-agent protocols and harness behavior;
+- sandbox Service, Backend, and Session contracts; and
+- capability-scoped provider adapters such as Modal.
 
-`archetype.app.missions.agent_service` owns the application composition:
+`archetype.app.missions` owns application composition:
 
-- reserve entity identities;
-- materialize mission, task, and edge entities;
-- drive ticks;
-- drain committed execution intents;
-- invoke the injected sandbox resource;
-- validate and stage typed receipts; and
-- return a terminal mission projection.
+- reserve identities and materialize submitted graphs;
+- configure a world with the built-in mission behavior;
+- step the state machine;
+- cross the post-commit boundary and invoke the coding-agent harness;
+- stage factual observations through the mutation path;
+- compose artifact publication and evaluation when requested; and
+- return supported mission projections.
 
-The service does **not** decide readiness, acceptance, retry, or mission
-success. Those decisions remain in processors so the persisted world explains
-what happened and why.
+The application service does not decide readiness, retry, acceptance, or
+mission success. Those decisions remain visible in processors and persisted
+state.
 
 ### World topology is not sandbox topology
 
-A world is the state machine for related entities. It is not a sandbox.
-Nothing in the task graph requires one world per sandbox, one agent per world,
-or one worktree per task.
+A world is a state machine, not a sandbox. The same contract permits one world
+with many sandboxes, many worktrees in one sandbox, several agents in separate
+worktrees, or cooperating agents in one worktree. Placement policy may change
+without changing task readiness.
 
-The Modal V1 adapter chooses one persistent repository sandbox per mission,
-serial task execution inside that mission, and parallel execution across
-different missions. A future provider may map the same graph to many
-sandboxes, many worktrees in one sandbox, or several agents in one worktree.
-The transition contract does not change when the physical execution topology
-changes.
+V1 may choose one persistent repository session per mission and serialize
+tasks that share its worktree. That is a provider policy, not an ECS invariant.
 
-## 4. Commit and transition protocol
+## 4. State and transition protocol
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor Author
-    participant Runtime as RuntimeMissions
-    participant Application as iRuntimeApplication
-    participant Service as AgentMissionService
+    participant Service as MissionService
     participant World
-    participant Pipeline as Mission processors
-    participant Outbox as PostTick outbox
-    participant Sandbox as AgentMissionSandbox
+    participant Processors
+    participant Harness as CodingAgentHarness
+    participant Sandboxes as SandboxService
 
-    Author->>Runtime: runtime.missions(config)
-    Runtime->>Application: agent_mission_service(world factory, config)
-    Application-->>Runtime: iAgentMissionService
-    Author->>Runtime: submit(repository, branch, tasks)
-    Runtime->>Service: materialize typed task graph
-    Service->>World: stage mission, tasks, and relation entities
+    Author->>Service: submit(repository, branch, tasks)
+    Service->>World: stage mission, tasks, validators, relations
 
-    loop until the mission is terminal
+    loop until mission is terminal
         Service->>World: step()
-        World->>Pipeline: evaluate tick N from prior committed state
-        Pipeline-->>World: next task and mission rows
-        World->>World: persist tick N
-        World-->>Outbox: PostTick(committed results)
-        Outbox-->>Service: drain execution requests
-        opt committed tasks were dispatched
-            Service->>Sandbox: run_many(requests)
-            Sandbox-->>Service: typed receipts
-            Service->>World: stage attempt and evidence updates
+        World->>Processors: evaluate N from committed N-1
+        Processors-->>World: state changes + TaskDispatch
+        World->>World: commit tick N
+        World-->>Service: PostTick(committed dispatches)
+        opt a current dispatch is ready for external work
+            Service->>Harness: execute(dispatch)
+            Harness->>Sandboxes: acquire session and run tools
+            Sandboxes-->>Harness: process + filesystem observations
+            Harness-->>Service: execution, validation, Git, optional recovery outputs
+            Service->>World: stage observations
         end
     end
 
-    Service-->>Runtime: MissionResult
-    Runtime-->>Author: terminal task projections
+    Service-->>Author: terminal projection
 ```
 
-The post-tick boundary is the safety property. A processor may produce a
-`dispatched` row, but the sandbox does not see it until persistence succeeds
-and `PostTick` receives the committed result. A failed tick cannot leak an
-external coding-agent side effect.
+The PostTick boundary is a safety property: no sandbox sees speculative work.
+If tick persistence fails, its dispatch cannot leak an external side effect.
 
-### Task states
+### Task state
 
 ```mermaid
 stateDiagram-v2
     [*] --> pending
-    pending --> ready: every prerequisite accepted at N-1
-    ready --> dispatched: create attempt intent
-    dispatched --> accepted: accepted receipt
-    dispatched --> ready: rejected or failed; budget remains
-    dispatched --> failed: rejected or failed; budget exhausted
+    pending --> ready: all prerequisites accepted at N-1
+    ready --> dispatched: commit TaskDispatch
+    dispatched --> accepted: current revision passes every guard
+    dispatched --> ready: evidence fails and budget remains
+    dispatched --> failed: evidence fails and budget is exhausted
     accepted --> [*]
     failed --> [*]
 ```
 
-The processor pipeline is ordered and batteries-included:
+The built-in pipeline has four concerns:
 
-| Priority | Processor | Decision |
+| Order | Processor | Authority |
 |---:|---|---|
-| 10 | `TaskGateProcessor` | Consume one unsettled receipt: accept, retry, or exhaust. |
-| 20 | `TaskReadinessProcessor` | Move a pending task to ready when no dependency blocks it. |
-| 30 | `TaskDispatchProcessor` | Turn ready into a durable attempt intent. |
-| 40 | `MissionRollupProcessor` | Succeed when all related tasks are accepted; fail when any task fails. |
+| 10 | Task decision | Consume observations for the current dispatch and accept, retry, or exhaust. |
+| 20 | Task readiness | Make a task ready only when every prerequisite was accepted in the previous committed tick. |
+| 30 | Task dispatch | Convert ready state into one durable dispatch identity. |
+| 40 | Mission rollup | Succeed only when every member task is accepted; fail when a member task is terminally failed. |
 
-Attempt state is separate from task state. An attempt moves from `idle` to
-`pending`, then records `accepted`, `rejected`, or `failed`. The `settled` flag
-prevents the gate from consuming the same receipt twice. Earlier attempt and
-evidence values remain available in world history by tick.
+There is no durable `Attempt` aggregate. Retrying produces a new
+`TaskDispatch`; history preserves every prior dispatch and observation.
 
-`AgentTaskPolicy` persists both the retry budget and repository-publication
-policy. V1 has one publication edge: `commit_and_push`. The outbox copies that
-policy from committed graph state into every `TaskExecutionRequest`; it is not
-an optional Modal configuration flag.
+### Intent, observation, decision
 
-### Previous-tick relationship visibility
+These concepts never collapse into one status field:
 
-Readiness and mission rollup use `GraphView`, which exposes strictly
-previous-tick frames. If task A becomes accepted in tick N, a dependent task B
-may become ready no earlier than tick N+1. That one-tick causal gap is
-intentional: downstream work never observes speculative or half-persisted
-state.
+| Kind | Examples | May decide task state? |
+|---|---|---:|
+| Intent | `TaskDispatch` | No |
+| Runtime observation | `Sandbox`, `AgentExecution` | No |
+| Work output | `ValidationResult`, `Commit`, `Checkpoint`, `FilesystemManifest`, `FrictionLog`, artifact refs | No |
+| Decision | `TaskState` written by the task decision processor | Yes |
 
-Relations are entities, not a serialized cursor:
+`TaskDispatch` identifies the task, dispatch sequence, requested repository
+base, and policy. `AgentExecution` records process lifecycle such as
+`starting`, `running`, `exited`, `errored`, or `interrupted`.
+
+Sandbox lifecycle is separate: `provisioning`, `ready`, `errored`,
+`interrupted`, or `closed`. A sandbox is never `accepted`, `rejected`, or
+`completed`; it is a container that may host zero or many executions.
+
+### Relations and previous-tick visibility
+
+At minimum, V1 materializes:
 
 ```text
-DependsOn(source=B, target=A)      B waits for A
-PartOfMission(source=A, target=M)  A contributes to M
+PartOfMission(source=task, target=mission)
+DependsOn(source=task, target=prerequisite)
+Guards(source=validator, target=task)
+Executes(source=execution, target=task)
+RunsIn(source=execution, target=sandbox)
+ProducedBy(source=output, target=execution)
 ```
 
-Because edges are ordinary temporal entities, the world can later answer which
-dependency existed at a tick, inherit the graph through a fork, and join task
-state without decoding a `plan_json` blob.
+Readiness and rollup use `GraphView`, which is strictly previous-tick. If task
+A is accepted at N, dependent task B may become ready no earlier than N+1.
+Edges are temporal entities, so dependency, provenance, and fork inheritance
+remain queryable without decoding a plan blob.
 
 ## 5. Sandbox and validator protocol
 
-The family-owned `AgentMissionSandbox` protocol has three operations:
+The sandbox vocabulary describes a resource, not a workflow:
 
 ```python
-class AgentMissionSandbox(Protocol):
-    async def run_many(
-        self, requests: tuple[TaskExecutionRequest, ...]
-    ) -> tuple[TaskExecutionReceipt, ...]: ...
+class SandboxBackend(Protocol):
+    async def create(self, spec: SandboxSpec) -> SandboxSession: ...
+    async def restore(
+        self, spec: SandboxSpec, checkpoint: CheckpointRef
+    ) -> SandboxSession: ...
 
-    async def close_mission(self, mission_id: int) -> None: ...
+
+class SandboxSession(Protocol):
+    @property
+    def identity(self) -> SandboxIdentity: ...
+
+    async def status(self) -> SandboxStatus: ...
+    async def exec(self, request: ProcessRequest) -> ProcessResult: ...
+    async def checkpoint(self) -> CheckpointRef: ...
     async def close(self) -> None: ...
+
+
+class SandboxService:
+    async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> SandboxSession: ...
+    async def close(self, key: SandboxKey) -> None: ...
+    async def close_all(self) -> None: ...
 ```
 
-`TaskExecutionRequest` is processor-authorized work. It contains the mission
-and task identities, repository coordinates, prompt, validators, attempt
-identity, publication policy, and prior session/evidence needed for a repair
-turn.
+- Backend creates or restores provider resources.
+- Session is the live handle for process and snapshot capabilities.
+- Service selects a backend, reuses sessions according to policy, and owns
+  shutdown.
 
-`TaskExecutionReceipt` is an observation, not authority. It may report:
+The coding-agent harness works through `SandboxSession`. It owns clone and
+branch preparation, agent invocation, validator execution, Git publication,
+and translation into factual Components. Provider adapters do not know task
+state and do not return an acceptance verdict.
 
-- accepted, rejected, or failed execution;
-- every validator result;
-- sandbox, worktree, and agent-session identities;
-- commit and push evidence;
-- artifact references; and
-- structured friction or an error.
-
-Before staging an accepted receipt, the application service requires matching
-mission/task/attempt identity, one result for every requested validator,
-matching validator commands, every result marked passed, and a non-empty
-commit SHA. For V1's `commit_and_push` policy, it also requires pushed branch
-evidence. The next tick's gate—not the sandbox—turns that evidence into an
-accepted task.
+Checkpointing is optional resumability. A checkpoint is a lightweight,
+content-addressed reference to a sandbox snapshot; a filesystem manifest is a
+queryable observation of captured state. Neither is required to accept a task.
 
 ### Repository validators are authority
 
-A validator's expected return code is part of its contract. Success does not
-always mean exit code zero. A regression task may require pytest to fail with
-exit code `1`; that proves the test is red before an implementation task is
-allowed to begin.
+Submission materializes each `CommandValidator` as an entity related to its
+task. Every execution emits one `ValidationResult` per guard containing:
 
-The Modal adapter:
+- validator, task, dispatch, execution, and repository-revision identity;
+- the expected and observed return codes;
+- bounded stdout/stderr or artifact references; and
+- timing and error observations.
 
-1. lets the agent edit without committing, pushing, or opening a PR;
-2. runs the authored validator commands itself;
-3. compares each observed return code with `expected_returncode`;
-4. commits and pushes only when every validator passes; and
-5. preserves rejected work, session identity, and validator evidence for the
-   next attempt.
+`passed` is derived from `actual_returncode == expected_returncode`. It is
+never trusted from a sandbox or agent response. Expected nonzero codes are
+valid—for example, a predecessor can prove a regression test is red.
 
-This is the hill-climbing loop: improve the work, and when necessary improve
-the validators or repository harness in an explicit predecessor task. The
-model's claim that it is finished is never the gate.
+The task decision processor accepts only when all guards have a result for the
+**current dispatch and exact final repository revision**. Evidence from a
+prior dispatch or pre-repair tree is stale by construction.
 
-### Modal V1 resource boundary
+### Git and publication
 
-The included adapter keeps the Codex OAuth volume on a separate auth-broker
-sandbox. It stages the credential into the mission sandbox only around the
-agent invocation, persists a refreshed credential back through the broker, and
-removes the mission copy. The GitHub secret is attached only to clone and push
-commands.
+Git is part of the coding contract:
 
-Modal exposes process stdin as an open pipe. Codex waits for optional stdin
-even when the full prompt is an argument, so the adapter explicitly sends EOF
-before awaiting the process. That small provider invariant has a focused
-regression test because omitting it leaves a sandbox alive without ever
-starting an agent thread.
+1. the harness records the dispatch's starting revision;
+2. the agent may create commits during its work;
+3. validators run against the final working tree;
+4. if validated work remains dirty, the publisher creates one final commit;
+5. every commit created during the dispatch is recorded; and
+6. the configured branch policy publishes the validated final revision.
 
-## 6. The first dogfood
+The publisher never resets valid agent-authored commits merely to manufacture
+one synthetic result. Acceptance binds validation and publication evidence to
+the same final revision.
 
-V1 fixed [Archetype issue #543](https://github.com/VangelisTech/archetype/issues/543)
-using the same repository and harness it was changing.
+### Friction and artifacts
 
-```text
-regression  ──accepted before──▶  implementation
-     │                                  │
-     ├─ prove the new test is red       ├─ focused query/runtime contracts
-     └─ change only the test file       ├─ architecture + lazy audits
-                                        ├─ Ruff
-                                        └─ diff integrity
-```
+`FrictionLog` is one timestamped observation entity, not an append-only JSON
+field. It may reference a task, dispatch, execution, validator, path, or commit
+so later analysis can group failure modes across sessions.
 
-The authored relationship is
-`DependsOn(source=implementation, target=regression)`: the implementation task
-waits for the regression task.
+Large outputs use content-addressed artifact references: digest, media type,
+size, and a storage hint. The mission application service may compose the
+Artifacts family to persist or ingest them; the sandbox protocol does not
+become a storage system.
 
-| Task | Result | Evidence |
-|---|---|---|
-| `regression` | Accepted on attempt 1 | Expected-red test and file-scope validator passed; commit `69938b485f45d1c1a5999f9744fee7f6e91e48e3`. |
-| `implementation` | Rejected on attempt 1 | Focused tests, architecture, Ruff, and diff checks passed; the lazy audit correctly rejected a moved `.to_pylist()` allowlist location. |
-| `implementation` | Accepted on attempt 2 | The same sandbox, worktree, and Codex session received the exact failed evidence, repaired the allowlist, and passed every gate; commit `63603e4efe93f884ad9d996912878def8b7963f2`. |
-| Mission | Succeeded | Terminal rollup after 10 ticks; both accepted commits were pushed. |
+## 6. Prefabs and planning
 
-The dogfood also improved its own harness before publication. The first
-file-scope validator used `git diff --name-only HEAD`, which ignores untracked
-files; it was replaced with a `git status --porcelain --untracked-files=all`
-check. The first Modal invocation exposed the open-stdin invariant described
-above. Both faults were stopped, reduced to explicit checks, and rerun rather
-than explained away as agent behavior.
+V1 submission directly materializes tasks, validators, and relations. That is
+enough for correct execution order and remains the simplest dogfood surface.
 
-The resulting branch is
-[`agent/dogfood-543-missions-v1c`](https://github.com/VangelisTech/archetype/tree/agent/dogfood-543-missions-v1c).
+A later mission prefab may author the same graph. Prefab instantiation does not
+decide readiness or replace the processors. Registration code installs
+Components and behavior; durable prefab library data describes the graph.
+Manifests may declare allowlisted behavior-module requirements but never
+auto-import executable code.
 
-That run proves the V1 happy path, dependency ordering, expected-nonzero
-validation, evidence-carrying retry, accepted-only commit/push, and terminal
-sandbox teardown against a real repository. It does not prove crash recovery,
-fleet coordination, or arbitrary provider behavior.
+A planner will have the same output boundary: `list[AgentTask]` plus
+relationships. HTN decomposition is useful, but is not a V1 correctness gate.
 
 ## 7. V1 boundary
 
 ### Included
 
-- explicit typed task DAGs;
-- temporal task and membership relationships;
+- explicit task and validator entities;
+- temporal membership, dependency, guard, placement, and provenance relations;
 - previous-tick readiness joins;
 - processor-owned acceptance, retry, exhaustion, and rollup;
-- post-commit sandbox dispatch;
-- repository-authored validators, including expected nonzero results;
-- graph-owned `commit_and_push` publication policy;
-- same-worktree and same-session repair turns;
-- typed attempt, evidence, artifact-reference, and friction state;
-- a Modal/Codex resource; and
+- post-commit dispatch;
+- separate sandbox and agent-process lifecycle;
+- repository validators with expected nonzero support;
+- revision-bound validation and Git publication evidence;
+- first-class commits, checkpoints, manifests, friction, and artifact refs;
+- a Modal backend; and
 - terminal result projection and cleanup.
 
 ### Deliberately not included
 
 - task decomposition or HTN planning;
 - prefab-driven readiness;
-- artifact ingestion or indexing;
-- durable claims, leases, fences, or fleet recovery;
+- claims, leases, fences, receipts, or a mission-specific control catalog;
+- a six-phase sandbox kernel;
+- an `Attempt` aggregate;
 - PR creation, CI watching, review, merge, or deployment;
-- parallel independent tasks inside one shared mission worktree;
-- durable active-mission cancellation or cold resume;
-- live attempt streaming; and
-- a general relationship-to-sandbox placement scheduler.
+- a general relationship-to-sandbox placement scheduler; and
+- a requirement that checkpoints or manifests gate acceptance.
 
-V1 is intentionally smaller than the retained claim/fence/finalization stack.
-That older internal subsystem is not called by `runtime.missions(...)` and is
-not the public Agent Missions contract. Its current compatibility obligations
-are isolated in the
-[Legacy mission attempt kernel](legacy-mission-attempt-kernel.md) until the
-repository cleanup removes or deliberately reuses them.
+The retired claim/fence/finalization subsystem is not a compatibility layer for
+this contract. Cleanup stops creating or consuming its tables and routes while
+leaving existing persisted tables inert; deleting historical operator data is
+a separate, explicit migration decision.
 
 ### Current hardening gaps
 
-| Gap | Consequence | Intended direction |
+| Gap | V1 treatment | Later seam |
 |---|---|---|
-| `RuntimeMissions` is async-only. | Mission authoring does not yet have the sync parity of ordinary world handles. | Add a sync wrapper over the same `iAgentMissionService` workflow without duplicating transition policy. |
-| The post-tick outbox remembers dispatched attempt IDs in process memory. | An active mission has no cold-resume guarantee. | Persist an execution receipt/admission identity before claiming recovery. |
-| A third-party sandbox reports `ValidatorResult.passed`. | The service matches commands and requires `passed`, but does not independently recompute it from the reported return code and requested expectation. | Recompute at the application boundary before accepting the receipt. |
-| `PartOfMission` is not yet exclusive. | The intended one-mission-per-task membership is authoring convention, not a relation constraint. | Adopt the graph family's exclusive-edge constraint if the invariant remains correct. |
-| Modal's default image installs the coding tools during image construction. | The provider environment is not yet a reviewed, fully pinned release inventory. | Pin and record the provider/toolchain image before general availability. |
-| Interruption is not a durable terminal observation. | Cancelling a local runner can leave a nonterminal persisted mission. | Model cancellation and recovery as typed evidence and processor transitions. |
-
-These gaps are cleanup inputs, not reasons to obscure the V1 mental model.
+| Cold process resume | A live dogfood may recover from an explicit checkpoint; no fleet claim is implied. | Reinstall registration bundles and reconcile committed dispatches through a reviewed outbox contract. |
+| Sandbox placement | Use a simple configured policy. | Add a scheduler only when multiple topologies require one. |
+| Task decomposition | Authors submit the graph. | Planner emits the same typed graph. |
+| Terminal interaction | `exec` is the required capability. | Add optional PTY/tmux/ttyd capabilities without widening workflow authority. |
+| Artifact ingestion | Record content-addressed refs. | Compose `archetype.app.artifacts` for typed ingestion. |
+| Prefab mission libraries | Direct materialization remains authoritative. | Author reusable graphs after generic prefab registry contracts settle. |
 
 ## 8. File and responsibility map
 
+This is the destination layout for the cleanup:
+
 | File | Owns |
 |---|---|
-| `archetype/missions/contracts.py` | Typed authoring, request, receipt, sandbox protocol, configuration, and result values. |
-| `archetype/missions/relationships.py` | `PartOfMission` and `DependsOn` edge types. |
-| `archetype/missions/coding_agents/components.py` | Persisted mission/task/workspace/retry/publication/attempt/evidence schemas. |
-| `archetype/missions/coding_agents/transitions.py` | Small persisted mission, task, and attempt vocabularies. |
-| `archetype/missions/coding_agents/processors.py` | Gate, readiness, dispatch, and rollup authority. |
-| `archetype/missions/coding_agents/resources.py` | Sandbox resource wrapper and committed-intent outbox. |
-| `archetype/missions/sandboxes/modal.py` | Modal sandbox lifecycle, Codex execution, validation, commit, push, and teardown. |
-| `archetype/app/missions/agent_service.py` | Graph materialization, tick/I/O composition, receipt validation, and result projection. |
+| `archetype/missions/contracts.py` | Supported authoring, configuration, and result values. |
+| `archetype/missions/components.py` | Mission, task, validator, dispatch, sandbox, execution, and output Components. |
+| `archetype/missions/relations.py` | Membership, dependency, guard, placement, and provenance Relations. |
+| `archetype/missions/transitions.py` | Small persisted status vocabularies and transition tables. |
+| `archetype/missions/processors.py` | Task decision, readiness, dispatch, and mission rollup authority. |
+| `archetype/missions/projections.py` | Supported mission/task/execution result projections. |
+| `archetype/missions/coding_agents/contracts.py` | Coding-agent request and driver protocols. |
+| `archetype/missions/coding_agents/harness.py` | Repository preparation, agent invocation, validation, Git publication, and observation translation. |
+| `archetype/missions/sandboxes/contracts.py` | Sandbox Backend, Session, process, status, and snapshot value contracts. |
+| `archetype/missions/sandboxes/service.py` | Backend registry and live-session lifetime. |
+| `archetype/missions/sandboxes/modal.py` | Modal Backend and Session implementation only. |
+| `archetype/app/missions/service.py` | Graph materialization, tick/I/O composition, cross-family workflows, and projections. |
 | `archetype/runtime/missions.py` | Mission-author runtime handle and lifecycle. |
 | `examples/11_coding_agent_mission.py` | Real typed dogfood script. |
-| `tests/missions/test_agent_mission_contracts.py` | Authoring and graph contract oracles. |
-| `tests/integration/test_agent_mission_service.py` | Dependency, retry, evidence, ordering, and terminal integration oracle. |
-| `tests/missions/test_modal_agent_sandbox.py` | Provider-boundary regression, including stdin EOF. |
+| `tests/missions/` | Family contract, transition, sandbox, harness, and provider oracles. |
+| `tests/integration/test_agent_mission_service.py` | End-to-end graph, retry, revision binding, and cleanup oracle. |
 
-No author should need to import a Component, processor, `GraphView`, outbox, or
-application service to run the built-in workflow.
+No author imports a Component, processor, `GraphView`, application service, or
+provider SDK to run the built-in workflow.
+
+During migration, existing `coding_agents/components.py`,
+`coding_agents/processors.py`, `coding_agents/resources.py`, and
+`app/missions/agent_service.py` are temporary source locations—not an
+alternative contract.
 
 ## 9. Family direction after V1
 
-Agent Missions establishes the convention for the broader repository cleanup:
-reusable state and pure behavior live in a named family; the app layer only
-composes durable authority and cross-family workflows.
+Agent Missions establishes the repository convention: reusable state, pure
+behavior, and capability-scoped resources live in the named family; the app
+layer owns durable application authority and cross-family composition.
 
 ```text
 archetype.missions
-├── coding_agents/     # implemented V1 state + transition package
-├── sandboxes/         # family-owned execution resources
-├── planning/          # HTN resolver; AgentTask/DependsOn adapter is future work
-└── trajectories/      # typed evidence schemas, authoring values, pure transforms
+├── components.py
+├── relations.py
+├── transitions.py
+├── processors.py
+├── projections.py
+├── coding_agents/
+├── sandboxes/
+├── planning/
+└── trajectories/
 
 archetype.app.missions
-├── agent_service.py       # composition and durable workflow boundary
-└── trajectory_service.py  # query/evaluation composition
-
-archetype.app.artifacts
-└── transcript_service.py  # redacted source claim + typed transcript rows
-
-archetype.physical_ai      # physical state, policies, contracts, pure optimization
-archetype.app.physical_ai  # world/simulation/evaluation workflow composition
-
-archetype.research     # research ledger state and pure runner decoding
+└── service.py
 ```
 
-The completed ownership cleanup is:
+The orphan cleanup follows the same rule:
 
-| Former orphan | Final owner |
+| Capability | Owner |
 |---|---|
-| Former `archetype.htn` | Moved to `archetype.missions.planning`; adapting solved plans into task entities and dependency relations remains future work. |
-| Former `archetype.datasets` | Removed; retained evidence identity now lives in `archetype.evaluation.contracts`. |
-| Former `archetype.experiments` | Removed. Claude parsing moved under mission trajectories; redacted ingestion moved under app artifacts; physical and research code moved to their named families. |
-| Trajectory helpers | Moved under `archetype.missions.trajectories`; the app service composes query and evaluation without owning evidence or transitions. |
-| Physical-AI prototypes | State and pure behavior moved into `archetype.physical_ai`; rollout/evaluation composition moved behind `archetype.app.physical_ai` and the supported runtime. |
-| Research ledger state | Moved into `archetype.research`; `archetype.app.research` retains world/simulation orchestration. |
-| Former `archetype.contrib` observability shim | Removed; retained vendor-neutral vocabulary lives in `archetype._obs`. |
+| Planning / former HTN | `archetype.missions.planning` |
+| Mission trajectories | `archetype.missions.trajectories` with app query/evaluation composition |
+| Artifact and transcript ingestion | `archetype.app.artifacts` consuming family-owned value contracts |
+| Physical-AI state and behavior | `archetype.physical_ai` |
+| Physical-AI workflows | `archetype.app.physical_ai` |
+| Research state and pure decoding | `archetype.research` |
+| Research workflows | `archetype.app.research` |
+| Vendor-neutral observability vocabulary | `archetype._obs` |
 
-These ownership moves are complete. They do not change the V1 transition
-protocol: transcript evidence, physical evaluation, research workflows, and
-planning helpers remain consumers or siblings of mission transition authority,
-not hidden branches inside its processors.
+Datasets, Experiments, Contrib, and a production RTS vocabulary are not
+families. The Biome prefab remains an example; its reusable pattern belongs in
+generic prefab machinery.
 
 ## 10. Verification
 
-The credential-free contract lane is:
+The credential-free contract lane must prove:
 
-```bash
-uv run pytest -q \
-  tests/missions/test_agent_mission_contracts.py \
-  tests/missions/test_modal_agent_sandbox.py \
-  tests/integration/test_agent_mission_service.py
+- graph materialization and cycle rejection;
+- previous-tick dependency ordering;
+- post-commit-only dispatch;
+- retry with a new dispatch identity;
+- stale-revision evidence rejection;
+- expected-nonzero validator derivation;
+- agent-authored and publisher-authored commit preservation;
+- sandbox/agent/task lifecycle separation;
+- terminal cleanup; and
+- example dry-run execution.
 
-uv run --extra coding-agent python examples/11_coding_agent_mission.py --dry-run
-uv run python scripts/check_architecture.py
-uv run python scripts/check_lazy_audit.py
-```
-
-The live Modal example is paid and credentialed, so it remains an explicit
-dogfood operation rather than an ordinary CI test.
+The live Modal dogfood must additionally prove real repository preparation,
+agent execution, validation, commit/push publication, evidence-carrying repair,
+and sandbox teardown. It is paid and credentialed, so it remains an explicit
+operation rather than an ordinary CI test.
 
 ## Companion contracts
 
@@ -558,4 +537,5 @@ dogfood operation rather than an ordinary CI test.
 - [Application Architecture](application-architecture.md)
 - [Service Protocols](service-protocols.md)
 - [Repository Harness](repository-harness.md)
+- [Prefab Libraries](prefab-libraries.md)
 - [Graph system design](../design/graph-system.md)
