@@ -15,6 +15,22 @@ from archetype.missions.coding_agents.components import (
     AgentTaskValidators,
     AgentTaskWorkspace,
 )
+from archetype.missions.coding_agents.contracts import (
+    AgentExecutionResult,
+    AgentExecutionStatus,
+    AgentProcessObservation,
+    CodingAgentDriver,
+    CommitObservation,
+    DispatchedValidator,
+    FrictionObservation,
+    TaskDispatchRequest,
+    ValidationObservation,
+)
+from archetype.missions.coding_agents.harness import (
+    CodexDriver,
+    CodingAgentHarness,
+    CodingAgentHarnessConfig,
+)
 from archetype.missions.coding_agents.processors import (
     MissionRollupProcessor,
     TaskDispatchProcessor,
@@ -34,6 +50,8 @@ from archetype.missions.coding_agents.transitions import (
 
 __all__ = [
     "AGENT_TASK_COMPONENTS",
+    "AgentExecutionResult",
+    "AgentExecutionStatus",
     "AgentAttemptStatus",
     "AgentMissionRecord",
     "AgentMissionSandboxResource",
@@ -47,10 +65,20 @@ __all__ = [
     "AgentTaskStatus",
     "AgentTaskValidators",
     "AgentTaskWorkspace",
+    "AgentProcessObservation",
+    "CodexDriver",
+    "CodingAgentDriver",
+    "CodingAgentHarness",
+    "CodingAgentHarnessConfig",
+    "CommitObservation",
+    "DispatchedValidator",
+    "FrictionObservation",
     "MissionRollupProcessor",
     "TaskDispatchProcessor",
+    "TaskDispatchRequest",
     "TaskExecutionOutbox",
     "TaskGateProcessor",
     "TaskReadinessProcessor",
+    "ValidationObservation",
     "agent_mission_processors",
 ]
