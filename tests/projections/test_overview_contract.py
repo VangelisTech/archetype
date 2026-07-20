@@ -134,6 +134,35 @@ def test_sync_parity_roundtrip(tmp_path):
         assert by_table == {"crew": 1, "cargo": 2}
 
 
+def _make_named_component(field_default: str) -> type[Component]:
+    class Clash(Component):
+        marker: str = field_default
+
+    return Clash
+
+
+def test_label_collision_raises(tmp_path):
+    """Two distinct components with the same lowercased name must not
+    silently shadow each other in the overview."""
+    first = _make_named_component("a")
+    second = _make_named_component("b")
+    assert first is not second
+
+    async def go():
+        async with ArchetypeRuntime() as runtime:
+            world = runtime.world("clash", storage=_storage(tmp_path))
+            with pytest.raises(ValueError, match="clash"):
+                await world_overview(world, first, second)
+            return True
+
+    assert _run(go())
+
+    with ArchetypeRuntime.sync() as runtime:
+        world = runtime.world("clash-sync", storage=_storage(tmp_path / "s"))
+        with pytest.raises(ValueError, match="clash"):
+            projections_sync.world_overview(world, first, second)
+
+
 def test_sync_helper_rejects_async_world(tmp_path):
     async def go():
         async with ArchetypeRuntime() as runtime:

@@ -17,6 +17,7 @@ from daft import DataFrame
 
 from archetype.core.component import Component
 from archetype.projections.frames import overview
+from archetype.projections.worlds import require_unique_labels
 
 
 class SyncQueriesLike(Protocol):
@@ -33,9 +34,14 @@ def _require_sync(world: SyncQueriesLike) -> None:
 
 
 def world_overview(world: SyncQueriesLike, *components: type[Component]) -> DataFrame:
-    """Per-tick population series for each component type, labeled by name."""
+    """Per-tick population series for each component type, labeled by name.
+
+    Label collisions raise, mirroring the async flavor; use
+    :func:`archetype.projections.overview` with explicit labels instead.
+    """
     if not components:
         raise ValueError("world_overview requires at least one component type")
     _require_sync(world)
+    require_unique_labels(components)
     frames = {comp.__name__.lower(): world.query(comp) for comp in components}
     return overview(**frames)
