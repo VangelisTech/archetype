@@ -18,6 +18,7 @@ uv run python examples/<filename>.py
 | 7 | [`07_hooks.py`](07_hooks.py) | Lifecycle hooks for audit logs, tick metrics, and temporary debug traces | None |
 | 8 | [`08_htn_resolution.py`](08_htn_resolution.py) | HTN plan resolution as a fan-out AND/OR forest | None |
 | 9 | [`09_cloud_storage.py`](09_cloud_storage.py) | Cloud storage configurations through `StorageConfig` and the runtime API | Optional cloud credentials |
+| 11 | [`11_graph_relationships.py`](11_graph_relationships.py) | Edge entities: build a hierarchy, traverse it, read the graph at an earlier tick, cascade after a despawn | None |
 
 ### Supplementary
 
