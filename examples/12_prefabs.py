@@ -65,7 +65,7 @@ async def main():
 
         # ── 3. EDIT THE PREFAB; INSTANCES DO NOT MOVE ─────────────────────────
         await world.update(tank, Chassis(armor=99))
-        await world.run(steps=2)  # the edit persists, then the view captures it
+        await world.step()  # one step: the edit persists and the view captures it
         mk2 = await instantiate(world, view, tank)
         await world.step()
 

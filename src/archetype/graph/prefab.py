@@ -105,6 +105,12 @@ def _overlay(components: list[Component], overrides: Sequence[Component]) -> lis
     :meth:`GraphView.frame` applies here so an override always replaces its
     counterpart instead of colliding with it at spawn.
     """
+    for override in overrides:
+        if issubclass(type(override), Prefab | Relation) or _same_component(type(override), Prefab):
+            raise ValueError(
+                f"override {type(override).__name__} is not copyable: markers and "
+                "relations never attach to instances"
+            )
     remaining = list(overrides)
     out: list[Component] = []
     for comp in components:

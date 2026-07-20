@@ -74,7 +74,13 @@ class GraphView:
         self.tick = event.tick - 1  # PostTick.tick is the next tick
 
     def frames(self) -> list[tuple[ArchetypeSignature, DataFrame]]:
-        """The captured (signature, frame) pairs — read-only iteration order."""
+        """The RAW captured (signature, frame) pairs.
+
+        Unlike :meth:`frame` and :meth:`population`, no ``is_active``
+        filtering is applied — rows despawned at capture time are included.
+        Callers that need liveness filter it themselves, as
+        ``prefab._entity_components`` does.
+        """
         return list(self._frames.items())
 
     def population(self) -> DataFrame | None:

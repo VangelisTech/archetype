@@ -256,3 +256,26 @@ def test_twin_prefab_marker_is_not_copied():
     components = _entity_components(view, 7)
     assert [type(c).__name__ for c in components] == ["Chassis"]
     assert components[0].armor == 12
+
+
+def test_marker_and_relation_overrides_are_rejected(tmp_path):
+    """An override that could smuggle a marker or relation onto an instance
+    fails loudly instead of silently minting a second template."""
+
+    async def go():
+        view = GraphView()
+        async with ArchetypeRuntime() as runtime:
+            world = _world(runtime, "smuggle", tmp_path, view)
+            template = await world.spawn(Prefab(name="t"), Chassis(armor=1))
+            await world.step()
+
+            with pytest.raises(ValueError, match="not copyable"):
+                await instantiate(world, view, template, overrides=[Prefab(name="oops")])
+            with pytest.raises(ValueError, match="not copyable"):
+                await instantiate(world, view, template, overrides=[IsA(source=1, target=2)])
+            twin_marker = _make_prefab_twin()
+            with pytest.raises(ValueError, match="not copyable"):
+                await instantiate(world, view, template, overrides=[twin_marker(name="ghost")])
+            return True
+
+    assert _run(go())
