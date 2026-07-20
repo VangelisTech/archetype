@@ -45,9 +45,9 @@ vocabulary, but their package boundaries may change before v1 as coding-mission
 and physical-AI capabilities settle. The import-boundary checker constrains
 what these packages may depend on; it does not promote them to public API.
 
-The target ownership is now decided in
-[Agent Mission Transitions, section 7](agent-missions.md#7-adjacent-capability-package-map),
-but it is not yet implemented. `archetype.htn` folds under
+The target ownership is recorded in
+[Agent Missions V1, section 9](agent-missions.md#9-family-direction-after-v1),
+but the orphan-package cleanup is not yet implemented. `archetype.htn` folds under
 `archetype.missions` as the planning subdomain via #591. `archetype.datasets`
 is removed by #590, which folds evidence identity into
 `archetype.evaluation.contracts`. The mixed `experiments` package is staged

@@ -18,7 +18,8 @@ Package location states architectural ownership before any symbol is exported:
 |---|---|
 | Components, processors, pure DataFrame transforms, transition graphs, and reusable projections | `archetype.<family>` |
 | Supported family value contracts | `archetype.<family>.contracts` or another specifically named family module |
-| Durable authority, cross-family orchestration, internal service ports, and concrete implementations | `archetype.app.<family>` |
+| Capability-scoped resources and provider adapters implementing a family-owned protocol | A named subpackage of `archetype.<family>` |
+| Durable authority, cross-family orchestration, internal service ports, and concrete application services | `archetype.app.<family>` |
 | Transport, authentication, application facade, and composition | `archetype.api`, `archetype.app.gateway`, `archetype.app.application`, and `archetype.app.container` |
 
 A top-level family may depend on `archetype.core`, itself, third-party
@@ -38,11 +39,12 @@ application ports, and `service.py` for application authority. A top-level
 location does not make every symbol public; supported exports remain explicit
 under [API Stability](api-stability.md).
 
-For example, `archetype.missions` is a leaf family containing persistent
-mission Components and pure world transitions. Durable claims, recovery,
-execution authorization, app ports, and orchestration stay in
-`archetype.app.missions`; the family move adds no `archetype` root exports or
-legacy app re-exports.
+For example, `archetype.missions` consumes the lower `archetype.graph` family.
+It contains mission/task Components, relations, transition processors,
+authoring values, and capability-scoped sandbox resources. Durable workflow
+composition stays in `archetype.app.missions`; neither location alone adds a
+symbol to the `archetype` root facade. See
+[Agent Missions V1](agent-missions.md#3-architecture-and-ownership).
 
 ## Source of Truth
 

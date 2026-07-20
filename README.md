@@ -122,6 +122,8 @@ runtime:` and omit `await`.
 - Forks inherit source history and create an independent future.
 - Agents are entities: an LLM call is one more columnar processor writing to
   the same history.
+- Agent Missions turns repository work into a typed task graph whose
+  transitions are gated by the repository's own validators.
 - The service layer can authorize and audit mutations before a tick applies
   them.
 
@@ -131,6 +133,8 @@ Start with the [quickstart](https://archetype.vangelis.tech/docs/guide/quickstar
 then use the guides for [components](https://archetype.vangelis.tech/docs/guide/components/),
 [processors](https://archetype.vangelis.tech/docs/guide/processors/), and
 [worlds](https://archetype.vangelis.tech/docs/guide/working-with-worlds/).
+For coding-agent workflows, see
+[Agent Missions V1](https://archetype.vangelis.tech/docs/guide/agent-missions/).
 
 The site also includes the current [Python API](https://archetype.vangelis.tech/docs/reference/python-api/),
 [CLI](https://archetype.vangelis.tech/docs/reference/cli/), and
@@ -145,6 +149,7 @@ uv run python examples/02_fork_counterfactual.py
 uv run python examples/03_time_travel.py
 uv run python examples/04_messaging.py
 uv run python examples/07_hooks.py
+uv run --extra coding-agent python examples/11_coding_agent_mission.py --dry-run
 ```
 
 `examples/05_llm_agents.py` and parts of `examples/06_trajectory_analysis.py`

@@ -256,3 +256,80 @@ Source: [`examples/07_hooks.py`](https://github.com/VangelisTech/archetype/blob/
 - **Tick telemetry**: `PreTick` starts a timer and `PostTick` computes metrics from `event.results`
 - **Hook handles**: unregister a temporary debug hook with `world.remove_hook(handle)`
 - **Boundary discipline**: hooks emit side effects; processors keep the simulation state deterministic
+
+---
+
+## 8. HTN Resolution
+
+Resolve a hierarchical task network into a fan-out AND/OR forest.
+
+```bash
+uv run python examples/08_htn_resolution.py
+```
+
+Source: [`examples/08_htn_resolution.py`](https://github.com/VangelisTech/archetype/blob/main/examples/08_htn_resolution.py)
+
+This is a planning primitive, not the Agent Missions V1 planner. The future
+mission-planning adapter may translate a resolved plan into task entities and
+`DependsOn` edges; it may not advance those tasks.
+
+---
+
+## 9. Cloud Storage
+
+Configure cloud-backed storage through `StorageConfig` without changing the
+runtime workflow.
+
+```bash
+uv run python examples/09_cloud_storage.py
+```
+
+Source: [`examples/09_cloud_storage.py`](https://github.com/VangelisTech/archetype/blob/main/examples/09_cloud_storage.py)
+
+The local path runs without cloud credentials. Provider-specific branches need
+the matching host credentials.
+
+---
+
+## 10. AutoResearch
+
+Run a multi-candidate research workflow through the runtime-owned world and
+evaluation boundaries.
+
+```bash
+uv run python examples/10_autoresearch.py
+```
+
+Source: [`examples/10_autoresearch.py`](https://github.com/VangelisTech/archetype/blob/main/examples/10_autoresearch.py)
+
+AutoResearch is a sibling workflow, not a coding-agent mission subfamily. It
+may consume an agent callback without inheriting mission transition authority.
+
+---
+
+## 11. Coding-Agent Mission
+
+Submit a two-task repository mission: first prove a regression is red, then
+implement the fix only after that predecessor is accepted.
+
+```bash
+# Inspect the typed graph without creating Modal resources.
+uv run --extra coding-agent python examples/11_coding_agent_mission.py --dry-run
+
+# Run the credentialed dogfood.
+uv run --extra coding-agent python examples/11_coding_agent_mission.py
+```
+
+Source: [`examples/11_coding_agent_mission.py`](https://github.com/VangelisTech/archetype/blob/main/examples/11_coding_agent_mission.py)
+
+**What it demonstrates:**
+
+- typed `AgentTask` and `CommandValidator` authoring;
+- a temporal `DependsOn` relationship instead of a JSON plan cursor;
+- an expected-nonzero validator for the red regression;
+- committed dispatch through the post-tick outbox;
+- same-worktree, evidence-carrying repair after validator rejection; and
+- accepted-only commit and push through the Modal/Codex resource.
+
+See [Agent Missions V1](agent-missions.md) for the complete state machine,
+sequence diagram, ownership map, dogfood result, and explicit limits.

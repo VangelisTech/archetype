@@ -9,6 +9,11 @@
 public/internal classification, wiring, and enforcement. This document owns the
 purpose and active mapping of each family port.
 
+Agent Missions V1 currently uses one family-owned resource protocol,
+`AgentMissionSandbox`, while its application workflow has not yet moved behind
+an app-family port. That explicit gap is described below; the older
+`iMission*` and `iSandbox*` ports are a separate compatibility subsystem.
+
 ## 1. Policy
 
 Application protocols are internal dependency boundaries unless a focused
@@ -57,6 +62,10 @@ iSimulationService -> iWorldService + injected callbacks
 iCommandScheduler  -> iWorldService + iMutationService
 iResearchService   -> iWorldService + iSimulationService
 iAuditLog          -> iStorageService
+
+RuntimeMissions -> AgentMissionService -> AgentMissionSandbox
+
+# Legacy mission-attempt compatibility stack
 iMissionService    -> typed mission rows (no service dependency)
 iMissionAttemptClaimService -> ControlCatalog + iRedactionService
 iMissionAttemptExecutionService
@@ -66,10 +75,11 @@ iMissionArtifactFinalizer -> iArtifactBundleService
 iSandboxService    -> registered iSandboxBackend providers
 ```
 
-`ServiceContainer` selects concrete implementations across families. The
-mission execution service receives both mission-family authorities through
-their protocols and accepts a mission-owned structural sandbox runner per
-attempt; it is orchestration, not another composition root.
+`ServiceContainer` selects concrete implementations across families. In the
+legacy stack, the mission execution service receives both mission authorities
+through their protocols and accepts a structural sandbox runner per attempt;
+it is orchestration, not another composition root. V1's composition exception
+is tracked separately below.
 
 ## 3. Active mapping
 
@@ -90,12 +100,14 @@ attempt; it is orchestration, not another composition root.
 | `iCommandScheduler` | `CommandScheduler` | application | Durable admission, leasing, dispatch, retry, settlement and outbox inspection |
 | `iAuditLog` | `AuditLog` | application, gateway, query | Append-only access rows and command-outbox projection |
 | `iResearchService` | `AutoResearchService` | application | Multi-run autoresearch workflow and research ledger |
-| `iMissionService` | `MissionService` | coding-agent orchestration | Validator normalization, policy-bound attempt identity, typed transition graph, retry/exhaustion, evidence gates, and current non-authority outcome application |
-| `iMissionAttemptClaimService` | `MissionAttemptClaimService` | coding-agent orchestration and recovery workers | Pre-durability quarantine/redaction receipts, durable acquisition, fencing, single-use execution grants, recovery decisions, acknowledgement, semantically validated settlement, and authenticated terminal-winner reread |
-| `iMissionArtifactFinalizer` | application-owned `MissionArtifactFinalizer` | mission attempt execution and recovery workers | Deterministic no-I/O request preparation plus exact staged-request publication through the artifact outbox; returned receipts are orchestration feedback while the claim authority rereads terminal catalog state |
-| `iMissionAttemptExecutionService` | `MissionAttemptExecutionService` | coding-agent processors and supervisors | Claim/arm, atomic provider-call admission, runner-lifetime lease heartbeat, acknowledgement, indexed artifact finalization, claim-bound settlement, durable-winner authentication, private settled-row application, and terminal replay |
-| `iSandboxService` | `SandboxService` | container, mission orchestration | Provider selection and process-local create/restore/resume/close lifetime |
-| `iSandboxBackend` | host-selected provider adapters | sandbox service | Provider-specific isolated execution and checkpoint recovery |
+| Family resource port `AgentMissionSandbox` | `ModalAgentMissionSandbox` | `AgentMissionService` | V1 isolated execution and typed receipts; no task-transition authority |
+| **CURRENT GAP:** no V1 app port | `AgentMissionService` | `RuntimeMissions` | Materialize task graphs, coordinate committed I/O, validate receipts, and project terminal results |
+| Legacy `iMissionService` | `MissionService` | legacy attempt orchestration | Single-row validator normalization, transition graph, retry/exhaustion, and outcome application |
+| Legacy `iMissionAttemptClaimService` | `MissionAttemptClaimService` | legacy attempt orchestration and recovery workers | Pre-durability redaction, durable claims, fencing, recovery decisions, acknowledgement, settlement, and terminal-winner reread |
+| Legacy `iMissionArtifactFinalizer` | application-owned `MissionArtifactFinalizer` | legacy attempt execution and recovery workers | Prepared artifact publication and reconciliation feedback |
+| Legacy `iMissionAttemptExecutionService` | `MissionAttemptExecutionService` | legacy coding-agent processors and supervisors | Claim/arm, provider admission, heartbeat, acknowledgement, finalization, settlement, and replay |
+| Legacy `iSandboxService` | `SandboxService` | container, legacy mission orchestration | Provider selection and process-local create/restore/resume/close lifetime |
+| Legacy `iSandboxBackend` | host-selected provider adapters | legacy sandbox service | Provider-specific isolated execution and checkpoint recovery |
 
 ## 4. Boundary rules
 
@@ -132,9 +144,30 @@ boundaries. Future live-event, OTel, and proxy exporters consume that same port;
 they do not fork scanner policy.
 `iAuditLog` is a projection/read port, not the authority for command outcome.
 
-### Mission ports
+### Agent Missions V1
 
-`iMissionService` is the sole mission/task/attempt transition authority. It is
+`AgentMissionSandbox` belongs to `archetype.missions.contracts` because coding
+agents and their execution resources are implementations beneath the missions
+family. Its `run_many`, `close_mission`, and `close` methods exchange typed
+`TaskExecutionRequest` and `TaskExecutionReceipt` values. The sandbox reports
+observations; mission processors remain transition authority.
+
+`AgentMissionService` is app-internal composition over a structural mission
+world and that resource. It owns graph materialization, the post-commit I/O
+loop, receipt validation, and terminal projection. It does not own readiness,
+acceptance, retry, exhaustion, or rollup policy.
+
+**CURRENT GAP:** the service has no `iAgentMissionService` app port and is
+constructed by `RuntimeMissions`. Graduation moves construction into the
+container/application path without moving Components, processors, relations,
+or sandbox resources into `app`.
+
+See [Agent Missions V1](agent-missions.md).
+
+### Legacy mission-attempt ports
+
+Within the legacy stack, `iMissionService` is the sole single-row
+mission/task/attempt transition authority. It is
 a pure row transformer: it owns no provider, live handle, world, storage
 client, or authorization context. Consumers persist its result through the
 ordinary world tick. Preparation canonicalizes validator names, commands,
@@ -186,8 +219,8 @@ catalog, requires the terminal winner, and authenticates its canonical payload
 at the boundary that creates projection authority. A detached or
 caller-replaced `AttemptClaim` DTO is never equivalent to that read. The
 execution service consumes this operation immediately before its private row
-transformation and the ordinary world tick. See
-[Agent mission transitions](agent-missions.md).
+transformation and the ordinary world tick. See the
+[Legacy mission attempt kernel](legacy-mission-attempt-kernel.md).
 
 `iMissionAttemptExecutionService` is the supported orchestration port for one
 attempt. It prepares and acquires through the two authorities above, then
@@ -231,8 +264,9 @@ remains its concrete implementation. Its row transforms consume
 reusable values does not promote the service, claim DTOs, execution
 authorization, or recovery contracts.
 
-### Sandbox ports
+### Legacy sandbox ports
 
+These ports are not used by the Modal Agent Missions V1 resource.
 `iSandboxService` owns external resource lifetime and provider selection; it
 never decides whether a task advances. `ServiceContainer` constructs an empty
 provider registry unless a trusted host supplies adapters. The common attempt
@@ -277,12 +311,12 @@ command, world, and other authority-specific models remain with their app
 owners unless a focused specification classifies an individual value as a
 reusable family contract.
 
-The mission split is the implemented example: persistent Components and pure
-world transitions live under `archetype.missions`, while durable claims,
-leases, fences, authorization values, recovery actions, settlement, redaction,
-provider coordination, app ports, and concrete orchestration remain under
-`archetype.app.missions`. No compatibility re-export or root-facade promotion
-bridges those owners.
+The V1 mission split is the implemented example: Components, processors,
+relations, authoring/receipt values, and sandbox resources live under
+`archetype.missions`; graph materialization and cross-boundary workflow
+composition live under `archetype.app.missions`. The retained claim, lease,
+fence, finalization, and app-sandbox types are legacy internal machinery, not a
+second V1 ownership pattern.
 
 ## 6. Construction and shutdown
 
@@ -305,6 +339,11 @@ before a world has been opened in that process. There is no advertised
 unbound/default-catalog mission finalizer. Focused implementation tests may
 inspect internal members without creating compatibility.
 
+Agent Missions V1 is the current exception: `RuntimeMissions` constructs its
+application service directly. The target cleanup adds an actor-free app port
+and container-owned composition; it does not expose the service or container
+to mission authors.
+
 Shutdown stops new application admission, closes retained sandbox handles,
 flushes the audit projection, then closes container-owned world/storage
 resources.
@@ -326,5 +365,6 @@ resources.
 - [Audit Log](audit-log.md)
 - [Execution Hierarchy](execution-hierarchy.md)
 - [Artifact Finalization](artifact-finalization.md)
-- [Agent Mission Transitions](agent-missions.md)
+- [Agent Missions V1](agent-missions.md)
+- [Legacy Mission Attempt Kernel](legacy-mission-attempt-kernel.md)
 - [Sandbox Execution](sandbox-execution.md)

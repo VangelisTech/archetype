@@ -13,6 +13,7 @@ site_dir: site/docs
 not_in_nav: |
   design/**
   planning/**
+  guide/legacy-mission-attempt-kernel.md
 
 theme:
   name: material
@@ -69,6 +70,7 @@ nav:
       - Running a Server: guide/api-layer.md
       - Trajectories: guide/trajectories.md
       - AutoResearch: guide/autoresearch.md
+      - Agent Missions: guide/agent-missions.md
       - Tragedy of the Commons: experiments/tragedy-of-the-commons.md
   - REFERENCE:
       - PYTHON API:
@@ -105,7 +107,6 @@ nav:
       - Atomic Visibility: guide/atomic-visibility.md
       - Artifacts: guide/artifacts.md
       - Artifact Finalization: guide/artifact-finalization.md
-      - Agent Mission Transitions: guide/agent-missions.md
       - Dataset and Evaluation Ontology: guide/dataset-eval-ontology.md
       - Audit Log: guide/audit-log.md
       - Repository Harness: guide/repository-harness.md

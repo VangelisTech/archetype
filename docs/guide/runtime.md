@@ -3,8 +3,11 @@
 **Document type:** Normative.
 **Scope:** `src/archetype/runtime/` — the trusted Python scripting boundary.
 
-The runtime depends on the actor-free `iRuntimeApplication` port. It never
-depends on the command gateway, authorization models, or concrete app services.
+Ordinary runtime/world operations depend on the actor-free
+`iRuntimeApplication` port. They never depend on the command gateway or
+authorization models. Agent Missions V1 currently has one explicit composition
+gap, recorded in R16, where its specialized runtime handle constructs the
+mission application service directly.
 
 ## 1. Purpose
 
@@ -14,7 +17,7 @@ depends on the command gateway, authorization models, or concrete app services.
    `RuntimeApplication`;
 2. owns lazy world handles and process lifetime;
 3. provides ergonomic async and sync scripting semantics; and
-4. delegates canonical operations to `iRuntimeApplication`.
+4. delegates canonical world operations to `iRuntimeApplication`.
 
 The runtime is a trusted in-process boundary. Possession of the runtime grants
 the host the capabilities it was constructed with; it does not fabricate a
@@ -194,6 +197,26 @@ explicit internal host composition injects one. Cross-runtime live-handle
 transfer is out of scope; durable identity and storage coordinates are the
 interchange boundary.
 
+### R16 — Agent Missions V1
+
+`runtime.missions(name, config=..., storage=...)` returns an async
+`RuntimeMissions` handle. It configures one mission-capable world with the
+built-in Components, graph view, transition processors, post-tick outbox, and
+injected `AgentMissionSandbox` resource. Authors submit typed tasks and never
+wire that bundle themselves.
+
+The handle owns the specialized mission-world lifetime. Closing it closes the
+sandbox resource and its world handle; closing it does not close the parent
+runtime. A terminal run closes that mission's provider session. Runtime
+shutdown remains the outer process boundary.
+
+**CURRENT GAP:** `RuntimeMissions` constructs `AgentMissionService` directly
+instead of obtaining a mission workflow through `iRuntimeApplication` and the
+container. V1 is also async-only, so it does not yet satisfy R1 and R5 as a
+graduated runtime capability. The behavior is supported for the dogfood, but
+the composition exception is not the target architecture. See
+[Agent Missions V1, current hardening gaps](agent-missions.md#current-hardening-gaps).
+
 ## 3. Canonical surface
 
 The async surface below has sync parity:
@@ -208,6 +231,18 @@ world = runtime.world(
     hooks=...,
 )
 world = runtime.attach(world_id, storage=...)
+
+missions = runtime.missions(
+    "software-factory",
+    config=AgentMissionConfig(sandbox=my_sandbox),
+    storage=...,
+)
+submitted = await missions.submit(
+    repository="owner/repository",
+    branch="agent/change",
+    tasks=(AgentTask(...),),
+)
+mission_result = await missions.run(submitted)
 
 eid = await world.spawn(Position(x=0), Velocity(dx=1))
 ids = await world.spawn_batch(Position(x=0), count=10_000)
@@ -263,6 +298,7 @@ entity's archetype. These intents remain distinct.
 src/archetype/runtime/
   __init__.py
   runtime.py       ArchetypeRuntime and SyncArchetypeRuntime
+  missions.py      async Agent Missions authoring/lifecycle handle
   world.py         RuntimeWorld and SyncRuntimeWorld
   entrypoint.py    managed script decorator
   _config.py       scripting-boundary coercion
@@ -291,3 +327,4 @@ with ArchetypeRuntime.sync() as runtime:
 - [World Lifecycle](world-lifecycle.md)
 - [Service Protocols](service-protocols.md)
 - [Audit Log](audit-log.md)
+- [Agent Missions V1](agent-missions.md)

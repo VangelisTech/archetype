@@ -37,6 +37,7 @@ services and gives you world handles that are lazy until first use.
 | Write behavior | [Processors](guide/processors.md) |
 | Spawn, query, and fork | [Working with worlds](guide/working-with-worlds.md) |
 | Inspect past state | [History and forks](guide/history-and-forks.md) |
+| Run a coding-agent software factory | [Agent Missions](guide/agent-missions.md) |
 | Run a service over HTTP | [Service hosting](guide/app-overview.md) |
 | Find an exact method or endpoint | [Reference](reference/python-api.md) |
 

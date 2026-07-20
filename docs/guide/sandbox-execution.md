@@ -5,6 +5,14 @@
 **Scope:** Provider-neutral coding-agent execution and process-local sandbox
 lifetime under `src/archetype/app/sandboxes/`.
 
+> **Legacy compatibility subsystem.**
+>
+> This page specifies the six-phase kernel retained under
+> `archetype.app.sandboxes`. Agent Missions V1 does not call it. V1 sandbox
+> resources live under `archetype.missions.sandboxes` and implement the
+> smaller family-owned `AgentMissionSandbox` protocol described in
+> [Agent Missions V1](agent-missions.md#5-sandbox-and-validator-protocol).
+
 ## 1. Ownership and boundary
 
 The sandbox family owns the common attempt kernel, provider selection, live

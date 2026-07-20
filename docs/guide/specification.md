@@ -26,7 +26,8 @@ The current contract set is split across design docs and executable tests.
 | [Atomic Visibility](atomic-visibility.md) | Tick commit identity | Manifest-published ticks, commit tokens, writer fencing, epoch-0 legacy reads. |
 | [Artifacts](artifacts.md) | External-artifact ingestion | Typed Iceberg tables, Daft file processors, content identity, and claim-backed receipt compatibility. |
 | [Artifact Finalization](artifact-finalization.md) | Sandbox evidence durability | Provider checkpoints, portable bundle publication/replay, pre-durability redaction, indexing, and retention. |
-| [Agent Mission Transitions](agent-missions.md) | Mission domain and attempt authority | Top-level typed world graph plus app-owned claims, evidence gates, retry, exhaustion, and task advancement. |
+| [Agent Missions V1](agent-missions.md) | Coding-agent software factory | Typed task graphs, previous-tick readiness, post-commit sandbox dispatch, validator-gated retry, and terminal mission rollup. |
+| [Legacy Mission Attempt Kernel](legacy-mission-attempt-kernel.md) | Internal compatibility stack | Existing single-row transitions, fenced attempt claims, and indexed-finalization contracts; not the V1 authoring path. |
 | [Dataset and Evaluation Ontology](dataset-eval-ontology.md) | Dataset/eval identity and vocabulary | Dataset-vs-runtime coordinates, trial/episode cardinality, typed-artifact ownership, and grader composition. |
 | [Audit Log](audit-log.md) | Audit rows | Append-only audit history and query contract. |
 | [Repository Harness](repository-harness.md) | Executable evidence | Focused tests, contract matrices, repository scenarios, benchmarks, static audits, and mutation probes. |
@@ -87,7 +88,7 @@ This specification covers:
 - multi-world orchestration and world forking
 - idempotency expectations and non-idempotent boundaries
 - typed external artifacts and dataset/evaluation identity
-- typed coding-agent mission transitions and completed-attempt evidence gates
+- typed coding-agent task graphs, committed dispatch, and validator-gated transitions
 
 This specification does not authorize direct edits to `src/archetype/core/`.
 It defines the behavior that higher layers must preserve and that future

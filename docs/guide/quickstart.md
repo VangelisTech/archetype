@@ -111,4 +111,5 @@ with ArchetypeRuntime.sync() as runtime:
 - [Write processors](processors.md)
 - [Work with worlds](working-with-worlds.md)
 - [Choose a runnable example](examples.md)
+- [Run a coding-agent mission](agent-missions.md)
 - [Host a service](app-overview.md)

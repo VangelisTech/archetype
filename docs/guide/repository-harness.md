@@ -17,6 +17,20 @@ layer would own code that depends on the whole stack, developer tooling, and
 test-only infrastructure. “Harness” is the composition of the evidence below,
 not one runtime package.
 
+## The harness inside a software factory
+
+An Agent Mission may invoke repository checks, but it does not absorb or own
+them. Mission validators name the exact harness commands that authorize one
+task transition. Changing those validators changes the factory's acceptance
+policy without moving pytest, architecture audits, or CI machinery into the
+missions family.
+
+This also makes expected failure useful evidence. A regression task can require
+a focused test to exit nonzero before an implementation task becomes ready;
+the later task can require that same test to pass. See
+[Agent Missions V1](agent-missions.md#repository-validators-are-authority)
+for the dogfooded protocol.
+
 ## Evidence types
 
 Each tool answers a different question.

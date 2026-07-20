@@ -35,7 +35,7 @@ signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
 authority = "Fenced attempt-claim rows, validated mission transitions, provider receipts, and durable outcomes remain authoritative."
 evidence = [
-  "docs/guide/agent-missions.md",
+  "docs/guide/legacy-mission-attempt-kernel.md",
   "tests/app/test_mission_attempt_claims.py",
   "tests/app/test_mission_transition_authority.py",
 ]

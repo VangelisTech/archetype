@@ -420,7 +420,7 @@ profiles = ["pr", "main", "release"]
 
 [[contract]]
 id = "missions.transition.evidence_gated"
-source = "docs/guide/agent-missions.md"
+source = "docs/guide/legacy-mission-attempt-kernel.md"
 section = "2. Typed mission/task/attempt transition graph"
 owner = "missions"
 risk = "high"
@@ -435,7 +435,7 @@ profiles = ["pr", "main", "release"]
 
 [[contract]]
 id = "missions.attempt.claim_fenced"
-source = "docs/guide/agent-missions.md"
+source = "docs/guide/legacy-mission-attempt-kernel.md"
 section = "5. Durable pre-execution claim and recovery"
 owner = "missions"
 risk = "high"
@@ -454,7 +454,7 @@ profiles = ["pr", "main", "release"]
 
 [[contract]]
 id = "missions.attempt.indexed_finalization"
-source = "docs/guide/agent-missions.md"
+source = "docs/guide/legacy-mission-attempt-kernel.md"
 section = "5. Durable pre-execution claim and recovery"
 owner = "missions"
 risk = "high"
@@ -474,6 +474,25 @@ static = [
   "scripts/check_pre_durability_redaction.py",
 ]
 evals = ["mission_indexed_finalization_gate"]
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "missions.agent_v1.validator_gated"
+source = "docs/guide/agent-missions.md"
+section = "4. Commit and transition protocol"
+owner = "missions"
+risk = "high"
+pytest = [
+  "tests/missions/test_agent_mission_contracts.py",
+  "tests/missions/test_modal_agent_sandbox.py",
+  "tests/integration/test_agent_mission_service.py",
+]
+static = [
+  "scripts/check_architecture.py",
+  "scripts/check_lazy_audit.py",
+]
+evals = []
 benchmarks = []
 profiles = ["pr", "main", "release"]
 

@@ -64,6 +64,12 @@ and settles tick-deferred commands. It does not own RBAC.
 
 **Audit** owns journals, transactional outboxes, and the analytical projection.
 
+**AgentMissionService** composes the mission family's task entities,
+relationships, processors, committed-intent outbox, and sandbox resource. The
+processors own transitions; the service owns graph materialization and the
+tick-to-external-I/O loop. Its current direct `RuntimeMissions` construction is
+a documented V1 composition gap, not a general runtime-to-service pattern.
+
 **RuntimeApplication** is the actor-free application facade consumed by the
 runtime and gateway. **CommandGateway** is the only ActorCtx-aware application
 boundary and is consumed by API/untrusted adapters only.
