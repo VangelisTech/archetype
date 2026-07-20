@@ -132,6 +132,39 @@ def test_frame_matches_signature_membership(tmp_path):
     assert _run(go())
 
 
+def _make_beacon_twin() -> type[Component]:
+    class Beacon(Component):
+        strength: float = 1.0
+
+    return Beacon
+
+
+def test_frame_matches_schema_identical_twin(tmp_path):
+    """A different class object with the same name and prefixed schema must
+    match — the cold-resume scenario, where the world holds its own class."""
+
+    async def go():
+        view = GraphView()
+        async with ArchetypeRuntime() as runtime:
+            world = runtime.world(
+                "twin",
+                storage=_storage(tmp_path),
+                resources=[view],
+                hooks=[(PostTick, view.on_post_tick)],
+            )
+            await world.spawn(Beacon(strength=1.0))
+            await world.step()
+
+            twin = _make_beacon_twin()
+            assert twin is not Beacon
+            frame = view.frame(twin)
+            assert frame is not None
+            assert frame.count_rows() == 1
+            return True
+
+    assert _run(go())
+
+
 def test_despawned_rows_are_filtered(tmp_path):
     async def go():
         view = GraphView()
