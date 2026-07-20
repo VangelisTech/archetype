@@ -97,8 +97,8 @@ Repository package ownership is normative:
 
 A top-level domain-family package owns reusable ECS state and pure domain
 behavior. It may depend on `archetype.core`, itself, third-party libraries, and
-only reviewed lower top-level family contracts declared in
-`quality/architecture.toml`. It must not import `archetype.app`,
+only reviewed lower top-level family contracts declared in the merged
+architecture policy. It must not import `archetype.app`,
 `archetype.runtime`, `archetype.api`, or `archetype.cli`, and it does not
 configure process-global providers or exporters, storage backends, process
 hosts, or the service container. The application layer may import a registered top-level
@@ -137,7 +137,7 @@ symbol public. Supported names remain an explicit classification owned by
 remain internal.
 
 The `archetype.missions` family consumes the lower `archetype.graph` family,
-as declared in `quality/architecture.toml`. It owns mission/task Components,
+as declared in `quality/architecture.d/missions.toml`. It owns mission/task Components,
 typed authoring and execution values, task relationships, DataFrame-first
 transition processors, reusable projections/resources, and coding-agent
 sandbox implementations. Sandboxes are mission-family resources; they are not
@@ -483,10 +483,10 @@ Agent Missions V1 is implemented under `archetype.missions.coding_agents`,
 single-row transition, claim, fence, finalization, and app-sandbox modules are
 still present but are not called by `runtime.missions(...)`.
 
-`quality/architecture.toml` and the fragments in `quality/architecture.d/`
-contain both the application-family DAG and the registered top-level family
-dispositions for `artifacts`, `evaluation`,
-`graph`, `missions`, `physical_ai`, `projections`, and `research`.
+`quality/architecture.toml` contains the scalar policy and application-family
+DAG. Per-family fragments under `quality/architecture.d/` register the
+top-level dispositions for `artifacts`, `evaluation`, `graph`, `missions`,
+`physical_ai`, `projections`, and `research`.
 `scripts/check_architecture.py` enforces their package direction, protocol
 imports, concrete construction, concrete inheritance, and persistent
 Component placement.

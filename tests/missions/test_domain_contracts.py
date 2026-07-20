@@ -213,14 +213,20 @@ def test_architecture_manifest_registers_the_mission_graph_dependency_without_ex
     # (#611); the contract holds over the merged manifest, the same view
     # scripts/check_architecture.py assembles.
     root = Path(__file__).resolve().parents[2]
-    manifest = tomllib.loads((root / "quality" / "architecture.toml").read_text(encoding="utf-8"))
-    for fragment in sorted((root / "quality" / "architecture.d").glob("*.toml")):
-        data = tomllib.loads(fragment.read_text(encoding="utf-8"))
-        for key in ("top_level_family_rule", "exception"):
-            if key in data:
-                manifest.setdefault(key, []).extend(data[key])
+    policy_root = root / "quality"
+    policy_paths = [
+        policy_root / "architecture.toml",
+        *sorted((policy_root / "architecture.d").glob("*.toml")),
+    ]
+    manifests = [tomllib.loads(path.read_text(encoding="utf-8")) for path in policy_paths]
     rules = {
-        rule["consumer"]: rule["allowed_families"] for rule in manifest["top_level_family_rule"]
+        rule["consumer"]: rule["allowed_families"]
+        for manifest in manifests
+        for rule in manifest.get("top_level_family_rule", [])
     }
     assert rules["archetype.missions"] == ["archetype.graph"]
-    assert all(exception.get("issue") != 559 for exception in manifest.get("exception", []))
+    assert all(
+        exception.get("issue") != 559
+        for manifest in manifests
+        for exception in manifest.get("exception", [])
+    )

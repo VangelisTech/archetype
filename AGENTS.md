@@ -16,9 +16,10 @@ Choose the owning package before adding a type or behavior:
 
 Top-level families may import `archetype.core`, themselves, third-party
 libraries, and only lower top-level family contracts declared in
-`quality/architecture.toml`. They never import `app`, `runtime`, `api`, or
-`cli`; application families may consume their contracts in the other
-direction. Use `components.py`, `processors.py`, `contracts.py`,
+`quality/architecture.toml` and the family fragments under
+`quality/architecture.d/`. They never import `app`, `runtime`, `api`, or `cli`;
+application families may consume their contracts in the other direction. Use
+`components.py`, `processors.py`, `contracts.py`,
 `transitions.py`, `interfaces.py`, and `service.py` according to those semantic
 roles. Every first-party top-level package or module must be classified as
 reserved infrastructure or a registered family, and the family graph must

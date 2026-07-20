@@ -10,7 +10,8 @@ frame; stepping into an agent's seat is rendering it.
 
 This module declares the projections family's first family-to-family edge:
 it consumes :mod:`archetype.graph` traversal (granted in
-``quality/architecture.toml``; acyclic — graph does not import projections).
+``quality/architecture.d/projections.toml``; acyclic — graph does not import
+projections).
 """
 
 from __future__ import annotations

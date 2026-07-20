@@ -616,9 +616,9 @@ lets reconciliation prove a safe result.
 - `quality/contracts.toml` registers
   `missions.transition.evidence_gated`, `missions.attempt.claim_fenced`, and
   `missions.attempt.indexed_finalization` as blocking PR contracts.
-- `quality/architecture.toml` registers the V1-reviewed
-  `archetype.missions -> archetype.graph` edge, rejects other reverse or
-  undeclared family imports, limits the
+- `quality/architecture.d/missions.toml` registers the V1-reviewed
+  `archetype.missions -> archetype.graph` edge; the merged architecture policy
+  rejects other reverse or undeclared family imports, limits the
   claim service to mission-owned app models and the storage control catalog,
   permits only mission-family dependencies in the execution service, and lets
   the sandbox consume only the app-owned immutable fenced authorization and

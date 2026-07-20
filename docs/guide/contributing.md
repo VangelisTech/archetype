@@ -24,7 +24,8 @@ Package location states architectural ownership before any symbol is exported:
 
 A top-level family may depend on `archetype.core`, itself, third-party
 libraries, and only reviewed lower top-level family contracts declared in
-`quality/architecture.toml`. It never imports `archetype.app`,
+the root `quality/architecture.toml` policy and per-family fragments under
+`quality/architecture.d/`. It never imports `archetype.app`,
 `archetype.runtime`, `archetype.api`, or `archetype.cli`. The application layer
 may consume top-level family contracts; the reverse edge is forbidden.
 Every first-party top-level package or module must be classified as reserved

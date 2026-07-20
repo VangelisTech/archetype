@@ -29,7 +29,8 @@ Every active protocol has:
 - named consumers and one implementation;
 - the complete method surface used by those consumers;
 - structural conformance checked by the repository type gate and focused tests;
-- an allowed edge in `quality/architecture.toml`; and
+- an allowed edge in the merged `quality/architecture.toml` policy and its
+  `quality/architecture.d/` fragments; and
 - negative architecture evidence rejecting undeclared concrete edges.
 
 Protocols are co-located with their family. There is no root
@@ -352,11 +353,11 @@ optimization live under `archetype.physical_ai`, while
 ports under `archetype.app.physical_ai`. The root `app/models.py`
 boundary-model split remains owned by #560.
 
-`quality/architecture.toml` currently carries no migration exceptions; no
-wildcard compatibility package is implied. Redaction, audit, sandbox, command,
-world, and other authority-specific models remain with their app owners unless
-a focused specification classifies an individual value as a reusable family
-contract.
+The root policy and its `quality/architecture.d/` fragments currently carry no
+migration exceptions; no wildcard compatibility package is implied.
+Redaction, audit, sandbox, command, world, and other authority-specific models
+remain with their app owners unless a focused specification classifies an
+individual value as a reusable family contract.
 
 The V1 mission split is the implemented example: Components, processors,
 relations, authoring/receipt values, and sandbox resources live under
@@ -401,6 +402,7 @@ resources.
 
 - `scripts/check_architecture.py`
 - `quality/architecture.toml`
+- `quality/architecture.d/`
 - `tests/scripts/test_check_architecture.py`
 - `tests/app/test_service_protocols.py`
 - `make typecheck`
