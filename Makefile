@@ -100,7 +100,7 @@ format:
 	@uv run ruff format $(RUFF_PATHS)
 
 .PHONY: lint
-lint: lazy-audit architecture-audit observability-audit sandbox-phase-audit version-inventory-audit api-boundary-audit idempotency-audit gate-coverage-audit redaction-audit
+lint: lazy-audit architecture-audit observability-audit version-inventory-audit api-boundary-audit idempotency-audit gate-coverage-audit redaction-audit
 	@uv run ruff check $(RUFF_PATHS)
 
 .PHONY: lint-fix
@@ -149,10 +149,6 @@ architecture-audit:
 .PHONY: observability-audit
 observability-audit:
 	@uv run python scripts/check_observability.py
-
-.PHONY: sandbox-phase-audit
-sandbox-phase-audit:
-	@uv run python scripts/check_sandbox_phase_order.py
 
 # Fail-closed load of the pinned execution-environment inventory plus a
 # freshness check of its rendered operator page (#507).
@@ -362,7 +358,11 @@ package-smoke: build
 examples-smoke:
 	@set -e; for f in examples/[0-9][0-9]_*.py; do \
 		echo "Running $$f"; \
-		PYTHONPATH=$(PYTHONPATH) uv run python "$$f"; \
+		if [ "$$f" = "examples/11_coding_agent_mission.py" ]; then \
+			PYTHONPATH=$(PYTHONPATH) uv run python "$$f" --dry-run; \
+		else \
+			PYTHONPATH=$(PYTHONPATH) uv run python "$$f"; \
+		fi; \
 	done
 
 .PHONY: verify-pr

@@ -1,254 +1,259 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Persistent mission world schemas and component-local validation."""
+"""Persistent ECS state for the Agent Missions software factory."""
 
 from __future__ import annotations
-
-import re
 
 from pydantic import field_validator, model_validator
 
 from archetype.core.component import Component
-from archetype.missions.transitions import (
-    AttemptStatus,
-    CheckpointStatus,
-    FinalizationPhase,
-    MissionStatus,
-    MissionTransitionEvent,
-    TaskStatus,
-)
-
-_MAX_SIGNED_64BIT = (1 << 63) - 1
-_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+from archetype.missions.contracts import RepositoryPublicationPolicy
+from archetype.missions.sandboxes.contracts import SandboxStatus
+from archetype.missions.transitions import AgentExecutionStatus, MissionStatus, TaskStatus
 
 
 class Mission(Component):
-    """Episode-level mission; ``finished`` is its terminal latch."""
+    """Immutable repository identity for one submitted mission."""
 
-    name: str = ""
-    repo: str = ""
-    branch: str = "agent/mission"
-    plan_json: str = "[]"
-    status: str = MissionStatus.READY.value
-    finished: bool = False
-    succeeded: bool = False
-    failure_reason: str = ""
-    pr_ready: bool = False
-    pr_url: str = ""
+    name: str = "agent-mission"
+    repository: str = ""
+    branch: str = ""
+    base_ref: str = "main"
+
+
+class MissionState(Component):
+    """Current mission rollup derived from related task entities."""
+
+    status: str = MissionStatus.RUNNING.value
+    reason: str = ""
 
     @field_validator("status")
     @classmethod
     def _valid_status(cls, value: str) -> str:
         return MissionStatus(value).value
 
-    @model_validator(mode="after")
-    def _consistent_terminal_flags(self) -> Mission:
-        status = MissionStatus(self.status)
-        expected = {
-            MissionStatus.READY: (False, False),
-            MissionStatus.RUNNING: (False, False),
-            MissionStatus.SUCCEEDED: (True, True),
-            MissionStatus.FAILED: (True, False),
-        }[status]
-        if (self.finished, self.succeeded) != expected:
-            raise ValueError(
-                f"mission status {status.value!r} requires "
-                f"finished={expected[0]} and succeeded={expected[1]}"
-            )
-        return self
 
+class Task(Component):
+    """Immutable task name and atomic goal prompt."""
 
-class TaskGate(Component):
-    """Current task and the durable evidence threshold required to advance."""
-
-    step_index: int = 0
-    step_name: str = ""
+    name: str = ""
     prompt: str = ""
-    validators_json: str = "[]"
-    attempts: int = 0
-    max_attempts: int = 5
-    status: str = TaskStatus.READY.value
-    required_finalization_phase: str = FinalizationPhase.CHECKPOINTED.value
-    passed: bool = False
+
+
+class TaskWorkspace(Component):
+    """Repository coordinates shared by every dispatch of one task."""
+
+    repository: str = ""
+    branch: str = ""
+    base_ref: str = "main"
+
+
+class TaskPolicy(Component):
+    """Dispatch budget and repository publication policy."""
+
+    max_dispatches: int = 3
+    publication_policy: str = RepositoryPublicationPolicy.COMMIT_AND_PUSH.value
+
+    @field_validator("max_dispatches")
+    @classmethod
+    def _positive_dispatches(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("max_dispatches must be positive")
+        return value
+
+    @field_validator("publication_policy")
+    @classmethod
+    def _valid_publication_policy(cls, value: str) -> str:
+        return RepositoryPublicationPolicy(value).value
+
+
+class TaskState(Component):
+    """Processor-owned task decision state."""
+
+    status: str = TaskStatus.PENDING.value
+    reason: str = ""
 
     @field_validator("status")
     @classmethod
     def _valid_status(cls, value: str) -> str:
         return TaskStatus(value).value
 
-    @field_validator("required_finalization_phase")
-    @classmethod
-    def _valid_phase(cls, value: str) -> str:
-        return FinalizationPhase(value).value
+
+class TaskDispatch(Component):
+    """Latest committed permission to execute a task; history retains prior intent."""
+
+    dispatch_id: str = ""
+    sequence: int = 0
 
     @model_validator(mode="after")
-    def _valid_counters_and_flags(self) -> TaskGate:
-        if self.step_index < 0 or self.attempts < 0 or self.max_attempts < 1:
-            raise ValueError("task indexes are non-negative and max_attempts is positive")
-        if self.attempts > self.max_attempts:
-            raise ValueError("task attempts cannot exceed max_attempts")
-        if self.passed != (TaskStatus(self.status) is TaskStatus.PASSED):
-            raise ValueError("task passed flag must agree with task status")
+    def _valid_identity(self) -> TaskDispatch:
+        if self.sequence < 0:
+            raise ValueError("dispatch sequence must not be negative")
+        if self.sequence == 0 and self.dispatch_id:
+            raise ValueError("an undispatched task cannot have a dispatch identity")
+        if self.sequence > 0 and not self.dispatch_id:
+            raise ValueError("a dispatched task requires a dispatch identity")
         return self
 
 
-class Attempt(Component):
-    """Exactly one submission, persisted whether accepted or rejected."""
+class TaskValidator(Component):
+    """One executable repository guard materialized as its own entity."""
 
-    attempt_id: str = ""
-    attempt_index: int = 0
-    status: str = AttemptStatus.PENDING.value
-    provider_status: str = ""
-    harness: str = ""
-    agent_session_id: str = ""
-    validator_details_json: str = "[]"
-    transition_event: str = ""
-    mission_status_before: str = ""
-    task_status_before: str = ""
-    mission_status_after: str = ""
-    task_status_after: str = ""
+    name: str = ""
+    command: list[str] = []
+    expected_returncode: int = 0
+    timeout_seconds: int = 900
 
-    @field_validator("status")
-    @classmethod
-    def _valid_status(cls, value: str) -> str:
-        return AttemptStatus(value).value
-
-    @field_validator("transition_event")
-    @classmethod
-    def _valid_event(cls, value: str) -> str:
-        return MissionTransitionEvent(value).value if value else ""
-
-    @field_validator("mission_status_before", "mission_status_after")
-    @classmethod
-    def _valid_mission_edge(cls, value: str) -> str:
-        return MissionStatus(value).value if value else ""
-
-    @field_validator("task_status_before", "task_status_after")
-    @classmethod
-    def _valid_task_edge(cls, value: str) -> str:
-        return TaskStatus(value).value if value else ""
+    @model_validator(mode="after")
+    def _valid_spec(self) -> TaskValidator:
+        if not self.name.strip():
+            raise ValueError("validator name must not be empty")
+        if not self.command or any(not argument for argument in self.command):
+            raise ValueError("validator command must contain non-empty arguments")
+        if self.timeout_seconds < 1:
+            raise ValueError("validator timeout_seconds must be positive")
+        return self
 
 
-class Checkpoint(Component):
-    """Provider-native recovery point captured after an attempt."""
+class Sandbox(Component):
+    """Observed lifecycle of a filesystem and process container."""
 
     provider: str = ""
-    status: str = CheckpointStatus.PENDING.value
-    state_ref: str = ""
-    restorable: bool = False
-    created_at_ms: int = 0
-    expires_at_ms: int | None = None
+    sandbox_id: str = ""
+    environment: str = ""
+    worktree: str = ""
+    status: str = SandboxStatus.PROVISIONING.value
+    error: str = ""
 
     @field_validator("status")
     @classmethod
     def _valid_status(cls, value: str) -> str:
-        return CheckpointStatus(value).value
+        return SandboxStatus(value).value
 
 
-class Finalization(Component):
-    """Progress from evidence capture through durable publication."""
+class AgentExecution(Component):
+    """Factual process observation for one task dispatch."""
 
-    phase: str = FinalizationPhase.PENDING.value
-    idempotency_key: str = ""
-    manifest_ref: str = ""
-    bundle_id: str = ""
-    request_digest: str = ""
-    producer_digest: str = ""
-    redaction_policy_id: str = ""
-    index_snapshot_id: int = 0
-    legacy_unbound: bool = False
+    task_id: int = 0
+    dispatch_id: str = ""
+    dispatch_sequence: int = 0
+    status: str = AgentExecutionStatus.STARTING.value
+    sandbox_id: str = ""
+    agent_session_id: str = ""
+    agent_returncode: int = -1
+    starting_revision: str = ""
+    final_revision: str = ""
     error: str = ""
 
-    @field_validator("phase")
+    @field_validator("status")
     @classmethod
-    def _valid_phase(cls, value: str) -> str:
-        return FinalizationPhase(value).value
+    def _valid_status(cls, value: str) -> str:
+        return AgentExecutionStatus(value).value
 
-    @field_validator("index_snapshot_id", mode="before")
-    @classmethod
-    def _exact_snapshot_integer(cls, value: object) -> int:
-        if type(value) is not int:
-            raise ValueError("finalization index_snapshot_id must be an exact integer")
-        if value < 0 or value > _MAX_SIGNED_64BIT:
-            raise ValueError("finalization index_snapshot_id is outside the signed 64-bit range")
-        return value
 
-    @model_validator(mode="after")
-    def _indexed_authority_is_complete(self) -> Finalization:
-        if self.index_snapshot_id < 0:
-            raise ValueError("finalization index_snapshot_id must be non-negative")
-        phase = FinalizationPhase(self.phase)
-        if self.legacy_unbound:
-            if phase not in {FinalizationPhase.PUBLISHED, FinalizationPhase.INDEXED}:
-                raise ValueError(
-                    "legacy unbound finalization must retain a published or indexed phase"
-                )
-            if any(
-                (
-                    self.bundle_id,
-                    self.request_digest,
-                    self.producer_digest,
-                    self.redaction_policy_id,
-                    self.index_snapshot_id,
-                )
-            ):
-                raise ValueError(
-                    "legacy unbound finalization cannot contain current authority evidence"
-                )
-            return self
-        if phase is FinalizationPhase.INDEXED:
-            for name in ("bundle_id", "request_digest", "producer_digest"):
-                if not _SHA256_RE.fullmatch(getattr(self, name)):
-                    raise ValueError(f"indexed finalization requires a lowercase SHA-256 {name}")
-            if not self.redaction_policy_id.strip():
-                raise ValueError("indexed finalization requires a redaction policy identity")
-            if not self.manifest_ref.strip():
-                raise ValueError("indexed finalization requires a manifest reference")
-            if self.index_snapshot_id < 1:
-                raise ValueError("indexed finalization requires a positive index snapshot")
-        return self
+class ValidationResult(Component):
+    """One validator observation bound to exact execution and revision identity."""
+
+    task_id: int = 0
+    validator_id: int = 0
+    execution_id: int = 0
+    dispatch_id: str = ""
+    dispatch_sequence: int = 0
+    revision: str = ""
+    expected_returncode: int = 0
+    actual_returncode: int = 0
+    stdout: str = ""
+    stderr: str = ""
+
+    @property
+    def passed(self) -> bool:
+        return self.actual_returncode == self.expected_returncode
 
 
 class Commit(Component):
-    """Verified Git identity produced by the task gate."""
+    """One Git commit observed during a task dispatch."""
 
+    task_id: int = 0
+    execution_id: int = 0
+    dispatch_id: str = ""
     sha: str = ""
     message: str = ""
+    branch: str = ""
     pushed: bool = False
+    final_revision: bool = False
 
 
-class Evidence(Component):
-    """Queryable references to portable and provider-native attempt evidence."""
+class Checkpoint(Component):
+    """Optional provider-native recovery point for a sandbox."""
 
-    results_json: str = "{}"
-    trace_ref: str = ""
-    traces_ref: str = ""
-    live_status_ref: str = ""
-    live_events_ref: str = ""
-    sandbox_state_ref: str = ""
-    filesystem_start_ref: str = ""
-    filesystem_end_ref: str = ""
-    filesystem_diff_ref: str = ""
-    git_status_ref: str = ""
-    git_patch_ref: str = ""
-    git_bundle_ref: str = ""
-    context_ref: str = ""
+    task_id: int = 0
+    execution_id: int = 0
+    dispatch_id: str = ""
+    provider: str = ""
+    checkpoint_id: str = ""
+    uri: str = ""
+    created_at_ms: int = 0
+    restorable: bool = False
+    error: str = ""
+
+
+class FilesystemManifest(Component):
+    """Optional content-addressed observation of sandbox filesystem state."""
+
+    task_id: int = 0
+    execution_id: int = 0
+    dispatch_id: str = ""
+    digest: str = ""
+    uri: str = ""
+    entry_count: int = 0
 
 
 class FrictionLog(Component):
-    """Agent-reported operational friction retained as episode evidence."""
+    """One timestamped, queryable obstacle rather than an embedded JSON list."""
 
-    entries_json: str = "[]"
+    task_id: int = 0
+    execution_id: int = 0
+    dispatch_id: str = ""
+    kind: str = ""
+    message: str = ""
 
+
+class AgentArtifact(Component):
+    """Content-addressed reference to a large output produced by an execution."""
+
+    task_id: int = 0
+    execution_id: int = 0
+    dispatch_id: str = ""
+    digest: str = ""
+    uri: str = ""
+    media_type: str = "application/octet-stream"
+    size_bytes: int = 0
+
+
+TASK_COMPONENTS = (
+    Task,
+    TaskWorkspace,
+    TaskPolicy,
+    TaskState,
+    TaskDispatch,
+)
+
+OUTPUT_COMPONENTS = (
+    ValidationResult,
+    Commit,
+    Checkpoint,
+    FilesystemManifest,
+    FrictionLog,
+    AgentArtifact,
+)
 
 MISSION_COMPONENTS = (
     Mission,
-    TaskGate,
-    Attempt,
-    Checkpoint,
-    Finalization,
-    Commit,
-    Evidence,
-    FrictionLog,
+    MissionState,
+    *TASK_COMPONENTS,
+    TaskValidator,
+    Sandbox,
+    AgentExecution,
+    *OUTPUT_COMPONENTS,
 )

@@ -11,8 +11,12 @@ from typing import TYPE_CHECKING
 from daft import DataFrame
 
 from archetype.core.config import StorageConfig
-from archetype.missions.coding_agents.contracts import AgentMissionConfig
-from archetype.missions.contracts import AgentTask, MissionResult, SubmittedMission
+from archetype.missions.contracts import (
+    AgentMissionConfig,
+    AgentTask,
+    MissionResult,
+    SubmittedMission,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -32,6 +36,7 @@ class RuntimeMissions:
         config: AgentMissionConfig,
         storage: str | Path | StorageConfig | None = None,
     ) -> None:
+        self._runtime = runtime
         self._service = runtime._agent_mission_service(
             world_factory=runtime.world,
             name=name,
@@ -74,10 +79,16 @@ class RuntimeMissions:
         return await self._service.run(mission, max_ticks=max_ticks)
 
     async def close(self) -> None:
+        await self._shutdown_internal(from_runtime=False)
+
+    async def _shutdown_internal(self, *, from_runtime: bool) -> None:
         if self._closed:
             return
         self._closed = True
-        await self._service.close()
+        try:
+            await self._service.close()
+        finally:
+            self._runtime._unregister_mission_handle(self)
 
     async def query(self, *components: type[Component]) -> DataFrame:
         """Query persisted mission state through the underlying world read path."""

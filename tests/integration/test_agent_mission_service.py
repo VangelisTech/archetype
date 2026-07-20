@@ -15,24 +15,22 @@ import pytest
 from archetype import ArchetypeRuntime
 from archetype.core.config import StorageConfig
 from archetype.missions import (
+    AgentExecution,
     AgentMissionConfig,
     AgentTask,
     CommandValidator,
+    Commit,
     DependsOn,
+    FrictionLog,
     RepositoryPublicationPolicy,
-)
-from archetype.missions.coding_agents import (
-    AgentCommit,
-    AgentExecution,
-    AgentFrictionLog,
-    AgentProcessObservation,
-    AgentTaskPolicy,
-    AgentTaskState,
     Sandbox,
+    TaskPolicy,
+    TaskState,
     TaskValidator,
     ValidationResult,
 )
-from archetype.missions.relationships import Guards
+from archetype.missions.coding_agents import AgentProcessObservation
+from archetype.missions.relations import Guards
 from archetype.missions.sandboxes import (
     CheckpointRef,
     ProcessRequest,
@@ -218,6 +216,7 @@ async def test_explicit_graph_drives_revision_bound_retry_and_downstream_readine
             ("implementation", 1),
         ]
         assert all(task.commit_shas for task in result.tasks)
+        assert all(len(task.commit_shas) == len(set(task.commit_shas)) for task in result.tasks)
         assert backend.creates == 1
         assert backend.session is not None and backend.session.closed == 1
         assert [(request.task_name, request.dispatch_sequence) for request in driver.requests] == [
@@ -232,8 +231,8 @@ async def test_explicit_graph_drives_revision_bound_retry_and_downstream_readine
             for request in driver.requests
         )
 
-        policy_rows = latest(await missions.query(AgentTaskPolicy)).to_pylist()
-        policy = AgentTaskPolicy.get_prefix()
+        policy_rows = latest(await missions.query(TaskPolicy)).to_pylist()
+        policy = TaskPolicy.get_prefix()
         assert {
             str(row[f"{policy}publication_policy"]) for row in policy_rows if row["is_active"]
         } == {RepositoryPublicationPolicy.COMMIT_AND_PUSH.value}
@@ -258,16 +257,16 @@ async def test_explicit_graph_drives_revision_bound_retry_and_downstream_readine
         assert [int(row[f"{validation}actual_returncode"]) for row in validation_rows].count(0) == 2
         assert len(validation_rows) == 3
         assert len(latest(await missions.query(AgentExecution)).to_pylist()) == 3
-        assert len(latest(await missions.query(AgentCommit)).to_pylist()) == 2
-        assert len(latest(await missions.query(AgentFrictionLog)).to_pylist()) == 1
+        assert len(latest(await missions.query(Commit)).to_pylist()) == 2
+        assert len(latest(await missions.query(FrictionLog)).to_pylist()) == 1
 
         sandbox_rows = latest(await missions.query(Sandbox)).to_pylist()
         sandbox = Sandbox.get_prefix()
         assert sandbox_rows[-1][f"{sandbox}status"] == SandboxStatus.CLOSED.value
 
-        history = (await missions.query(AgentTaskState)).to_pylist()
+        history = (await missions.query(TaskState)).to_pylist()
         state_ticks: dict[tuple[int, str], list[int]] = {}
-        state = AgentTaskState.get_prefix()
+        state = TaskState.get_prefix()
         for row in sorted(history, key=lambda value: value["tick"]):
             if row["is_active"]:
                 key = (int(row["entity_id"]), str(row[f"{state}status"]))

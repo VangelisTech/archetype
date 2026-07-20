@@ -2,7 +2,7 @@
 
 **Document type:** Normative V1 contract.
 
-**Status:** Accepted target; implementation migration is in progress.
+**Status:** Implemented.
 
 Agent Missions is Archetype's first software factory. An author submits a
 repository, a branch, and a graph of coding tasks guarded by the repository's
@@ -185,7 +185,7 @@ flowchart LR
 - step the state machine;
 - cross the post-commit boundary and invoke the coding-agent harness;
 - stage factual observations through the mutation path;
-- compose artifact publication and evaluation when requested; and
+- compose mission trajectory reads and evaluation through a separate app service; and
 - return supported mission projections.
 
 The application service does not decide readiness, retry, acceptance, or
@@ -272,11 +272,12 @@ These concepts never collapse into one status field:
 |---|---|---:|
 | Intent | `TaskDispatch` | No |
 | Runtime observation | `Sandbox`, `AgentExecution` | No |
-| Work output | `ValidationResult`, `Commit`, `Checkpoint`, `FilesystemManifest`, `FrictionLog`, artifact refs | No |
+| Work output | `ValidationResult`, `Commit`, `FrictionLog`; reusable checkpoint, manifest, and artifact-reference Components | No |
 | Decision | `TaskState` written by the task decision processor | Yes |
 
-`TaskDispatch` identifies the task, dispatch sequence, requested repository
-base, and policy. `AgentExecution` records process lifecycle such as
+`TaskDispatch` identifies the committed dispatch and sequence. Together with
+the task's workspace and policy Components, it projects the requested
+repository base and publication policy. `AgentExecution` records process lifecycle such as
 `starting`, `running`, `exited`, `errored`, or `interrupted`.
 
 Sandbox lifecycle is separate: `provisioning`, `ready`, `errored`,
@@ -326,7 +327,7 @@ class SandboxSession(Protocol):
 class SandboxService:
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> SandboxSession: ...
     async def close(self, key: SandboxKey) -> None: ...
-    async def close_all(self) -> None: ...
+    async def shutdown(self) -> None: ...
 ```
 
 - Backend creates or restores provider resources.
@@ -340,8 +341,11 @@ and translation into factual Components. Provider adapters do not know task
 state and do not return an acceptance verdict.
 
 Checkpointing is optional resumability. A checkpoint is a lightweight,
-content-addressed reference to a sandbox snapshot; a filesystem manifest is a
-queryable observation of captured state. Neither is required to accept a task.
+provider-native reference to a sandbox snapshot; a filesystem manifest is a
+content-addressed, queryable observation of captured state. Neither is
+required to accept a task. V1 defines both Components and the Session
+checkpoint capability, but automatic capture and restore policy remain a
+later application seam.
 
 ### Repository validators are authority
 
@@ -350,8 +354,7 @@ task. Every execution emits one `ValidationResult` per guard containing:
 
 - validator, task, dispatch, execution, and repository-revision identity;
 - the expected and observed return codes;
-- bounded stdout/stderr or artifact references; and
-- timing and error observations.
+- bounded stdout and stderr observations.
 
 `passed` is derived from `actual_returncode == expected_returncode`. It is
 never trusted from a sandbox or agent response. Expected nonzero codes are
@@ -413,7 +416,8 @@ relationships. HTN decomposition is useful, but is not a V1 correctness gate.
 - separate sandbox and agent-process lifecycle;
 - repository validators with expected nonzero support;
 - revision-bound validation and Git publication evidence;
-- first-class commits, checkpoints, manifests, friction, and artifact refs;
+- first-class commits and friction plus reusable checkpoint, manifest, and
+  artifact-reference Components;
 - a Modal backend; and
 - terminal result projection and cleanup.
 
@@ -422,7 +426,7 @@ relationships. HTN decomposition is useful, but is not a V1 correctness gate.
 - task decomposition or HTN planning;
 - prefab-driven readiness;
 - claims, leases, fences, receipts, or a mission-specific control catalog;
-- a six-phase sandbox kernel;
+- a second sandbox workflow kernel;
 - an `Attempt` aggregate;
 - PR creation, CI watching, review, merge, or deployment;
 - a general relationship-to-sandbox placement scheduler; and
@@ -446,7 +450,7 @@ a separate, explicit migration decision.
 
 ## 8. File and responsibility map
 
-This is the destination layout for the cleanup:
+The implementation follows this layout:
 
 | File | Owns |
 |---|---|
@@ -469,11 +473,6 @@ This is the destination layout for the cleanup:
 
 No author imports a Component, processor, `GraphView`, application service, or
 provider SDK to run the built-in workflow.
-
-During migration, existing `coding_agents/components.py`,
-`coding_agents/processors.py`, `coding_agents/resources.py`, and
-`app/missions/agent_service.py` are temporary source locations—not an
-alternative contract.
 
 ## 9. Family direction after V1
 

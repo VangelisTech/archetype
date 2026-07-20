@@ -1,462 +1,408 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Deterministic, provider-neutral mission transition authority."""
+"""Application composition for the batteries-included Agent Missions family."""
 
 from __future__ import annotations
 
-import hashlib
-import json
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import Callable, Sequence
+from pathlib import Path
+from typing import Protocol
 
-from archetype.app.limits import MAX_ICEBERG_SNAPSHOT_ID
-from archetype.app.missions.models import (
-    AttemptClaim,
-    MissionAttemptRequest,
-    mission_attempt_request_fingerprint,
-    normalize_attempt_validators,
+from daft import DataFrame
+
+from archetype.core.component import Component
+from archetype.core.config import StorageConfig
+from archetype.core.hooks import PostTick
+from archetype.graph import GraphView
+from archetype.missions.coding_agents.contracts import (
+    AgentExecutionResult,
 )
-from archetype.app.missions.outcomes import (
-    assess_attempt_outcome,
-    assess_legacy_unbound_settled_outcome,
+from archetype.missions.coding_agents.harness import (
+    CodexDriver,
+    CodingAgentHarness,
+    CodingAgentHarnessConfig,
 )
-from archetype.app.missions.transitions import AttemptClaimStatus
-from archetype.missions.transitions import (
-    AttemptStatus,
-    FinalizationPhase,
-    MissionStatus,
-    MissionTaskState,
-    MissionTransitionEvent,
-    MissionTransitionGraph,
-    TaskStatus,
-    retry_event,
+from archetype.missions.components import (
+    AgentExecution,
+    Commit,
+    FrictionLog,
+    Mission,
+    MissionState,
+    Sandbox,
+    Task,
+    TaskDispatch,
+    TaskPolicy,
+    TaskState,
+    TaskValidator,
+    TaskWorkspace,
+    ValidationResult,
 )
+from archetype.missions.contracts import (
+    AgentMissionConfig,
+    AgentTask,
+    MissionResult,
+    MissionSubmission,
+    SubmittedMission,
+)
+from archetype.missions.processors import mission_processors
+from archetype.missions.projections import (
+    TaskDispatchOutbox,
+    current_mission_status,
+    project_mission_result,
+)
+from archetype.missions.relations import (
+    DependsOn,
+    Executes,
+    Guards,
+    PartOfMission,
+    ProducedBy,
+    RunsIn,
+)
+from archetype.missions.sandboxes import (
+    SandboxIdentity,
+    SandboxKey,
+    SandboxServiceProtocol,
+    SandboxSpec,
+    SandboxStatus,
+)
+from archetype.missions.transitions import AgentExecutionStatus, MissionStatus
+
+
+class MissionWorld(Protocol):
+    """Structural runtime-world surface required by the application service."""
+
+    async def reserve_ids(self, n: int) -> list[int]: ...
+
+    async def spawn_reserved(self, entity_id: int, *components: Component) -> None: ...
+
+    async def spawn(self, *components: Component) -> int: ...
+
+    async def update(self, entity_id: int, *components: Component) -> None: ...
+
+    async def step(self, **kwargs: object) -> None: ...
+
+    async def query(self, *components: type[Component]) -> DataFrame: ...
+
+    async def info(self) -> MissionWorldInfo: ...
+
+    async def shutdown(self) -> None: ...
+
+    @property
+    def world_id(self) -> object: ...
+
+
+class MissionWorldInfo(Protocol):
+    tick: int
 
 
 class MissionService:
-    """Gate mission progress on validators and durable evidence.
+    """Materialize task graphs and compose committed ticks with external I/O."""
 
-    A tick records at most one completed attempt. Rejection and incomplete
-    finalization are ordinary committed states; only this service traverses
-    the typed mission/task/attempt graph.
-    """
-
-    def __init__(self, graph: MissionTransitionGraph | None = None) -> None:
-        self._graph = graph or MissionTransitionGraph()
-
-    def prepare_attempt(self, row: Mapping[str, Any], *, tick: int) -> MissionAttemptRequest | None:
-        # A world tick observes an attempt; it is not part of provider-submission
-        # identity. It is persisted separately so artifact recovery retains the
-        # original observation while the unchanged claim converges on later ticks.
-        if type(tick) is not int:
-            raise TypeError("mission attempt observation tick must be an exact integer")
-        if tick < 0:
-            raise ValueError("mission attempt observation tick must be non-negative")
-        source = self._state(row)
-        finished = bool(row.get("mission__finished"))
-        terminal = source.mission in {MissionStatus.SUCCEEDED, MissionStatus.FAILED}
-        if finished != terminal:
-            raise ValueError("mission finished flag does not agree with its typed status")
-        if terminal:
-            return None
-        self._graph.require_active(source)
-
-        plan = self._plan(row)
-        step_index = int(row["taskgate__step_index"])
-        if step_index < 0:
-            raise ValueError("mission step_index must be non-negative")
-        if step_index >= len(plan):
-            raise ValueError("active mission step_index is outside its plan")
-
-        step = plan[step_index]
-        name = str(step.get("name", "")).strip()
-        prompt = str(step.get("prompt", "")).strip()
-        validators = normalize_attempt_validators(tuple(step.get("validators") or ()))
-        if not name or not prompt:
-            raise ValueError("mission tasks require non-empty name and prompt")
-
-        attempts = int(row["taskgate__attempts"])
-        max_attempts = int(row["taskgate__max_attempts"])
-        if attempts < 0 or max_attempts < 1 or attempts >= max_attempts:
-            raise ValueError("active task attempt counters are inconsistent")
-        attempt_index = attempts + 1
-        try:
-            required_phase = FinalizationPhase(str(row["taskgate__required_finalization_phase"]))
-        except ValueError as exc:
-            raise ValueError("unknown required finalization phase") from exc
-        plan_digest = self._plan_digest(plan)
-        world_id = str(row["world_id"])
-        run_id = str(row["run_id"])
-        entity_id = str(row["entity_id"])
-        gate_material = json.dumps(
-            {
-                "world_id": world_id,
-                "run_id": run_id,
-                "entity_id": entity_id,
-                "mission_status": source.mission.value,
-                "task_status": source.task.value,
-                "step_index": step_index,
-                "attempt_index": attempt_index,
-                "max_attempts": max_attempts,
-                "required_finalization_phase": required_phase.value,
-                "plan_digest": plan_digest,
-                "step": step,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        prior = (
-            json.loads(str(row.get("attempt__validator_details_json") or "[]"))
-            if attempt_index > 1
-            else []
-        )
-        if not isinstance(prior, list) or any(not isinstance(value, dict) for value in prior):
-            raise ValueError("persisted validator details must be a JSON list of objects")
-        idempotency_key = hashlib.sha256(gate_material.encode()).hexdigest()
-        mission_id = f"{world_id}:{run_id}:{entity_id}"
-        task_id = hashlib.sha256(f"{plan_digest}:{step_index}:{name}".encode()).hexdigest()
-        attempt_id = hashlib.sha256(idempotency_key.encode()).hexdigest()
-        correlation = {
-            "world_id": world_id,
-            "run_id": run_id,
-            "entity_id": entity_id,
-            "step_index": step_index,
-        }
-        request_fingerprint = mission_attempt_request_fingerprint(
-            idempotency_key=idempotency_key,
-            prompt=prompt,
-            validators=validators,
-            step_name=name,
-            step_index=step_index,
-            attempt_index=attempt_index,
-            plan_digest=plan_digest,
-            max_attempts=max_attempts,
-            required_finalization_phase=required_phase,
-            previous_session_id=str(row.get("attempt__agent_session_id") or ""),
-            previous_validator_details=tuple(prior),
-            correlation=correlation,
-        )
-        return MissionAttemptRequest(
-            prompt=prompt,
-            validators=validators,
-            step_name=name,
-            step_index=step_index,
-            attempt_index=attempt_index,
-            plan_digest=plan_digest,
-            max_attempts=max_attempts,
-            required_finalization_phase=required_phase,
-            idempotency_key=idempotency_key,
-            mission_id=mission_id,
-            task_id=task_id,
-            attempt_id=attempt_id,
-            request_fingerprint=request_fingerprint,
-            previous_session_id=str(row.get("attempt__agent_session_id") or ""),
-            previous_validator_details=tuple(prior),
-            correlation=correlation,
-            source=source,
-            observation_tick=tick,
-        )
-
-    def apply_attempt(
+    def __init__(
         self,
-        row: Mapping[str, Any],
-        request: MissionAttemptRequest,
-        outcome: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        """Apply one outcome under current write semantics."""
-
-        authority_fields = (
-            "artifact_publication_key",
-            "artifact_request_digest",
-            "artifact_producer_digest",
-            "artifact_redaction_policy_id",
-            "finalization_bundle_id",
-            "finalization_request_digest",
-            "finalization_producer_digest",
-            "finalization_redaction_policy_id",
-        )
-        snapshot = outcome.get("finalization_index_snapshot_id", 0)
-        if (
-            str(outcome.get("finalization_phase", "")) == FinalizationPhase.INDEXED.value
-            or any(str(outcome.get(field, "")).strip() for field in authority_fields)
-            or isinstance(snapshot, bool)
-            or snapshot not in (None, "", 0, "0")
-        ):
-            raise ValueError("indexed artifact authority requires a claim-bound settled projection")
-
-        return self._apply_attempt(
-            row,
-            request,
-            outcome,
-            legacy_unbound=False,
-            expected_status=None,
-        )
-
-    def _apply_settled_attempt(
-        self,
-        row: Mapping[str, Any],
-        request: MissionAttemptRequest,
-        outcome: Mapping[str, Any],
-        claim: AttemptClaim,
-    ) -> dict[str, Any]:
-        """Project claim-authenticated evidence for the execution workflow only."""
-
-        if claim.status is not AttemptClaimStatus.SETTLED:
-            raise ValueError("settled mission projection requires a terminal attempt claim")
-        if (
-            claim.attempt_id != request.attempt_id
-            or claim.idempotency_key != request.idempotency_key
-            or claim.mission_id != request.mission_id
-            or claim.task_id != request.task_id
-        ):
-            raise ValueError("settled attempt claim does not match its mission request")
-        outcome_json = self._json(outcome)
-        if (
-            outcome_json != claim.outcome_json
-            or hashlib.sha256(outcome_json.encode()).hexdigest() != claim.outcome_digest
-        ):
-            raise ValueError("settled mission projection changed the terminal outcome")
-        try:
-            settlement = AttemptStatus(claim.settlement_status)
-        except ValueError as exc:
-            raise ValueError("settled attempt claim has an invalid terminal status") from exc
-        if claim.legacy_unbound:
-            if not claim.legacy_unbound_eligible or claim.contract_version != 7:
-                raise ValueError("legacy unbound claim lacks migration eligibility")
-            if any(
-                (
-                    claim.artifact_request_json,
-                    claim.artifact_request_digest,
-                    claim.artifact_publication_key,
-                    claim.finalizing_at,
-                )
-            ):
-                raise ValueError("legacy unbound claim contains current artifact authority")
-        return self._apply_attempt(
-            row,
-            request,
-            outcome,
-            legacy_unbound=claim.legacy_unbound,
-            expected_status=settlement,
-        )
-
-    def _apply_attempt(
-        self,
-        row: Mapping[str, Any],
-        request: MissionAttemptRequest,
-        outcome: Mapping[str, Any],
         *,
-        legacy_unbound: bool,
-        expected_status: AttemptStatus | None,
-    ) -> dict[str, Any]:
-        source = self._state(row)
-        if bool(row.get("mission__finished")):
-            raise ValueError("a terminal mission cannot accept another attempt")
-        self._graph.require_active(source)
-        if source != request.source:
-            raise ValueError("mission state changed after this attempt was prepared")
-        if int(row["taskgate__step_index"]) != request.step_index:
-            raise ValueError("mission step changed after this attempt was prepared")
-        if int(row["taskgate__attempts"]) + 1 != request.attempt_index:
-            raise ValueError("mission attempt counter changed after this attempt was prepared")
-        plan = self._plan(row)
-        if self._plan_digest(plan) != request.plan_digest:
-            raise ValueError("mission plan changed after this attempt was prepared")
-        if int(row["taskgate__max_attempts"]) != request.max_attempts:
-            raise ValueError("mission max_attempts changed after this attempt was prepared")
-        try:
-            required_phase = FinalizationPhase(str(row["taskgate__required_finalization_phase"]))
-        except ValueError as exc:
-            raise ValueError("unknown required finalization phase") from exc
-        if required_phase is not request.required_finalization_phase:
-            raise ValueError("mission finalization gate changed after this attempt was prepared")
-
-        assessment = (
-            assess_legacy_unbound_settled_outcome(request, outcome)
-            if legacy_unbound
-            else assess_attempt_outcome(request, outcome)
+        world_factory: Callable[..., MissionWorld],
+        name: str,
+        config: AgentMissionConfig,
+        sandbox_service: SandboxServiceProtocol,
+        storage: str | Path | StorageConfig | None = None,
+    ) -> None:
+        view = GraphView()
+        outbox = TaskDispatchOutbox()
+        world = world_factory(
+            name,
+            storage=storage,
+            processors=list(mission_processors()),
+            resources=[view, outbox],
+            hooks=[
+                (PostTick, view.on_post_tick),
+                (PostTick, outbox.on_post_tick),
+            ],
         )
-        if expected_status is not None and assessment.attempt_status is not expected_status:
-            raise ValueError("settled outcome disagrees with its terminal claim status")
+        driver = config.driver or CodexDriver(
+            model=config.model,
+            workspace=config.workspace,
+        )
+        self._world = world
+        self._view = view
+        self._outbox = outbox
+        self._sandboxes = sandbox_service
+        self._sandbox_provider = config.sandbox_backend.name
+        self._sandbox_environment = config.sandbox_environment
+        self._workspace = config.workspace
+        self._harness = CodingAgentHarness(
+            driver,
+            CodingAgentHarnessConfig(workspace=config.workspace),
+        )
+        self._max_ticks = config.max_ticks
+        self._sandbox_entities: dict[str, tuple[int, Sandbox]] = {}
+        self._mission_sandboxes: dict[int, str] = {}
 
-        details = list(outcome["validator_details"])
-        if not details or any(not isinstance(value, dict) for value in details):
-            raise ValueError("sandbox outcomes require non-empty validator details")
-        friction = list(outcome.get("friction") or ())
-        if any(not isinstance(value, dict) for value in friction):
-            raise ValueError("sandbox friction entries must be JSON objects")
-        prior_friction = json.loads(str(row.get("frictionlog__entries_json") or "[]"))
-        if not isinstance(prior_friction, list) or any(
-            not isinstance(value, dict) for value in prior_friction
-        ):
-            raise ValueError("persisted friction log must be a JSON list of objects")
-        prior_friction.extend(friction)
+    async def submit(
+        self,
+        *,
+        repository: str,
+        branch: str,
+        tasks: Sequence[AgentTask],
+        name: str = "agent-mission",
+        base_ref: str = "main",
+    ) -> SubmittedMission:
+        """Materialize one explicit task and validator graph."""
 
-        provider_status = assessment.provider_status
-        checkpoint_status = assessment.checkpoint_status
-        checkpoint_expires_at_ms = assessment.checkpoint_expires_at_ms
-        actual_phase = assessment.finalization_phase
-        gate_passed = assessment.gate_passed
-        attempt_status = assessment.attempt_status
-        exhausted = request.attempt_index >= request.max_attempts
+        submission = MissionSubmission(
+            repository=repository,
+            branch=branch,
+            tasks=tuple(tasks),
+            name=name,
+            base_ref=base_ref,
+        )
+        identities = await self._world.reserve_ids(len(submission.tasks) + 1)
+        mission_id, *task_entity_ids = identities
+        task_ids = {
+            task.name: entity_id
+            for task, entity_id in zip(submission.tasks, task_entity_ids, strict=True)
+        }
 
-        if gate_passed:
-            event = (
-                MissionTransitionEvent.MISSION_SUCCEEDED
-                if request.step_index + 1 >= len(plan)
-                else MissionTransitionEvent.TASK_ADVANCED
+        await self._world.spawn_reserved(
+            mission_id,
+            Mission(
+                name=submission.name,
+                repository=submission.repository,
+                branch=submission.branch,
+                base_ref=submission.base_ref,
+            ),
+            MissionState(),
+        )
+        for task, task_id in zip(submission.tasks, task_entity_ids, strict=True):
+            await self._world.spawn_reserved(
+                task_id,
+                Task(name=task.name, prompt=task.prompt),
+                TaskWorkspace(
+                    repository=submission.repository,
+                    branch=submission.branch,
+                    base_ref=submission.base_ref,
+                ),
+                TaskPolicy(
+                    max_dispatches=task.max_dispatches,
+                    publication_policy=task.publication_policy.value,
+                ),
+                TaskState(),
+                TaskDispatch(),
             )
-        else:
-            event = retry_event(attempt_status, exhausted=exhausted)
-        transition = self._graph.transition(source, event)
+            await self._world.spawn(PartOfMission(source=task_id, target=mission_id))
+            for validator in task.validators:
+                validator_id = await self._world.spawn(
+                    TaskValidator(
+                        name=validator.name,
+                        command=list(validator.command),
+                        expected_returncode=validator.expected_returncode,
+                        timeout_seconds=validator.timeout_seconds,
+                    )
+                )
+                await self._world.spawn(Guards(source=validator_id, target=task_id))
+        for task in submission.tasks:
+            for dependency in task.depends_on:
+                await self._world.spawn(
+                    DependsOn(source=task_ids[task.name], target=task_ids[dependency])
+                )
+        return SubmittedMission(
+            mission_id=mission_id,
+            task_ids=tuple((task.name, task_ids[task.name]) for task in submission.tasks),
+        )
 
-        # Migration-proven v7 outcomes may contain arbitrary extra keys whose
-        # names resemble the v8 artifact contract. Preserve those bytes in the
-        # terminal claim, but never project them as current authority.
-        finalization_bundle_id = (
-            "" if legacy_unbound else str(outcome.get("finalization_bundle_id", ""))
+    async def run(
+        self,
+        mission: SubmittedMission,
+        *,
+        max_ticks: int | None = None,
+    ) -> MissionResult:
+        """Drive ticks and stage observations until one mission is terminal."""
+
+        limit = max_ticks if max_ticks is not None else self._max_ticks
+        if limit < 1:
+            raise ValueError("max_ticks must be positive")
+
+        for _ in range(limit):
+            await self._world.step()
+            requests = self._outbox.drain()
+            for result, sandbox_status in await self._execute(requests):
+                await self._stage_result(result, sandbox_status)
+
+            status = current_mission_status(self._view, mission.mission_id)
+            if status in {MissionStatus.SUCCEEDED, MissionStatus.FAILED}:
+                await self._close_mission_sandbox(mission.mission_id)
+                await self._world.step()
+                info = await self._world.info()
+                return project_mission_result(
+                    self._view,
+                    mission,
+                    ticks_completed=int(info.tick),
+                )
+
+        status = current_mission_status(self._view, mission.mission_id)
+        raise RuntimeError(
+            f"mission {mission.mission_id} did not terminate after {limit} ticks "
+            f"(status={status.value if status else 'not-visible'})"
         )
-        finalization_request_digest = (
-            "" if legacy_unbound else str(outcome.get("finalization_request_digest", ""))
-        )
-        finalization_producer_digest = (
-            "" if legacy_unbound else str(outcome.get("finalization_producer_digest", ""))
-        )
-        finalization_redaction_policy_id = (
-            "" if legacy_unbound else str(outcome.get("finalization_redaction_policy_id", ""))
-        )
-        finalization_index_snapshot_id = (
-            0 if legacy_unbound else outcome.get("finalization_index_snapshot_id", 0)
-        )
-        if (
-            type(finalization_index_snapshot_id) is not int
-            or not 0 <= finalization_index_snapshot_id <= MAX_ICEBERG_SNAPSHOT_ID
-        ):
-            raise ValueError(
-                "finalization projection requires an exact signed 64-bit snapshot integer"
+
+    async def close(self) -> None:
+        failures: list[BaseException] = []
+        for close in (self._sandboxes.shutdown, self._world.shutdown):
+            try:
+                await close()
+            except BaseException as exc:
+                failures.append(exc)
+        if failures:
+            raise BaseExceptionGroup(
+                f"Agent Missions shutdown failed for {len(failures)} operation(s)",
+                failures,
             )
 
-        updated = dict(row)
-        updated.update(
-            {
-                "mission__status": transition.target.mission.value,
-                "taskgate__step_name": request.step_name,
-                "taskgate__prompt": request.prompt,
-                "taskgate__validators_json": self._json(list(request.validators)),
-                "taskgate__attempts": request.attempt_index,
-                "taskgate__status": transition.target.task.value,
-                "taskgate__passed": transition.target.task is TaskStatus.PASSED,
-                "attempt__attempt_id": str(outcome["attempt_id"]),
-                "attempt__attempt_index": request.attempt_index,
-                "attempt__status": transition.attempt.value,
-                "attempt__provider_status": provider_status.value,
-                "attempt__harness": str(outcome["harness"]),
-                "attempt__agent_session_id": str(outcome["agent_session_id"]),
-                "attempt__validator_details_json": self._json(details),
-                "attempt__transition_event": transition.event.value,
-                "attempt__mission_status_before": transition.source.mission.value,
-                "attempt__task_status_before": transition.source.task.value,
-                "attempt__mission_status_after": transition.target.mission.value,
-                "attempt__task_status_after": transition.target.task.value,
-                "checkpoint__provider": str(outcome["checkpoint_provider"]),
-                "checkpoint__status": checkpoint_status.value,
-                "checkpoint__state_ref": str(outcome["sandbox_state_ref"]),
-                "checkpoint__restorable": bool(outcome["checkpoint_restorable"]),
-                "checkpoint__created_at_ms": int(outcome["checkpoint_created_at_ms"]),
-                "checkpoint__expires_at_ms": checkpoint_expires_at_ms,
-                "finalization__phase": actual_phase.value,
-                "finalization__idempotency_key": request.idempotency_key,
-                "finalization__manifest_ref": str(outcome["finalization_manifest_ref"]),
-                "finalization__bundle_id": finalization_bundle_id,
-                "finalization__request_digest": finalization_request_digest,
-                "finalization__producer_digest": finalization_producer_digest,
-                "finalization__redaction_policy_id": finalization_redaction_policy_id,
-                "finalization__index_snapshot_id": finalization_index_snapshot_id,
-                "finalization__legacy_unbound": legacy_unbound,
-                "finalization__error": str(outcome["finalization_error"]),
-                "evidence__results_json": self._json(outcome["results"]),
-                "evidence__trace_ref": str(outcome["trace_ref"]),
-                "evidence__traces_ref": str(outcome["traces_ref"]),
-                "evidence__live_status_ref": str(outcome.get("live_status_ref", "")),
-                "evidence__live_events_ref": str(outcome.get("live_events_ref", "")),
-                "evidence__sandbox_state_ref": str(outcome["sandbox_state_ref"]),
-                "evidence__filesystem_start_ref": str(outcome["filesystem_start_ref"]),
-                "evidence__filesystem_end_ref": str(outcome["filesystem_end_ref"]),
-                "evidence__filesystem_diff_ref": str(outcome["filesystem_diff_ref"]),
-                "evidence__git_status_ref": str(outcome["git_status_ref"]),
-                "evidence__git_patch_ref": str(outcome["git_patch_ref"]),
-                "evidence__git_bundle_ref": str(outcome["git_bundle_ref"]),
-                "evidence__context_ref": str(outcome["context_ref"]),
-                "frictionlog__entries_json": self._json(prior_friction),
-            }
-        )
+    async def query(self, *components: type[Component]) -> DataFrame:
+        """Query persisted mission state through the mission-world read path."""
 
-        if gate_passed:
-            sha = str(outcome["sha"])
-            if not sha:
-                raise ValueError("an accepted, finalized attempt requires a commit SHA")
-            updated["commit__sha"] = sha
-            updated["commit__message"] = str(outcome["message"])
-            updated["commit__pushed"] = bool(outcome["pushed"])
-            if transition.advances_task:
-                next_index = request.step_index + 1
-                nxt = plan[next_index]
-                updated.update(
-                    {
-                        "taskgate__step_index": next_index,
-                        "taskgate__step_name": str(nxt["name"]),
-                        "taskgate__prompt": str(nxt["prompt"]),
-                        "taskgate__validators_json": self._json(nxt["validators"]),
-                        "taskgate__attempts": 0,
-                    }
-                )
-            else:
-                updated.update(
-                    {
-                        "mission__finished": True,
-                        "mission__succeeded": True,
-                        "mission__pr_ready": True,
-                        "mission__pr_url": str(
-                            outcome.get("pr_url") or row.get("mission__pr_url", "")
-                        ),
-                    }
-                )
-        elif transition.terminal:
-            updated.update(
-                {
-                    "mission__finished": True,
-                    "mission__succeeded": False,
-                    "mission__failure_reason": (
-                        f"task {request.step_name!r} exhausted {request.attempt_index} attempts; "
-                        f"latest status={attempt_status.value} phase={actual_phase.value}"
+        return await self._world.query(*components)
+
+    @property
+    def world_id(self) -> object:
+        """Return the mission world's durable identity."""
+
+        return self._world.world_id
+
+    async def _execute(self, requests):
+        results: list[tuple[AgentExecutionResult, SandboxStatus]] = []
+        for request in requests:
+            key = SandboxKey(f"mission:{request.mission_id}")
+            spec = SandboxSpec(
+                provider=self._sandbox_provider,
+                environment=self._sandbox_environment,
+                workdir=self._workspace,
+                metadata=(
+                    ("mission", str(request.mission_id)),
+                    ("branch", request.branch),
+                ),
+            )
+            try:
+                session = await self._sandboxes.acquire(key, spec)
+                result = await self._harness.execute(session, request)
+                sandbox_status = await session.status()
+            except Exception as exc:
+                sandbox_status = SandboxStatus.ERRORED
+                result = AgentExecutionResult(
+                    mission_id=request.mission_id,
+                    task_id=request.task_id,
+                    dispatch_id=request.dispatch_id,
+                    dispatch_sequence=request.dispatch_sequence,
+                    status=AgentExecutionStatus.ERRORED,
+                    sandbox=SandboxIdentity(
+                        self._sandbox_provider,
+                        f"unavailable-{request.dispatch_id}",
+                        self._sandbox_environment,
                     ),
-                }
+                    worktree=self._workspace,
+                    agent_session_id="",
+                    agent_returncode=-1,
+                    starting_revision=request.task_base_revision,
+                    final_revision="",
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            results.append((result, sandbox_status))
+        return tuple(results)
+
+    async def _stage_result(
+        self,
+        result: AgentExecutionResult,
+        sandbox_status: SandboxStatus,
+    ) -> None:
+        retained_sandbox = self._sandbox_entities.get(result.sandbox.sandbox_id)
+        if retained_sandbox is None:
+            sandbox_state = Sandbox(
+                provider=result.sandbox.provider,
+                sandbox_id=result.sandbox.sandbox_id,
+                environment=result.sandbox.environment,
+                worktree=result.worktree,
+                status=sandbox_status.value,
+                error=result.error if sandbox_status is SandboxStatus.ERRORED else "",
             )
-        return updated
+            sandbox_entity = await self._world.spawn(sandbox_state)
+            self._sandbox_entities[result.sandbox.sandbox_id] = (
+                sandbox_entity,
+                sandbox_state,
+            )
+            self._mission_sandboxes[result.mission_id] = result.sandbox.sandbox_id
+        else:
+            sandbox_entity, _ = retained_sandbox
 
-    def _state(self, row: Mapping[str, Any]) -> MissionTaskState:
-        return self._graph.state(row.get("mission__status"), row.get("taskgate__status"))
+        execution_id = await self._world.spawn(
+            AgentExecution(
+                task_id=result.task_id,
+                dispatch_id=result.dispatch_id,
+                dispatch_sequence=result.dispatch_sequence,
+                status=result.status.value,
+                sandbox_id=result.sandbox.sandbox_id,
+                agent_session_id=result.agent_session_id,
+                agent_returncode=result.agent_returncode,
+                starting_revision=result.starting_revision,
+                final_revision=result.final_revision,
+                error=result.error,
+            )
+        )
+        await self._world.spawn(Executes(source=execution_id, target=result.task_id))
+        await self._world.spawn(RunsIn(source=execution_id, target=sandbox_entity))
 
-    @staticmethod
-    def _json(value: Any) -> str:
-        return json.dumps(
-            value,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=True,
-            allow_nan=False,
+        for observed in result.validation:
+            output_id = await self._world.spawn(
+                ValidationResult(
+                    task_id=result.task_id,
+                    validator_id=observed.validator_id,
+                    execution_id=execution_id,
+                    dispatch_id=result.dispatch_id,
+                    dispatch_sequence=result.dispatch_sequence,
+                    revision=observed.revision,
+                    expected_returncode=observed.expected_returncode,
+                    actual_returncode=observed.actual_returncode,
+                    stdout=observed.stdout,
+                    stderr=observed.stderr,
+                )
+            )
+            await self._world.spawn(ProducedBy(source=output_id, target=execution_id))
+        for observed in result.commits:
+            output_id = await self._world.spawn(
+                Commit(
+                    task_id=result.task_id,
+                    execution_id=execution_id,
+                    dispatch_id=result.dispatch_id,
+                    sha=observed.sha,
+                    message=observed.message,
+                    branch=observed.branch,
+                    pushed=observed.pushed,
+                    final_revision=observed.final_revision,
+                )
+            )
+            await self._world.spawn(ProducedBy(source=output_id, target=execution_id))
+        for observed in result.friction:
+            output_id = await self._world.spawn(
+                FrictionLog(
+                    task_id=result.task_id,
+                    execution_id=execution_id,
+                    dispatch_id=result.dispatch_id,
+                    kind=observed.kind,
+                    message=observed.message,
+                )
+            )
+            await self._world.spawn(ProducedBy(source=output_id, target=execution_id))
+
+    async def _close_mission_sandbox(self, mission_id: int) -> None:
+        await self._sandboxes.close(SandboxKey(f"mission:{mission_id}"))
+        sandbox_id = self._mission_sandboxes.get(mission_id)
+        if sandbox_id is None:
+            return
+        entity_id, sandbox_state = self._sandbox_entities[sandbox_id]
+        await self._world.update(
+            entity_id,
+            sandbox_state.model_copy(update={"status": SandboxStatus.CLOSED.value}),
         )
 
-    @classmethod
-    def _plan_digest(cls, plan: list[dict[str, Any]]) -> str:
-        return hashlib.sha256(cls._json(plan).encode()).hexdigest()
 
-    @staticmethod
-    def _plan(row: Mapping[str, Any]) -> list[dict[str, Any]]:
-        plan = json.loads(str(row.get("mission__plan_json") or "[]"))
-        if not isinstance(plan, list) or any(not isinstance(step, dict) for step in plan):
-            raise ValueError("mission plan must be a JSON list of task objects")
-        if not plan:
-            raise ValueError("mission plan must contain at least one task")
-        return plan
+__all__ = ["MissionService", "MissionWorld"]

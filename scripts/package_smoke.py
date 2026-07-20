@@ -104,7 +104,7 @@ from pathlib import Path
 import archetype
 from archetype import ArchetypeRuntime
 from archetype.api.app import create_app
-from archetype.app.sandboxes.versions import load_version_inventory
+from archetype.missions.sandboxes.versions import load_version_inventory
 from archetype.cli.main import app
 from typer.testing import CliRunner
 

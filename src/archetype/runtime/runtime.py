@@ -92,6 +92,7 @@ class ArchetypeRuntime:
         )
         self._application: iRuntimeApplication = self._container.application
         self._handles: WeakSet[RuntimeWorld] = WeakSet()
+        self._mission_handles: WeakSet[RuntimeMissions] = WeakSet()
         self._closed = False
 
     async def __aenter__(self) -> ArchetypeRuntime:
@@ -115,6 +116,11 @@ class ArchetypeRuntime:
         self._closed = True
 
         errors: list[BaseException] = []
+        for handle in list(self._mission_handles):
+            try:
+                await handle._shutdown_internal(from_runtime=True)
+            except BaseException as e:
+                errors.append(e)
         for handle in list(self._handles):
             try:
                 await handle._shutdown_internal(from_runtime=True)
@@ -184,7 +190,9 @@ class ArchetypeRuntime:
             raise RuntimeError("ArchetypeRuntime is closed")
         from archetype.runtime.missions import RuntimeMissions
 
-        return RuntimeMissions(self, name, config=config, storage=storage)
+        handle = RuntimeMissions(self, name, config=config, storage=storage)
+        self._mission_handles.add(handle)
+        return handle
 
     def _agent_mission_service(self, **kwargs):
         """Reach the mission workflow only through the actor-free application facade."""
@@ -328,6 +336,9 @@ class ArchetypeRuntime:
 
     def _unregister_handle(self, handle: RuntimeWorld) -> None:
         self._handles.discard(handle)
+
+    def _unregister_mission_handle(self, handle: RuntimeMissions) -> None:
+        self._mission_handles.discard(handle)
 
     def _ensure_open(self) -> None:
         if self._closed:

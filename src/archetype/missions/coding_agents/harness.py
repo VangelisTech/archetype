@@ -11,7 +11,6 @@ from pathlib import PurePosixPath
 
 from archetype.missions.coding_agents.contracts import (
     AgentExecutionResult,
-    AgentExecutionStatus,
     AgentProcessObservation,
     CodingAgentDriver,
     CommitObservation,
@@ -22,6 +21,7 @@ from archetype.missions.coding_agents.contracts import (
 )
 from archetype.missions.contracts import RepositoryPublicationPolicy
 from archetype.missions.sandboxes import ProcessRequest, ProcessResult, SandboxSession
+from archetype.missions.transitions import AgentExecutionStatus
 
 
 @dataclass(frozen=True)

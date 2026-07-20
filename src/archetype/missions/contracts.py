@@ -7,6 +7,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from archetype.missions.coding_agents.contracts import CodingAgentDriver
+    from archetype.missions.sandboxes import SandboxBackend
 
 
 @dataclass(frozen=True)
@@ -34,6 +39,26 @@ class RepositoryPublicationPolicy(StrEnum):
 
 
 @dataclass(frozen=True)
+class AgentMissionConfig:
+    """Process configuration bound once to a mission runtime handle."""
+
+    sandbox_backend: SandboxBackend
+    sandbox_environment: str
+    driver: CodingAgentDriver | None = None
+    workspace: str = "/workspace/repo"
+    model: str = ""
+    max_ticks: int = 100
+
+    def __post_init__(self) -> None:
+        if not self.sandbox_environment.strip():
+            raise ValueError("sandbox_environment must be a pinned identity")
+        if not self.workspace.startswith("/") or self.workspace == "/":
+            raise ValueError("workspace must be a non-root absolute path")
+        if self.max_ticks < 1:
+            raise ValueError("AgentMissionConfig.max_ticks must be positive")
+
+
+@dataclass(frozen=True)
 class AgentTask:
     """One explicitly authored task and its incoming dependency names."""
 
@@ -51,6 +76,9 @@ class AgentTask:
             raise ValueError(f"task {self.name!r} prompt must not be empty")
         if not self.validators:
             raise ValueError(f"task {self.name!r} requires at least one validator")
+        validator_names = [validator.name for validator in self.validators]
+        if len(set(validator_names)) != len(validator_names):
+            raise ValueError(f"task {self.name!r} validator names must be unique")
         if self.max_dispatches < 1:
             raise ValueError(f"task {self.name!r} max_dispatches must be positive")
         try:

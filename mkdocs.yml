@@ -13,7 +13,6 @@ site_dir: site/docs
 not_in_nav: |
   design/**
   planning/**
-  guide/legacy-mission-attempt-kernel.md
 
 theme:
   name: material
@@ -104,7 +103,6 @@ nav:
       - Specifications: guide/specification.md
       - Service Protocols: guide/service-protocols.md
       - Execution Hierarchy: guide/execution-hierarchy.md
-      - Sandbox Execution: guide/sandbox-execution.md
       - World Lifecycle: guide/world-lifecycle.md
       - Durable Discovery: guide/durable-discovery.md
       - Atomic Visibility: guide/atomic-visibility.md

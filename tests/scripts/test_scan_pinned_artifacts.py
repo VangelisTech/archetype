@@ -12,7 +12,7 @@ import pytest
 import scripts.scan_pinned_artifacts as scan_module
 from scripts.scan_pinned_artifacts import build_queries, load_pinned_artifacts, main, scan
 
-pytestmark = pytest.mark.contract("sandboxes.environment.pinned")
+pytestmark = pytest.mark.contract("missions.environment.pinned")
 
 
 def _fake_fetch(vulnerable_names: set[str]) -> Any:
@@ -37,12 +37,8 @@ def test_build_queries_covers_registry_pins_and_names_unscannable_kinds() -> Non
         for item in queries
     }
     assert ("npm", "@openai/codex") in packages
-    assert ("npm", "@anthropic-ai/claude-code") in packages
-    assert ("npm", "opencode-ai") in packages
     assert ("PyPI", "modal") in packages
-    assert ("PyPI", "pydantic-evals") in packages
-    assert "otel-collector" in unscannable
-    assert "apple-container-runtime" in unscannable
+    assert unscannable == []
 
 
 def test_scan_reports_advisories_per_pinned_artifact() -> None:
@@ -55,7 +51,7 @@ def test_scan_reports_advisories_per_pinned_artifact() -> None:
     by_id = {result["artifact_id"]: result for result in report["results"]}
     assert by_id["modal-sdk"]["vulnerabilities"] == ["OSV-TEST-1", "OSV-TEST-2"]
     assert by_id["codex-cli"]["vulnerabilities"] == []
-    assert report["unscannable"] == ["apple-container-runtime", "otel-collector"]
+    assert report["unscannable"] == []
 
 
 def test_scan_rejects_mismatched_osv_response() -> None:

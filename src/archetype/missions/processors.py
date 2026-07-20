@@ -15,29 +15,29 @@ from daft.functions import when
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.resources import Resources
 from archetype.graph import GraphView
-from archetype.missions.coding_agents.components import (
-    AgentCommit,
+from archetype.missions.components import (
     AgentExecution,
-    AgentMissionRecord,
-    AgentMissionState,
-    AgentTaskPolicy,
-    AgentTaskRecord,
-    AgentTaskState,
+    Commit,
+    Mission,
+    MissionState,
+    Task,
     TaskDispatch,
+    TaskPolicy,
+    TaskState,
     ValidationResult,
 )
-from archetype.missions.coding_agents.contracts import AgentExecutionStatus
-from archetype.missions.coding_agents.transitions import (
-    AgentMissionStatus,
-    AgentTaskStatus,
+from archetype.missions.relations import DependsOn, Guards, PartOfMission
+from archetype.missions.transitions import (
+    AgentExecutionStatus,
+    MissionStatus,
+    TaskStatus,
 )
-from archetype.missions.relationships import DependsOn, Guards, PartOfMission
 
 
 class TaskDecisionProcessor(AsyncProcessor):
     """Accept, retry, or exhaust from current revision-bound observations."""
 
-    components = (AgentTaskState, TaskDispatch, AgentTaskPolicy)
+    components = (TaskState, TaskDispatch, TaskPolicy)
     priority = 10
 
     async def process(
@@ -56,7 +56,7 @@ class TaskDecisionProcessor(AsyncProcessor):
 
         execution = AgentExecution.get_prefix()
         validation = ValidationResult.get_prefix()
-        commit = AgentCommit.get_prefix()
+        commit = Commit.get_prefix()
         guard = Guards.get_prefix()
         terminal = executions.where(
             col(f"{execution}status").is_in(
@@ -127,7 +127,7 @@ class TaskDecisionProcessor(AsyncProcessor):
             summary = summary.with_column("_validation_count", lit(0))
             summary = summary.with_column("_passed_count", lit(0))
 
-        commits = view.frame(AgentCommit)
+        commits = view.frame(Commit)
         if commits is not None:
             final_commits = commits.join(
                 terminal,
@@ -162,11 +162,11 @@ class TaskDecisionProcessor(AsyncProcessor):
             right_on=["_summary_task_id", "_summary_dispatch_id"],
             how="left",
         )
-        state = AgentTaskState.get_prefix()
-        policy = AgentTaskPolicy.get_prefix()
+        state = TaskState.get_prefix()
+        policy = TaskPolicy.get_prefix()
         dispatched = cast(
             Expression,
-            col(f"{state}status") == AgentTaskStatus.DISPATCHED.value,
+            col(f"{state}status") == TaskStatus.DISPATCHED.value,
         )
         has_terminal = col("_execution_id").not_null()
         exited = cast(
@@ -202,9 +202,9 @@ class TaskDecisionProcessor(AsyncProcessor):
         ).otherwise(lit("validation or repository publication failed"))
         df = df.with_columns(
             {
-                f"{state}status": when(accepted, then=lit(AgentTaskStatus.ACCEPTED.value))
-                .when(retryable, then=lit(AgentTaskStatus.READY.value))
-                .when(exhausted, then=lit(AgentTaskStatus.FAILED.value))
+                f"{state}status": when(accepted, then=lit(TaskStatus.ACCEPTED.value))
+                .when(retryable, then=lit(TaskStatus.READY.value))
+                .when(exhausted, then=lit(TaskStatus.FAILED.value))
                 .otherwise(col(f"{state}status")),
                 f"{state}reason": when(exhausted, then=failure_reason).otherwise(
                     col(f"{state}reason")
@@ -217,7 +217,7 @@ class TaskDecisionProcessor(AsyncProcessor):
 class TaskReadinessProcessor(AsyncProcessor):
     """Move pending tasks to ready when every prerequisite is accepted."""
 
-    components = (AgentTaskRecord, AgentTaskState)
+    components = (Task, TaskState)
     priority = 20
 
     async def process(
@@ -229,12 +229,12 @@ class TaskReadinessProcessor(AsyncProcessor):
         if resources is None:
             raise KeyError("TaskReadinessProcessor requires world resources")
         view = resources.require(GraphView)
-        previous_tasks = view.frame(AgentTaskRecord, AgentTaskState)
+        previous_tasks = view.frame(Task, TaskState)
         if previous_tasks is None:
             return df
         dependencies = view.frame(DependsOn)
         original = tuple(df.column_names)
-        state = AgentTaskState.get_prefix()
+        state = TaskState.get_prefix()
 
         if dependencies is None:
             unblocked = df
@@ -244,7 +244,7 @@ class TaskReadinessProcessor(AsyncProcessor):
             nonaccepted = previous_tasks.where(
                 cast(
                     Expression,
-                    col(f"{state}status") != AgentTaskStatus.ACCEPTED.value,
+                    col(f"{state}status") != TaskStatus.ACCEPTED.value,
                 )
             ).select(col("entity_id").alias("_prerequisite_id"))
             blocking = (
@@ -264,11 +264,11 @@ class TaskReadinessProcessor(AsyncProcessor):
             )
             marker = col("_blocked_task_id").is_null()
 
-        pending = cast(Expression, col(f"{state}status") == AgentTaskStatus.PENDING.value)
+        pending = cast(Expression, col(f"{state}status") == TaskStatus.PENDING.value)
         eligible = pending if marker is None else pending & marker
         unblocked = unblocked.with_column(
             f"{state}status",
-            when(eligible, then=lit(AgentTaskStatus.READY.value)).otherwise(col(f"{state}status")),
+            when(eligible, then=lit(TaskStatus.READY.value)).otherwise(col(f"{state}status")),
         )
         return unblocked.select(*original)
 
@@ -289,7 +289,7 @@ def _begin_dispatch(
     dispatch_id: str,
     sequence: int,
 ) -> dict[str, Any]:
-    if task_status != AgentTaskStatus.READY.value:
+    if task_status != TaskStatus.READY.value:
         return {
             "task_status": task_status,
             "dispatch_id": dispatch_id,
@@ -298,7 +298,7 @@ def _begin_dispatch(
     next_sequence = sequence + 1
     identity = hashlib.sha256(f"{entity_id}:{next_sequence}".encode()).hexdigest()
     return {
-        "task_status": AgentTaskStatus.DISPATCHED.value,
+        "task_status": TaskStatus.DISPATCHED.value,
         "dispatch_id": identity,
         "sequence": next_sequence,
     }
@@ -307,11 +307,11 @@ def _begin_dispatch(
 class TaskDispatchProcessor(AsyncProcessor):
     """Turn ready tasks into durable external-work intent."""
 
-    components = (AgentTaskRecord, AgentTaskState, TaskDispatch)
+    components = (Task, TaskState, TaskDispatch)
     priority = 30
 
     async def process(self, df: DataFrame, **_: Any) -> DataFrame:
-        state = AgentTaskState.get_prefix()
+        state = TaskState.get_prefix()
         dispatch = TaskDispatch.get_prefix()
         df = df.with_column(
             "_agent_mission_dispatch",
@@ -331,7 +331,7 @@ class TaskDispatchProcessor(AsyncProcessor):
 class MissionRollupProcessor(AsyncProcessor):
     """Derive mission success or failure from related previous-tick tasks."""
 
-    components = (AgentMissionRecord, AgentMissionState)
+    components = (Mission, MissionState)
     priority = 40
 
     async def process(
@@ -343,12 +343,12 @@ class MissionRollupProcessor(AsyncProcessor):
         if resources is None:
             raise KeyError("MissionRollupProcessor requires world resources")
         view = resources.require(GraphView)
-        tasks = view.frame(AgentTaskState)
+        tasks = view.frame(TaskState)
         memberships = view.frame(PartOfMission)
         if tasks is None or memberships is None:
             return df
 
-        task_state = AgentTaskState.get_prefix()
+        task_state = TaskState.get_prefix()
         relation = PartOfMission.get_prefix()
         joined = memberships.join(
             tasks,
@@ -360,7 +360,7 @@ class MissionRollupProcessor(AsyncProcessor):
             when(
                 cast(
                     Expression,
-                    col(f"{task_state}status") == AgentTaskStatus.ACCEPTED.value,
+                    col(f"{task_state}status") == TaskStatus.ACCEPTED.value,
                 ),
                 then=lit(1),
             ).otherwise(lit(0)),
@@ -370,7 +370,7 @@ class MissionRollupProcessor(AsyncProcessor):
             when(
                 cast(
                     Expression,
-                    col(f"{task_state}status") == AgentTaskStatus.FAILED.value,
+                    col(f"{task_state}status") == TaskStatus.FAILED.value,
                 ),
                 then=lit(1),
             ).otherwise(lit(0)),
@@ -387,10 +387,10 @@ class MissionRollupProcessor(AsyncProcessor):
             right_on=f"{relation}target",
             how="left",
         )
-        state = AgentMissionState.get_prefix()
+        state = MissionState.get_prefix()
         running = cast(
             Expression,
-            col(f"{state}status") == AgentMissionStatus.RUNNING.value,
+            col(f"{state}status") == MissionStatus.RUNNING.value,
         )
         failed_count = cast(Expression, col("_failed_count") > 0)  # ty: ignore[unsupported-operator]
         task_count = cast(Expression, col("_task_count") > 0)  # ty: ignore[unsupported-operator]
@@ -398,8 +398,8 @@ class MissionRollupProcessor(AsyncProcessor):
         succeeded = running & task_count & (col("_accepted_count") == col("_task_count"))
         df = df.with_columns(
             {
-                f"{state}status": when(failed, then=lit(AgentMissionStatus.FAILED.value))
-                .when(succeeded, then=lit(AgentMissionStatus.SUCCEEDED.value))
+                f"{state}status": when(failed, then=lit(MissionStatus.FAILED.value))
+                .when(succeeded, then=lit(MissionStatus.SUCCEEDED.value))
                 .otherwise(col(f"{state}status")),
                 f"{state}reason": when(failed, then=lit("a mission task failed")).otherwise(
                     col(f"{state}reason")
@@ -409,7 +409,7 @@ class MissionRollupProcessor(AsyncProcessor):
         return df.select(*original)
 
 
-def agent_mission_processors() -> tuple[AsyncProcessor, ...]:
+def mission_processors() -> tuple[AsyncProcessor, ...]:
     """Return the complete built-in task transition pipeline."""
 
     return (

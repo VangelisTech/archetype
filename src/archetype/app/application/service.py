@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from archetype.app.audit.interfaces import iAuditLog
     from archetype.app.commands.interfaces import iCommandScheduler
     from archetype.app.evaluation.interfaces import iEvaluationService
-    from archetype.app.missions.interfaces import iAgentMissionService, iTrajectoryService
+    from archetype.app.missions.interfaces import iMissionService, iTrajectoryService
     from archetype.app.physical_ai.interfaces import iPhysicalAIService
     from archetype.app.query.interfaces import iQueryService
     from archetype.app.research.interfaces import iResearchService
@@ -96,7 +96,7 @@ class RuntimeApplication:
         evaluations: iEvaluationService | None = None,
         trajectories: iTrajectoryService | None = None,
         physical_ai: iPhysicalAIService | None = None,
-        agent_missions: Callable[..., iAgentMissionService] | None = None,
+        agent_missions: Callable[..., iMissionService] | None = None,
     ) -> None:
         self._mutations = mutations
         self._worlds = worlds
@@ -122,7 +122,7 @@ class RuntimeApplication:
         self._lanes: dict[str, _WorldLane] = {}
         self._create_lock = asyncio.Lock()
 
-    def agent_mission_service(self, **kwargs) -> iAgentMissionService:
+    def agent_mission_service(self, **kwargs) -> iMissionService:
         """Compose the internal mission workflow port for a trusted runtime handle."""
 
         if not self._accepting:

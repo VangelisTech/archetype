@@ -6,7 +6,7 @@
 Ordinary runtime/world operations depend on the actor-free
 `iRuntimeApplication` port. They never depend on the command gateway or
 authorization models. Agent Missions follows the same boundary: its specialized
-runtime handle receives an `iAgentMissionService` workflow through
+runtime handle receives an `iMissionService` workflow through
 `iRuntimeApplication`, while the container selects the concrete service.
 
 ## 1. Purpose
@@ -228,10 +228,12 @@ bundle themselves.
 
 The handle owns the specialized mission-world lifetime. Closing it closes the
 sandbox resource and its world handle; closing it does not close the parent
-runtime. A terminal run closes that mission's provider session. Runtime
-shutdown remains the outer process boundary.
+runtime. A terminal run closes that mission's provider session. The runtime
+tracks live mission handles and closes them before its remaining world handles,
+so runtime shutdown remains the outer process boundary even after a failed or
+abandoned mission.
 
-`RuntimeMissions` obtains its internal `iAgentMissionService` through
+`RuntimeMissions` obtains its internal `iMissionService` through
 `iRuntimeApplication`; it neither imports the concrete service nor receives the
 container. V1 is still async-only, so sync parity under R5 remains a hardening
 gap. See

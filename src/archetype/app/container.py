@@ -16,10 +16,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
 
-from archetype.app.application.mission_artifacts import MissionArtifactFinalizer
 from archetype.app.application.service import RuntimeApplication
 from archetype.app.artifacts.bundle_service import ArtifactBundleService
 from archetype.app.artifacts.service import ArtifactService
@@ -30,9 +28,6 @@ from archetype.app.commands.service import CommandScheduler
 from archetype.app.evaluation.service import EvaluationService
 from archetype.app.gateway.auth import reset_tick_counters
 from archetype.app.gateway.service import CommandGateway
-from archetype.app.missions.agent_service import AgentMissionService
-from archetype.app.missions.claim_service import MissionAttemptClaimService
-from archetype.app.missions.execution_service import MissionAttemptExecutionService
 from archetype.app.missions.service import MissionService
 from archetype.app.missions.trajectory_service import TrajectoryService
 from archetype.app.physical_ai.service import PhysicalAIService
@@ -40,26 +35,14 @@ from archetype.app.query.service import QueryService
 from archetype.app.redaction.interfaces import iRedactionService
 from archetype.app.redaction.service import RedactionService
 from archetype.app.research.service import AutoResearchService
-from archetype.app.sandboxes.interfaces import iSandboxBackend
-from archetype.app.sandboxes.service import SandboxService
 from archetype.app.storage.service import StorageService
 from archetype.app.world.mutation import MutationService
 from archetype.app.world.service import WorldService
 from archetype.app.world.simulation import SimulationService
 from archetype.artifacts.bundles import ArtifactSourceResolver, ArtifactStoreConfig
 from archetype.core.config import StorageConfig
-from archetype.missions.coding_agents.contracts import AgentMissionConfig
-from archetype.missions.sandboxes.service import SandboxService as MissionSandboxService
-
-
-@dataclass(frozen=True)
-class MissionAttemptWorkflow:
-    """One storage-bound internal mission attempt composition."""
-
-    mission_service: MissionService
-    claim_service: MissionAttemptClaimService
-    artifact_finalizer: MissionArtifactFinalizer
-    execution_service: MissionAttemptExecutionService
+from archetype.missions.contracts import AgentMissionConfig
+from archetype.missions.sandboxes.service import SandboxService
 
 
 class ServiceContainer:
@@ -78,7 +61,6 @@ class ServiceContainer:
         artifact_store_config: ArtifactStoreConfig | None = None,
         artifact_source_resolver: ArtifactSourceResolver | None = None,
         redaction_service: iRedactionService | None = None,
-        sandbox_backends: Iterable[iSandboxBackend] | None = None,
     ):
         if storage_service is not None and storage_service.has_injected_session:
             if audit_storage_config is None:
@@ -119,10 +101,6 @@ class ServiceContainer:
             self.query_service,
             self.evaluation_service,
         )
-
-        # External providers remain optional host adapters. The composition
-        # root owns only the provider-neutral registry and live-handle drain.
-        self.sandbox_service = SandboxService(sandbox_backends or ())
 
         # Services that depend on WorldService
         self.mutation_service = MutationService(self.world_service)
@@ -165,48 +143,19 @@ class ServiceContainer:
         self.simulation_service.set_quota_reset(reset_tick_counters)
 
     @staticmethod
-    def _agent_mission_service(*, config: AgentMissionConfig, **kwargs) -> AgentMissionService:
+    def _agent_mission_service(*, config: AgentMissionConfig, **kwargs) -> MissionService:
         """Compose one mission-owned sandbox lifetime beneath the app workflow."""
 
-        return AgentMissionService(
+        return MissionService(
             config=config,
-            sandbox_service=MissionSandboxService((config.sandbox_backend,)),
+            sandbox_service=SandboxService((config.sandbox_backend,)),
             **kwargs,
-        )
-
-    def mission_attempt_workflow(
-        self,
-        storage_config: StorageConfig,
-    ) -> MissionAttemptWorkflow:
-        """Bind claim and artifact-finalization authority to one storage identity."""
-
-        bound_storage = storage_config.model_copy(deep=True)
-        mission_service = MissionService()
-        claim_service = MissionAttemptClaimService(
-            self.storage_service.get_control_catalog(bound_storage),
-            redaction_service=self.redaction_service,
-        )
-        artifact_finalizer = MissionArtifactFinalizer(
-            self.artifact_bundle_service,
-            storage_config=bound_storage,
-        )
-        execution_service = MissionAttemptExecutionService(
-            claim_service,
-            mission_service,
-            artifact_finalizer,
-        )
-        return MissionAttemptWorkflow(
-            mission_service=mission_service,
-            claim_service=claim_service,
-            artifact_finalizer=artifact_finalizer,
-            execution_service=execution_service,
         )
 
     async def shutdown(self) -> None:
         """Gracefully shut down all services."""
         steps: list[tuple[str, Callable[[], Awaitable[None]]]] = [
             ("application admission", self.application.stop_admission),
-            ("sandbox sessions", self.sandbox_service.shutdown),
             ("audit log", self.audit_log.shutdown),
         ]
         if self._owns_storage_service:

@@ -6,11 +6,11 @@
     "capability"
   ],
   "failure_policy": "every architectural capability task and every trial passes",
-  "started_at": "2026-07-19T22:16:49.924944Z",
-  "duration_s": 0.504845,
+  "started_at": "2026-07-20T20:39:36.257863Z",
+  "duration_s": 0.263636,
   "outcome": "passed",
   "revision": {
-    "commit": "dbecb456d22816cb5bda17654bdcd80401b7e212",
+    "commit": "4567ab17712d4a4123eddb205fc63ad4b513bfd8",
     "dirty": true
   },
   "environment": {
@@ -29,7 +29,7 @@
     }
   },
   "invocation": [
-    "/Users/everettkleven/conductor/workspaces/archetype/havana/evals/run.py",
+    "/Users/everettkleven/conductor/workspaces/archetype/colombo-v2/evals/run.py",
     "--profile",
     "capability",
     "--out",
@@ -62,7 +62,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0293,
+          "elapsed_s": 0.0238,
           "error": null,
           "graders": [
             {
@@ -103,7 +103,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0343,
+          "elapsed_s": 0.0271,
           "error": null,
           "graders": [
             {
@@ -156,7 +156,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.1042,
+          "elapsed_s": 0.0771,
           "error": null,
           "graders": [
             {
@@ -221,7 +221,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0793,
+          "elapsed_s": 0.0592,
           "error": null,
           "graders": [
             {
@@ -280,7 +280,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0922,
+          "elapsed_s": 0.0749,
           "error": null,
           "graders": [
             {
@@ -327,9 +327,9 @@
       "task_id": "agent_mission_transition_authority",
       "suite": "capability",
       "contract_ids": [
-        "missions.transition.evidence_gated"
+        "missions.agent_v1.validator_gated"
       ],
-      "desc": "Mission progress requires validator, commit, checkpoint, and finalization evidence",
+      "desc": "Explicit task graphs advance from dispatch-bound validation and pushed revisions",
       "trial_count": 1,
       "correct_samples": 1,
       "pass_rate": 1.0,
@@ -345,111 +345,17 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0003,
+          "elapsed_s": 0.0001,
           "error": null,
           "graders": [
             {
-              "name": "mission_gate_holds",
+              "name": "mission_graph_is_data",
               "passed": true,
               "score": 1.0,
               "details": ""
             },
             {
-              "name": "mission_gate_advances",
-              "passed": true,
-              "score": 1.0,
-              "details": ""
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "task_id": "mission_attempt_claim_recovery",
-      "suite": "capability",
-      "contract_ids": [
-        "missions.attempt.claim_fenced"
-      ],
-      "desc": "Durable claim fencing, conservative uncertain recovery, and terminal replay survive a cold restart",
-      "trial_count": 1,
-      "correct_samples": 1,
-      "pass_rate": 1.0,
-      "pass_at_k": 1.0,
-      "pass_at_k_curve": {
-        "1": 1.0
-      },
-      "pass_pow_k": 1.0,
-      "avg_score": 1.0,
-      "all_passed": true,
-      "trials": [
-        {
-          "trial": 0,
-          "passed": true,
-          "score": 1.0,
-          "elapsed_s": 0.0746,
-          "error": null,
-          "graders": [
-            {
-              "name": "attempt_claim_recovery_authority",
-              "passed": true,
-              "score": 1.0,
-              "details": ""
-            },
-            {
-              "name": "attempt_claim_terminal_replay",
-              "passed": true,
-              "score": 1.0,
-              "details": ""
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "task_id": "mission_indexed_finalization_gate",
-      "suite": "capability",
-      "contract_ids": [
-        "missions.attempt.indexed_finalization"
-      ],
-      "desc": "INDEXED evidence gates mission progress and cold FINALIZING recovery settles exact staged identity without another runner/model call",
-      "trial_count": 1,
-      "correct_samples": 1,
-      "pass_rate": 1.0,
-      "pass_at_k": 1.0,
-      "pass_at_k_curve": {
-        "1": 1.0
-      },
-      "pass_pow_k": 1.0,
-      "avg_score": 1.0,
-      "all_passed": true,
-      "trials": [
-        {
-          "trial": 0,
-          "passed": true,
-          "score": 1.0,
-          "elapsed_s": 0.0876,
-          "error": null,
-          "graders": [
-            {
-              "name": "indexed_row_gate_holds",
-              "passed": true,
-              "score": 1.0,
-              "details": ""
-            },
-            {
-              "name": "cold_finalizing_recovery",
-              "passed": true,
-              "score": 1.0,
-              "details": ""
-            },
-            {
-              "name": "indexed_evidence_identity",
-              "passed": true,
-              "score": 1.0,
-              "details": ""
-            },
-            {
-              "name": "indexed_settlement_exactly_once",
+              "name": "mission_evidence_is_bound",
               "passed": true,
               "score": 1.0,
               "details": ""
@@ -480,7 +386,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0006,
+          "elapsed_s": 0.0005,
           "error": null,
           "graders": [
             {
@@ -492,53 +398,12 @@
           ]
         }
       ]
-    },
-    {
-      "task_id": "sandbox_attempt_phase_contract",
-      "suite": "capability",
-      "contract_ids": [
-        "sandboxes.attempt.phase_order"
-      ],
-      "desc": "Provider-neutral six-phase attempt, validator authority, checkpoint handoff, replay",
-      "trial_count": 1,
-      "correct_samples": 1,
-      "pass_rate": 1.0,
-      "pass_at_k": 1.0,
-      "pass_at_k_curve": {
-        "1": 1.0
-      },
-      "pass_pow_k": 1.0,
-      "avg_score": 1.0,
-      "all_passed": true,
-      "trials": [
-        {
-          "trial": 0,
-          "passed": true,
-          "score": 1.0,
-          "elapsed_s": 0.0011,
-          "error": null,
-          "graders": [
-            {
-              "name": "six_phase_order",
-              "passed": true,
-              "score": 1.0,
-              "details": ""
-            },
-            {
-              "name": "sandbox_kernel_outcome",
-              "passed": true,
-              "score": 1.0,
-              "details": ""
-            }
-          ]
-        }
-      ]
     }
   ],
   "metrics": {
     "capability": {
-      "tasks": 10,
-      "fully_passing_tasks": 10,
+      "tasks": 7,
+      "fully_passing_tasks": 7,
       "trials_per_task": [
         1
       ],

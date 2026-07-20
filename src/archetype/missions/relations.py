@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""First-class relationships used by the Agent Missions task graph."""
+"""First-class relationship entities for mission graphs and provenance."""
 
 from archetype.graph import Relation
 

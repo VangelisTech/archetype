@@ -4,7 +4,7 @@
 """Fail-closed access to the pinned coding-agent environment inventory.
 
 ``versions.toml`` is the one machine-readable inventory of executable
-dependencies that can affect an attempt: agent CLIs, sandbox SDKs and
+dependencies that can affect execution: agent CLIs, sandbox SDKs and
 runtimes, collector and proxy images, and evaluation packages. Loading
 validates every value against strict shape whitelists and credential deny
 patterns, so a required immutable version either resolves exactly or raises
@@ -19,12 +19,11 @@ import tomllib
 from dataclasses import dataclass
 from functools import cache
 from importlib import resources
-from typing import Any, get_args
-
-from archetype.app.sandboxes.models import AgentHarness
+from typing import Any
 
 _RESOURCE_NAME = "versions.toml"
 _SUPPORTED_SCHEMA_VERSION = 1
+_SUPPORTED_HARNESSES = ("codex",)
 
 _STATUSES = frozenset({"pinned", "planned"})
 _ROLES = frozenset(
@@ -251,7 +250,7 @@ def _parse_artifact(row: Any, index: int) -> PinnedArtifact:
     interface: HarnessInterface | None = None
     if role == "agent-harness":
         harness = _string(row, "harness", label)
-        if harness not in get_args(AgentHarness):
+        if harness not in _SUPPORTED_HARNESSES:
             raise VersionPinError(f"{label}: unknown agent harness {harness!r}")
         interface = _harness_interface(row["harness_interface"], f"{label}.harness_interface")
 
@@ -295,7 +294,7 @@ def parse_version_inventory(data: bytes) -> VersionInventory:
         if artifact.artifact_id in seen:
             raise VersionPinError(f"duplicate artifact id {artifact.artifact_id!r}")
         seen.add(artifact.artifact_id)
-    for harness in get_args(AgentHarness):
+    for harness in _SUPPORTED_HARNESSES:
         pins = [artifact for artifact in artifacts if artifact.harness == harness]
         if len(pins) != 1:
             raise VersionPinError(

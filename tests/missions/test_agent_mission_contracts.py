@@ -8,21 +8,19 @@ from __future__ import annotations
 import pytest
 
 from archetype.missions import (
+    OUTPUT_COMPONENTS,
+    TASK_COMPONENTS,
+    AgentExecution,
     AgentTask,
     CommandValidator,
     MissionSubmission,
     RepositoryPublicationPolicy,
-)
-from archetype.missions.coding_agents import (
-    AGENT_OUTPUT_COMPONENTS,
-    AGENT_TASK_COMPONENTS,
-    AgentExecution,
-    AgentTaskPolicy,
     TaskDispatch,
+    TaskPolicy,
     TaskValidator,
     ValidationResult,
-    agent_mission_processors,
 )
+from archetype.missions.processors import mission_processors
 
 
 def _validator(name: str = "focused") -> CommandValidator:
@@ -49,10 +47,10 @@ def test_submission_is_an_explicit_typed_dag_without_a_planner_switch() -> None:
         task.publication_policy is RepositoryPublicationPolicy.COMMIT_AND_PUSH
         for task in submission.tasks
     )
-    assert AgentTaskPolicy().publication_policy == RepositoryPublicationPolicy.COMMIT_AND_PUSH.value
+    assert TaskPolicy().publication_policy == RepositoryPublicationPolicy.COMMIT_AND_PUSH.value
     assert "decompose" not in AgentTask.__dataclass_fields__
     assert "max_attempts" not in AgentTask.__dataclass_fields__
-    assert [type(processor).__name__ for processor in agent_mission_processors()] == [
+    assert [type(processor).__name__ for processor in mission_processors()] == [
         "TaskDecisionProcessor",
         "TaskReadinessProcessor",
         "TaskDispatchProcessor",
@@ -81,6 +79,15 @@ def test_submission_rejects_invalid_relationships(tasks, message: str) -> None:
         MissionSubmission(repository="repo", branch="agent/test", tasks=tasks)
 
 
+def test_task_rejects_duplicate_validator_names() -> None:
+    with pytest.raises(ValueError, match="validator names must be unique"):
+        AgentTask(
+            "task",
+            "Do it.",
+            (_validator("duplicate"), _validator("duplicate")),
+        )
+
+
 def test_validators_dispatches_and_outputs_are_first_class_state() -> None:
     validator = TaskValidator(
         name="expected-red",
@@ -103,7 +110,6 @@ def test_validators_dispatches_and_outputs_are_first_class_state() -> None:
     assert "passed" not in ValidationResult.model_fields
     assert "specs_json" not in TaskValidator.model_fields
     assert "attempt" not in " ".join(
-        component.__name__.lower()
-        for component in (*AGENT_TASK_COMPONENTS, *AGENT_OUTPUT_COMPONENTS)
+        component.__name__.lower() for component in (*TASK_COMPONENTS, *OUTPUT_COMPONENTS)
     )
     assert AgentExecution.model_fields["status"].default == "starting"

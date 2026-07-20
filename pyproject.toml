@@ -74,7 +74,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 # The pinned execution-environment inventory ships with the package so
 # installed adapters resolve immutable versions fail-closed (#507).
-"archetype.app.sandboxes" = ["versions.toml"]
+"archetype.missions.sandboxes" = ["versions.toml"]
 
 
 [tool.pytest.ini_options]

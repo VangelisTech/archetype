@@ -12,9 +12,12 @@ from pathlib import Path
 
 import pytest
 
-from archetype.missions import CommandValidator, RepositoryPublicationPolicy
-from archetype.missions.coding_agents import (
+from archetype.missions import (
     AgentExecutionStatus,
+    CommandValidator,
+    RepositoryPublicationPolicy,
+)
+from archetype.missions.coding_agents import (
     AgentProcessObservation,
     CodingAgentHarness,
     CodingAgentHarnessConfig,

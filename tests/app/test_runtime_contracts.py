@@ -268,6 +268,32 @@ class TestShutdownIdempotency:
         assert isinstance(captured.value.__cause__, BaseExceptionGroup)
         assert isinstance(captured.value.__cause__.exceptions[0], asyncio.CancelledError)
 
+    @pytest.mark.asyncio
+    async def test_runtime_shutdown_closes_mission_handles_before_container(self, monkeypatch):
+        runtime = ArchetypeRuntime()
+        calls: list[str] = []
+
+        class FailingMissionHandle:
+            async def _shutdown_internal(self, *, from_runtime: bool) -> None:
+                assert from_runtime
+                calls.append("mission")
+                raise RuntimeError("mission close failed")
+
+        mission = FailingMissionHandle()
+        runtime._mission_handles.add(mission)  # type: ignore[arg-type]
+
+        async def shutdown_container() -> None:
+            calls.append("container")
+
+        monkeypatch.setattr(runtime._container, "shutdown", shutdown_container)
+
+        with pytest.raises(RuntimeError, match="encountered 1 error") as captured:
+            await runtime.shutdown()
+
+        assert calls == ["mission", "container"]
+        assert isinstance(captured.value.__cause__, RuntimeError)
+        assert "mission close failed" in str(captured.value.__cause__)
+
 
 class TestStructuredStepFailures:
     """#444: TickExecutionError crosses the runtime boundary unchanged, so

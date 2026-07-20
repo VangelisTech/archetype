@@ -18,6 +18,7 @@ from archetype.missions.sandboxes import (
     SandboxIdentity,
     SandboxKey,
     SandboxService,
+    SandboxServiceProtocol,
     SandboxSession,
     SandboxSpec,
     SandboxStatus,
@@ -84,6 +85,7 @@ def test_sandbox_contracts_describe_resources_not_task_outcomes() -> None:
     assert statuses.isdisjoint({"accepted", "rejected", "completed"})
     assert isinstance(_Backend(), SandboxBackend)
     assert isinstance(_Session(SandboxIdentity("fake", "sandbox", "environment")), SandboxSession)
+    assert isinstance(SandboxService(), SandboxServiceProtocol)
 
 
 def test_process_request_requires_explicit_portable_inputs() -> None:

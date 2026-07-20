@@ -6,21 +6,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
 from archetype.missions.contracts import CommandValidator, RepositoryPublicationPolicy
-from archetype.missions.sandboxes import SandboxBackend, SandboxIdentity, SandboxSession
-
-
-class AgentExecutionStatus(StrEnum):
-    """Factual lifecycle of one agent process and its repository harness."""
-
-    STARTING = "starting"
-    RUNNING = "running"
-    EXITED = "exited"
-    ERRORED = "errored"
-    INTERRUPTED = "interrupted"
+from archetype.missions.sandboxes import SandboxIdentity, SandboxSession
+from archetype.missions.transitions import AgentExecutionStatus
 
 
 @dataclass(frozen=True)
@@ -164,30 +154,8 @@ class CodingAgentDriver(Protocol):
     ) -> AgentProcessObservation: ...
 
 
-@dataclass(frozen=True)
-class AgentMissionConfig:
-    """Process configuration bound once to a mission runtime handle."""
-
-    sandbox_backend: SandboxBackend
-    sandbox_environment: str
-    driver: CodingAgentDriver | None = None
-    workspace: str = "/workspace/repo"
-    model: str = ""
-    max_ticks: int = 100
-
-    def __post_init__(self) -> None:
-        if not self.sandbox_environment.strip():
-            raise ValueError("sandbox_environment must be a pinned identity")
-        if not self.workspace.startswith("/") or self.workspace == "/":
-            raise ValueError("workspace must be a non-root absolute path")
-        if self.max_ticks < 1:
-            raise ValueError("AgentMissionConfig.max_ticks must be positive")
-
-
 __all__ = [
-    "AgentMissionConfig",
     "AgentExecutionResult",
-    "AgentExecutionStatus",
     "AgentProcessObservation",
     "CodingAgentDriver",
     "CommitObservation",

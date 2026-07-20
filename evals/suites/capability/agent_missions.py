@@ -1,21 +1,24 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Graded, credential-free mission-transition capability checks.
-
-This suite proves typed transition authority over rows that the world persists:
-validator rejection and an incomplete checkpoint produce explicit graph edges
-without advancing the task, while complete evidence does. It does not claim a
-durable pre-execution claim, crash recovery, resumption, or exactly-once model
-submission; those require a control-authority claim before provider execution.
-"""
+"""Credential-free checks for the Agent Missions V1 state protocol."""
 
 from __future__ import annotations
 
-import json
-from typing import Any
-
-from archetype.app.missions import MissionService, attempt_invocation_fingerprint
+from archetype.missions import (
+    TASK_TRANSITIONS,
+    AgentExecution,
+    AgentExecutionStatus,
+    AgentTask,
+    CommandValidator,
+    Commit,
+    DependsOn,
+    MissionSubmission,
+    RepositoryPublicationPolicy,
+    TaskDispatch,
+    TaskStatus,
+    ValidationResult,
+)
 from evals.graders import state_check
 from evals.harness import EvalHarness
 from evals.types import GraderResult
@@ -23,166 +26,86 @@ from evals.types import GraderResult
 SUITE = "capability"
 
 
-def _row() -> dict[str, Any]:
-    return {
-        "world_id": "world-eval",
-        "run_id": "run-eval",
-        "entity_id": 7,
-        "mission__status": "ready",
-        "mission__finished": False,
-        "mission__succeeded": False,
-        "mission__failure_reason": "",
-        "mission__pr_ready": False,
-        "mission__pr_url": "",
-        "mission__plan_json": json.dumps(
-            [
-                {
-                    "name": "fix-bug",
-                    "prompt": "Fix the issue.",
-                    "validators": [{"name": "regression", "command": ["pytest"]}],
-                }
-            ]
-        ),
-        "taskgate__step_index": 0,
-        "taskgate__attempts": 0,
-        "taskgate__max_attempts": 5,
-        "taskgate__status": "ready",
-        "taskgate__required_finalization_phase": "checkpointed",
-        "attempt__agent_session_id": "",
-        "attempt__validator_details_json": "[]",
-        "frictionlog__entries_json": "[]",
-    }
-
-
-def _outcome(
-    request: Any,
-    *,
-    accepted: bool,
-    checkpoint_restorable: bool,
-) -> dict[str, Any]:
-    status = "accepted" if accepted else "rejected"
-    return {
-        "attempt_id": request.attempt_id,
-        "attempt_index": request.attempt_index,
-        "idempotency_key": request.idempotency_key,
-        "request_fingerprint": attempt_invocation_fingerprint(
-            prompt=request.prompt,
-            validators=request.validators,
-            step_name=request.step_name,
-            attempt_index=request.attempt_index,
-            previous_session_id=request.previous_session_id,
-            previous_validator_details=request.previous_validator_details,
-            correlation=request.correlation,
-        ),
-        "status": status,
-        "accepted": accepted,
-        "harness": "fake",
-        "agent_session_id": "session-eval",
-        "validator_details": [
-            {
-                "name": "regression",
-                "command": ["pytest"],
-                "expected_returncode": 0,
-                "returncode": 0 if accepted else 1,
-                "passed": accepted,
-                "stdout": "",
-                "stderr": "",
-            }
-        ],
-        "checkpoint_provider": "fake",
-        "checkpoint_status": "created" if checkpoint_restorable else "failed",
-        "checkpoint_restorable": checkpoint_restorable,
-        "checkpoint_created_at_ms": 1,
-        "checkpoint_expires_at_ms": 2,
-        "sandbox_state_ref": "fake://checkpoint" if checkpoint_restorable else "",
-        "finalization_phase": "checkpointed",
-        "finalization_manifest_ref": "fake://manifest",
-        "finalization_error": "" if checkpoint_restorable else "checkpoint unavailable",
-        "results": {"regression": accepted},
-        "trace_ref": "fake://trace",
-        "traces_ref": "fake://traces",
-        "filesystem_start_ref": "fake://fs-start",
-        "filesystem_end_ref": "fake://fs-end",
-        "filesystem_diff_ref": "fake://fs-diff",
-        "git_status_ref": "fake://status",
-        "git_patch_ref": "fake://patch",
-        "git_bundle_ref": "fake://bundle",
-        "context_ref": "fake://context",
-        "friction": [],
-        "sha": "abc123" if accepted else "",
-        "message": "fix: resolve bug" if accepted else "",
-        "pushed": False,
-    }
-
-
 def task_agent_mission_transition_authority() -> list[GraderResult]:
-    """Reject twice for different reasons, then advance on complete evidence."""
-    service = MissionService()
-    initial = _row()
+    """Grade the explicit DAG, committed intent, and revision-bound evidence."""
 
-    first_request = service.prepare_attempt(initial, tick=1)
-    assert first_request is not None
-    rejected = service.apply_attempt(
-        initial,
-        first_request,
-        _outcome(first_request, accepted=False, checkpoint_restorable=True),
+    validator = CommandValidator("focused", ("pytest", "-q"))
+    submission = MissionSubmission(
+        repository="VangelisTech/archetype",
+        branch="agent/eval",
+        tasks=(
+            AgentTask("regression", "Write the regression.", (validator,)),
+            AgentTask(
+                "implementation",
+                "Implement the fix.",
+                (validator,),
+                depends_on=("regression",),
+            ),
+        ),
     )
-
-    second_request = service.prepare_attempt(rejected, tick=2)
-    assert second_request is not None
-    uncheckpointed = service.apply_attempt(
-        rejected,
-        second_request,
-        _outcome(second_request, accepted=True, checkpoint_restorable=False),
+    dependency = DependsOn(source=2, target=1)
+    dispatch = TaskDispatch(dispatch_id="dispatch-1", sequence=1)
+    execution = AgentExecution(
+        task_id=2,
+        dispatch_id=dispatch.dispatch_id,
+        dispatch_sequence=dispatch.sequence,
+        status=AgentExecutionStatus.EXITED.value,
+        final_revision="abc123",
+        agent_returncode=0,
     )
-
-    third_request = service.prepare_attempt(uncheckpointed, tick=3)
-    assert third_request is not None
-    completed = service.apply_attempt(
-        uncheckpointed,
-        third_request,
-        _outcome(third_request, accepted=True, checkpoint_restorable=True),
+    validation = ValidationResult(
+        task_id=execution.task_id,
+        validator_id=3,
+        execution_id=4,
+        dispatch_id=execution.dispatch_id,
+        dispatch_sequence=execution.dispatch_sequence,
+        revision=execution.final_revision,
+        expected_returncode=0,
+        actual_returncode=0,
+    )
+    commit = Commit(
+        task_id=execution.task_id,
+        execution_id=4,
+        dispatch_id=execution.dispatch_id,
+        sha=execution.final_revision,
+        branch=submission.branch,
+        pushed=True,
+        final_revision=True,
     )
 
     return [
         state_check(
             {
-                "rejection_is_durable": rejected["attempt__status"] == "rejected",
-                "rejection_edge_is_typed": (
-                    rejected["attempt__transition_event"] == "rejected_retry"
-                    and rejected["mission__status"] == "running"
-                    and rejected["taskgate__status"] == "retryable"
+                "tasks_are_explicit": [task.name for task in submission.tasks]
+                == ["regression", "implementation"],
+                "dependency_is_explicit": submission.tasks[1].depends_on == ("regression",),
+                "dependency_model_is_relational": (
+                    dependency.source == 2 and dependency.target == 1
                 ),
-                "rejection_does_not_advance": rejected["taskgate__step_index"] == 0,
-                "accepted_without_checkpoint_does_not_advance": (
-                    uncheckpointed["taskgate__step_index"] == 0
-                    and not uncheckpointed["mission__finished"]
+                "publication_is_required": all(
+                    task.publication_policy is RepositoryPublicationPolicy.COMMIT_AND_PUSH
+                    for task in submission.tasks
                 ),
-                "attempt_identity_changes": len(
-                    {
-                        first_request.idempotency_key,
-                        second_request.idempotency_key,
-                        third_request.idempotency_key,
-                    }
-                )
-                == 3,
             },
-            name="mission_gate_holds",
+            name="mission_graph_is_data",
         ),
         state_check(
             {
-                "complete_evidence_finishes": completed["mission__finished"],
-                "complete_evidence_succeeds": completed["mission__succeeded"],
-                "complete_evidence_is_pr_ready": completed["mission__pr_ready"],
-                "commit_is_recorded": completed["commit__sha"] == "abc123",
-                "success_edge_is_typed": (
-                    completed["attempt__transition_event"] == "mission_succeeded"
-                    and completed["mission__status"] == "succeeded"
-                    and completed["taskgate__status"] == "passed"
+                "dispatch_is_committed_intent": (
+                    execution.dispatch_id == dispatch.dispatch_id
+                    and execution.dispatch_sequence == dispatch.sequence
                 ),
-                "attempt_count_is_three": completed["taskgate__attempts"] == 3,
+                "validation_is_revision_bound": validation.revision == execution.final_revision,
+                "validator_passed": validation.passed,
+                "commit_is_exact_final_revision": (
+                    commit.sha == execution.final_revision
+                    and commit.pushed
+                    and commit.final_revision
+                ),
+                "decision_edges_are_typed": TASK_TRANSITIONS[TaskStatus.DISPATCHED]
+                == frozenset({TaskStatus.READY, TaskStatus.ACCEPTED, TaskStatus.FAILED}),
             },
-            name="mission_gate_advances",
+            name="mission_evidence_is_bound",
         ),
     ]
 
@@ -192,5 +115,5 @@ def register(harness: EvalHarness) -> None:
         "agent_mission_transition_authority",
         suite=SUITE,
         fn=task_agent_mission_transition_authority,
-        desc="Mission progress requires validator, commit, checkpoint, and finalization evidence",
+        desc="Explicit task graphs advance from dispatch-bound validation and pushed revisions",
     )

@@ -64,12 +64,12 @@ and settles tick-deferred commands. It does not own RBAC.
 
 **Audit** owns journals, transactional outboxes, and the analytical projection.
 
-**AgentMissionService** composes the mission family's task entities,
+**MissionService** composes the mission family's task entities,
 relationships, processors, committed-intent outbox, and sandbox resource. The
 processors own transitions; the service owns graph materialization and the
 tick-to-external-I/O loop. `ServiceContainer` injects its factory into
 `RuntimeApplication`; `RuntimeMissions` consumes the resulting
-`iAgentMissionService` port without importing the concrete service.
+`iMissionService` port without importing the concrete service.
 
 **PhysicalAIService** turns typed task-evaluation and instruction-sweep
 requests into one batched world, drives a bounded episode, and projects

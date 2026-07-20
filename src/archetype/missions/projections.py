@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Post-commit dispatch projection for coding-agent missions."""
+"""Post-commit dispatch and terminal result projections for Agent Missions."""
 
 from __future__ import annotations
 
@@ -12,24 +12,34 @@ from daft import DataFrame, Expression, col
 
 from archetype.core.component import Component
 from archetype.core.hooks import PostTick
-from archetype.missions.coding_agents.components import (
-    AgentExecution,
-    AgentTaskPolicy,
-    AgentTaskRecord,
-    AgentTaskState,
-    AgentTaskWorkspace,
-    TaskDispatch,
-    TaskValidator,
-    ValidationResult,
-)
+from archetype.graph import GraphView
 from archetype.missions.coding_agents.contracts import (
     DispatchedValidator,
     TaskDispatchRequest,
     ValidationObservation,
 )
-from archetype.missions.coding_agents.transitions import AgentTaskStatus
-from archetype.missions.contracts import CommandValidator, RepositoryPublicationPolicy
-from archetype.missions.relationships import Guards, PartOfMission
+from archetype.missions.components import (
+    AgentExecution,
+    Commit,
+    Mission,
+    MissionState,
+    Task,
+    TaskDispatch,
+    TaskPolicy,
+    TaskState,
+    TaskValidator,
+    TaskWorkspace,
+    ValidationResult,
+)
+from archetype.missions.contracts import (
+    CommandValidator,
+    MissionResult,
+    RepositoryPublicationPolicy,
+    SubmittedMission,
+    TaskResult,
+)
+from archetype.missions.relations import Guards, PartOfMission
+from archetype.missions.transitions import MissionStatus, TaskStatus
 
 
 def _live_frame(event: PostTick, *components: type[Component]) -> DataFrame | None:
@@ -57,10 +67,10 @@ class TaskDispatchOutbox:
     """Project newly committed dispatch rows into bounded execution requests."""
 
     _TASK_COMPONENTS = (
-        AgentTaskRecord,
-        AgentTaskWorkspace,
-        AgentTaskPolicy,
-        AgentTaskState,
+        Task,
+        TaskWorkspace,
+        TaskPolicy,
+        TaskState,
         TaskDispatch,
     )
 
@@ -82,12 +92,12 @@ class TaskDispatchOutbox:
         assert validator_frame is not None
         assert guard_edges is not None
 
-        state = AgentTaskState.get_prefix()
+        state = TaskState.get_prefix()
         dispatch = TaskDispatch.get_prefix()
         dispatched = task_frame.where(
             cast(
                 Expression,
-                col(f"{state}status") == AgentTaskStatus.DISPATCHED.value,
+                col(f"{state}status") == TaskStatus.DISPATCHED.value,
             )
         )
         membership = PartOfMission.get_prefix()
@@ -164,9 +174,9 @@ class TaskDispatchOutbox:
                     how="left",
                 )
             observation_rows = observations.to_pylist()
-        record = AgentTaskRecord.get_prefix()
-        workspace = AgentTaskWorkspace.get_prefix()
-        policy = AgentTaskPolicy.get_prefix()
+        record = Task.get_prefix()
+        workspace = TaskWorkspace.get_prefix()
+        policy = TaskPolicy.get_prefix()
         for row in task_rows:
             dispatch_id = str(row[f"{dispatch}dispatch_id"])
             if dispatch_id in self._seen_dispatches:
@@ -234,3 +244,93 @@ class TaskDispatchOutbox:
         requests = tuple(self._queued)
         self._queued.clear()
         return requests
+
+
+def current_mission_status(view: GraphView, mission_id: int) -> MissionStatus | None:
+    """Project one mission's current persisted decision state."""
+
+    frame = view.frame(MissionState)
+    if frame is None:
+        return None
+    state = MissionState.get_prefix()
+    rows = (
+        frame.where(cast(Expression, col("entity_id") == mission_id))
+        .select(f"{state}status")
+        .to_pylist()
+    )
+    if not rows:
+        return None
+    return MissionStatus(rows[0][f"{state}status"])
+
+
+def project_mission_result(
+    view: GraphView,
+    submitted: SubmittedMission,
+    *,
+    ticks_completed: int,
+) -> MissionResult:
+    """Materialize the bounded terminal projection returned to an author."""
+
+    mission_frame = view.frame(Mission, MissionState)
+    task_frame = view.frame(Task, TaskState, TaskDispatch)
+    if mission_frame is None or task_frame is None:
+        raise RuntimeError("terminal mission state is not queryable")
+
+    mission_rows = mission_frame.where(
+        cast(Expression, col("entity_id") == submitted.mission_id)
+    ).to_pylist()
+    if len(mission_rows) != 1:
+        raise RuntimeError("terminal mission projection is not unique")
+    mission_row = mission_rows[0]
+
+    task_ids = dict(submitted.task_ids)
+    task_projection = task_frame.where(col("entity_id").is_in(list(task_ids.values())))
+    commits = view.frame(Commit)
+    commit = Commit.get_prefix()
+    if commits is not None:
+        task_projection = task_projection.join(
+            commits.select(
+                col(f"{commit}task_id").alias("_commit_task_id"),
+                col(f"{commit}sha").alias("_commit_sha"),
+            ),
+            left_on="entity_id",
+            right_on="_commit_task_id",
+            how="left",
+        )
+    projection_rows = task_projection.to_pylist()
+    task_rows: dict[int, dict[str, Any]] = {}
+    commits_by_task: dict[int, list[str]] = {}
+    for row in projection_rows:
+        task_id = int(row["entity_id"])
+        task_rows.setdefault(task_id, row)
+        if row.get("_commit_sha") is not None:
+            sha = str(row["_commit_sha"])
+            task_commits = commits_by_task.setdefault(task_id, [])
+            if sha not in task_commits:
+                task_commits.append(sha)
+
+    task = Task.get_prefix()
+    state = TaskState.get_prefix()
+    dispatch = TaskDispatch.get_prefix()
+    tasks = tuple(
+        TaskResult(
+            task_id=task_id,
+            name=str(task_rows[task_id][f"{task}name"]),
+            status=str(task_rows[task_id][f"{state}status"]),
+            dispatches=int(task_rows[task_id][f"{dispatch}sequence"]),
+            commit_shas=tuple(commits_by_task.get(task_id, ())),
+            reason=str(task_rows[task_id][f"{state}reason"]),
+        )
+        for _, task_id in submitted.task_ids
+    )
+    mission = Mission.get_prefix()
+    mission_state = MissionState.get_prefix()
+    return MissionResult(
+        mission_id=submitted.mission_id,
+        status=str(mission_row[f"{mission_state}status"]),
+        repository=str(mission_row[f"{mission}repository"]),
+        branch=str(mission_row[f"{mission}branch"]),
+        ticks_completed=ticks_completed,
+        tasks=tasks,
+        reason=str(mission_row[f"{mission_state}reason"]),
+    )

@@ -193,37 +193,37 @@ method = "to_pylist"
 reason = "Mutation-planning boundary for instantiation: spawning copies requires the template's concrete component values and child prefab ids; _rows is the single funnel and every entity filter runs in the lazy plan before it."
 
 [[entries]]
-path = "src/archetype/missions/coding_agents/resources.py"
-line = 99
+path = "src/archetype/missions/projections.py"
+line = 109
 method = "to_pylist"
 reason = "Post-commit external-I/O boundary: the lazy frame is restricted to committed DISPATCHED tasks and joined to mission identity before those bounded intents become Python requests for sandbox processes; an OS process invocation cannot remain a Daft expression."
 
 [[entries]]
-path = "src/archetype/missions/coding_agents/resources.py"
-line = 125
+path = "src/archetype/missions/projections.py"
+line = 135
 method = "to_pylist"
 reason = "Post-commit validator-command boundary: Guards and TaskValidator entities are joined lazily first, then the finite validators attached to dispatchable tasks become argv tuples consumed by the repository harness; process argv cannot remain a DataFrame value."
 
 [[entries]]
-path = "src/archetype/missions/coding_agents/resources.py"
-line = 166
+path = "src/archetype/missions/projections.py"
+line = 176
 method = "to_pylist"
 reason = "Repair-turn boundary: prior AgentExecution and ValidationResult entities are joined lazily by execution before the finite previous-dispatch observations become a coding-agent prompt and session-resume request; the external driver requires concrete typed observations."
 
 [[entries]]
-path = "src/archetype/app/missions/agent_service.py"
-line = 402
+path = "src/archetype/missions/projections.py"
+line = 259
 method = "to_pylist"
 reason = "Single-mission control-loop boundary: the frame is filtered to one submitted mission and only its persisted status enters Python to decide whether the application service should tick again or return; no mission payload rows are materialized."
 
 [[entries]]
-path = "src/archetype/app/missions/agent_service.py"
-line = 415
+path = "src/archetype/missions/projections.py"
+line = 281
 method = "to_pylist"
 reason = "Terminal mission result boundary: the frame is filtered to one terminal mission whose scalar repository, branch, status, and reason must become the immutable MissionResult returned by the public runtime API."
 
 [[entries]]
-path = "src/archetype/app/missions/agent_service.py"
-line = 434
+path = "src/archetype/missions/projections.py"
+line = 300
 method = "to_pylist"
 reason = "Terminal task result boundary: task state is filtered to the submitted ids and left-joined lazily to first-class commit entities before the finite scalar rows become immutable TaskResult values returned by the public runtime API."

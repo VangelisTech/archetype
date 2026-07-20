@@ -181,6 +181,17 @@ class SandboxBackend(Protocol):
     async def restore(self, spec: SandboxSpec, checkpoint: CheckpointRef) -> SandboxSession: ...
 
 
+@runtime_checkable
+class SandboxServiceProtocol(Protocol):
+    """Process-local Session lifetime required by mission composition."""
+
+    async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> SandboxSession: ...
+
+    async def close(self, key: SandboxKey) -> None: ...
+
+    async def shutdown(self) -> None: ...
+
+
 __all__ = [
     "CheckpointRef",
     "ProcessRequest",
@@ -190,6 +201,7 @@ __all__ = [
     "SandboxIdentity",
     "SandboxKey",
     "SandboxSession",
+    "SandboxServiceProtocol",
     "SandboxSpec",
     "SandboxStatus",
 ]

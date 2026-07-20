@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from archetype.app.sandboxes.versions import load_version_inventory
+from archetype.missions.sandboxes.versions import load_version_inventory
 from scripts.generate_version_inventory import main, render
 
-pytestmark = pytest.mark.contract("sandboxes.environment.pinned")
+pytestmark = pytest.mark.contract("missions.environment.pinned")
 
 
 def test_render_lists_every_artifact_and_the_content_digest() -> None:
