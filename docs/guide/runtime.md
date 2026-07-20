@@ -3,8 +3,11 @@
 **Document type:** Normative.
 **Scope:** `src/archetype/runtime/` — the trusted Python scripting boundary.
 
-The runtime depends on the actor-free `iRuntimeApplication` port. It never
-depends on the command gateway, authorization models, or concrete app services.
+Ordinary runtime/world operations depend on the actor-free
+`iRuntimeApplication` port. They never depend on the command gateway or
+authorization models. Agent Missions follows the same boundary: its specialized
+runtime handle receives an `iMissionService` workflow through
+`iRuntimeApplication`, while the container selects the concrete service.
 
 ## 1. Purpose
 
@@ -14,7 +17,7 @@ depends on the command gateway, authorization models, or concrete app services.
    `RuntimeApplication`;
 2. owns lazy world handles and process lifetime;
 3. provides ergonomic async and sync scripting semantics; and
-4. delegates canonical operations to `iRuntimeApplication`.
+4. delegates canonical world operations to `iRuntimeApplication`.
 
 The runtime is a trusted in-process boundary. Possession of the runtime grants
 the host the capabilities it was constructed with; it does not fabricate a
@@ -132,12 +135,29 @@ EvaluationService itself.
 execution must not hold a runtime handle lock that would deadlock reentrant
 runtime operations.
 
-### R12 — Artifacts, not generic artifacts
+`runtime.evaluate_physical_task(...)` and
+`runtime.sweep_physical_instructions(...)` delegate typed requests to the
+physical-AI application workflow. The runtime does not install processors,
+reset provider state, spawn trial entities, run episodes, or collect terminal
+rows itself. Returned reports carry the durable world/run identity from which
+their values were derived. The sync runtime exposes the same operations.
+
+### R12 — Typed artifacts and transcript evidence
 
 The supported target vocabulary is artifact/evidence publication. Runtime
 methods may ingest files, structured rows, or content and return typed artifact
 receipts. The runtime does not inspect storage catalogs, implement content
 identity, complete publication claims, or expose generic domain "artifacts."
+
+`world.ingest_claude_transcript(source)` is the recommended coding-agent
+transcript boundary. `ClaudeTranscriptSource` carries local input configuration
+and stable project/session identity. The application workflow snapshots and
+redacts the file, parses only the sanitized copy, publishes its lightweight
+trajectory/source claim, and appends normalized rows to the Iceberg transcript
+table. The returned `TranscriptIngestionReceipt` reports both authorities and
+their replay outcome. The runtime does not open the source file, write
+narrative Components, or coordinate those steps itself. Sync world handles
+expose the same operation.
 
 The artifact-bundle DTOs exported from the top-level `archetype` package are
 supported runtime contracts: `ArtifactBundleRequest`, `ArtifactCandidate`,
@@ -149,8 +169,11 @@ Their physical home is the `archetype.artifacts.bundles` family module
 not make additional names supported, and nothing here grants access to the
 concrete artifact service.
 
-Legacy `ingest`, `write_artifacts`, `artifacts`, and `ArtifactReceipt` names are migration
-surfaces to remove after the artifact-family cutover.
+`world.ingest_files()`, `world.write_artifacts()`, and `world.artifacts()` are
+the lower-level typed-table surfaces used by other domains and custom
+processors. `world.publish()` is the claim-backed Component artifact surface.
+They are separate because an artifact table row, a source claim, and a portable
+artifact bundle have different durability and replay contracts.
 
 ### R13 — Observability is host-configured and quiet by default
 
@@ -194,6 +217,28 @@ explicit internal host composition injects one. Cross-runtime live-handle
 transfer is out of scope; durable identity and storage coordinates are the
 interchange boundary.
 
+### R16 — Agent Missions V1
+
+`runtime.missions(name, config=..., storage=...)` returns an async
+`RuntimeMissions` handle. It configures one mission-capable world with the
+built-in Components, graph view, transition processors, post-tick outbox, and
+injected Sandbox Backend and coding-agent driver. The family-owned Sandbox
+Service retains live Sessions. Authors submit typed tasks and never wire that
+bundle themselves.
+
+The handle owns the specialized mission-world lifetime. Closing it closes the
+sandbox resource and its world handle; closing it does not close the parent
+runtime. A terminal run closes that mission's provider session. The runtime
+tracks live mission handles and closes them before its remaining world handles,
+so runtime shutdown remains the outer process boundary even after a failed or
+abandoned mission.
+
+`RuntimeMissions` obtains its internal `iMissionService` through
+`iRuntimeApplication`; it neither imports the concrete service nor receives the
+container. V1 is still async-only, so sync parity under R5 remains a hardening
+gap. See
+[Agent Missions V1, current hardening gaps](agent-missions.md#current-hardening-gaps).
+
 ## 3. Canonical surface
 
 The async surface below has sync parity:
@@ -208,6 +253,21 @@ world = runtime.world(
     hooks=...,
 )
 world = runtime.attach(world_id, storage=...)
+
+missions = runtime.missions(
+    "software-factory",
+    config=AgentMissionConfig(
+        sandbox_backend=my_backend,
+        sandbox_environment="provider-image@sha256:digest",
+    ),
+    storage=...,
+)
+submitted = await missions.submit(
+    repository="owner/repository",
+    branch="agent/change",
+    tasks=(AgentTask(...),),
+)
+mission_result = await missions.run(submitted)
 
 eid = await world.spawn(Position(x=0), Velocity(dx=1))
 ids = await world.spawn_batch(Position(x=0), count=10_000)
@@ -263,6 +323,7 @@ entity's archetype. These intents remain distinct.
 src/archetype/runtime/
   __init__.py
   runtime.py       ArchetypeRuntime and SyncArchetypeRuntime
+  missions.py      async Agent Missions authoring/lifecycle handle
   world.py         RuntimeWorld and SyncRuntimeWorld
   entrypoint.py    managed script decorator
   _config.py       scripting-boundary coercion
@@ -291,3 +352,4 @@ with ArchetypeRuntime.sync() as runtime:
 - [World Lifecycle](world-lifecycle.md)
 - [Service Protocols](service-protocols.md)
 - [Audit Log](audit-log.md)
+- [Agent Missions V1](agent-missions.md)

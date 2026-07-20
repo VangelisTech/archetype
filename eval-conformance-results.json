@@ -7,12 +7,12 @@
     "spec"
   ],
   "failure_policy": "every required task and every trial passes",
-  "started_at": "2026-07-19T22:16:48.092619Z",
-  "duration_s": 0.859716,
+  "started_at": "2026-07-20T20:39:34.283328Z",
+  "duration_s": 1.160243,
   "outcome": "passed",
   "revision": {
-    "commit": "dbecb456d22816cb5bda17654bdcd80401b7e212",
-    "dirty": false
+    "commit": "4567ab17712d4a4123eddb205fc63ad4b513bfd8",
+    "dirty": true
   },
   "environment": {
     "runner_id": "Everetts-MacBook-Pro.local",
@@ -30,7 +30,7 @@
     }
   },
   "invocation": [
-    "/Users/everettkleven/conductor/workspaces/archetype/havana/evals/run.py",
+    "/Users/everettkleven/conductor/workspaces/archetype/colombo-v2/evals/run.py",
     "--profile",
     "conformance",
     "--out",
@@ -323,7 +323,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.274,
+          "elapsed_s": 0.402,
           "error": null,
           "graders": [
             {
@@ -388,7 +388,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0944,
+          "elapsed_s": 0.1282,
           "error": null,
           "graders": [
             {
@@ -447,7 +447,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0748,
+          "elapsed_s": 0.0824,
           "error": null,
           "graders": [
             {
@@ -482,7 +482,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.1074,
+          "elapsed_s": 0.0824,
           "error": null,
           "graders": [
             {
@@ -541,7 +541,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0571,
+          "elapsed_s": 0.1323,
           "error": null,
           "graders": [
             {
@@ -588,7 +588,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.037,
+          "elapsed_s": 0.0295,
           "error": null,
           "graders": [
             {
@@ -629,7 +629,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0395,
+          "elapsed_s": 0.0545,
           "error": null,
           "graders": [
             {
@@ -670,7 +670,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0268,
+          "elapsed_s": 0.0713,
           "error": null,
           "graders": [
             {
@@ -705,7 +705,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0455,
+          "elapsed_s": 0.0597,
           "error": null,
           "graders": [
             {
@@ -740,7 +740,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0556,
+          "elapsed_s": 0.058,
           "error": null,
           "graders": [
             {
@@ -775,7 +775,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0293,
+          "elapsed_s": 0.0444,
           "error": null,
           "graders": [
             {
@@ -810,7 +810,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0005,
+          "elapsed_s": 0.0011,
           "error": null,
           "graders": [
             {
@@ -940,7 +940,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.004,
+          "elapsed_s": 0.0036,
           "error": null,
           "graders": [
             {
@@ -1051,7 +1051,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0025,
+          "elapsed_s": 0.0001,
           "error": null,
           "graders": [
             {
@@ -1086,7 +1086,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0005,
+          "elapsed_s": 0.0003,
           "error": null,
           "graders": [
             {

@@ -49,5 +49,6 @@ bypasses the live registry and reads persisted state through storage.
 
 Every cross-family concrete construction occurs in `app/container.py`.
 Constructors use family protocols, concrete services do not inherit concrete
-services, and `quality/architecture.toml` currently has zero migration
-exceptions. `scripts/check_architecture.py` enforces those claims.
+services, and the merged `quality/architecture.toml` policy plus its family
+fragments currently has zero migration exceptions.
+`scripts/check_architecture.py` enforces those claims.

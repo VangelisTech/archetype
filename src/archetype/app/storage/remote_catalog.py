@@ -36,10 +36,6 @@ from archetype.app.storage.catalog import (
     ArtifactPublicationExpiredError,
     ArtifactPublicationPendingError,
     ArtifactPublicationRecord,
-    AttemptClaimConflictError,
-    AttemptClaimPendingError,
-    AttemptClaimRecord,
-    AttemptClaimStaleError,
     CatalogConflictError,
     ClaimConflictError,
     ClaimPendingError,
@@ -57,7 +53,6 @@ from archetype.app.storage.catalog import (
     _require_bounded_text,
     _require_portable_counter,
     _require_sha256,
-    _validate_attempt_claim_transition,
     artifact_publication_key,
     claim_scope_key,
 )
@@ -65,17 +60,12 @@ from archetype.core.interfaces import StaleWriterError
 
 logger = logging.getLogger(__name__)
 
-_ATTEMPT_CLAIM_PROTOCOL_VERSION = 4
-_ATTEMPT_CLAIM_CAPABILITY = "attempt_claim_execution_v2"
 _ARTIFACT_SNAPSHOT_PROTOCOL_VERSION = 3
 _ARTIFACT_SNAPSHOT_CAPABILITY = "artifact_snapshot_decimal_v1"
 _ARTIFACT_SERVER_CLOCK_PROTOCOL_VERSION = 6
 _ARTIFACT_SERVER_CLOCK_CAPABILITY = "artifact_publication_server_clock_v1"
 
 _ERROR_MAP: dict[str, type[Exception]] = {
-    "attempt_claim_conflict": AttemptClaimConflictError,
-    "attempt_claim_pending": AttemptClaimPendingError,
-    "attempt_claim_stale": AttemptClaimStaleError,
     "artifact_publication_conflict": ArtifactPublicationConflictError,
     "artifact_publication_expired": ArtifactPublicationExpiredError,
     "artifact_publication_pending": ArtifactPublicationPendingError,
@@ -161,14 +151,6 @@ class RemoteControlCatalog:
             or any(required not in capabilities for required in required_capabilities)
         ):
             raise RuntimeError(f"remote control catalog does not support {feature}")
-
-    async def _require_attempt_claim_protocol(self, world_id: str) -> None:
-        await self._require_catalog_protocol(
-            world_id,
-            minimum_version=_ATTEMPT_CLAIM_PROTOCOL_VERSION,
-            capability=_ATTEMPT_CLAIM_CAPABILITY,
-            feature="attempt-claim execution v2",
-        )
 
     async def _require_artifact_snapshot_protocol(self, world_id: str) -> None:
         await self._require_catalog_protocol(
@@ -426,182 +408,6 @@ class RemoteControlCatalog:
             )
             for row in response.json()
         ]
-
-    # ── mission attempt claims ──────────────────────────────────────────────
-
-    async def acquire_attempt_claim(
-        self,
-        *,
-        claim_key: str,
-        world_id: str,
-        run_id: str,
-        mission_id: str,
-        task_id: str,
-        attempt_id: str,
-        idempotency_key: str,
-        request_fingerprint: str,
-        request_json: str,
-        redaction_policy_id: str,
-        redaction_evidence_json: str,
-        provider: str,
-        provider_request_fingerprint: str,
-        supports_idempotent_replay: bool,
-        supports_session_resume: bool,
-        provider_idempotency_key: str,
-        claimant: str,
-        lease_seconds: float = 900.0,
-    ) -> tuple[str, AttemptClaimRecord]:
-        if not redaction_policy_id.strip():
-            raise ValueError("attempt claim redaction_policy_id must not be empty")
-        if not redaction_evidence_json.strip():
-            raise ValueError("attempt claim redaction_evidence_json must not be empty")
-        await self._require_attempt_claim_protocol(world_id)
-        response = await self._call(
-            "POST",
-            f"/w/{world_id}/attempt-claims/acquire-v2",
-            {
-                "claim_key": claim_key,
-                "run_id": run_id,
-                "mission_id": mission_id,
-                "task_id": task_id,
-                "attempt_id": attempt_id,
-                "idempotency_key": idempotency_key,
-                "request_fingerprint": request_fingerprint,
-                "request_json": request_json,
-                "redaction_policy_id": redaction_policy_id,
-                "redaction_evidence_json": redaction_evidence_json,
-                "provider": provider,
-                "provider_request_fingerprint": provider_request_fingerprint,
-                "supports_idempotent_replay": supports_idempotent_replay,
-                "supports_session_resume": supports_session_resume,
-                "provider_idempotency_key": provider_idempotency_key,
-                "claimant": claimant,
-                "lease_seconds": lease_seconds,
-            },
-        )
-        body = response.json()
-        return body["outcome"], _attempt_claim_from_json(world_id, body["claim"])
-
-    async def transition_attempt_claim(
-        self,
-        world_id: str,
-        claim_key: str,
-        claimant: str,
-        fence_epoch: int,
-        *,
-        expected_status: str,
-        target_status: str,
-        execution_nonce: str = "",
-        redaction_evidence_json: str = "",
-        provider_session_id: str = "",
-        provider_request_id: str = "",
-        settlement_status: str = "",
-        outcome_digest: str = "",
-        outcome_json: str = "",
-        artifact_request_json: str = "",
-        artifact_request_digest: str = "",
-        artifact_publication_key: str = "",
-        last_error: str = "",
-    ) -> AttemptClaimRecord:
-        _validate_attempt_claim_transition(
-            expected_status=expected_status,
-            target_status=target_status,
-            execution_nonce=execution_nonce,
-            redaction_evidence_json=redaction_evidence_json,
-            provider_session_id=provider_session_id,
-            provider_request_id=provider_request_id,
-            settlement_status=settlement_status,
-            outcome_digest=outcome_digest,
-            outcome_json=outcome_json,
-            artifact_request_json=artifact_request_json,
-            artifact_request_digest=artifact_request_digest,
-            artifact_publication_key=artifact_publication_key,
-            last_error=last_error,
-        )
-        await self._require_attempt_claim_protocol(world_id)
-        response = await self._call(
-            "POST",
-            f"/w/{world_id}/attempt-claims/{claim_key}/transition-v2",
-            {
-                "claimant": claimant,
-                "fence_epoch": fence_epoch,
-                "expected_status": expected_status,
-                "target_status": target_status,
-                "execution_nonce": execution_nonce,
-                "redaction_evidence_json": redaction_evidence_json,
-                "provider_session_id": provider_session_id,
-                "provider_request_id": provider_request_id,
-                "settlement_status": settlement_status,
-                "outcome_digest": outcome_digest,
-                "outcome_json": outcome_json,
-                "artifact_request_json": artifact_request_json,
-                "artifact_request_digest": artifact_request_digest,
-                "artifact_publication_key": artifact_publication_key,
-                "last_error": last_error,
-            },
-        )
-        return _attempt_claim_from_json(world_id, response.json())
-
-    async def consume_attempt_execution(
-        self,
-        world_id: str,
-        claim_key: str,
-        claimant: str,
-        fence_epoch: int,
-        execution_nonce: str,
-    ) -> AttemptClaimRecord:
-        if not execution_nonce:
-            raise ValueError("attempt execution nonce must not be empty")
-        await self._require_attempt_claim_protocol(world_id)
-        response = await self._call(
-            "POST",
-            f"/w/{world_id}/attempt-claims/{claim_key}/consume-v2",
-            {
-                "claimant": claimant,
-                "fence_epoch": fence_epoch,
-                "execution_nonce": execution_nonce,
-            },
-        )
-        return _attempt_claim_from_json(world_id, response.json())
-
-    async def renew_attempt_claim(
-        self,
-        world_id: str,
-        claim_key: str,
-        claimant: str,
-        fence_epoch: int,
-        *,
-        lease_seconds: float,
-    ) -> AttemptClaimRecord:
-        response = await self._call(
-            "POST",
-            f"/w/{world_id}/attempt-claims/{claim_key}/renew",
-            {
-                "claimant": claimant,
-                "fence_epoch": fence_epoch,
-                "lease_seconds": lease_seconds,
-            },
-        )
-        return _attempt_claim_from_json(world_id, response.json())
-
-    async def get_attempt_claim(self, world_id: str, claim_key: str) -> AttemptClaimRecord | None:
-        response = await self._call(
-            "GET",
-            f"/w/{world_id}/attempt-claims/{claim_key}",
-            ignore_status=(404,),
-        )
-        if response.status_code == 404:
-            return None
-        return _attempt_claim_from_json(world_id, response.json())
-
-    async def list_due_attempt_claims(
-        self, world_id: str, *, now: float, limit: int = 100
-    ) -> list[AttemptClaimRecord]:
-        response = await self._call(
-            "GET",
-            f"/w/{world_id}/attempt-claims?due={now}&limit={limit}",
-        )
-        return [_attempt_claim_from_json(world_id, row) for row in response.json()]
 
     # ── artifact claims ─────────────────────────────────────────────────────
 
@@ -934,49 +740,6 @@ def _claim_from_json(world_id: str, row: dict) -> ClaimRecord:
         claimant=row["claimant"],
         lease_expires_at=float(row["lease_expires_at"]),
         fence_epoch=int(row["fence_epoch"]),
-    )
-
-
-def _attempt_claim_from_json(world_id: str, row: dict) -> AttemptClaimRecord:
-    return AttemptClaimRecord(
-        claim_key=row["claim_key"],
-        world_id=world_id,
-        run_id=row["run_id"],
-        mission_id=row["mission_id"],
-        task_id=row["task_id"],
-        attempt_id=row["attempt_id"],
-        idempotency_key=row["idempotency_key"],
-        request_fingerprint=row["request_fingerprint"],
-        request_json=row["request_json"],
-        redaction_policy_id=row.get("redaction_policy_id", ""),
-        redaction_evidence_json=row.get("redaction_evidence_json", ""),
-        status=row["status"],
-        provider=row["provider"],
-        provider_request_fingerprint=row["provider_request_fingerprint"],
-        supports_idempotent_replay=bool(row["supports_idempotent_replay"]),
-        supports_session_resume=bool(row["supports_session_resume"]),
-        provider_idempotency_key=row.get("provider_idempotency_key", ""),
-        claimant=row["claimant"],
-        lease_expires_at=float(row["lease_expires_at"]),
-        fence_epoch=int(row["fence_epoch"]),
-        execution_nonce=row.get("execution_nonce", ""),
-        execution_consumed_at=row.get("execution_consumed_at"),
-        provider_session_id=row.get("provider_session_id", ""),
-        provider_request_id=row.get("provider_request_id", ""),
-        settlement_status=row.get("settlement_status", ""),
-        outcome_digest=row.get("outcome_digest", ""),
-        outcome_json=row.get("outcome_json", ""),
-        artifact_request_json=row.get("artifact_request_json", ""),
-        artifact_request_digest=row.get("artifact_request_digest", ""),
-        artifact_publication_key=row.get("artifact_publication_key", ""),
-        legacy_unbound_eligible=bool(row.get("legacy_unbound_eligible", False)),
-        last_error=row.get("last_error", ""),
-        created_at=row["created_at"],
-        updated_at=row["updated_at"],
-        possibly_submitted_at=row.get("possibly_submitted_at"),
-        acknowledged_at=row.get("acknowledged_at"),
-        finalizing_at=row.get("finalizing_at"),
-        settled_at=row.get("settled_at"),
     )
 
 

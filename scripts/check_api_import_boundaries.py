@@ -5,18 +5,12 @@
 
 Two rules, one principle: concrete application capabilities stay behind the
 actor-free application facade. Runtime uses ``iRuntimeApplication`` directly;
-untrusted API ingress reaches it through ``iCommandGateway``. Provisional
-outward capability packages use stable adapters rather than app services
-directly.
+untrusted API ingress reaches it through ``iCommandGateway``. Top-level domain
+families never reach into concrete application services.
 
 1. Import scopes (per consumer):
    - ``api`` route handlers depend on ``iCommandGateway`` — only the adapter
      composition module may construct the container.
-   - ``experiments`` is a provisional outward capability package: it may
-     import portable app contracts and models only. This rule prevents an
-     internal-service dependency; it does not declare the package supported.
-     Driving services directly from here is how the command-gateway bypass
-     entered ``src/`` (eval_rollouts, 2026-07-17).
    - ``runtime`` hosts trusted process composition over the application port.
 
 2. ``@public_api`` signatures: a public callable may not accept raw services
@@ -39,7 +33,6 @@ API_TARGETS = [
     ROOT / "src/archetype/api/deps.py",
     *sorted((ROOT / "src/archetype/api/routes").glob("*.py")),
 ]
-EXPERIMENTS_TARGETS = sorted((ROOT / "src/archetype/experiments").rglob("*.py"))
 PUBLIC_API_SCAN_TARGETS = sorted((ROOT / "src/archetype").rglob("*.py"))
 
 ALLOWED_APP_IMPORTS_API = {
@@ -54,14 +47,6 @@ FORBIDDEN_APP_IMPORTS_API = {
     "archetype.app.query.service",
     "archetype.app.world.simulation",
     "archetype.app.world.service",
-}
-
-# Provisional outward package: portable data contracts only. Capabilities arrive
-# through the runtime.
-ALLOWED_APP_IMPORTS_EXPERIMENTS = {
-    "archetype.app.models",
-    "archetype.app.research.contracts",
-    "archetype.app.research.models",
 }
 
 # Raw-service shapes a @public_api callable may not accept.
@@ -92,20 +77,7 @@ SERVICE_PARAM_NAMES = {
 
 # Deprecated service-shaped bridge parameters, keyed "relpath::qualname".
 # Every entry carries its removal deadline; delete the entry with the bridge.
-PUBLIC_API_BRIDGE_PARAMS: dict[str, set[str]] = {
-    # remove in v0.6 — pre-runtime callers migrate to runtime=
-    "src/archetype/experiments/eval_rollouts.py::run_task_eval": {
-        "world_service",
-        "simulation_service",
-        "evaluation_service",
-    },
-    # remove in v0.6 — pre-runtime callers migrate to runtime=
-    "src/archetype/experiments/instruction_sweep.py::run_instruction_sweep": {
-        "world_service",
-        "simulation_service",
-        "evaluation_service",
-    },
-}
+PUBLIC_API_BRIDGE_PARAMS: dict[str, set[str]] = {}
 
 
 def _imported_modules(node: ast.AST) -> list[str]:
@@ -213,11 +185,6 @@ def main() -> int:
         v
         for path in API_TARGETS
         for v in _import_violations(path, ALLOWED_APP_IMPORTS_API, FORBIDDEN_APP_IMPORTS_API, "api")
-    ]
-    violations += [
-        v
-        for path in EXPERIMENTS_TARGETS
-        for v in _import_violations(path, ALLOWED_APP_IMPORTS_EXPERIMENTS, set(), "experiments")
     ]
     violations += [v for path in PUBLIC_API_SCAN_TARGETS for v in _public_api_violations(path)]
     if violations:

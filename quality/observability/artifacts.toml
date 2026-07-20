@@ -44,6 +44,20 @@ rationale = "Reconciliation reuses durable publication state; no additional sign
 # family under #558; dispositions cover only application-family ports.
 [[disposition]]
 operations = [
+  "interfaces.iTranscriptIngestionService.ingest",
+]
+signals = ["none"]
+outcomes = ["propagated_failure", "handled_outcome"]
+authority = "The source claim, lightweight trajectory reference, typed artifact rows, redaction receipt, and ingestion receipt prove the outcome."
+evidence = [
+  "docs/guide/artifacts.md",
+  "docs/guide/trajectories.md",
+  "tests/app/test_transcript_ingestion.py",
+]
+rationale = "Transcript ingestion composes existing durable authorities; a duplicate service signal would not add evidence."
+
+[[disposition]]
+operations = [
   "interfaces.iArtifactService.publish",
   "interfaces.iArtifactService.publish_evaluation",
   "interfaces.iArtifactService.snapshot_ref",

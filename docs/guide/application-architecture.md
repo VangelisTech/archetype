@@ -91,16 +91,17 @@ Repository package ownership is normative:
 |---|---|
 | Components, processors, pure DataFrame transforms, transition graphs, and reusable projections | `archetype.<family>` |
 | Supported family value contracts | `archetype.<family>.contracts` or another specifically named family module |
-| Durable authority, cross-family orchestration, internal service ports, and concrete implementations | `archetype.app.<family>` |
+| Capability-scoped resources and provider adapters implementing a family-owned protocol | A named subpackage of `archetype.<family>` |
+| Durable authority, cross-family orchestration, internal service ports, and concrete application services | `archetype.app.<family>` |
 | Transport, authentication, application facade, and composition | `archetype.api`, `archetype.app.gateway`, `archetype.app.application`, and `archetype.app.container` |
 
 A top-level domain-family package owns reusable ECS state and pure domain
 behavior. It may depend on `archetype.core`, itself, third-party libraries, and
-only reviewed lower top-level family contracts declared in
-`quality/architecture.toml`. It must not import `archetype.app`,
+only reviewed lower top-level family contracts declared in the merged
+architecture policy. It must not import `archetype.app`,
 `archetype.runtime`, `archetype.api`, or `archetype.cli`, and it does not
-configure providers, exporters, storage backends, process hosts, or the
-service container. The application layer may import a registered top-level
+configure process-global providers or exporters, storage backends, process
+hosts, or the service container. The application layer may import a registered top-level
 family contract; the reverse edge is forbidden. Undeclared top-level
 family-to-family dependencies are denied. Every first-party package or module
 directly beneath `archetype` is classified as reserved infrastructure or
@@ -110,6 +111,13 @@ family graph must be acyclic. Imports through the `archetype` root facade are
 resolved to the module that owns the exported package or symbol before these
 rules are applied. If its static export map cannot be parsed exactly, the audit
 fails rather than degrading root-facade enforcement.
+
+A reviewed family may own a capability-scoped `Resource` implementation or
+provider adapter when the protocol and lifecycle vocabulary belong to that
+family. It must not become process-global configuration or cross-family
+authority. `archetype.missions.sandboxes` is the concrete example: it executes
+mission requests, while the app workflow owns composition and the processors
+own transitions.
 
 Naming states semantic ownership:
 
@@ -128,13 +136,19 @@ symbol public. Supported names remain an explicit classification owned by
 [API Stability](api-stability.md); concrete services and `ServiceContainer`
 remain internal.
 
-The `archetype.missions` family is a leaf disposition with no allowed
-top-level family dependencies. It owns only persistent mission Components,
-component-local validation, world-state enums, and the pure completed-attempt
-transition graph. Its family-package exports are deliberate; none are added to
-the `archetype` root facade. Claims, recovery actions, execution
-authorization, redaction, storage integration, ports, errors, and concrete
-services remain under `archetype.app.missions`.
+The `archetype.missions` family consumes the lower `archetype.graph` family,
+as declared in `quality/architecture.d/missions.toml`. It owns mission/task Components,
+typed authoring and execution values, task relationships, DataFrame-first
+transition processors, reusable projections/resources, and coding-agent
+sandbox implementations. Sandboxes are mission-family resources; they are not
+peer application authorities. The family never imports app, runtime, API, or
+CLI code.
+
+`archetype.app.missions` owns durable mission composition and orchestration.
+For Agent Missions V1 that means graph materialization, tick/external-I/O
+coordination, observation staging, and result projection. Family-package
+exports are deliberate and do not promote a concrete application service to
+the `archetype` root.
 
 The application-authority layout is:
 
@@ -144,28 +158,36 @@ src/archetype/app/
   world/             world lifecycle, mutation, and simulation
   storage/           stores, catalog/control authority, backend construction
   query/             persisted ECS read paths
-  artifacts/         ingestion, publication claims, storage and indexes
+  artifacts/         ingestion, transcript workflows, publication claims, storage and indexes
   redaction/         pre-durability secret scanning, receipts and quarantine
   evaluation/        grading orchestration, snapshot pinning and receipt writes
   commands/          durable ledger, scheduling, dispatch, settlement
   gateway/           authorization policy boundary
   audit/             journals, outboxes, projections
   research/          autoresearch and multi-run research workflows
-  missions/          redaction-gated claims, fencing and orchestration
-  sandboxes/         provider-neutral isolated execution and live-handle lifetime
+  missions/          mission graph and external-I/O composition
+  physical_ai/       batched evaluation and instruction-sweep workflow
   errors.py          cross-family application error contracts
   container.py       sole concrete cross-family wiring root
 ```
 
-The mission-adjacent package map is adjudicated in
-[Agent Mission Transitions, section 7](agent-missions.md#7-adjacent-capability-package-map).
-It assigns the provisional experiment modules to a future `research` family,
-mission-owned trajectory modules, and a future `physical_ai` family; folds
-HTN under `archetype.missions` as its planning subdomain; folds dataset
-identity into `archetype.evaluation.contracts`; and creates no new top-level
-family edge. Those target packages enter this concrete layout only as their
-focused implementation issues land; the current source tree and manifest
-remain the implementation truth until then.
+The mission-adjacent cleanup direction is recorded in
+[Agent Missions V1, section 9](agent-missions.md#9-family-direction-after-v1).
+Dataset evidence identity has moved into evaluation and the datasets umbrella
+is gone. HTN resolution now lives under `archetype.missions.planning`. The
+physical-AI Components, processors, policy contracts, and external-boundary
+helpers now live in the registered `archetype.physical_ai` family. Research
+ledger Components and the pure runner decoder live in `archetype.research`,
+while `archetype.app.research` retains workflow authority. Typed trajectory
+schemas and pure transforms live under `archetype.missions.trajectories`; the
+mission trajectory service composes query and evaluation ports. Physical
+evaluation values and pure instruction optimization live under
+`archetype.physical_ai`, while `archetype.app.physical_ai` composes the world,
+mutation, simulation, and evaluation ports. Claude transcript parsing now lives
+under `archetype.missions.trajectories`; `archetype.app.artifacts` owns its
+redact-before-durability workflow. The former production
+`archetype.experiments` umbrella is gone. The repository-root `experiments/`
+directory remains a consumer-side harness, not a package or authority family.
 
 Every application family co-locates its internal protocols, boundary models,
 and authority implementation. It imports reusable domain values from their
@@ -247,13 +269,12 @@ gateway, runtime, API, or CLI boundary.
 | Simulation | Step, run, episode, and rollout | World port plus named command-drain and quota-reset callables |
 | Query | Persisted ECS reads, durable discovery, and compatibility history reads | Storage and audit ports |
 | Redaction | Provider-neutral secret scanning, deterministic text redaction, safe receipts and quarantine | None |
-| Artifacts | Durable ingestion, immutable content, contextual links, publication claims and indexes | Redaction, storage and world-coordinate ports |
+| Artifacts | Durable ingestion, immutable content, coding-agent transcript normalization, contextual links, publication claims and indexes | Redaction, storage and world-coordinate ports |
 | Evaluation | Snapshot pinning, grader contracts, grading, evidence and durable receipts | Query and artifact ports |
 | Commands | Durable admission, order, leasing, dispatch, retry, settlement and dead letters | Control catalog plus world and mutation ports |
 | Audit | Transactional journal/outbox and analytical projection | Storage or control-authority ports |
 | Research | Multi-run research workflows | World and simulation ports plus explicit evaluator callbacks |
-| Missions | App-internal validator normalization, redaction-gated policy-bound attempt identity, provider-submission claims, single-use provider-call grants, runner-lifetime lease supervision, fencing, structural attempt orchestration, retry/exhaustion and evidence gates; consumes the top-level mission world domain | Redaction port, storage control catalog, injected structural sandbox runner and mission-owned artifact-finalizer port |
-| Sandboxes | Six-phase attempt execution, provider registry, checkpoints, and live handles | App-owned mission execution authorization, admission callback, and recovery action; provider adapters point inward |
+| Missions | Graph materialization, tick/external-I/O composition, terminal projection, and trajectory query/evaluation composition. Family processors retain transition authority; trajectory evidence cannot advance tasks. | Consumes a structural mission world and the family-owned sandbox resource. Trajectory reads consume query and evaluation ports. |
 | RuntimeApplication | Canonical actor-free application facade and per-world operation serialization | Approved family workflow ports only |
 | CommandGateway | Authorization, safe downgrade, access-audit notification, delegation | RuntimeApplication port, authorizer, audit-journal port |
 | ServiceContainer | Concrete construction, ownership, and callback wiring | Every concrete implementation it constructs |
@@ -296,9 +317,10 @@ Durability is family-specific rather than one service-level flag:
 | Deferred command admission | Command ledger | `PENDING` record, order, payload version and principal/origin are durable |
 | Tick | Store plus commit coordinator | All tick rows are durable and the visibility manifest is published |
 | Deferred command outcome | Commit coordinator plus command ledger | Terminal applied outcomes settle atomically with the manifest that makes them visible |
-| Mission provider submission | Mission attempt claim plus redaction and control authorities | Canonical request/provider metadata are quarantined before claim creation; the immutable policy ID, normalized request, runner metadata, and typed scan receipts are durable under a continuously renewed live fence; sanitized outcome/error plus receipts precede projection and terminal CAS |
-| Mission indexed finalization | Mission attempt claim plus artifact publication outbox and index | Sanitized outcome and exact prepared request are staged before object/index I/O; the claim authority rereads the matching terminal `INDEXED` or `EXPIRED` catalog row, produces the claim-bound sealed settlement, settles the claim, and then `require_settled` rereads/authenticates the durable winner before the execution service's private row projection |
+| Agent Mission dispatch | Mission world tick plus post-tick outbox | A `dispatched` task row is durably visible before any sandbox request leaves the world |
+| Agent Mission acceptance | Mission processors plus world tick | Revision-bound validation, execution, and pushed-commit observations are staged as data; the next task-decision tick accepts, retries, or exhausts the task |
 | Artifact ingestion | Artifact workflow plus publication claim | Content/rows are durable and their contextual index is published |
+| Coding-agent transcript | Source claim, redaction authority, and typed artifact table | The complete source is sanitized and parsed before the claim; the claim precedes the idempotent typed-row append so changed content conflicts before row durability |
 | Evaluation | Evaluation workflow | Subject and grader contract are pinned and the typed receipt is published |
 | Audit | Transactional outbox plus projection | Authoritative event is durable; analytical Iceberg projection may lag |
 
@@ -314,8 +336,10 @@ commands-family drain callback at the tick boundary.
 
 `ArtifactService` owns claim-backed component publication;
 `ArtifactTableService` owns typed file/row ingestion. Both are artifact-family
-workflows. Durable external material is described as an artifact, evidence
-object, typed dataset row, or evaluation receipt—never as a universal fact.
+authorities. `ClaudeTranscriptIngestionService` composes those ports with
+redaction and the pure missions parser; it creates no third storage authority.
+Durable external material is described as an artifact, evidence object, typed
+dataset row, or evaluation receipt—never as a universal fact.
 
 ## 8. Protocol policy and wiring
 
@@ -338,32 +362,18 @@ implementations across families. It constructs both outward application paths:
 ```text
 container.application -> RuntimeApplication
 container.command_gateway -> CommandGateway
-container.mission_attempt_workflow(storage_config)
-  -> storage-bound claim + artifact finalizer + execution services
+container -> RuntimeApplication.agent_mission_service -> iMissionService
 ```
 
 Runtime and API lifespan code may construct or receive the internal container,
 but ordinary runtime and route modules consume only their approved port.
 
-`app/missions/execution_service.py` is a family-internal orchestrator, not a
-composition root. It receives `iMissionService` and
-`iMissionAttemptClaimService`, `iMissionArtifactFinalizer`, and the
-mission-owned structural sandbox runner from its caller. It may not import a
-sandbox implementation, storage catalog, or another application family.
-`app/application/mission_artifacts.py` is the narrow cross-family workflow
-adapter: it implements the mission-owned finalizer port over
-`iArtifactBundleService` and immutable boundary models, without importing an
-artifact concrete service. The container remains the sole concrete
-cross-family composition root. Its mission workflow factory requires an
-explicit `StorageConfig` and binds both the claim catalog and artifact adapter
-to that same identity; cold recovery never discovers or defaults storage from
-live world state.
-
-`MissionAttemptClaimService` is a reviewed missions-to-redaction dependency and
-has no optional scanner path. Any composition site constructing it must inject
-`iRedactionService` together with the control catalog. Mission orchestration
-consumes the claim port; it does not fork redaction policy or scan with a
-sandbox-specific filter.
+For Agent Missions V1, the container injects the concrete `MissionService`
+factory into `RuntimeApplication`. `RuntimeMissions` supplies a runtime-owned
+world factory and supported mission configuration, then consumes only the
+returned `iMissionService` port. The app service installs the built-in
+processor/resource bundle and owns mission-world lifecycle; the runtime handle
+does not import or construct a concrete app service.
 
 Concrete services compose collaborators and never inherit another concrete
 service. Intentional inheritance is limited to components, processors,
@@ -438,10 +448,17 @@ evaluation ownership, and co-located protocols are implemented. Runtime calls
 do not fabricate `ActorCtx`; API routes depend on `iCommandGateway`; concrete
 services and the container are not top-level exports.
 
-`quality/architecture.toml` and the fragments in `quality/architecture.d/`
-contain both the application-family DAG and the registered top-level family
-dispositions for `artifacts`, `datasets`, `evaluation`, `experiments`,
-`graph`, `htn`, `missions`, `projections`, and `research`.
+Agent Missions V1 is implemented under `archetype.missions`,
+`archetype.app.missions.service`, and `archetype.runtime.missions`. The
+top-level mission-family edge to `archetype.graph` is machine-declared and
+supports temporal `DependsOn` and `PartOfMission` entities plus previous-tick
+`GraphView` joins. Coding-agent and sandbox implementations remain subordinate
+resources within the mission family.
+
+`quality/architecture.toml` contains the scalar policy and application-family
+DAG. Per-family fragments under `quality/architecture.d/` register the
+top-level dispositions for `artifacts`, `evaluation`, `graph`, `missions`,
+`physical_ai`, `projections`, and `research`.
 `scripts/check_architecture.py` enforces their package direction, protocol
 imports, concrete construction, concrete inheritance, and persistent
 Component placement.
@@ -462,16 +479,15 @@ digests live in `archetype.evaluation.contracts`, and
 `archetype.app.evaluation` retains orchestration and receipt-write authority
 while importing those domain definitions inward.
 
-The remaining reverse edges from provisional `archetype.experiments` and the
-remaining Components under app-family `models.py` are preserved only by exact
-migration entries. The design gate in #561 has been adjudicated: research
-Components and runner imports now point to #585, trajectory recorder imports
-point to #586, and physical-AI rollout/sweep reverse imports point to #589.
-The transcript, physical-AI domain, ontology, HTN-adapter, and final
-umbrella-removal stages are Issues #587, #588, #590, #591, and #592. No
-architecture exception remains owned by Issue #561. Mission Components and
-pure world transitions moved under Issue #559, so no mission migration
-exception remains. These entries make no app symbol supported.
+The research, trajectory, physical-AI, physical-workflow, ontology, HTN, and
+transcript stages have landed. The physical workflow is reachable only through
+`RuntimeApplication` and `ArchetypeRuntime`; its former raw-service bridges and
+all six Issue #589 architecture exceptions are gone. Transcript publication is
+reachable through the runtime, writes only sanitized narrative to typed
+artifact rows, and retains lightweight mission linkage as claim-backed
+Components. The provisional `archetype.experiments` package and its two unsafe
+logging exceptions are gone. The architecture manifest currently has no owned
+migration exceptions.
 
 Independent manifests under `quality/observability/` declare each family's
 operation dispositions. `scripts/check_observability.py` enforces their exact
@@ -481,56 +497,6 @@ syntax and exclusivity but does not invent call graphs or runtime topology: the
 three existing gateway decorators remain children, and Issue #515 owns
 coherent ingress roots. The existing footgun reviewer complements this
 deterministic audit with semantic observability review.
-
-`MissionService` remains app-internal pure transition authority over persisted
-row values and now consumes `archetype.missions`; the mechanical extraction
-does not rename or promote it.
-The same family now owns `MissionAttemptClaimService`, a control-catalog-backed
-pre-execution authority. It durably fences external provider submission and
-stores replayable terminal outcomes, but owns no provider client and cannot
-advance a task outside the world tick commit boundary. Its required redaction
-port quarantines canonical request/provider/acknowledgement and semantic outcome
-identity before each durable edge, binds the policy ID into immutable claim
-identity, and stores typed phase receipts. Narrative outcome/error values are
-redacted before projection or terminal CAS; the original finding receipt is
-preserved. Non-terminal policy drift fails closed, while settled sanitized
-replay remains readable. Arm mints one execution nonce for the fence; catalog
-consumption is atomic, single-use, live-lease checked, and required before
-provider preparation. Acknowledgement requires a consumed grant.
-`MissionAttemptExecutionService` is the family-local structural path joining
-claim acquisition/arm, grant consumption, provider acknowledgement, direct-row
-application, indexed artifact finalization, claim settlement, settled-row
-application, and terminal replay.
-`MissionService` normalizes
-validators before claim acquisition and persists the retry budget and
-finalization threshold in request identity. It also persists the first
-observation tick as non-identity evidence, and recovery restores that durable
-request before runner or artifact work. The execution service derives
-provider metadata from the selected runner rather than accepting an unrelated
-caller value. It supervises the entire runner lifetime with a lease heartbeat,
-cancels and awaits its local child tasks on failure or caller cancellation, and
-renews once after completion before staging, direct application, or settlement.
-Remote provider cancellation is adapter-specific; unresolved work remains
-`possibly_submitted` for reconciliation. Provider-accepted results require
-consumed-grant evidence; checkpoint provider and agent session evidence must
-match the claim. For an indexed policy, accepted and rejected recoverable
-outcomes enter `finalizing` with an exact prepared artifact request before any
-publication I/O. Recovery resumes that request through the artifact outbox and
-never invokes the runner. Only a bound terminal indexed or expired catalog row
-can produce the service-sealed finalization settlement; process-local receipts
-cannot, and generic settlement cannot finish a finalizing claim. Public
-`MissionService.apply_attempt` categorically rejects an indexed phase and any
-artifact staging, linkage, finalized authority, or nonzero snapshot. The claim
-service must authenticate the terminal row and settle first; the execution
-service then calls `require_settled(world_id, claim_key)` to reread and
-authenticate the durable winner before invoking an implementation-private
-mission row transformer and the ordinary world commit. `iMissionService`
-exposes no settled-projection method, and a detached or caller-replaced
-`AttemptClaim` DTO is never authority. Provider capability metadata never
-authorizes execution; uncertain and acknowledged claims reconcile. The sandbox
-family consumes only the mission-owned immutable execution authorization,
-callbacks, and recovery action; it does not import the claim service or storage
-catalog.
 
 Other deliberately retained implementation seams are documented rather than
 hidden: `QueryService` uses `iAuditLog` for compatibility history reads, and

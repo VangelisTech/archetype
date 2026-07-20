@@ -8,10 +8,9 @@ machine authority; this page is its review surface.
 | Contract | Owner | Risk | Normative source | Executable evidence | Profiles |
 | --- | --- | --- | --- | --- | --- |
 | `observability.signals.safe` | `observability` | high | [docs/guide/observability.md](../guide/observability.md) — 1. Safe signal contract | pytest: 2 | `pr`, `main`, `release` |
-| `observability.logging.correlated` | `observability` | medium | [docs/guide/observability.md](../guide/observability.md) — 5. Process-host ownership | pytest: 3 | `pr`, `main`, `release` |
+| `observability.logging.correlated` | `observability` | medium | [docs/guide/observability.md](../guide/observability.md) — 5. Process-host ownership | pytest: 2 | `pr`, `main`, `release` |
 | `observability.repository.enforced` | `observability` | high | [docs/guide/observability.md](../guide/observability.md) — 6. Family dispositions | pytest: 2; static: 1 | `pr`, `main`, `release` |
-| `sandboxes.attempt.phase_order` | `sandboxes` | high | [docs/guide/sandbox-execution.md](../guide/sandbox-execution.md) — 3. Six-phase attempt protocol | pytest: 2; static: 1; eval: 1 | `pr`, `main`, `release` |
-| `sandboxes.environment.pinned` | `sandboxes` | high | [docs/guide/sandbox-execution.md](../guide/sandbox-execution.md) — 9. Pinned environment inventory | pytest: 3; static: 1 | `pr`, `main`, `release` |
+| `missions.environment.pinned` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 5. Sandbox and validator protocol | pytest: 3; static: 1 | `pr`, `main`, `release` |
 | `architecture.dependencies.enforced` | `app` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 11. Static enforcement | pytest: 1; static: 1; eval: 2 | `pr`, `main`, `release` |
 | `architecture.protocols.complete` | `app` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 8. Protocol policy and wiring | pytest: 1; static: 1; eval: 1 | `pr`, `main`, `release` |
 | `runtime.trust.actor_free` | `runtime` | high | [docs/guide/runtime.md](../guide/runtime.md) — R3 — Runtime is actor-free | pytest: 1; static: 1; eval: 1 | `pr`, `main`, `release` |
@@ -28,6 +27,7 @@ machine authority; this page is its review surface.
 | `storage.cache.concurrent_no_loss` | `storage` | high | [docs/guide/stores.md](../guide/stores.md) — Write-Behind Cache | pytest: 1; eval: 2; benchmark: 1 | `pr`, `main`, `release` |
 | `artifacts.publication.exactly_once_visible` | `artifacts` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 3. The claim lifecycle | pytest: 1; eval: 4 | `pr`, `main`, `release` |
 | `evaluation.receipt.snapshot_pinned` | `evaluation` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 7. Evaluation receipts: claim-before-grade | pytest: 1; eval: 2 | `pr`, `main`, `release` |
+| `artifacts.transcripts.redacted_claim` | `artifacts` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 13. Coding-agent transcript artifacts | pytest: 2; static: 1 | `pr`, `main`, `release` |
 | `evaluation.ontology.separated` | `evaluation` | medium | [docs/guide/dataset-eval-ontology.md](../guide/dataset-eval-ontology.md) — 1. The contract in one view | pytest: 1; eval: 1 | `pr`, `main`, `release` |
 | `audit.append_only.evidence` | `audit` | high | [docs/guide/audit-log.md](../guide/audit-log.md) — 2. Append-only invariant | pytest: 1; eval: 1 | `pr`, `main`, `release` |
 | `simulation.episode.termination` | `world` | medium | [docs/guide/specification.md](../guide/specification.md) — Run contract | pytest: 1; eval: 3 | `pr`, `main`, `release` |
@@ -36,10 +36,8 @@ machine authority; this page is its review surface.
 | `storage.remote.control_parity` | `storage` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 10. Supported durability profile | pytest: 2; static: 1 | `main`, `release` |
 | `artifacts.bundle.publication_replay` | `artifacts` | high | [docs/guide/artifact-finalization.md](../guide/artifact-finalization.md) — 5. Publication state machine | pytest: 4 | `pr`, `main`, `release` |
 | `artifacts.bundle.recovery_server_clock` | `artifacts` | high | [docs/guide/artifact-finalization.md](../guide/artifact-finalization.md) — 6. Reconciler contract | pytest: 4 | `pr`, `main`, `release` |
-| `missions.transition.evidence_gated` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 2. Typed mission/task/attempt transition graph | pytest: 2; static: 1; eval: 1 | `pr`, `main`, `release` |
-| `missions.attempt.claim_fenced` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 5. Durable pre-execution claim and recovery | pytest: 6; static: 1; eval: 1 | `pr`, `main`, `release` |
-| `missions.attempt.indexed_finalization` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 5. Durable pre-execution claim and recovery | pytest: 9; static: 2; eval: 1 | `pr`, `main`, `release` |
-| `security.redaction.pre_durability` | `redaction` | high | [docs/guide/artifact-finalization.md](../guide/artifact-finalization.md) — 4. Pre-durability secret redaction | pytest: 12; static: 2; eval: 1 | `pr`, `main`, `release` |
+| `missions.agent_v1.validator_gated` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 4. State and transition protocol | pytest: 6; static: 2; eval: 1 | `pr`, `main`, `release` |
+| `security.redaction.pre_durability` | `redaction` | high | [docs/guide/artifact-finalization.md](../guide/artifact-finalization.md) — 4. Pre-durability secret redaction | pytest: 3; static: 2; eval: 1 | `pr`, `main`, `release` |
 
 Profile membership states where a contract must be enforced. Eval suite
 blocking/advisory policy is defined separately in `quality/eval_profiles.toml`;

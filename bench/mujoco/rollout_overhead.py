@@ -32,7 +32,7 @@ os.environ.setdefault("LOGFIRE_SEND_TO_LOGFIRE", "false")
 
 from archetype import ArchetypeRuntime
 from archetype.core.config import StorageConfig
-from archetype.experiments.mujoco_cartpole import (
+from archetype.physical_ai.mujoco_cartpole import (
     DEFAULT_SUBSTEPS,
     CartpoleState,
     CartpoleStepProcessor,

@@ -391,8 +391,10 @@ class RedactionService:
         temporary = destination.with_name(f"{destination.name}.redacting")
         findings: Counter[str] = Counter()
         snapshot_bytes = 0
+        source_digest = ""
         try:
             snapshot_bytes = self._copy_snapshot(source, destination, scope=scope)
+            source_digest = self._digest_file(destination)
             if zipfile.is_zipfile(destination):
                 self._scan_zip(destination, scope=scope)
             elif tarfile.is_tarfile(destination):
@@ -423,12 +425,21 @@ class RedactionService:
 
         return RedactedFile(
             path=destination,
+            source_digest=source_digest,
             receipt=self._receipt(
                 scope,
                 scanned_bytes=snapshot_bytes,
                 findings=findings,
             ),
         )
+
+    @staticmethod
+    def _digest_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            while chunk := stream.read(1 << 20):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     @staticmethod
     def _copy_snapshot(source: Path, destination: Path, *, scope: str) -> int:

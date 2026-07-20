@@ -1,0 +1,18 @@
+version = 1
+owner = "physical_ai"
+family = "physical_ai"
+
+[[disposition]]
+operations = [
+  "interfaces.iPhysicalAIService.evaluate_task",
+  "interfaces.iPhysicalAIService.sweep_instructions",
+]
+signals = ["none"]
+outcomes = ["propagated_failure", "handled_outcome"]
+authority = "Persisted ManipStatus and ManipTask rows under the returned world/run identity, plus the typed ledger-derived report, remain authoritative."
+evidence = [
+  "docs/guide/physical-ai.md",
+  "tests/app/physical_ai/test_task_evaluation.py",
+  "tests/app/physical_ai/test_instruction_sweep.py",
+]
+rationale = "Physical evaluation produces queryable ledger evidence; a second workflow signal would duplicate rather than strengthen that authority."

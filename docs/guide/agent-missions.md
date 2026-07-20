@@ -1,940 +1,543 @@
-# Agent mission transitions
+# Agent Missions V1
 
-**Document type:** Normative.
+**Document type:** Normative V1 contract.
 
-**Scope:** Reusable mission ECS state and pure transitions under
-`src/archetype/missions/`, plus durable attempt authority and orchestration
-under `src/archetype/app/missions/`.
+**Status:** Implemented.
 
-This specification owns when a coding task may advance. Sandbox execution,
-provider credentials, artifact publication, and repository automation are
-separate capabilities and cannot bypass this authority.
+Agent Missions is Archetype's first software factory. An author submits a
+repository, a branch, and a graph of coding tasks guarded by the repository's
+own validators. Archetype records the graph, commits every decision as world
+state, and advances work only when current evidence permits the transition.
 
-## 1. Ownership and persistence boundary
+Archetype does not own how an agent writes code. It owns **when work may
+start, which observations may advance it, and why every transition occurred**.
 
-The top-level `archetype.missions` domain owns:
+> **The V1 contract**
+>
+> Tasks and validators are entities. Dependencies are relations. Processors
+> are the transition authority. A dispatch is committed intent. Agent and
+> sandbox activity are observations. Only validator results bound to the
+> current dispatch and repository revision can accept a task.
 
-- the persistent `Mission`, `TaskGate`, `Attempt`, `Checkpoint`,
-  `Finalization`, `Commit`, `Evidence`, and `FrictionLog` Components;
-- their component-local validators and serialization contracts;
-- mission, task, completed-attempt, checkpoint, and finalization value enums;
-- the pure mission/task/attempt world-transition graph and deterministic
-  validation; and
-- no claim, storage, authorization, provider, or orchestration authority.
+## 1. The contract in one view
 
-The internal `archetype.app.missions` family owns:
-
-- immutable task-plan parsing;
-- deterministic task and attempt identity;
-- durable provider-submission claims, leases, and fences;
-- fail-closed recovery decisions and claim-fenced attempt orchestration;
-- retry and exhaustion policy;
-- validator, commit, checkpoint, and finalization gates;
-- the typed attempt-claim transition graph; and
-- application DTOs, errors, ports, and concrete services.
-
-It does not own a provider client, live sandbox handle, credential, world
-lifecycle, or ingress authorization decision. `MissionService` remains an
-app-internal pure transformer over one persisted ECS row and consumes the
-top-level mission transition domain. This extraction does not promote or
-rename that service. A world processor may call it, but the world tick remains
-the commit boundary for the returned row.
-
-`MissionAttemptClaimService` is the separate control-plane authority used
-before external provider I/O. It persists through the storage family's
-`ControlCatalog`, because a submission fence must be durable before a world
-tick can contain the completed result. Claim durability never advances a task;
-only the ordinary world commit can make the corresponding completed-attempt
-edge visible.
-
-`MissionAttemptExecutionService` is the supported structural orchestration
-path. It joins `MissionService`, `MissionAttemptClaimService`, and an injected
-`FencedAttemptRunner` without importing a sandbox implementation. Production
-callers do not manually interleave claim, sandbox, row-transition, and
-settlement operations. For an indexed gate it also consumes the mission-owned
-`iMissionArtifactFinalizer` port; the application layer adapts that port to the
-artifact family without giving either family authority over the other's state
-machine.
-
-The Components and world-state types above are exported from
-`archetype.missions` and defined once in `components.py` and `transitions.py`.
-They are not re-exported from `archetype.app.missions` or the `archetype` root.
-The component columns are strings because LanceDB's Pydantic-to-Arrow bridge
-does not support Python enum fields. That storage constraint does not make
-states free-form: `MissionStatus`, `TaskStatus`, `AttemptStatus`,
-`CheckpointStatus`, `FinalizationPhase`, and `MissionTransitionEvent` are the
-only accepted values. Component validators reject invalid construction, and
-`MissionTransitionGraph` parses every persisted value again before use.
-
-The control catalog has the same typed-state rule. `AttemptClaimStatus`,
-`AttemptClaimEvent`, and `AttemptClaimTransitionGraph` own every persisted
-submission edge; storage adapters implement compare-and-swap persistence but
-do not invent recovery policy.
-
-Completed checkpoint state is `created`, `failed`, or `disabled`; `pending` is
-the component's pre-attempt default. The sandbox family's transport-level
-`ready` outcome is translated explicitly to durable `created` at
-`MissionService.apply_attempt`. This boundary translation keeps the two
-families independent while preserving one persisted vocabulary.
-
-## 2. Typed mission/task/attempt transition graph
-
-One immutable graph owns the state of all three scopes. Its source is the
-persisted `(mission status, current-task status)` pair. Its edge records one
-attempt result and its event. Its target is the next persisted mission/task
-pair.
-
-Legal source pairs are:
-
-| Mission | Current task | Meaning |
-|---|---|---|
-| `ready` | `ready` | No attempt has completed. |
-| `running` | `ready` | A prior task advanced and the next task is ready. |
-| `running` | `retryable` | The current task retained control after an unsuccessful attempt. |
-
-Each active source admits the same eight explicit edges:
-
-| Event | Attempt | Target mission | Target task |
-|---|---|---|---|
-| `rejected_retry` | `rejected` | `running` | `retryable` |
-| `incomplete_retry` | `incomplete` | `running` | `retryable` |
-| `failed_retry` | `failed` | `running` | `retryable` |
-| `rejected_exhausted` | `rejected` | `failed` | `exhausted` |
-| `incomplete_exhausted` | `incomplete` | `failed` | `exhausted` |
-| `failed_exhausted` | `failed` | `failed` | `exhausted` |
-| `task_advanced` | `accepted` | `running` | `ready` |
-| `mission_succeeded` | `accepted` | `succeeded` | `passed` |
-
-Terminal states have no outgoing edge. A row outside this graph fails closed;
-the service does not repair it by guessing.
-
-Every completed attempt persists its graph edge in `Attempt`:
-
-- `mission_status_before` and `task_status_before`;
-- `transition_event` and authoritative terminal `status`;
-- `mission_status_after` and `task_status_after`; and
-- the provider's raw terminal status separately as `provider_status`.
-
-Append-only world history therefore retains the edge even when a successful
-multi-task attempt selects the next task in the same committed row.
-
-## 3. Attempt and evidence gate
-
-`prepare_attempt`:
-
-1. parses and validates the persisted source state;
-2. selects the immutable plan entry at `step_index`;
-3. validates the non-empty prompt and deterministically normalizes every
-   validator;
-4. requires coherent attempt counters below `max_attempts`;
-5. derives the next positive attempt index;
-6. parses the typed minimum finalization phase;
-7. hashes the canonical full plan into a stable plan identity;
-8. hashes world, run, entity, source state, plan, task, and attempt identity
-   together with `max_attempts` and the finalization threshold into one
-   deterministic idempotency key; and
-9. derives stable mission, task, attempt, and semantic request identities that
-   retain both policy values.
-
-Validator normalization requires at least one validator, unique non-empty
-names, no caller-supplied reserved `git_tree_change` gate, a non-empty command
-sequence containing only strings, a numeric `expected_returncode`, and a
-positive numeric `timeout_seconds`. Omitted values canonically default to
-return code `0` and timeout `900` seconds. This happens during
-`prepare_attempt`, before claim acquisition or arming, so malformed or
-ambiguous validator input cannot create provider-submission state.
-
-The request carries its source state, step index, full-plan identity,
-normalized validators, `max_attempts`, required finalization phase,
-provider-neutral request fingerprint, and the stable correlation needed to
-reconstruct it after process loss. The request also persists the exact
-non-negative `observation_tick` at which the claim was first prepared. That
-tick is evidence, not provider-submission identity: it is excluded from the
-request fingerprint, idempotency key, provider fingerprint, and claim key.
-Preparing an otherwise unchanged task on a later tick therefore reacquires the
-same claim and restores the first durable request rather than replacing its
-observation. Artifact preparation derives its bundle tick only from that
-persisted value. Migrated v7 requests, which predate the field, recover with
-`observation_tick = 0`.
-
-`apply_attempt` rejects a stale request if any of them, the retry budget, or the
-required finalization phase changed before settlement. This prevents an
-in-flight result from becoming final or advancing against policy or a plan that
-was edited after execution began, even when its current step text stayed
-unchanged.
-
-An attempt advances only when all of the following hold:
-
-- the receipt identity matches the request;
-- validator details are non-empty JSON objects;
-- the provider reports an accepted result;
-- a checkpoint has `created` status, a non-empty state reference, and is
-  restorable;
-- finalization meets the task's typed minimum phase; and
-- a non-empty commit SHA exists.
-
-Provider acceptance without complete recovery/finalization evidence becomes
-the authoritative attempt state `incomplete`. It is not silently treated as
-success. Rejection, incomplete evidence, and provider failure remain committed
-attempts and retain the current task until the retry budget is exhausted.
-
-## 4. Tick and task advancement semantics
-
-A world tick is a commit opportunity, not a synonym for model execution. A
-processor may execute no attempt, one attempt, or only recovery work. An
-unsuccessful attempt does not abort the tick: the rejected or incomplete graph
-edge is valuable state and must remain queryable.
-
-For a successful non-final task, the same output row records the accepted
-attempt edge and selects the next task with status `ready` and attempt count
-zero. For the final task, the graph enters `succeeded/passed`. Exhaustion enters
-`failed/exhausted`. Booleans such as `finished`, `succeeded`, and `passed` are
-compatibility projections and must agree with their typed status.
-
-Only the world's ordinary two-phase tick commit makes a returned transition
-durable and visible. `MissionService` never writes around that boundary.
-
-## 5. Durable pre-execution claim and recovery
-
-No sandbox or model invocation is authorized until a deterministic attempt
-claim is durable. Its immutable identity binds world, run, mission, task,
-attempt, mission idempotency key, canonical request JSON, request fingerprint,
-normalized validators, retry and finalization policy, provider identity,
-provider request fingerprint, and declared recovery capabilities. On the
-supported path, those provider fields come directly from
-`runner.provider_execution_capabilities`, which fingerprints the selected
-adapter and its effective execution specification. The caller cannot pair an
-unrelated capability record with the runner. Reusing a claim identity with
-changed immutable input is a conflict.
-
-`MissionAttemptClaimService` requires an injected `iRedactionService`; there is
-no unscanned construction path. Before the first catalog claim, it scans the
-canonical request JSON and runner-derived provider capabilities. A finding in
-either semantic payload raises typed quarantine and leaves no claim row. The
-active `redaction_policy_id` is included in the immutable claim fingerprint, so
-the same request and provider under a different policy are not silently treated
-as equivalent.
-
-Each accepted phase retains a typed `RedactionReceipt` in the claim's fixed
-redaction-evidence schema:
-
-| Evidence key | Input and disposition |
+| Primitive | Responsibility |
 |---|---|
-| `request` | Canonical mission request; any finding quarantines before claim creation. |
-| `provider` | Runner provider identity and capability metadata; any finding quarantines before claim creation. |
-| `acknowledgement` | Provider session/request identity; any finding quarantines before acknowledgement CAS. |
-| `outcome` | Semantic identity and references quarantine; narrative values are deterministically redacted. |
-| `last_error` | Narrative error text is redacted and bounded before terminal CAS. |
+| World | The durable state machine for missions, tasks, relations, dispatches, executions, and outputs. |
+| Mission | Names one repository objective and rolls its task graph into one result. |
+| Task | Holds one atomic goal, workflow state, retry policy, and repository coordinates. |
+| Validator | Describes one executable acceptance check; `Guards` relates it to a task. |
+| Relations | Express membership, dependencies, execution placement, and provenance without serialized plans. |
+| Processors | Decide readiness, dispatch, retry, failure, acceptance, and mission rollup. |
+| `TaskDispatch` | Records committed permission to perform a particular task revision. It is intent, not an attempt object. |
+| `AgentExecution` | Records what an agent process did for a dispatch. It never says whether the task was accepted. |
+| Sandbox | Records the lifecycle of an isolated filesystem and process container. It never says whether the task was accepted. |
+| Outputs | Record validator results, commits, checkpoints, manifests, friction, and published artifacts. |
+| Sandbox service | Owns backend selection and live session lifetime; it has no workflow authority. |
+| Application service | Materializes the graph, crosses committed I/O boundaries, stages observations, and returns projections. |
 
-All receipts carry the same policy ID and contain counts and rule IDs, never
-matched text. The catalog retains immutable acquisition evidence separately
-from the evolving latest phase evidence, so later acknowledgement or settlement
-cannot weaken reacquisition checks. If outcome redaction finds a narrative
-secret, settlement preserves that original finding receipt; a defensive rescan
-of the sanitized value cannot replace it with a misleading clean receipt.
+The governing separation is:
 
-Outcome fields that determine source meaning or recovery are never rewritten.
-Attempt and provider IDs, idempotency and request fingerprints, statuses,
-session and checkpoint identity, artifact/trace/filesystem/Git/context
-references, commit SHA, validator names and command arguments, and result keys
-are safe-metadata fields. A finding in one of those fields quarantines the
-outcome without projection or settlement. Narrative fields such as validator
-output, friction, messages, and error detail may be redacted. The only
-subsequent semantic advancement is the claim-owned `finalizing -> settled`
-upgrade described below: it preserves the staged source outcome and adds the
-exact authority from the durable `INDEXED` row. The sanitized outcome is
-validated before either current-write projection or a catalog CAS. Public
-`MissionService.apply_attempt` is intentionally narrower: it categorically
-rejects an `indexed` phase and any current artifact staging, linkage, finalized
-authority, or nonzero snapshot. Only the execution service may project those
-fields: it asks the storage-bound claim service to
-`require_settled(world_id, claim_key)`, then immediately invokes the mission
-service's private settled-row transformer. The authority is that durable
-reread, never a detached or caller-replaced `AttemptClaim` value, so a caller
-cannot create artifact authority with a self-consistent-looking outcome. Only
-the redacted error and canonical claim outcome are eligible for a catalog CAS.
+```text
+Archetype owns transitions as data.
+The sandbox owns isolated filesystem and process capabilities.
+The agent execution records what happened.
+The repository harness owns acceptance.
+```
 
-Policy drift fails closed for every non-terminal claim operation, including
-renewal, grant consumption, acknowledgement, outcome preparation, and
-settlement. A settled claim remains readable after policy rollout: duplicate
-acquisition and terminal replay use its persisted policy identity and sanitized
-outcome without mutating or reinterpreting the historical record.
+Daft evaluates state transforms and joins. It does not keep an agent process
+alive or schedule a Modal sandbox. External work begins only after the tick
+containing its dispatch has committed.
 
-Acquisition is a fenced lease:
+## 2. Public authoring surface
 
-- the first claimant creates `claimed` at fence epoch one;
-- the same live claimant observes `owned` without changing the fence;
-- a different claimant cannot acquire a live lease;
-- after expiry, one recovery claimant takes ownership at the next fence epoch;
-- callers use a unique claimant identity for each worker incarnation rather
-  than a shared pool or deployment name;
-- a database uniqueness constraint permits only one claim key for each
-  `(world, mission, task, attempt)` identity;
-- every renew or transition is a claimant-and-fence compare-and-swap, so a
-  displaced worker cannot acknowledge or settle; and
-- a settled claim replays as `duplicate` instead of creating new work.
+Configuration happens once. Authors submit typed values; they do not construct
+Components, wire processors, manage `GraphView`, or serialize a plan.
 
-Before returning an `execute` authorization, the service durably transitions
-`claimed -> possibly_submitted` through `arm_submission` and stores a fresh,
-opaque execution nonce for that fence. The authorization carries this
-single-use grant, but the official sandbox path must still consume it through
-the catalog immediately before provider preparation or invocation. This
-ordering is deliberately conservative: a crash immediately before the network
-send and a crash immediately after it both recover as `possibly_submitted`.
-Catalog state therefore never asserts that an external request was not sent
-when it cannot prove that fact.
+```python
+import asyncio
 
-Arm is a strict status compare-and-swap, not an idempotent same-target write.
-If two decisions race under the same claimant and fence, exactly one can move
-`claimed -> possibly_submitted`, mint the fence's nonce, and receive `execute`;
-the loser re-reads the claim and receives `reconcile`. The same strict rule
-prevents stale acknowledgement or settlement retries from silently replacing
-different evidence. Identical acknowledgement and terminal evidence may
-converge only after the claim service explicitly compares the stored values.
-Artifact staging and final settlement follow the same rule: a lost-response
-retry may converge only when the stored canonical outcome, exact prepared
-request, digests, publication key, policy, and terminal artifact row all match.
+from archetype import ArchetypeRuntime
+from archetype.missions import AgentMissionConfig, AgentTask, CommandValidator
+from archetype.missions.sandboxes.modal import ModalSandboxBackend, ModalSandboxConfig
 
-The complete claim graph is:
 
-| Source | Event | Target | Meaning |
-|---|---|---|---|
-| `claimed` | `arm_submission` | `possibly_submitted` | Persist uncertainty and the fence's single-use execution nonce. |
-| `possibly_submitted` | `acknowledge_provider` | `provider_acknowledged` | After grant consumption, persist a provider session or request identity. |
-| `provider_acknowledged` | `stage_finalization` | `finalizing` | Persist the sanitized outcome and exact prepared artifact request before artifact I/O. |
-| `claimed` | `settle_without_submission` | `settled` | Finish work proven not to require provider submission. |
-| `possibly_submitted` | `settle_after_reconciliation` | `settled` | Reconciliation produced the terminal outcome. |
-| `provider_acknowledged` | `settle_acknowledged` | `settled` | The acknowledged operation produced the terminal outcome. |
-| `finalizing` | `settle_finalized` | `settled` | Bind a service-sealed outcome derived from the exact durable `INDEXED` or `EXPIRED` artifact row. |
+MISSION_CONFIG = AgentMissionConfig(
+    sandbox_backend=ModalSandboxBackend(
+        ModalSandboxConfig(
+            auth_volume_name="archetype-codex-auth",
+            github_secret_name="archetype-github",
+        )
+    ),
+    sandbox_environment="modal-codex-v1@sha256:<reviewed-image-digest>",
+    max_ticks=40,
+)
 
-Every other edge fails closed. Consumption is a separate atomic catalog
-compare-and-swap over `possibly_submitted`, claimant, fence, nonce, an
-unconsumed marker, and an unexpired lease. Success records
-`execution_consumed_at`. A stale fence, expired lease, duplicate consumption,
-changed nonce, or settled claim cannot consume the grant. Provider
-acknowledgement also requires that this grant was consumed.
+TASKS = (
+    AgentTask(
+        name="regression",
+        prompt="Add a deterministic regression test. Do not change production code.",
+        validators=(
+            CommandValidator(
+                name="regression_is_red",
+                command=("uv", "run", "pytest", "-q", "tests/app/test_bug.py"),
+                expected_returncode=1,
+            ),
+        ),
+    ),
+    AgentTask(
+        name="implementation",
+        prompt="Make the regression pass with the smallest layer-correct fix.",
+        validators=(
+            CommandValidator(
+                name="focused_contract",
+                command=("uv", "run", "pytest", "-q", "tests/app/test_bug.py"),
+            ),
+            CommandValidator(
+                name="architecture",
+                command=("uv", "run", "python", "scripts/check_architecture.py"),
+            ),
+        ),
+        depends_on=("regression",),
+    ),
+)
 
-For a task whose required finalization phase is `indexed`, the supported path
-stages portable evidence for every recoverable provider `accepted` or
-`rejected` outcome. Both require a restorable checkpoint and captured,
-checkpointed, uploaded, or legacy published handoff evidence; an accepted
-outcome additionally requires its non-empty commit SHA. A rejected attempt is
-still published for review and recovery, but remains authoritatively rejected
-after indexing and cannot advance the task.
 
-Artifact preparation performs no source, object-store, or index I/O. It binds
-the claim's redaction policy and produces one exact projection:
+async def main() -> None:
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "fix-bug",
+            config=MISSION_CONFIG,
+            storage=".context/agent-missions/data",
+        ) as missions:
+            mission = await missions.submit(
+                repository="VangelisTech/archetype",
+                branch="agent/fix-bug",
+                tasks=TASKS,
+            )
+            result = await missions.run(mission)
 
-- canonical artifact `request_json`;
-- `request_digest`, the SHA-256 of that exact JSON including the bound policy;
-- deterministic `publication_key`;
-- policy-independent `producer_digest`; and
-- `redaction_policy_id`.
+    print(result.status)
+    for task in result.tasks:
+        print(task.name, task.status, task.dispatches, task.commit_shas)
 
-The `stage_finalization` CAS persists the exact JSON, sanitized provisional
-outcome, and outcome digest in the claim. That provisional outcome carries all
-four linkage markers: publication key, exact request digest, producer digest,
-and redaction-policy identity. The claim also stores the prepared projection
-fields independently, and reaches `finalizing` only after the two copies agree
-and all of that identity is durable. No artifact publication may be
-reconstructed from mutable world input or a caller object after this edge. The
-artifact family receives only the persisted projection and durably drives its
-own `PENDING -> UPLOADED -> INDEXED` outbox.
 
-An `INDEXED` row is authoritative for the mission only when its bundle ID,
-exact request JSON and digest, producer digest, redaction policy, and attempt
-identity equal the staged projection, its manifest reference is non-empty, and
-its index snapshot is an exact positive signed-64-bit integer. An `EXPIRED` row
-is authoritative only when its terminal status and the same staged identity
-agree. The claim service rereads that row from its storage-bound control
-catalog; a caller-supplied receipt is never settlement authority. Only then
-does it construct and seal the corresponding prepared settlement. Generic
-`settle(...)` categorically rejects a current `finalizing` claim. The seal is
-process-local and binds the claim/fence, staged request and policy, result kind
-and status, and redacted outcome; cold recovery remints it from durable state.
-The execution service passes that seal to `settle_finalized(...)` first. After
-the terminal CAS succeeds or converges with an identical prior settlement, it
-calls `require_settled(world_id, claim_key)` to reread and authenticate the
-winning terminal row, then projects only that stored outcome through the
-mission service's private settled-row transformer. A supplied or replaced
-`AttemptClaim` DTO cannot enter that transformer through `iMissionService`.
-Changed staging or durable evidence is a conflict; byte-identical lost-response
-retries are idempotent.
+asyncio.run(main())
+```
 
-Legacy mission phase `published` is an explicit compatibility value, not an
-artifact-publication state. It can satisfy only the historical `pending`,
-`captured`, `checkpointed`, and `published` gates. It never proves `uploaded`
-or `indexed`; under an `indexed` gate it is only eligible input to the staged
-outbox and must still reach and authenticate the exact durable `INDEXED` row.
-Likewise, a raw sandbox outcome cannot self-assert `indexed`, even when the
-task requires only an earlier phase: claim validation requires the staged
-request linkage. Already-settled legacy outcomes remain readable, but no new
-unbound indexed fact may be created.
+`CommandValidator` and `AgentTask` are authoring values. Submission compiles
+them into Validator and Task entities plus relations. The convenient surface
+does not turn validator definitions or task dependencies back into JSON blobs.
 
-That compatibility is explicit and migration-proven. The v7-to-v8 catalog
-migration sets `legacy_unbound_eligible` only for claims that were already
-`settled` under an `indexed` gate before the new artifact-authority columns
-existed. Non-indexed v7 claims continue through ordinary historical assessment;
-the read boundary also normalizes any such row overmarked by an early
-phase-agnostic v8 backfill. Projection still requires the narrow accepted
-`published` or `indexed` legacy shape with no staged or finalized artifact
-authority. A qualifying replay exposes
-`Finalization.legacy_unbound=true` in the world row; current v8 writes always
-expose `false`. This is a compatibility classification, not synthesized
-artifact provenance: the canonical legacy outcome remains byte-for-byte
-unchanged. Migration-proven v7 rows remain exclusively legacy even if their
-stored JSON contains fields whose names resemble current artifact authority;
-those extras are inert and are never projected as a bundle, manifest, or
-snapshot. The same authority-shaped extras on a v8 row fail closed.
+### Submission contract
 
-Terminal settlement accepts only a complete replayable sandbox outcome bound
-to the claimed attempt, idempotency key, attempt index, and normalized sandbox
-request. It validates provider status and `accepted`, validator and result
-shape, checkpoint coherence, finalization phase, and accepted commit evidence.
-For a direct non-finalizing outcome, the official execution service first uses
-strict current-write `MissionService.apply_attempt`; its authoritative
-`AttemptStatus` is the status stored by direct settlement and must agree with
-the outcome's provider semantics. A finalized `INDEXED` or `EXPIRED` outcome
-uses the claim-bound order instead: authenticate the terminal durable row,
-construct and seal the prepared settlement, settle `finalizing -> settled`,
-reread and authenticate the winning row through `require_settled`, and only
-then invoke the execution workflow's private settled-row transformer. Public
-`iMissionService` exposes no settled projection operation, and `apply_attempt`
-categorically rejects that indexed or linkage-bearing authority.
-An accepted provider outcome requires durable grant-consumption evidence,
-whether the mission derives authoritative `accepted` or `incomplete` from its
-checkpoint/finalization gate. The outcome's checkpoint provider must equal the
-provider bound into the claim, and its agent session must equal the durable
-provider acknowledgement. Settlement stores the derived status, canonical
-outcome JSON and digest, and any retained error.
+`missions.submit(...)` accepts `list[AgentTask]` or any finite sequence of
+tasks. V1 requires:
 
-A crash after claim settlement but before the world tick commits can therefore
-reconstruct the original request and replay the complete terminal outcome into
-the completed-row transition without another provider call. First completion
-and every terminal replay call `require_settled(world_id, claim_key)` to reread
-the claim that won the CAS and authenticate its canonical outcome JSON, digest,
-settlement status, attempt identity, and explicit legacy classification. The
-execution service then invokes the mission service's private settled-row
-transformer; public `apply_attempt` remains strict for every new write. A
-detached or caller-replaced claim DTO cannot authorize this path, and the same
-attempt never re-enters the runner or artifact outbox after terminal
-settlement.
+- non-empty repository, branch, base ref, and task sequence;
+- unique, non-empty task and validator names;
+- non-empty prompts and at least one validator per task;
+- positive dispatch budgets;
+- dependencies that name tasks in the same submission;
+- an acyclic dependency graph; and
+- a pinned sandbox environment plus an explicit publication policy.
 
-The remote control catalog probes `catalog_protocol_version >= 4` and the
-`attempt_claim_execution_v2` capability before claim acquisition, every
-status/evidence transition, and execution-grant consumption. Those operations
-use only the versioned `acquire-v2`, `transition-v2`, and `consume-v2` routes.
-A mixed old-Worker/new-client deployment therefore fails before claim mutation
-or paid provider admission instead of discovering incompatibility after
-execution.
+The sequence is already the planner seam. A later planner may take one large
+task and emit many tasks and relationships. Task decomposition is not part of
+V1.
 
-Recovery policy is derived only from durable claim state:
+## 3. Architecture and ownership
 
-- a fresh `claimed` attempt is durably armed with a new execution nonce and
-  then receives `execute`; the provider call still requires atomic grant
-  consumption;
-- `possibly_submitted` always receives `reconcile`;
-- `provider_acknowledged` always receives `reconcile`;
-- `finalizing` always receives `finalize`, which publishes only the persisted
-  artifact projection; and
-- a settled attempt receives `settled`, which never authorizes model work.
+```mermaid
+flowchart LR
+    Author[Mission author] --> Runtime[RuntimeMissions]
+    Runtime --> App[MissionService]
+    App --> World[Mission world]
 
-Cold `finalize` recovery does not invoke `FencedAttemptRunner`, a model,
-validators, repository finalization, or checkpoint creation/refresh. If the
-artifact family's durable row is still `PENDING`, its resolver may read or
-restore the already-bound checkpoint solely to materialize the staged portable
-files. Once that row is `UPLOADED`, recovery requires neither the sandbox nor
-the checkpoint. If the exact `PENDING` publication has durably expired, recovery
-requires the exact terminal `EXPIRED` artifact row, binds it to the staged
-projection, and settles the provider outcome as incomplete or rejected
-with the generic `artifact_publication_expired` marker. A claim alone cannot
-mint expiry. None of these cases re-enters attempt execution; any later work is
-a newly identified attempt.
+    subgraph Domain[archetype.missions]
+        State[Components + relations]
+        Behavior[Processors + transitions]
+        Agents[Coding-agent harness]
+        Sandboxes[Sandbox service + backends + sessions]
+    end
 
-Provider request fingerprints, idempotency keys, session identities, and
-capability flags remain durable metadata for a future concrete recovery
-adapter. Metadata alone never authorizes inference. The current claim service
-never issues `replay_idempotent` or `resume_session`, and the sandbox rejects
-both actions because no provider transport implements them.
+    World --> State
+    World --> Behavior
+    App --> Agents
+    Agents --> Sandboxes
+    Sandboxes --> Provider[Modal / future providers]
+    App --> World
+```
 
-Every authorization binds both layers of request identity: the immutable claim
-fingerprint and the exact normalized sandbox invocation fingerprint. The latter
-covers prompt, normalized validator commands and defaults, task name, attempt
-index, prior session and validator evidence, and correlation. An `execute`
-authorization additionally carries the current fence's opaque nonce. Sandbox
-correlation must match the claimed world, run, entity-derived mission, and task
-step before any mutation occurs.
+`archetype.missions` owns the reusable family:
 
-The supported orchestration order is:
+- mission, task, validator, sandbox, execution, and output Components;
+- relations and pure DataFrame transition logic;
+- built-in processors and projections;
+- coding-agent protocols and harness behavior;
+- sandbox Service, Backend, and Session contracts; and
+- capability-scoped provider adapters such as Modal.
 
-1. `MissionService.prepare_attempt` normalizes validator input and derives the
-   deterministic request, including retry and finalization policy. Invalid
-   input fails before any claim is acquired.
-2. `MissionAttemptExecutionService` acquires the claim under a worker-
-   incarnation identity using `runner.provider_execution_capabilities`, then
-   asks the claim service for one fenced decision. The claim service quarantines
-   the canonical request or provider metadata before catalog acquisition. The
-   execution service accepts no independent caller-supplied capability record.
-3. A fresh claim is armed with one nonce before `execute`; an uncertain claim
-   enters only `reconcile`.
-4. For either runnable decision, the execution service starts the structural
-   runner and a lease heartbeat together. The heartbeat renews the active claim
-   for the runner's entire lifetime. Renewal failure cancels and awaits the
-   runner before failing closed; caller cancellation cancels and awaits both
-   local child tasks, so no local runner or renewal task is orphaned. This does
-   not prove that a remote provider operation terminated.
-5. The structural sandbox runner validates the authorization, exact invocation,
-   and any matching receipts. If provider execution is required, it invokes the
-   execution service's authorization callback to consume that exact nonce
-   atomically through the catalog before preparing or calling the provider.
-   Failed consumption stops the attempt.
-6. Immediately after provider execution returns, the runner invokes the
-   acknowledgement callback before validation or any later phase. A durable
-   provider session or request identity moves a consumed claim to
-   `provider_acknowledged`; an unconsumed grant cannot be acknowledged.
-7. The sandbox completes validation, repository finalization, evidence,
-   checkpoint, and artifact handoff, or reconciles those phases from matching
-   receipts without inference.
-8. After the runner completes, the execution service stops and awaits the
-   heartbeat, renews the active claim once more, verifies consumed-grant and
-   provider-session evidence, quarantines semantic outcome fields, redacts
-   narrative outcome values, and assesses the sanitized result. An indexed
-   gate with eligible accepted or rejected recovery evidence is prepared and
-   moved to `finalizing` before artifact I/O. Other outcomes pass through
-   `MissionService.apply_attempt` and direct terminal settlement.
-9. A finalizing worker publishes only the exact persisted projection while a
-   claim heartbeat remains active. The artifact family independently recovers
-   its durable `PENDING -> UPLOADED -> INDEXED` state machine.
-10. The claim authority rereads and validates the exact durable `INDEXED` or
-    `EXPIRED` artifact row, constructs and seals the only permitted finalized
-    outcome from the staged outcome, and settles `finalizing -> settled`. It
-    then calls `require_settled(world_id, claim_key)` to re-read and authenticate
-    the outcome that won the terminal CAS and invokes the private settled-row
-    transformer, so first completion and replay expose the same row projection.
-    Public `iMissionService` offers no settled-projection method, and
-    `apply_attempt` cannot accept the indexed or linkage-bearing outcome.
-11. If acquisition finds `finalizing`, the execution service performs step 9
-    directly without invoking the sandbox runner. If it finds `settled`, it
-    verifies and applies the stored outcome without invoking the runner or
-    artifact finalizer.
+`archetype.app.missions` owns application composition:
 
-All sandbox entry, including `reconcile`, requires the live lease carried by
-the current fence, and supported orchestration maintains that lease until the
-runner has fully stopped. Reconciliation without matching repository or final
-durable evidence fails closed; it cannot fall through to model execution.
+- reserve identities and materialize submitted graphs;
+- configure a world with the built-in mission behavior;
+- step the state machine;
+- cross the post-commit boundary and invoke the coding-agent harness;
+- stage factual observations through the mutation path;
+- compose mission trajectory reads and evaluation through a separate app service; and
+- return supported mission projections.
 
-The crash matrix is consequently:
+The application service does not decide readiness, retry, acceptance, or
+mission success. Those decisions remain visible in processors and persisted
+state.
 
-| Crash point | Durable recovery state | Permitted next action |
+### World topology is not sandbox topology
+
+A world is a state machine, not a sandbox. The same contract permits one world
+with many sandboxes, many worktrees in one sandbox, several agents in separate
+worktrees, or cooperating agents in one worktree. Placement policy may change
+without changing task readiness.
+
+V1 may choose one persistent repository session per mission and serialize
+tasks that share its worktree. That is a provider policy, not an ECS invariant.
+
+## 4. State and transition protocol
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Author
+    participant Service as MissionService
+    participant World
+    participant Processors
+    participant Harness as CodingAgentHarness
+    participant Sandboxes as SandboxService
+
+    Author->>Service: submit(repository, branch, tasks)
+    Service->>World: stage mission, tasks, validators, relations
+
+    loop until mission is terminal
+        Service->>World: step()
+        World->>Processors: evaluate N from committed N-1
+        Processors-->>World: state changes + TaskDispatch
+        World->>World: commit tick N
+        World-->>Service: PostTick(committed dispatches)
+        opt a current dispatch is ready for external work
+            Service->>Harness: execute(dispatch)
+            Harness->>Sandboxes: acquire session and run tools
+            Sandboxes-->>Harness: process + filesystem observations
+            Harness-->>Service: execution, validation, Git, optional recovery outputs
+            Service->>World: stage observations
+        end
+    end
+
+    Service-->>Author: terminal projection
+```
+
+The PostTick boundary is a safety property: no sandbox sees speculative work.
+If tick persistence fails, its dispatch cannot leak an external side effect.
+
+### Task state
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending
+    pending --> ready: all prerequisites accepted at N-1
+    ready --> dispatched: commit TaskDispatch
+    dispatched --> accepted: current revision passes every guard
+    dispatched --> ready: evidence fails and budget remains
+    dispatched --> failed: evidence fails and budget is exhausted
+    accepted --> [*]
+    failed --> [*]
+```
+
+The built-in pipeline has four concerns:
+
+| Order | Processor | Authority |
+|---:|---|---|
+| 10 | Task decision | Consume observations for the current dispatch and accept, retry, or exhaust. |
+| 20 | Task readiness | Make a task ready only when every prerequisite was accepted in the previous committed tick. |
+| 30 | Task dispatch | Convert ready state into one durable dispatch identity. |
+| 40 | Mission rollup | Succeed only when every member task is accepted; fail when a member task is terminally failed. |
+
+There is no durable `Attempt` aggregate. Retrying produces a new
+`TaskDispatch`; history preserves every prior dispatch and observation.
+
+### Intent, observation, decision
+
+These concepts never collapse into one status field:
+
+| Kind | Examples | May decide task state? |
+|---|---|---:|
+| Intent | `TaskDispatch` | No |
+| Runtime observation | `Sandbox`, `AgentExecution` | No |
+| Work output | `ValidationResult`, `Commit`, `FrictionLog`; reusable checkpoint, manifest, and artifact-reference Components | No |
+| Decision | `TaskState` written by the task decision processor | Yes |
+
+`TaskDispatch` identifies the committed dispatch and sequence. Together with
+the task's workspace and policy Components, it projects the requested
+repository base and publication policy. `AgentExecution` records process lifecycle such as
+`starting`, `running`, `exited`, `errored`, or `interrupted`.
+
+Sandbox lifecycle is separate: `provisioning`, `ready`, `errored`,
+`interrupted`, or `closed`. A sandbox is never `accepted`, `rejected`, or
+`completed`; it is a container that may host zero or many executions.
+
+### Relations and previous-tick visibility
+
+At minimum, V1 materializes:
+
+```text
+PartOfMission(source=task, target=mission)
+DependsOn(source=task, target=prerequisite)
+Guards(source=validator, target=task)
+Executes(source=execution, target=task)
+RunsIn(source=execution, target=sandbox)
+ProducedBy(source=output, target=execution)
+```
+
+Readiness and rollup use `GraphView`, which is strictly previous-tick. If task
+A is accepted at N, dependent task B may become ready no earlier than N+1.
+Edges are temporal entities, so dependency, provenance, and fork inheritance
+remain queryable without decoding a plan blob.
+
+## 5. Sandbox and validator protocol
+
+The sandbox vocabulary describes a resource, not a workflow:
+
+```python
+class SandboxBackend(Protocol):
+    async def create(self, spec: SandboxSpec) -> SandboxSession: ...
+    async def restore(
+        self, spec: SandboxSpec, checkpoint: CheckpointRef
+    ) -> SandboxSession: ...
+
+
+class SandboxSession(Protocol):
+    @property
+    def identity(self) -> SandboxIdentity: ...
+
+    async def status(self) -> SandboxStatus: ...
+    async def exec(self, request: ProcessRequest) -> ProcessResult: ...
+    async def checkpoint(self) -> CheckpointRef: ...
+    async def close(self) -> None: ...
+
+
+class SandboxService:
+    async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> SandboxSession: ...
+    async def close(self, key: SandboxKey) -> None: ...
+    async def shutdown(self) -> None: ...
+```
+
+- Backend creates or restores provider resources.
+- Session is the live handle for process and snapshot capabilities.
+- Service selects a backend, reuses sessions according to policy, and owns
+  shutdown.
+
+The coding-agent harness works through `SandboxSession`. It owns clone and
+branch preparation, agent invocation, validator execution, Git publication,
+and translation into factual Components. Provider adapters do not know task
+state and do not return an acceptance verdict.
+
+Checkpointing is optional resumability. A checkpoint is a lightweight,
+provider-native reference to a sandbox snapshot; a filesystem manifest is a
+content-addressed, queryable observation of captured state. Neither is
+required to accept a task. V1 defines both Components and the Session
+checkpoint capability, but automatic capture and restore policy remain a
+later application seam.
+
+### Repository validators are authority
+
+Submission materializes each `CommandValidator` as an entity related to its
+task. Every execution emits one `ValidationResult` per guard containing:
+
+- validator, task, dispatch, execution, and repository-revision identity;
+- the expected and observed return codes;
+- bounded stdout and stderr observations.
+
+`passed` is derived from `actual_returncode == expected_returncode`. It is
+never trusted from a sandbox or agent response. Expected nonzero codes are
+valid—for example, a predecessor can prove a regression test is red.
+
+The task decision processor accepts only when all guards have a result for the
+**current dispatch and exact final repository revision**. Evidence from a
+prior dispatch or pre-repair tree is stale by construction.
+
+### Git and publication
+
+Git is part of the coding contract:
+
+1. the harness records the dispatch's starting revision;
+2. the agent may create commits during its work;
+3. validators run against the final working tree;
+4. if validated work remains dirty, the publisher creates one final commit;
+5. every commit created during the dispatch is recorded; and
+6. the configured branch policy publishes the validated final revision.
+
+The publisher never resets valid agent-authored commits merely to manufacture
+one synthetic result. Acceptance binds validation and publication evidence to
+the same final revision.
+
+### Friction and artifacts
+
+`FrictionLog` is one timestamped observation entity, not an append-only JSON
+field. It may reference a task, dispatch, execution, validator, path, or commit
+so later analysis can group failure modes across sessions.
+
+Large outputs use content-addressed artifact references: digest, media type,
+size, and a storage hint. The mission application service may compose the
+Artifacts family to persist or ingest them; the sandbox protocol does not
+become a storage system.
+
+## 6. Prefabs and planning
+
+V1 submission directly materializes tasks, validators, and relations. That is
+enough for correct execution order and remains the simplest dogfood surface.
+
+A later mission prefab may author the same graph. Prefab instantiation does not
+decide readiness or replace the processors. Registration code installs
+Components and behavior; durable prefab library data describes the graph.
+Manifests may declare allowlisted behavior-module requirements but never
+auto-import executable code.
+
+A planner will have the same output boundary: `list[AgentTask]` plus
+relationships. HTN decomposition is useful, but is not a V1 correctness gate.
+
+## 7. V1 boundary
+
+### Included
+
+- explicit task and validator entities;
+- temporal membership, dependency, guard, placement, and provenance relations;
+- previous-tick readiness joins;
+- processor-owned acceptance, retry, exhaustion, and rollup;
+- post-commit dispatch;
+- separate sandbox and agent-process lifecycle;
+- repository validators with expected nonzero support;
+- revision-bound validation and Git publication evidence;
+- first-class commits and friction plus reusable checkpoint, manifest, and
+  artifact-reference Components;
+- a Modal backend; and
+- terminal result projection and cleanup.
+
+### Deliberately not included
+
+- task decomposition or HTN planning;
+- prefab-driven readiness;
+- claims, leases, fences, receipts, or a mission-specific control catalog;
+- a second sandbox workflow kernel;
+- an `Attempt` aggregate;
+- PR creation, CI watching, review, merge, or deployment;
+- a general relationship-to-sandbox placement scheduler; and
+- a requirement that checkpoints or manifests gate acceptance.
+
+The retired claim/fence/finalization subsystem is not a compatibility layer for
+this contract. Cleanup stops creating or consuming its tables and routes while
+leaving existing persisted tables inert; deleting historical operator data is
+a separate, explicit migration decision.
+
+### Current hardening gaps
+
+| Gap | V1 treatment | Later seam |
 |---|---|---|
-| Before claim acquisition | No claim | Acquire first; provider execution is forbidden. |
-| After acquisition, before arm | `claimed` | Recover the expired fence, arm uncertainty, then execute. |
-| Concurrent arm under one claimant/fence | One `possibly_submitted` with one nonce; loser observes it | One `execute`; every loser receives `reconcile`. |
-| After arm, before grant consumption | `possibly_submitted`; nonce unconsumed | Reconcile only; the issued grant is not minted again. |
-| Concurrent grant consumption | One `execution_consumed_at` write | One caller may enter provider preparation; every duplicate fails closed. |
-| After grant consumption, before send | `possibly_submitted`; nonce consumed | Reconcile only; never infer that no send occurred. |
-| Lease heartbeat fails during runner work | Last durable uncertain or acknowledged state | Cancel and await the local runner task; do not apply or settle. Any remote operation remains adapter-specific and must reconcile. |
-| Caller cancels during runner work | Last durable claim state | Cancel and await both local child tasks. Remote work may remain `possibly_submitted`; adapter-specific cancellation or reconciliation owns it. |
-| After send, before acknowledgement callback commits | `possibly_submitted` | Reconcile only; missing receipts cannot authorize another model call. |
-| After acknowledgement, before validation/finalization | `provider_acknowledged` | Reconcile only against provider or sandbox evidence. |
-| After repository receipt, before evidence/checkpoint/handoff | Claim remains uncertain or acknowledged | With a live lease, reconcile through the receipt; skip model, validators, commit, and push. |
-| After final sandbox receipt, before artifact preparation | `provider_acknowledged` plus sandbox receipt | Reconcile the receipt without model or repository work, sanitize it, and deterministically prepare again. |
-| After preparation, before staging CAS | `provider_acknowledged`; prepared projection existed only in memory | Reconcile the same receipt, reproduce the exact projection, and retry staging. No artifact I/O was authorized. |
-| During or after staging CAS response loss | Either `provider_acknowledged` or `finalizing` | Re-read. Retry only the exact staging values; changed JSON, digests, key, policy, or outcome fails closed. |
-| After `finalizing`, before artifact publication claim | `finalizing` plus exact projection and provisional outcome | Cold `finalize`; do not invoke the runner, model, validators, repository finalization, or checkpoint creation. |
-| After artifact claim, before upload | Mission `finalizing`; artifact `PENDING` plus exact request | Resume the artifact outbox from its durable request; the resolver may read the already-bound checkpoint. |
-| Artifact retry window elapses before upload | Mission `finalizing`; exact artifact row is `EXPIRED` | Bind the terminal row to the staged projection, add only `artifact_publication_expired`, and settle incomplete or rejected. A bare claim or process-local exception cannot assert expiry; the same attempt never invokes the runner or publication again. |
-| During upload | Mission `finalizing`; artifact `PENDING` plus content-addressed objects | Read back and byte-verify present payload and manifest objects; reuse exact objects and replace truncated or corrupt ones before persisting upload metadata. |
-| After upload metadata | Mission `finalizing`; artifact `UPLOADED` plus complete records | Index without sandbox or checkpoint access. |
-| After Iceberg commit, before artifact catalog completion | Query rows visible; artifact `UPLOADED`; mission `finalizing` | Verify deterministic rows, mark the artifact `INDEXED`, and continue finalization. |
-| After artifact `INDEXED`, before mission settlement | Mission `finalizing` plus exact terminal artifact row | Reread and bind the row, construct the sealed settlement, and settle; do not project or invoke external attempt work yet. |
-| During or after final settlement response loss | Either `finalizing` or `settled` | Re-read. Retry only the exact finalized outcome and status; once settled, authenticate the durable winner with `require_settled`. Conflicting evidence fails closed. |
-| After claim settlement, before world commit | `settled` plus canonical indexed or direct outcome | Call `require_settled(world_id, claim_key)`, then let the execution service's private row transformer apply that durable winner into the same completed-attempt edge without entering the sandbox or outbox. A supplied claim DTO is not authority. |
-| After world commit | `settled` claim plus visible completed-attempt row | Duplicate recovery performs no provider or publication work; ordinary world history is authoritative. |
+| Cold process resume | A live dogfood may recover from an explicit checkpoint; no fleet claim is implied. | Reinstall registration bundles and reconcile committed dispatches through a reviewed outbox contract. |
+| Sandbox placement | Use a simple configured policy. | Add a scheduler only when multiple topologies require one. |
+| Task decomposition | Authors submit the graph. | Planner emits the same typed graph. |
+| Terminal interaction | `exec` is the required capability. | Add optional PTY/tmux/ttyd capabilities without widening workflow authority. |
+| Artifact ingestion | Record content-addressed refs. | Compose `archetype.app.artifacts` for typed ingestion. |
+| Prefab mission libraries | Direct materialization remains authoritative. | Author reusable graphs after generic prefab registry contracts settle. |
 
-This is a one-live-executor, one-authorized-provider-call, and no-blind-replay
-guarantee, not an exactly-once provider-side-effect claim. The single-use grant
-atomically controls entry into provider preparation, but its consumption and
-the provider transport cannot be one transaction. A crash or transport failure
-after consumption may leave the external side effect absent, complete, or
-unknown. That uncertainty remains explicit until provider or sandbox evidence
-lets reconciliation prove a safe result.
+## 8. File and responsibility map
 
-## 6. Executable enforcement
+The implementation follows this layout:
 
-- `tests/missions/test_domain_contracts.py` pins every moved Component's
-  Pydantic and Arrow schema fingerprints, default serialization, single class
-  identity, full legal/illegal transition matrix, deliberate family exports,
-  and app-owned authority boundary.
-- `tests/app/test_mission_transition_authority.py` exhausts every graph edge,
-  terminal rejection, validator normalization, stale plan and policy requests,
-  evidence gate, retry, and multi-task advancement.
-- `tests/app/test_mission_attempt_claims.py` exhausts the claim graph, concurrent
-  acquisition and arm decisions, single-use execution grants, cold restart and
-  takeover, stale-fence rejection, complete outcome, status, consumed-grant,
-  checkpoint-provider, and acknowledged-session binding, proof that capability
-  metadata does not authorize execution, request/provider/acknowledgement and
-  semantic-reference quarantine, narrative outcome/error redaction, policy
-  drift, exact finalization staging and settlement, accepted and rejected
-  indexed outcomes, cold `finalize`, conflicting CAS replay, and semantic
-  terminal replay.
-- `tests/app/test_mission_artifact_finalizer.py` proves deterministic prepared
-  requests, policy binding, exact prepared publication, receipt identity, and
-  fail-closed mismatches at the mission/artifact family boundary.
-- `tests/app/test_indexed_finalization_crash_oracle.py` cold-restarts the
-  storage-bound public workflow at eight durable boundaries from preparation
-  through mission settlement. It uses real local objects, Iceberg, and SQLite
-  state to prove one provider admission, one logical publication, exact
-  original observation tick, query/raw-row parity, and side-effect-free
-  terminal replay.
-- `tests/app/test_sandbox_kernel.py` proves invocation binding, live-lease
-  enforcement, runner-derived provider capability binding, unsupported
-  replay/resume rejection, acknowledgement ordering, execution-service
-  heartbeat and cancellation lifetime, post-run renewal, settlement, receipt
-  reconciliation, crash recovery, and settled replay without a second model
-  call.
-- `tests/app/test_remote_catalog_parity.py` proves the local SQLite and remote
-  control-catalog implementations expose the same identity, strict-CAS,
-  single-use grant, staged artifact fields, `finalizing` recovery, and claim
-  lifecycle semantics.
-- `evals/suites/capability/agent_missions.py` grades a credential-free rejected,
-  incomplete, then accepted sequence without importing the feature tests.
-- `mission_attempt_claim_recovery` grades cold claim recovery and settlement as
-  a blocking capability eval.
-- `mission_indexed_finalization_gate` grades fail-closed pre-index state, cold
-  `finalize` recovery, exact durable row identity, and side-effect-free terminal
-  replay as a blocking capability eval.
-- `quality/contracts.toml` registers
-  `missions.transition.evidence_gated`, `missions.attempt.claim_fenced`, and
-  `missions.attempt.indexed_finalization` as blocking PR contracts.
-- `quality/architecture.toml` registers `archetype.missions` as a leaf
-  top-level family, rejects reverse or undeclared family imports, limits the
-  claim service to mission-owned app models and the storage control catalog,
-  permits only mission-family dependencies in the execution service, and lets
-  the sandbox consume only the app-owned immutable fenced authorization and
-  recovery action.
-
-## 7. Adjacent capability package map
-
-This section is the normative design decision from
-[Issue #561](https://github.com/VangelisTech/archetype/issues/561). It
-adjudicates the durable boundaries around missions, autoresearch, HTN,
-datasets, trajectories, physical-AI experiments, and the repository harness.
-It does not perform the staged source moves.
-
-This section was amended on 2026-07-19 by the operator ruling recorded on
-Issue #561: trajectory evidence and HTN planning fold under
-`archetype.missions`, and dataset identity folds into `archetype.evaluation`.
-The version of this section first merged by #593 treated those three as
-standalone families; that disposition is superseded.
-
-Until a linked implementation issue lands, the current import path remains
-implementation truth. The target below governs new work and prevents a
-temporary path from becoming an accidental compatibility promise.
-
-### 7.1 Boundary decisions
-
-#### Missions remain narrow in authority, wide in evidence
-
-The split defined in section 1 is final for this design. The missions family
-owns its evidence and planning vocabulary — trajectory index rows, transcript
-references, and HTN plan structure live under `archetype.missions` — but none
-of that vocabulary carries transition authority. Neither research, physical-AI
-evaluation, graph projections, evaluation-side dataset adapters, nor the
-mission-owned planning and trajectory modules themselves may advance a
-mission. They may propose plans or produce evidence. Only the mission
-workflow may validate that evidence and commit a legal mission edge.
-
-#### Autoresearch is an independent domain and app workflow
-
-Autoresearch is a generic multi-run research workflow over worlds, rollouts,
-and caller-supplied evaluation. It is not a mission subfamily and is not tied
-to coding-agent providers.
-
-The target top-level `archetype.research` family owns the persistent
-`Experiment`, `Run`, `Result`, and `BranchHead` Components plus their typed
-`RunStatus`. The internal `archetype.app.research` family retains
-`AutoResearchService`, its port, application/runtime callback and result
-values that compose `EpisodeConfig` or `RolloutResult`, world and simulation
-coordination, resume validation, and research-ledger orchestration. Candidate
-preparation may invoke a coding-agent adapter supplied from outside the
-family; that does not give research provider or mission authority.
-
-#### HTN is mission planning
-
-HTN plan resolution exists to structure agent missions; it is not enshrined
-as a standalone reusable family. The current `archetype.htn` Components,
-STRIPS domain values, pure helpers, Daft UDFs, and processors move
-mechanically under `archetype.missions` as the planning subdomain
-(`missions/planning/`), subject to the compatibility requirements in
-section 7.6. It is not a graph projection.
-
-An app-owned adapter validates and translates an immutable resolved HTN plan
-into the mission workflow's task-plan input. An HTN plan can propose task
-structure but cannot authorize a provider call, settle an attempt, or advance
-a mission; planning modules inside the family hold no transition authority.
-
-#### Dataset identity folds into evaluation
-
-The `archetype.datasets` family is removed. Evidence identity and provenance
-— `TaskRef`, `EpisodeRef`, `RuntimeSlice`, and the immutable evidence-side
-`Trial` — move to `archetype.evaluation.contracts`, beside the grader kinds,
-graders, rubrics, eval bindings, outcomes, grader contracts, and evaluation
-receipts the evaluation family already owns. What was measured and how it was
-graded is one ownership story. Issue
-[#590](https://github.com/VangelisTech/archetype/issues/590) performs this
-fold after the evaluation-family extraction in
-[#557](https://github.com/VangelisTech/archetype/issues/557), preserving
-every identity defined in the dataset/eval ontology.
-
-A live physical-AI or mission attempt is not a dataset trial merely because
-both use the word *trial*. It becomes a dataset episode only when an explicit
-app-owned exporter freezes evidence under natural dataset coordinates and,
-when applicable, includes a `RuntimeSlice` as provenance.
-
-#### The experiments umbrella is removed
-
-`archetype.experiments` is a provisional grouping with no coherent authority.
-It is dissolved after its contents move to their owners:
-
-- research ledger state and runner-row decoding move to `research`;
-- trajectory index schemas and pure transforms move under `missions`
-  (`missions/trajectories.py` and `missions/projections.py`);
-- reusable manipulation and control state and processors move to
-  `physical_ai`, which defines its own trajectory and rollout types when it
-  is implemented rather than sharing mission-owned rows;
-- task-evaluation and instruction-sweep orchestration move to
-  `app.physical_ai`; and
-- the Cartpole demonstration moves to example or benchmark support.
-
-The old package is not preserved as a permanent compatibility facade. API
-Stability already classifies it as provisional, and a facade would require
-the cross-family dependencies this design is intended to remove.
-
-#### Analytics stays capability-scoped
-
-There is no generic `archetype.analytics` package. Durable schemas live with
-the capability they describe. Analysis accepts DataFrames or structural rows
-and returns a pure DataFrame or value projection. An application adapter may
-obtain durable frames through the application/query boundary, but a top-level
-transform never imports or calls `QueryService`.
-
-An analysis result is advisory unless an owning workflow deliberately
-publishes it as a typed artifact or an evaluation receipt. It cannot settle a
-claim or drive a mission transition.
-
-### 7.2 Target package tree
-
-```text
-src/archetype/
-  missions/                         # domain from #559, widened by #586/#591
-    components.py
-    transitions.py
-    trajectories.py                 # durable trajectory index rows, legacy reader
-    projections.py                  # pure trajectory/transcript rollups
-    planning/                       # HTN: components, domain, processors, udfs
-      contracts.py                  # immutable resolved-plan values when added
-  research/                         # leaf family
-    __init__.py
-    components.py                   # Experiment, Run, Result, BranchHead
-    transitions.py                  # RunStatus
-    loaders.py                      # pure runner-row decoding
-  evaluation/                       # #557, then #590
-    components.py
-    contracts.py                    # grading vocabulary + evidence identity
-                                    # (TaskRef, EpisodeRef, RuntimeSlice, Trial)
-  artifacts/                        # #558
-    components.py
-    contracts.py
-    bundles.py
-  physical_ai/                      # leaf reusable domain; owns its own
-    components.py                   # trajectory/rollout types when implemented
-    contracts.py                    # env/policy and picklable spec contracts
-    processors.py
-    boundary.py
-  app/
-    missions/                       # attempt authority and orchestration
-    research/                       # autoresearch workflow, ports, app DTOs
-    physical_ai/                    # eval/sweep/trial orchestration
-    artifacts/
-      adapters/claude_sessions.py   # redaction-gated transcript ingestion
-    evaluation/
-    query/
-```
-
-`archetype.htn` and `archetype.datasets` do not appear above: HTN folds under
-`missions/planning/` (#591) and dataset identity folds into
-`archetype.evaluation.contracts` (#590). There is no standalone
-`archetype.trajectories` family; mission evidence rows live in the missions
-family (#586).
-
-Repository evidence remains outside production code:
-
-```text
-evals/          # repository capability, idempotency, and spec harness
-bench/          # performance and resource evidence
-experiments/    # one-off research scripts and generated figures
-examples/       # teaching code and reference/test support
-tests/          # executable contracts and compatibility oracles
-```
-
-None of those repository directories may be imported by production code or
-moved under `src/archetype` merely because it evaluates the product.
-
-### 7.3 Current-module disposition
-
-| Current module or symbols | Target disposition |
+| File | Owns |
 |---|---|
-| `app/research/models.py` | Move `Experiment`, `Run`, `Result`, and `BranchHead` exactly once to `research/components.py`; move `RunStatus` to `research/transitions.py`; remove the app model module after consumers migrate. |
-| `app/research/contracts.py` | Keep app-owned callback, configuration, and result values that compose application execution contracts. Existing supported root exports remain supported. |
-| `app/research/interfaces.py`, `service.py` | Keep internal. They own the multi-run workflow, identity checks, ledger writes, and world/simulation coordination. |
-| `htn/components.py`, `domain.py`, `processors.py`, `udfs.py` | Move mechanically to `missions/planning/` under #591, preserving the section 7.6 compatibility requirements; add an immutable resolved-plan contract when the app adapter is implemented. |
-| `datasets/definitions.py` | Move `TaskRef`, `EpisodeRef`, `RuntimeSlice`, `Trial`, `GraderKind`, `Grader`, `Rubric`, and `Eval` to `archetype.evaluation.contracts` under #590; delete `archetype.datasets`. |
-| `experiments/__init__.py` | Remove after the staged moves; add no permanent shim or root re-export. |
-| `experiments/loaders.py` | Move pure runner SQLite row decoding to `research/loaders.py`; replace container-backed ingestion with the supported runtime/application mutation path. |
-| `experiments/trajectories.py` | Move the single Component definitions to `missions/trajectories.py`; non-persistent authoring/parser helpers stay in-memory values beside them. |
-| `experiments/recorders.py` | Move structural row/frame transforms to `missions/projections.py`; remove dependencies on app model classes from the family. |
-| `experiments/claude_sessions.py` | Move file parsing and ingestion behind the artifact/redaction boundary; keep raw JSONL as the source artifact. |
-| `experiments/boundary.py` | Move the narrowly scoped Daft external-call helpers to `physical_ai/boundary.py`. |
-| `experiments/manipulation.py` | Split persistent schemas, provider-neutral contracts, and processors into the matching `physical_ai` modules; move scripted doubles to tests/examples. |
-| `experiments/policy.py` | Move policy contracts and processors to `physical_ai`; move concrete scripted policies to tests/examples. |
-| `experiments/eval_rollouts.py`, `instruction_sweep.py` | Move orchestration behind approved application/runtime ports under `app.physical_ai`; remove raw-service bridge parameters and resolve their provisional `public_api` markers. |
-| `experiments/mujoco_cartpole.py` | Move to example/benchmark support; do not promote one demonstration model into a supported product contract. |
-| `app/evaluation` reusable values | Follow #557 and #590; grading, snapshot pinning, receipt claims, and storage remain app-owned. |
-| `app/artifacts` reusable values | Follow #558; publication, indexing, reconciliation, redaction coordination, and storage remain app-owned. |
-| `app/query` | Keep internal. It supplies durable reads and owns no capability-specific analysis. |
+| `archetype/missions/contracts.py` | Supported authoring, configuration, and result values. |
+| `archetype/missions/components.py` | Mission, task, validator, dispatch, sandbox, execution, and output Components. |
+| `archetype/missions/relations.py` | Membership, dependency, guard, placement, and provenance Relations. |
+| `archetype/missions/transitions.py` | Small persisted status vocabularies and transition tables. |
+| `archetype/missions/processors.py` | Task decision, readiness, dispatch, and mission rollup authority. |
+| `archetype/missions/projections.py` | Supported mission/task/execution result projections. |
+| `archetype/missions/coding_agents/contracts.py` | Coding-agent request and driver protocols. |
+| `archetype/missions/coding_agents/harness.py` | Repository preparation, agent invocation, validation, Git publication, and observation translation. |
+| `archetype/missions/sandboxes/contracts.py` | Sandbox Backend, Session, process, status, and snapshot value contracts. |
+| `archetype/missions/sandboxes/service.py` | Backend registry and live-session lifetime. |
+| `archetype/missions/sandboxes/modal.py` | Modal Backend and Session implementation only. |
+| `archetype/app/missions/service.py` | Graph materialization, tick/I/O composition, cross-family workflows, and projections. |
+| `archetype/runtime/missions.py` | Mission-author runtime handle and lifecycle. |
+| `examples/11_coding_agent_mission.py` | Real typed dogfood script. |
+| `tests/missions/` | Family contract, transition, sandbox, harness, and provider oracles. |
+| `tests/integration/test_agent_mission_service.py` | End-to-end graph, retry, revision binding, and cleanup oracle. |
 
-### 7.4 Transcript, trajectory, and artifact boundary
+No author imports a Component, processor, `GraphView`, application service, or
+provider SDK to run the built-in workflow.
 
-`Trajectory` and the small command, observation, action, and reward rows are
-durable index Components owned by the missions family. They retain their
-current class names and schemas when moved to `missions/trajectories.py`.
-`Turn` and `LoadedSession` are in-memory authoring or parser values, not
-persistent Components. Transcript ingestion itself is artifact-family work:
-the redaction-gated adapter lives at the app artifact boundary, and whether a
-transcript can be ingested at all is an artifacts question, independent of
-which mission consumes the resulting index rows.
+## 9. Family direction after V1
 
-The existing content-bearing `TrajectoryTurn` class remains the single class
-used to read historical rows during a separately reviewed migration. New
-coding-agent ingestion must not treat unbounded transcript text, tool inputs,
-tool outputs, raw JSONL, frames, filesystem captures, or model-provider
-payloads as ordinary mission Components. Those values pass pre-durability
-redaction and enter the claim-backed artifact or typed artifact-table path.
-The lightweight trajectory or mission row may retain an identity/reference,
-not the unbounded source payload.
-
-Issue [#587](https://github.com/VangelisTech/archetype/issues/587) owns the
-write-path and compatibility decision. It must preserve historical reads and
-cannot silently reinterpret the legacy string `Trajectory.episode_id` as the
-integer dataset episode identity from the dataset ontology.
-
-Transcript/session analysis, counts, labels, comparisons, and rollups are
-pure transforms over supplied frames. Full transcript artifacts and derived
-projections remain evidence. Neither is mission advancement authority.
-
-### 7.5 Dependency DAG
-
-Every capability adjudicated here is a leaf top-level family at this stage:
+Agent Missions establishes the repository convention: reusable state, pure
+behavior, and capability-scoped resources live in the named family; the app
+layer owns durable application authority and cross-family composition.
 
 ```text
-research      -> core
-evaluation    -> core
-artifacts     -> core
-physical_ai   -> core
-missions      -> core
+archetype.missions
+├── components.py
+├── relations.py
+├── transitions.py
+├── processors.py
+├── projections.py
+├── coding_agents/
+├── sandboxes/
+├── planning/
+└── trajectories/
+
+archetype.app.missions
+└── service.py
 ```
 
-`htn` and `datasets` appear in the current source tree and manifest until
-Issues #591 and #590 fold them in; while they exist they remain leaves with
-no family edge. No new top-level family edge is required. In particular, the
-following edges are forbidden:
+The orphan cleanup follows the same rule:
 
-- `missions -> graph` and `missions -> projections`;
-- `research -> missions`;
-- `physical_ai -> evaluation` and `physical_ai -> missions` — physical-AI
-  defines its own trajectory and rollout types when implemented; and
-- any of these families importing `app`, `runtime`, `api`, or `cli`.
+| Capability | Owner |
+|---|---|
+| Planning / former HTN | `archetype.missions.planning` |
+| Mission trajectories | `archetype.missions.trajectories` with app query/evaluation composition |
+| Artifact and transcript ingestion | `archetype.app.artifacts` consuming family-owned value contracts |
+| Physical-AI state and behavior | `archetype.physical_ai` |
+| Physical-AI workflows | `archetype.app.physical_ai` |
+| Research state and pure decoding | `archetype.research` |
+| Research workflows | `archetype.app.research` |
+| Vendor-neutral observability vocabulary | `archetype._obs` |
 
-Application families may consume and compose these contracts in the approved
-direction. Dataset export, product grading, HTN-to-mission translation, and
-physical-AI orchestration therefore live at app workflow boundaries rather
-than creating domain-family cycles.
+Datasets, Experiments, Contrib, and a production RTS vocabulary are not
+families. The Biome prefab remains an example; its reusable pattern belongs in
+generic prefab machinery.
 
-PR [#545](https://github.com/VangelisTech/archetype/pull/545) remains a
-supporting graph design record under the repository-wide policy in #556. Its
-staged relationship work may separately declare `projections -> graph` when a
-concrete projection requires it. This design creates no graph edge and does
-not treat unresolved illustrative pseudocode as an implementation contract.
+## 10. Verification
 
-### 7.6 Persistence and compatibility
+The credential-free contract lane must prove:
 
-Each Component relocation is one physical class move. The implementation
-issue MUST preserve:
+- graph materialization and cycle rejection;
+- previous-tick dependency ordering;
+- post-commit-only dispatch;
+- retry with a new dispatch identity;
+- stale-revision evidence rejection;
+- expected-nonzero validator derivation;
+- agent-authored and publisher-authored commit preservation;
+- sandbox/agent/task lifecycle separation;
+- terminal cleanup; and
+- example dry-run execution.
 
-- the class name and `Component.get_prefix()` result;
-- every field, default, validator, and string-valued enum vocabulary;
-- Pydantic and Arrow schemas and their fingerprints;
-- payload hydration by class name; and
-- cold signature discovery for existing durable tables.
+The live Modal dogfood must additionally prove real repository preparation,
+agent execution, validation, commit/push publication, evidence-carrying repair,
+and sandbox teardown. It is paid and credentialed, so it remains an explicit
+operation rather than an ordinary CI test.
 
-An old-path subclass or copied class is invalid because name-addressed payload
-hydration would become ambiguous. A temporary alias, if objectively required,
-must point to the same class object and have a separate removal issue and
-expiry; provisional paths do not receive aliases by default.
+## Companion contracts
 
-Module paths are not persisted as Component identity today, but implementations
-must prove that fact with schema, class-identity, payload, and cold-discovery
-oracles before removing an import path. Any field rename or schema split,
-especially for legacy trajectory rows, requires a separate reviewed migration
-instead of being smuggled into a package move.
-
-### 7.7 Durability, idempotency, and observability ownership
-
-| Capability | Durable authority and idempotency | Observability disposition |
-|---|---|---|
-| Missions | Mission world commit plus the app-owned fenced attempt claim and artifact-finalization authority defined above. | Mission/app manifests; signals are advisory and cannot settle a claim. |
-| Research | World-ledger rows keyed by caller `experiment_id` and semantic configuration digest. An active attempt fails closed because no concurrent-attempt claim exists. | Research app port dispositions; no exactly-once candidate claim is implied. |
-| Mission planning (HTN) | Deterministic world rows and pure plan replay under `missions/planning/`. It owns no external side-effect claim. | Family-safe logging/signals only; plan evidence is not execution authority. |
-| Evaluation (incl. evidence identity) | Snapshot-pinned subject, grader contract, and claim-backed receipt owned by the evaluation app workflow. Natural dataset coordinates plus artifact-envelope/content identity when evidence rows are ingested. | Evaluation app manifest; a receipt is evidence, not promotion authority. Identity values emit no authority signal. |
-| Mission trajectories/transcripts | Lightweight world indexes under missions plus redaction-gated, content-addressed artifact publication for full content. | No content-bearing telemetry; receipts contain counts/rule IDs, never matched text. |
-| Physical AI | Ordinary world commits for state. External env/policy calls remain non-idempotent until the durable trial authority in #322 owns admission/recovery. | Physical-AI app ports receive exact dispositions; telemetry cannot infer provider completion. |
-| Repository harness | Files and CI artifacts under `tests/`, `evals/`, and `bench/`; never product authority. | CI reporting only. |
-
-### 7.8 Public and internal API disposition
-
-- Existing root autoresearch configuration/result exports and runtime methods
-  remain supported.
-- Concrete research, physical-AI, mission, evaluation, artifact, and query
-  services and all app-family ports remain internal.
-- `archetype.htn` and `archetype.datasets` remain provisional import paths
-  only until #591 and #590 fold them into missions and evaluation; the future
-  `research` and `physical_ai` family paths remain provisional until an
-  implementation issue explicitly graduates names and updates the API
-  manifest.
-- The provisional `archetype.experiments` facade is removed after migration;
-  none of its names are added to the `archetype` root as part of this design.
-- A supported physical-AI workflow must enter through `ArchetypeRuntime` and
-  `RuntimeApplication`; untrusted ingress also passes through
-  `CommandGateway`. Application services are never accepted as public
-  callable parameters.
-
-### 7.9 Staged implementation issues
-
-The package moves are deliberately split so each change has one owner and a
-focused compatibility oracle:
-
-| Issue | Scope | Prerequisites |
-|---|---|---|
-| [#585](https://github.com/VangelisTech/archetype/issues/585) | Extract the research ledger domain and pure runner decoder. | This design. |
-| [#586](https://github.com/VangelisTech/archetype/issues/586) | Fold trajectory schemas and pure transforms under `archetype.missions` with exact compatibility. | This design. |
-| [#587](https://github.com/VangelisTech/archetype/issues/587) | Route coding-agent transcript ingestion through redacted artifacts at the app artifact boundary. | #558 and #586. |
-| [#588](https://github.com/VangelisTech/archetype/issues/588) | Extract the reusable physical-AI domain with its own trajectory/rollout types. | This design; coordinate #322. |
-| [#589](https://github.com/VangelisTech/archetype/issues/589) | Move physical-AI evaluation/sweep orchestration behind app/runtime boundaries. | #557 and #588; coordinate #322. |
-| [#590](https://github.com/VangelisTech/archetype/issues/590) | Fold dataset identity into `archetype.evaluation.contracts` and delete `archetype.datasets`. | #557; coordinate #322/#558. |
-| [#591](https://github.com/VangelisTech/archetype/issues/591) | Fold HTN under `missions/planning/` mechanically; add the resolved-plan contract and app-owned mission adapter. | This design; coordinate #477/#511. |
-| [#592](https://github.com/VangelisTech/archetype/issues/592) | Remove the empty experiments facade and checker lane. | #585–#589 as listed in that issue. |
-
-Issue #561 owns only this adjudication, its documentation, and replacement of
-temporary architecture exceptions with those concrete implementation owners.
-It performs no source relocation or behavior change.
+- [Runtime](runtime.md)
+- [Application Architecture](application-architecture.md)
+- [Service Protocols](service-protocols.md)
+- [Repository Harness](repository-harness.md)
+- [Prefab Libraries](prefab-libraries.md)
+- [Graph system design](../design/graph-system.md)

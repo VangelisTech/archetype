@@ -8,11 +8,23 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TARGET = ROOT / "src" / "archetype" / "app" / "artifacts" / "bundle_service.py"
+TRANSCRIPT_TARGET = ROOT / "src" / "archetype" / "app" / "artifacts" / "transcript_service.py"
 
 
 def _service_methods(tree: ast.Module) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
     for node in tree.body:
         if isinstance(node, ast.ClassDef) and node.name == "ArtifactBundleService":
+            return {
+                child.name: child
+                for child in node.body
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
+    return {}
+
+
+def _transcript_methods(tree: ast.Module) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == "ClaudeTranscriptIngestionService":
             return {
                 child.name: child
                 for child in node.body
@@ -28,7 +40,8 @@ def _call_lines(node: ast.AST, name: str) -> list[int]:
     return sorted(
         child.lineno
         for child in ast.walk(node)
-        if isinstance(child, ast.Attribute) and child.attr == name
+        if (isinstance(child, ast.Attribute) and child.attr == name)
+        or (isinstance(child, ast.Name) and child.id == name)
     )
 
 
@@ -160,8 +173,53 @@ def audit_path(path: Path = DEFAULT_TARGET) -> list[str]:
     return errors
 
 
+def audit_transcript_path(path: Path = TRANSCRIPT_TARGET) -> list[str]:
+    """Prove transcript source bytes cross safety checks before durable writers."""
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    methods = _transcript_methods(tree)
+    ingest = methods.get("ingest")
+    if ingest is None:
+        return ["ClaudeTranscriptIngestionService is missing ingest()"]
+
+    errors: list[str] = []
+    _require_order(errors, ingest, "transcript ingest", "assert_safe_metadata", "sanitize_file")
+    _require_order(errors, ingest, "transcript ingest", "sanitize_file", "read_text")
+    _require_order(
+        errors,
+        ingest,
+        "transcript ingest",
+        "sanitize_file",
+        "parse_claude_transcript",
+    )
+    _require_order(
+        errors,
+        ingest,
+        "transcript ingest",
+        "parse_claude_transcript",
+        "_normalize_session",
+    )
+    _require_order(errors, ingest, "transcript ingest", "_normalize_session", "publish")
+    _require_order(errors, ingest, "transcript ingest", "publish", "_artifact_rows")
+    _require_order(errors, ingest, "transcript ingest", "_artifact_rows", "write_artifacts")
+
+    raw_reads = [
+        node.lineno
+        for node in ast.walk(ingest)
+        if isinstance(node, ast.Attribute)
+        and node.attr in {"read_text", "read_bytes", "open"}
+        and isinstance(node.value, ast.Attribute)
+        and node.value.attr == "path"
+        and isinstance(node.value.value, ast.Name)
+        and node.value.value.id == "source"
+    ]
+    if raw_reads:
+        errors.append("transcript ingest must never read source.path before sanitization")
+    return errors
+
+
 def main() -> int:
-    errors = audit_path()
+    errors = [*audit_path(), *audit_transcript_path()]
     if errors:
         print("Pre-durability redaction audit failed:")
         for error in errors:

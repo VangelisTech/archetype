@@ -13,8 +13,8 @@
 
 This record captures the point at which Archetype's coding-agent work stopped
 being a fake sandbox or an example-local state machine and became a tested
-application capability. Current contracts in [Agent missions and sandbox
-execution](../../guide/agent-missions.md), [Artifact
+application capability. Current contracts in [Agent
+Missions](../../guide/agent-missions.md), [Artifact
 finalization](../../guide/artifact-finalization.md), and [Application
 Architecture](../../guide/application-architecture.md) supersede this record.
 

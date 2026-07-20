@@ -10,7 +10,6 @@ import inspect
 import pytest
 
 from archetype.app.application.interfaces import iRuntimeApplication
-from archetype.app.application.mission_artifacts import MissionArtifactFinalizer
 from archetype.app.application.service import RuntimeApplication
 from archetype.app.artifacts.bundle_service import ArtifactBundleService
 from archetype.app.artifacts.interfaces import (
@@ -29,30 +28,24 @@ from archetype.app.evaluation.interfaces import iEvaluationService
 from archetype.app.evaluation.service import EvaluationService
 from archetype.app.gateway.interfaces import iCommandGateway
 from archetype.app.gateway.service import CommandGateway
-from archetype.app.missions.claim_service import MissionAttemptClaimService
-from archetype.app.missions.execution_service import MissionAttemptExecutionService
 from archetype.app.missions.interfaces import (
-    iMissionArtifactFinalizer,
-    iMissionAttemptClaimService,
-    iMissionAttemptExecutionService,
     iMissionService,
+    iTrajectoryService,
 )
 from archetype.app.missions.service import MissionService
+from archetype.app.missions.trajectory_service import TrajectoryService
 from archetype.app.query.interfaces import iQueryService
 from archetype.app.query.service import QueryService
 from archetype.app.redaction.interfaces import iRedactionService
 from archetype.app.redaction.service import RedactionService
 from archetype.app.research.interfaces import iResearchService
 from archetype.app.research.service import AutoResearchService
-from archetype.app.sandboxes.interfaces import iSandboxService
-from archetype.app.sandboxes.service import SandboxService
 from archetype.app.storage.interfaces import iStorageService
 from archetype.app.storage.service import StorageService
 from archetype.app.world.interfaces import iMutationService, iSimulationService, iWorldService
 from archetype.app.world.mutation import MutationService
 from archetype.app.world.service import WorldService
 from archetype.app.world.simulation import SimulationService
-from archetype.core.config import StorageConfig
 
 pytestmark = pytest.mark.contract("architecture.protocols.complete")
 
@@ -67,15 +60,12 @@ SERVICE_PROTOCOLS = (
     (ArtifactTableService, iArtifactTableService),
     (ArtifactBundleService, iArtifactBundleService),
     (MissionService, iMissionService),
-    (MissionAttemptClaimService, iMissionAttemptClaimService),
-    (MissionAttemptExecutionService, iMissionAttemptExecutionService),
-    (MissionArtifactFinalizer, iMissionArtifactFinalizer),
+    (TrajectoryService, iTrajectoryService),
     (RedactionService, iRedactionService),
     (EvaluationService, iEvaluationService),
     (AutoResearchService, iResearchService),
     (AuditLog, iAuditLog),
     (CommandScheduler, iCommandScheduler),
-    (SandboxService, iSandboxService),
     (RuntimeApplication, iRuntimeApplication),
     (CommandGateway, iCommandGateway),
 )
@@ -96,12 +86,9 @@ def test_family_protocol_covers_every_public_service_operation(implementation, p
 
 
 @pytest.mark.asyncio
-async def test_container_wiring_conforms_to_every_family_protocol(tmp_path) -> None:
+async def test_container_wiring_conforms_to_every_family_protocol() -> None:
     container = ServiceContainer()
     try:
-        workflow = container.mission_attempt_workflow(
-            StorageConfig(uri=tmp_path / "world", namespace="protocols")
-        )
         bindings = (
             (container.storage_service, iStorageService),
             (container.world_service, iWorldService),
@@ -111,16 +98,12 @@ async def test_container_wiring_conforms_to_every_family_protocol(tmp_path) -> N
             (container.artifact_service, iArtifactService),
             (container.artifact_table_service, iArtifactTableService),
             (container.artifact_bundle_service, iArtifactBundleService),
-            (workflow.mission_service, iMissionService),
-            (workflow.claim_service, iMissionAttemptClaimService),
-            (workflow.execution_service, iMissionAttemptExecutionService),
-            (workflow.artifact_finalizer, iMissionArtifactFinalizer),
+            (container.trajectory_service, iTrajectoryService),
             (container.redaction_service, iRedactionService),
             (container.evaluation_service, iEvaluationService),
             (container.autoresearch_service, iResearchService),
             (container.audit_log, iAuditLog),
             (container.command_scheduler, iCommandScheduler),
-            (container.sandbox_service, iSandboxService),
             (container.application, iRuntimeApplication),
             (container.command_gateway, iCommandGateway),
         )

@@ -28,18 +28,20 @@ all of it is a library rather than an engine change.
 
 ### D1 — Family libraries are a layer beside core
 
-A family library (`archetype.htn`, `archetype.graph`, `archetype.projections`)
-lives at the top level and imports only `archetype.core` and third-party
-packages. Its logic is frame-pure — functions over DataFrames — with thin
-handle sugar beside it. Because it sits beside core in the dependency DAG,
-everyone may import it: scripts, runtime consumers, and `app` (so `app.api`
-can serve a projection over REST without projections moving into app).
+A family library (`archetype.missions.planning`, `archetype.graph`,
+`archetype.projections`)
+owns reusable domain behavior at the top level. It imports `archetype.core`,
+itself, third-party packages, and only reviewed lower family contracts. Its
+logic is frame-pure — functions over DataFrames — with thin handle sugar beside
+it. Scripts and application services may consume it without moving reusable
+projection behavior into `app`; another top-level family needs an explicit
+edge first.
 
-Enforced, not conventional: a `package_rule` in `quality/architecture.toml`
-forbids family libraries from importing `archetype.app`, `archetype.runtime`,
-`archetype.api`, and `archetype.cli`. There is exactly one such rule, shared
-with the broader app split below — whichever track lands first codifies it,
-and the other conforms.
+Enforced, not conventional: the root policy in `quality/architecture.toml`
+forbids outward imports to `archetype.app`, `archetype.runtime`,
+`archetype.api`, and `archetype.cli`; fragments under
+`quality/architecture.d/` register each family and its reviewed lower-family
+edges.
 
 Alignment (2026-07-19, architecture-agent direction): this decision is the
 special case of a repo-wide split of `app/` into application authority
@@ -53,8 +55,12 @@ its family (`missions/projections.py`); the top-level `projections/` package
 holds generic, cross-family read models. Sequencing per that direction: the
 family dependency rule is codified first, pure types move family-by-family,
 and `graph`/`projections` are introduced against the stabilized pattern.
-`htn`, `datasets`, and `experiments` consolidate only after the
-agent-missions boundary stabilizes.
+That sequencing has since completed: HTN lives under mission planning,
+dataset identity lives under evaluation, and the former production
+experiments umbrella has been divided among missions, physical AI, research,
+and artifact-owned transcript ingestion. This design still explains the order
+in which those boundaries were established; the guide specifications describe
+their current contracts.
 
 ### D2 — Edges are entities; EdgeTables are archetype tables
 

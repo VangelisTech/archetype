@@ -58,39 +58,6 @@ class iEvaluationService(Protocol):
         entity_ids: list[int] | None = None,
         lineage: list[tuple[str, str, int]] | None = None,
     ) -> DataFrame: ...
-    async def query_trajectory_component(
-        self,
-        component: type[Component],
-        *,
-        world_id: str | UUID,
-        run_id: str | UUID,
-        storage_config: StorageConfig | None = None,
-        ticks: list[int] | None = None,
-        entity_ids: list[int] | None = None,
-        lineage: list[tuple[str, str, int]] | None = None,
-        trajectory_ids: Sequence[str] | None = None,
-        episode_ids: Sequence[str] | None = None,
-        rollout_ids: Sequence[str] | None = None,
-        task_ids: Sequence[str] | None = None,
-        trial_idxs: Sequence[int] | None = None,
-    ) -> DataFrame: ...
     async def run_graders(
         self, df: DataFrame, graders: Sequence[TrajectoryGrader]
-    ) -> list[GraderOutput]: ...
-    async def grade_trajectory_component(
-        self,
-        component: type[Component],
-        *,
-        world_id: str | UUID,
-        run_id: str | UUID,
-        graders: Sequence[TrajectoryGrader],
-        storage_config: StorageConfig | None = None,
-        ticks: list[int] | None = None,
-        entity_ids: list[int] | None = None,
-        lineage: list[tuple[str, str, int]] | None = None,
-        trajectory_ids: Sequence[str] | None = None,
-        episode_ids: Sequence[str] | None = None,
-        rollout_ids: Sequence[str] | None = None,
-        task_ids: Sequence[str] | None = None,
-        trial_idxs: Sequence[int] | None = None,
     ) -> list[GraderOutput]: ...

@@ -38,7 +38,7 @@ from daft import col
 
 from archetype import ArchetypeRuntime
 from archetype.core.config import RunConfig
-from archetype.htn import (
+from archetype.missions.planning import (
     Branch,
     HtnDomain,
     MethodSpec,

@@ -107,12 +107,12 @@ def test_api_factory_does_not_instrument_or_warn_about_logfire() -> None:
     assert result.stderr == ""
 
 
-def test_deprecated_contrib_import_is_quiet_and_vendor_free() -> None:
+def test_private_observability_boundary_import_is_quiet_and_vendor_free() -> None:
     result = _run(
         """
         import sys
 
-        import archetype.contrib.logfire_observer
+        import archetype._obs
 
         assert "logfire" not in sys.modules
         """

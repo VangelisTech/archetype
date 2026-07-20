@@ -28,17 +28,30 @@ from archetype.app.models import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from archetype.app.artifacts.interfaces import (
         iArtifactBundleService,
         iArtifactService,
         iArtifactTableService,
+        iTranscriptIngestionService,
     )
     from archetype.app.audit.interfaces import iAuditLog
     from archetype.app.commands.interfaces import iCommandScheduler
     from archetype.app.evaluation.interfaces import iEvaluationService
+    from archetype.app.missions.interfaces import iMissionService, iTrajectoryService
+    from archetype.app.physical_ai.interfaces import iPhysicalAIService
     from archetype.app.query.interfaces import iQueryService
     from archetype.app.research.interfaces import iResearchService
     from archetype.app.world.interfaces import iMutationService, iSimulationService, iWorldService
+    from archetype.physical_ai.contracts import (
+        InstructionSweepConfig,
+        InstructionSweepReport,
+        PhysicalTaskEvalConfig,
+        PhysicalTaskEvalReport,
+    )
+    from archetype.physical_ai.manipulation import EnvClient
+    from archetype.physical_ai.policy import PolicyClient
 
 
 _ACTIVE_APPLICATION: ContextVar[RuntimeApplication | None] = ContextVar(
@@ -79,7 +92,11 @@ class RuntimeApplication:
         artifact_tables: iArtifactTableService | None = None,
         artifacts: iArtifactService | None = None,
         artifact_bundles: iArtifactBundleService | None = None,
+        transcripts: iTranscriptIngestionService | None = None,
         evaluations: iEvaluationService | None = None,
+        trajectories: iTrajectoryService | None = None,
+        physical_ai: iPhysicalAIService | None = None,
+        agent_missions: Callable[..., iMissionService] | None = None,
     ) -> None:
         self._mutations = mutations
         self._worlds = worlds
@@ -91,7 +108,11 @@ class RuntimeApplication:
         self._artifact_tables = artifact_tables
         self._artifacts = artifacts
         self._artifact_bundles = artifact_bundles
+        self._transcripts = transcripts
         self._evaluations = evaluations
+        self._trajectories = trajectories
+        self._physical_ai = physical_ai
+        self._agent_missions = agent_missions
 
         self._state_lock = asyncio.Lock()
         self._drained = asyncio.Event()
@@ -100,6 +121,15 @@ class RuntimeApplication:
         self._accepting = True
         self._lanes: dict[str, _WorldLane] = {}
         self._create_lock = asyncio.Lock()
+
+    def agent_mission_service(self, **kwargs) -> iMissionService:
+        """Compose the internal mission workflow port for a trusted runtime handle."""
+
+        if not self._accepting:
+            raise RuntimeError("RuntimeApplication is shutting down")
+        if self._agent_missions is None:
+            raise RuntimeError("agent mission service is not wired")
+        return self._agent_missions(**kwargs)
 
     @asynccontextmanager
     async def _admit(self):
@@ -280,6 +310,42 @@ class RuntimeApplication:
                 on_iteration=on_iteration,
             )
 
+    async def evaluate_physical_task(
+        self,
+        config: PhysicalTaskEvalConfig,
+        *,
+        env_client: EnvClient,
+        policy_client: PolicyClient | None = None,
+    ) -> PhysicalTaskEvalReport:
+        """Run one ledger-backed physical evaluation through its owning service."""
+
+        if self._physical_ai is None:
+            raise RuntimeError("physical AI service is not wired")
+        async with self._admit():
+            return await self._physical_ai.evaluate_task(
+                config,
+                env_client=env_client,
+                policy_client=policy_client,
+            )
+
+    async def sweep_physical_instructions(
+        self,
+        config: InstructionSweepConfig,
+        *,
+        env_client: EnvClient,
+        policy_client: PolicyClient,
+    ) -> InstructionSweepReport:
+        """Run one paired-seed instruction sweep through its owning service."""
+
+        if self._physical_ai is None:
+            raise RuntimeError("physical AI service is not wired")
+        async with self._admit():
+            return await self._physical_ai.sweep_instructions(
+                config,
+                env_client=env_client,
+                policy_client=policy_client,
+            )
+
     # Query and introspection ----------------------------------------
 
     def _resolve_storage(self, world_id, storage_config):
@@ -431,6 +497,14 @@ class RuntimeApplication:
                 str(world_id), paths, processor, storage_config=storage_config
             )
 
+    async def ingest_claude_transcript(self, world_id, source, *, storage_config=None):
+        if self._transcripts is None:
+            raise RuntimeError("transcript ingestion service is not wired")
+        async with self._admit():
+            return await self._transcripts.ingest(
+                str(world_id), source, storage_config=storage_config
+            )
+
     async def write_artifacts(self, world_id, table_name, artifacts, *, storage_config=None):
         if self._artifact_tables is None:
             raise RuntimeError("artifact table service is not wired")
@@ -480,6 +554,51 @@ class RuntimeApplication:
             raise RuntimeError("evaluation service is not wired")
         async with self._admit():
             return await self._evaluations.evaluate(str(world_id), components, **kwargs)
+
+    async def query_trajectory(
+        self,
+        component,
+        world_id,
+        run_id,
+        storage_config=None,
+        **kwargs,
+    ):
+        if self._trajectories is None:
+            raise RuntimeError("trajectory service is not wired")
+        async with self._admit():
+            storage_config = self._resolve_storage(world_id, storage_config)
+            return await self._trajectories.query(
+                component,
+                world_id=str(world_id),
+                run_id=str(run_id),
+                storage_config=storage_config,
+                lineage=await self._resolve_lineage(world_id, run_id, storage_config),
+                **kwargs,
+            )
+
+    async def grade_trajectory(
+        self,
+        component,
+        world_id,
+        run_id,
+        *,
+        graders,
+        storage_config=None,
+        **kwargs,
+    ):
+        if self._trajectories is None:
+            raise RuntimeError("trajectory service is not wired")
+        async with self._admit():
+            storage_config = self._resolve_storage(world_id, storage_config)
+            return await self._trajectories.grade(
+                component,
+                world_id=str(world_id),
+                run_id=str(run_id),
+                graders=graders,
+                storage_config=storage_config,
+                lineage=await self._resolve_lineage(world_id, run_id, storage_config),
+                **kwargs,
+            )
 
     # Deferred commands ---------------------------------------------
 

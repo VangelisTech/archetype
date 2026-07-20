@@ -2,26 +2,21 @@
 
 # Version inventory
 
-This page is generated from `src/archetype/app/sandboxes/versions.toml`, the
-machine-readable inventory of every executable dependency that can affect a
-coding-agent attempt. The TOML inventory is the machine authority; this page
+This page is generated from `src/archetype/missions/sandboxes/versions.toml`,
+the machine-readable inventory of executable dependencies used by Agent
+Missions V1. The TOML inventory is the machine authority; this page
 is its operator review surface. The normative contract, including the
 fail-closed resolution rules and the upgrade/rollback procedure, is
-[Sandbox execution, section 9](../guide/sandbox-execution.md).
+[Agent Missions, section 5](../guide/agent-missions.md#5-sandbox-and-validator-protocol).
 
-Inventory content digest: `sha256:d8d625dd64db556677499e33be278b0fa282bef20d479da626b989b420b33259`
+Inventory content digest: `sha256:6f8a587a67e31c0131243cd63212311da5fe8cb2e230acf7d63f4c25b2953ad4`
 
 ## Pinned artifacts
 
 | Artifact | Role | Kind | Name | Version | Immutable reference | Consumers |
 | --- | --- | --- | --- | --- | --- | --- |
 | `codex-cli` | agent-harness | npm-package | `@openai/codex` | `0.144.6` | `sha512-wk+2CWiBNXiJLBoN2D08N9RceWkSBnlgk5g2K1a4CXrP/C0gdlHyRUG7RFzm9y41DCK/7tvCct233JVxyFmznw==` | #563, #565, #567 |
-| `claude-code-cli` | agent-harness | npm-package | `@anthropic-ai/claude-code` | `2.1.215` | `sha512-lsWBvyMyBqg/rOZ06o/HEhlpOzHsH8IBf9RH4u5gzizQ1LWS/oXAh5nqWNUu3hn2d8QkyYg0aseNzMDlGD+3qg==` | #508, #563, #565 |
-| `opencode-cli` | agent-harness | npm-package | `opencode-ai` | `1.18.3` | `sha512-HnItl/+uhSpj7JV9x6ITiE0XFq4b/PKF5OM03TIyiFoFiLw3MQoJOAXZFTEzC7IOgAIYcysRQBBmCmlXILkxww==` | #563, #565 |
 | `modal-sdk` | sandbox-sdk | python-package | `modal` | `1.5.2` | `sha256:7508a44f8742c6f26be4d28da71f46092ef3bcc07d0f27cbd0ea8c9d6d9fc873` | #563, #566 |
-| `apple-container-runtime` | sandbox-runtime | macos-installer | `apple/container` | `1.1.0` | `sha256:0ca1c42a2269c2557efb1d82b1b38ac553e6a3a3da1b1179c439bcee1e7d6714` | #564 |
-| `otel-collector` | collector | container-image | `otel/opentelemetry-collector-contrib` | `0.156.0` | `docker.io/otel/opentelemetry-collector-contrib@sha256:125bdbeb7590cc1952c5b3430ecf14063568980c2c93d5b38676cc0446ed8108` | #492 |
-| `pydantic-evals` | evaluation | python-package | `pydantic-evals` | `2.13.0` | `sha256:c3a87e73cad0ae26c44ee5d648419822b36f385bff39836c273a998bec5f1ff9` | #477 |
 
 ## Planned artifacts
 
@@ -30,4 +25,3 @@ selected yet. Resolving one fails closed until it is pinned.
 
 | Artifact | Role | Consumers |
 | --- | --- | --- |
-| `l7-egress-proxy` | proxy | #490 |

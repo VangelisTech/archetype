@@ -10,19 +10,26 @@ Choose the owning package before adding a type or behavior:
 |---|---|
 | Components, processors, pure DataFrame transforms, transition graphs, and reusable projections | `archetype.<family>` |
 | Supported family value contracts | `archetype.<family>.contracts` or another specifically named family module |
-| Durable authority, cross-family orchestration, internal service ports, and concrete implementations | `archetype.app.<family>` |
+| Capability-scoped resources and provider adapters implementing a family-owned protocol | A named subpackage of `archetype.<family>` |
+| Durable authority, cross-family orchestration, internal service ports, and concrete application services | `archetype.app.<family>` |
 | Transport, authentication, application facade, and composition | `archetype.api`, `archetype.app.gateway`, `archetype.app.application`, and `archetype.app.container` |
 
 Top-level families may import `archetype.core`, themselves, third-party
 libraries, and only lower top-level family contracts declared in
-`quality/architecture.toml`. They never import `app`, `runtime`, `api`, or
-`cli`; application families may consume their contracts in the other
-direction. Use `components.py`, `processors.py`, `contracts.py`,
+`quality/architecture.toml` and the family fragments under
+`quality/architecture.d/`. They never import `app`, `runtime`, `api`, or `cli`;
+application families may consume their contracts in the other direction. Use
+`components.py`, `processors.py`, `contracts.py`,
 `transitions.py`, `interfaces.py`, and `service.py` according to those semantic
 roles. Every first-party top-level package or module must be classified as
 reserved infrastructure or a registered family, and the family graph must
 remain acyclic. Root-facade imports receive the disposition of their owning module.
 Package placement never makes a symbol public by itself.
+
+A reviewed family may own a capability-scoped resource adapter without gaining
+application authority. Agent Missions is the concrete example: coding-agent
+state, processors, relations, and sandbox resources live under
+`archetype.missions`; `archetype.app.missions` composes them into a workflow.
 
 ## Layout
 

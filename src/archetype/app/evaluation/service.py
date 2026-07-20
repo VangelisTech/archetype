@@ -25,9 +25,8 @@ import json
 import time
 from collections.abc import Sequence
 from inspect import isawaitable
-from typing import Any
 
-from daft import DataFrame, col
+from daft import DataFrame
 from pydantic_core import to_jsonable_python
 from uuid_utils import UUID
 
@@ -187,46 +186,6 @@ class EvaluationService:
             lineage=lineage,
         )
 
-    async def query_trajectory_component(
-        self,
-        component: type[Component],
-        *,
-        world_id: str | UUID,
-        run_id: str | UUID,
-        storage_config: StorageConfig | None = None,
-        ticks: list[int] | None = None,
-        entity_ids: list[int] | None = None,
-        lineage: list[tuple[str, str, int]] | None = None,
-        trajectory_ids: Sequence[str] | None = None,
-        episode_ids: Sequence[str] | None = None,
-        rollout_ids: Sequence[str] | None = None,
-        task_ids: Sequence[str] | None = None,
-        trial_idxs: Sequence[int] | None = None,
-    ) -> DataFrame:
-        """Return one typed trajectory component filtered by target fields.
-
-        Components such as ``Trajectory``, ``TrajectoryReward``, and
-        ``TrajectoryObservation`` each have their own table shape. A grader
-        needing several trajectory tables should request each DataFrame.
-        """
-        df = await self.query_components(
-            [component],
-            world_id=world_id,
-            run_id=run_id,
-            storage_config=storage_config,
-            ticks=ticks,
-            entity_ids=entity_ids,
-            lineage=lineage,
-        )
-        filters = {
-            "trajectory_id": trajectory_ids,
-            "episode_id": episode_ids,
-            "rollout_id": rollout_ids,
-            "task_id": task_ids,
-            "trial_idx": trial_idxs,
-        }
-        return _filter_component_rows(df, component, filters)
-
     async def run_graders(
         self,
         df: DataFrame,
@@ -253,57 +212,3 @@ class EvaluationService:
             else:
                 results.append(output)
         return results
-
-    async def grade_trajectory_component(
-        self,
-        component: type[Component],
-        *,
-        world_id: str | UUID,
-        run_id: str | UUID,
-        graders: Sequence[TrajectoryGrader],
-        storage_config: StorageConfig | None = None,
-        ticks: list[int] | None = None,
-        entity_ids: list[int] | None = None,
-        lineage: list[tuple[str, str, int]] | None = None,
-        trajectory_ids: Sequence[str] | None = None,
-        episode_ids: Sequence[str] | None = None,
-        rollout_ids: Sequence[str] | None = None,
-        task_ids: Sequence[str] | None = None,
-        trial_idxs: Sequence[int] | None = None,
-    ) -> list[GraderOutput]:
-        """Query one trajectory component and execute graders over it."""
-        df = await self.query_trajectory_component(
-            component,
-            world_id=world_id,
-            run_id=run_id,
-            storage_config=storage_config,
-            ticks=ticks,
-            entity_ids=entity_ids,
-            lineage=lineage,
-            trajectory_ids=trajectory_ids,
-            episode_ids=episode_ids,
-            rollout_ids=rollout_ids,
-            task_ids=task_ids,
-            trial_idxs=trial_idxs,
-        )
-        return await self.run_graders(df, graders)
-
-
-def _filter_component_rows(
-    df: DataFrame,
-    component: type[Component],
-    filters: dict[str, Sequence[Any] | None],
-) -> DataFrame:
-    prefix = component.get_prefix()
-    model_fields = getattr(component, "model_fields", {})
-    requested = {field_name: values for field_name, values in filters.items() if values is not None}
-    unsupported = sorted(set(requested) - set(model_fields))
-    if unsupported:
-        names = ", ".join(unsupported)
-        raise ValueError(
-            f"{component.__name__} does not store requested trajectory filter field(s): "
-            f"{names}; filter the Trajectory header or use fields stored on this component"
-        )
-    for field_name, values in requested.items():
-        df = df.where(col(f"{prefix}{field_name}").is_in(list(values)))
-    return df

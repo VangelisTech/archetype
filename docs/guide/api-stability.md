@@ -36,30 +36,43 @@ their owning family modules; applications use `ArchetypeRuntime`, REST, or CLI.
 Names beginning with an underscore are internal. Modules explicitly labeled
 experimental may change without the compatibility guarantees of the main API.
 
-### Provisional capability packages
+### Reviewed capability packages
 
-`archetype.experiments`, `archetype.htn`, and `archetype.datasets` are not
-supported application surfaces merely because their modules are importable.
-They contain working prototypes and, in the dataset case, a normatively defined
-vocabulary, but their package boundaries may change before v1 as coding-mission
-and physical-AI capabilities settle. The import-boundary checker constrains
-what these packages may depend on; it does not promote them to public API.
+The provisional production `archetype.experiments` package has been removed.
+Standalone scripts under the repository-root `experiments/` directory are
+consumers of the shipped library; they do not define an importable domain
+family or application authority.
 
-The target ownership is now decided in
-[Agent Mission Transitions, section 7](agent-missions.md#7-adjacent-capability-package-map),
-but it is not yet implemented. `archetype.htn` folds under
-`archetype.missions` as the planning subdomain via #591. `archetype.datasets`
-is removed by #590, which folds evidence identity into
-`archetype.evaluation.contracts`. The mixed `experiments` package is staged
-into `research` (#585), mission-owned trajectory modules (#586/#587), and
-`physical_ai` (#588/#589), then removed by #592. The surviving future family
-paths remain provisional until an implementation issue explicitly graduates a
-surface.
+`ClaudeTranscriptSource` and `TranscriptIngestionReceipt` are supported types
+in the `RuntimeWorld.ingest_claude_transcript()` signature. They remain
+namespaced under `archetype.missions.trajectories` and
+`archetype.artifacts`; support does not require promotion to the
+root import surface. The parser's in-memory `LoadedSession` and the concrete
+artifact ingestion service remain implementation details.
 
-Do not build a compatibility promise around those module paths yet. New
-applications use `ArchetypeRuntime` and supported extension types. A future
-graduation must name an owning domain family, add it to the API manifest, and
-provide a migration from the provisional path.
+`archetype.physical_ai` is the reviewed owner for reusable physical state,
+policy contracts, external-step processors, typed evaluation values, and pure
+instruction optimization. `PhysicalTaskEvalConfig`, `PhysicalTaskEvalReport`,
+`InstructionSweepConfig`, `InstructionSweepReport`, `TrialOutcome`, and
+`VariantOutcome` are supported top-level runtime contracts. The concrete
+application service remains internal.
+
+The ownership trajectory is recorded in
+[Agent Missions V1, section 9](agent-missions.md#9-family-direction-after-v1),
+and the named family moves are complete. Dataset evidence identity now lives in
+`archetype.evaluation.contracts`, and the former `archetype.datasets` package is
+gone. The former `archetype.htn` resolver now lives under
+`archetype.missions.planning`; its future adapter to mission task entities is
+not yet a supported authoring surface. Trajectory schemas, Claude source
+parsing, and pure transforms live under `archetype.missions.trajectories`;
+physical state and pure behavior live in `physical_ai`; physical rollout/sweep
+orchestration lives behind `RuntimeApplication`; and research ledger state and
+its pure runner decoder live in `archetype.research`.
+
+Do not build a compatibility promise around the planning adapter or concrete
+application module paths. New applications use `ArchetypeRuntime` and the
+supported extension/signature types inventoried by the generated reference. A
+future graduation must name an owning domain family and enter that inventory.
 
 Supported exports are additive within a release line. Removing or changing
 their meaning requires a versioned migration. Every classification or export

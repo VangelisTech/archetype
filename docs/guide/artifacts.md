@@ -286,3 +286,111 @@ without that serialization.
 Iceberg commits are atomic. After a crash, a visible append is found by its
 logical keys on retry; an uncommitted append is absent and can be attempted
 again.
+
+## 13. Coding-agent transcript artifacts
+
+A coding-agent transcript is source evidence, not mission state. The raw JSONL
+stays at its source location. Archetype records its content digest and stable
+logical identity, publishes a lightweight trajectory index, and writes only
+sanitized narrative to a typed artifact table.
+
+```text
+local Claude JSONL
+    │ stable regular-file snapshot
+    ▼
+RedactionService ── quarantine ──► no claim, no artifact table
+    │ sanitized temporary copy
+    ▼
+pure Claude parser ── empty/noise ─► no claim, no artifact table
+    │ complete in-memory session
+    ▼
+source claim: Trajectory + TranscriptArtifactRef + AssetRef
+    │ same source/content converges; changed content conflicts
+    ▼
+coding_agent_transcript_rows: one session row + ordered turn rows
+```
+
+The supported runtime path is intentionally small:
+
+```python
+from pathlib import Path
+
+from archetype import ArchetypeRuntime, StorageConfig
+from archetype.core.config import StorageBackend
+from archetype.missions.trajectories import ClaudeTranscriptSource
+
+storage = StorageConfig(
+    uri="./evidence",
+    namespace="missions",
+    backend=StorageBackend.ICEBERG,
+)
+
+async with ArchetypeRuntime() as runtime:
+    world = runtime.world("software-factory", storage=storage)
+    receipt = await world.ingest_claude_transcript(
+        ClaudeTranscriptSource(
+            path=Path("session.jsonl"),
+            mission_id="mission-42",
+        )
+    )
+    rows = await world.artifacts("coding_agent_transcript_rows")
+```
+
+`ClaudeTranscriptSource` is configuration and source identity. Its canonical
+URI is `claude-session://<project>/<session>`; the local filesystem path never
+crosses durability. Project and session may be supplied explicitly, otherwise
+they derive from the source path. One world may ingest any number of sessions,
+independent of how many sandboxes or worktrees produced them.
+
+The source claim publishes four Components on one metadata entity:
+
+| Component | Durable meaning |
+|---|---|
+| `ArtifactMeta` | Claim identity, payload digest, commit token, and producer. |
+| `Trajectory` | Small query coordinates and aggregate counts; no narrative. |
+| `TranscriptArtifactRef` | Mission/trajectory linkage, raw source digest, redaction summary, and typed-table name. |
+| `AssetRef` | Content-addressed reference to the original JSONL source artifact. |
+
+New transcript ingestion never writes `TrajectoryTurn`. That schema remains
+readable for historical rows and available for explicitly authored, already
+safe small evidence; it is not the raw-transcript ingestion path.
+
+The typed table contains one `row_kind="session"` row and one
+`row_kind="turn"` row per parsed turn. Every row carries the trajectory,
+mission, project, session, raw-source digest, source-claim entity, redaction
+receipt columns, and a row-specific content hash. Turn rows then add role,
+content, tool input/output, token, duration, and error fields. Thinking blocks
+are excluded. Sidechains are excluded by default. Content bounds apply after
+the complete source file has crossed the redaction boundary.
+
+Safety precedes every durable write:
+
+1. Metadata is checked without retaining tainted values in exceptions.
+2. A stable regular-file snapshot is copied without following symlinks.
+3. The snapshot's raw SHA-256 is computed, then text secrets are replaced.
+   Unsupported sources, invalid text, unsafe archives, and scan-limit failures
+   are quarantined.
+4. The pure missions-family parser reads only that sanitized snapshot.
+5. Structured session and turn records receive a second defensive redaction
+   pass. The complete normalized payload exists in memory before publication.
+6. Only then may the source claim and typed rows become durable.
+
+Replay has two identities. The claim key is
+`(world, run, "claude-transcripts", source_uri)` and its payload binds the raw
+source digest. Repeating the same logical source and bytes returns the original
+claim. Reusing that source identity for changed bytes raises
+`ClaimConflictError` before new typed rows can land. Typed rows use their
+ordinary `(world_id, run_id, source_uri, content_hash)` keys, so a complete
+retry appends nothing.
+
+The claim and Iceberg append are two durable authorities, not a fictional
+cross-store transaction. The claim lands first so changed bytes can never
+pollute the typed table. If the table append fails after claim completion, an
+identical retry receives the existing claim and idempotently repairs the
+missing rows. `TranscriptIngestionReceipt.duplicate` is true only when both the
+claim and every typed row already existed.
+
+Transcript ingestion requires Iceberg because its narrative belongs in a
+typed artifact table. Async and sync world handles expose the same operation.
+The service composes existing claim, table, redaction, and world ports; it does
+not become a new source of truth.

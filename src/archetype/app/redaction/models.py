@@ -100,6 +100,7 @@ class RedactedFile(BaseModel):
     model_config = dict(frozen=True)
 
     path: Path
+    source_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     receipt: RedactionReceipt
 
 

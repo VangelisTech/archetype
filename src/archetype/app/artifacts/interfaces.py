@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from daft import DataFrame
 
@@ -18,9 +18,17 @@ from archetype.artifacts.bundles import (
     ArtifactReconcileItemResult,
     ArtifactReconcileResult,
 )
-from archetype.artifacts.contracts import ArtifactProcessor, ArtifactReceipt, ArtifactWriteReceipt
+from archetype.artifacts.contracts import (
+    ArtifactProcessor,
+    ArtifactReceipt,
+    ArtifactWriteReceipt,
+    TranscriptIngestionReceipt,
+)
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
+
+if TYPE_CHECKING:
+    from archetype.missions.trajectories import ClaudeTranscriptSource
 
 
 @runtime_checkable
@@ -84,6 +92,19 @@ class iArtifactTableService(Protocol):
         *,
         storage_config: StorageConfig | None = None,
     ) -> DataFrame: ...
+
+
+@runtime_checkable
+class iTranscriptIngestionService(Protocol):
+    """Redact and publish coding-agent transcript artifacts."""
+
+    async def ingest(
+        self,
+        world_id: str,
+        source: ClaudeTranscriptSource,
+        *,
+        storage_config: StorageConfig | None = None,
+    ) -> TranscriptIngestionReceipt: ...
 
 
 @runtime_checkable

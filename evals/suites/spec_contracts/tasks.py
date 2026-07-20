@@ -684,7 +684,7 @@ def task_dataset_eval_ontology() -> list[GraderResult]:
     from dataclasses import fields, is_dataclass
     from typing import get_type_hints
 
-    from archetype.datasets import definitions as defs
+    from archetype.evaluation import contracts as defs
 
     task = defs.TaskRef(benchmark="libero", suite="libero_spatial", task_key="3")
     episode = defs.EpisodeRef(benchmark="libero", episode_id=17)

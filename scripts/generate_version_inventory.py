@@ -10,7 +10,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from archetype.app.sandboxes.versions import (
+from archetype.missions.sandboxes.versions import (
     PinnedArtifact,
     VersionInventory,
     load_version_inventory,
@@ -37,12 +37,12 @@ def render(inventory: VersionInventory | None = None) -> str:
         "",
         "# Version inventory",
         "",
-        "This page is generated from `src/archetype/app/sandboxes/versions.toml`, the",
-        "machine-readable inventory of every executable dependency that can affect a",
-        "coding-agent attempt. The TOML inventory is the machine authority; this page",
+        "This page is generated from `src/archetype/missions/sandboxes/versions.toml`,",
+        "the machine-readable inventory of executable dependencies used by Agent",
+        "Missions V1. The TOML inventory is the machine authority; this page",
         "is its operator review surface. The normative contract, including the",
         "fail-closed resolution rules and the upgrade/rollback procedure, is",
-        "[Sandbox execution, section 9](../guide/sandbox-execution.md).",
+        "[Agent Missions, section 5](../guide/agent-missions.md#5-sandbox-and-validator-protocol).",
         "",
         f"Inventory content digest: `{inventory.digest}`",
         "",

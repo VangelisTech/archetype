@@ -84,6 +84,17 @@ PAGES: tuple[ReferencePage, ...] = (
         ),
     ),
     ReferencePage(
+        "transcripts",
+        "Coding-agent transcripts",
+        "Recommended API",
+        "Ingest Claude Code JSONL through a redacted, replay-safe artifact boundary and "
+        "retain only lightweight trajectory linkage in world history.",
+        (
+            "ClaudeTranscriptSource",
+            "TranscriptIngestionReceipt",
+        ),
+    ),
+    ReferencePage(
         "building-blocks",
         "Building blocks",
         "Extension API",
@@ -130,6 +141,28 @@ PAGES: tuple[ReferencePage, ...] = (
             "Outcome",
             "GraderContract",
             "EvalReceipt",
+        ),
+    ),
+    ReferencePage(
+        "physical-ai",
+        "Physical AI",
+        "Recommended API",
+        "Run batched physical-policy evaluations and paired instruction sweeps through "
+        "the runtime, while retaining queryable world/run evidence.",
+        (
+            "PhysicalTaskEvalConfig",
+            "PhysicalTaskEvalReport",
+            "InstructionSweepConfig",
+            "InstructionSweepReport",
+            "TrialOutcome",
+            "VariantOutcome",
+            "EnvClient",
+            "PolicyClient",
+            "PerturbationStrategy",
+            "TemplatePerturbation",
+            "RoundRecord",
+            "OptimizationResult",
+            "optimize_instruction",
         ),
     ),
     ReferencePage(
@@ -202,7 +235,31 @@ SUPPLEMENTAL: dict[str, tuple[str, str]] = {
     "HookEvent": ("archetype.core.hooks", "HookEvent"),
     "HookHandle": ("archetype.core.hooks", "HookHandle"),
     "HookInfo": ("archetype.app.models", "HookInfo"),
+    "ClaudeTranscriptSource": (
+        "archetype.missions.trajectories",
+        "ClaudeTranscriptSource",
+    ),
+    "TranscriptIngestionReceipt": (
+        "archetype.artifacts",
+        "TranscriptIngestionReceipt",
+    ),
     "IterationResult": ("archetype.app.research.contracts", "IterationResult"),
+    "EnvClient": ("archetype.physical_ai.manipulation", "EnvClient"),
+    "OptimizationResult": ("archetype.physical_ai.optimization", "OptimizationResult"),
+    "PerturbationStrategy": (
+        "archetype.physical_ai.optimization",
+        "PerturbationStrategy",
+    ),
+    "PolicyClient": ("archetype.physical_ai.policy", "PolicyClient"),
+    "RoundRecord": ("archetype.physical_ai.optimization", "RoundRecord"),
+    "TemplatePerturbation": (
+        "archetype.physical_ai.optimization",
+        "TemplatePerturbation",
+    ),
+    "optimize_instruction": (
+        "archetype.physical_ai.optimization",
+        "optimize_instruction",
+    ),
     "ProcessorInfo": ("archetype.app.models", "ProcessorInfo"),
     "ResourceInfo": ("archetype.app.models", "ResourceInfo"),
     "StorageBackend": ("archetype.core.config", "StorageBackend"),
@@ -232,6 +289,8 @@ RECORDS = frozenset(
         "RolloutResult",
         "ArtifactReceipt",
         "ArtifactWriteReceipt",
+        "ClaudeTranscriptSource",
+        "TranscriptIngestionReceipt",
         "ArtifactBundleRequest",
         "ArtifactCandidate",
         "ArtifactIndexRecord",
@@ -259,6 +318,14 @@ RECORDS = frozenset(
         "Outcome",
         "GraderContract",
         "EvalReceipt",
+        "PhysicalTaskEvalConfig",
+        "PhysicalTaskEvalReport",
+        "InstructionSweepConfig",
+        "InstructionSweepReport",
+        "TrialOutcome",
+        "VariantOutcome",
+        "OptimizationResult",
+        "RoundRecord",
     }
 )
 
@@ -266,9 +333,12 @@ EXPLICIT_MEMBERS: dict[str, tuple[str, ...]] = {
     "RunConfig": ("dev", "benchmark"),
     "AutoResearchResult": ("improved",),
     "ArtifactWriteReceipt": ("duplicate",),
+    "TranscriptIngestionReceipt": ("duplicate",),
     "ArtifactBundleRequest": ("canonical_json", "digest"),
     "ArtifactStoreConfig": ("local", "retention_seconds"),
     "GraderContract": ("digest",),
+    "PhysicalTaskEvalReport": ("success_rate", "mean_length"),
+    "InstructionSweepReport": ("scores", "best"),
 }
 
 COMPATIBILITY_CLASSES = frozenset(

@@ -6,15 +6,15 @@ types = [
   "ArtifactService",
   "ArtifactBundleService",
   "ArtifactTableService",
+  "ClaudeTranscriptIngestionService",
   "AuditLog",
   "AutoResearchService",
   "CommandGateway",
   "CommandScheduler",
   "EvaluationService",
   "MutationService",
-  "MissionAttemptClaimService",
-  "MissionAttemptExecutionService",
   "MissionService",
+  "PhysicalAIService",
   "QueryService",
   "RedactionService",
   "RuntimeApplication",
@@ -22,6 +22,7 @@ types = [
   "ServiceContainer",
   "SimulationService",
   "StorageService",
+  "TrajectoryService",
   "WorldService",
 ]
 composition_roots = [
@@ -45,7 +46,6 @@ reserved_infrastructure = [
   "archetype.api",
   "archetype.app",
   "archetype.cli",
-  "archetype.contrib",
   "archetype.core",
   "archetype.runtime",
 ]
@@ -155,11 +155,8 @@ name = "mission-family"
 consumer = "archetype.app.missions"
 allowed_app = [
   "archetype.app.missions",
-  "archetype.app.errors",
-  "archetype.app.limits",
-  "archetype.app.redaction.interfaces",
-  "archetype.app.redaction.models",
-  "archetype.app.storage.catalog",
+  "archetype.app.evaluation.interfaces",
+  "archetype.app.query.interfaces",
 ]
 
 [[family_rule]]
@@ -172,12 +169,13 @@ allowed_app = [
 ]
 
 [[family_rule]]
-name = "sandbox-family"
-consumer = "archetype.app.sandboxes"
+name = "physical-ai-family"
+consumer = "archetype.app.physical_ai"
 allowed_app = [
-  "archetype.app.sandboxes",
-  "archetype.app.missions.models",
-  "archetype.app.missions.transitions",
+  "archetype.app.physical_ai",
+  "archetype.app.evaluation.interfaces",
+  "archetype.app.world.interfaces",
+  "archetype.app.models",
 ]
 
 [[family_rule]]
@@ -202,7 +200,7 @@ allowed_app = [
   "archetype.app.commands.interfaces",
   "archetype.app.evaluation.interfaces",
   "archetype.app.missions.interfaces",
-  "archetype.app.missions.models",
+  "archetype.app.physical_ai.interfaces",
   "archetype.app.query.interfaces",
   "archetype.app.research.interfaces",
   "archetype.app.world.interfaces",
@@ -303,6 +301,18 @@ allowed_app = [
 ]
 
 [[module_rule]]
+module = "archetype.app.artifacts.transcript_service"
+allowed_interfaces = [
+  "archetype.app.artifacts.interfaces.iArtifactService",
+  "archetype.app.artifacts.interfaces.iArtifactTableService",
+  "archetype.app.redaction.interfaces.iRedactionService",
+  "archetype.app.world.interfaces.iWorldService",
+]
+allowed_app = [
+  "archetype.app.redaction.models",
+]
+
+[[module_rule]]
 module = "archetype.app.redaction.service"
 allowed_interfaces = []
 allowed_app = [
@@ -324,56 +334,29 @@ allowed_app = [
 [[module_rule]]
 module = "archetype.app.missions.service"
 allowed_interfaces = []
-allowed_app = [
-  "archetype.app.limits",
-  "archetype.app.missions.models",
-  "archetype.app.missions.outcomes",
-  "archetype.app.missions.transitions",
-]
+allowed_app = []
 
 [[module_rule]]
-module = "archetype.app.missions.claim_service"
-allowed_interfaces = ["archetype.app.redaction.interfaces.iRedactionService"]
-allowed_app = [
-  "archetype.app.limits",
-  "archetype.app.missions.models",
-  "archetype.app.missions.outcomes",
-  "archetype.app.missions.transitions",
-  "archetype.app.redaction.models",
-  "archetype.app.storage.catalog",
-]
-
-[[module_rule]]
-module = "archetype.app.missions.execution_service"
+module = "archetype.app.missions.trajectory_service"
 allowed_interfaces = [
-  "archetype.app.missions.interfaces._iMissionExecutionProjection",
-  "archetype.app.missions.interfaces.iMissionArtifactFinalizer",
-  "archetype.app.missions.interfaces.iMissionAttemptClaimService",
-]
-allowed_app = [
-  "archetype.app.missions.models",
-  "archetype.app.missions.outcomes",
-  "archetype.app.missions.transitions",
-]
-
-[[module_rule]]
-module = "archetype.app.application.mission_artifacts"
-allowed_interfaces = [
-  "archetype.app.artifacts.interfaces.iArtifactBundleService",
-  "archetype.app.missions.interfaces.iMissionArtifactFinalizer",
-]
-allowed_app = [
-  "archetype.app.artifacts.bundle_models",
-  "archetype.app.missions.models",
-]
-
-[[module_rule]]
-module = "archetype.app.sandboxes.service"
-allowed_interfaces = [
-  "archetype.app.sandboxes.interfaces.iSandboxBackend",
-  "archetype.app.sandboxes.interfaces.iSandboxSession",
+  "archetype.app.evaluation.interfaces.GraderOutput",
+  "archetype.app.evaluation.interfaces.TrajectoryGrader",
+  "archetype.app.evaluation.interfaces.iEvaluationService",
+  "archetype.app.query.interfaces.iQueryService",
 ]
 allowed_app = []
+
+[[module_rule]]
+module = "archetype.app.physical_ai.service"
+allowed_interfaces = [
+  "archetype.app.evaluation.interfaces.iEvaluationService",
+  "archetype.app.world.interfaces.iMutationService",
+  "archetype.app.world.interfaces.iSimulationService",
+  "archetype.app.world.interfaces.iWorldService",
+]
+allowed_app = [
+  "archetype.app.models",
+]
 
 [[module_rule]]
 module = "archetype.app.research.service"
@@ -383,7 +366,6 @@ allowed_interfaces = [
 ]
 allowed_app = [
   "archetype.app.research.contracts",
-  "archetype.app.research.models",
   "archetype.app.models",
 ]
 
@@ -415,9 +397,13 @@ allowed_interfaces = [
   "archetype.app.artifacts.interfaces.iArtifactBundleService",
   "archetype.app.artifacts.interfaces.iArtifactService",
   "archetype.app.artifacts.interfaces.iArtifactTableService",
+  "archetype.app.artifacts.interfaces.iTranscriptIngestionService",
   "archetype.app.audit.interfaces.iAuditLog",
   "archetype.app.commands.interfaces.iCommandScheduler",
   "archetype.app.evaluation.interfaces.iEvaluationService",
+  "archetype.app.missions.interfaces.iMissionService",
+  "archetype.app.missions.interfaces.iTrajectoryService",
+  "archetype.app.physical_ai.interfaces.iPhysicalAIService",
   "archetype.app.query.interfaces.iQueryService",
   "archetype.app.research.interfaces.iResearchService",
   "archetype.app.world.interfaces.iMutationService",
@@ -438,7 +424,5 @@ allowed_app = [
   "archetype.app.gateway.auth.models",
   "archetype.app.models",
 ]
-
 # Exact migration edges. These preserve current behavior while the sequenced
 # family relocations move each definition once, without compatibility copies.
-

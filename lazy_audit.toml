@@ -121,22 +121,22 @@ method = "to_pylist"
 reason = "Resume-time entity-directory extract (issue #273 A1-resume): the latest visible row per entity — already reduced in Daft to one (entity_id, tick, is_active) row per entity via groupby-max + join — must enter Python control flow to become the entity2sig registry and next_entity_id counter that route all subsequent mutations; imperative world reconstruction at the cold-resume boundary, bounded by live entity count, not a downstream dataframe computation."
 
 [[entries]]
-path = "src/archetype/experiments/boundary.py"
+path = "src/archetype/physical_ai/boundary.py"
 line = 122
 method = "to_pylist"
 reason = "series_to_rows helper: converts each Series parameter to a Python list inside a list comprehension. This function is called exclusively from @daft.method.batch UDF bodies (MuJoCo C-library boundary, env RPC boundary, policy inference boundary) where the Daft executor has already materialised the batch. The AST checker auto-exempts to_pylist calls on named parameters of @daft.method.batch functions but cannot trace through this plain helper indirection; the call is semantically equivalent to an auto-sanctioned UDF-boundary access."
 
 [[entries]]
-path = "src/archetype/experiments/eval_rollouts.py"
-line = 416
+path = "src/archetype/app/physical_ai/service.py"
+line = 98
 method = "collect"
-reason = "grading boundary: latest-tick row per entity from the already-filtered episode query becomes the scalar TaskEvalReport — the analysis edge where eval graders also collect; nothing downstream re-enters the DAG"
+reason = "physical-evaluation grading boundary: latest-tick rows from the persisted episode query become typed task/sweep reports; this is the analysis edge and nothing downstream re-enters the DAG"
 
 [[entries]]
-path = "src/archetype/experiments/eval_rollouts.py"
-line = 416
+path = "src/archetype/app/physical_ai/service.py"
+line = 98
 method = "to_pylist"
-reason = "same grading-boundary site as the collect above: per-entity terminal rows to Python for success/length aggregation into the report"
+reason = "same physical-evaluation grading boundary as the collect above: terminal rows enter Python for bounded success/length aggregation into typed reports"
 
 [[entries]]
 path = "src/archetype/app/artifacts/bundle_service.py"
@@ -191,3 +191,39 @@ path = "src/archetype/graph/prefab.py"
 line = 68
 method = "to_pylist"
 reason = "Mutation-planning boundary for instantiation: spawning copies requires the template's concrete component values and child prefab ids; _rows is the single funnel and every entity filter runs in the lazy plan before it."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+line = 109
+method = "to_pylist"
+reason = "Post-commit external-I/O boundary: the lazy frame is restricted to committed DISPATCHED tasks and joined to mission identity before those bounded intents become Python requests for sandbox processes; an OS process invocation cannot remain a Daft expression."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+line = 135
+method = "to_pylist"
+reason = "Post-commit validator-command boundary: Guards and TaskValidator entities are joined lazily first, then the finite validators attached to dispatchable tasks become argv tuples consumed by the repository harness; process argv cannot remain a DataFrame value."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+line = 176
+method = "to_pylist"
+reason = "Repair-turn boundary: prior AgentExecution and ValidationResult entities are joined lazily by execution before the finite previous-dispatch observations become a coding-agent prompt and session-resume request; the external driver requires concrete typed observations."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+line = 259
+method = "to_pylist"
+reason = "Single-mission control-loop boundary: the frame is filtered to one submitted mission and only its persisted status enters Python to decide whether the application service should tick again or return; no mission payload rows are materialized."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+line = 281
+method = "to_pylist"
+reason = "Terminal mission result boundary: the frame is filtered to one terminal mission whose scalar repository, branch, status, and reason must become the immutable MissionResult returned by the public runtime API."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+line = 300
+method = "to_pylist"
+reason = "Terminal task result boundary: task state is filtered to the submitted ids and left-joined lazily to first-class commit entities before the finite scalar rows become immutable TaskResult values returned by the public runtime API."

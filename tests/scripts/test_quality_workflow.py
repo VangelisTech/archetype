@@ -68,6 +68,19 @@ def test_observability_audit_uses_the_existing_required_format_context() -> None
     )
 
 
+def test_example_smoke_keeps_the_coding_agent_dogfood_credential_free() -> None:
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    target = re.search(
+        r"^examples-smoke:\n(?P<body>(?:\t.*\n)+)",
+        makefile,
+        re.MULTILINE,
+    )
+
+    assert target is not None
+    assert '"examples/11_coding_agent_mission.py"' in target.group("body")
+    assert 'uv run python "$$f" --dry-run' in target.group("body")
+
+
 def test_quality_gate_aggregates_every_applicable_job() -> None:
     gate = _job(QUALITY_WORKFLOW.read_text(encoding="utf-8"), "quality-gate")
 

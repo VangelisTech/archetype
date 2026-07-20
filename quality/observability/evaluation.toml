@@ -7,9 +7,7 @@ operations = [
   "interfaces.iEvaluationService.evaluate",
   "interfaces.iEvaluationService.query_components",
   "interfaces.iEvaluationService.query_episode",
-  "interfaces.iEvaluationService.query_trajectory_component",
   "interfaces.iEvaluationService.run_graders",
-  "interfaces.iEvaluationService.grade_trajectory_component",
 ]
 signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome"]

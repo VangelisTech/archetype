@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from weakref import WeakSet
 
 from uuid_utils import UUID
@@ -32,6 +32,18 @@ from archetype.core.config import CacheConfig, StorageConfig
 from archetype.core.hooks import HookEvent
 from archetype.runtime._config import coerce_cache, coerce_storage
 from archetype.runtime.world import RuntimeWorld, SyncRuntimeWorld, _RuntimeWorldState
+
+if TYPE_CHECKING:
+    from archetype.missions.contracts import AgentMissionConfig
+    from archetype.physical_ai.contracts import (
+        InstructionSweepConfig,
+        InstructionSweepReport,
+        PhysicalTaskEvalConfig,
+        PhysicalTaskEvalReport,
+    )
+    from archetype.physical_ai.manipulation import EnvClient
+    from archetype.physical_ai.policy import PolicyClient
+    from archetype.runtime.missions import RuntimeMissions
 
 
 class ArchetypeRuntime:
@@ -80,6 +92,7 @@ class ArchetypeRuntime:
         )
         self._application: iRuntimeApplication = self._container.application
         self._handles: WeakSet[RuntimeWorld] = WeakSet()
+        self._mission_handles: WeakSet[RuntimeMissions] = WeakSet()
         self._closed = False
 
     async def __aenter__(self) -> ArchetypeRuntime:
@@ -103,6 +116,11 @@ class ArchetypeRuntime:
         self._closed = True
 
         errors: list[BaseException] = []
+        for handle in list(self._mission_handles):
+            try:
+                await handle._shutdown_internal(from_runtime=True)
+            except BaseException as e:
+                errors.append(e)
         for handle in list(self._handles):
             try:
                 await handle._shutdown_internal(from_runtime=True)
@@ -158,6 +176,60 @@ class ArchetypeRuntime:
         state.aliases.add(handle)
         self._handles.add(handle)
         return handle
+
+    def missions(
+        self,
+        name: str = "agent-missions",
+        *,
+        config: AgentMissionConfig,
+        storage: str | Path | StorageConfig | None = None,
+    ) -> RuntimeMissions:
+        """Create a lazy, batteries-included Agent Missions handle."""
+
+        if self._closed:
+            raise RuntimeError("ArchetypeRuntime is closed")
+        from archetype.runtime.missions import RuntimeMissions
+
+        handle = RuntimeMissions(self, name, config=config, storage=storage)
+        self._mission_handles.add(handle)
+        return handle
+
+    def _agent_mission_service(self, **kwargs):
+        """Reach the mission workflow only through the actor-free application facade."""
+
+        return self._application.agent_mission_service(**kwargs)
+
+    async def evaluate_physical_task(
+        self,
+        config: PhysicalTaskEvalConfig,
+        *,
+        env_client: EnvClient,
+        policy_client: PolicyClient | None = None,
+    ) -> PhysicalTaskEvalReport:
+        """Run and grade one batched physical task evaluation."""
+
+        self._ensure_open()
+        return await self._application.evaluate_physical_task(
+            config,
+            env_client=env_client,
+            policy_client=policy_client,
+        )
+
+    async def sweep_physical_instructions(
+        self,
+        config: InstructionSweepConfig,
+        *,
+        env_client: EnvClient,
+        policy_client: PolicyClient,
+    ) -> InstructionSweepReport:
+        """Compare instruction variants on paired seeds in one world."""
+
+        self._ensure_open()
+        return await self._application.sweep_physical_instructions(
+            config,
+            env_client=env_client,
+            policy_client=policy_client,
+        )
 
     async def resume(
         self,
@@ -265,6 +337,9 @@ class ArchetypeRuntime:
     def _unregister_handle(self, handle: RuntimeWorld) -> None:
         self._handles.discard(handle)
 
+    def _unregister_mission_handle(self, handle: RuntimeMissions) -> None:
+        self._mission_handles.discard(handle)
+
     def _ensure_open(self) -> None:
         if self._closed:
             raise RuntimeError("ArchetypeRuntime is closed")
@@ -352,6 +427,40 @@ class SyncArchetypeRuntime:
             hooks=hooks,
         )
         return SyncRuntimeWorld(rw, self)
+
+    def evaluate_physical_task(
+        self,
+        config: PhysicalTaskEvalConfig,
+        *,
+        env_client: EnvClient,
+        policy_client: PolicyClient | None = None,
+    ) -> PhysicalTaskEvalReport:
+        """Synchronous physical task evaluation."""
+
+        return self._dispatch(
+            self._runtime.evaluate_physical_task(
+                config,
+                env_client=env_client,
+                policy_client=policy_client,
+            )
+        )
+
+    def sweep_physical_instructions(
+        self,
+        config: InstructionSweepConfig,
+        *,
+        env_client: EnvClient,
+        policy_client: PolicyClient,
+    ) -> InstructionSweepReport:
+        """Synchronous paired-seed instruction sweep."""
+
+        return self._dispatch(
+            self._runtime.sweep_physical_instructions(
+                config,
+                env_client=env_client,
+                policy_client=policy_client,
+            )
+        )
 
     def discover(self, storage=None) -> list[WorldInfo]:
         """List durable worlds through the synchronous facade."""
