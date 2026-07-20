@@ -434,9 +434,10 @@ services and the container are not top-level exports.
 
 `quality/architecture.toml` contains both the application-family DAG and the
 registered top-level family dispositions for `artifacts`, `datasets`,
-`experiments`, `htn`, and `missions`. `scripts/check_architecture.py`
-enforces their package direction, protocol imports, concrete construction,
-concrete inheritance, and persistent Component placement.
+`evaluation`, `experiments`, `htn`, and `missions`.
+`scripts/check_architecture.py` enforces their package direction, protocol
+imports, concrete construction, concrete inheritance, and persistent
+Component placement.
 
 The artifact relocation (#558) is complete: `ArtifactMeta` and `AssetRef`
 live in `archetype.artifacts.components`, the typed-table and
@@ -448,17 +449,22 @@ catalog-bound `PreparedArtifactBundleRequest` remains application-owned
 because its validation binds to the control catalog's publication-key
 derivation.
 
+The evaluation relocation (#557) is complete: `EvalReceipt` lives in
+`archetype.evaluation.components`, the grading value contracts and identity
+digests live in `archetype.evaluation.contracts`, and
+`archetype.app.evaluation` retains orchestration and receipt-write authority
+while importing those domain definitions inward.
+
 The remaining reverse edges from provisional `archetype.experiments` and the
 remaining Components under app-family `models.py` are preserved only by exact
-migration entries. Evaluation points to relocation issue #557. The design gate
-in #561 has been adjudicated: research Components and runner imports now point
-to #585, trajectory recorder imports point to #586, and physical-AI
-rollout/sweep reverse imports point to #589. The transcript, physical-AI
-domain, ontology, HTN-adapter, and final umbrella-removal stages are
-Issues #587, #588, #590, #591, and #592. No architecture exception remains
-owned by Issue #561. Mission Components and pure world transitions moved
-under Issue #559, so no mission migration exception remains. These entries
-make no app symbol supported.
+migration entries. The design gate in #561 has been adjudicated: research
+Components and runner imports now point to #585, trajectory recorder imports
+point to #586, and physical-AI rollout/sweep reverse imports point to #589.
+The transcript, physical-AI domain, ontology, HTN-adapter, and final
+umbrella-removal stages are Issues #587, #588, #590, #591, and #592. No
+architecture exception remains owned by Issue #561. Mission Components and
+pure world transitions moved under Issue #559, so no mission migration
+exception remains. These entries make no app symbol supported.
 
 Independent manifests under `quality/observability/` declare each family's
 operation dispositions. `scripts/check_observability.py` enforces their exact

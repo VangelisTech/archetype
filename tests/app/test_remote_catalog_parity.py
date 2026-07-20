@@ -2727,9 +2727,9 @@ async def test_service_stack_runs_against_remote_catalog(tmp_path, worker_url, m
     monkeypatch.setenv("ARCHETYPE_CONTROL_CATALOG_TOKEN", WORKER_TOKEN)
 
     from archetype.app.container import ServiceContainer
-    from archetype.app.evaluation.models import GraderContract, Outcome
     from archetype.core.component import Component
     from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+    from archetype.evaluation.contracts import GraderContract, Outcome
 
     class Probe(Component):
         value: float = 0.0

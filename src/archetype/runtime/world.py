@@ -53,7 +53,6 @@ if TYPE_CHECKING:
     from daft import DataFrame
 
     from archetype.app.evaluation.interfaces import GraderOutput, TrajectoryGrader
-    from archetype.app.evaluation.models import GraderContract
     from archetype.app.research.contracts import (
         AutoResearchConfig,
         AutoResearchResult,
@@ -62,6 +61,7 @@ if TYPE_CHECKING:
         IterationResult,
     )
     from archetype.core.hooks import HookHandle
+    from archetype.evaluation.contracts import GraderContract
     from archetype.runtime.runtime import ArchetypeRuntime, SyncArchetypeRuntime
 
 _FireMode = Any  # Literal["blocking", "spawn"] — kept loose for forward compat

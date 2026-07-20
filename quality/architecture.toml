@@ -66,6 +66,11 @@ consumer = "archetype.datasets"
 allowed_families = []
 
 [[top_level_family_rule]]
+name = "evaluation-domain-family"
+consumer = "archetype.evaluation"
+allowed_families = []
+
+[[top_level_family_rule]]
 name = "experiments-domain-family"
 consumer = "archetype.experiments"
 allowed_families = []
@@ -340,7 +345,6 @@ allowed_interfaces = [
   "archetype.app.query.interfaces.iQueryService",
 ]
 allowed_app = [
-  "archetype.app.evaluation.models",
   "archetype.app.models",
 ]
 
@@ -553,16 +557,6 @@ owner = "experiments"
 issue = 589
 reason = "The provisional instruction sweep imports the root public-API marker from infrastructure."
 expiry_condition = "Remove when #589 resolves public classification at the runtime/application boundary."
-expires = "v0.5"
-
-[[exception]]
-rule = "app_component_model"
-consumer = "archetype.app.evaluation.models"
-target = "archetype.app.evaluation.models.EvalReceipt"
-owner = "evaluation"
-issue = 557
-reason = "EvalReceipt is persistent ECS schema still colocated with evaluation app authority."
-expiry_condition = "Remove when #557 moves EvalReceipt to archetype.evaluation.components without duplicating its class identity."
 expires = "v0.5"
 
 [[exception]]

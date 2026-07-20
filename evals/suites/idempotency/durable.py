@@ -18,7 +18,6 @@ from unittest.mock import patch
 from uuid_utils import uuid7
 
 from archetype.app.container import ServiceContainer
-from archetype.app.evaluation.models import EvalReceipt, GraderContract, Outcome
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.storage.catalog import (
     CatalogConflictError,
@@ -31,6 +30,8 @@ from archetype.artifacts.components import ArtifactMeta
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.core.interfaces import StaleWriterError
+from archetype.evaluation.components import EvalReceipt
+from archetype.evaluation.contracts import GraderContract, Outcome
 from evals.graders import exact_match, state_check
 from evals.types import GraderResult
 

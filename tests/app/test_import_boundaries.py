@@ -26,7 +26,6 @@ _RUNTIME_TYPE_ONLY_APP = frozenset(
     {
         "archetype.app.research.contracts",
         "archetype.app.evaluation.interfaces",
-        "archetype.app.evaluation.models",
     }
 )
 
