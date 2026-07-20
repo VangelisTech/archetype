@@ -513,7 +513,7 @@ The cleanup direction is:
 | Current orphan | Direction |
 |---|---|
 | `archetype.htn` | Fold into `archetype.missions.planning`; a planner emits tasks and dependency relations but does not advance them. |
-| `archetype.datasets` | Remove; retained evidence identity belongs with evaluation contracts. |
+| Former `archetype.datasets` | Removed; retained evidence identity now lives in `archetype.evaluation.contracts`. |
 | `archetype.experiments` | Remove; keep only code with a clear owner under missions, research, or physical AI. |
 | Trajectory helpers | Keep pure projections under missions; compose query- and evaluation-backed workflows in the app layer. |
 | Physical-AI prototypes | Give them a dedicated `archetype.physical_ai` family rather than an experiments umbrella. |

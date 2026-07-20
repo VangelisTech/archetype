@@ -11,15 +11,10 @@ execution state machine tracked by issue #322, a particular reader schema, or
 the `evals/` repository-check runner. That runner reuses ordinary words such as
 task and trial as local implementation labels; it does not extend this model.
 
-The vocabulary contract is normative. Issue
-[#561](https://github.com/VangelisTech/archetype/issues/561), as amended by
-the operator ruling of 2026-07-19, adjudicates its ownership: the entire
-vocabulary — `TaskRef`, `EpisodeRef`, `RuntimeSlice`, `Trial`, `GraderKind`,
-`Grader`, `Rubric`, and `Eval` — moves to `archetype.evaluation.contracts`
-under [#590](https://github.com/VangelisTech/archetype/issues/590) after the
-evaluation-family extraction in #557, and `archetype.datasets` is removed.
-Until that fold lands, `archetype.datasets.definitions` remains the current
-implementation path. The move cannot change the identities defined here.
+The vocabulary contract is normative. `TaskRef`, `EpisodeRef`, `RuntimeSlice`,
+`Trial`, `GraderKind`, `Grader`, `Rubric`, and `Eval` live in
+`archetype.evaluation.contracts`. Dataset identity is evidence used by
+evaluation; it does not justify a separate runtime or application family.
 
 ## 1. The contract in one view
 
@@ -88,9 +83,9 @@ coordinates and the streams retain their own timing.
 A **Trial** is one seeded execution of one task. A trial produces exactly one dataset episode.
 The trial is the act; the episode is its frozen evidence.
 
-`archetype.datasets.Trial` is an immutable evidence-side record. It is not a
-pending/running orchestration object. Submission, polling, retry, and terminal
-execution state belong to the lifecycle tracked by issue #322.
+`archetype.evaluation.contracts.Trial` is an immutable evidence-side record. It
+is not a pending/running orchestration object. Submission, polling, retry, and
+terminal execution state belong to application orchestration.
 
 ### Evaluation vocabulary
 
@@ -235,7 +230,7 @@ Dataset-native nouns stop at their adapter.
 ## 8. Executable mirror and current gaps
 
 The immutable identity vocabulary lives in
-`archetype.datasets.definitions`. Readers, exporters, and evaluation code MUST
+`archetype.evaluation.contracts`. Readers, exporters, and evaluation code MUST
 import these definitions rather than create competing meanings for the same
 nouns. The spec eval checks the cardinality, key types, coordinate separation,
 and exact grader kinds.

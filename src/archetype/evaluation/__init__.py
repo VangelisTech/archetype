@@ -4,11 +4,10 @@
 """Evaluation domain family: receipt schema and grading value contracts.
 
 This package owns the reusable, deterministic evaluation definitions:
-``EvalReceipt`` (persistent ECS schema) and the grading value contracts
-(``Outcome``, ``GraderContract``, and the identity digest helpers in
-``archetype.evaluation.contracts``). Grading orchestration, snapshot
-pinning, storage, and receipt writes remain internal application authority
-under ``archetype.app.evaluation``.
+``EvalReceipt`` (persistent ECS schema), immutable dataset/evidence identity,
+and grading value contracts. Grading orchestration, snapshot pinning, storage,
+and receipt writes remain internal application authority under
+``archetype.app.evaluation``.
 
 A top-level path does not make a symbol public: the supported surface is
 exactly the names re-exported here, which back the ``Outcome``,
@@ -19,15 +18,34 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from archetype.evaluation.contracts import GraderContract, Outcome
+from archetype.evaluation.contracts import (
+    EpisodeRef,
+    Eval,
+    Grader,
+    GraderContract,
+    GraderKind,
+    Outcome,
+    Rubric,
+    RuntimeSlice,
+    TaskRef,
+    Trial,
+)
 
 if TYPE_CHECKING:
     from archetype.evaluation.components import EvalReceipt
 
 __all__ = [
+    "EpisodeRef",
+    "Eval",
     "EvalReceipt",
+    "Grader",
     "GraderContract",
+    "GraderKind",
     "Outcome",
+    "Rubric",
+    "RuntimeSlice",
+    "TaskRef",
+    "Trial",
 ]
 
 
