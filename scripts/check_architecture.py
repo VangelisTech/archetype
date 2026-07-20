@@ -271,11 +271,60 @@ def _root_export_owners(tree: ast.AST | None) -> tuple[dict[str, str], str | Non
     return {}, ROOT_EXPORT_POLICY_ERROR
 
 
+FRAGMENT_SECTIONS = frozenset(
+    {"exception", "family_rule", "module_rule", "package_rule", "top_level_family_rule"}
+)
+_UNIQUE_RULE_KEYS = (
+    ("family_rule", "name"),
+    ("top_level_family_rule", "name"),
+    ("package_rule", "name"),
+    ("module_rule", "module"),
+)
+
+
+def _fragment_dir(policy_path: Path) -> Path:
+    return policy_path.parent / f"{policy_path.stem}.d"
+
+
 def _load_policy(policy_path: Path) -> dict[str, Any]:
     with policy_path.open("rb") as handle:
         policy = tomllib.load(handle)
     if policy.get("version") not in {1, 2, 3}:
         raise ValueError("architecture policy version must be 1, 2, or 3")
+    fragment_dir = _fragment_dir(policy_path)
+    fragment_paths = sorted(fragment_dir.glob("*.toml")) if fragment_dir.is_dir() else []
+    for fragment_path in fragment_paths:
+        with fragment_path.open("rb") as handle:
+            fragment = tomllib.load(handle)
+        for section, rows in fragment.items():
+            if section not in FRAGMENT_SECTIONS:
+                raise ValueError(
+                    f"architecture fragment {fragment_path.name} declares {section!r}; "
+                    f"fragments may declare only {sorted(FRAGMENT_SECTIONS)}"
+                )
+            if not isinstance(rows, list):
+                raise ValueError(
+                    f"architecture fragment {fragment_path.name} section {section!r} "
+                    "must be an array of tables"
+                )
+            base = policy.setdefault(section, [])
+            if not isinstance(base, list):
+                raise ValueError(
+                    f"architecture policy section {section!r} must be an array of tables"
+                )
+            base.extend(rows)
+    for section, key in _UNIQUE_RULE_KEYS:
+        seen: set[str] = set()
+        for row in policy.get(section, []):
+            value = row.get(key) if isinstance(row, dict) else None
+            if not isinstance(value, str):
+                continue
+            if value in seen:
+                raise ValueError(
+                    f"duplicate {section} {key} {value!r} across the architecture "
+                    "policy and its fragments"
+                )
+            seen.add(value)
     return policy
 
 
