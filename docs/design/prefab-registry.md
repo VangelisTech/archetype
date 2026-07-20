@@ -55,9 +55,11 @@ prefab)` takes the target handle and the source view separately, so
 
 Today `IsA.target` is an entity id, which is world-local: an instance
 imported from a library world holds a dangling reference. `IsA` grows payload
-fields — `world: str = ""` (source world id; empty means same-world) and
-`at_tick: int = -1` (the version instantiated) — so lineage is complete and
-durable across worlds. This is a schema change to a shipped component and
+fields — `world: str = ""` (source world id; empty means same-world),
+`run_id: str = ""` (the source run that persisted the copied row — one
+world's history spans runs, so a tick alone under-identifies a version), and
+`at_tick: int = -1` (the captured tick) — so lineage is complete and durable
+across worlds: the full version coordinate is `(world, run, tick)`. This is a schema change to a shipped component and
 must land before adoption spreads (#543's lesson: schema evolution against
 persisted tables bites).
 

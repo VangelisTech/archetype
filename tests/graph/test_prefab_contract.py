@@ -254,9 +254,10 @@ def test_twin_prefab_marker_is_not_copied():
     view._frames = {signature: frame}
     view.tick = 0
 
-    components = _entity_components(view, 7)
+    components, run_id = _entity_components(view, 7)
     assert [type(c).__name__ for c in components] == ["Chassis"]
     assert components[0].armor == 12
+    assert run_id == ""  # synthetic frame has no run_id column
 
 
 def test_marker_and_relation_overrides_are_rejected(tmp_path):
@@ -521,6 +522,32 @@ def test_undeclared_world_field_has_no_scope_semantics(tmp_path):
 
             result = await cascade(world, SpawnedIn, view)
             assert result.total == 1  # the edge dangles despite world="tundra"
+            return True
+
+    assert _run(go())
+
+
+def test_lineage_carries_source_run_id(tmp_path):
+    """One world's history spans runs: lineage pins (world, run, tick)."""
+
+    async def go():
+        view = GraphView()
+        async with ArchetypeRuntime() as runtime:
+            world = _world(runtime, "run-pin", tmp_path, view)
+            template = await world.spawn(Prefab(name="t"), Chassis(armor=6))
+            await world.step()
+
+            inst = await instantiate(world, view, template)
+            await world.step()
+
+            latest = (await world.info()).tick - 1
+            template_rows = (await world.query(Prefab)).where(col("tick") == view.tick).to_pylist()
+            source_run = str(template_rows[0]["run_id"])
+            lineage = (await edges(world, IsA, at=latest)).to_pylist()
+            assert len(lineage) == 1
+            assert lineage[0]["isa__source"] == inst
+            assert lineage[0]["isa__run_id"] == source_run
+            assert source_run != ""
             return True
 
     assert _run(go())
