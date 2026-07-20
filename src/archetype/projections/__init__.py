@@ -14,6 +14,7 @@ cross-family read models.
 
 from archetype.projections import sync
 from archetype.projections.frames import activity, latest, overview
+from archetype.projections.possession import possession, possession_view
 from archetype.projections.worlds import QueriesLike, world_overview
 
 __all__ = [
@@ -21,6 +22,8 @@ __all__ = [
     "activity",
     "latest",
     "overview",
+    "possession",
+    "possession_view",
     "sync",
     "world_overview",
 ]
