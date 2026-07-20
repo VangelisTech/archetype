@@ -438,9 +438,10 @@ evaluation ownership, and co-located protocols are implemented. Runtime calls
 do not fabricate `ActorCtx`; API routes depend on `iCommandGateway`; concrete
 services and the container are not top-level exports.
 
-`quality/architecture.toml` contains both the application-family DAG and the
-registered top-level family dispositions for `artifacts`, `datasets`,
-`evaluation`, `experiments`, `htn`, and `missions`.
+`quality/architecture.toml` and the fragments in `quality/architecture.d/`
+contain both the application-family DAG and the registered top-level family
+dispositions for `artifacts`, `datasets`, `evaluation`, `experiments`,
+`graph`, `htn`, `missions`, `projections`, and `research`.
 `scripts/check_architecture.py` enforces their package direction, protocol
 imports, concrete construction, concrete inheritance, and persistent
 Component placement.

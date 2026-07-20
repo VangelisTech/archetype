@@ -36,8 +36,9 @@ of Sander's relationship roadmap was: the substrate keeps everything.
   world, running a scenario, and grading from history — the autoresearch
   pattern. Fitness rows key naturally by `(prefab, version tick)`.
 
-The registry therefore adds only three genuinely new things: **names**,
-**cross-world provenance**, and **eval binding**.
+The registry therefore adds only four genuinely new things: **names**,
+**cross-world provenance**, **eval binding**, and an explicit declaration of
+the **behavior modules** required to interpret an asset's schemas.
 
 ---
 
@@ -64,11 +65,11 @@ persisted tables bites).
 ### R3 — The manifest is an artifact bundle
 
 A registry entry is a published artifact (the existing bundle machinery, per
-`docs/guide/artifacts.md`): name, source `(world_id, entity_id, tick)`, the
-component set with **prefixed schema hashes**, the subtree inventory, the
-eval-suite reference, and evidence receipts from grading runs. Publishing a
-prefab version is publishing a manifest; the registry index is the artifact
-index. No new storage system.
+`docs/guide/artifacts.md`): name, source `(world_id, entity_id, tick)`, required
+behavior-module identities, the component set with **prefixed schema hashes**,
+the subtree inventory, the eval-suite reference, and evidence receipts from
+grading runs. Publishing a prefab version is publishing a manifest; the
+registry index is the artifact index. No new storage system.
 
 ### R4 — Schema identity is the compatibility contract
 
@@ -86,6 +87,29 @@ eval-suite reference is mandatory; `FLAG`-style validations (cycle checks,
 schema drift, orphaned lineage) run as evals over the library world, and a
 version without evidence receipts is visibly ungraded in the index.
 
+### R6 — Code registration precedes asset loading
+
+Biome imports C modules before evaluating asset scripts. The same ordering is
+required here: a host installs approved component classes, processors,
+resources, and hooks before it loads, imports, or evaluates prefab content.
+Those registrations are executable process state; prefab entities and rules
+are durable world state. They are related, but they are not one registry.
+
+A prefab manifest declares its required behavior modules and their schema
+identities. It never embeds a callable, imports a module by an untrusted string,
+or treats code as automatically executable asset data. The host resolves each
+declared requirement through an allowlisted composition root, installs a fresh
+world-local registration, and then checks the manifest's component schemas
+under R4. A cold resume repeats code registration before the first step; it
+does not reconstruct processors or resources from ledger rows.
+
+This preserves the useful half of Flecs' two-layer model without turning the
+artifact index into a plugin loader. Family examples may provide convenience
+factories such as the example-local `register_biome_rts()`, while durable asset
+authoring remains a separate operation such as
+`author_prefab_library(world)`. That example bundle is not the reusable
+registration contract; the `PrefabLibrary` model in §7 is.
+
 ### R7 — The relation-copy boundary
 
 `instantiate` copies component values, recursively copies the `ChildOf`
@@ -95,7 +119,9 @@ lines — and exposes no source-to-instance id map. Domain wiring belongs in
 rule entities interpreted by a driver or service after instantiation. If
 enough families need arbitrary graph cloning, the sanctioned broadening is a
 separate `InstantiationResult(root_id, id_map)` API with explicit
-relation-copy policies; `instantiate` is never silently widened.
+relation-copy policies; `instantiate` is never silently widened. The Biome
+example's `AssetChildOf` remains example-local until a catalog relation is
+deliberately generalized under `archetype.prefabs`.
 
 ---
 
@@ -109,6 +135,8 @@ relation-copy policies; `instantiate` is never silently widened.
   `docs/design/mutation-outbox.md` — designed, not implemented.
 - No declarative prefab file format yet (Biome's `.flecs` layer); Python
   authoring through the library object comes first.
+- No automatic execution of code named by a manifest. Module resolution is an
+  explicit, allowlisted host-composition decision (R6).
 
 ---
 
@@ -137,13 +165,15 @@ relation-copy policies; `instantiate` is never silently widened.
 2. `PrefabLibrary` authoring object in `archetype.prefabs` (§7): emit and
    register components/relations/processors/hooks under a namespace; publish
    prefab entities into a library world; install into consumer worlds.
-3. Manifest models + schema-hash capture in the family (R3, R4).
+3. Manifest models + schema-hash and required-library capture in the family
+   (R3, R4, R6).
 4. Namespace directory in the control catalog + binding service under `app`
    (§5.1); publish/lookup rides the artifact bundle service (R3).
 5. #604 MutationOutbox seam in core (rulings on the issue), then
    processor-native instantiate.
 6. Eval-binding conventions + library-world validations (R5).
-7. Cross-world import example: a library world feeding the RTS toy (#603).
+7. Cross-world import example: a library world feeding the Biome RTS reference
+   example (#603).
 
 ## 7. Registration model (ruled 2026-07-20)
 
@@ -188,6 +218,21 @@ libraries whose component names collide fails loudly at install, before any
 table exists. No column-prefix mangling — the prefix convention stands.
 
 Biome's auto-wiring (`EcsWith` pairs, on-add hooks assigning building bits)
-needs no new machinery here: a library bundles the equivalent `OnSpawn`/
-`OnComponentAdded` hooks and counter resources, which the hook system
-already supports. Biome's declarative script layer is deferred (§4).
+uses existing registration shapes: a library can bundle `OnSpawn`/
+`OnComponentAdded` hooks and counter resources. That does not make lifecycle
+hooks transactional. Their failures are logged rather than aborting a
+mutation, so correctness-critical auto-wiring must use explicitly authored
+components, pure processors, or the ruled mutation-outbox/application seam.
+Biome's declarative script layer is deferred (§4).
+
+**Security rule:** a manifest may identify the `PrefabLibrary` implementation
+required to interpret its component schemas, but it never embeds a callable or
+causes a module named by an untrusted string to execute. The host composition
+root resolves declared library identities through an allowlist and installs
+them explicitly. The artifact index is not a plugin loader.
+
+**Lifecycle rule:** registrations are process-local and world-local. The same
+approved library bundle must install atomically for a new world and again
+before the first step of a cold-resumed world. New-world configuration already
+has the required processor/resource/hook shape; cold-resume parity remains
+runtime-contract work and must not be bypassed through internal services.
