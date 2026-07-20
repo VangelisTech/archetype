@@ -21,6 +21,7 @@ ergonomic world handles.
 """
 
 from archetype.app.storage.session import configure_session
+from archetype.runtime.missions import RuntimeMissions
 from archetype.runtime.runtime import (
     ArchetypeRuntime,
     SyncArchetypeRuntime,
@@ -32,6 +33,7 @@ __all__ = [
     "ArchetypeRuntime",
     "SyncArchetypeRuntime",
     "RuntimeWorld",
+    "RuntimeMissions",
     "SyncRuntimeWorld",
     "configure_session",
     "run_sync",

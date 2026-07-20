@@ -3,6 +3,7 @@
 
 """Durable mission claims, authorization, and application orchestration."""
 
+from archetype.app.missions.agent_service import AgentMissionService
 from archetype.app.missions.claim_service import MissionAttemptClaimService
 from archetype.app.missions.execution_service import MissionAttemptExecutionService
 from archetype.app.missions.interfaces import (
@@ -41,6 +42,7 @@ from archetype.app.missions.transitions import (
 
 __all__ = [
     "ATTEMPT_CLAIM_TRANSITION_GRAPH",
+    "AgentMissionService",
     "AttemptArtifactExpiration",
     "AttemptArtifactProjection",
     "AttemptArtifactPublication",

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from weakref import WeakSet
 
 from uuid_utils import UUID
@@ -32,6 +32,10 @@ from archetype.core.config import CacheConfig, StorageConfig
 from archetype.core.hooks import HookEvent
 from archetype.runtime._config import coerce_cache, coerce_storage
 from archetype.runtime.world import RuntimeWorld, SyncRuntimeWorld, _RuntimeWorldState
+
+if TYPE_CHECKING:
+    from archetype.missions.contracts import AgentMissionConfig
+    from archetype.runtime.missions import RuntimeMissions
 
 
 class ArchetypeRuntime:
@@ -158,6 +162,21 @@ class ArchetypeRuntime:
         state.aliases.add(handle)
         self._handles.add(handle)
         return handle
+
+    def missions(
+        self,
+        name: str = "agent-missions",
+        *,
+        config: AgentMissionConfig,
+        storage: str | Path | StorageConfig | None = None,
+    ) -> RuntimeMissions:
+        """Create a lazy, batteries-included Agent Missions handle."""
+
+        if self._closed:
+            raise RuntimeError("ArchetypeRuntime is closed")
+        from archetype.runtime.missions import RuntimeMissions
+
+        return RuntimeMissions(self, name, config=config, storage=storage)
 
     async def resume(
         self,
