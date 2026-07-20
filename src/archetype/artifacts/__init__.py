@@ -32,6 +32,7 @@ from archetype.artifacts.contracts import (
     ArtifactProcessor,
     ArtifactReceipt,
     ArtifactWriteReceipt,
+    TranscriptIngestionReceipt,
 )
 
 __all__ = [
@@ -47,4 +48,5 @@ __all__ = [
     "ArtifactWriteReceipt",
     "BoundedArtifactSourceResolver",
     "MaterializedArtifact",
+    "TranscriptIngestionReceipt",
 ]

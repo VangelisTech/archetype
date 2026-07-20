@@ -54,8 +54,12 @@ its family (`missions/projections.py`); the top-level `projections/` package
 holds generic, cross-family read models. Sequencing per that direction: the
 family dependency rule is codified first, pure types move family-by-family,
 and `graph`/`projections` are introduced against the stabilized pattern.
-`htn`, `datasets`, and `experiments` consolidate only after the
-agent-missions boundary stabilizes.
+That sequencing has since completed: HTN lives under mission planning,
+dataset identity lives under evaluation, and the former production
+experiments umbrella has been divided among missions, physical AI, research,
+and artifact-owned transcript ingestion. This design still explains the order
+in which those boundaries were established; the guide specifications describe
+their current contracts.
 
 ### D2 — Edges are entities; EdgeTables are archetype tables
 

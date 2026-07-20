@@ -117,6 +117,32 @@ class ArtifactBundleService:
     ]
 
 
+def test_transcript_fixture_detects_raw_read_and_durability_order_bypasses(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "transcript_service.py"
+    source.write_text(
+        """
+class ClaudeTranscriptIngestionService:
+    async def ingest(self, source):
+        await self._artifacts.publish()
+        await self._tables.write_artifacts()
+        source.path.read_text()
+        self._redaction.assert_safe_metadata()
+        sanitized = self._redaction.sanitize_file()
+        session = parse_claude_transcript(sanitized.path.read_text())
+        normalized = _normalize_session(session)
+        _artifact_rows(normalized)
+""",
+        encoding="utf-8",
+    )
+
+    errors = checker.audit_transcript_path(source)
+    assert "transcript ingest must call _normalize_session() before publish()" in errors
+    assert "transcript ingest must call _artifact_rows() before write_artifacts()" in errors
+    assert "transcript ingest must never read source.path before sanitization" in errors
+
+
 def test_repository_redaction_order_passes() -> None:
     completed = subprocess.run(
         [sys.executable, str(CHECKER_PATH)],

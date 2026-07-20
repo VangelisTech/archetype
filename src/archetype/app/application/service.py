@@ -34,6 +34,7 @@ if TYPE_CHECKING:
         iArtifactBundleService,
         iArtifactService,
         iArtifactTableService,
+        iTranscriptIngestionService,
     )
     from archetype.app.audit.interfaces import iAuditLog
     from archetype.app.commands.interfaces import iCommandScheduler
@@ -91,6 +92,7 @@ class RuntimeApplication:
         artifact_tables: iArtifactTableService | None = None,
         artifacts: iArtifactService | None = None,
         artifact_bundles: iArtifactBundleService | None = None,
+        transcripts: iTranscriptIngestionService | None = None,
         evaluations: iEvaluationService | None = None,
         trajectories: iTrajectoryService | None = None,
         physical_ai: iPhysicalAIService | None = None,
@@ -106,6 +108,7 @@ class RuntimeApplication:
         self._artifact_tables = artifact_tables
         self._artifacts = artifacts
         self._artifact_bundles = artifact_bundles
+        self._transcripts = transcripts
         self._evaluations = evaluations
         self._trajectories = trajectories
         self._physical_ai = physical_ai
@@ -492,6 +495,14 @@ class RuntimeApplication:
         async with self._admit():
             return await self._artifact_tables.ingest_files(
                 str(world_id), paths, processor, storage_config=storage_config
+            )
+
+    async def ingest_claude_transcript(self, world_id, source, *, storage_config=None):
+        if self._transcripts is None:
+            raise RuntimeError("transcript ingestion service is not wired")
+        async with self._admit():
+            return await self._transcripts.ingest(
+                str(world_id), source, storage_config=storage_config
             )
 
     async def write_artifacts(self, world_id, table_name, artifacts, *, storage_config=None):

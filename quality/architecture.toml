@@ -6,6 +6,7 @@ types = [
   "ArtifactService",
   "ArtifactBundleService",
   "ArtifactTableService",
+  "ClaudeTranscriptIngestionService",
   "AuditLog",
   "AutoResearchService",
   "CommandGateway",
@@ -317,6 +318,18 @@ allowed_app = [
 ]
 
 [[module_rule]]
+module = "archetype.app.artifacts.transcript_service"
+allowed_interfaces = [
+  "archetype.app.artifacts.interfaces.iArtifactService",
+  "archetype.app.artifacts.interfaces.iArtifactTableService",
+  "archetype.app.redaction.interfaces.iRedactionService",
+  "archetype.app.world.interfaces.iWorldService",
+]
+allowed_app = [
+  "archetype.app.redaction.models",
+]
+
+[[module_rule]]
 module = "archetype.app.redaction.service"
 allowed_interfaces = []
 allowed_app = [
@@ -450,6 +463,7 @@ allowed_interfaces = [
   "archetype.app.artifacts.interfaces.iArtifactBundleService",
   "archetype.app.artifacts.interfaces.iArtifactService",
   "archetype.app.artifacts.interfaces.iArtifactTableService",
+  "archetype.app.artifacts.interfaces.iTranscriptIngestionService",
   "archetype.app.audit.interfaces.iAuditLog",
   "archetype.app.commands.interfaces.iCommandScheduler",
   "archetype.app.evaluation.interfaces.iEvaluationService",

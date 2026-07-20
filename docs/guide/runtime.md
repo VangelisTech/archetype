@@ -142,12 +142,22 @@ reset provider state, spawn trial entities, run episodes, or collect terminal
 rows itself. Returned reports carry the durable world/run identity from which
 their values were derived. The sync runtime exposes the same operations.
 
-### R12 — Artifacts, not generic artifacts
+### R12 — Typed artifacts and transcript evidence
 
 The supported target vocabulary is artifact/evidence publication. Runtime
 methods may ingest files, structured rows, or content and return typed artifact
 receipts. The runtime does not inspect storage catalogs, implement content
 identity, complete publication claims, or expose generic domain "artifacts."
+
+`world.ingest_claude_transcript(source)` is the recommended coding-agent
+transcript boundary. `ClaudeTranscriptSource` carries local input configuration
+and stable project/session identity. The application workflow snapshots and
+redacts the file, parses only the sanitized copy, publishes its lightweight
+trajectory/source claim, and appends normalized rows to the Iceberg transcript
+table. The returned `TranscriptIngestionReceipt` reports both authorities and
+their replay outcome. The runtime does not open the source file, write
+narrative Components, or coordinate those steps itself. Sync world handles
+expose the same operation.
 
 The artifact-bundle DTOs exported from the top-level `archetype` package are
 supported runtime contracts: `ArtifactBundleRequest`, `ArtifactCandidate`,
@@ -159,8 +169,11 @@ Their physical home is the `archetype.artifacts.bundles` family module
 not make additional names supported, and nothing here grants access to the
 concrete artifact service.
 
-Legacy `ingest`, `write_artifacts`, `artifacts`, and `ArtifactReceipt` names are migration
-surfaces to remove after the artifact-family cutover.
+`world.ingest_files()`, `world.write_artifacts()`, and `world.artifacts()` are
+the lower-level typed-table surfaces used by other domains and custom
+processors. `world.publish()` is the claim-backed Component artifact surface.
+They are separate because an artifact table row, a source claim, and a portable
+artifact bundle have different durability and replay contracts.
 
 ### R13 — Observability is host-configured and quiet by default
 

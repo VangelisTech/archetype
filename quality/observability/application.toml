@@ -42,6 +42,7 @@ operations = [
   "interfaces.iRuntimeApplication.get_audit_history",
   "interfaces.iRuntimeApplication.ingest_artifact",
   "interfaces.iRuntimeApplication.ingest_files",
+  "interfaces.iRuntimeApplication.ingest_claude_transcript",
   "interfaces.iRuntimeApplication.write_artifacts",
   "interfaces.iRuntimeApplication.query_artifacts",
   "interfaces.iRuntimeApplication.publish_artifact_bundle",

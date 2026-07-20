@@ -41,7 +41,12 @@ from archetype.artifacts.bundles import (
     ArtifactPublishReceipt,
     ArtifactReconcileResult,
 )
-from archetype.artifacts.contracts import ArtifactProcessor, ArtifactReceipt, ArtifactWriteReceipt
+from archetype.artifacts.contracts import (
+    ArtifactProcessor,
+    ArtifactReceipt,
+    ArtifactWriteReceipt,
+    TranscriptIngestionReceipt,
+)
 from archetype.core.component import Component
 from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
 from archetype.core.hooks import HookEvent
@@ -63,6 +68,7 @@ if TYPE_CHECKING:
     )
     from archetype.core.hooks import HookHandle
     from archetype.evaluation.contracts import GraderContract
+    from archetype.missions.trajectories import ClaudeTranscriptSource
     from archetype.runtime.runtime import ArchetypeRuntime, SyncArchetypeRuntime
 
 _FireMode = Any  # Literal["blocking", "spawn"] — kept loose for forward compat
@@ -324,6 +330,20 @@ class RuntimeWorld:
                 wid,
                 paths,
                 processor,
+                storage_config=self._state.storage_config,
+            )
+
+    async def ingest_claude_transcript(
+        self,
+        source: ClaudeTranscriptSource,
+    ) -> TranscriptIngestionReceipt:
+        """Redact and publish one Claude JSONL source as typed artifact rows."""
+
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+            return await self._app.ingest_claude_transcript(
+                wid,
+                source,
                 storage_config=self._state.storage_config,
             )
 
@@ -857,6 +877,14 @@ class SyncRuntimeWorld:
         processor: ArtifactProcessor,
     ) -> ArtifactWriteReceipt:
         return self._run(lambda: self._world.ingest_files(paths, processor))
+
+    def ingest_claude_transcript(
+        self,
+        source: ClaudeTranscriptSource,
+    ) -> TranscriptIngestionReceipt:
+        """Sync mirror of redacted Claude transcript ingestion."""
+
+        return self._run(lambda: self._world.ingest_claude_transcript(source))
 
     def write_artifacts(self, table_name: str, artifacts: DataFrame) -> ArtifactWriteReceipt:
         return self._run(lambda: self._world.write_artifacts(table_name, artifacts))

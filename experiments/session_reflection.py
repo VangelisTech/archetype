@@ -1,18 +1,12 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Self-reflection over Claude Code session history.
+"""Reflect over Claude Code history through the supported artifact boundary.
 
-Ingests every session transcript under ~/.claude/projects into a world —
-one Trajectory header plus normalized TrajectoryTurn rows per session,
-all materialized at tick 0 as initial conditions — then reflects with
-Daft queries over the corpus: where the time went, which tools carry the
-work, where tools errored, and where the human had to push back.
-
-The correction heuristic is deliberately crude (user turns opening with
-"no", "wait", "stop", "don't", "actually", ...): it exists to surface
-candidate sessions for closer reading and later LLM labeling, not to be
-a verdict.
+The script discovers local source files, but Archetype owns every safety and
+durability concern: each transcript is snapshotted, redacted, claim-published,
+and normalized into a typed artifact table before analysis. Raw narrative is
+never written as mission Component state.
 
 Usage:
     uv run python experiments/session_reflection.py [--limit N]
@@ -29,12 +23,14 @@ from pathlib import Path
 from daft import col
 from daft.functions import lower, startswith
 
-from archetype.app.container import ServiceContainer
-from archetype.core.config import RunConfig, StorageConfig, WorldConfig
-from archetype.experiments.claude_sessions import load_claude_sessions
-from archetype.missions.trajectories import Trajectory, TrajectoryTurn
+from archetype import ArchetypeRuntime, StorageConfig
+from archetype.core.config import StorageBackend
+from archetype.missions.trajectories import (
+    CLAUDE_TRANSCRIPT_TABLE,
+    ClaudeTranscriptSource,
+)
 
-CORRECTION_OPENERS = [
+CORRECTION_OPENERS = (
     "no ",
     "no,",
     "no.",
@@ -53,15 +49,21 @@ CORRECTION_OPENERS = [
     "hold on",
     "you're not",
     "youre not",
-]
+)
 
 
 def _correction_predicate():
-    lowered = lower(col("trajectoryturn__content"))
+    lowered = lower(col("content"))
     predicate = startswith(lowered, CORRECTION_OPENERS[0])
     for opener in CORRECTION_OPENERS[1:]:
         predicate = predicate | startswith(lowered, opener)
-    return (col("trajectoryturn__role") == "user") & predicate
+    return (col("role") == "user") & predicate
+
+
+def _session_files(projects_dir: str | None, limit: int | None) -> list[Path]:
+    root = Path(projects_dir) if projects_dir else Path.home() / ".claude" / "projects"
+    paths = sorted(root.glob("*/*.jsonl")) if root.exists() else []
+    return paths if limit is None else paths[:limit]
 
 
 async def main() -> None:
@@ -73,167 +75,171 @@ async def main() -> None:
     parser.add_argument("--max-content-chars", type=int, default=2000)
     args = parser.parse_args()
 
-    t0 = time.time()
-    sessions = load_claude_sessions(
-        args.projects_dir, limit=args.limit, max_content_chars=args.max_content_chars
-    )
-    print(f"Loaded {len(sessions)} sessions in {time.time() - t0:.1f}s")
-    if not sessions:
+    paths = _session_files(args.projects_dir, args.limit)
+    if not paths:
         print("No sessions found.")
         return
 
-    c = ServiceContainer()
-    try:
-        storage = StorageConfig(uri=args.storage, namespace="sessions")
-        world = await c.world_service.create_world(WorldConfig(name="claude-sessions"), storage)
+    storage = StorageConfig(
+        uri=args.storage,
+        namespace="sessions",
+        backend=StorageBackend.ICEBERG,
+    )
+    started = time.time()
+    ingested = skipped = redactions = 0
 
-        t0 = time.time()
-        n_rows = 0
-        for session in sessions:
-            for entity_components in session.components():
-                await world.create_entity(entity_components)
-                n_rows += 1
-        await c.simulation_service.step(world.world_id, RunConfig())
-        print(f"Materialized {n_rows} rows at tick 0 in {time.time() - t0:.1f}s")
+    async with ArchetypeRuntime() as runtime:
+        world = runtime.world("claude-sessions", storage=storage)
+        for path in paths:
+            try:
+                receipt = await world.ingest_claude_transcript(
+                    ClaudeTranscriptSource(
+                        path=path,
+                        max_content_chars=args.max_content_chars,
+                    )
+                )
+            except ValueError as exc:
+                if str(exc) != "Claude transcript contains no dialogue turns":
+                    raise
+                skipped += 1
+                continue
+            ingested += 1
+            redactions += receipt.redaction_count
 
-        headers = await world.query_archetype(sig=(Trajectory,), ticks=[0])
-        turns = await world.query_archetype(sig=(TrajectoryTurn,), ticks=[0])
+        if not ingested:
+            print(f"No dialogue sessions found ({skipped} empty/noise files skipped).")
+            return
 
-        # ── Reflections (Daft queries over the corpus) ─────────────────────
-        totals = headers.agg(
-            col("trajectory__total_tokens").sum().alias("tokens"),
-            col("trajectory__total_turns").sum().alias("turns"),
-            col("trajectory__duration_seconds").sum().alias("seconds"),
+        rows = await world.artifacts(CLAUDE_TRANSCRIPT_TABLE)
+        sessions = rows.where(col("row_kind") == "session")
+        turns = rows.where(col("row_kind") == "turn")
+
+        totals = sessions.agg(
+            col("total_tokens").sum().alias("tokens"),
+            col("total_turns").sum().alias("turns"),
+            col("duration_seconds").sum().alias("seconds"),
         ).to_pylist()[0]
-
         by_project = (
-            headers.groupby("trajectory__task_id")
+            sessions.groupby("project")
             .agg(
-                col("trajectory__trajectory_id").count().alias("sessions"),
-                col("trajectory__total_tokens").sum().alias("tokens"),
+                col("trajectory_id").count().alias("sessions"),
+                col("total_tokens").sum().alias("tokens"),
             )
             .sort("tokens", desc=True)
             .limit(12)
             .to_pylist()
         )
-
         by_model = (
-            headers.where(col("trajectory__model") != "")
-            .groupby("trajectory__model")
-            .agg(col("trajectory__trajectory_id").count().alias("sessions"))
+            sessions.where(col("model") != "")
+            .groupby("model")
+            .agg(col("trajectory_id").count().alias("sessions"))
             .sort("sessions", desc=True)
             .to_pylist()
         )
-
         tool_usage = (
-            turns.where(col("trajectoryturn__role") == "tool_call")
-            .groupby("trajectoryturn__tool_name")
-            .agg(col("trajectoryturn__seq").count().alias("calls"))
+            turns.where(col("role") == "tool_call")
+            .groupby("tool_name")
+            .agg(col("seq").count().alias("calls"))
             .sort("calls", desc=True)
             .limit(15)
             .to_pylist()
         )
-
         tool_errors = (
-            turns.where(col("trajectoryturn__error") != "")
-            .groupby("trajectoryturn__tool_name")
-            .agg(col("trajectoryturn__seq").count().alias("errors"))
+            turns.where(col("error") != "")
+            .groupby("tool_name")
+            .agg(col("seq").count().alias("errors"))
             .sort("errors", desc=True)
             .limit(10)
             .to_pylist()
         )
-        total_tool_results = turns.where(col("trajectoryturn__role") == "tool_result").count_rows()
-        total_tool_errors = turns.where(col("trajectoryturn__error") != "").count_rows()
-
+        total_tool_results = turns.where(col("role") == "tool_result").count_rows()
+        total_tool_errors = turns.where(col("error") != "").count_rows()
+        correction_rows = turns.where(_correction_predicate())
         corrections = (
-            turns.where(_correction_predicate())
-            .groupby("trajectoryturn__trajectory_id")
-            .agg(col("trajectoryturn__seq").count().alias("corrections"))
+            correction_rows.groupby("trajectory_id", "project")
+            .agg(col("seq").count().alias("corrections"))
             .sort("corrections", desc=True)
             .limit(15)
             .to_pylist()
         )
-        total_corrections = turns.where(_correction_predicate()).count_rows()
-        total_user_turns = turns.where(col("trajectoryturn__role") == "user").count_rows()
-
+        total_corrections = correction_rows.count_rows()
+        total_user_turns = turns.where(col("role") == "user").count_rows()
         biggest = (
-            headers.sort("trajectory__total_tokens", desc=True)
+            sessions.sort("total_tokens", desc=True)
             .limit(10)
-            .select(
-                "trajectory__trajectory_id",
-                "trajectory__task_id",
-                "trajectory__total_tokens",
-                "trajectory__total_turns",
-            )
+            .select("trajectory_id", "project", "total_tokens", "total_turns")
             .to_pylist()
         )
 
-        # ── Report ──────────────────────────────────────────────────────────
-        project_of = {s.trajectory.trajectory_id: s.project for s in sessions}
         lines = [
             "# Session Reflection Report",
             "",
-            f"- Sessions: **{len(sessions)}**  |  Turn rows: **{int(totals['turns'])}**  |  "
-            f"Output tokens: **{int(totals['tokens']):,}**  |  "
-            f"Cumulative session span: **{totals['seconds'] / 3600:.0f}h** (parallel agents, includes idle)",
+            f"- Sessions: **{ingested}** | Turn rows: **{int(totals['turns'])}** | "
+            f"Output tokens: **{int(totals['tokens']):,}** | "
+            f"Cumulative session span: **{totals['seconds'] / 3600:.0f}h**",
+            f"- Source files skipped as empty/noise: **{skipped}** | "
+            f"Secret findings redacted before durability: **{redactions}**",
             f"- Tool errors: **{total_tool_errors}** of {total_tool_results} tool results "
             f"({100 * total_tool_errors / max(total_tool_results, 1):.1f}%)",
             f"- Correction-shaped user turns: **{total_corrections}** of {total_user_turns} "
-            f"({100 * total_corrections / max(total_user_turns, 1):.1f}%) — crude heuristic, "
-            "candidates for labeling",
+            f"({100 * total_corrections / max(total_user_turns, 1):.1f}%) — a candidate "
+            "heuristic, not a verdict",
             "",
-            "## Where the work happens (top projects by tokens)",
+            "## Where the work happens",
             "",
             "| project | sessions | output tokens |",
-            "|---|---|---|",
-        ]
-        lines += [
-            f"| {r['trajectory__task_id']} | {r['sessions']} | {int(r['tokens']):,} |"
-            for r in by_project
-        ]
-        lines += ["", "## Models", "", "| model | sessions |", "|---|---|"]
-        lines += [f"| {r['trajectory__model']} | {r['sessions']} |" for r in by_model]
-        lines += ["", "## Tools that carry the work", "", "| tool | calls |", "|---|---|"]
-        lines += [f"| {r['trajectoryturn__tool_name']} | {r['calls']} |" for r in tool_usage]
-        lines += ["", "## Tool errors", "", "| tool | errors |", "|---|---|"]
-        lines += [f"| {r['trajectoryturn__tool_name']} | {r['errors']} |" for r in tool_errors]
-        lines += [
+            "|---|---:|---:|",
+            *(
+                f"| {row['project']} | {row['sessions']} | {int(row['tokens']):,} |"
+                for row in by_project
+            ),
             "",
-            "## Sessions with the most correction-shaped turns",
+            "## Models",
+            "",
+            "| model | sessions |",
+            "|---|---:|",
+            *(f"| {row['model']} | {row['sessions']} |" for row in by_model),
+            "",
+            "## Tools that carry the work",
+            "",
+            "| tool | calls |",
+            "|---|---:|",
+            *(f"| {row['tool_name']} | {row['calls']} |" for row in tool_usage),
+            "",
+            "## Tool errors",
+            "",
+            "| tool | errors |",
+            "|---|---:|",
+            *(f"| {row['tool_name']} | {row['errors']} |" for row in tool_errors),
+            "",
+            "## Sessions with correction-shaped turns",
             "",
             "| session | project | corrections |",
-            "|---|---|---|",
-        ]
-        lines += [
-            f"| {r['trajectoryturn__trajectory_id'][:8]} | "
-            f"{project_of.get(r['trajectoryturn__trajectory_id'], '?')} | {r['corrections']} |"
-            for r in corrections
-        ]
-        lines += [
+            "|---|---|---:|",
+            *(
+                f"| {row['trajectory_id']} | {row['project']} | {row['corrections']} |"
+                for row in corrections
+            ),
             "",
             "## Biggest sessions",
             "",
             "| session | project | tokens | turns |",
-            "|---|---|---|---|",
-        ]
-        lines += [
-            f"| {r['trajectory__trajectory_id'][:8]} | {r['trajectory__task_id']} | "
-            f"{int(r['trajectory__total_tokens']):,} | {r['trajectory__total_turns']} |"
-            for r in biggest
-        ]
-        lines += [
+            "|---|---|---:|---:|",
+            *(
+                f"| {row['trajectory_id']} | {row['project']} | "
+                f"{int(row['total_tokens']):,} | {row['total_turns']} |"
+                for row in biggest
+            ),
             "",
             "---",
-            f"Corpus world: `{world.world_id}` (run `{world.run_id}`), storage `{args.storage}` — "
-            "the rows are durable; every query above is repeatable, and the corpus is forkable.",
+            f"World `{world.world_id}`; storage `{args.storage}`. Raw JSONL remains the "
+            "source artifact. This report reads world/run-scoped, redacted typed rows.",
         ]
-
         report = "\n".join(lines)
-        Path(args.report).write_text(report)
-        print(f"\nReport written to {args.report}\n")
+        Path(args.report).write_text(report, encoding="utf-8")
+        print(f"Ingested {ingested} sessions in {time.time() - started:.1f}s")
+        print(f"Report written to {args.report}\n")
         print(report)
-    finally:
-        await c.shutdown()
 
 
 if __name__ == "__main__":

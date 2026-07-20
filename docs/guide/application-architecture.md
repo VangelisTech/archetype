@@ -159,7 +159,7 @@ src/archetype/app/
   world/             world lifecycle, mutation, and simulation
   storage/           stores, catalog/control authority, backend construction
   query/             persisted ECS read paths
-  artifacts/         ingestion, publication claims, storage and indexes
+  artifacts/         ingestion, transcript workflows, publication claims, storage and indexes
   redaction/         pre-durability secret scanning, receipts and quarantine
   evaluation/        grading orchestration, snapshot pinning and receipt writes
   commands/          durable ledger, scheduling, dispatch, settlement
@@ -185,9 +185,11 @@ schemas and pure transforms live under `archetype.missions.trajectories`; the
 mission trajectory service composes query and evaluation ports. Physical
 evaluation values and pure instruction optimization live under
 `archetype.physical_ai`, while `archetype.app.physical_ai` composes the world,
-mutation, simulation, and evaluation ports. The remaining experiments cleanup
-is the transcript-ingestion boundary. The current source tree and machine
-manifest remain implementation truth until that move lands.
+mutation, simulation, and evaluation ports. Claude transcript parsing now lives
+under `archetype.missions.trajectories`; `archetype.app.artifacts` owns its
+redact-before-durability workflow. The former production
+`archetype.experiments` umbrella is gone. The repository-root `experiments/`
+directory remains a consumer-side harness, not a package or authority family.
 
 Every application family co-locates its internal protocols, boundary models,
 and authority implementation. It imports reusable domain values from their
@@ -269,7 +271,7 @@ gateway, runtime, API, or CLI boundary.
 | Simulation | Step, run, episode, and rollout | World port plus named command-drain and quota-reset callables |
 | Query | Persisted ECS reads, durable discovery, and compatibility history reads | Storage and audit ports |
 | Redaction | Provider-neutral secret scanning, deterministic text redaction, safe receipts and quarantine | None |
-| Artifacts | Durable ingestion, immutable content, contextual links, publication claims and indexes | Redaction, storage and world-coordinate ports |
+| Artifacts | Durable ingestion, immutable content, coding-agent transcript normalization, contextual links, publication claims and indexes | Redaction, storage and world-coordinate ports |
 | Evaluation | Snapshot pinning, grader contracts, grading, evidence and durable receipts | Query and artifact ports |
 | Commands | Durable admission, order, leasing, dispatch, retry, settlement and dead letters | Control catalog plus world and mutation ports |
 | Audit | Transactional journal/outbox and analytical projection | Storage or control-authority ports |
@@ -323,6 +325,7 @@ Durability is family-specific rather than one service-level flag:
 | Legacy mission provider submission | Legacy attempt claim plus redaction and control authorities | Canonical request/provider metadata and the active fence are durable before provider admission |
 | Legacy mission indexed finalization | Legacy attempt claim plus artifact publication outbox and index | The compatibility workflow authenticates a matching terminal artifact row before projecting its settled outcome |
 | Artifact ingestion | Artifact workflow plus publication claim | Content/rows are durable and their contextual index is published |
+| Coding-agent transcript | Source claim, redaction authority, and typed artifact table | The complete source is sanitized and parsed before the claim; the claim precedes the idempotent typed-row append so changed content conflicts before row durability |
 | Evaluation | Evaluation workflow | Subject and grader contract are pinned and the typed receipt is published |
 | Audit | Transactional outbox plus projection | Authoritative event is durable; analytical Iceberg projection may lag |
 
@@ -338,8 +341,10 @@ commands-family drain callback at the tick boundary.
 
 `ArtifactService` owns claim-backed component publication;
 `ArtifactTableService` owns typed file/row ingestion. Both are artifact-family
-workflows. Durable external material is described as an artifact, evidence
-object, typed dataset row, or evaluation receipt—never as a universal fact.
+authorities. `ClaudeTranscriptIngestionService` composes those ports with
+redaction and the pure missions parser; it creates no third storage authority.
+Durable external material is described as an artifact, evidence object, typed
+dataset row, or evaluation receipt—never as a universal fact.
 
 ## 8. Protocol policy and wiring
 
@@ -481,8 +486,7 @@ still present but are not called by `runtime.missions(...)`.
 `quality/architecture.toml` and the fragments in `quality/architecture.d/`
 contain both the application-family DAG and the registered top-level family
 dispositions for `artifacts`, `evaluation`,
-`experiments`, `graph`, `missions`, `physical_ai`, `projections`, and
-`research`.
+`graph`, `missions`, `physical_ai`, `projections`, and `research`.
 `scripts/check_architecture.py` enforces their package direction, protocol
 imports, concrete construction, concrete inheritance, and persistent
 Component placement.
@@ -503,12 +507,15 @@ digests live in `archetype.evaluation.contracts`, and
 `archetype.app.evaluation` retains orchestration and receipt-write authority
 while importing those domain definitions inward.
 
-The research, trajectory, physical-AI, physical-workflow, ontology, and HTN
-namespace stages have landed. The physical workflow is reachable only through
+The research, trajectory, physical-AI, physical-workflow, ontology, HTN, and
+transcript stages have landed. The physical workflow is reachable only through
 `RuntimeApplication` and `ArchetypeRuntime`; its former raw-service bridges and
-all six Issue #589 architecture exceptions are gone. Transcript publication
-and final removal of the provisional `archetype.experiments` umbrella remain.
-The architecture manifest currently has no owned migration exceptions.
+all six Issue #589 architecture exceptions are gone. Transcript publication is
+reachable through the runtime, writes only sanitized narrative to typed
+artifact rows, and retains lightweight mission linkage as claim-backed
+Components. The provisional `archetype.experiments` package and its two unsafe
+logging exceptions are gone. The architecture manifest currently has no owned
+migration exceptions.
 
 Independent manifests under `quality/observability/` declare each family's
 operation dispositions. `scripts/check_observability.py` enforces their exact

@@ -36,13 +36,19 @@ their owning family modules; applications use `ArchetypeRuntime`, REST, or CLI.
 Names beginning with an underscore are internal. Modules explicitly labeled
 experimental may change without the compatibility guarantees of the main API.
 
-### Provisional capability packages
+### Reviewed capability packages
 
-`archetype.experiments` is not a supported application surface merely because
-its remaining transcript loader is importable. Its package boundary will
-disappear when transcript publication moves behind its durable artifact
-boundary. The import-boundary checker now prohibits every application import
-from this package; it does not promote the loader to public API.
+The provisional production `archetype.experiments` package has been removed.
+Standalone scripts under the repository-root `experiments/` directory are
+consumers of the shipped library; they do not define an importable domain
+family or application authority.
+
+`ClaudeTranscriptSource` and `TranscriptIngestionReceipt` are supported types
+in the `RuntimeWorld.ingest_claude_transcript()` signature. They remain
+namespaced under `archetype.missions.trajectories` and
+`archetype.artifacts`; support does not require promotion to the
+root import surface. The parser's in-memory `LoadedSession` and the concrete
+artifact ingestion service remain implementation details.
 
 `archetype.physical_ai` is the reviewed owner for reusable physical state,
 policy contracts, external-step processors, typed evaluation values, and pure
@@ -51,24 +57,22 @@ instruction optimization. `PhysicalTaskEvalConfig`, `PhysicalTaskEvalReport`,
 `VariantOutcome` are supported top-level runtime contracts. The concrete
 application service remains internal.
 
-The target ownership is recorded in
+The ownership trajectory is recorded in
 [Agent Missions V1, section 9](agent-missions.md#9-family-direction-after-v1),
-and is landing incrementally. Dataset evidence identity now lives in
+and the named family moves are complete. Dataset evidence identity now lives in
 `archetype.evaluation.contracts`, and the former `archetype.datasets` package is
 gone. The former `archetype.htn` resolver now lives under
 `archetype.missions.planning`; its future adapter to mission task entities is
-not yet a supported authoring surface. The mixed `experiments` package is
-being staged out: trajectory schemas and transforms now live under
-`archetype.missions.trajectories`; physical state and pure behavior live in
-`physical_ai`; its rollout/sweep orchestration now lives behind
-`RuntimeApplication`; and research ledger state and its pure runner decoder
-live in `archetype.research`. Only the transcript loader remains inside the
-mixed experiments umbrella.
+not yet a supported authoring surface. Trajectory schemas, Claude source
+parsing, and pure transforms live under `archetype.missions.trajectories`;
+physical state and pure behavior live in `physical_ai`; physical rollout/sweep
+orchestration lives behind `RuntimeApplication`; and research ledger state and
+its pure runner decoder live in `archetype.research`.
 
-Do not build a compatibility promise around those module paths yet. New
-applications use `ArchetypeRuntime` and supported extension types. A future
-graduation must name an owning domain family, add it to the API manifest, and
-provide a migration from the provisional path.
+Do not build a compatibility promise around the planning adapter or concrete
+application module paths. New applications use `ArchetypeRuntime` and the
+supported extension/signature types inventoried by the generated reference. A
+future graduation must name an owning domain family and enter that inventory.
 
 Supported exports are additive within a release line. Removing or changing
 their meaning requires a versioned migration. Every classification or export

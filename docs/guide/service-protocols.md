@@ -46,6 +46,7 @@ iRuntimeApplication
   -> iWorldService + iMutationService + iSimulationService
   -> iQueryService
   -> iArtifactService + iArtifactTableService + iArtifactBundleService
+  -> iTranscriptIngestionService
   -> iEvaluationService
   -> iCommandScheduler
   -> iAuditLog
@@ -58,6 +59,9 @@ iArtifactBundleService -> iRedactionService + iStorageService + iWorldService
 iRedactionService -> no lower application family
 iArtifactService   -> iStorageService + iWorldService
 iArtifactTableService -> iStorageService + iWorldService
+iTranscriptIngestionService
+  -> iArtifactService + iArtifactTableService
+  -> iRedactionService + iWorldService
 iQueryService      -> iStorageService + iAuditLog
 iWorldService      -> iStorageService
 iMutationService   -> iWorldService
@@ -102,7 +106,8 @@ selected mission workflow through the actor-free application facade.
 | `iArtifactService` | `ArtifactService` | application, evaluation | Claim-backed component publication and immutable snapshot pinning |
 | `iArtifactTableService` | `ArtifactTableService` | application | Typed file/row ingestion and contextual reads |
 | `iArtifactBundleService` | `ArtifactBundleService` | application | Portable evidence publication, indexing, and reconciliation |
-| `iRedactionService` | `RedactionService` | artifact bundles, mission attempt claims; future telemetry/proxy adapters | Provider-neutral pre-durability scanning, deterministic text redaction, safe receipts, and quarantine |
+| `iTranscriptIngestionService` | `ClaudeTranscriptIngestionService` | application | Redact, parse, claim, and publish coding-agent transcripts without durable raw narrative |
+| `iRedactionService` | `RedactionService` | artifact bundles, transcript ingestion, mission attempt claims; future telemetry/proxy adapters | Provider-neutral pre-durability scanning, deterministic text redaction, safe receipts, and quarantine |
 | `iEvaluationService` | `EvaluationService` | application, physical AI | Query, grade, validate and publish evaluation evidence |
 | `iCommandScheduler` | `CommandScheduler` | application | Durable admission, leasing, dispatch, retry, settlement and outbox inspection |
 | `iAuditLog` | `AuditLog` | application, gateway, query | Append-only access rows and command-outbox projection |
@@ -150,6 +155,14 @@ reconciliation while provider checkpoints remain recovery objects. It consumes
 `iRedactionService` before its control, object, manifest, and index durability
 boundaries. Future live-event, OTel, and proxy exporters consume that same port;
 they do not fork scanner policy.
+
+`iTranscriptIngestionService` is a composition port, not another storage
+authority. Its implementation snapshots and redacts through
+`iRedactionService`, parses with the pure missions-family adapter, publishes the
+lightweight source/trajectory claim through `iArtifactService`, and writes
+sanitized rows through `iArtifactTableService`. The source claim precedes the
+typed append so a changed-content conflict fires before new rows become
+durable; an identical retry can repair a missing append idempotently.
 `iAuditLog` is a projection/read port, not the authority for command outcome.
 
 ### Agent Missions V1

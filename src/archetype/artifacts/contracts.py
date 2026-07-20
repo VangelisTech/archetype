@@ -144,3 +144,27 @@ class ArtifactWriteReceipt:
         if self.sources_matched is None:
             return None
         return self.sources_matched > 0
+
+
+@dataclass(frozen=True)
+class TranscriptIngestionReceipt:
+    """Result of claim-backed, redacted transcript artifact ingestion."""
+
+    world_id: str
+    run_id: str
+    trajectory_id: str
+    mission_id: str
+    source_uri: str
+    source_content_hash: str
+    redaction_policy_id: str
+    redaction_status: str
+    redaction_count: int
+    redaction_rule_ids: tuple[str, ...]
+    reference: ArtifactReceipt
+    rows: ArtifactWriteReceipt
+
+    @property
+    def duplicate(self) -> bool:
+        """Whether both the source claim and typed rows already existed."""
+
+        return self.reference.duplicate and self.rows.rows_written == 0

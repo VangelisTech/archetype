@@ -28,6 +28,7 @@ machine authority; this page is its review surface.
 | `storage.cache.concurrent_no_loss` | `storage` | high | [docs/guide/stores.md](../guide/stores.md) — Write-Behind Cache | pytest: 1; eval: 2; benchmark: 1 | `pr`, `main`, `release` |
 | `artifacts.publication.exactly_once_visible` | `artifacts` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 3. The claim lifecycle | pytest: 1; eval: 4 | `pr`, `main`, `release` |
 | `evaluation.receipt.snapshot_pinned` | `evaluation` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 7. Evaluation receipts: claim-before-grade | pytest: 1; eval: 2 | `pr`, `main`, `release` |
+| `artifacts.transcripts.redacted_claim` | `artifacts` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 13. Coding-agent transcript artifacts | pytest: 2; static: 1 | `pr`, `main`, `release` |
 | `evaluation.ontology.separated` | `evaluation` | medium | [docs/guide/dataset-eval-ontology.md](../guide/dataset-eval-ontology.md) — 1. The contract in one view | pytest: 1; eval: 1 | `pr`, `main`, `release` |
 | `audit.append_only.evidence` | `audit` | high | [docs/guide/audit-log.md](../guide/audit-log.md) — 2. Append-only invariant | pytest: 1; eval: 1 | `pr`, `main`, `release` |
 | `simulation.episode.termination` | `world` | medium | [docs/guide/specification.md](../guide/specification.md) — Run contract | pytest: 1; eval: 3 | `pr`, `main`, `release` |

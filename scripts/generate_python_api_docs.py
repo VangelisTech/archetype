@@ -84,6 +84,17 @@ PAGES: tuple[ReferencePage, ...] = (
         ),
     ),
     ReferencePage(
+        "transcripts",
+        "Coding-agent transcripts",
+        "Recommended API",
+        "Ingest Claude Code JSONL through a redacted, replay-safe artifact boundary and "
+        "retain only lightweight trajectory linkage in world history.",
+        (
+            "ClaudeTranscriptSource",
+            "TranscriptIngestionReceipt",
+        ),
+    ),
+    ReferencePage(
         "building-blocks",
         "Building blocks",
         "Extension API",
@@ -224,6 +235,14 @@ SUPPLEMENTAL: dict[str, tuple[str, str]] = {
     "HookEvent": ("archetype.core.hooks", "HookEvent"),
     "HookHandle": ("archetype.core.hooks", "HookHandle"),
     "HookInfo": ("archetype.app.models", "HookInfo"),
+    "ClaudeTranscriptSource": (
+        "archetype.missions.trajectories",
+        "ClaudeTranscriptSource",
+    ),
+    "TranscriptIngestionReceipt": (
+        "archetype.artifacts",
+        "TranscriptIngestionReceipt",
+    ),
     "IterationResult": ("archetype.app.research.contracts", "IterationResult"),
     "EnvClient": ("archetype.physical_ai.manipulation", "EnvClient"),
     "OptimizationResult": ("archetype.physical_ai.optimization", "OptimizationResult"),
@@ -270,6 +289,8 @@ RECORDS = frozenset(
         "RolloutResult",
         "ArtifactReceipt",
         "ArtifactWriteReceipt",
+        "ClaudeTranscriptSource",
+        "TranscriptIngestionReceipt",
         "ArtifactBundleRequest",
         "ArtifactCandidate",
         "ArtifactIndexRecord",
@@ -312,6 +333,7 @@ EXPLICIT_MEMBERS: dict[str, tuple[str, ...]] = {
     "RunConfig": ("dev", "benchmark"),
     "AutoResearchResult": ("improved",),
     "ArtifactWriteReceipt": ("duplicate",),
+    "TranscriptIngestionReceipt": ("duplicate",),
     "ArtifactBundleRequest": ("canonical_json", "digest"),
     "ArtifactStoreConfig": ("local", "retention_seconds"),
     "GraderContract": ("digest",),

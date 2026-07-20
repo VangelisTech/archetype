@@ -1,8 +1,0 @@
-# Architecture policy fragment: experiments.
-# Merged into quality/architecture.toml by scripts/check_architecture.py;
-# fragments may declare only rule/exception arrays, never scalar policy.
-
-[[top_level_family_rule]]
-name = "experiments-domain-family"
-consumer = "archetype.experiments"
-allowed_families = ["archetype.missions"]

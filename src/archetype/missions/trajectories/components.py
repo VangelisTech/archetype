@@ -28,6 +28,8 @@ from archetype.core.component import Component
 if TYPE_CHECKING:
     from archetype.missions.trajectories.contracts import Turn
 
+CLAUDE_TRANSCRIPT_TABLE = "coding_agent_transcript_rows"
+
 
 class Trajectory(Component):
     """One durable trajectory header row."""
@@ -99,6 +101,25 @@ class TrajectoryTurn(Component):
     tokens: int = 0
     duration_ms: float = 0.0
     error: str = ""
+
+
+class TranscriptArtifactRef(Component):
+    """Lightweight link from a trajectory to redacted transcript artifacts.
+
+    Narrative content never belongs in this Component. Historical
+    ``TrajectoryTurn`` rows remain readable, while new transcript ingestion
+    writes normalized narrative rows only through the artifact table boundary.
+    """
+
+    trajectory_id: str = ""
+    mission_id: str = ""
+    source_uri: str = ""
+    source_content_hash: str = ""
+    redaction_policy_id: str = ""
+    redaction_status: str = "clean"
+    redaction_count: int = 0
+    redaction_rule_ids_json: str = "[]"
+    table_name: str = CLAUDE_TRANSCRIPT_TABLE
 
 
 class TrajectoryCommandEvent(Component):

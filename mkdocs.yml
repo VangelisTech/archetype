@@ -80,6 +80,7 @@ nav:
           - World Handle: reference/python/world-handle.md
           - Runtime Models: reference/python/runtime-models.md
           - Durable Artifact Bundles: reference/python/artifact-bundles.md
+          - Coding-Agent Transcripts: reference/python/transcripts.md
           - Building Blocks: reference/python/building-blocks.md
           - Hooks and Identity: reference/python/hooks.md
           - Configuration: reference/python/configuration.md

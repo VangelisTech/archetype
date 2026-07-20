@@ -7,9 +7,12 @@ A trajectory is a lightweight, typed index over what happened during a mission
 or rollout. It is evidence: it can be queried and graded, but it never decides
 whether a task advances.
 
-Archetype stores the header, turns, commands, observations, actions, and rewards
-as separate Component rows. It does not hide the record in one JSON document,
-and it does not make raw transcripts part of mission state.
+Archetype provides separate schemas for headers, turns, commands, observations,
+actions, and rewards; it does not hide trajectory evidence in one JSON
+document. Small, already-safe evidence may be authored as Component rows. Raw
+coding-agent transcripts use the artifact boundary described below: only a
+lightweight Component index joins the mission graph, while sanitized narrative
+lives in a typed artifact table.
 
 ## Ownership
 
@@ -17,10 +20,13 @@ and it does not make raw transcripts part of mission state.
 |---|---|
 | `archetype.missions.trajectories.components` | Persistent Arrow-safe schemas. |
 | `archetype.missions.trajectories.contracts` | In-memory authoring values, structural inputs, and typed selection. |
+| `archetype.missions.trajectories.claude` | Claude source configuration and pure parsing of already-sanitized text. No file I/O or durability. |
 | `archetype.missions.trajectories.transforms` | Pure row and lazy DataFrame transforms; no service access. |
 | `archetype.app.missions.trajectory_service` | Internal composition of persisted query access and evaluation graders. |
+| `archetype.app.artifacts.transcript_service` | Internal file snapshot, redaction, claim, and typed-row workflow. |
 | `RuntimeWorld.query_trajectory()` | Recommended filtered read path. |
 | `RuntimeWorld.grade_trajectory()` | Recommended query-then-grade path. |
+| `RuntimeWorld.ingest_claude_transcript()` | Recommended source-to-artifact workflow. |
 
 The app service owns no trajectory truth. Query storage remains authoritative
 for rows, evaluation remains authoritative for grader execution and receipts,
@@ -31,7 +37,8 @@ and mission processors remain authoritative for task transitions.
 | Component | One row represents |
 |---|---|
 | `Trajectory` | Header and coordinates for one trajectory. |
-| `TrajectoryTurn` | One historical conversational or tool-use turn. |
+| `TrajectoryTurn` | One historical or explicitly authored conversational/tool-use turn. New raw-transcript ingestion does not write it. |
+| `TranscriptArtifactRef` | Lightweight trajectory/mission link to a sanitized typed transcript table and its source digest. |
 | `TrajectoryCommandEvent` | One command or audit event. |
 | `TrajectoryObservation` | One observed tick or external event. |
 | `TrajectoryAction` | One action aligned to the trajectory sequence. |
@@ -45,7 +52,7 @@ one observation changes.
 historical rows. It is not the integer dataset-episode identity in the
 evaluation ontology.
 
-## Author and publish evidence
+## Author small, already-safe evidence
 
 ```python
 from archetype import ArchetypeRuntime
@@ -82,9 +89,9 @@ async with ArchetypeRuntime() as runtime:
     await world.run(steps=1)
 ```
 
-The spawned values become visible together at the tick commit boundary. Use
-artifact publication, not Component rows, for large or secret-bearing source
-material.
+The spawned values become visible together at the tick commit boundary. This
+is an authoring path, not a transcript loader. Use artifact ingestion for
+large, externally sourced, or potentially secret-bearing material.
 
 ## Select one trajectory table
 
@@ -163,6 +170,32 @@ Raw coding-agent transcripts, tool inputs and outputs, frames, and other large
 or secret-bearing content are artifacts. They require pre-durability redaction,
 stable source/content identity, and typed artifact-table publication.
 
-`TrajectoryTurn` remains the one class identity for historical Component rows;
-that compatibility does not make unredacted Component writes the preferred
-transcript-ingestion path.
+```python
+from pathlib import Path
+
+from archetype.missions.trajectories import ClaudeTranscriptSource
+
+receipt = await world.ingest_claude_transcript(
+    ClaudeTranscriptSource(
+        path=Path("session.jsonl"),
+        mission_id="mission-42",
+    )
+)
+```
+
+The missions family parses already-sanitized text into immutable `LoadedSession`
+and `Turn` values. It neither opens the source path nor exposes a method that
+turns the session into spawnable entities. The artifact-owned application
+workflow performs the stable snapshot, quarantine/redaction, complete parse,
+claim-backed publication, and typed Iceberg append.
+
+The claim publishes one `Trajectory` header with `TranscriptArtifactRef` and
+`AssetRef`. The normalized table then stores one session row plus ordered turn
+rows linked by the same canonical `trajectory_id`. The local path is absent
+from both. Query the lightweight header through `query_trajectory()` and the
+narrative through `world.artifacts("coding_agent_transcript_rows")`.
+
+`TrajectoryTurn` remains the one class identity for historical Component rows
+and deliberate safe authoring. Compatibility does not authorize a new raw
+transcript writer. See [Coding-agent transcript artifacts](artifacts.md#13-coding-agent-transcript-artifacts)
+for ordering, redaction, replay, and recovery semantics.

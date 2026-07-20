@@ -11,9 +11,6 @@ families never reach into concrete application services.
 1. Import scopes (per consumer):
    - ``api`` route handlers depend on ``iCommandGateway`` — only the adapter
      composition module may construct the container.
-   - the remaining provisional ``experiments`` transcript adapter may not
-     import application modules. Physical workflow orchestration has an owning
-     application service and no longer lives there.
    - ``runtime`` hosts trusted process composition over the application port.
 
 2. ``@public_api`` signatures: a public callable may not accept raw services
@@ -36,7 +33,6 @@ API_TARGETS = [
     ROOT / "src/archetype/api/deps.py",
     *sorted((ROOT / "src/archetype/api/routes").glob("*.py")),
 ]
-EXPERIMENTS_TARGETS = sorted((ROOT / "src/archetype/experiments").rglob("*.py"))
 PUBLIC_API_SCAN_TARGETS = sorted((ROOT / "src/archetype").rglob("*.py"))
 
 ALLOWED_APP_IMPORTS_API = {
@@ -52,9 +48,6 @@ FORBIDDEN_APP_IMPORTS_API = {
     "archetype.app.world.simulation",
     "archetype.app.world.service",
 }
-
-# The remaining provisional transcript adapter has no application dependency.
-ALLOWED_APP_IMPORTS_EXPERIMENTS: set[str] = set()
 
 # Raw-service shapes a @public_api callable may not accept.
 SERVICE_TYPE_NAMES = {
@@ -192,11 +185,6 @@ def main() -> int:
         v
         for path in API_TARGETS
         for v in _import_violations(path, ALLOWED_APP_IMPORTS_API, FORBIDDEN_APP_IMPORTS_API, "api")
-    ]
-    violations += [
-        v
-        for path in EXPERIMENTS_TARGETS
-        for v in _import_violations(path, ALLOWED_APP_IMPORTS_EXPERIMENTS, set(), "experiments")
     ]
     violations += [v for path in PUBLIC_API_SCAN_TARGETS for v in _public_api_violations(path)]
     if violations:

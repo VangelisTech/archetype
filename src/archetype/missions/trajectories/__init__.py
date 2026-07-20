@@ -3,13 +3,20 @@
 
 """Mission trajectory schemas, authoring contracts, and pure transforms."""
 
+from archetype.missions.trajectories.claude import (
+    ClaudeTranscriptSource,
+    LoadedSession,
+    parse_claude_transcript,
+)
 from archetype.missions.trajectories.components import (
+    CLAUDE_TRANSCRIPT_TABLE,
     Trajectory,
     TrajectoryAction,
     TrajectoryCommandEvent,
     TrajectoryObservation,
     TrajectoryReward,
     TrajectoryTurn,
+    TranscriptArtifactRef,
 )
 from archetype.missions.trajectories.contracts import TrajectorySelection, Turn
 from archetype.missions.trajectories.transforms import (
@@ -33,7 +40,11 @@ __all__ = [
     "TrajectoryReward",
     "TrajectorySelection",
     "TrajectoryTurn",
+    "TranscriptArtifactRef",
     "Turn",
+    "CLAUDE_TRANSCRIPT_TABLE",
+    "ClaudeTranscriptSource",
+    "LoadedSession",
     "actions_from_observations",
     "audit_row_to_event",
     "audit_rows_to_events",
@@ -44,4 +55,5 @@ __all__ = [
     "reward_row",
     "trajectory_from_episode_result",
     "turns_to_components",
+    "parse_claude_transcript",
 ]

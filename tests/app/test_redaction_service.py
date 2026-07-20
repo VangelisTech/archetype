@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import errno
 import gzip
+import hashlib
 import io
 import stat
 import tarfile
@@ -202,6 +203,7 @@ def test_text_file_is_snapshotted_and_redacted_without_mutating_source(tmp_path:
     assert "<redacted:sensitive-assignment>" in result.path.read_text()
     assert result.receipt.status == "redacted"
     assert result.receipt.scanned_bytes == source.stat().st_size
+    assert result.source_digest == hashlib.sha256(source.read_bytes()).hexdigest()
 
 
 @pytest.mark.parametrize(

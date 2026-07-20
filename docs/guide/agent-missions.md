@@ -508,26 +508,31 @@ archetype.app.missions
 ├── agent_service.py       # composition and durable workflow boundary
 └── trajectory_service.py  # query/evaluation composition
 
+archetype.app.artifacts
+└── transcript_service.py  # redacted source claim + typed transcript rows
+
 archetype.physical_ai      # physical state, policies, contracts, pure optimization
 archetype.app.physical_ai  # world/simulation/evaluation workflow composition
 
 archetype.research     # research ledger state and pure runner decoding
 ```
 
-The cleanup direction is:
+The completed ownership cleanup is:
 
-| Current orphan | Direction |
+| Former orphan | Final owner |
 |---|---|
 | Former `archetype.htn` | Moved to `archetype.missions.planning`; adapting solved plans into task entities and dependency relations remains future work. |
 | Former `archetype.datasets` | Removed; retained evidence identity now lives in `archetype.evaluation.contracts`. |
-| `archetype.experiments` | Remove; keep only code with a clear owner under missions, research, or physical AI. |
+| Former `archetype.experiments` | Removed. Claude parsing moved under mission trajectories; redacted ingestion moved under app artifacts; physical and research code moved to their named families. |
 | Trajectory helpers | Moved under `archetype.missions.trajectories`; the app service composes query and evaluation without owning evidence or transitions. |
 | Physical-AI prototypes | State and pure behavior moved into `archetype.physical_ai`; rollout/evaluation composition moved behind `archetype.app.physical_ai` and the supported runtime. |
 | Research ledger state | Moved into `archetype.research`; `archetype.app.research` retains world/simulation orchestration. |
 | Former `archetype.contrib` observability shim | Removed; retained vendor-neutral vocabulary lives in `archetype._obs`. |
 
-Those moves are not prerequisites for V1 and should not be smuggled into its
-transition protocol. They are the next repository-shape refactor.
+These ownership moves are complete. They do not change the V1 transition
+protocol: transcript evidence, physical evaluation, research workflows, and
+planning helpers remain consumers or siblings of mission transition authority,
+not hidden branches inside its processors.
 
 ## 10. Verification
 

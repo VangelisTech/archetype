@@ -24,6 +24,7 @@ from archetype.app.application.service import RuntimeApplication
 from archetype.app.artifacts.bundle_service import ArtifactBundleService
 from archetype.app.artifacts.service import ArtifactService
 from archetype.app.artifacts.table_service import ArtifactTableService
+from archetype.app.artifacts.transcript_service import ClaudeTranscriptIngestionService
 from archetype.app.audit.service import AuditLog
 from archetype.app.commands.service import CommandScheduler
 from archetype.app.evaluation.service import EvaluationService
@@ -105,6 +106,12 @@ class ServiceContainer:
             artifact_source_resolver,
             redaction_service=self.redaction_service,
         )
+        self.transcript_ingestion_service = ClaudeTranscriptIngestionService(
+            self.artifact_service,
+            self.artifact_table_service,
+            self.redaction_service,
+            self.world_service,
+        )
         self.evaluation_service = EvaluationService(self.query_service, self.artifact_service)
         self.trajectory_service = TrajectoryService(
             self.query_service,
@@ -143,6 +150,7 @@ class ServiceContainer:
             artifact_tables=self.artifact_table_service,
             artifacts=self.artifact_service,
             artifact_bundles=self.artifact_bundle_service,
+            transcripts=self.transcript_ingestion_service,
             evaluations=self.evaluation_service,
             trajectories=self.trajectory_service,
             research=self.autoresearch_service,

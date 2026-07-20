@@ -19,7 +19,7 @@ _SPEC.loader.exec_module(checker)
 
 
 def _write(tmp_path: Path, body: str) -> Path:
-    target = tmp_path / "src" / "archetype" / "experiments" / "sample.py"
+    target = tmp_path / "src" / "archetype" / "probes" / "sample.py"
     target.parent.mkdir(parents=True)
     target.write_text(body)
     return target
@@ -60,27 +60,33 @@ def test_bridge_allowlist_suppresses_with_deadline(tmp_path, monkeypatch):
     )
     monkeypatch.setitem(
         checker.PUBLIC_API_BRIDGE_PARAMS,
-        "src/archetype/experiments/sample.py::bridged",
+        "src/archetype/probes/sample.py::bridged",
         {"world_service"},
     )
     assert checker._public_api_violations(path) == []
 
 
-def test_experiments_scope_blocks_service_imports(tmp_path, monkeypatch):
+def test_api_scope_blocks_service_imports(tmp_path, monkeypatch):
     monkeypatch.setattr(checker, "ROOT", tmp_path)
     path = _write(tmp_path, "from archetype.app.world.simulation import SimulationService\n")
     violations = checker._import_violations(
-        path, checker.ALLOWED_APP_IMPORTS_EXPERIMENTS, set(), "experiments"
+        path,
+        checker.ALLOWED_APP_IMPORTS_API,
+        checker.FORBIDDEN_APP_IMPORTS_API,
+        "api",
     )
     assert len(violations) == 1
-    assert "allowed app imports for experiments" in violations[0]
+    assert "concrete app capabilities" in violations[0]
 
 
-def test_experiments_scope_blocks_application_models(tmp_path, monkeypatch):
+def test_api_scope_rejects_unapproved_application_imports(tmp_path, monkeypatch):
     monkeypatch.setattr(checker, "ROOT", tmp_path)
-    path = _write(tmp_path, "from archetype.app.models import EpisodeConfig\n")
+    path = _write(tmp_path, "from archetype.app.artifacts.service import ArtifactService\n")
     violations = checker._import_violations(
-        path, checker.ALLOWED_APP_IMPORTS_EXPERIMENTS, set(), "experiments"
+        path,
+        checker.ALLOWED_APP_IMPORTS_API,
+        checker.FORBIDDEN_APP_IMPORTS_API,
+        "api",
     )
     assert len(violations) == 1
 
@@ -90,29 +96,13 @@ def test_import_scope_ignores_dotted_sibling_packages(tmp_path, monkeypatch):
     path = _write(tmp_path, "import archetype.application\n")
     assert (
         checker._import_violations(
-            path, checker.ALLOWED_APP_IMPORTS_EXPERIMENTS, set(), "experiments"
+            path,
+            checker.ALLOWED_APP_IMPORTS_API,
+            checker.FORBIDDEN_APP_IMPORTS_API,
+            "api",
         )
         == []
     )
-
-
-def test_experiments_scope_scans_nested_subdirectories(tmp_path, monkeypatch):
-    """Nested experiment modules must not escape the import scan (the reviewer
-    caught the original non-recursive glob)."""
-    monkeypatch.setattr(checker, "ROOT", tmp_path)
-    nested = tmp_path / "src" / "archetype" / "experiments" / "vla" / "bridge.py"
-    nested.parent.mkdir(parents=True)
-    nested.write_text("from archetype.app.world.service import WorldService\n")
-    targets = sorted((tmp_path / "src/archetype/experiments").rglob("*.py"))
-    assert nested in targets
-    violations = [
-        v
-        for path in targets
-        for v in checker._import_violations(
-            path, checker.ALLOWED_APP_IMPORTS_EXPERIMENTS, set(), "experiments"
-        )
-    ]
-    assert len(violations) == 1
 
 
 def test_annotation_match_is_whole_token_not_substring(tmp_path, monkeypatch):

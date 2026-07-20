@@ -182,9 +182,10 @@ task = ManipTask(entity_id=entity_id, ...)  # env_key field retired
 await world.spawn_reserved(entity_id, Arm(), Gripper())
 ```
 
-The `env_key` field on `ManipTask` and friends is retained for backward
-compatibility in this release. The experiments refactor (a separate lane)
-will migrate callers and remove the field.
+The physical-AI extraction retained `env_key` as an explicit provider-routing
+identity, distinct from the ECS entity ID; it no longer belongs to an
+experiments-refactor migration. See the current [Physical AI](../guide/physical-ai.md)
+contract before changing that field.
 
 ---
 
