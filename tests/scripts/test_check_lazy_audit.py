@@ -309,6 +309,7 @@ def test_full_scan_with_allowlist_passes(tmp_path):
                 "path": "src/mypkg/boundary_module.py",
                 "line": 5,
                 "method": "to_pylist",
+                "qualname": "query_rows",
                 "reason": "Terminal query result returned to caller; cannot remain lazy past function boundary.",
             }
         ],
@@ -386,6 +387,72 @@ def test_allowlist_entry_does_not_authorize_replacement_call_at_same_line(tmp_pa
                 "line": 2,
                 "method": "to_pylist",
                 "qualname": "single_row_migration",
+                "reason": "Single-row migration extract at the storage boundary.",
+            }
+        ],
+    )
+
+    import check_lazy_audit as mod
+
+    monkeypatch.setattr(mod, "_project_root", lambda: tmp_path)
+    monkeypatch.setattr(sys, "argv", ["check_lazy_audit.py"])
+
+    assert mod.main() == 1
+
+
+def test_allowlist_entry_survives_line_drift(tmp_path, monkeypatch):
+    source = tmp_path / "src" / "mypkg" / "migration.py"
+    source.parent.mkdir(parents=True)
+    _write_py(
+        source.parent,
+        source.name,
+        """\
+        def single_row_migration(frame):
+            # An unrelated edit moves the call without changing its identity.
+            return frame.to_pylist()
+        """,
+    )
+    _write_toml(
+        tmp_path,
+        [
+            {
+                "path": "src/mypkg/migration.py",
+                "line": 2,
+                "method": "to_pylist",
+                "qualname": "single_row_migration",
+                "reason": "Single-row migration extract at the storage boundary.",
+            }
+        ],
+    )
+
+    import check_lazy_audit as mod
+
+    monkeypatch.setattr(mod, "_project_root", lambda: tmp_path)
+    monkeypatch.setattr(sys, "argv", ["check_lazy_audit.py"])
+
+    assert mod.main() == 0
+
+
+def test_ambiguous_qualname_identity_fails_closed(tmp_path, monkeypatch):
+    source = tmp_path / "src" / "mypkg" / "migration.py"
+    source.parent.mkdir(parents=True)
+    _write_py(
+        source.parent,
+        source.name,
+        """\
+        def migration(frame, other):
+            first = frame.to_pylist()
+            return first, other.to_pylist()
+        """,
+    )
+    _write_toml(
+        tmp_path,
+        [
+            {
+                "path": "src/mypkg/migration.py",
+                "line": 2,
+                "method": "to_pylist",
+                "qualname": "migration",
                 "reason": "Single-row migration extract at the storage boundary.",
             }
         ],

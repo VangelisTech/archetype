@@ -32,6 +32,14 @@ _PROCESSED_COLUMN = "_archetype_artifact_processed"
 _RESERVED_PREFIX = "_archetype_artifact_"
 
 
+def _collect_discovered_sources(sources: DataFrame) -> DataFrame:
+    return sources.collect(num_preview_rows=0)
+
+
+def _collect_candidate_sources(sources: DataFrame) -> DataFrame:
+    return sources.collect(num_preview_rows=0)
+
+
 def _require_identity_columns(names: list[str]) -> None:
     missing = [name for name in ("source_uri", "content_hash") if name not in names]
     if missing:
@@ -141,7 +149,7 @@ class ArtifactTableService:
             sources = sources.with_column("source_uri", file_path(col("file")))
             sources = sources.with_column("content_hash", _file_content_hash(col("file")))
             sources = sources.select("file", "source_uri", "content_hash")
-            sources = sources.collect(num_preview_rows=0)
+            sources = _collect_discovered_sources(sources)
             sources_matched = sources.count_rows()
             if not sources_matched:
                 return self._receipt(
@@ -164,7 +172,7 @@ class ArtifactTableService:
                     wid,
                     rid,
                 ).select("file", "source_uri", "content_hash")
-            sources = sources.collect(num_preview_rows=0)
+            sources = _collect_candidate_sources(sources)
 
             if sources.count_rows() == 0:
                 return self._receipt(

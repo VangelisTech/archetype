@@ -20,9 +20,9 @@ memory, defeats query planning, and stops scaling at in-memory size.
 
 Every such call inside ``src/`` is a contract exception against Archetype's
 lazy execution model. This script enumerates production call sites and
-gates them against ``lazy_audit.toml``. New, undocumented sites cause a
-non-zero exit; stale entries (allowlisted lines that no longer hold a
-matching call) are also surfaced so the audit stays honest under refactors.
+gates them against ``lazy_audit.toml``. Entries identify calls by path,
+enclosing function qualname, and method; line numbers are diagnostic hints.
+New, undocumented sites and stale entries both cause a non-zero exit.
 
 **UDF-boundary exemption (sanctioned pattern)**
 
@@ -76,6 +76,7 @@ class Site:
     path: str
     line: int
     method: str
+    qualname: str
     snippet: str
     sanctioned: bool = False  # True → udf-boundary, no allowlist entry needed
 
@@ -85,6 +86,7 @@ class Entry:
     path: str
     line: int
     method: str
+    qualname: str
     reason: str
 
 
@@ -168,6 +170,34 @@ def _collect_batch_udf_param_lines(source: str) -> dict[int, frozenset[str]]:
     return line_to_params
 
 
+class _MaterializationVisitor(ast.NodeVisitor):
+    """Find calls while retaining their stable enclosing Python qualname."""
+
+    def __init__(self) -> None:
+        self.scope: list[tuple[str, bool]] = []
+        self.calls: list[tuple[ast.Call, str]] = []
+
+    def _visit_scope(self, node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        is_function = isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        self.scope.append((node.name, is_function))
+        self.generic_visit(node)
+        self.scope.pop()
+
+    visit_ClassDef = _visit_scope
+    visit_FunctionDef = _visit_scope
+    visit_AsyncFunctionDef = _visit_scope
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if isinstance(node.func, ast.Attribute) and node.func.attr in _MATERIALIZATION_METHODS:
+            parts: list[str] = []
+            for index, (name, is_function) in enumerate(self.scope):
+                parts.append(name)
+                if is_function and index < len(self.scope) - 1:
+                    parts.append("<locals>")
+            self.calls.append((node, ".".join(parts) or "<module>"))
+        self.generic_visit(node)
+
+
 def _scan_file(path: Path, rel: str) -> list[Site]:
     try:
         text = path.read_text(encoding="utf-8")
@@ -179,18 +209,11 @@ def _scan_file(path: Path, rel: str) -> list[Site]:
     batch_line_params = _collect_batch_udf_param_lines(text)
     lines = text.splitlines()
     sites: list[Site] = []
-    seen: set[tuple[int, str]] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-            continue
+    visitor = _MaterializationVisitor()
+    visitor.visit(tree)
+    for node, qualname in visitor.calls:
         method = node.func.attr
-        if method not in _MATERIALIZATION_METHODS:
-            continue
         method_line = node.func.end_lineno or node.lineno
-        key = (method_line, method)
-        if key in seen:
-            continue
-        seen.add(key)
         receiver = node.func.value
         sanctioned = (
             method == "to_pylist"
@@ -203,6 +226,7 @@ def _scan_file(path: Path, rel: str) -> list[Site]:
                 path=rel,
                 line=method_line,
                 method=method,
+                qualname=qualname,
                 snippet=lines[method_line - 1].lstrip(),
                 sanctioned=sanctioned,
             )
@@ -241,6 +265,7 @@ def load_allowlist(root: Path) -> tuple[list[Entry], str | None]:
                     path=str(raw["path"]),
                     line=int(raw["line"]),
                     method=str(raw["method"]),
+                    qualname=str(raw["qualname"]),
                     reason=str(raw.get("reason", "")).strip(),
                 )
             )
@@ -340,7 +365,7 @@ def main() -> int:
     if "--list" in sys.argv:
         for s in sites:
             tag = " [udf-boundary]" if s.sanctioned else ""
-            print(f"{s.path}:{s.line}  .{s.method}(){tag}  {s.snippet}")
+            print(f"{s.path}:{s.line}  {s.qualname} .{s.method}(){tag}  {s.snippet}")
         return 0
 
     allow, allow_err = load_allowlist(root)
@@ -354,8 +379,20 @@ def main() -> int:
     audited_sites = [s for s in sites if not s.sanctioned]
     sanctioned_sites = [s for s in sites if s.sanctioned]
 
-    site_keys = {(s.path, s.line, s.method): s for s in audited_sites}
-    allow_keys = {(e.path, e.line, e.method): e for e in allow}
+    site_groups: dict[tuple[str, str, str], list[Site]] = {}
+    allow_groups: dict[tuple[str, str, str], list[Entry]] = {}
+    for site in audited_sites:
+        site_groups.setdefault((site.path, site.qualname, site.method), []).append(site)
+    for entry in allow:
+        allow_groups.setdefault((entry.path, entry.qualname, entry.method), []).append(entry)
+
+    ambiguous_keys = {key for key, values in site_groups.items() if len(values) != 1} | {
+        key for key, values in allow_groups.items() if len(values) != 1
+    }
+    site_keys = {key: values[0] for key, values in site_groups.items() if key not in ambiguous_keys}
+    allow_keys = {
+        key: values[0] for key, values in allow_groups.items() if key not in ambiguous_keys
+    }
 
     new_sites = [site_keys[k] for k in site_keys.keys() - allow_keys.keys()]
     stale_entries = [allow_keys[k] for k in allow_keys.keys() - site_keys.keys()]
@@ -372,27 +409,46 @@ def main() -> int:
             f"(sanctioned @daft.method.batch / @daft.func.batch parameter access)."
         )
 
-    if not (new_sites or stale_entries or weak_reasons):
+    if not (new_sites or stale_entries or weak_reasons or ambiguous_keys):
         print(f"lazy audit: {len(audited_sites)} audited site(s), all accounted for.")
         return 0
 
     print(STERN_HEADER, file=sys.stderr)
 
+    if ambiguous_keys:
+        rendered = [
+            f"{path}  {qualname} .{method}()" for path, qualname, method in sorted(ambiguous_keys)
+        ]
+        sys.stderr.write(
+            _format_section(
+                "Ambiguous call-site identities (one qualname/method must identify exactly one call and entry):",
+                rendered,
+            )
+        )
+
     if new_sites:
-        rendered = [f"{s.path}:{s.line}  .{s.method}()  {s.snippet}" for s in new_sites]
+        rendered = [
+            f"{s.path}:{s.line}  {s.qualname} .{s.method}()  {s.snippet}" for s in new_sites
+        ]
         sys.stderr.write(_format_section("New, undocumented materialization points:", rendered))
 
     if stale_entries:
-        rendered = [f"{e.path}:{e.line}  .{e.method}()  reason={e.reason!r}" for e in stale_entries]
+        rendered = [
+            f"{e.path}:{e.line}  {e.qualname} .{e.method}()  reason={e.reason!r}"
+            for e in stale_entries
+        ]
         sys.stderr.write(
             _format_section(
-                "Stale allowlist entries (line no longer holds a matching call):",
+                "Stale allowlist entries (identity no longer has a matching call):",
                 rendered,
             )
         )
 
     if weak_reasons:
-        rendered = [f"{e.path}:{e.line}  .{e.method}()  reason={e.reason!r}" for e in weak_reasons]
+        rendered = [
+            f"{e.path}:{e.line}  {e.qualname} .{e.method}()  reason={e.reason!r}"
+            for e in weak_reasons
+        ]
         sys.stderr.write(
             _format_section(
                 "Allowlist entries with unjustified reasons (rejected at review):",

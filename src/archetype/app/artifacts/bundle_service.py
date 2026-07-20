@@ -1458,20 +1458,7 @@ class ArtifactBundleService:
                 uri,
                 field="artifact.existing_object_uri",
             )
-            downloaded = (
-                daft.from_pydict({"object_uri": [uri]})
-                .with_column(
-                    "_bytes",
-                    download(
-                        col("object_uri"),
-                        max_connections=config.max_connections,
-                        on_error="null",
-                        io_config=config.io_config,
-                    ),
-                )
-                .select("_bytes")
-                .to_pylist()[0]["_bytes"]
-            )
+            downloaded = self._download_existing_object(uri, config)
             if (
                 isinstance(downloaded, bytes)
                 and len(downloaded) == size_bytes
@@ -1479,6 +1466,23 @@ class ArtifactBundleService:
             ):
                 return uri
         return ""
+
+    @staticmethod
+    def _download_existing_object(uri: str, config: ArtifactStoreConfig) -> object:
+        return (
+            daft.from_pydict({"object_uri": [uri]})
+            .with_column(
+                "_bytes",
+                download(
+                    col("object_uri"),
+                    max_connections=config.max_connections,
+                    on_error="null",
+                    io_config=config.io_config,
+                ),
+            )
+            .select("_bytes")
+            .to_pylist()[0]["_bytes"]
+        )
 
     async def _index_records(self, records: tuple[ArtifactIndexRecord, ...]) -> int:
         config = self._require_config()

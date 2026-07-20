@@ -9,6 +9,8 @@
 #
 # Generic reasons ("needed", "for the test", "convenience") are
 # rejected automatically by scripts/check_lazy_audit.py.
+# Entries are identified by path, enclosing function qualname, and method.
+# The line is retained only as a review and diagnostic hint.
 #
 # Scope: src/ only. Tests are exempt — terminal materialization at the
 # assertion boundary is expected and not part of the audited contract.
@@ -28,148 +30,173 @@
 path = "src/archetype/api/models.py"
 line = 33
 method = "collect"
+qualname = "dataframe_to_rows"
 reason = "HTTP JSON response boundary: FastAPI must receive concrete row dictionaries for response encoding; a Daft lazy DataFrame cannot be represented as JSON without executing the query."
 
 [[entries]]
 path = "src/archetype/api/models.py"
 line = 33
 method = "to_pylist"
+qualname = "dataframe_to_rows"
 reason = "HTTP JSON response boundary: convert the already-collected Daft result into row dictionaries for FastAPI's JSON encoder at the terminal REST boundary."
 
 [[entries]]
 path = "src/archetype/core/aio/async_store.py"
 line = 273
 method = "collect"
+qualname = "AsyncStore.append"
 reason = "Storage write boundary: materialize the incoming frame once for the empty-row guard and reuse that same materialized frame for the backing-table append."
 
 [[entries]]
 path = "src/archetype/core/aio/async_world.py"
 line = 422
 method = "to_pylist"
+qualname = "AsyncWorld._move_entity"
 reason = "Cross-archetype entity migration: extract the latest tick row as a Python dict for component-overlay, which mutates field-by-field before re-insertion into the new archetype."
 
 [[entries]]
 path = "src/archetype/core/sync/store.py"
 line = 132
 method = "collect"
+qualname = "SyncStore.append"
 reason = "Debug-mode-only logging: materialise so count_rows and df.show emit diagnostics; gated on self.debug and never reached in production execution paths."
 
 [[entries]]
 path = "src/archetype/core/sync/world.py"
 line = 305
 method = "to_pylist"
+qualname = "SyncWorld._move_entity"
 reason = "Cross-archetype entity migration (sync mirror of async_world): extract the latest tick row for component overlay before re-insertion."
 
 [[entries]]
 path = "src/archetype/core/lineage.py"
 line = 105
 method = "to_pylist"
+qualname = "load_lineage"
 reason = "Lineage metadata extract: a fork's ancestor segments (bounded by fork depth, typically 1-3 rows) must become Python (world_id, run_id, up_to_tick) tuples because they route subsequent per-tick store queries; the routing decision cannot be expressed inside a single Daft plan."
 
 [[entries]]
 path = "src/archetype/app/research/service.py"
 line = 458
 method = "to_pylist"
+qualname = "AutoResearchService._read_experiment"
 reason = "Single-row experiment-contract extract: the persisted identity and JSON configuration digest must enter Python control flow for exact collision rejection before the service records a resumed attempt; this is an imperative lifecycle gate, not a downstream dataframe computation."
 
 [[entries]]
 path = "src/archetype/app/research/service.py"
 line = 466
 method = "to_pylist"
+qualname = "AutoResearchService._read_head"
 reason = "Single-row loop-state extract: the latest BranchHead row must enter Python control flow for incumbent score comparison and entity-id routing of the next append; these values drive imperative orchestration, not a further dataframe computation."
 
 [[entries]]
 path = "src/archetype/app/research/service.py"
 line = 478
 method = "to_pylist"
+qualname = "AutoResearchService._next_iteration"
 reason = "Bounded control-plane history extract: deterministic Run ids and terminal statuses must enter Python control flow to reject active, corrupt, duplicate, or non-contiguous attempts before resume; the result chooses whether any new work may start rather than feeding a dataframe computation."
 
 [[entries]]
 path = "src/archetype/app/world/simulation.py"
 line = 221
 method = "to_pylist"
+qualname = "SimulationService._entities_terminal"
 reason = "Episode-termination boundary: the value-based 'all entities done' check is reduced in Daft to a single (n_done, n_total) row, then materialized so the all/any decision can enter Python control flow and break the run_episode loop; a Python bool cannot remain a lazy Daft expression."
 
 [[entries]]
 path = "src/archetype/app/query/service.py"
 line = 408
 method = "to_pylist"
+qualname = "QueryService.get_command_history"
 reason = "Bounded compatibility boundary: queued audit rows are already filtered and limited lazily, then materialized into the legacy list[Command] return contract used by pre-gate callers."
 
 [[entries]]
 path = "src/archetype/app/storage/iceberg.py"
 line = 75
 method = "collect"
+qualname = "IcebergCatalogContext.append_counted"
 reason = "Storage write boundary: Daft has already committed the artifact pipeline through its native Iceberg writer; only per-output-file row counts enter Python to construct the bounded write receipt. No artifact-row payload is materialized."
 
 [[entries]]
 path = "src/archetype/app/artifacts/table_service.py"
-line = 144
+line = 36
 method = "collect"
+qualname = "_collect_discovered_sources"
 reason = "File discovery boundary: materializes only the current call's file references, source URIs, and content hashes once before deduplication so zero matched sources are distinguishable from a retry and file bytes are not rehashed. Typed artifact payload rows remain lazy through the Iceberg write."
 
 [[entries]]
 path = "src/archetype/app/artifacts/table_service.py"
-line = 167
+line = 40
 method = "collect"
+qualname = "_collect_candidate_sources"
 reason = "Processor candidate boundary: materializes the distinct, existing-key-filtered identities derived from the already materialized discovery frame so the emptiness check, processor, and identity validation reuse one candidate set. It does not reread file bytes or materialize typed artifact payload rows."
 
 [[entries]]
 path = "src/archetype/app/world/service.py"
 line = 741
 method = "to_pylist"
+qualname = "WorldService._scan_world_rows"
 reason = "Resume-time entity-directory extract (issue #273 A1-resume): the latest visible row per entity — already reduced in Daft to one (entity_id, tick, is_active) row per entity via groupby-max + join — must enter Python control flow to become the entity2sig registry and next_entity_id counter that route all subsequent mutations; imperative world reconstruction at the cold-resume boundary, bounded by live entity count, not a downstream dataframe computation."
 
 [[entries]]
 path = "src/archetype/experiments/boundary.py"
 line = 122
 method = "to_pylist"
+qualname = "series_to_rows"
 reason = "series_to_rows helper: converts each Series parameter to a Python list inside a list comprehension. This function is called exclusively from @daft.method.batch UDF bodies (MuJoCo C-library boundary, env RPC boundary, policy inference boundary) where the Daft executor has already materialised the batch. The AST checker auto-exempts to_pylist calls on named parameters of @daft.method.batch functions but cannot trace through this plain helper indirection; the call is semantically equivalent to an auto-sanctioned UDF-boundary access."
 
 [[entries]]
 path = "src/archetype/experiments/eval_rollouts.py"
 line = 416
 method = "collect"
+qualname = "_final_row_per_entity"
 reason = "grading boundary: latest-tick row per entity from the already-filtered episode query becomes the scalar TaskEvalReport — the analysis edge where eval graders also collect; nothing downstream re-enters the DAG"
 
 [[entries]]
 path = "src/archetype/experiments/eval_rollouts.py"
 line = 416
 method = "to_pylist"
+qualname = "_final_row_per_entity"
 reason = "same grading-boundary site as the collect above: per-entity terminal rows to Python for success/length aggregation into the report"
 
 [[entries]]
 path = "src/archetype/app/artifacts/bundle_service.py"
 line = 1321
 method = "to_pylist"
+qualname = "ArtifactBundleService._file_metadata"
 reason = "Artifact-manifest boundary: the caller-declared, size-bounded file set has already been hashed and MIME-classified by native Daft expressions; scalar metadata must enter Python to construct validated immutable index records and the canonical bundle manifest."
 
 [[entries]]
 path = "src/archetype/app/artifacts/bundle_service.py"
 line = 1373
 method = "to_pylist"
+qualname = "ArtifactBundleService._upload_files"
 reason = "Object-store completion boundary: each caller-declared, size-bounded upload has executed through Daft and its returned object URI must enter Python to construct the portable manifest and deterministic artifact-index rows."
 
 [[entries]]
 path = "src/archetype/app/artifacts/bundle_service.py"
 line = 1386
 method = "to_pylist"
+qualname = "ArtifactBundleService._upload_bytes"
 reason = "Single-object upload boundary: one generated bundle-manifest byte value is uploaded through Daft and its sole destination URI must enter the durable publication receipt and control-catalog record."
 
 [[entries]]
 path = "src/archetype/app/artifacts/bundle_service.py"
 line = 1440
 method = "to_pylist"
+qualname = "ArtifactBundleService._existing_object"
 reason = "Existing-object metadata authorization boundary: only paths and sizes beneath one deterministic content-addressed destination enter Python so each candidate URI can pass shared redaction policy and exact-size eligibility before any remote byte read."
 
 [[entries]]
 path = "src/archetype/app/artifacts/bundle_service.py"
-line = 1473
+line = 1484
 method = "to_pylist"
+qualname = "ArtifactBundleService._download_existing_object"
 reason = "Existing-object byte-integrity boundary: one size-eligible, metadata-approved remote candidate is read through Daft and its bytes enter Python solely to verify exact size and SHA-256 before durable reuse."
 
 [[entries]]
 path = "src/archetype/app/artifacts/bundle_service.py"
-line = 1489
+line = 1493
 method = "to_pylist"
+qualname = "ArtifactBundleService._index_records"
 reason = "Bundle-index idempotency boundary: the Iceberg query is filtered to one deterministic bundle and its bounded artifact rows must enter Python for exact conflict detection and missing-row selection before an append."
