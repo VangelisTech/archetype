@@ -93,9 +93,9 @@ version without evidence receipts is visibly ungraded in the index.
 - No central naming authority beyond the namespace directory (§7); cross-org
   trust and signing are future work.
 - No automatic migration of drifted schemas (R4 forbids silent coercion).
-- Processor-native instantiation is IN scope: #604 was ruled greenlit
-  (2026-07-20) — the MutationOutbox seam makes it possible; see the #604
-  issue for the recorded rulings.
+- Processor-native instantiation is IN scope once the mutation-outbox seam
+  lands: ruled on #604 (2026-07-20), design in
+  `docs/design/mutation-outbox.md` — designed, not implemented.
 - No declarative prefab file format yet (Biome's `.flecs` layer); Python
   authoring through the library object comes first.
 
