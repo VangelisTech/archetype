@@ -222,3 +222,37 @@ def test_override_matches_schema_identical_twin(tmp_path):
             return True
 
     assert _run(go())
+
+
+def _make_prefab_twin() -> type[Component]:
+    class Prefab(Component):
+        name: str = ""
+
+    return Prefab
+
+
+def test_twin_prefab_marker_is_not_copied():
+    """A schema-identical twin Prefab marker (cold resume) is excluded from
+    the copy exactly like the real one — instances never become templates."""
+    import daft
+
+    from archetype.graph.prefab import _entity_components
+
+    twin_marker = _make_prefab_twin()
+    signature = tuple(sorted((twin_marker, Chassis), key=lambda t: t.__name__))
+    frame = daft.from_pydict(
+        {
+            "entity_id": [7],
+            "tick": [0],
+            "prefab__name": ["ghost"],
+            "chassis__armor": [12],
+            "chassis__color": ["blue"],
+        }
+    )
+    view = GraphView()
+    view._frames = {signature: frame}
+    view.tick = 0
+
+    components = _entity_components(view, 7)
+    assert [type(c).__name__ for c in components] == ["Chassis"]
+    assert components[0].armor == 12

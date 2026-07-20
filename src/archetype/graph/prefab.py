@@ -71,7 +71,13 @@ def _entity_components(view: GraphView, entity_id: int) -> list[Component]:
         row = matched[0]
         components: list[Component] = []
         for cls in signature:
-            if issubclass(cls, Prefab | Relation):
+            # Exclusion honors schema identity for the marker: a resumed
+            # world's twin Prefab class is not an issubclass of ours, and
+            # copying it would silently turn instances into templates.
+            # Relation exclusion stays hierarchical — relation subclasses
+            # have distinct schemas by design, and edges are their own
+            # entities, never components on a template root.
+            if issubclass(cls, Prefab | Relation) or _same_component(cls, Prefab):
                 continue
             prefix = cls.get_prefix()
             components.append(cls(**{f: row[f"{prefix}{f}"] for f in cls.model_fields}))
