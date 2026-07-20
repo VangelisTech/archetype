@@ -32,7 +32,7 @@ from archetype.graph.components import ChildOf, Relation
 from archetype.graph.edges import WorldLike, _require_async, link
 from archetype.graph.sync import SyncWorldLike, _require_sync
 from archetype.graph.sync import link as link_sync
-from archetype.graph.view import GraphView
+from archetype.graph.view import GraphView, _same_component
 
 
 class Prefab(Component):
@@ -62,7 +62,10 @@ def _entity_components(view: GraphView, entity_id: int) -> list[Component]:
     entities.
     """
     for signature, frame in view.frames():
-        matched = _rows(frame.where(cast(Expression, col("entity_id") == entity_id)).limit(1))
+        live = frame
+        if "is_active" in live.column_names:
+            live = live.where(col("is_active"))
+        matched = _rows(live.where(cast(Expression, col("entity_id") == entity_id)).limit(1))
         if not matched:
             continue
         row = matched[0]
@@ -89,8 +92,23 @@ def _child_prefabs(view: GraphView, parent: int) -> list[int]:
 
 
 def _overlay(components: list[Component], overrides: Sequence[Component]) -> list[Component]:
-    by_type = {type(o): o for o in overrides}
-    return [by_type.pop(type(c), c) for c in components] + list(by_type.values())
+    """Overlay ``overrides`` onto ``components`` by schema identity.
+
+    Class-object identity under-matches on resumed durable worlds whose
+    signatures hold schema-identical twin classes; the same identity rule as
+    :meth:`GraphView.frame` applies here so an override always replaces its
+    counterpart instead of colliding with it at spawn.
+    """
+    remaining = list(overrides)
+    out: list[Component] = []
+    for comp in components:
+        match = next((o for o in remaining if _same_component(type(o), type(comp))), None)
+        if match is not None:
+            remaining.remove(match)
+            out.append(match)
+        else:
+            out.append(comp)
+    return out + remaining
 
 
 async def instantiate(

@@ -142,8 +142,7 @@ def test_editing_prefab_does_not_mutate_instances(tmp_path):
             await world.step()
 
             await world.update(template, Chassis(armor=99))
-            await world.step()
-            await world.step()  # view captures the edited template
+            await world.step()  # one step: the edit persists and the view captures it
 
             second = await instantiate(world, view, template)
             await world.step()
@@ -191,3 +190,35 @@ def test_sync_instantiate_parity(tmp_path):
         rows = world.query(Chassis).where(col("tick") == latest).to_pylist()
         by_id = {row["entity_id"]: row["chassis__armor"] for row in rows}
         assert by_id[inst] == 7
+
+
+def _make_chassis_twin() -> type[Component]:
+    class Chassis(Component):
+        armor: int = 10
+        color: str = "grey"
+
+    return Chassis
+
+
+def test_override_matches_schema_identical_twin(tmp_path):
+    """An override from a schema-identical twin class replaces the copied
+    component instead of colliding with it — the cold-resume rule."""
+
+    async def go():
+        view = GraphView()
+        async with ArchetypeRuntime() as runtime:
+            world = _world(runtime, "twin-override", tmp_path, view)
+            template = await world.spawn(Prefab(name="t"), Chassis(armor=3))
+            await world.step()
+
+            twin = _make_chassis_twin()
+            inst = await instantiate(world, view, template, overrides=[twin(armor=77)])
+            await world.step()
+
+            latest = (await world.info()).tick - 1
+            rows = (await world.query(Chassis)).where(col("tick") == latest).to_pylist()
+            by_id = {row["entity_id"]: row["chassis__armor"] for row in rows}
+            assert by_id[inst] == 77
+            return True
+
+    assert _run(go())
