@@ -14,16 +14,49 @@ from archetype.graph.cascade import CascadeResult, cascade, dangling_edges
 from archetype.graph.components import ChildOf, Policy, Relation, require_relation
 from archetype.graph.edges import WorldLike, edges, link, unlink
 from archetype.graph.frames import between, live_edge_ids, with_source, with_target
+from archetype.graph.prefab import (
+    AssetRef,
+    DefinedPrefab,
+    Instance,
+    InstantiationPolicy,
+    IsA,
+    NodeRef,
+    Prefab,
+    PrefabEdge,
+    PrefabNode,
+    PrefabNodeKey,
+    PrefabTemplate,
+    define,
+    instantiate,
+    only_prefabs,
+    prefab_frame,
+    without_prefabs,
+)
 from archetype.graph.view import GraphView
 
 __all__ = [
+    "AssetRef",
     "CascadeResult",
     "ChildOf",
+    "DefinedPrefab",
     "GraphView",
+    "Instance",
+    "InstantiationPolicy",
+    "IsA",
+    "NodeRef",
     "Policy",
+    "Prefab",
+    "PrefabEdge",
+    "PrefabNode",
+    "PrefabNodeKey",
+    "PrefabTemplate",
     "Relation",
     "cascade",
     "dangling_edges",
+    "define",
+    "instantiate",
+    "only_prefabs",
+    "prefab_frame",
     "WorldLike",
     "between",
     "edges",
@@ -34,4 +67,5 @@ __all__ = [
     "unlink",
     "with_source",
     "with_target",
+    "without_prefabs",
 ]
