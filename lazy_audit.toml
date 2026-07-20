@@ -92,7 +92,7 @@ reason = "Episode-termination boundary: the value-based 'all entities done' chec
 
 [[entries]]
 path = "src/archetype/app/query/service.py"
-line = 408
+line = 419
 method = "to_pylist"
 reason = "Bounded compatibility boundary: queued audit rows are already filtered and limited lazily, then materialized into the legacy list[Command] return contract used by pre-gate callers."
 
