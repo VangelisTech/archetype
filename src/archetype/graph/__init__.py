@@ -13,8 +13,10 @@ from archetype.graph import sync
 from archetype.graph.components import Relation, require_relation
 from archetype.graph.edges import WorldLike, edges, link, unlink
 from archetype.graph.frames import between, live_edge_ids, with_source, with_target
+from archetype.graph.view import GraphView
 
 __all__ = [
+    "GraphView",
     "Relation",
     "WorldLike",
     "between",
