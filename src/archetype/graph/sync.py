@@ -17,7 +17,7 @@ from daft import DataFrame, Expression, col
 
 from archetype.core.component import Component
 from archetype.graph.components import Relation, require_relation
-from archetype.graph.frames import live_edge_ids
+from archetype.graph.frames import live_edge_ids, live_edge_ids_from
 
 
 class _InfoLike(Protocol):
@@ -45,10 +45,29 @@ def _require_sync(world: SyncWorldLike, method: str) -> None:
 
 
 def link(world: SyncWorldLike, rel: Relation) -> int:
-    """Spawn an edge entity for ``rel``. See :func:`archetype.graph.edges.link`."""
+    """Spawn an edge entity for ``rel``. See :func:`archetype.graph.edges.link`.
+
+    Exclusive relations replace the live edges from the same source in the
+    same batch, mirroring the async flavor.
+    """
     require_relation(rel)
     _require_sync(world, "spawn")
-    return world.spawn(rel)
+    rel_type = type(rel)
+    if not rel_type.exclusive:
+        return world.spawn(rel)
+
+    latest = world.info().tick - 1
+    try:
+        frame = world.query(rel_type)
+    except KeyError:
+        frame = None  # first edge of this relation: nothing to replace
+    replaced = set() if frame is None else live_edge_ids_from(frame, rel_type, rel.source, latest)
+    # Spawn before despawn: a failure between the two degrades to the
+    # documented two-live-edges race, never to zero live edges.
+    edge_id = world.spawn(rel)
+    for old_id in replaced:
+        world.despawn(old_id)
+    return edge_id
 
 
 def edges(world: SyncWorldLike, rel: type[Relation], *, at: int | None = None) -> DataFrame:

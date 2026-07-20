@@ -43,11 +43,24 @@ def live_edge_ids(
 ) -> set[int]:
     """Entity ids of the ``rel`` edges from ``source`` to ``target`` live at
     tick ``latest``.
+    """
+    return _ids_at(between(edges, rel, source, target), latest)
 
-    This is the mutation-planning boundary shared by the async and sync
-    ``unlink``: despawn takes concrete ids, so the matching ids — and only
-    the ids — cross into Python. The filters run in the lazy plan.
+
+def live_edge_ids_from(edges: DataFrame, rel: type[Relation], source: int, latest: int) -> set[int]:
+    """Entity ids of every ``rel`` edge outgoing from ``source`` live at
+    tick ``latest`` — the exclusive-relation replacement set (stage 5a).
+    """
+    return _ids_at(with_source(edges, rel, source), latest)
+
+
+def _ids_at(edges: DataFrame, latest: int) -> set[int]:
+    """Materialize the entity ids of the rows at tick ``latest``.
+
+    The single mutation-planning boundary shared by ``unlink`` and exclusive
+    ``link``: despawn takes concrete ids, so the matching ids — and only the
+    ids — cross into Python. All filters run in the lazy plan.
     """
     at_latest = cast(Expression, col("tick") == latest)
-    rows = between(edges, rel, source, target).where(at_latest).select("entity_id").to_pylist()
+    rows = edges.where(at_latest).select("entity_id").to_pylist()
     return {row["entity_id"] for row in rows}

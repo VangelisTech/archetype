@@ -20,6 +20,8 @@ Arrow-serialization rules as any component.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from archetype.core.component import Component
 
 
@@ -29,7 +31,15 @@ class Relation(Component):
     ``Relation`` itself is abstract by convention: spawn subclasses, never the
     base (``link`` enforces this). ``source`` and ``target`` are entity ids as
     stamped by the engine (``BASE_SCHEMA.entity_id``).
+
+    ``exclusive`` declares that an entity holds at most one live edge of this
+    relation as ``source`` (design stage 5a): ``link`` stages the replacement
+    despawn of the previous edge in the same batch. Enforcement reads
+    persisted state — linking the same exclusive source twice before a step
+    stages both edges, so the step boundary is the consistency unit.
     """
+
+    exclusive: ClassVar[bool] = False
 
     source: int = 0
     target: int = 0
