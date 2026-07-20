@@ -9,11 +9,12 @@
 public/internal classification, wiring, and enforcement. This document owns the
 purpose and active mapping of each family port.
 
-Agent Missions V1 uses the family-owned `AgentMissionSandbox` resource protocol
-behind the app-owned `iAgentMissionService` workflow. Physical evaluation uses
-the same ownership pattern: family-owned environment/policy protocols beneath
-the app-owned `iPhysicalAIService`. The older `iMission*` and `iSandbox*` ports
-are a separate compatibility subsystem.
+Agent Missions V1 uses the family-owned `SandboxService`, `SandboxBackend`, and
+`SandboxSession` resource stack beneath the app-owned `iAgentMissionService`
+workflow. Physical evaluation uses the same ownership pattern: family-owned
+environment/policy protocols beneath the app-owned `iPhysicalAIService`. The
+older `iMission*` and `iSandbox*` ports are a separate, explicitly legacy
+compatibility subsystem.
 
 ## 1. Policy
 
@@ -75,7 +76,9 @@ iPhysicalAIService
 iAuditLog          -> iStorageService
 
 RuntimeMissions -> iRuntimeApplication -> iAgentMissionService
-iAgentMissionService -> AgentMissionSandbox
+iAgentMissionService
+  -> missions.SandboxService -> missions.SandboxBackend
+  -> missions.CodingAgentHarness -> missions.SandboxSession
 
 # Legacy mission-attempt compatibility stack
 iMissionService    -> typed mission rows (no service dependency)
@@ -113,9 +116,11 @@ selected mission workflow through the actor-free application facade.
 | `iCommandScheduler` | `CommandScheduler` | application | Durable admission, leasing, dispatch, retry, settlement and outbox inspection |
 | `iAuditLog` | `AuditLog` | application, gateway, query | Append-only access rows and command-outbox projection |
 | `iResearchService` | `AutoResearchService` | application | Multi-run autoresearch workflow and research ledger |
-| `iAgentMissionService` | `AgentMissionService` | application, `RuntimeMissions` | Materialize task graphs, own the batteries-included world bundle, coordinate committed I/O, validate receipts, and project terminal results |
+| `iAgentMissionService` | `AgentMissionService` | application, `RuntimeMissions` | Materialize task graphs, own the batteries-included world bundle, drain committed dispatches into external work, stage factual observations, and project terminal results |
 | `iPhysicalAIService` | `PhysicalAIService` | application | Create batched evaluation worlds, install physical processors, run episodes, and derive typed reports from persisted state |
-| Family resource port `AgentMissionSandbox` | `ModalAgentMissionSandbox` | `AgentMissionService` | V1 isolated execution and typed receipts; no task-transition authority |
+| Family resource service `missions.SandboxService` | `missions.SandboxService` | `AgentMissionService` | Select a configured backend and acquire, reuse, close, and shut down mission-keyed sessions; no task-transition authority |
+| Family resource port `missions.SandboxBackend` | configured provider adapter, including `ModalSandboxBackend` | `missions.SandboxService` | Create or restore provider-owned isolated sessions |
+| Family resource port `missions.SandboxSession` | provider session adapter, including `ModalSandboxSession` | `CodingAgentHarness`, `missions.SandboxService` | Expose process, status, checkpoint, and close operations for one live sandbox |
 | Legacy `iMissionService` | `MissionService` | legacy attempt orchestration | Single-row validator normalization, transition graph, retry/exhaustion, and outcome application |
 | Legacy `iMissionAttemptClaimService` | `MissionAttemptClaimService` | legacy attempt orchestration and recovery workers | Pre-durability redaction, durable claims, fencing, recovery decisions, acknowledgement, settlement, and terminal-winner reread |
 | Legacy `iMissionArtifactFinalizer` | application-owned `MissionArtifactFinalizer` | legacy attempt execution and recovery workers | Prepared artifact publication and reconciliation feedback |
@@ -168,23 +173,40 @@ durable; an identical retry can repair a missing append idempotently.
 
 ### Agent Missions V1
 
-`AgentMissionSandbox` belongs to `archetype.missions.contracts` because coding
-agents and their execution resources are implementations beneath the missions
-family. Its `run_many`, `close_mission`, and `close` methods exchange typed
-`TaskExecutionRequest` and `TaskExecutionReceipt` values. The sandbox reports
-observations; mission processors remain transition authority.
+`archetype.missions` owns the complete reusable coding-agent capability:
+`SandboxService`, the `SandboxBackend` and `SandboxSession` protocols, sandbox
+value contracts, coding-harness values, Components, relations, and processors.
+The configured backend creates or restores a provider-owned session;
+`SandboxService` selects that backend and single-flights acquisition by a
+`SandboxKey`. For V1 the application service uses a mission-keyed value, so
+tasks in one mission can reuse the retained session without making that live
+handle durable authority.
 
 `iAgentMissionService` is the app-internal workflow port implemented by
 `AgentMissionService`. The service composes a structural mission world with the
 built-in Components, processors, relationships, graph view, committed-intent
-outbox, and sandbox resource. It owns graph materialization, the post-commit I/O
-loop, receipt validation, lifecycle, and terminal projection. It does not own
-readiness, acceptance, retry, exhaustion, or rollup policy.
+outbox, coding harness, and sandbox service. After a tick commits,
+`TaskDispatchOutbox` projects newly persisted `TaskDispatch` data into external
+work requests. The service acquires the mission-keyed session and invokes the
+harness only from that post-commit path, then stages the returned factual
+observations for a later tick.
 
-`ServiceContainer` injects the concrete service factory into
-`RuntimeApplication`. `RuntimeMissions` supplies only its runtime-owned world
-factory and supported configuration, then consumes the returned port. No
-Component, processor, relation, or sandbox implementation moves into `app`.
+Graph materialization records each authored `TaskValidator`. The harness then
+prepares the repository, runs the coding agent and those validator commands,
+performs Git publication, and returns facts that the service records as
+`AgentExecution`, `ValidationResult`, `AgentCommit`, and `AgentFrictionLog`
+Components and relations. Validator success is derived from expected and
+actual return codes; neither the harness, sandbox, nor service decides task
+state. Processors alone accept a task, retry it, exhaust its dispatch budget,
+unlock dependent tasks, and roll terminal task states up to the mission.
+
+`ServiceContainer` takes the backend configured by `AgentMissionConfig`,
+constructs `SandboxService` around it, passes that service to
+`AgentMissionService`, and injects the concrete mission-service factory into
+`RuntimeApplication`.
+`RuntimeMissions` supplies only its runtime-owned world factory and supported
+configuration, then consumes the returned port. No Component, processor,
+relation, harness value, or sandbox implementation moves into `app`.
 
 See [Agent Missions V1](agent-missions.md).
 
@@ -307,7 +329,7 @@ authorization, or recovery contracts.
 
 ### Legacy sandbox ports
 
-These ports are not used by the Modal Agent Missions V1 resource.
+These legacy ports are not used by Agent Missions V1.
 `iSandboxService` owns external resource lifetime and provider selection; it
 never decides whether a task advances. `ServiceContainer` constructs an empty
 provider registry unless a trusted host supplies adapters. The common attempt
@@ -360,7 +382,7 @@ remain with their app owners unless a focused specification classifies an
 individual value as a reusable family contract.
 
 The V1 mission split is the implemented example: Components, processors,
-relations, authoring/receipt values, and sandbox resources live under
+relations, authoring and coding-harness values, and sandbox resources live under
 `archetype.missions`; graph materialization and cross-boundary workflow
 composition live under `archetype.app.missions`. The retained claim, lease,
 fence, finalization, and app-sandbox types are legacy internal machinery, not a
