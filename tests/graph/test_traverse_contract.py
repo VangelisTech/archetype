@@ -13,12 +13,12 @@ from __future__ import annotations
 import asyncio
 import os
 
-import daft
-import pytest
-
 os.environ.setdefault("LOGFIRE_SEND_TO_LOGFIRE", "false")
 os.environ.setdefault("LOGFIRE_IGNORE_NO_CONFIG", "1")
 os.environ.setdefault("DO_NOT_TRACK", "1")
+
+import daft  # noqa: E402
+import pytest  # noqa: E402
 
 from archetype import ArchetypeRuntime  # noqa: E402
 from archetype.core.component import Component  # noqa: E402
@@ -90,6 +90,8 @@ def test_neighborhood_validates_inputs():
         neighborhood(frame, ChildOf, [1], depth=0)
     with pytest.raises(ValueError):
         neighborhood(frame, ChildOf, [], depth=1)
+    with pytest.raises(ValueError, match="direction"):
+        neighborhood(frame, ChildOf, [1], depth=1, direction="incoming")  # type: ignore[arg-type]
 
 
 def test_traversal_composes_with_live_edgetables(tmp_path):
