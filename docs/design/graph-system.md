@@ -212,9 +212,11 @@ wrappers; REST exposure later via app importing the frame layer.
 | 7 | `Prefab` marker, `IsA`, `instantiate()`, `examples/12_prefabs.py` | 2, 5b | ~400 lines |
 | 8 | PreFab registry: manifest, versioning, eval binding | 7, design doc first | — |
 
-Stage 8 requires its own design (`docs/design/prefab-registry.md`) after
-stage 7 lands; its versioning story must answer #543 (schema evolution against
-persisted tables).
+Stage 7 and 8 are specified in depth by `docs/design/prefab-library.md`, which
+reshapes Stage 7 into a defined graph operation (id reservation, edge remapping,
+merge algebra, per-component instantiation policy) and splits it into 7a–7d.
+That document is the "own design" this stage-8 note called for; its versioning
+story must answer #543 (schema evolution against persisted tables).
 
 ---
 
