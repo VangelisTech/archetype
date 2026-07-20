@@ -72,7 +72,9 @@ async def main():
         latest = (await world.info()).tick - 1
         rows = (await world.query(Chassis)).where(col("tick") == latest).to_pylist()
         armor = {row["entity_id"]: row["chassis__armor"] for row in rows}
-        print(f"3. after the edit: first instance armor={armor[red]}, new instance armor={armor[mk2]}")
+        print(
+            f"3. after the edit: first instance armor={armor[red]}, new instance armor={armor[mk2]}"
+        )
         print("   copy-on-instantiate: the old generation is history, not collateral")
 
 
