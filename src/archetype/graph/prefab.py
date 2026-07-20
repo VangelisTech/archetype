@@ -44,15 +44,18 @@ class Prefab(Component):
 class IsA(Relation):
     """Lineage: ``source`` (the instance) was instantiated from ``target``.
 
-    ``world`` and ``at_tick`` make the lineage globally unambiguous and
-    version-pinned (registry design R2): ``world`` is the source world id
-    when the template lives in a different world (empty for same-world), and
-    ``at_tick`` is the captured tick the copy was taken from.
+    ``world``, ``run_id``, and ``at_tick`` make the lineage globally
+    unambiguous and version-pinned (registry design R2): ``world`` is the
+    source world id when the template lives in a different world (empty for
+    same-world), ``run_id`` is the source run the copied row was persisted
+    by — one world's history spans runs, so a tick alone under-identifies a
+    version — and ``at_tick`` is the captured tick of the copy.
     """
 
     scope_field = "world"
 
     world: str = ""
+    run_id: str = ""
     at_tick: int = -1
 
 
@@ -65,8 +68,10 @@ def _rows(frame: DataFrame) -> list[dict]:
     return frame.to_pylist()
 
 
-def _entity_components(view: GraphView | GraphSnapshot, entity_id: int) -> list[Component]:
-    """Rebuild the entity's component instances from the captured frames.
+def _entity_components(
+    view: GraphView | GraphSnapshot, entity_id: int
+) -> tuple[list[Component], str]:
+    """Rebuild the entity's components and source run id from the frames.
 
     ``Prefab`` markers and ``Relation`` components are never copied: the
     marker is what makes a template a template, and edges are their own
@@ -80,6 +85,7 @@ def _entity_components(view: GraphView | GraphSnapshot, entity_id: int) -> list[
         if not matched:
             continue
         row = matched[0]
+        run_id = str(row.get("run_id", ""))
         components: list[Component] = []
         for cls in signature:
             # Exclusion honors schema identity for the marker: a resumed
@@ -92,7 +98,7 @@ def _entity_components(view: GraphView | GraphSnapshot, entity_id: int) -> list[
                 continue
             prefix = cls.get_prefix()
             components.append(cls(**{f: row[f"{prefix}{f}"] for f in cls.model_fields}))
-        return components
+        return components, run_id
     raise LookupError(f"entity {entity_id} not found at the view's captured tick")
 
 
@@ -180,9 +186,11 @@ async def _instantiate(
     max_depth: int,
     source_world: str,
 ) -> int:
-    lineage = IsA(target=prefab, world=source_world, at_tick=view.tick)
-    new_id = await world.spawn(*_overlay(_entity_components(view, prefab), overrides))
-    lineage.source = new_id
+    components, run_id = _entity_components(view, prefab)
+    new_id = await world.spawn(*_overlay(components, overrides))
+    lineage = IsA(
+        source=new_id, target=prefab, world=source_world, run_id=run_id, at_tick=view.tick
+    )
     await link(world, lineage)
     if max_depth > 0:
         for child in _child_prefabs(view, prefab):
@@ -218,9 +226,11 @@ def _instantiate_sync(
     max_depth: int,
     source_world: str,
 ) -> int:
-    lineage = IsA(target=prefab, world=source_world, at_tick=view.tick)
-    new_id = world.spawn(*_overlay(_entity_components(view, prefab), overrides))
-    lineage.source = new_id
+    components, run_id = _entity_components(view, prefab)
+    new_id = world.spawn(*_overlay(components, overrides))
+    lineage = IsA(
+        source=new_id, target=prefab, world=source_world, run_id=run_id, at_tick=view.tick
+    )
     link_sync(world, lineage)
     if max_depth > 0:
         for child in _child_prefabs(view, prefab):
