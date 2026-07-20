@@ -27,7 +27,7 @@ Wiring::
 
 from __future__ import annotations
 
-from daft import DataFrame, col
+from daft import DataFrame, col, lit
 
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
@@ -57,12 +57,15 @@ class DepthProcessor(AsyncProcessor):
         self, df: DataFrame, resources: Resources | None = None, **kwargs
     ) -> DataFrame:
         view = resources.get(GraphView) if resources is not None else None
-        if view is None:
+        if view is None or view.tick < 0:
             return df
         edges = view.frame(ChildOf)
         parents = view.frame(Depth)
         if edges is None or parents is None:
-            return df
+            # No edges (or no prior depth) at the captured tick: every entity
+            # is a root. Rewrite to 0 so seeded or stale values cannot
+            # persist — the root contract holds even before any hierarchy.
+            return df.with_column("depth__value", lit(0))
 
         prefix = ChildOf.get_prefix()
         # Exclusive ChildOf guarantees one live parent per child at persisted

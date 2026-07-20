@@ -155,3 +155,26 @@ def test_toposorted_orders_parents_first(tmp_path):
             return True
 
     assert _run(go())
+
+
+def test_seeded_depth_normalizes_without_edges(tmp_path):
+    """A caller-supplied Depth value cannot survive: no edges means root, 0."""
+
+    async def go():
+        view = GraphView()
+        async with ArchetypeRuntime() as runtime:
+            world = runtime.world(
+                "seeded",
+                storage=_storage(tmp_path),
+                processors=[DepthProcessor()],
+                resources=[view],
+                hooks=[(PostTick, view.on_post_tick)],
+            )
+            seeded = await world.spawn(Node(name="seeded"), Depth(value=5))
+            await world.run(steps=3)
+            latest = (await world.info()).tick - 1
+            depths = await _depths(world, latest)
+            assert depths[seeded] == 0
+            return True
+
+    assert _run(go())
