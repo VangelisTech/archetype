@@ -270,6 +270,7 @@ class QueryService:
         """
         import daft
         import pyarrow as pa
+        from daft import DataType
 
         from archetype.app.storage.catalog import CatalogSchemaMismatchError, schema_fingerprint
 
@@ -318,6 +319,16 @@ class QueryService:
                 # (Daft stubs Expression methods as bool; these are Expressions.)
                 visible = df["commit_token"].is_in(commit_tokens) if commit_tokens else lit(False)
                 df = df.where(visible)
+            # Component names are the durable discovery key, so an older
+            # generation may legitimately predate a requested field. Keep the
+            # projection lazy and give that field a typed null; the physical
+            # schema above is still fingerprint-validated before any repair.
+            for field in schema:
+                if field.name not in df.column_names:
+                    df = df.with_column(
+                        field.name,
+                        lit(None).cast(DataType.from_arrow_type(field.type)),
+                    )
             result = result.concat(df.select(*proj_cols))
 
         return result
