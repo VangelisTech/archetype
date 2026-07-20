@@ -17,7 +17,13 @@ derived explanatory views; their rank, grouping, and arrow routing are not
 architecture. In dependency tables, `A -> B` means **A consumes B**.
 
 The machine-readable architecture policy encodes these rules. It may not invent
-new dependencies or silently preserve implementation drift.
+new dependencies or silently preserve implementation drift. The policy is
+`quality/architecture.toml` plus per-family fragments under
+`quality/architecture.d/`: each family's registration and migration exceptions
+live in that family's fragment, so two family changes never edit the same
+file. Fragments may declare only rule and exception arrays; version, reserved
+infrastructure, and other scalar policy stay in the root file, and the checker
+rejects fragments that declare anything else or duplicate a rule name.
 
 ## 2. Supported and internal boundaries
 

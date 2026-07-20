@@ -1,0 +1,10 @@
+# Architecture policy fragment: projections.
+# Merged into quality/architecture.toml by scripts/check_architecture.py;
+# fragments may declare only rule/exception arrays, never scalar policy.
+
+[[top_level_family_rule]]
+name = "projections-domain-family"
+consumer = "archetype.projections"
+# First reviewed family-to-family edge: possession composes graph traversal.
+# Acyclic: graph does not import projections.
+allowed_families = ["archetype.graph"]

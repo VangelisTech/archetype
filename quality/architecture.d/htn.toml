@@ -1,0 +1,8 @@
+# Architecture policy fragment: htn.
+# Merged into quality/architecture.toml by scripts/check_architecture.py;
+# fragments may declare only rule/exception arrays, never scalar policy.
+
+[[top_level_family_rule]]
+name = "htn-domain-family"
+consumer = "archetype.htn"
+allowed_families = []

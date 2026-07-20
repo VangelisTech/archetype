@@ -1,0 +1,43 @@
+# Architecture policy fragment: research.
+# Merged into quality/architecture.toml by scripts/check_architecture.py;
+# fragments may declare only rule/exception arrays, never scalar policy.
+
+[[exception]]
+rule = "app_component_model"
+consumer = "archetype.app.research.models"
+target = "archetype.app.research.models.Experiment"
+owner = "research"
+issue = 585
+reason = "Experiment is persistent ECS schema adjudicated to the top-level research family."
+expiry_condition = "Remove when #585 moves Experiment to archetype.research.components without duplicating its class identity."
+expires = "v0.5"
+
+[[exception]]
+rule = "app_component_model"
+consumer = "archetype.app.research.models"
+target = "archetype.app.research.models.Run"
+owner = "research"
+issue = 585
+reason = "Run is persistent ECS schema adjudicated to the top-level research family."
+expiry_condition = "Remove when #585 moves Run to archetype.research.components without duplicating its class identity."
+expires = "v0.5"
+
+[[exception]]
+rule = "app_component_model"
+consumer = "archetype.app.research.models"
+target = "archetype.app.research.models.Result"
+owner = "research"
+issue = 585
+reason = "Result is persistent ECS schema adjudicated to the top-level research family."
+expiry_condition = "Remove when #585 moves Result to archetype.research.components without duplicating its class identity."
+expires = "v0.5"
+
+[[exception]]
+rule = "app_component_model"
+consumer = "archetype.app.research.models"
+target = "archetype.app.research.models.BranchHead"
+owner = "research"
+issue = 585
+reason = "BranchHead is persistent ECS schema adjudicated to the top-level research family."
+expiry_condition = "Remove when #585 moves BranchHead to archetype.research.components without duplicating its class identity."
+expires = "v0.5"
