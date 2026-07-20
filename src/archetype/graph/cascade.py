@@ -56,17 +56,19 @@ def dangling_edges(edges: DataFrame, rel: type[Relation], population: DataFrame)
     ``population``.
 
     Liveness as an anti-join — no per-row Python, no lookups. Local liveness
-    is only decidable for local targets: a relation carrying a non-empty
-    ``world`` payload (cross-world lineage such as ``IsA``) points at a
-    foreign world's entity id, which is out of this anti-join's jurisdiction
-    and never dangles here. Cross-world reconciliation is a world-aware
-    process, not the same-world cascade helper.
+    is only decidable for local targets: a relation that DECLARES a scope
+    field (``Relation.scope_field``, as ``IsA`` does) has its non-empty
+    scoped rows excluded — those targets live in a foreign world, out of
+    this anti-join's jurisdiction, and never dangle here. Scope is declared,
+    never inferred from column names. Cross-world reconciliation is a
+    world-aware process, not the same-world cascade helper.
     """
     prefix = rel.get_prefix()
-    world_col = f"{prefix}world"
-    if world_col in edges.column_names:
-        local_scope = cast(Expression, col(world_col) == "")
-        edges = edges.where(local_scope)
+    if rel.scope_field is not None:
+        scope_col = f"{prefix}{rel.scope_field}"
+        if scope_col in edges.column_names:
+            local_scope = cast(Expression, col(scope_col) == "")
+            edges = edges.where(local_scope)
     return edges.join(
         population,
         left_on=col(f"{prefix}target"),

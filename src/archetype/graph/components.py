@@ -58,6 +58,12 @@ class Relation(Component):
     exclusive: ClassVar[bool] = False
     on_delete_target: ClassVar[Policy] = Policy.REMOVE
 
+    #: Name of the payload field carrying a foreign-world scope, or ``None``.
+    #: Only a declared scope changes semantics (cascade excludes non-empty
+    #: scoped rows from local liveness); a payload field that merely happens
+    #: to be named ``world`` has no special meaning.
+    scope_field: ClassVar[str | None] = None
+
     source: int = 0
     target: int = 0
 

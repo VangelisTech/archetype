@@ -498,3 +498,29 @@ def test_cascade_never_reaps_cross_world_lineage(tmp_path):
             return True
 
     assert _run(go())
+
+
+def test_undeclared_world_field_has_no_scope_semantics(tmp_path):
+    """A payload field merely named 'world' does not change cascade
+    semantics: without a declared scope_field, its edges dangle normally."""
+    from archetype.graph import cascade
+
+    class SpawnedIn(Relation):
+        world: str = ""  # domain payload, NOT a declared scope
+
+    async def go():
+        view = GraphView()
+        async with ArchetypeRuntime() as runtime:
+            world = _world(runtime, "no-scope", tmp_path, view)
+            a = await world.spawn(Chassis(armor=1))
+            b = await world.spawn(Chassis(armor=2))
+            await link(world, SpawnedIn(source=a, target=b, world="tundra"))
+            await world.step()
+            await world.despawn(b)
+            await world.step()
+
+            result = await cascade(world, SpawnedIn, view)
+            assert result.total == 1  # the edge dangles despite world="tundra"
+            return True
+
+    assert _run(go())

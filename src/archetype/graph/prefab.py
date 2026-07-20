@@ -50,6 +50,8 @@ class IsA(Relation):
     ``at_tick`` is the captured tick the copy was taken from.
     """
 
+    scope_field = "world"
+
     world: str = ""
     at_tick: int = -1
 
