@@ -73,6 +73,10 @@ class GraphView:
         self._frames = dict(event.results)
         self.tick = event.tick - 1  # PostTick.tick is the next tick
 
+    def frames(self) -> list[tuple[ArchetypeSignature, DataFrame]]:
+        """The captured (signature, frame) pairs — read-only iteration order."""
+        return list(self._frames.items())
+
     def population(self) -> DataFrame | None:
         """Distinct ids of every entity alive at the captured tick.
 

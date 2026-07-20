@@ -15,6 +15,7 @@ from archetype.graph.components import ChildOf, Policy, Relation, require_relati
 from archetype.graph.depth import Depth, DepthProcessor, toposorted
 from archetype.graph.edges import WorldLike, edges, link, unlink
 from archetype.graph.frames import between, live_edge_ids, with_source, with_target
+from archetype.graph.prefab import IsA, Prefab, instantiate, instantiate_sync
 from archetype.graph.traverse import ancestors, descendants, neighborhood
 from archetype.graph.view import GraphView
 
@@ -24,7 +25,9 @@ __all__ = [
     "Depth",
     "DepthProcessor",
     "GraphView",
+    "IsA",
     "Policy",
+    "Prefab",
     "Relation",
     "WorldLike",
     "ancestors",
@@ -33,6 +36,8 @@ __all__ = [
     "dangling_edges",
     "descendants",
     "edges",
+    "instantiate",
+    "instantiate_sync",
     "link",
     "live_edge_ids",
     "neighborhood",
