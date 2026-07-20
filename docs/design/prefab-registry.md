@@ -1,8 +1,8 @@
 # PreFab Registry — Design
 
-**Status:** Proposed, for review. Written after stages 1–7 of the graph track
-landed (`docs/design/graph-system.md`), per issue #555's design-doc-first
-rule. Nothing here is implemented.
+**Status:** Ruled. Written after stages 1–7 landed; Everett's rulings
+recorded 2026-07-20 (§5, §7). Implementation may proceed per §6; nothing is
+implemented yet.
 
 ---
 
@@ -90,33 +90,93 @@ version without evidence receipts is visibly ungraded in the index.
 
 ## 4. What stays out
 
-- No central naming authority beyond the artifact index in this design;
-  cross-org trust and signing are future work.
+- No central naming authority beyond the namespace directory (§7); cross-org
+  trust and signing are future work.
 - No automatic migration of drifted schemas (R4 forbids silent coercion).
-- No processor-native instantiation; the driver-level seam stands until the
-  #604 core discussion resolves.
+- Processor-native instantiation is IN scope once the mutation-outbox seam
+  lands: ruled on #604 (2026-07-20), design in
+  `docs/design/mutation-outbox.md` — designed, not implemented.
+- No declarative prefab file format yet (Biome's `.flecs` layer); Python
+  authoring through the library object comes first.
 
 ---
 
-## 5. Open questions for review
+## 5. Rulings (Everett, 2026-07-20)
 
-1. **Naming ownership** — is a name bound in the control catalog (one
-   authority per storage identity) or per library world? The catalog is the
-   natural home but couples the registry to app-layer authority; the family
-   split suggests manifest models live in a family and the binding service
-   lives under `app`.
-2. **`IsA` payload rollout** — R2 changes a shipped component's schema.
-   Land it immediately (small blast radius now) or version the relation?
-3. **Registry family placement** — `archetype.prefabs` as its own family
-   (manifest models + frame-pure index readers), with the publishing service
-   under `app.artifacts`? This mirrors the missions split.
+1. **Naming ownership — hybrid, split by rate of change.** The control
+   catalog holds only the namespace directory (library name → library world
+   id): small, authoritative, RBAC'd, rarely changing. Prefab names below a
+   namespace are world content (`Prefab.name` rows), unique-per-library via
+   a FLAG eval, versioned by ticks, forking with the library. Resolution is
+   two hops: catalog for the namespace, ledger for the name at a version.
+2. **`IsA` payload — land now.** Necessary for cross-world lineage; the
+   installed base is a week old, so the schema change is nearly free today
+   and expensive later (#543's lesson). First implementation step.
+3. **Family placement — `archetype.prefabs` is its own family**, separate
+   from `archetype.graph` (mechanics stay in graph, governance in prefabs);
+   manifest models + frame-pure index readers in the family, the binding
+   service under `app`. Registered via its own
+   `quality/architecture.d/prefabs.toml` fragment.
 
 ---
 
-## 6. Implementation sketch (post-review)
+## 6. Implementation sketch (rulings applied)
 
 1. `IsA` provenance payload + migration note (R2) — small, ships first.
-2. Manifest models + schema-hash capture in a family package (R3, R4).
-3. Publish/lookup through the artifact bundle service (R3).
-4. Eval-binding conventions + library-world validations (R5).
-5. Cross-world import example: a library world feeding the RTS toy (#603).
+2. `PrefabLibrary` authoring object in `archetype.prefabs` (§7): emit and
+   register components/relations/processors/hooks under a namespace; publish
+   prefab entities into a library world; install into consumer worlds.
+3. Manifest models + schema-hash capture in the family (R3, R4).
+4. Namespace directory in the control catalog + binding service under `app`
+   (§5.1); publish/lookup rides the artifact bundle service (R3).
+5. #604 MutationOutbox seam in core (rulings on the issue), then
+   processor-native instantiate.
+6. Eval-binding conventions + library-world validations (R5).
+7. Cross-world import example: a library world feeding the RTS toy (#603).
+
+## 7. Registration model (ruled 2026-07-20)
+
+Biome's registration is two layers: C modules (`ECS_IMPORT`) register
+component types, systems, observers, and hooks under a module namespace;
+`.flecs` scripts then declaratively compose prefabs from those registered
+parts, namespaced by blocks (`buildings.Solar`). Archetype adopts the same
+split with what already exists:
+
+- **Layer 1 — the library object (code).** `PrefabLibrary(name)` is the
+  authoring surface: it emits and registers the primitives you build with —
+  component and relation classes, processors, hooks — under its namespace,
+  and carries the prefab-authoring API. Installing a library into a world is
+  the `ECS_IMPORT` analog and rides the declarative world config (R6:
+  processors, resources, hooks in declared order). Registration is explicit,
+  not import-magic.
+- **Layer 2 — the library world (data).** Prefab entities composed from
+  layer-1 parts, exactly what stage 7 built. Publishing writes them and the
+  manifest artifact; the catalog's namespace directory points at the world.
+
+Sketch of the authoring surface:
+
+```python
+units = PrefabLibrary("vangelis.units")
+
+@units.component
+class Chassis(Component):
+    armor: int = 10
+
+@units.processor
+class Locomotion(AsyncProcessor): ...
+
+harvester = units.prefab("harvester", Chassis(armor=42))
+
+world = runtime.world("sim", **units.install())      # layer 1 into a world
+await units.publish(library_world)                    # layer 2 + manifest
+```
+
+**Collision rule:** component names are registered under the library's
+namespace in the directory at publish/install time; installing two
+libraries whose component names collide fails loudly at install, before any
+table exists. No column-prefix mangling — the prefix convention stands.
+
+Biome's auto-wiring (`EcsWith` pairs, on-add hooks assigning building bits)
+needs no new machinery here: a library bundles the equivalent `OnSpawn`/
+`OnComponentAdded` hooks and counter resources, which the hook system
+already supports. Biome's declarative script layer is deferred (§4).
