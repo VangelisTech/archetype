@@ -38,6 +38,18 @@ if TYPE_CHECKING:
     from archetype.core.interfaces import ArchetypeSignature
 
 
+def _same_component(a: type[Component], b: type[Component]) -> bool:
+    """Schema identity, as the query path defines it.
+
+    A resumed durable world may register a different but schema-identical
+    class object, so class identity alone under-matches; name plus prefixed
+    schema is the identity the engine keys tables by.
+    """
+    return a is b or (
+        a.__name__ == b.__name__ and a.get_prefixed_schema() == b.get_prefixed_schema()
+    )
+
+
 class GraphView:
     """Read-only window onto the last persisted tick's frames.
 
@@ -64,10 +76,14 @@ class GraphView:
     def frame(self, *components: type[Component]) -> DataFrame | None:
         """Concat the frames whose archetype contains all ``components``.
 
-        Each matching frame is projected to ``entity_id``, ``tick``, and the
-        requested components' prefixed columns, so heterogeneous archetypes
-        concat cleanly. Rows despawned at capture time are filtered out.
-        Returns ``None`` before the first tick or when nothing matches.
+        Membership uses schema identity — name plus prefixed schema — not
+        Python class identity, matching the engine's query path: a resumed
+        durable world may hold a different but schema-identical class object
+        in its signatures. Each matching frame is projected to ``entity_id``,
+        ``tick``, and the requested components' prefixed columns, so
+        heterogeneous archetypes concat cleanly. Rows despawned at capture
+        time are filtered out. Returns ``None`` before the first tick or when
+        nothing matches.
         """
         if not components:
             raise ValueError("frame requires at least one component type")
@@ -78,7 +94,9 @@ class GraphView:
 
         matches: list[DataFrame] = []
         for signature, frame in self._frames.items():
-            if all(comp in signature for comp in components):
+            if all(
+                any(_same_component(comp, member) for member in signature) for comp in components
+            ):
                 part = frame
                 if "is_active" in part.column_names:
                     part = part.where(col("is_active"))
