@@ -279,6 +279,80 @@ def test_non_exclusive_link_keeps_both(tmp_path):
     assert _run(go())
 
 
+def _edge_frame(source: int, target: int):
+    import daft
+
+    return daft.from_pydict(
+        {
+            "entity_id": [5],
+            "tick": [0],
+            "assigned__source": [source],
+            "assigned__target": [target],
+        }
+    )
+
+
+class _ExplodingAsyncWorld:
+    """WorldLike fake whose despawn raises: proves spawn precedes despawn."""
+
+    def __init__(self, source: int, target: int):
+        self._frame = _edge_frame(source, target)
+        self.spawned: list[Relation] = []
+
+    async def info(self):
+        class _Info:
+            tick = 1
+
+        return _Info()
+
+    async def query(self, *_components):
+        return self._frame
+
+    async def spawn(self, *components) -> int:
+        self.spawned.extend(components)
+        return 99
+
+    async def despawn(self, entity_id: int) -> None:
+        raise RuntimeError("despawn boom")
+
+
+class _ExplodingSyncWorld:
+    def __init__(self, source: int, target: int):
+        self._frame = _edge_frame(source, target)
+        self.spawned: list[Relation] = []
+
+    def info(self):
+        class _Info:
+            tick = 1
+
+        return _Info()
+
+    def query(self, *_components):
+        return self._frame
+
+    def spawn(self, *components) -> int:
+        self.spawned.extend(components)
+        return 99
+
+    def despawn(self, entity_id: int) -> None:
+        raise RuntimeError("despawn boom")
+
+
+def test_exclusive_link_spawns_before_despawn():
+    """A failure mid-replacement degrades to two live edges, never zero."""
+    fake = _ExplodingAsyncWorld(source=1, target=2)
+    with pytest.raises(RuntimeError, match="despawn boom"):
+        _run(link(fake, Assigned(source=1, target=3)))
+    assert len(fake.spawned) == 1  # replacement was created before the failure
+
+
+def test_exclusive_sync_link_spawns_before_despawn():
+    fake = _ExplodingSyncWorld(source=1, target=2)
+    with pytest.raises(RuntimeError, match="despawn boom"):
+        graph_sync.link(fake, Assigned(source=1, target=3))
+    assert len(fake.spawned) == 1
+
+
 def test_exclusive_sync_parity(tmp_path):
     with ArchetypeRuntime.sync() as runtime:
         world = runtime.world("exclusive-sync", storage=_storage(tmp_path))
