@@ -209,10 +209,18 @@ def test_app_authority_stays_internal_while_consuming_the_top_level_domain() -> 
 
 
 def test_architecture_manifest_registers_a_leaf_family_without_legacy_exceptions() -> None:
+    # Family rules and exceptions live in quality/architecture.d fragments
+    # (#611); the contract holds over the merged manifest, the same view
+    # scripts/check_architecture.py assembles.
     root = Path(__file__).resolve().parents[2]
     manifest = tomllib.loads((root / "quality" / "architecture.toml").read_text(encoding="utf-8"))
+    for fragment in sorted((root / "quality" / "architecture.d").glob("*.toml")):
+        data = tomllib.loads(fragment.read_text(encoding="utf-8"))
+        for key in ("top_level_family_rule", "exception"):
+            if key in data:
+                manifest.setdefault(key, []).extend(data[key])
     rules = {
         rule["consumer"]: rule["allowed_families"] for rule in manifest["top_level_family_rule"]
     }
     assert rules["archetype.missions"] == []
-    assert all(exception.get("issue") != 559 for exception in manifest["exception"])
+    assert all(exception.get("issue") != 559 for exception in manifest.get("exception", []))
