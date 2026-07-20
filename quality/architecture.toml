@@ -93,7 +93,9 @@ allowed_families = []
 [[top_level_family_rule]]
 name = "projections-domain-family"
 consumer = "archetype.projections"
-allowed_families = []
+# First reviewed family-to-family edge: possession composes graph traversal.
+# Acyclic: graph does not import projections.
+allowed_families = ["archetype.graph"]
 
 [[package_rule]]
 name = "core-does-not-import-outward"
