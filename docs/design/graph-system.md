@@ -81,12 +81,20 @@ query-service reentrancy, wired through the declarative world config
 
 ### D4 — Cleanup is policy, propagated by ticks
 
-A relation declares `on_delete_target`: `REMOVE` (default; treat edges to
-inactive targets as absent at read time), `DELETE` (cascade despawn), or
-`FLAG` (surface to evals; the ledger-world replacement for Flecs' `Panic`).
-A late-priority `CascadeDespawn` processor applies the policy using GraphView
-liveness. Cascades propagate one generation per tick and land in history —
-correct for an append-only world, and every step is auditable.
+A relation declares `on_delete_target`: `REMOVE` (default; despawn the
+dangling edge, leave the source), `DELETE` (despawn edge and source — the
+hierarchy cascade), or `FLAG` (mutate nothing; surface the dangling edges to
+the caller — the ledger-world replacement for Flecs' `Panic`).
+
+Amended 2026-07-19 (decision on issue #552): the original text specified a
+`CascadeDespawn` *processor*, but processors are pure `DataFrame → DataFrame`
+with no mutation channel — `is_active` is engine-owned. The policy is applied
+by the driver-level `graph.cascade(world, rel, view)` helper instead: it
+reads liveness from the GraphView as a lazy anti-join, stages despawns
+through the world API, and advances one generation per invocation — calling
+it once per step yields the one-generation-per-tick propagation, every step
+on the ledger. A processor-native sibling requires the staged-mutation core
+seam tracked in issue #604.
 
 ### D5 — `IsA` copies at instantiation
 

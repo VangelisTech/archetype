@@ -20,9 +20,25 @@ Arrow-serialization rules as any component.
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import ClassVar
 
 from archetype.core.component import Component
+
+
+class Policy(StrEnum):
+    """What ``cascade`` does to a relation's edges when their target dies.
+
+    Design D4 (as amended for the driver-level cascade): ``REMOVE`` despawns
+    the dangling edge and leaves the source entity alone; ``DELETE`` despawns
+    the edge and its source entity (the hierarchy cascade); ``FLAG`` mutates
+    nothing and surfaces the dangling edges to the caller — the ledger-world
+    replacement for a panic.
+    """
+
+    REMOVE = "remove"
+    DELETE = "delete"
+    FLAG = "flag"
 
 
 class Relation(Component):
@@ -40,9 +56,22 @@ class Relation(Component):
     """
 
     exclusive: ClassVar[bool] = False
+    on_delete_target: ClassVar[Policy] = Policy.REMOVE
 
     source: int = 0
     target: int = 0
+
+
+class ChildOf(Relation):
+    """The blessed hierarchy relation: ``source`` is a child of ``target``.
+
+    One parent per child (``exclusive``); when the parent dies, the child
+    dies with it on the next ``cascade`` pass (``Policy.DELETE``), one
+    generation per invocation, every step recorded in history.
+    """
+
+    exclusive = True
+    on_delete_target = Policy.DELETE
 
 
 def require_relation(rel: Relation) -> None:

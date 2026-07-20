@@ -16,8 +16,10 @@ from typing import Protocol, cast
 from daft import DataFrame, Expression, col
 
 from archetype.core.component import Component
-from archetype.graph.components import Relation, require_relation
+from archetype.graph.cascade import CascadeResult, _plan
+from archetype.graph.components import Policy, Relation, require_relation
 from archetype.graph.frames import live_edge_ids, live_edge_ids_from
+from archetype.graph.view import GraphView
 
 
 class _InfoLike(Protocol):
@@ -95,3 +97,26 @@ def unlink(world: SyncWorldLike, rel: type[Relation], source: int, target: int) 
     for edge_id in edge_ids:
         world.despawn(edge_id)
     return len(edge_ids)
+
+
+def cascade(world: SyncWorldLike, rel: type[Relation], view: GraphView) -> CascadeResult:
+    """Apply ``rel.on_delete_target`` to the dangling edges, one generation.
+
+    Blocking counterpart of :func:`archetype.graph.cascade.cascade`.
+    """
+    _require_sync(world, "despawn")
+    rows = _plan(view, rel)
+    policy = rel.on_delete_target
+    if not rows:
+        return CascadeResult(policy=policy)
+    edge_ids = tuple(row["entity_id"] for row in rows)
+    if policy is Policy.FLAG:
+        return CascadeResult(policy=policy, flagged_edges=edge_ids)
+    for edge_id in edge_ids:
+        world.despawn(edge_id)
+    if policy is Policy.REMOVE:
+        return CascadeResult(policy=policy, removed_edges=edge_ids)
+    sources = tuple({row["source"] for row in rows})
+    for source in sources:
+        world.despawn(source)
+    return CascadeResult(policy=policy, removed_edges=edge_ids, deleted_entities=sources)
