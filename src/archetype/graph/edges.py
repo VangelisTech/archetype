@@ -21,7 +21,7 @@ from daft import DataFrame, Expression, col
 
 from archetype.core.component import Component
 from archetype.graph.components import Relation, require_relation
-from archetype.graph.frames import live_edge_ids
+from archetype.graph.frames import live_edge_ids, live_edge_ids_from
 
 
 class _InfoLike(Protocol):
@@ -53,11 +53,23 @@ async def link(world: WorldLike, rel: Relation) -> int:
     """Spawn an edge entity for ``rel``.
 
     The edge lands as raw initial conditions at the next persisted tick, like
-    every staged spawn. Exclusive-relation replacement arrives in stage 5a;
-    today ``link`` is deliberately a thin seam over ``spawn``.
+    every staged spawn. For an ``exclusive`` relation, the live edges from the
+    same source are staged for despawn in the same batch: old edge out, new
+    edge in, both landing at the next persisted tick. Replacement reads
+    persisted state, so the step boundary is the consistency unit.
     """
     require_relation(rel)
     _require_async(world, "spawn")
+    rel_type = type(rel)
+    if rel_type.exclusive:
+        latest = (await world.info()).tick - 1
+        try:
+            frame = await world.query(rel_type)
+        except KeyError:
+            frame = None  # first edge of this relation: nothing to replace
+        if frame is not None:
+            for edge_id in live_edge_ids_from(frame, rel_type, rel.source, latest):
+                await world.despawn(edge_id)
     return await world.spawn(rel)
 
 

@@ -212,6 +212,89 @@ def test_async_helpers_reject_sync_world(tmp_path):
         assert graph_sync.unlink(world, ChildOf, a, b) == 0
 
 
+class Assigned(Relation):
+    """Exclusive test relation: one live assignment per source."""
+
+    exclusive = True
+
+
+def test_exclusive_link_replaces_across_steps(tmp_path):
+    async def go():
+        async with ArchetypeRuntime() as runtime:
+            world = runtime.world("exclusive", storage=_storage(tmp_path))
+            worker = await world.spawn(Node(name="worker"))
+            first = await world.spawn(Node(name="first"))
+            second = await world.spawn(Node(name="second"))
+            await link(world, Assigned(source=worker, target=first))
+            await world.step()
+
+            await link(world, Assigned(source=worker, target=second))
+            await world.step()
+
+            latest = (await world.info()).tick - 1
+            live = (await edges(world, Assigned, at=latest)).to_pylist()
+            assert len(live) == 1
+            assert live[0]["assigned__target"] == second
+
+            # Replacement is history, not erasure: the first edge's rows remain.
+            history = (await edges(world, Assigned)).to_pylist()
+            assert {r["assigned__target"] for r in history} == {first, second}
+            return True
+
+    assert _run(go())
+
+
+def test_exclusive_first_link_without_table(tmp_path):
+    async def go():
+        async with ArchetypeRuntime() as runtime:
+            world = runtime.world("exclusive-first", storage=_storage(tmp_path))
+            worker = await world.spawn(Node(name="worker"))
+            task = await world.spawn(Node(name="task"))
+            await world.step()  # unrelated signature exists; no Assigned table
+            await link(world, Assigned(source=worker, target=task))
+            await world.step()
+            latest = (await world.info()).tick - 1
+            assert len((await edges(world, Assigned, at=latest)).to_pylist()) == 1
+            return True
+
+    assert _run(go())
+
+
+def test_non_exclusive_link_keeps_both(tmp_path):
+    async def go():
+        async with ArchetypeRuntime() as runtime:
+            world = runtime.world("nonexclusive", storage=_storage(tmp_path))
+            a = await world.spawn(Node(name="a"))
+            b = await world.spawn(Node(name="b"))
+            c = await world.spawn(Node(name="c"))
+            await link(world, ChildOf(source=a, target=b))
+            await world.step()
+            await link(world, ChildOf(source=a, target=c))
+            await world.step()
+            latest = (await world.info()).tick - 1
+            live = (await edges(world, ChildOf, at=latest)).to_pylist()
+            assert len(live) == 2
+            return True
+
+    assert _run(go())
+
+
+def test_exclusive_sync_parity(tmp_path):
+    with ArchetypeRuntime.sync() as runtime:
+        world = runtime.world("exclusive-sync", storage=_storage(tmp_path))
+        worker = world.spawn(Node(name="worker"))
+        first = world.spawn(Node(name="first"))
+        second = world.spawn(Node(name="second"))
+        graph_sync.link(world, Assigned(source=worker, target=first))
+        world.step()
+        graph_sync.link(world, Assigned(source=worker, target=second))
+        world.step()
+        latest = world.info().tick - 1
+        live = graph_sync.edges(world, Assigned, at=latest).to_pylist()
+        assert len(live) == 1
+        assert live[0]["assigned__target"] == second
+
+
 def test_sync_parity_roundtrip(tmp_path):
     """graph.sync mirrors link/edges/unlink without await (runtime.md R5)."""
     with ArchetypeRuntime.sync() as runtime:
