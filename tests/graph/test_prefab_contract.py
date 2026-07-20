@@ -31,6 +31,7 @@ from archetype.graph import (  # noqa: E402
     GraphView,
     IsA,
     Prefab,
+    Relation,
     edges,
     instantiate,
     instantiate_sync,
@@ -276,6 +277,250 @@ def test_marker_and_relation_overrides_are_rejected(tmp_path):
             twin_marker = _make_prefab_twin()
             with pytest.raises(ValueError, match="not copyable"):
                 await instantiate(world, view, template, overrides=[twin_marker(name="ghost")])
+            return True
+
+    assert _run(go())
+
+
+def test_lineage_is_version_pinned_and_same_world_is_empty(tmp_path):
+    async def go():
+        view = GraphView()
+        async with ArchetypeRuntime() as runtime:
+            world = _world(runtime, "pinned", tmp_path, view)
+            template = await world.spawn(Prefab(name="t"), Chassis(armor=4))
+            await world.step()
+            pinned_tick = view.tick
+
+            inst = await instantiate(world, view, template)
+            await world.step()
+
+            latest = (await world.info()).tick - 1
+            lineage = (await edges(world, IsA, at=latest)).to_pylist()
+            assert len(lineage) == 1
+            assert lineage[0]["isa__source"] == inst
+            assert lineage[0]["isa__at_tick"] == pinned_tick
+            assert lineage[0]["isa__world"] == ""  # same-world lineage
+            return True
+
+    assert _run(go())
+
+
+def test_cross_world_instantiation_records_source_world(tmp_path):
+    """R1's seam plus R2's payload: import from a library world and keep
+    globally unambiguous lineage."""
+
+    async def go():
+        library_view = GraphView()
+        async with ArchetypeRuntime() as runtime:
+            library = runtime.world(
+                "library",
+                storage=_storage(tmp_path),
+                resources=[library_view],
+                hooks=[(PostTick, library_view.on_post_tick)],
+            )
+            consumer = runtime.world("consumer", storage=_storage(tmp_path))
+
+            template = await library.spawn(Prefab(name="unit"), Chassis(armor=13))
+            await library.step()
+
+            inst = await instantiate(consumer, library_view, template)
+            await consumer.step()
+
+            latest = (await consumer.info()).tick - 1
+            rows = (await consumer.query(Chassis)).where(col("tick") == latest).to_pylist()
+            assert {r["entity_id"]: r["chassis__armor"] for r in rows}[inst] == 13
+
+            lineage = (await edges(consumer, IsA, at=latest)).to_pylist()
+            assert len(lineage) == 1
+            library_id = str((await library.info()).world_id)
+            assert lineage[0]["isa__world"] == library_id
+            assert lineage[0]["isa__target"] == template  # id valid IN that world
+            return True
+
+    assert _run(go())
+
+
+class Wired(Relation):
+    """Arbitrary domain relation for the negative contract."""
+
+
+def test_arbitrary_relations_are_not_copied(tmp_path):
+    """The relation-copy boundary (R7): only ChildOf wiring is rebuilt; any
+    other relation between prefab entities stays on the originals."""
+
+    async def go():
+        view = GraphView()
+        async with ArchetypeRuntime() as runtime:
+            world = _world(runtime, "boundary", tmp_path, view)
+            body = await world.spawn(Prefab(name="body"), Chassis(armor=1))
+            gun = await world.spawn(Prefab(name="gun"), Turret(caliber=20))
+            await link(world, ChildOf(source=gun, target=body))
+            await link(world, Wired(source=body, target=gun))
+            await world.step()
+
+            inst = await instantiate(world, view, body)
+            await world.step()
+
+            latest = (await world.info()).tick - 1
+            new_ids = {inst} | {
+                row["childof__source"]
+                for row in (await edges(world, ChildOf, at=latest)).to_pylist()
+                if row["childof__target"] == inst
+            }
+            wired = (await edges(world, Wired, at=latest)).to_pylist()
+            assert len(wired) == 1  # exactly the original edge
+            touched = {wired[0]["wired__source"], wired[0]["wired__target"]}
+            assert touched == {body, gun}
+            assert not (touched & new_ids)
+            return True
+
+    assert _run(go())
+
+
+def test_instantiation_is_pinned_against_a_ticking_source(tmp_path):
+    """A source world capturing new ticks mid-instantiation must not split
+    the copy across versions: every lineage row carries the snapshot's tick
+    and children resolve from the snapshot's frames."""
+    import daft
+
+    from archetype.core.hooks import PostTick
+    from archetype.graph import ChildOf, link  # noqa: F401  (link exercised via instantiate)
+
+    prefab_sig = tuple(sorted((Prefab, Chassis), key=lambda t: t.__name__))
+    prefab_frame = daft.from_pydict(
+        {
+            "entity_id": [1, 2],
+            "tick": [0, 0],
+            "is_active": [True, True],
+            "prefab__name": ["body", "gun"],
+            "chassis__armor": [5, 7],
+            "chassis__color": ["grey", "grey"],
+        }
+    )
+    edge_frame = daft.from_pydict(
+        {
+            "entity_id": [5],
+            "tick": [0],
+            "is_active": [True],
+            "childof__source": [2],
+            "childof__target": [1],
+        }
+    )
+    view = GraphView()
+    view._frames = {prefab_sig: prefab_frame, (ChildOf,): edge_frame}
+    view.tick = 0
+    view.world_id = "library-world"
+
+    class _TickingWorld:
+        """Every spawn advances the live view — the mid-instantiation race."""
+
+        def __init__(self):
+            self.spawned = []
+            self._next = 100
+
+        async def info(self):
+            class _Info:
+                tick = 1
+                world_id = "consumer-world"
+
+            return _Info()
+
+        async def query(self, *_components):
+            # Exclusive-link replacement legitimately queries the TARGET
+            # world; a fresh consumer has no edge tables yet.
+            raise KeyError("no table in consumer world")
+
+        async def spawn(self, *components) -> int:
+            self.spawned.append(components)
+            view._capture(PostTick(world_id="library-world", tick=view.tick + 2, results={}))
+            self._next += 1
+            return self._next
+
+        async def despawn(self, entity_id: int) -> None:
+            raise AssertionError("no despawns during instantiation")
+
+    fake = _TickingWorld()
+    _run(instantiate(fake, view, 1))
+
+    lineage = [c for batch in fake.spawned for c in batch if isinstance(c, IsA)]
+    assert len(lineage) == 2  # root and child both copied despite the racing view
+    assert {edge.at_tick for edge in lineage} == {0}  # one pinned version
+    assert {edge.world for edge in lineage} == {"library-world"}
+
+
+def test_cascade_never_reaps_cross_world_lineage(tmp_path):
+    """A cross-world IsA target is out of local-liveness jurisdiction: the
+    generic cascade removes genuinely dangling LOCAL lineage while foreign
+    lineage survives untouched."""
+    from archetype.graph import cascade
+
+    async def go():
+        library_view = GraphView()
+        view = GraphView()
+        async with ArchetypeRuntime() as runtime:
+            library = runtime.world(
+                "reap-library",
+                storage=_storage(tmp_path),
+                resources=[library_view],
+                hooks=[(PostTick, library_view.on_post_tick)],
+            )
+            consumer = runtime.world(
+                "reap-consumer",
+                storage=_storage(tmp_path),
+                resources=[view],
+                hooks=[(PostTick, view.on_post_tick)],
+            )
+            lib_template = await library.spawn(Prefab(name="imported"), Chassis(armor=9))
+            await library.step()
+
+            local_template = await consumer.spawn(Prefab(name="local"), Chassis(armor=2))
+            await consumer.step()
+
+            imported = await instantiate(consumer, library_view, lib_template)
+            local_inst = await instantiate(consumer, view, local_template)
+            await consumer.step()
+
+            # Kill the LOCAL template: its lineage edge genuinely dangles.
+            await consumer.despawn(local_template)
+            await consumer.step()
+
+            result = await cascade(consumer, IsA, view)
+            await consumer.step()
+
+            latest = (await consumer.info()).tick - 1
+            lineage = (await edges(consumer, IsA, at=latest)).to_pylist()
+            survivors = {(r["isa__source"], r["isa__world"]) for r in lineage}
+            # The cross-world edge survives; the dangling local one is gone.
+            library_id = str((await library.info()).world_id)
+            assert (imported, library_id) in survivors
+            assert all(src != local_inst for src, _ in survivors)
+            assert result.total >= 1
+            return True
+
+    assert _run(go())
+
+
+def test_undeclared_world_field_has_no_scope_semantics(tmp_path):
+    """A payload field merely named 'world' does not change cascade
+    semantics: without a declared scope_field, its edges dangle normally."""
+    from archetype.graph import cascade
+
+    class SpawnedIn(Relation):
+        world: str = ""  # domain payload, NOT a declared scope
+
+    async def go():
+        view = GraphView()
+        async with ArchetypeRuntime() as runtime:
+            world = _world(runtime, "no-scope", tmp_path, view)
+            a = await world.spawn(Chassis(armor=1))
+            b = await world.spawn(Chassis(armor=2))
+            await link(world, SpawnedIn(source=a, target=b, world="tundra"))
+            await world.step()
+            await world.despawn(b)
+            await world.step()
+
+            result = await cascade(world, SpawnedIn, view)
+            assert result.total == 1  # the edge dangles despite world="tundra"
             return True
 
     assert _run(go())

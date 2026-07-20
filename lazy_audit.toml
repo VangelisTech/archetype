@@ -182,12 +182,12 @@ reason = "Mutation-planning boundary shared by async and sync unlink: despawn ta
 
 [[entries]]
 path = "src/archetype/graph/cascade.py"
-line = 81
+line = 94
 method = "to_pylist"
 reason = "Mutation-planning boundary for cascade: despawn takes concrete ids, so _plan materializes the (edge id, source) pairs of the dangling edges; the liveness union, anti-join, and filters all run in the lazy plan and only ids cross into Python."
 
 [[entries]]
 path = "src/archetype/graph/prefab.py"
-line = 54
+line = 65
 method = "to_pylist"
 reason = "Mutation-planning boundary for instantiation: spawning copies requires the template's concrete component values and child prefab ids; _rows is the single funnel and every entity filter runs in the lazy plan before it."

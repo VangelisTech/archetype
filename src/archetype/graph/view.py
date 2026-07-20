@@ -50,6 +50,59 @@ def _same_component(a: type[Component], b: type[Component]) -> bool:
     )
 
 
+def _frame_lookup(
+    frames: dict[ArchetypeSignature, DataFrame], components: tuple[type[Component], ...]
+) -> DataFrame | None:
+    """Signature-membership lookup shared by GraphView and GraphSnapshot."""
+    if not components:
+        raise ValueError("frame requires at least one component type")
+    columns = ["entity_id", "tick"]
+    for comp in components:
+        prefix = comp.get_prefix()
+        columns.extend(f"{prefix}{field}" for field in comp.model_fields)
+
+    matches: list[DataFrame] = []
+    for signature, frame in frames.items():
+        if all(any(_same_component(comp, member) for member in signature) for comp in components):
+            part = frame
+            if "is_active" in part.column_names:
+                part = part.where(col("is_active"))
+            matches.append(part.select(*columns))
+    if not matches:
+        return None
+    out = matches[0]
+    for part in matches[1:]:
+        out = out.concat(part)
+    return out
+
+
+class GraphSnapshot:
+    """A frozen copy of one captured tick: frames, tick, and world id.
+
+    ``GraphView`` mutates on every ``PostTick``; multi-read operations that
+    must see one consistent version (``instantiate`` and its recursion) take
+    a snapshot once and read only from it.
+    """
+
+    def __init__(
+        self,
+        frames: dict[ArchetypeSignature, DataFrame],
+        tick: int,
+        world_id: str,
+    ) -> None:
+        self._frames = frames
+        self.tick = tick
+        self.world_id = world_id
+
+    def frames(self) -> list[tuple[ArchetypeSignature, DataFrame]]:
+        """The RAW (signature, frame) pairs of this snapshot."""
+        return list(self._frames.items())
+
+    def frame(self, *components: type[Component]) -> DataFrame | None:
+        """Signature-membership lookup over this snapshot's frames."""
+        return _frame_lookup(self._frames, components)
+
+
 class GraphView:
     """Read-only window onto the last persisted tick's frames.
 
@@ -60,6 +113,11 @@ class GraphView:
     def __init__(self) -> None:
         self._frames: dict[ArchetypeSignature, DataFrame] = {}
         self.tick: int = -1
+        self.world_id: str = ""
+
+    def snapshot(self) -> GraphSnapshot:
+        """Freeze the current capture for multi-read consistency."""
+        return GraphSnapshot(dict(self._frames), self.tick, self.world_id)
 
     async def on_post_tick(self, event: PostTick) -> None:
         """Async hook handler: capture the tick's persisted frames."""
@@ -72,6 +130,7 @@ class GraphView:
     def _capture(self, event: PostTick) -> None:
         self._frames = dict(event.results)
         self.tick = event.tick - 1  # PostTick.tick is the next tick
+        self.world_id = event.world_id
 
     def frames(self) -> list[tuple[ArchetypeSignature, DataFrame]]:
         """The RAW captured (signature, frame) pairs.
@@ -115,25 +174,4 @@ class GraphView:
         time are filtered out. Returns ``None`` before the first tick or when
         nothing matches.
         """
-        if not components:
-            raise ValueError("frame requires at least one component type")
-        columns = ["entity_id", "tick"]
-        for comp in components:
-            prefix = comp.get_prefix()
-            columns.extend(f"{prefix}{field}" for field in comp.model_fields)
-
-        matches: list[DataFrame] = []
-        for signature, frame in self._frames.items():
-            if all(
-                any(_same_component(comp, member) for member in signature) for comp in components
-            ):
-                part = frame
-                if "is_active" in part.column_names:
-                    part = part.where(col("is_active"))
-                matches.append(part.select(*columns))
-        if not matches:
-            return None
-        out = matches[0]
-        for part in matches[1:]:
-            out = out.concat(part)
-        return out
+        return _frame_lookup(self._frames, components)
