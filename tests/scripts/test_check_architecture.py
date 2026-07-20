@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 CHECKER_PATH = Path(__file__).resolve().parents[2] / "scripts" / "check_architecture.py"
 SPEC = importlib.util.spec_from_file_location("check_architecture", CHECKER_PATH)
 assert SPEC is not None and SPEC.loader is not None
@@ -1029,3 +1031,71 @@ def test_repository_architecture_policy_passes() -> None:
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "Architecture audit passed" in completed.stdout
+
+
+def _write_fragment(policy: Path, name: str, body: str) -> Path:
+    fragment_dir = policy.parent / f"{policy.stem}.d"
+    fragment_dir.mkdir(exist_ok=True)
+    fragment = fragment_dir / f"{name}.toml"
+    fragment.write_text(body, encoding="utf-8")
+    return fragment
+
+
+def test_fragment_exception_merges_into_the_policy(tmp_path: Path) -> None:
+    probe = tmp_path / "src" / "archetype" / "app" / "probe.py"
+    probe.parent.mkdir(parents=True)
+    probe.write_text("value = 1\n", encoding="utf-8")
+    policy = _write_policy(tmp_path)
+    _write_fragment(
+        policy,
+        "probe",
+        """
+[[exception]]
+rule = "module_dependency"
+consumer = "archetype.app.probe"
+target = "archetype.app.world.service"
+owner = "architecture"
+reason = "fixture"
+expires = "v1"
+""",
+    )
+
+    result = checker.audit_repository(policy, repo_root=tmp_path)
+
+    assert result.policy_errors == [
+        "stale architecture exception matched no violation: "
+        "module_dependency | archetype.app.probe | archetype.app.world.service"
+    ]
+
+
+def test_fragment_rejects_scalar_policy_sections(tmp_path: Path) -> None:
+    policy = _write_policy(tmp_path)
+    _write_fragment(policy, "rogue", "version = 9\n")
+
+    with pytest.raises(ValueError, match="fragments may declare only"):
+        checker.audit_repository(policy, repo_root=tmp_path)
+
+
+def test_fragment_rejects_non_list_rule_sections(tmp_path: Path) -> None:
+    policy = _write_policy(tmp_path)
+    _write_fragment(policy, "rogue", 'exception = "not-a-list"\n')
+
+    with pytest.raises(ValueError, match="must be an array of tables"):
+        checker.audit_repository(policy, repo_root=tmp_path)
+
+
+def test_duplicate_rule_names_across_fragments_fail(tmp_path: Path) -> None:
+    policy = _write_policy(tmp_path)
+    _write_fragment(
+        policy,
+        "dupe",
+        """
+[[package_rule]]
+name = "app-outward"
+consumer = "archetype.app"
+forbidden = []
+""",
+    )
+
+    with pytest.raises(ValueError, match="duplicate package_rule name"):
+        checker.audit_repository(policy, repo_root=tmp_path)
