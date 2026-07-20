@@ -73,6 +73,26 @@ class GraphView:
         self._frames = dict(event.results)
         self.tick = event.tick - 1  # PostTick.tick is the next tick
 
+    def population(self) -> DataFrame | None:
+        """Distinct ids of every entity alive at the captured tick.
+
+        The lazy union of ``entity_id`` across all captured frames — the
+        liveness authority for cascade's dangling-edge anti-join. ``None``
+        before the first tick.
+        """
+        parts: list[DataFrame] = []
+        for frame in self._frames.values():
+            part = frame
+            if "is_active" in part.column_names:
+                part = part.where(col("is_active"))
+            parts.append(part.select("entity_id"))
+        if not parts:
+            return None
+        out = parts[0]
+        for part in parts[1:]:
+            out = out.concat(part)
+        return out.distinct()
+
     def frame(self, *components: type[Component]) -> DataFrame | None:
         """Concat the frames whose archetype contains all ``components``.
 
