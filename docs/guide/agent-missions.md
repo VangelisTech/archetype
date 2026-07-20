@@ -501,7 +501,7 @@ composes durable authority and cross-family workflows.
 archetype.missions
 ├── coding_agents/     # implemented V1 state + transition package
 ├── sandboxes/         # family-owned execution resources
-├── planning/          # future home of HTN task decomposition
+├── planning/          # HTN resolver; AgentTask/DependsOn adapter is future work
 └── trajectories/      # future mission evidence/projection vocabulary
 
 archetype.app.missions
@@ -512,7 +512,7 @@ The cleanup direction is:
 
 | Current orphan | Direction |
 |---|---|
-| `archetype.htn` | Fold into `archetype.missions.planning`; a planner emits tasks and dependency relations but does not advance them. |
+| Former `archetype.htn` | Moved to `archetype.missions.planning`; adapting solved plans into task entities and dependency relations remains future work. |
 | Former `archetype.datasets` | Removed; retained evidence identity now lives in `archetype.evaluation.contracts`. |
 | `archetype.experiments` | Remove; keep only code with a clear owner under missions, research, or physical AI. |
 | Trajectory helpers | Keep pure projections under missions; compose query- and evaluation-backed workflows in the app layer. |

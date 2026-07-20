@@ -13,8 +13,8 @@
 # limitations under the License.
 
 """
-HTN UDFs
-========
+Mission Planning UDFs
+=====================
 
 Pure, total ``@daft.func`` row transforms over the ``Branch`` JSON columns. None
 closes over any non-serializable state — the operator / method spec each needs is

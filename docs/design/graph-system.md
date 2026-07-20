@@ -28,7 +28,8 @@ all of it is a library rather than an engine change.
 
 ### D1 — Family libraries are a layer beside core
 
-A family library (`archetype.htn`, `archetype.graph`, `archetype.projections`)
+A family library (`archetype.missions.planning`, `archetype.graph`,
+`archetype.projections`)
 lives at the top level and imports only `archetype.core` and third-party
 packages. Its logic is frame-pure — functions over DataFrames — with thin
 handle sugar beside it. Because it sits beside core in the dependency DAG,

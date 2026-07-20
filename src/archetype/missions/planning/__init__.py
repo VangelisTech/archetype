@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-Archetype HTN — Hierarchical Task Network plan resolution as a formal ECS pattern.
+Mission planning — Hierarchical Task Network resolution as a formal ECS pattern.
 
 **EXPERIMENTAL** (issue #278): never production-dogfooded; the API and the
 row shapes may change without deprecation. Use for exploration, not as a
@@ -43,22 +43,29 @@ The driver (``resolve_htn``) is structural-only and lives in ``examples/`` becau
 it must materialize rows (eager collection) at the spawn-decision boundary; the
 processors and UDFs here are pure ``DataFrame -> DataFrame`` and lazy-audit clean.
 
-Executable invariants live in ``tests/htn/test_htn_contract.py``. The eventual
-module boundary will be decided with the coding-mission capability that uses
-the planner.
+Executable invariants live in
+``tests/missions/planning/test_htn_contract.py``. This resolver is planning
+machinery beneath the missions family; adapting a solved plan into
+``AgentTask`` values and ``DependsOn`` relations remains future work.
 """
 
 from __future__ import annotations
 
-from archetype.htn.components import Branch, BranchStatus, Solved, TaskKind, TaskStatus
-from archetype.htn.domain import (
+from archetype.missions.planning.components import (
+    Branch,
+    BranchStatus,
+    Solved,
+    TaskKind,
+    TaskStatus,
+)
+from archetype.missions.planning.domain import (
     HtnDomain,
     MethodSpec,
     OperatorSpec,
     build_initial_network,
     splice_method,
 )
-from archetype.htn.processors import (
+from archetype.missions.planning.processors import (
     ApplicabilityProcessor,
     EffectProcessor,
     FrontierProcessor,

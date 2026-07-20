@@ -13,8 +13,8 @@
 # limitations under the License.
 
 """
-HTN Domain
-==========
+Mission Planning Domain
+=======================
 
 The STATIC planning domain: STRIPS ``OperatorSpec`` (primitive tasks) and
 ``MethodSpec`` (ways to decompose a compound task), grouped into an ``HtnDomain``.

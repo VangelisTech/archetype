@@ -22,8 +22,8 @@ the processor chain can evaluate preconditions and apply effects same-tick, same
 (Inv HTN-V2.1 / HTN-V2.2). ``Solved`` is the only marker, attached once by the driver
 when a branch's network has zero open nodes.
 
-House idiom (mirrors ``src/archetype/experiments/components.py``): subclass
-``Component`` (Pydantic via LanceModel, never dataclass); every field defaulted;
+House idiom: subclass ``Component`` (Pydantic via LanceModel, never dataclass);
+every field defaulted;
 scalars stored directly; complex data JSON-encoded into ``*_json``; ``StrEnum``-as-
 string for status with a helper class beside it (stored as ``.value``, never the enum
 — enums are not Arrow-serializable); timestamps as ``*_at_ms`` ints; ``@classmethod

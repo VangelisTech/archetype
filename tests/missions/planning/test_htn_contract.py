@@ -26,7 +26,7 @@ os.environ.setdefault("LOGFIRE_IGNORE_NO_CONFIG", "1")
 
 from archetype import ArchetypeRuntime  # noqa: E402
 from archetype.core.config import StorageConfig  # noqa: E402
-from archetype.htn import (  # noqa: E402
+from archetype.missions.planning import (  # noqa: E402
     Branch,
     EffectProcessor,
     HtnDomain,
@@ -39,7 +39,7 @@ from archetype.htn import (  # noqa: E402
 )
 
 # Load the example driver directly — examples/ isn't a package on sys.path.
-_EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "08_htn_resolution.py"
+_EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "08_htn_resolution.py"
 _spec = importlib.util.spec_from_file_location("htn_example", _EXAMPLE)
 htn_example = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = htn_example

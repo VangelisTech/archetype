@@ -38,21 +38,22 @@ experimental may change without the compatibility guarantees of the main API.
 
 ### Provisional capability packages
 
-`archetype.experiments` and `archetype.htn` are not supported application
-surfaces merely because their modules are importable. They contain working
-prototypes, but their package boundaries may change before v1 as coding-mission
-and physical-AI capabilities settle. The import-boundary checker constrains
-what these packages may depend on; it does not promote them to public API.
+`archetype.experiments` is not a supported application surface merely because
+its modules are importable. It contains working prototypes, but its package
+boundary will disappear as physical-AI and mission capabilities settle. The
+import-boundary checker constrains what the package may depend on; it does not
+promote it to public API.
 
 The target ownership is recorded in
 [Agent Missions V1, section 9](agent-missions.md#9-family-direction-after-v1),
 and is landing incrementally. Dataset evidence identity now lives in
 `archetype.evaluation.contracts`, and the former `archetype.datasets` package is
-gone. `archetype.htn` folds under `archetype.missions` as the planning
-subdomain. The mixed `experiments` package is staged into research,
-mission-owned trajectory modules, and `physical_ai`, then removed. The
-surviving future family paths remain provisional until an implementation issue
-explicitly graduates a surface.
+gone. The former `archetype.htn` resolver now lives under
+`archetype.missions.planning`; its future adapter to mission task entities is
+not yet a supported authoring surface. The mixed `experiments` package is
+staged into research, mission-owned trajectory modules, and `physical_ai`, then
+removed. The surviving future family paths remain provisional until an
+implementation issue explicitly graduates a surface.
 
 Do not build a compatibility promise around those module paths yet. New
 applications use `ArchetypeRuntime` and supported extension types. A future

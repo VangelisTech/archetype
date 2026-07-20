@@ -175,10 +175,10 @@ src/archetype/app/
 The mission-adjacent cleanup direction is recorded in
 [Agent Missions V1, section 9](agent-missions.md#9-family-direction-after-v1).
 Dataset evidence identity has moved into evaluation and the datasets umbrella
-is gone. The remaining work folds HTN planning and mission trajectory
-projections under missions, removes the experiments umbrella, and gives
-physical AI a named family. The current source tree and machine manifest remain
-implementation truth until each move lands.
+is gone. HTN resolution now lives under `archetype.missions.planning`. The
+remaining work moves mission trajectory projections, removes the experiments
+umbrella, and gives physical AI a named family. The current source tree and
+machine manifest remain implementation truth until each move lands.
 
 Every application family co-locates its internal protocols, boundary models,
 and authority implementation. It imports reusable domain values from their

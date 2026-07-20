@@ -38,7 +38,7 @@ from daft.functions import when
 
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
-from archetype.htn import udfs
+from archetype.missions.planning import udfs
 
 _LIVE = lit("live")
 _READY_FIELDS = (
@@ -220,7 +220,7 @@ class TerminationProcessor(AsyncProcessor):
 
 
 # Bind the (Branch,) signature after the class bodies to keep imports linear.
-from archetype.htn.components import Branch  # noqa: E402
+from archetype.missions.planning.components import Branch  # noqa: E402
 
 FrontierProcessor.components = (Branch,)
 ApplicabilityProcessor.components = (Branch,)
