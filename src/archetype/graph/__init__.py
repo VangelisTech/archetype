@@ -17,13 +17,14 @@ from archetype.graph.edges import WorldLike, edges, link, unlink
 from archetype.graph.frames import between, live_edge_ids, with_source, with_target
 from archetype.graph.prefab import IsA, Prefab, instantiate, instantiate_sync
 from archetype.graph.traverse import ancestors, descendants, neighborhood
-from archetype.graph.view import GraphView
+from archetype.graph.view import GraphSnapshot, GraphView
 
 __all__ = [
     "CascadeResult",
     "ChildOf",
     "Depth",
     "DepthProcessor",
+    "GraphSnapshot",
     "GraphView",
     "IsA",
     "Policy",

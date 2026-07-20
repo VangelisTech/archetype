@@ -29,7 +29,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from daft import DataFrame, col
+from typing import cast
+
+from daft import DataFrame, Expression, col
 
 from archetype.graph.components import Policy, Relation
 from archetype.graph.edges import WorldLike, _require_async
@@ -51,11 +53,21 @@ class CascadeResult:
 
 
 def dangling_edges(edges: DataFrame, rel: type[Relation], population: DataFrame) -> DataFrame:
-    """Frame-pure: the edges whose target is absent from ``population``.
+    """Frame-pure: the local-target edges whose target is absent from
+    ``population``.
 
-    Liveness as an anti-join — no per-row Python, no lookups.
+    Liveness as an anti-join — no per-row Python, no lookups. Local liveness
+    is only decidable for local targets: a relation carrying a non-empty
+    ``world`` payload (cross-world lineage such as ``IsA``) points at a
+    foreign world's entity id, which is out of this anti-join's jurisdiction
+    and never dangles here. Cross-world reconciliation is a world-aware
+    process, not the same-world cascade helper.
     """
     prefix = rel.get_prefix()
+    world_col = f"{prefix}world"
+    if world_col in edges.column_names:
+        local_scope = cast(Expression, col(world_col) == "")
+        edges = edges.where(local_scope)
     return edges.join(
         population,
         left_on=col(f"{prefix}target"),

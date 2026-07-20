@@ -32,7 +32,7 @@ from archetype.graph.components import ChildOf, Relation
 from archetype.graph.edges import WorldLike, _require_async, link
 from archetype.graph.sync import SyncWorldLike, _require_sync
 from archetype.graph.sync import link as link_sync
-from archetype.graph.view import GraphView, _same_component
+from archetype.graph.view import GraphSnapshot, GraphView, _same_component
 
 
 class Prefab(Component):
@@ -63,7 +63,7 @@ def _rows(frame: DataFrame) -> list[dict]:
     return frame.to_pylist()
 
 
-def _entity_components(view: GraphView, entity_id: int) -> list[Component]:
+def _entity_components(view: GraphView | GraphSnapshot, entity_id: int) -> list[Component]:
     """Rebuild the entity's component instances from the captured frames.
 
     ``Prefab`` markers and ``Relation`` components are never copied: the
@@ -94,7 +94,7 @@ def _entity_components(view: GraphView, entity_id: int) -> list[Component]:
     raise LookupError(f"entity {entity_id} not found at the view's captured tick")
 
 
-def _child_prefabs(view: GraphView, parent: int) -> list[int]:
+def _child_prefabs(view: GraphView | GraphSnapshot, parent: int) -> list[int]:
     """Direct ``ChildOf`` children of ``parent`` at the captured tick."""
     edges = view.frame(ChildOf)
     if edges is None:
@@ -160,8 +160,11 @@ async def instantiate(
     """
     _require_async(world, "spawn")
     target_world = str((await world.info()).world_id)
-    source_world = "" if view.world_id in ("", target_world) else view.world_id
-    return await _instantiate(world, view, prefab, overrides, max_depth, source_world)
+    # One frozen snapshot for the whole recursion: a source world ticking
+    # mid-instantiation must not split the copy across versions.
+    snap = view.snapshot()
+    source_world = "" if snap.world_id in ("", target_world) else snap.world_id
+    return await _instantiate(world, snap, prefab, overrides, max_depth, source_world)
 
 
 instantiate.__doc__ = (instantiate.__doc__ or "") + "\n\n    " + _BOUNDARY
@@ -169,7 +172,7 @@ instantiate.__doc__ = (instantiate.__doc__ or "") + "\n\n    " + _BOUNDARY
 
 async def _instantiate(
     world: WorldLike,
-    view: GraphView,
+    view: GraphSnapshot,
     prefab: int,
     overrides: Sequence[Component],
     max_depth: int,
@@ -197,8 +200,9 @@ def instantiate_sync(
     """Blocking counterpart of :func:`instantiate` (runtime.md R5 parity)."""
     _require_sync(world, "spawn")
     target_world = str(world.info().world_id)
-    source_world = "" if view.world_id in ("", target_world) else view.world_id
-    return _instantiate_sync(world, view, prefab, overrides, max_depth, source_world)
+    snap = view.snapshot()
+    source_world = "" if snap.world_id in ("", target_world) else snap.world_id
+    return _instantiate_sync(world, snap, prefab, overrides, max_depth, source_world)
 
 
 instantiate_sync.__doc__ = (instantiate_sync.__doc__ or "") + "\n\n    " + _BOUNDARY
@@ -206,7 +210,7 @@ instantiate_sync.__doc__ = (instantiate_sync.__doc__ or "") + "\n\n    " + _BOUN
 
 def _instantiate_sync(
     world: SyncWorldLike,
-    view: GraphView,
+    view: GraphSnapshot,
     prefab: int,
     overrides: Sequence[Component],
     max_depth: int,
