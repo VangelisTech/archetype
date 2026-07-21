@@ -30,6 +30,23 @@ composition_roots = [
   "archetype.runtime.runtime",
 ]
 
+[[capability_rule]]
+name = "storage-execution-authority"
+consumer = "archetype.app"
+owner = "archetype.app.storage.service"
+owned_attributes = [
+  "collect",
+  "write_iceberg",
+  "current_catalog",
+  "create_table",
+  "create_table_if_not_exists",
+]
+owned_symbols = [
+  "daft.read_iceberg",
+  "pyiceberg.exceptions.CommitFailedException",
+]
+mediated_attributes = { to_pylist = "materialize" }
+
 [top_level_family_policy]
 forbidden_outward = [
   "archetype.app",
