@@ -3,18 +3,34 @@
 
 """Sandbox resources beneath the Agent Missions family."""
 
+from archetype.missions.sandboxes.apple_container import (
+    AppleContainerSandboxBackend,
+    AppleContainerSandboxConfig,
+    AppleContainerSandboxSession,
+)
 from archetype.missions.sandboxes.contracts import (
+    CheckpointLocality,
     CheckpointRef,
     ProcessRequest,
     ProcessResult,
     SandboxBackend,
     SandboxCapabilities,
+    SandboxEvent,
+    SandboxEventObserver,
+    SandboxEventType,
     SandboxIdentity,
     SandboxKey,
     SandboxServiceProtocol,
     SandboxSession,
     SandboxSpec,
     SandboxStatus,
+    live_observation_paths,
+    validate_checkpoint_for_spec,
+)
+from archetype.missions.sandboxes.docker import (
+    DockerSandboxBackend,
+    DockerSandboxConfig,
+    DockerSandboxSession,
 )
 from archetype.missions.sandboxes.modal import (
     ModalSandboxBackend,
@@ -24,7 +40,14 @@ from archetype.missions.sandboxes.modal import (
 from archetype.missions.sandboxes.service import SandboxService
 
 __all__ = [
+    "AppleContainerSandboxBackend",
+    "AppleContainerSandboxConfig",
+    "AppleContainerSandboxSession",
+    "CheckpointLocality",
     "CheckpointRef",
+    "DockerSandboxBackend",
+    "DockerSandboxConfig",
+    "DockerSandboxSession",
     "ModalSandboxBackend",
     "ModalSandboxConfig",
     "ModalSandboxSession",
@@ -32,6 +55,9 @@ __all__ = [
     "ProcessResult",
     "SandboxBackend",
     "SandboxCapabilities",
+    "SandboxEvent",
+    "SandboxEventObserver",
+    "SandboxEventType",
     "SandboxIdentity",
     "SandboxKey",
     "SandboxService",
@@ -39,4 +65,6 @@ __all__ = [
     "SandboxSession",
     "SandboxSpec",
     "SandboxStatus",
+    "live_observation_paths",
+    "validate_checkpoint_for_spec",
 ]

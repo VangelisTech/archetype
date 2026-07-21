@@ -271,7 +271,7 @@ requires-dist = [
     { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.6,<10" },
     { name = "mkdocs-mermaid2-plugin", marker = "extra == 'docs'" },
     { name = "mkdocstrings", extras = ["python"], marker = "extra == 'docs'", specifier = ">=0.27" },
-    { name = "modal", marker = "extra == 'coding-agent'", specifier = ">=1.5,<2" },
+    { name = "modal", marker = "extra == 'coding-agent'", specifier = "==1.5.0" },
     { name = "mujoco", marker = "extra == 'sim'", specifier = ">=3.2" },
     { name = "mutmut", marker = "extra == 'dev'", specifier = ">=3.5" },
     { name = "opentelemetry-api", specifier = ">=1.20" },

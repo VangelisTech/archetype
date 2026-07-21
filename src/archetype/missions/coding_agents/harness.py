@@ -59,6 +59,7 @@ class CodexDriver:
         request: TaskDispatchRequest,
         prompt: str,
     ) -> AgentProcessObservation:
+        codex_home = f"{session.capabilities.home_directory.rstrip('/')}/.codex"
         common = [
             "--json",
             "--dangerously-bypass-approvals-and-sandbox",
@@ -89,7 +90,7 @@ class CodexDriver:
                 tuple(argv),
                 workdir=self.workspace,
                 timeout_seconds=self.timeout_seconds,
-                env=(("NO_COLOR", "1"), ("CODEX_HOME", "/root/.codex")),
+                env=(("NO_COLOR", "1"), ("CODEX_HOME", codex_home)),
                 secret_names=(self.secret_name,),
                 close_stdin=True,
             )
@@ -227,6 +228,8 @@ class CodingAgentHarness:
                 agent_returncode=agent.returncode,
                 starting_revision=starting_revision,
                 final_revision=final_revision,
+                agent_stdout=self._tail(agent.stdout, 16_000),
+                agent_stderr=self._tail(agent.stderr, 16_000),
                 validation=validation,
                 commits=commits,
                 friction=tuple(friction),
@@ -246,6 +249,8 @@ class CodingAgentHarness:
                 agent_returncode=agent.returncode,
                 starting_revision=starting_revision,
                 final_revision=final_revision,
+                agent_stdout=self._tail(agent.stdout, 16_000),
+                agent_stderr=self._tail(agent.stderr, 16_000),
                 validation=validation,
                 commits=commits,
                 friction=tuple(friction),

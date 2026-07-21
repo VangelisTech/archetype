@@ -45,7 +45,14 @@ class _Session:
         return ProcessResult(request.argv, 0, stdout="ok")
 
     async def checkpoint(self) -> CheckpointRef:
-        return CheckpointRef("fake", "checkpoint", "fake://checkpoint", 1)
+        return CheckpointRef(
+            "fake",
+            "checkpoint",
+            "fake://checkpoint",
+            1,
+            environment=self.identity.environment,
+            source_sandbox_id=self.identity.sandbox_id,
+        )
 
     async def close(self) -> None:
         self.closed += 1
@@ -101,6 +108,8 @@ def test_process_request_requires_explicit_portable_inputs() -> None:
         ProcessRequest(("python",), workdir="relative")
     with pytest.raises(ValueError, match="unique"):
         ProcessRequest(("python",), env=(("A", "1"), ("A", "2")))
+    with pytest.raises(ValueError, match="home_directory"):
+        SandboxCapabilities(home_directory="/")
 
 
 @pytest.mark.asyncio
@@ -131,7 +140,14 @@ async def test_restore_and_shutdown_own_only_live_session_lifetime() -> None:
     backend = _Backend()
     backend.release.set()
     service = SandboxService((backend,))
-    checkpoint = CheckpointRef("fake", "restored", "fake://restored", 1)
+    checkpoint = CheckpointRef(
+        "fake",
+        "restored",
+        "fake://restored",
+        1,
+        environment=_spec().environment,
+        source_sandbox_id="source",
+    )
     session = await service.restore(SandboxKey("mission:8"), _spec(), checkpoint)
 
     assert backend.restores == 1
@@ -141,3 +157,102 @@ async def test_restore_and_shutdown_own_only_live_session_lifetime() -> None:
     await service.shutdown()
     with pytest.raises(RuntimeError, match="shutting down"):
         await service.acquire(SandboxKey("mission:9"), _spec())
+
+
+@pytest.mark.asyncio
+async def test_restore_replaces_a_retained_live_session_instead_of_ignoring_checkpoint() -> None:
+    backend = _Backend()
+    backend.release.set()
+    service = SandboxService((backend,))
+    key = SandboxKey("mission:10")
+    spec = _spec()
+    original = await service.acquire(key, spec)
+    checkpoint = CheckpointRef(
+        "fake",
+        "replacement",
+        "fake://replacement",
+        1,
+        environment=spec.environment,
+        source_sandbox_id=original.identity.sandbox_id,
+    )
+
+    restored = await service.restore(key, spec, checkpoint)
+
+    assert original.closed == 1
+    assert backend.restores == 1
+    assert restored is not original
+    assert restored.identity.sandbox_id == "replacement"
+    assert service.session(key) is restored
+    await service.close(key)
+    await service.close(key)
+    assert restored.closed == 1
+
+
+@pytest.mark.asyncio
+async def test_restore_rejects_wrong_environment_owner_expiry_and_fidelity() -> None:
+    backend = _Backend()
+    backend.release.set()
+    service = SandboxService((backend,))
+    spec = SandboxSpec(
+        "fake",
+        "environment-a",
+        "/workspace/repo",
+        metadata=(("mission", "11"),),
+    )
+
+    for checkpoint, error in (
+        (
+            CheckpointRef(
+                "fake",
+                "wrong-environment",
+                "fake://wrong-environment",
+                1,
+                environment="environment-b",
+                source_sandbox_id="source",
+                owner_id="11",
+            ),
+            "environment",
+        ),
+        (
+            CheckpointRef(
+                "fake",
+                "wrong-owner",
+                "fake://wrong-owner",
+                1,
+                environment="environment-a",
+                source_sandbox_id="source",
+                owner_id="12",
+            ),
+            "owner",
+        ),
+        (
+            CheckpointRef(
+                "fake",
+                "expired",
+                "fake://expired",
+                1,
+                environment="environment-a",
+                source_sandbox_id="source",
+                owner_id="11",
+                expires_at_ms=2,
+            ),
+            "expired",
+        ),
+        (
+            CheckpointRef(
+                "fake",
+                "not-restorable",
+                "fake://not-restorable",
+                1,
+                environment="environment-a",
+                source_sandbox_id="source",
+                owner_id="11",
+                restorable=False,
+            ),
+            "non-restorable",
+        ),
+    ):
+        with pytest.raises(ValueError, match=error):
+            await service.restore(SandboxKey("mission:11"), spec, checkpoint)
+
+    assert backend.restores == 0

@@ -14,6 +14,7 @@ from archetype.missions.sandboxes.contracts import (
     SandboxKey,
     SandboxSession,
     SandboxSpec,
+    validate_checkpoint_for_spec,
 )
 
 
@@ -66,11 +67,38 @@ class SandboxService:
         spec: SandboxSpec,
         checkpoint: CheckpointRef,
     ) -> SandboxSession:
-        """Restore one session, single-flighted under the same key contract."""
+        """Explicitly replace a retained session or restore an absent key."""
 
-        if checkpoint.provider != spec.provider:
-            raise ValueError("checkpoint provider does not match sandbox spec")
-        return await self._acquire(key, spec, checkpoint=checkpoint)
+        validate_checkpoint_for_spec(checkpoint, spec)
+        async with self._lock:
+            if not self._accepting:
+                raise RuntimeError("SandboxService is shutting down")
+            pending_entry = self._pending.get(key)
+            if pending_entry is not None:
+                pending_spec, pending_checkpoint, pending = pending_entry
+                if (pending_spec, pending_checkpoint) != (spec, checkpoint):
+                    raise ValueError(
+                        f"sandbox key {key.value!r} is already pending with another spec"
+                    )
+            else:
+                retained = self._sessions.pop(key, None)
+                if retained is not None:
+                    retained_spec, replaced = retained
+                    if retained_spec != spec:
+                        self._sessions[key] = retained
+                        raise ValueError(
+                            f"sandbox key {key.value!r} is already bound to another spec"
+                        )
+                    self._session_ids.pop(replaced.identity.sandbox_id, None)
+                else:
+                    replaced = None
+                backend = self._backend(spec.provider)
+                pending = asyncio.create_task(
+                    self._create(key, spec, backend, checkpoint, replaced=replaced),
+                    name=f"sandbox-restore:{key.value}",
+                )
+                self._pending[key] = (spec, checkpoint, pending)
+        return await asyncio.shield(pending)
 
     async def _acquire(
         self,
@@ -110,9 +138,13 @@ class SandboxService:
         spec: SandboxSpec,
         backend: SandboxBackend,
         checkpoint: CheckpointRef | None,
+        *,
+        replaced: SandboxSession | None = None,
     ) -> SandboxSession:
         session: SandboxSession | None = None
         try:
+            if replaced is not None:
+                await replaced.close()
             session = (
                 await backend.create(spec)
                 if checkpoint is None

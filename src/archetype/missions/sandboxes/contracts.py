@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import re
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import PurePosixPath
@@ -19,6 +22,26 @@ class SandboxStatus(StrEnum):
     ERRORED = "errored"
     INTERRUPTED = "interrupted"
     CLOSED = "closed"
+
+
+class SandboxEventType(StrEnum):
+    """Structured, provider-neutral operational events with no workflow authority."""
+
+    READY = "sandbox_ready"
+    PROCESS_STARTED = "process_started"
+    HEARTBEAT = "heartbeat"
+    PROCESS_FINISHED = "process_finished"
+    CHECKPOINT_STARTED = "checkpoint_started"
+    CHECKPOINT_FINISHED = "checkpoint_finished"
+    CHECKPOINT_FAILED = "checkpoint_failed"
+    CLOSING = "sandbox_closing"
+
+
+class CheckpointLocality(StrEnum):
+    """Where a provider-native checkpoint can be resolved."""
+
+    HOST = "host"
+    PROVIDER = "provider"
 
 
 @dataclass(frozen=True)
@@ -79,17 +102,64 @@ class SandboxIdentity:
 
 
 @dataclass(frozen=True)
+class SandboxEvent:
+    """Bounded operational event safe for callbacks and provider spools."""
+
+    kind: SandboxEventType
+    sandbox: SandboxIdentity
+    timestamp_ms: int
+    sequence: int = 0
+    operation: str = ""
+    returncode: int | None = None
+    checkpoint_uri: str = ""
+    message: str = ""
+
+    def __post_init__(self) -> None:
+        if self.timestamp_ms < 0 or self.sequence < 0:
+            raise ValueError("sandbox event time and sequence must not be negative")
+
+    def record(self) -> dict[str, str | int | None]:
+        """Return a stable JSON-compatible record without process output."""
+
+        return {
+            "schema_version": 1,
+            "type": self.kind.value,
+            "timestamp_ms": self.timestamp_ms,
+            "sequence": self.sequence,
+            "provider": self.sandbox.provider,
+            "sandbox_id": self.sandbox.sandbox_id,
+            "environment": self.sandbox.environment,
+            "operation": self.operation,
+            "returncode": self.returncode,
+            "checkpoint_uri": self.checkpoint_uri,
+            "message": self.message,
+        }
+
+
+SandboxEventObserver = Callable[[SandboxEvent], None]
+
+
+@dataclass(frozen=True)
 class SandboxCapabilities:
     """Optional capabilities exposed without changing workflow authority."""
 
     checkpoints: bool = False
+    live_output: bool = False
     secret_names: tuple[str, ...] = ()
+    home_directory: str = "/root"
+    observation_directory: str = "/tmp/archetype-agent-missions/live"
 
     def __post_init__(self) -> None:
         if any(not name.strip() for name in self.secret_names):
             raise ValueError("sandbox secret capability names must not be empty")
         if len(set(self.secret_names)) != len(self.secret_names):
             raise ValueError("sandbox secret capability names must be unique")
+        home = PurePosixPath(self.home_directory)
+        if not home.is_absolute() or str(home) in {"/", "."}:
+            raise ValueError("sandbox home_directory must be a non-root absolute path")
+        observation = PurePosixPath(self.observation_directory)
+        if not observation.is_absolute() or str(observation) in {"/", "."}:
+            raise ValueError("sandbox observation_directory must be a non-root absolute path")
 
 
 @dataclass(frozen=True)
@@ -142,6 +212,12 @@ class CheckpointRef:
     checkpoint_id: str
     uri: str
     created_at_ms: int
+    environment: str = ""
+    source_sandbox_id: str = ""
+    owner_id: str = ""
+    locality: CheckpointLocality = CheckpointLocality.PROVIDER
+    expires_at_ms: int | None = None
+    integrity: str = ""
     restorable: bool = True
 
     def __post_init__(self) -> None:
@@ -149,6 +225,60 @@ class CheckpointRef:
             raise ValueError("checkpoint requires provider, checkpoint_id, and uri")
         if self.created_at_ms < 0:
             raise ValueError("checkpoint created_at_ms must not be negative")
+        object.__setattr__(self, "locality", CheckpointLocality(self.locality))
+        if self.expires_at_ms is not None and self.expires_at_ms <= self.created_at_ms:
+            raise ValueError("checkpoint expiry must be after creation")
+        if self.integrity and not re.fullmatch(r"sha256:[0-9a-f]{64}", self.integrity):
+            raise ValueError("checkpoint integrity must be a sha256 digest")
+
+    def expired(self, *, now_ms: int | None = None) -> bool:
+        """Return whether the provider-declared recovery window has elapsed."""
+
+        observed = int(time.time() * 1000) if now_ms is None else now_ms
+        return self.expires_at_ms is not None and observed >= self.expires_at_ms
+
+
+def validate_checkpoint_for_spec(
+    checkpoint: CheckpointRef,
+    spec: SandboxSpec,
+    *,
+    now_ms: int | None = None,
+) -> None:
+    """Reject cross-provider, cross-environment, cross-owner, and expired restore."""
+
+    if checkpoint.provider != spec.provider:
+        raise ValueError("checkpoint provider does not match sandbox spec")
+    if not checkpoint.restorable:
+        raise ValueError("checkpoint is marked non-restorable")
+    if not checkpoint.environment:
+        raise ValueError("checkpoint has no environment lineage")
+    if checkpoint.environment != spec.environment:
+        raise ValueError("checkpoint environment does not match sandbox spec")
+    if not checkpoint.source_sandbox_id:
+        raise ValueError("checkpoint has no source sandbox identity")
+    owner = spec.metadata_dict().get("mission", "")
+    if owner and checkpoint.owner_id != owner:
+        raise ValueError("checkpoint owner does not match sandbox spec")
+    if checkpoint.expired(now_ms=now_ms):
+        raise ValueError("checkpoint has expired")
+
+
+def live_observation_paths(
+    root: str = "/tmp/archetype-agent-missions/live",
+) -> dict[str, str]:
+    """Return session-owned observation paths outside the target repository."""
+
+    root_path = PurePosixPath(root)
+    if not root_path.is_absolute() or str(root_path) in {"/", "."}:
+        raise ValueError("live artifact root must be a non-root absolute path")
+    directory = str(root_path).rstrip("/")
+    return {
+        "directory": directory,
+        "status": f"{directory}/session.json",
+        "events": f"{directory}/events.jsonl",
+        "stdout": f"{directory}/agent.stdout.log",
+        "stderr": f"{directory}/agent.stderr.log",
+    }
 
 
 @runtime_checkable
@@ -187,21 +317,34 @@ class SandboxServiceProtocol(Protocol):
 
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> SandboxSession: ...
 
+    async def restore(
+        self,
+        key: SandboxKey,
+        spec: SandboxSpec,
+        checkpoint: CheckpointRef,
+    ) -> SandboxSession: ...
+
     async def close(self, key: SandboxKey) -> None: ...
 
     async def shutdown(self) -> None: ...
 
 
 __all__ = [
+    "CheckpointLocality",
     "CheckpointRef",
+    "live_observation_paths",
     "ProcessRequest",
     "ProcessResult",
     "SandboxBackend",
     "SandboxCapabilities",
+    "SandboxEvent",
+    "SandboxEventObserver",
+    "SandboxEventType",
     "SandboxIdentity",
     "SandboxKey",
     "SandboxSession",
     "SandboxServiceProtocol",
     "SandboxSpec",
     "SandboxStatus",
+    "validate_checkpoint_for_spec",
 ]
