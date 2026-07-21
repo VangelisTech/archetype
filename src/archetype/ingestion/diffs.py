@@ -32,6 +32,13 @@ def _is_diff(logical_path: str) -> bool:
 
 @daft.func(return_dtype=_DIFF_METADATA)
 def _diff_metadata(file: daft.File) -> dict[str, str | int]:
+    with file.open() as opened:
+        return scan_diff_metadata(cast(BinaryIO, opened))
+
+
+def scan_diff_metadata(stream: BinaryIO) -> dict[str, str | int]:
+    """Scan unified or Git patch structure from one binary stream."""
+
     git_files = 0
     unified_files = 0
     hunk_count = 0
@@ -58,13 +65,11 @@ def _diff_metadata(file: daft.File) -> dict[str, str | int]:
             binary_files += 1
 
     buffered = b""
-    with file.open() as opened:
-        stream = cast(BinaryIO, opened)
-        while chunk := stream.read(1 << 20):
-            lines = (buffered + chunk).split(b"\n")
-            buffered = lines.pop()
-            for line in lines:
-                observe(line)
+    while chunk := stream.read(1 << 20):
+        lines = (buffered + chunk).split(b"\n")
+        buffered = lines.pop()
+        for line in lines:
+            observe(line)
     if buffered:
         observe(buffered)
     return {

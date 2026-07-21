@@ -9,6 +9,7 @@ import hashlib
 import mimetypes
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
+from typing import BinaryIO, cast
 from urllib.parse import unquote, urlparse
 
 import daft
@@ -85,10 +86,22 @@ def _logical_path(
 
 @daft.func(return_dtype=DataType.string())
 def _mime_type(file: daft.File, source_uri: str) -> str:
-    override = _MIME_OVERRIDES.get(_uri_path(source_uri).suffix.lower())
+    override = _mime_override(source_uri)
     if override is not None:
         return override
-    detected = file.mime_type()
+    return detect_mime_type(source_uri, file.mime_type())
+
+
+def _mime_override(source_uri: str) -> str | None:
+    return _MIME_OVERRIDES.get(_uri_path(source_uri).suffix.lower())
+
+
+def detect_mime_type(source_uri: str, detected: str) -> str:
+    """Resolve stable extension overrides and a scanner-provided MIME type."""
+
+    override = _mime_override(source_uri)
+    if override is not None:
+        return override
     if detected != "application/octet-stream":
         return detected
     return mimetypes.guess_type(source_uri)[0] or detected
@@ -96,6 +109,12 @@ def _mime_type(file: daft.File, source_uri: str) -> str:
 
 @daft.func(return_dtype=DataType.string())
 def _media_family(mime_type: str) -> str:
+    return media_family_for(mime_type)
+
+
+def media_family_for(mime_type: str) -> str:
+    """Map a MIME type into one specialized artifact-index family."""
+
     if mime_type == "application/pdf":
         return "pdf"
     family = mime_type.partition("/")[0]
@@ -108,6 +127,12 @@ def _media_family(mime_type: str) -> str:
 
 @daft.func(return_dtype=DataType.timestamp("us", timezone="UTC"))
 def _uuid7_timestamp(artifact_id: str) -> datetime:
+    return ingestion_time_for(artifact_id)
+
+
+def ingestion_time_for(artifact_id: str) -> datetime:
+    """Derive the UTC ingestion time encoded by a UUIDv7 artifact ID."""
+
     value = UUID(artifact_id)
     if value.version != 7:
         raise ValueError("artifact_id must be UUIDv7")
@@ -118,14 +143,20 @@ def _uuid7_timestamp(artifact_id: str) -> datetime:
 def _file_hashes(file: daft.File) -> dict[str, str | int]:
     """Compute both integrity hashes and size during one streaming read."""
 
+    with file.open(buffer_size=_COPY_BUFFER) as stream:
+        return hash_file(cast(BinaryIO, stream))
+
+
+def hash_file(stream: BinaryIO) -> dict[str, str | int]:
+    """Compute SHA-256, XXH3-64, and size in one pass over a binary stream."""
+
     sha256 = hashlib.sha256()
     fast = xxhash.xxh3_64()
     size = 0
-    with file.open(buffer_size=_COPY_BUFFER) as stream:
-        while chunk := stream.read(_COPY_BUFFER):
-            sha256.update(chunk)
-            fast.update(chunk)
-            size += len(chunk)
+    while chunk := stream.read(_COPY_BUFFER):
+        sha256.update(chunk)
+        fast.update(chunk)
+        size += len(chunk)
     return {
         "sha256": sha256.hexdigest(),
         "xxhash3_64": fast.hexdigest(),

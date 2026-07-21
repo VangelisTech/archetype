@@ -86,27 +86,35 @@ def _kind(language: str) -> str:
 def _text_metadata(file: daft.File, logical_path: str) -> dict[str, str | int | bool]:
     """Scan line count and UTF-8 validity without retaining submitted content."""
 
+    with file.open() as opened:
+        return scan_text_metadata(cast(BinaryIO, opened), logical_path)
+
+
+def scan_text_metadata(
+    stream: BinaryIO,
+    logical_path: str,
+) -> dict[str, str | int | bool]:
+    """Scan text shape and language metadata from one binary stream."""
+
     decoder = codecs.getincrementaldecoder("utf-8")("strict")
     utf8 = True
     line_count = 0
     size = 0
     final_byte = b""
-    with file.open() as opened:
-        stream = cast(BinaryIO, opened)
-        while chunk := stream.read(1 << 20):
-            size += len(chunk)
-            final_byte = chunk[-1:]
-            line_count += chunk.count(b"\n")
-            if utf8:
-                try:
-                    decoder.decode(chunk, final=False)
-                except UnicodeDecodeError:
-                    utf8 = False
+    while chunk := stream.read(1 << 20):
+        size += len(chunk)
+        final_byte = chunk[-1:]
+        line_count += chunk.count(b"\n")
         if utf8:
             try:
-                decoder.decode(b"", final=True)
+                decoder.decode(chunk, final=False)
             except UnicodeDecodeError:
                 utf8 = False
+    if utf8:
+        try:
+            decoder.decode(b"", final=True)
+        except UnicodeDecodeError:
+            utf8 = False
     if size and final_byte != b"\n":
         line_count += 1
     language = _LANGUAGES.get(PurePosixPath(logical_path).suffix.lower(), "text")
