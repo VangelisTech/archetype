@@ -155,6 +155,37 @@ async def test_conditional_append_rejects_duplicate_keys_within_candidate_batch(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("null_key_column", ("event_id", "scope"))
+async def test_conditional_append_rejects_null_keys_without_writing(tmp_path, null_key_column):
+    service = StorageService()
+    storage = _storage(tmp_path)
+    values = {
+        "event_id": ["e1", "e2"],
+        "scope": ["primary", "secondary"],
+        "value": [1, 2],
+    }
+    values[null_key_column][1] = None
+    candidates = daft.from_pydict(values)
+    try:
+        for _ in range(2):
+            with pytest.raises(
+                ValueError,
+                match=r"conditional append .* contains null key values .*key columns must be non-null",
+            ):
+                await service.append_missing(
+                    storage,
+                    "unique_events",
+                    candidates,
+                    key_columns=("event_id", "scope"),
+                )
+
+        rows = (await service.read_table(storage, "unique_events")).to_pylist()
+        assert rows == []
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_app_table_schema_drift_fails_before_write(tmp_path):
     service = StorageService()
     storage = _storage(tmp_path)

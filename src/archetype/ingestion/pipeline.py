@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shutil
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -224,18 +223,38 @@ def _copy_local_object(
         )
     destination = Path(root) / "objects" / "sha256" / sha256[:2] / sha256
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.is_file() and destination.stat().st_size == size_bytes:
-        digest = hashlib.sha256()
-        with destination.open("rb") as existing:
-            while chunk := existing.read(_COPY_BUFFER):
-                digest.update(chunk)
-        if digest.hexdigest() == sha256:
-            return destination.resolve().as_uri()
-
     descriptor, temporary = tempfile.mkstemp(prefix=f".{sha256}-", dir=destination.parent)
     try:
         with os.fdopen(descriptor, "wb") as target, file.open(buffer_size=_COPY_BUFFER) as source:
-            shutil.copyfileobj(source, target, length=_COPY_BUFFER)
+            actual_sha256 = hashlib.sha256()
+            actual_size = 0
+            while chunk := source.read(_COPY_BUFFER):
+                actual_size += len(chunk)
+                if actual_size > max_artifact_bytes:
+                    raise ValueError(
+                        f"artifact is larger than {max_artifact_bytes} bytes; "
+                        "per-artifact limit exceeded while persisting"
+                    )
+                actual_sha256.update(chunk)
+                target.write(chunk)
+
+        actual_digest = actual_sha256.hexdigest()
+        if actual_size != size_bytes or actual_digest != sha256:
+            raise ValueError(
+                "artifact source changed after discovery: "
+                f"expected {size_bytes} bytes with SHA-256 {sha256}, "
+                f"read {actual_size} bytes with SHA-256 {actual_digest}"
+            )
+
+        if destination.is_file() and destination.stat().st_size == actual_size:
+            existing_digest = hashlib.sha256()
+            with destination.open("rb") as existing:
+                while chunk := existing.read(_COPY_BUFFER):
+                    existing_digest.update(chunk)
+            if existing_digest.hexdigest() == actual_digest:
+                os.unlink(temporary)
+                return destination.resolve().as_uri()
+
         os.replace(temporary, destination)
     except BaseException:
         try:
@@ -247,13 +266,38 @@ def _copy_local_object(
 
 
 @daft.func(return_dtype=DataType.binary())
-def _read_bounded(file: daft.File, size_bytes: int, max_artifact_bytes: int) -> bytes:
+def _read_bounded(
+    file: daft.File,
+    sha256: str,
+    size_bytes: int,
+    max_artifact_bytes: int,
+) -> bytes:
     if size_bytes > max_artifact_bytes:
         raise ValueError(
             f"artifact is {size_bytes} bytes; per-artifact limit is {max_artifact_bytes}"
         )
+    payload = bytearray()
+    actual_sha256 = hashlib.sha256()
+    actual_size = 0
     with file.open(buffer_size=_COPY_BUFFER) as stream:
-        return stream.read()
+        while chunk := stream.read(_COPY_BUFFER):
+            actual_size += len(chunk)
+            if actual_size > max_artifact_bytes:
+                raise ValueError(
+                    f"artifact is larger than {max_artifact_bytes} bytes; "
+                    "per-artifact limit exceeded while persisting"
+                )
+            actual_sha256.update(chunk)
+            payload.extend(chunk)
+
+    actual_digest = actual_sha256.hexdigest()
+    if actual_size != size_bytes or actual_digest != sha256:
+        raise ValueError(
+            "artifact source changed after discovery: "
+            f"expected {size_bytes} bytes with SHA-256 {sha256}, "
+            f"read {actual_size} bytes with SHA-256 {actual_digest}"
+        )
+    return bytes(payload)
 
 
 @daft.func(return_dtype=_PDF_METADATA)
@@ -373,6 +417,7 @@ class FileIngestionPipeline:
             "_object_bytes",
             _read_bounded(
                 col("file"),
+                col("sha256"),
                 col("size_bytes"),
                 lit(self.max_artifact_bytes),
             ),

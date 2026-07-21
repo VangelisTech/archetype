@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from glob import has_magic
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import daft
 from daft import DataFrame, lit
@@ -36,13 +37,61 @@ class SourcePlan:
     source_root: str
 
 
+def _remote_parent(uri: str) -> str:
+    """Return a remote URI's parent without treating its scheme as a path."""
+
+    parsed = urlsplit(uri)
+    path = parsed.path.rstrip("/")
+    parent = path.rpartition("/")[0]
+    # The authority is already the root for an object directly in a bucket.
+    if parent == "/":
+        parent = ""
+    return urlunsplit((parsed.scheme, parsed.netloc, parent, "", ""))
+
+
+def _remote_glob_root(uri: str) -> str:
+    """Return the stable non-magic URI prefix used for logical paths."""
+
+    parsed = urlsplit(uri)
+    wildcard = min(
+        position
+        for position in (parsed.path.find("*"), parsed.path.find("?"), parsed.path.find("["))
+        if position >= 0
+    )
+    prefix = parsed.path[:wildcard]
+    root = prefix.rstrip("/") if prefix.endswith("/") else prefix.rpartition("/")[0]
+    if root == "/":
+        root = ""
+    return urlunsplit((parsed.scheme, parsed.netloc, root, "", ""))
+
+
+def _remote_has_magic(uri: str) -> bool:
+    """Treat wildcard syntax in the URI path, not query credentials, as a glob."""
+
+    return has_magic(urlsplit(uri).path)
+
+
 def plan_source(index: int, source: ArtifactSource) -> SourcePlan:
     """Resolve local directory and glob semantics without content I/O."""
 
     local = local_storage_path(source.source_uri)
     if local is None:
-        path = source.source_uri.rstrip("/") + "/**/*" if source.recursive else source.source_uri
-        return SourcePlan(index, source, path, source.source_uri)
+        if _remote_has_magic(source.source_uri):
+            return SourcePlan(
+                index,
+                source,
+                source.source_uri,
+                _remote_glob_root(source.source_uri),
+            )
+        if source.recursive:
+            root = source.source_uri.rstrip("/")
+            return SourcePlan(index, source, root + "/**/*", root)
+        return SourcePlan(
+            index,
+            source,
+            source.source_uri,
+            _remote_parent(source.source_uri),
+        )
 
     if not has_magic(source.source_uri) and local.exists():
         if local.is_dir():

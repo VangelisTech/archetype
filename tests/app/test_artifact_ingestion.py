@@ -140,6 +140,43 @@ def test_logical_paths_and_source_plans_preserve_declared_roots(tmp_path):
     assert wildcard.source_root == str(directory)
 
 
+def test_exact_remote_source_uses_parent_as_logical_root():
+    plan = plan_source(
+        0,
+        ArtifactSource(source_uri="s3://bucket/context/report.md"),
+    )
+
+    assert plan.path == "s3://bucket/context/report.md"
+    assert plan.source_root == "s3://bucket/context"
+    assert logical_path_for(plan.path, source_root=plan.source_root) == "report.md"
+
+
+def test_remote_query_credentials_do_not_turn_an_exact_source_into_a_glob():
+    source_uri = "https://example.com/context/report.md?token=signed"
+    plan = plan_source(0, ArtifactSource(source_uri=source_uri))
+
+    assert plan.path == source_uri
+    assert plan.source_root == "https://example.com/context"
+    assert logical_path_for(plan.path, source_root=plan.source_root) == "report.md"
+
+
+def test_remote_glob_preserves_paths_below_non_magic_prefix():
+    plan = plan_source(
+        0,
+        ArtifactSource(source_uri="s3://bucket/context/**/*.md"),
+    )
+
+    assert plan.path == "s3://bucket/context/**/*.md"
+    assert plan.source_root == "s3://bucket/context"
+    assert (
+        logical_path_for(
+            "s3://bucket/context/research/reports/result.md",
+            source_root=plan.source_root,
+        )
+        == "research/reports/result.md"
+    )
+
+
 @pytest.mark.asyncio
 async def test_text_file_gets_uuidv7_common_index_and_content_address(tmp_path):
     store = tmp_path / "artifact-store"

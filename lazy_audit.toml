@@ -56,7 +56,7 @@ reason = "Conditional producer boundary: StorageService freezes the aligned cand
 
 [[entries]]
 path = "src/archetype/app/storage/service.py"
-line = 532
+line = 544
 method = "collect"
 reason = "Conditional append boundary: StorageService materializes the anti-join after each refreshed Iceberg snapshot so a conflicting writer cannot cause a stale retry to duplicate an existing logical key."
 

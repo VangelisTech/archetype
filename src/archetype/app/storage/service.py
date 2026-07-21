@@ -491,11 +491,11 @@ class StorageService:
     ) -> int:
         """Append rows absent by key within this service's execution authority.
 
-        The producer graph is evaluated once and duplicate candidate keys are
-        rejected before persistence. After an optimistic conflict, the frozen
-        candidate rows are anti-joined against the refreshed table before
-        another write. This prevents both same-batch ambiguity and the
-        stale-pending retry bug where two writers can publish the same logical
+        The producer graph is evaluated once, then null key values and duplicate
+        candidate keys are rejected before persistence. After an optimistic
+        conflict, the frozen candidate rows are anti-joined against the refreshed
+        table before another write. This prevents both same-batch ambiguity and
+        the stale-pending retry bug where two writers can publish the same logical
         key.
         """
         self._require_frame(rows)
@@ -518,6 +518,18 @@ class StorageService:
                             num_preview_rows=0,
                         )
                         candidate_count = candidates.count_rows()
+                        null_key_filter = col(key_columns[0]).is_null()
+                        for key_column in key_columns[1:]:
+                            null_key_filter = null_key_filter | col(key_column).is_null()
+                        contains_null_key = await self._blocking(
+                            candidates.where(null_key_filter).limit(1).count_rows
+                        )
+                        if contains_null_key:
+                            raise ValueError(
+                                f"conditional append for table {table_name!r} contains "
+                                f"null key values for {key_columns!r}; key columns must "
+                                "be non-null"
+                            )
                         distinct_key_count = await self._blocking(
                             candidates.distinct(*key_columns).count_rows
                         )
