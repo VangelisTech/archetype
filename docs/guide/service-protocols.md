@@ -234,7 +234,7 @@ The artifacts family owns the supported `ArtifactSource`, `ArtifactRef`, and
 `archetype.ingestion`; file/media transforms live in specialized ingestion
 modules; application authority remains under `archetype.app.ingestion` and
 `archetype.app.artifacts`. The evaluation family completed its split under
-#557: `EvalReceipt` lives in
+issue #557: `EvalReceipt` lives in
 `archetype.evaluation.components`, and the grading value contracts and
 identity digests live in `archetype.evaluation.contracts`. Current paths
 that predate this rule are migration state, not alternate ownership. The
