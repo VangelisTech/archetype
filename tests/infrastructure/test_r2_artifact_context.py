@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Real multimodal artifact ingestion through R2 Data Catalog and R2 objects."""
+"""Real multimodal artifact ingestion through Cloudflare R2."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from daft.catalog import Catalog
 from daft.io import IOConfig, S3Config
 from daft.session import Session
 from pyarrow.fs import S3FileSystem
-from pyiceberg.catalog.rest import RestCatalog
+from pyiceberg.catalog.sql import SqlCatalog
 from uuid_utils import uuid7
 
 from archetype.app.container import ServiceContainer
@@ -36,17 +36,11 @@ ACCESS_KEY_ID = os.environ.get("R2_ACCESS_KEY_ID")
 SECRET_ACCESS_KEY = os.environ.get("R2_SECRET_ACCESS_KEY")
 API_ENDPOINT = os.environ.get("R2_API_ENDPOINT")
 BUCKET = os.environ.get("R2_BUCKET")
-CATALOG_URI = os.environ.get("R2_CATALOG_URI")
-CATALOG_WAREHOUSE = os.environ.get("R2_CATALOG_WAREHOUSE")
-CATALOG_TOKEN = os.environ.get("R2_CATALOG_TOKEN")
 _REQUIRED = (
     ACCESS_KEY_ID,
     SECRET_ACCESS_KEY,
     API_ENDPOINT,
     BUCKET,
-    CATALOG_URI,
-    CATALOG_WAREHOUSE,
-    CATALOG_TOKEN,
 )
 _HF = "hf://datasets/Eventual-Inc/sample-files"
 
@@ -57,24 +51,30 @@ pytestmark = [
     pytest.mark.slow,
     pytest.mark.skipif(
         not all(_REQUIRED),
-        reason="GitHub Actions supplies R2 object and Data Catalog credentials",
+        reason="GitHub Actions supplies Cloudflare R2 credentials",
     ),
 ]
 
 
-def _catalog() -> RestCatalog:
-    assert CATALOG_URI is not None
-    assert CATALOG_WAREHOUSE is not None
-    assert CATALOG_TOKEN is not None
-    return RestCatalog(
+def _catalog(path: Path, warehouse: str) -> SqlCatalog:
+    assert API_ENDPOINT is not None
+    assert ACCESS_KEY_ID is not None
+    assert SECRET_ACCESS_KEY is not None
+    return SqlCatalog(
         "archetype_r2_artifact_dogfood",
-        uri=CATALOG_URI,
-        warehouse=CATALOG_WAREHOUSE,
-        token=CATALOG_TOKEN,
+        uri=f"sqlite:///{path}",
+        warehouse=warehouse,
+        **{
+            "s3.endpoint": API_ENDPOINT,
+            "s3.access-key-id": ACCESS_KEY_ID,
+            "s3.secret-access-key": SECRET_ACCESS_KEY,
+            "s3.region": "auto",
+            "s3.force-virtual-addressing": "false",
+        },
     )
 
 
-def _session(catalog: RestCatalog, namespace: str) -> Session:
+def _session(catalog: SqlCatalog, namespace: str) -> Session:
     session = Session()
     session.attach_catalog(Catalog.from_iceberg(catalog))
     session.set_namespace(namespace)
@@ -97,7 +97,7 @@ def _io_config() -> IOConfig:
     )
 
 
-async def test_huggingface_context_pack_round_trips_through_r2_data_catalog(
+async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
     tmp_path: Path, monkeypatch
 ) -> None:
     assert BUCKET is not None
@@ -107,9 +107,11 @@ async def test_huggingface_context_pack_round_trips_through_r2_data_catalog(
     identity = uuid7().hex
     namespace = f"artifact_dogfood_{identity}"
     prefix = f"archetype-ci/artifact-context/{identity}"
+    warehouse = f"s3://{BUCKET}/{prefix}/warehouse"
     object_root = f"s3://{BUCKET}/{prefix}/objects"
+    catalog_path = tmp_path / "artifact-catalog.db"
     storage = StorageConfig(
-        uri=f"s3://{BUCKET}/{prefix}/worlds",
+        uri=warehouse,
         namespace=namespace,
         backend=StorageBackend.ICEBERG,
         io_config=_io_config(),
@@ -167,9 +169,8 @@ async def test_huggingface_context_pack_round_trips_through_r2_data_catalog(
         encoding="utf-8",
     )
 
-    catalog = _catalog()
+    catalog = _catalog(catalog_path, warehouse)
     catalog.create_namespace(namespace)
-    table_locations: list[str] = []
     storage_service: StorageService | None = None
     container: ServiceContainer | None = None
     cold_storage: StorageService | None = None
@@ -276,10 +277,10 @@ async def test_huggingface_context_pack_round_trips_through_r2_data_catalog(
         container = None
         storage_service = None
 
-        # A fresh REST catalog and application graph must discover the same
-        # tables and read the common index; no process-local Daft registration
-        # may be required for the cold path.
-        cold_catalog = _catalog()
+        # A fresh catalog instance and application graph must discover the
+        # same R2-backed tables and read the common index; no process-local
+        # Daft registration may be required for the cold path.
+        cold_catalog = _catalog(catalog_path, warehouse)
         cold_storage = StorageService(_session(cold_catalog, namespace))
         cold = ServiceContainer(
             storage_service=cold_storage,
@@ -310,10 +311,9 @@ async def test_huggingface_context_pack_round_trips_through_r2_data_catalog(
         if storage_service is not None:
             await storage_service.shutdown()
 
-        cleanup_catalog = _catalog()
+        cleanup_catalog = _catalog(catalog_path, warehouse)
         if cleanup_catalog.namespace_exists(namespace):
             for identifier in cleanup_catalog.list_tables(namespace):
-                table_locations.append(cleanup_catalog.load_table(identifier).location())
                 cleanup_catalog.drop_table(identifier)
             cleanup_catalog.drop_namespace(namespace)
 
@@ -327,7 +327,3 @@ async def test_huggingface_context_pack_round_trips_through_r2_data_catalog(
             force_virtual_addressing=False,
         )
         filesystem.delete_dir(f"{BUCKET}/{prefix}")
-        for location in table_locations:
-            parsed = urlparse(location)
-            if parsed.scheme == "s3" and parsed.netloc == BUCKET:
-                filesystem.delete_dir(f"{parsed.netloc}/{parsed.path.lstrip('/')}")

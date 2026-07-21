@@ -290,7 +290,7 @@ real Cloudflare stack:
 Hugging Face Markdown + MP3 + MP4 + PDF
 local Markdown + Python + git patch + sanitized Claude transcript
   -> content-addressed R2 objects
-  -> R2 Data Catalog / Iceberg typed tables
+  -> Daft Catalog / Iceberg tables whose metadata and data live on R2
   -> fresh catalog + fresh application graph
   -> cold artifact discovery
 ```
