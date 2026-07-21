@@ -1,0 +1,38 @@
+name: DCO
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  signoff:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require Signed-off-by on outside contributions
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            // Keep in sync with cla.yml and pr-gate.yml.
+            const allowlist = ['everettVT'];
+            const author = context.payload.pull_request.user.login;
+            if (allowlist.includes(author) || author.endsWith('[bot]')) {
+              core.info(`${author} is exempt from DCO sign-off.`);
+              return;
+            }
+            const commits = await github.paginate(github.rest.pulls.listCommits, {
+              ...context.repo,
+              pull_number: context.payload.pull_request.number,
+            });
+            const missing = commits.filter(
+              (c) => !/^Signed-off-by: .+ <.+@.+>/m.test(c.commit.message),
+            );
+            if (missing.length > 0) {
+              const shas = missing.map((c) => c.sha.slice(0, 12)).join(', ');
+              core.setFailed(
+                `${missing.length} commit(s) missing a Signed-off-by line (${shas}). ` +
+                'Sign with `git commit -s`; see CONTRIBUTING.md.',
+              );
+            }

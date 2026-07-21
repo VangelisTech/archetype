@@ -4,6 +4,27 @@ This guide covers the local workflow, CI, and pull requests. Read
 `LEARNINGS.md` before changing engine behavior; the specification pages define
 the contracts that tests enforce.
 
+## Contribution Policy
+
+Archetype is Apache-2.0 and developed in the open, but pull requests are
+currently maintainer-only while the contract surface stabilizes: a workflow
+closes outside PRs automatically. Bug reports and design discussion are
+welcome as issues.
+
+Two agreements govern outside contributions when they are accepted:
+
+- **DCO** — every commit carries a `Signed-off-by` line (`git commit -s`)
+  certifying you have the right to submit the work under Apache-2.0.
+- **CLA** — on your first pull request, a bot asks you to sign the
+  [Contributor License Agreement](CLA.md), which grants Vangelis
+  Technologies the rights described there, including the right to license
+  the contribution under other terms. One signature covers all future
+  contributions.
+
+Maintainer- and bot-authored pull requests are exempt from both checks; the
+allowlist lives in `.github/workflows/` (`cla.yml`, `dco.yml`,
+`pr-gate.yml`).
+
 ## Choose Package Ownership First
 
 | Kind | Canonical location |
