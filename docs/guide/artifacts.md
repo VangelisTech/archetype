@@ -221,6 +221,10 @@ immutable and unreferenced objects are not visible artifacts.
 
 The service bounds both each file and the complete submission through
 `ArtifactStoreConfig`. Required sources that match no files fail closed.
+The persistence read hashes and counts the bytes it actually copies, compares
+them with discovery, and enforces the size limit incrementally. If a mutable
+source changes between discovery and persistence, no object or index row is
+published under the stale content identity.
 
 No claim or recovery state surrounds this pipeline. Callers retry by making a
 new occurrence. If the content copy already completed, the retry reuses the
@@ -369,3 +373,30 @@ scans use the staged object. Live model calls remain an explicit
 credential-bearing external check; the deterministic contract tests validate
 the task anchoring and source attribution without pretending that a mocked
 provider is model evidence.
+
+## 12. Migration from the 0.4 artifact surface
+
+This refactor is an intentional breaking change from the artifact API shipped
+in `0.4.1`. The first release containing it must be `0.5.0` or later; it must
+not be published as another `0.4.x` release.
+
+The old surface mixed file persistence with claims, publication recovery,
+checkpoint bundles, and entity receipts. The replacement keeps file
+occurrence identity and content durability while removing that orchestration:
+
+| 0.4 surface | 0.5 direction |
+| --- | --- |
+| `ArtifactBundleRequest` and `ArtifactCandidate` | one or more `ArtifactSource` values |
+| `ArtifactPublishReceipt`, `ArtifactReceipt`, and `MaterializedArtifact` | immutable `ArtifactRef` values |
+| `world.publish_artifact_bundle(...)` | `world.ingest_artifacts(...)` |
+| `world.artifact_bundles(...)` | `world.artifacts()` and typed artifact indexes |
+| `world.reconcile_artifact_bundles(...)` | removed; retry creates a new occurrence and reuses verified content |
+| generic `world.ingest_files(...)` / `world.write_artifacts(...)` | a reviewed application workflow composed from `IngestionService` |
+| `world.publish(...)` for external component rows | `world.spawn(...)` for world state, or an owning application workflow for durable tabular data |
+| `TranscriptIngestionReceipt` | `TranscriptIngestionResult` linked to the sanitized `ArtifactRef` |
+
+`ArtifactStoreConfig` retains its name but now configures only bounded object
+copying and file-ingestion I/O. Callers must construct the new model rather
+than expecting the former bundle/checkpoint fields. There are deliberately no
+compatibility aliases for claim, receipt, bundle-finalization, or reconciler
+types: preserving them would retain the machinery this migration removes.

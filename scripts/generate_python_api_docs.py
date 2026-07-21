@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import argparse
 import types
 from dataclasses import MISSING, dataclass, fields, is_dataclass
 from enum import Enum
@@ -378,6 +379,8 @@ def _type_name(annotation: object) -> str:
     """Render a compact Python type name for a generated field table."""
     if annotation is Any:
         return "Any"
+    if annotation is Ellipsis:
+        return "..."
     if annotation is None or annotation is type(None):
         return "None"
 
@@ -549,20 +552,52 @@ def _render_index() -> str:
     return "\n".join(lines)
 
 
-def main() -> None:
-    locations = _validate_coverage()
-    PAGES_DIR.mkdir(parents=True, exist_ok=True)
-    OUTPUT.write_text(_render_index(), encoding="utf-8", newline="\n")
-    expected = set()
+def _expected_outputs(locations: dict[str, tuple[str, str]]) -> dict[Path, str]:
+    outputs = {OUTPUT: _render_index()}
     for page in PAGES:
-        destination = PAGES_DIR / f"{page.slug}.md"
-        destination.write_text(_render_page(page, locations), encoding="utf-8", newline="\n")
-        expected.add(destination)
+        outputs[PAGES_DIR / f"{page.slug}.md"] = _render_page(page, locations)
+    return outputs
+
+
+def _check_outputs(outputs: dict[Path, str]) -> list[Path]:
+    drifted = [
+        destination
+        for destination, expected in outputs.items()
+        if not destination.is_file() or destination.read_text(encoding="utf-8") != expected
+    ]
+    drifted.extend(stale for stale in PAGES_DIR.glob("*.md") if stale not in outputs)
+    return sorted(drifted)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="fail when the committed Python reference differs from generated output",
+    )
+    args = parser.parse_args(argv)
+
+    locations = _validate_coverage()
+    outputs = _expected_outputs(locations)
+    if args.check:
+        drifted = _check_outputs(outputs)
+        if drifted:
+            rendered = ", ".join(str(path.relative_to(DOCS_DIR.parent)) for path in drifted)
+            print(f"Python API reference is stale: {rendered}")
+            return 1
+        print(f"Python API reference is current ({len(PAGES)} pages)")
+        return 0
+
+    PAGES_DIR.mkdir(parents=True, exist_ok=True)
+    for destination, rendered in outputs.items():
+        destination.write_text(rendered, encoding="utf-8", newline="\n")
     for stale in PAGES_DIR.glob("*.md"):
-        if stale not in expected:
+        if stale not in outputs:
             stale.unlink()
     print(f"Generated {OUTPUT} and {len(PAGES)} Python API pages")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
