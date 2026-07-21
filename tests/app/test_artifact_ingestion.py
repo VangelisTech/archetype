@@ -16,6 +16,7 @@ from pypdf import PdfWriter
 from uuid_utils import UUID
 
 import archetype.app.artifacts.service as artifact_service_module
+from archetype.app.artifacts.pipeline import plan_source
 from archetype.app.container import ServiceContainer
 from archetype.artifacts.contracts import ArtifactSource, ArtifactStoreConfig
 from archetype.core.config import StorageBackend, StorageConfig, WorldConfig
@@ -27,6 +28,7 @@ from archetype.ingestion import (
     ARTIFACT_TEXT,
     ARTIFACT_VIDEO,
 )
+from archetype.ingestion.files import logical_path_for
 from archetype.ingestion.images import ARTIFACT_IMAGES
 
 _PNG = base64.b64decode(
@@ -76,6 +78,66 @@ def _write_pdf(path: Path) -> None:
     writer.add_metadata({"/Title": "Context paper", "/Author": "Archetype"})
     with path.open("wb") as stream:
         writer.write(stream)
+
+
+def test_logical_paths_and_source_plans_preserve_declared_roots(tmp_path):
+    assert (
+        logical_path_for(
+            "s3://bucket/source/context%20pack/report.md",
+            source_root="s3://bucket/source",
+            logical_root="mission",
+        )
+        == "mission/context pack/report.md"
+    )
+    assert (
+        logical_path_for(
+            "s3://other/source/report.md",
+            source_root="s3://bucket/source",
+        )
+        == "report.md"
+    )
+    assert (
+        logical_path_for(
+            "file:///tmp/source/report.md",
+            logical_path="renamed/report.md",
+        )
+        == "renamed/report.md"
+    )
+    with pytest.raises(ValueError, match="portable relative"):
+        logical_path_for("result.md", logical_path="../result.md")
+
+    remote = plan_source(
+        0,
+        ArtifactSource(source_uri="s3://bucket/context", recursive=True),
+    )
+    assert remote.path == "s3://bucket/context/**/*"
+    assert remote.source_root == "s3://bucket/context"
+
+    directory = tmp_path / "context"
+    directory.mkdir()
+    local = plan_source(
+        1,
+        ArtifactSource(source_uri=str(directory), recursive=True),
+    )
+    assert local.path == str(directory / "**/*")
+    assert local.source_root == str(directory)
+    with pytest.raises(IsADirectoryError):
+        plan_source(2, ArtifactSource(source_uri=str(directory)))
+
+    document = directory / "report.md"
+    document.write_text("evidence")
+    with pytest.raises(NotADirectoryError):
+        plan_source(
+            3,
+            ArtifactSource(source_uri=str(document), recursive=True),
+        )
+
+    wildcard = plan_source(
+        4,
+        ArtifactSource(source_uri=str(directory / "*.md")),
+    )
+    assert wildcard.path == str(directory / "*.md")
+    assert wildcard.source_root == str(directory)
 
 
 @pytest.mark.asyncio

@@ -65,8 +65,8 @@ def plan_source(index: int, source: ArtifactSource) -> SourcePlan:
             for position in (root.find("*"), root.find("?"), root.find("["))
             if position >= 0
         )
-        prefix = root[:wildcard].rstrip("/")
-        root = str(Path(prefix).parent if not prefix.endswith("/") else Path(prefix))
+        prefix = root[:wildcard]
+        root = str(Path(prefix) if prefix.endswith("/") else Path(prefix).parent)
     return SourcePlan(index, source, source.source_uri, root)
 
 

@@ -23,6 +23,21 @@ def _storage(tmp_path: Path) -> StorageConfig:
     )
 
 
+@pytest.mark.parametrize(
+    ("name", "keys", "message"),
+    [
+        ("bad-name", ("id",), "table names"),
+        ("events", (), "at least one key"),
+        ("events", ("id", "id"), "must be unique"),
+        ("events", ("bad-key",), "invalid ingestion key"),
+        ("events", ("world_id",), "service-owned envelope"),
+    ],
+)
+def test_ingestion_table_rejects_ambiguous_identity(name, keys, message):
+    with pytest.raises(ValueError, match=message):
+        IngestionTable(name, key_columns=keys)
+
+
 @pytest.mark.asyncio
 async def test_append_registers_table_in_active_daft_catalog(tmp_path):
     container = ServiceContainer()

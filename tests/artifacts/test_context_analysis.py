@@ -89,3 +89,11 @@ def test_context_analysis_rejects_incomplete_index() -> None:
             daft.from_pydict({"artifact_id": ["a1"]}),
             ArtifactContext(task="Analyze"),
         )
+
+
+def test_context_synthesis_rejects_incomplete_analyses() -> None:
+    with pytest.raises(ValueError, match="analysis"):
+        synthesize_artifact_context(
+            daft.from_pydict({"artifact_id": ["a1"], "logical_path": ["brief.md"]}),
+            ArtifactContext(task="Analyze"),
+        )
