@@ -1,0 +1,41 @@
+name: PR gate
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  maintainer-only:
+    runs-on: ubuntu-latest
+    # API-only job: never checks out or executes pull-request code.
+    # Keep the allowlist in sync with cla.yml and dco.yml.
+    if: >-
+      github.event.pull_request.user.login != 'everettVT' &&
+      !endsWith(github.event.pull_request.user.login, '[bot]')
+    steps:
+      - name: Close outside pull requests
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: pr.number,
+              body: [
+                'Thanks for the interest — Archetype is not accepting outside pull',
+                'requests right now while the contract surface stabilizes, so this',
+                'PR is being closed automatically (it was not reviewed on its',
+                'merits). Bug reports and design discussion are welcome as issues.',
+                '',
+                'When outside contributions open up, PRs will require DCO sign-off',
+                'and a signed CLA — see CONTRIBUTING.md.',
+              ].join('\n'),
+            });
+            await github.rest.pulls.update({
+              ...context.repo,
+              pull_number: pr.number,
+              state: 'closed',
+            });
