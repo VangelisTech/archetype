@@ -10,9 +10,7 @@ from typing import BinaryIO, cast
 import daft
 from daft import DataFrame, DataType, col
 
-from archetype.ingestion.contracts import IngestionTable
-
-ARTIFACT_DIFF = IngestionTable("artifact_diff", key_columns=("artifact_id",))
+ARTIFACT_DIFF = "artifact_diff"
 _DIFF_METADATA = DataType.struct(
     {
         "format": DataType.string(),

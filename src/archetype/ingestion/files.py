@@ -19,9 +19,7 @@ from daft.functions import file_path, uuid
 from daft.io import IOConfig
 from uuid_utils import UUID
 
-from archetype.ingestion.contracts import IngestionTable
-
-ARTIFACT_FILES = IngestionTable("artifact_files", key_columns=("artifact_id",))
+ARTIFACT_FILES = "artifact_files"
 _COPY_BUFFER = 1 << 20
 _MIME_OVERRIDES = {
     ".diff": "text/x-diff",

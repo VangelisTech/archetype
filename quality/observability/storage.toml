@@ -34,7 +34,10 @@ operations = [
   "interfaces.iStorageService.require_iceberg_identity",
   "interfaces.iStorageService.get_control_catalog",
   "interfaces.iStorageService.get_or_create_store",
-  "interfaces.iStorageService.get_iceberg_context",
+  "interfaces.iStorageService.materialize",
+  "interfaces.iStorageService.read_table",
+  "interfaces.iStorageService.append_table",
+  "interfaces.iStorageService.append_missing",
   "interfaces.iStorageService.shutdown",
 ]
 signals = ["none"]

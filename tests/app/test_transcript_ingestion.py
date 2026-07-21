@@ -15,16 +15,12 @@ from archetype import ArchetypeRuntime
 from archetype.app.container import ServiceContainer
 from archetype.app.redaction import SecretQuarantineError
 from archetype.core.config import StorageBackend, StorageConfig, WorldConfig
-from archetype.ingestion import IngestionTable
 from archetype.missions.trajectories import (
     CLAUDE_TRANSCRIPT_TABLE,
     ClaudeTranscriptSource,
 )
 
-_TRANSCRIPT_ROWS = IngestionTable(
-    CLAUDE_TRANSCRIPT_TABLE,
-    key_columns=("source_artifact_id", "row_kind", "seq"),
-)
+_TRANSCRIPT_ROWS = CLAUDE_TRANSCRIPT_TABLE
 
 
 def _storage(tmp_path: Path, namespace: str) -> StorageConfig:

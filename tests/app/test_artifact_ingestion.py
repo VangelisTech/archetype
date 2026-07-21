@@ -174,9 +174,10 @@ async def test_text_file_gets_uuidv7_common_index_and_content_address(tmp_path):
                 "object_uri": reference.uri,
             }
         ]
-        iceberg = await container.storage_service.get_iceberg_context(storage)
-        assert iceberg.catalog.has_table("ns.artifact_files")
-        assert not iceberg.catalog.has_table("ns.artifact_images")
+        store_handle = await container.storage_service.get_or_create_store(storage)
+        catalog = store_handle.session.current_catalog()
+        assert catalog.has_table("ns.artifact_files")
+        assert not catalog.has_table("ns.artifact_images")
     finally:
         await container.shutdown()
 
@@ -294,8 +295,8 @@ async def test_common_index_is_published_last(tmp_path, monkeypatch):
                 str(world.world_id), ArtifactSource(source_uri=str(source))
             )
 
-        iceberg = await container.storage_service.get_iceberg_context(storage)
-        assert not iceberg.catalog.has_table("ns.artifact_files")
+        store_handle = await container.storage_service.get_or_create_store(storage)
+        assert not store_handle.session.current_catalog().has_table("ns.artifact_files")
     finally:
         await container.shutdown()
 

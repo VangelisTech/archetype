@@ -10,9 +10,8 @@ import pytest
 
 from archetype.app.container import ServiceContainer
 from archetype.core.config import StorageBackend, StorageConfig, WorldConfig
-from archetype.ingestion import IngestionTable
 
-READINGS = IngestionTable("readings", key_columns=("reading_id",))
+READINGS = "readings"
 
 
 def _storage(tmp_path: Path) -> StorageConfig:
@@ -23,21 +22,6 @@ def _storage(tmp_path: Path) -> StorageConfig:
     )
 
 
-@pytest.mark.parametrize(
-    ("name", "keys", "message"),
-    [
-        ("bad-name", ("id",), "table names"),
-        ("events", (), "at least one key"),
-        ("events", ("id", "id"), "must be unique"),
-        ("events", ("bad-key",), "invalid ingestion key"),
-        ("events", ("world_id",), "service-owned envelope"),
-    ],
-)
-def test_ingestion_table_rejects_ambiguous_identity(name, keys, message):
-    with pytest.raises(ValueError, match=message):
-        IngestionTable(name, key_columns=keys)
-
-
 @pytest.mark.asyncio
 async def test_append_registers_table_in_active_daft_catalog(tmp_path):
     container = ServiceContainer()
@@ -45,17 +29,16 @@ async def test_append_registers_table_in_active_daft_catalog(tmp_path):
         storage = _storage(tmp_path)
         world = await container.world_service.create_world(WorldConfig(name="w"), storage)
 
-        version = await container.ingestion_service.append(
+        rows_written = await container.ingestion_service.append(
             str(world.world_id),
             READINGS,
             daft.from_pydict({"reading_id": ["r1"], "value": [21.5]}),
+            key_columns=("reading_id",),
         )
 
-        iceberg = await container.storage_service.get_iceberg_context(storage)
-        assert iceberg.catalog.has_table("ns.readings")
-        assert version.table_name == "readings"
-        assert version.rows_written == 1
-        assert version.snapshot_id is not None
+        store = await container.storage_service.get_or_create_store(storage)
+        assert store.session.current_catalog().has_table("ns.readings")
+        assert rows_written == 1
         assert (
             await container.ingestion_service.read(str(world.world_id), READINGS)
         ).to_pylist() == [
@@ -84,6 +67,7 @@ async def test_registered_table_is_queryable_from_fresh_application(tmp_path, mo
             world_id,
             READINGS,
             daft.from_pydict({"reading_id": ["r1"], "value": [21.5]}),
+            key_columns=("reading_id",),
         )
     finally:
         await writer.shutdown()
@@ -115,12 +99,15 @@ async def test_append_is_idempotent_by_declared_key(tmp_path):
         world = await container.world_service.create_world(WorldConfig(name="w"), storage)
         rows = daft.from_pydict({"reading_id": ["r1"], "value": [21.5]})
 
-        first = await container.ingestion_service.append(str(world.world_id), READINGS, rows)
-        retry = await container.ingestion_service.append(str(world.world_id), READINGS, rows)
+        first = await container.ingestion_service.append(
+            str(world.world_id), READINGS, rows, key_columns=("reading_id",)
+        )
+        retry = await container.ingestion_service.append(
+            str(world.world_id), READINGS, rows, key_columns=("reading_id",)
+        )
 
-        assert first.rows_written == 1
-        assert retry.rows_written == 0
-        assert retry.snapshot_id == first.snapshot_id
+        assert first == 1
+        assert retry == 0
     finally:
         await container.shutdown()
 
@@ -135,6 +122,7 @@ async def test_registered_table_rejects_schema_drift(tmp_path):
             str(world.world_id),
             READINGS,
             daft.from_pydict({"reading_id": ["r1"], "value": [21.5]}),
+            key_columns=("reading_id",),
         )
 
         with pytest.raises(ValueError, match="different typed schema"):
@@ -142,6 +130,7 @@ async def test_registered_table_rejects_schema_drift(tmp_path):
                 str(world.world_id),
                 READINGS,
                 daft.from_pydict({"reading_id": ["r2"], "value": ["hot"]}),
+                key_columns=("reading_id",),
             )
     finally:
         await container.shutdown()

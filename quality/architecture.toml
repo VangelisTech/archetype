@@ -234,11 +234,14 @@ allowed_app = [
 
 [[module_rule]]
 module = "archetype.app.storage.service"
-allowed_interfaces = ["archetype.core.interfaces.iAsyncStore"]
+allowed_interfaces = [
+  "archetype.core.interfaces.AppendReceipt",
+  "archetype.core.interfaces.ArchetypeSignature",
+  "archetype.core.interfaces.iAsyncStore",
+]
 allowed_app = [
   "archetype.app.storage.catalog",
   "archetype.app.storage.remote_catalog",
-  "archetype.app.storage.iceberg",
   "archetype.app.storage.session",
 ]
 
@@ -285,9 +288,7 @@ allowed_interfaces = [
   "archetype.app.storage.interfaces.iStorageService",
   "archetype.app.world.interfaces.iWorldService",
 ]
-allowed_app = [
-  "archetype.app.storage.iceberg",
-]
+allowed_app = []
 
 [[module_rule]]
 module = "archetype.app.artifacts.service"
@@ -379,7 +380,6 @@ allowed_app = [
   "archetype.app.errors",
   "archetype.app.models",
   "archetype.app.storage.catalog",
-  "archetype.app.storage.iceberg",
 ]
 
 [[module_rule]]

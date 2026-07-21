@@ -6,9 +6,7 @@
 from daft import DataFrame, col
 from daft.functions import video_file, video_metadata
 
-from archetype.ingestion.contracts import IngestionTable
-
-ARTIFACT_VIDEO = IngestionTable("artifact_video", key_columns=("artifact_id",))
+ARTIFACT_VIDEO = "artifact_video"
 
 
 def video_index(files: DataFrame) -> DataFrame:

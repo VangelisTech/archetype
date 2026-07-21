@@ -97,24 +97,6 @@ method = "to_pylist"
 reason = "Bounded compatibility boundary: queued audit rows are already filtered and limited lazily, then materialized into the legacy list[Command] return contract used by pre-gate callers."
 
 [[entries]]
-path = "src/archetype/app/artifacts/service.py"
-line = 76
-method = "collect"
-reason = "Artifact occurrence boundary: execute UUIDv7 assignment and the bounded file scan's single-pass SHA-256/XXH3 hashing exactly once so every typed media sink and the common index share one occurrence identity without rereading source bytes."
-
-[[entries]]
-path = "src/archetype/app/artifacts/service.py"
-line = 86
-method = "collect"
-reason = "Object persistence boundary: execute each bounded content-addressed copy or Daft upload once so typed metadata indexes and the common visibility index reuse the same durable object URI without repeating external writes."
-
-[[entries]]
-path = "src/archetype/app/ingestion/service.py"
-line = 64
-method = "collect"
-reason = "Catalog append boundary: materialize the already key-filtered incoming rows exactly once so an empty idempotent retry creates no Iceberg snapshot and a non-empty UDF pipeline cannot execute separately for counting and writing."
-
-[[entries]]
 path = "src/archetype/app/world/service.py"
 line = 741
 method = "to_pylist"

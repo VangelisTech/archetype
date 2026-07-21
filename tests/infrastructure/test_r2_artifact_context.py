@@ -351,12 +351,12 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
         )
 
         cold_counts = {
-            ARTIFACT_FILES.name: len(common_rows),
-            ARTIFACT_AUDIO.name: len(audio_rows),
-            ARTIFACT_VIDEO.name: len(video_rows),
-            ARTIFACT_PDF.name: len(pdf_rows),
-            ARTIFACT_TEXT.name: len(text_rows),
-            ARTIFACT_DIFF.name: len(diff_rows),
+            ARTIFACT_FILES: len(common_rows),
+            ARTIFACT_AUDIO: len(audio_rows),
+            ARTIFACT_VIDEO: len(video_rows),
+            ARTIFACT_PDF: len(pdf_rows),
+            ARTIFACT_TEXT: len(text_rows),
+            ARTIFACT_DIFF: len(diff_rows),
             CLAUDE_TRANSCRIPT_TABLE: len(transcript_rows),
         }
         assert cold_counts == {

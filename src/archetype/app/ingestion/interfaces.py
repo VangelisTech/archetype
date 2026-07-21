@@ -10,7 +10,6 @@ from typing import Protocol, runtime_checkable
 from daft import DataFrame
 
 from archetype.core.config import StorageConfig
-from archetype.ingestion.contracts import IngestionTable, TableVersion
 
 
 @runtime_checkable
@@ -20,16 +19,17 @@ class iIngestionService(Protocol):
     async def append(
         self,
         world_id: str,
-        table: IngestionTable,
+        table_name: str,
         rows: DataFrame,
         *,
+        key_columns: tuple[str, ...] = (),
         storage_config: StorageConfig | None = None,
-    ) -> TableVersion: ...
+    ) -> int: ...
 
     async def read(
         self,
         world_id: str,
-        table: IngestionTable,
+        table_name: str,
         *,
         storage_config: StorageConfig | None = None,
     ) -> DataFrame: ...

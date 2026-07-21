@@ -12,9 +12,7 @@ import daft
 from daft import DataFrame, DataType, col
 from pypdf import PdfReader
 
-from archetype.ingestion.contracts import IngestionTable
-
-ARTIFACT_PDF = IngestionTable("artifact_pdf", key_columns=("artifact_id",))
+ARTIFACT_PDF = "artifact_pdf"
 _PDF_METADATA = DataType.struct(
     {
         "page_count": DataType.int64(),

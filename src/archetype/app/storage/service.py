@@ -24,19 +24,121 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any, TypeVar
 
+import pyarrow as pa
+from daft import DataFrame, DataType, col, read_iceberg
+from daft.catalog import Catalog, Table
+from daft.io import IOConfig
 from daft.session import Session
+from pyiceberg.exceptions import CommitFailedException
 
 from archetype._storage_uri import local_storage_path, normalized_storage_uri
 from archetype.app.storage.catalog import ControlCatalog, SqliteControlCatalog, catalog_path_for
-from archetype.app.storage.iceberg import IcebergCatalogContext
 from archetype.core.aio import AsyncCachedStore, AsyncLancedbStore, AsyncStore
 from archetype.core.config import CacheConfig, StorageBackend, StorageConfig
-from archetype.core.interfaces import iAsyncStore
+from archetype.core.interfaces import AppendReceipt, ArchetypeSignature, iAsyncStore
 from archetype.core.paths import require_safe_namespace, resolve_local_root
 
 logger = logging.getLogger(__name__)
+
+_MAX_COMMIT_ATTEMPTS = 16
+_T = TypeVar("_T")
+
+
+class _DaftExecutionGate:
+    """One reentrant admission lane for terminal Daft work in this process.
+
+    Reentrancy is required because a cached-store append can trigger a flush
+    into its inner durable store in the same task. Background flushes run in a
+    different task and therefore wait for the active operation.
+    """
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._owner: asyncio.Task[Any] | None = None
+        self._depth = 0
+
+    @asynccontextmanager
+    async def admit(self) -> AsyncIterator[None]:
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("Daft execution admission requires an asyncio task")
+        if task is self._owner:
+            self._depth += 1
+            try:
+                yield
+            finally:
+                self._depth -= 1
+            return
+
+        await self._lock.acquire()
+        self._owner = task
+        self._depth = 1
+        try:
+            yield
+        finally:
+            self._depth = 0
+            self._owner = None
+            self._lock.release()
+
+
+class _AdmittedAsyncStore(AsyncStore):
+    """Iceberg ECS store whose terminal append shares StorageService admission."""
+
+    def __init__(
+        self,
+        session: Session | object,
+        io_config: IOConfig | None,
+        execution_gate: _DaftExecutionGate,
+    ) -> None:
+        super().__init__(session, io_config=io_config)
+        self._execution_gate = execution_gate
+
+    async def append(self, sig: ArchetypeSignature, df: DataFrame) -> AppendReceipt:
+        async with self._execution_gate.admit():
+            return await super().append(sig, df)
+
+
+class _AdmittedAsyncLancedbStore(AsyncLancedbStore):
+    """LanceDB ECS store whose terminal append shares StorageService admission."""
+
+    def __init__(
+        self,
+        uri: str,
+        namespace: str,
+        execution_gate: _DaftExecutionGate,
+    ) -> None:
+        super().__init__(uri, namespace)
+        self._execution_gate = execution_gate
+
+    async def append(self, sig: ArchetypeSignature, df: DataFrame) -> AppendReceipt:
+        async with self._execution_gate.admit():
+            return await super().append(sig, df)
+
+
+class _AdmittedAsyncCachedStore(AsyncCachedStore):
+    """Cache whose materialization and explicit drains use the shared lane."""
+
+    def __init__(
+        self,
+        async_store: iAsyncStore,
+        cache_config: CacheConfig,
+        execution_gate: _DaftExecutionGate,
+    ) -> None:
+        super().__init__(async_store, cache_config)
+        self._execution_gate = execution_gate
+
+    async def append(self, sig: ArchetypeSignature, df: DataFrame) -> AppendReceipt:
+        async with self._execution_gate.admit():
+            return await super().append(sig, df)
+
+    async def flush(self) -> None:
+        async with self._execution_gate.admit():
+            await super().flush()
 
 
 def _validate_session_namespace(session: Session, config: StorageConfig) -> None:
@@ -68,6 +170,8 @@ def create_async_store(
     config: StorageConfig,
     session: Session | None = None,
     cache_config: CacheConfig | None = None,
+    *,
+    execution_gate: _DaftExecutionGate | None = None,
 ) -> iAsyncStore:
     """Create an async store from a StorageConfig.
 
@@ -88,7 +192,11 @@ def create_async_store(
             # outside ARCHETYPE_DATA_ROOT even with a safe segment name;
             # resolve the namespace directory under the same containment rule.
             resolve_local_root(str(Path(uri) / namespace))
-        store = AsyncLancedbStore(uri, namespace)
+        store = (
+            _AdmittedAsyncLancedbStore(uri, namespace, execution_gate)
+            if execution_gate is not None
+            else AsyncLancedbStore(uri, namespace)
+        )
     else:
         from archetype.app.storage.session import configure_session
 
@@ -97,13 +205,21 @@ def create_async_store(
             sess = session
         else:
             sess = configure_session(config)
-        store = AsyncStore(sess, io_config=config.io_config)
+        store = (
+            _AdmittedAsyncStore(sess, config.io_config, execution_gate)
+            if execution_gate is not None
+            else AsyncStore(sess, io_config=config.io_config)
+        )
 
     if isinstance(cache_config, bool):
         cache_config = CacheConfig() if cache_config else None
 
     if cache_config:
-        store = AsyncCachedStore(async_store=store, cache_config=cache_config)
+        store = (
+            _AdmittedAsyncCachedStore(store, cache_config, execution_gate)
+            if execution_gate is not None
+            else AsyncCachedStore(async_store=store, cache_config=cache_config)
+        )
 
     return store
 
@@ -121,8 +237,9 @@ class StorageService:
         self._session_identity: tuple[str, str] | None = None
         self._required_session_identity: tuple[str, str] | None = None
         self._session_lock = asyncio.Lock()
+        self._execution_gate = _DaftExecutionGate()
         self._instances: dict[str, iAsyncStore] = {}
-        self._locks: dict[str, asyncio.Lock] = {}
+        self._store_locks: dict[str, asyncio.Lock] = {}
         # Control catalogs, pooled by resolved catalog path (issue #272).
         # The catalog is an implementation resource of this service — it is
         # authoritative for discovery, and its location is a pure function
@@ -252,13 +369,16 @@ class StorageService:
                 return self._get_or_create_injected_store(key, storage_config, cache_config)
 
         if key not in self._instances:
-            if key not in self._locks:
-                self._locks[key] = asyncio.Lock()
+            if key not in self._store_locks:
+                self._store_locks[key] = asyncio.Lock()
 
-            async with self._locks[key]:
+            async with self._store_locks[key]:
                 if key not in self._instances:
                     self._instances[key] = create_async_store(
-                        storage_config, self._session, cache_config
+                        storage_config,
+                        self._session,
+                        cache_config,
+                        execution_gate=self._execution_gate,
                     )
 
         return self._instances[key]
@@ -293,22 +413,217 @@ class StorageService:
 
         store = self._instances.get(key)
         if store is None:
-            store = create_async_store(storage_config, self._session, cache_config)
+            store = create_async_store(
+                storage_config,
+                self._session,
+                cache_config,
+                execution_gate=self._execution_gate,
+            )
             self._instances[key] = store
             self._session_identity = requested
         return store
 
-    async def get_iceberg_context(
+    async def materialize(self, frame: DataFrame) -> DataFrame:
+        """Execute one Archetype-owned lazy Daft plan through the shared lane."""
+        self._require_frame(frame)
+        async with self._execution_gate.admit():
+            return await self._blocking(frame.collect, num_preview_rows=0)
+
+    async def read_table(
         self,
         storage_config: StorageConfig,
-    ) -> IcebergCatalogContext:
-        """Return the authoritative Daft catalog context for an Iceberg config."""
+        table_name: str,
+    ) -> DataFrame:
+        """Build a lazy read for one existing app-owned Iceberg table."""
+        store = await self._iceberg_store(storage_config)
+        async with self._execution_gate.admit():
+            catalog, identifier = self._catalog_identity(store, table_name)
+            if not catalog.has_table(identifier):
+                raise KeyError(f"Iceberg table {table_name!r} does not exist")
+            return self._read_table(catalog.get_table(identifier), store.io_config)
+
+    async def append_table(
+        self,
+        storage_config: StorageConfig,
+        table_name: str,
+        rows: DataFrame,
+    ) -> int:
+        """Materialize and append rows, retrying optimistic Iceberg conflicts."""
+        self._require_frame(rows)
+        store = await self._iceberg_store(storage_config)
+        frozen: DataFrame | None = None
+        rows_written = 0
+
+        for attempt in range(_MAX_COMMIT_ATTEMPTS):
+            try:
+                async with self._execution_gate.admit():
+                    table = self._ensure_table(store, table_name, rows.schema())
+                    if attempt:
+                        self._native_table(table).refresh()
+                    if frozen is None:
+                        aligned = self._align_table_schema(table, rows, table_name)
+                        frozen = await self._blocking(
+                            aligned.collect,
+                            num_preview_rows=0,
+                        )
+                        rows_written = frozen.count_rows()
+                    if rows_written:
+                        await self._blocking(
+                            frozen.write_iceberg,
+                            self._native_table(table),
+                            mode="append",
+                            io_config=store.io_config,
+                        )
+                    return rows_written
+            except CommitFailedException:
+                if attempt + 1 == _MAX_COMMIT_ATTEMPTS:
+                    raise
+                await asyncio.sleep(min(0.005 * (2**attempt), 0.1))
+
+        raise AssertionError("unreachable Iceberg append retry state")
+
+    async def append_missing(
+        self,
+        storage_config: StorageConfig,
+        table_name: str,
+        rows: DataFrame,
+        *,
+        key_columns: tuple[str, ...],
+    ) -> int:
+        """Append rows absent by key within this service's execution authority.
+
+        The producer graph is evaluated once. After an optimistic conflict,
+        the frozen candidate rows are anti-joined against the refreshed table
+        before another write. This prevents the stale-pending retry bug where
+        two writers can publish the same logical key.
+        """
+        self._require_frame(rows)
+        if not key_columns:
+            raise ValueError("append_missing requires at least one key column")
+        store = await self._iceberg_store(storage_config)
+        candidates: DataFrame | None = None
+
+        for attempt in range(_MAX_COMMIT_ATTEMPTS):
+            try:
+                async with self._execution_gate.admit():
+                    table = self._ensure_table(store, table_name, rows.schema())
+                    if attempt:
+                        self._native_table(table).refresh()
+
+                    if candidates is None:
+                        candidates = self._align_table_schema(table, rows, table_name)
+                    existing = self._read_table(table, store.io_config).select(*key_columns)
+                    pending = candidates.join(existing, on=list(key_columns), how="anti")
+                    pending = await self._blocking(
+                        pending.collect,
+                        num_preview_rows=0,
+                    )
+                    rows_written = pending.count_rows()
+                    if not rows_written:
+                        return 0
+                    if candidates is not pending and attempt == 0:
+                        # Freeze only rows that were candidates for the first
+                        # write. Rows already present cannot disappear from an
+                        # append-only table and need not be re-evaluated.
+                        candidates = pending
+                    await self._blocking(
+                        pending.write_iceberg,
+                        self._native_table(table),
+                        mode="append",
+                        io_config=store.io_config,
+                    )
+                    return rows_written
+            except CommitFailedException:
+                if attempt + 1 == _MAX_COMMIT_ATTEMPTS:
+                    raise
+                await asyncio.sleep(min(0.005 * (2**attempt), 0.1))
+
+        raise AssertionError("unreachable conditional append retry state")
+
+    async def _iceberg_store(self, storage_config: StorageConfig) -> AsyncStore:
         if storage_config.backend != StorageBackend.ICEBERG:
-            raise ValueError("Iceberg catalog context requires backend=iceberg")
+            raise ValueError("app table storage requires backend=iceberg")
         store = await self.get_or_create_store(storage_config, cache_config=None)
         if not isinstance(store, AsyncStore):
             raise TypeError(f"expected AsyncStore for Iceberg, got {type(store).__name__}")
-        return IcebergCatalogContext(session=store.session, io_config=store.io_config)
+        return store
+
+    @staticmethod
+    def _catalog_identity(store: AsyncStore, table_name: str) -> tuple[Catalog, str]:
+        catalog = store.session.current_catalog()
+        if catalog is None:
+            raise RuntimeError("Daft session has no current catalog")
+        namespace = store.session.current_namespace()
+        if namespace is None:
+            raise RuntimeError("Daft session has no current namespace")
+        return catalog, f"{namespace}.{table_name}"
+
+    @classmethod
+    def _ensure_table(
+        cls,
+        store: AsyncStore,
+        table_name: str,
+        schema,
+    ) -> Table:
+        catalog, identifier = cls._catalog_identity(store, table_name)
+        return catalog.create_table_if_not_exists(identifier, schema)
+
+    @staticmethod
+    def _read_table(table: Table, io_config: IOConfig | None) -> DataFrame:
+        return read_iceberg(StorageService._native_table(table), io_config=io_config)
+
+    @staticmethod
+    def _native_table(table: Table):
+        native = getattr(table, "_inner", None)
+        if native is None:
+            raise RuntimeError("Daft table does not expose an Iceberg handle")
+        return native
+
+    @staticmethod
+    def _align_table_schema(table: Table, rows: DataFrame, table_name: str) -> DataFrame:
+        existing = table.schema().to_pyarrow_schema()
+        incoming = rows.schema().to_pyarrow_schema()
+        existing_shape = {field.name: field.type for field in existing}
+        incoming_shape = {field.name: field.type for field in incoming}
+        compatible = existing_shape.keys() == incoming_shape.keys() and all(
+            StorageService._iceberg_compatible(incoming_shape[name], existing_type)
+            for name, existing_type in existing_shape.items()
+        )
+        if not compatible:
+            raise ValueError(
+                f"Iceberg table {table_name!r} already has a different typed schema: "
+                f"existing={existing_shape!r}, incoming={incoming_shape!r}"
+            )
+        return rows.select(
+            *(
+                col(field.name).cast(DataType.from_arrow_type(field.type)).alias(field.name)
+                for field in existing
+            )
+        )
+
+    @staticmethod
+    def _iceberg_compatible(incoming: pa.DataType, existing: pa.DataType) -> bool:
+        if incoming == existing:
+            return True
+        if pa.types.is_timestamp(incoming) and pa.types.is_timestamp(existing):
+            return incoming.tz == existing.tz
+        if pa.types.is_unsigned_integer(incoming) and pa.types.is_signed_integer(existing):
+            return incoming.bit_width <= existing.bit_width
+        return False
+
+    @staticmethod
+    def _require_frame(frame: DataFrame) -> None:
+        if not isinstance(frame, DataFrame):
+            raise TypeError("rows must be a daft.DataFrame")
+
+    @staticmethod
+    async def _blocking(
+        function: Callable[..., _T],
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> _T:
+        return await asyncio.to_thread(function, *args, **kwargs)
 
     async def shutdown(self):
         """Gracefully shuts down all managed storage backends."""
@@ -337,7 +652,7 @@ class StorageService:
                     errors.append(exc)
         finally:
             self._instances.clear()
-            self._locks.clear()
+            self._store_locks.clear()
             self._catalogs.clear()
 
         shutdown_error = (

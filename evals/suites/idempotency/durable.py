@@ -30,7 +30,6 @@ from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
 from archetype.core.interfaces import StaleWriterError
 from archetype.evaluation.contracts import GraderContract, Outcome
-from archetype.ingestion import IngestionTable
 from evals.graders import exact_match, state_check
 from evals.types import GraderResult
 
@@ -65,7 +64,7 @@ async def _visible_rows(
     return frame.to_pylist()
 
 
-_EVALUATION_RESULTS = IngestionTable("evaluation_results", key_columns=("evaluation_id",))
+_EVALUATION_RESULTS = "evaluation_results"
 
 
 def task_atomic_publish_retry() -> list[GraderResult]:

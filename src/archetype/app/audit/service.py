@@ -21,14 +21,12 @@ from collections.abc import Awaitable, Callable, Sequence
 
 import daft
 import pyarrow as pa
-from daft import Expression, Schema
-from daft.catalog import Table
+from daft import Expression
 from uuid_utils import UUID
 
 from archetype.app.errors import AvailabilityError
 from archetype.app.models import AuditRow
 from archetype.app.storage.catalog import OutboxRecord
-from archetype.app.storage.iceberg import IcebergCatalogContext
 from archetype.app.storage.interfaces import iStorageService
 from archetype.core.config import StorageBackend, StorageConfig
 
@@ -107,8 +105,6 @@ class AuditLog:
         self._storage_config = effective_config
         self._flush_rows = flush_rows
         self._pending: list[AuditRow] = []
-        self._context: IcebergCatalogContext | None = None
-        self._table: Table | None = None
         self._lock = asyncio.Lock()
         self._projection_lock = asyncio.Lock()
         self._rejected_rows = 0
@@ -128,27 +124,6 @@ class AuditLog:
     def rejected_rows(self) -> int:
         """Rows rejected before admission because the bounded batch was full."""
         return self._rejected_rows
-
-    async def _get_context(self) -> IcebergCatalogContext:
-        if self._context is None:
-            self._context = await self._storage_service.get_iceberg_context(self._storage_config)
-        return self._context
-
-    async def _ensure_table(self) -> Table:
-        if self._table is None:
-            context = await self._get_context()
-            schema = Schema.from_pyarrow_schema(_audit_schema())
-            self._table = context.create_table_if_not_exists(_AUDIT_TABLE, schema)
-        return self._table
-
-    async def _existing_table(self) -> Table | None:
-        if self._table is not None:
-            return self._table
-        context = await self._get_context()
-        if not context.has_table(_AUDIT_TABLE):
-            return None
-        self._table = context.get_table(_AUDIT_TABLE)
-        return self._table
 
     async def record(self, row: AuditRow) -> None:
         """Buffer one row, flushing at the configured batch boundary."""
@@ -172,9 +147,11 @@ class AuditLog:
         if not self._pending:
             return
         pending = tuple(self._pending)
-        context = await self._get_context()
-        table = await self._ensure_table()
-        await context.append(table, _rows_to_frame(pending))
+        await self._storage_service.append_table(
+            self._storage_config,
+            _AUDIT_TABLE,
+            _rows_to_frame(pending),
+        )
         del self._pending[: len(pending)]
 
     async def flush(self) -> None:
@@ -232,12 +209,15 @@ class AuditLog:
 
         await self.project_outbox()
         await self.flush()
-        table = await self._existing_table()
-        if table is None:
+        try:
+            frame = await self._storage_service.read_table(
+                self._storage_config,
+                _AUDIT_TABLE,
+            )
+        except KeyError:
             frame = _rows_to_frame(())
         else:
-            context = await self._get_context()
-            frame = context.read(table).distinct("audit_id")
+            frame = frame.distinct("audit_id")
 
         if world_id is not None:
             frame = frame.where(
@@ -269,5 +249,3 @@ class AuditLog:
         """Flush pending rows and release standalone storage ownership."""
         await self.project_outbox()
         await self.flush()
-        self._table = None
-        self._context = None

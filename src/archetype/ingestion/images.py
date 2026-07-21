@@ -6,9 +6,7 @@
 from daft import DataFrame, col
 from daft.functions import image_file, image_file_metadata
 
-from archetype.ingestion.contracts import IngestionTable
-
-ARTIFACT_IMAGES = IngestionTable("artifact_images", key_columns=("artifact_id",))
+ARTIFACT_IMAGES = "artifact_images"
 
 
 def image_index(files: DataFrame) -> DataFrame:

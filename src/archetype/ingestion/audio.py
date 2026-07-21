@@ -6,9 +6,7 @@
 from daft import DataFrame, col
 from daft.functions import audio_file, audio_metadata
 
-from archetype.ingestion.contracts import IngestionTable
-
-ARTIFACT_AUDIO = IngestionTable("artifact_audio", key_columns=("artifact_id",))
+ARTIFACT_AUDIO = "artifact_audio"
 
 
 def audio_index(files: DataFrame) -> DataFrame:

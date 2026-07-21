@@ -23,7 +23,6 @@ from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
 from archetype.evaluation.components import EvalReceipt
 from archetype.evaluation.contracts import GraderContract, Outcome, subject_digest
-from archetype.ingestion import IngestionTable
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -31,7 +30,7 @@ pytestmark = [
     pytest.mark.integration,
 ]
 
-_EVALUATION_RESULTS = IngestionTable("evaluation_results", key_columns=("evaluation_id",))
+_EVALUATION_RESULTS = "evaluation_results"
 
 
 class Telemetry(Component):
@@ -231,6 +230,7 @@ async def test_expired_owner_with_persisted_result_recovers_without_regrading(tm
                     schema=evaluation_module._EVALUATION_SCHEMA,
                 )
             ),
+            key_columns=("evaluation_id",),
             storage_config=storage,
         )
         await asyncio.sleep(0.02)

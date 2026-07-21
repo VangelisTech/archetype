@@ -73,17 +73,19 @@ class ArtifactService:
         # Materialize UUIDv7 and both hashes exactly once before multiple media
         # indexes consume the frame. Rebuilding this lazy node would assign a
         # different occurrence identity to each sink.
-        discovered = discovered.collect(num_preview_rows=0)
+        discovered = await self._storage_service.materialize(discovered)
         self._validate_discovery(discovered, plans, config)
         if discovered.count_rows() == 0:
             return ()
 
         object_uri = self._object_root(storage, config)
-        stored = persist_objects(
-            discovered.with_column("tick", lit(tick)),
-            object_uri=object_uri,
-            config=config,
-        ).collect(num_preview_rows=0)
+        stored = await self._storage_service.materialize(
+            persist_objects(
+                discovered.with_column("tick", lit(tick)),
+                object_uri=object_uri,
+                config=config,
+            )
+        )
 
         # Specialized parsers must read the durable object, not reopen the
         # acquisition URI. Remote sources may be slow, mutable, or disappear
@@ -95,7 +97,8 @@ class ArtifactService:
 
         # Typed extensions are not visibility roots. A failure here leaves no
         # common row for public readers to observe.
-        present_families = set(indexed.select("media_family").to_pydict()["media_family"])
+        stored_values = stored.to_pydict()
+        present_families = set(stored_values["media_family"])
         for family, table, project in _MEDIA_INDEXES:
             if family not in present_families:
                 continue
@@ -106,7 +109,7 @@ class ArtifactService:
                 storage_config=storage,
             )
 
-        logical_paths = indexed.select("logical_path").to_pydict()["logical_path"]
+        logical_paths = stored_values["logical_path"]
         if any(str(path).lower().endswith((".diff", ".patch")) for path in logical_paths):
             await self._ingestion.append(
                 wid,
@@ -122,7 +125,7 @@ class ArtifactService:
             common,
             storage_config=storage,
         )
-        return self._references(common)
+        return self._references(stored)
 
     async def index(
         self,
@@ -143,6 +146,7 @@ class ArtifactService:
         world_id: str,
         storage_config: StorageConfig | None,
     ) -> tuple[str, StorageConfig, int]:
+        """Get the world context for artifact ingestion."""
         wid = str(world_id)
         live = self._world_service.storage_record(wid)
         storage = storage_config or (live[0] if live is not None else StorageConfig())
@@ -194,7 +198,11 @@ class ArtifactService:
         plans: tuple[SourcePlan, ...],
         config: ArtifactStoreConfig,
     ) -> None:
-        columns = files.select("_source_index", "logical_path", "size_bytes").to_pydict()
+        columns = (
+            files.to_pydict()
+            if files.count_rows()
+            else {"_source_index": [], "logical_path": [], "size_bytes": []}
+        )
         source_indexes = [int(value) for value in columns.get("_source_index", [])]
         logical_paths = [str(value) for value in columns.get("logical_path", [])]
         sizes = [int(value) for value in columns.get("size_bytes", [])]
@@ -218,16 +226,8 @@ class ArtifactService:
             )
 
     @staticmethod
-    def _references(common: DataFrame) -> tuple[ArtifactRef, ...]:
-        values = common.select(
-            "artifact_id",
-            "logical_path",
-            "object_uri",
-            "sha256",
-            "xxhash3_64",
-            "mime_type",
-            "size_bytes",
-        ).to_pydict()
+    def _references(files: DataFrame) -> tuple[ArtifactRef, ...]:
+        values = files.to_pydict()
         return tuple(
             ArtifactRef(
                 artifact_id=str(artifact_id),

@@ -52,11 +52,10 @@ from archetype.evaluation.contracts import (
     Outcome,
     subject_digest,
 )
-from archetype.ingestion.contracts import IngestionTable
 
 logger = logging.getLogger(__name__)
 
-_EVALUATION_RESULTS = IngestionTable("evaluation_results", key_columns=("evaluation_id",))
+_EVALUATION_RESULTS = "evaluation_results"
 _EVALUATION_LEASE_SECONDS = 300.0
 _EVALUATION_POLL_SECONDS = 0.05
 _EVALUATION_SCHEMA = pa.schema(
@@ -247,6 +246,7 @@ class EvaluationService:
                 daft.from_arrow(
                     pa.Table.from_pylist([result.model_dump()], schema=_EVALUATION_SCHEMA)
                 ),
+                key_columns=("evaluation_id",),
                 storage_config=snapshot.storage_config,
             )
             stop_heartbeat.set()
@@ -398,13 +398,10 @@ class EvaluationService:
             )
         except KeyError:
             return None
-        values = (
-            rows.where(
-                rows["evaluation_id"] == evaluation_id  # ty: ignore[invalid-argument-type]
-            )
-            .limit(1)
-            .to_pydict()
-        )
+        matched = rows.where(
+            rows["evaluation_id"] == evaluation_id  # ty: ignore[invalid-argument-type]
+        ).limit(1)
+        values = (await self._storage.materialize(matched)).to_pydict()
         if not values.get("evaluation_id"):
             return None
         return EvalReceipt(**{name: values[name][0] for name in EvalReceipt.model_fields})

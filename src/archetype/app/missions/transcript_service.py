@@ -23,7 +23,6 @@ from archetype.app.storage.interfaces import iStorageService
 from archetype.app.world.interfaces import iWorldService
 from archetype.artifacts.contracts import ArtifactSource
 from archetype.core.config import StorageBackend, StorageConfig
-from archetype.ingestion.contracts import IngestionTable
 from archetype.missions.trajectories import (
     CLAUDE_TRANSCRIPT_TABLE,
     ClaudeTranscriptSource,
@@ -32,10 +31,7 @@ from archetype.missions.trajectories import (
     parse_claude_transcript,
 )
 
-_TRANSCRIPT_ROWS = IngestionTable(
-    CLAUDE_TRANSCRIPT_TABLE,
-    key_columns=("source_artifact_id", "row_kind", "seq"),
-)
+_TRANSCRIPT_ROWS = CLAUDE_TRANSCRIPT_TABLE
 
 
 def _canonical_digest(value: dict[str, Any]) -> str:
@@ -282,7 +278,7 @@ class TranscriptIngestionService:
             source_receipt=sanitized.receipt,
             source_artifact_id=artifact.artifact_id,
         )
-        table_version = await self._ingestion.append(
+        rows_written = await self._ingestion.append(
             world_id,
             _TRANSCRIPT_ROWS,
             daft.from_pylist(rows),
@@ -296,7 +292,7 @@ class TranscriptIngestionService:
             mission_id=source.mission_id,
             source_uri=source.source_uri,
             artifact=artifact,
-            rows_written=table_version.rows_written,
+            rows_written=rows_written,
             redaction_policy_id=self._redaction.policy_id,
             redaction_status=status,
             redaction_count=redaction_count,

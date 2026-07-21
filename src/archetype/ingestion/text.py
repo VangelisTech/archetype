@@ -12,9 +12,7 @@ from typing import BinaryIO, cast
 import daft
 from daft import DataFrame, DataType, col
 
-from archetype.ingestion.contracts import IngestionTable
-
-ARTIFACT_TEXT = IngestionTable("artifact_text", key_columns=("artifact_id",))
+ARTIFACT_TEXT = "artifact_text"
 _TEXT_METADATA = DataType.struct(
     {
         "text_kind": DataType.string(),

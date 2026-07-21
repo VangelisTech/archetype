@@ -1,3 +1,4 @@
+import daft
 import pytest
 
 from archetype.app.storage.service import AsyncLancedbStore, StorageService, create_async_store
@@ -173,7 +174,7 @@ def test_iceberg_backend_passes_io_config_to_async_store(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_iceberg_context_uses_pooled_store_session_and_io_config(tmp_path):
+async def test_app_table_operations_use_pooled_store_session_and_io_config(tmp_path):
     from daft.io import IOConfig
 
     from archetype.app.storage.session import configure_session
@@ -188,20 +189,21 @@ async def test_iceberg_context_uses_pooled_store_session_and_io_config(tmp_path)
     session = configure_session(config)
     service = StorageService(session=session)
     try:
-        context = await service.get_iceberg_context(config)
+        await service.append_table(config, "events", daft.from_pydict({"event_id": ["e1"]}))
+        store = await service.get_or_create_store(config)
 
-        assert context.session is session
-        assert context.io_config is io_config
+        assert store.session is session
+        assert store.io_config is io_config
     finally:
         await service.shutdown()
 
 
 @pytest.mark.asyncio
-async def test_iceberg_context_rejects_lance_backend(tmp_path):
+async def test_app_table_operations_reject_lance_backend(tmp_path):
     service = make_storage_service()
     try:
         with pytest.raises(ValueError, match="backend=iceberg"):
-            await service.get_iceberg_context(StorageConfig(uri=str(tmp_path / "lance")))
+            await service.read_table(StorageConfig(uri=str(tmp_path / "lance")), "events")
     finally:
         await service.shutdown()
 

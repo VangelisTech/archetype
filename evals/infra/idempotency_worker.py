@@ -26,14 +26,13 @@ from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
 from archetype.core.interfaces import StaleWriterError
 from archetype.evaluation.contracts import GraderContract, Outcome
-from archetype.ingestion import IngestionTable
 
 
 class ProcessReading(Component):
     value: float = 0.0
 
 
-_EVALUATION_RESULTS = IngestionTable("evaluation_results", key_columns=("evaluation_id",))
+_EVALUATION_RESULTS = "evaluation_results"
 
 
 def _storage(args: argparse.Namespace) -> StorageConfig:

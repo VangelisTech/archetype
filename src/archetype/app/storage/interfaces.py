@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
+from daft import DataFrame
+
 from archetype.app.storage.catalog import ControlCatalog
 from archetype.core.config import CacheConfig, StorageConfig
 
@@ -28,6 +30,28 @@ class iStorageService(Protocol):
         cache_config: CacheConfig | None = None,
     ) -> Any: ...
 
-    async def get_iceberg_context(self, storage_config: StorageConfig) -> Any: ...
+    async def materialize(self, frame: DataFrame) -> DataFrame: ...
+
+    async def read_table(
+        self,
+        storage_config: StorageConfig,
+        table_name: str,
+    ) -> DataFrame: ...
+
+    async def append_table(
+        self,
+        storage_config: StorageConfig,
+        table_name: str,
+        rows: DataFrame,
+    ) -> int: ...
+
+    async def append_missing(
+        self,
+        storage_config: StorageConfig,
+        table_name: str,
+        rows: DataFrame,
+        *,
+        key_columns: tuple[str, ...],
+    ) -> int: ...
 
     async def shutdown(self) -> None: ...
