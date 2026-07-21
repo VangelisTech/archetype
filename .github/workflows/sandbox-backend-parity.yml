@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
   pull_request:
     branches: [main]
+    # This paid/slow proof is intentionally example-gated rather than part of
+    # normal backend CI. Unit contracts still run whenever backend code changes.
     paths:
       - "examples/11_coding_agent_mission.py"
 

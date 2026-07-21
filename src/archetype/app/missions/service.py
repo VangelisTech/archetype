@@ -13,6 +13,7 @@ from typing import Protocol
 
 from daft import DataFrame
 
+from archetype.app.redaction.interfaces import iRedactionService
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
 from archetype.core.hooks import PostTick
@@ -129,9 +130,7 @@ class MissionService:
         name: str,
         config: AgentMissionConfig,
         sandbox_service: SandboxServiceProtocol,
-        redact_text: Callable[[str, str], str],
-        validate_metadata: Callable[[str, str], object],
-        redaction_policy_id: str,
+        redaction_service: iRedactionService,
         storage: str | Path | StorageConfig | None = None,
     ) -> None:
         view = GraphView()
@@ -154,9 +153,7 @@ class MissionService:
         self._view = view
         self._outbox = outbox
         self._sandboxes = sandbox_service
-        self._redact_text = redact_text
-        self._validate_metadata = validate_metadata
-        self._redaction_policy_id = redaction_policy_id
+        self._redaction_service = redaction_service
         self._sandbox_provider = config.sandbox_backend.name
         self._sandbox_environment = config.sandbox_environment
         self._workspace = config.workspace
@@ -420,10 +417,14 @@ class MissionService:
                     dispatch_id=request.dispatch_id,
                     dispatch_sequence=request.dispatch_sequence,
                     status=AgentExecutionStatus.ERRORED,
-                    sandbox=SandboxIdentity(
-                        self._sandbox_provider,
-                        f"unavailable-{request.dispatch_id}",
-                        self._sandbox_environment,
+                    sandbox=(
+                        session.identity
+                        if session is not None
+                        else SandboxIdentity(
+                            self._sandbox_provider,
+                            f"unavailable-{request.dispatch_id}",
+                            self._sandbox_environment,
+                        )
                     ),
                     worktree=self._workspace,
                     agent_session_id="",
@@ -487,7 +488,7 @@ class MissionService:
                     result.trace_uri,
                     field="AgentExecution.trace_uri",
                 ),
-                redaction_policy_id=self._redaction_policy_id,
+                redaction_policy_id=self._redaction_service.policy_id,
                 starting_revision=result.starting_revision,
                 final_revision=result.final_revision,
                 error=self._redact(
@@ -650,11 +651,11 @@ class MissionService:
     def _redact(self, value: str, *, scope: str) -> str:
         if not value:
             return ""
-        return self._redact_text(value, scope)
+        return self._redaction_service.redact_text(value, scope=scope).text
 
     def _safe_metadata(self, value: str, *, field: str) -> str:
         if value:
-            self._validate_metadata(value, field)
+            self._redaction_service.assert_safe_metadata(value, field=field)
         return value
 
     def _sandbox_spec(self, mission_id: int, branch: str) -> SandboxSpec:

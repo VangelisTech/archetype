@@ -206,19 +206,37 @@ class AppleContainerSandboxSession:
 
     async def _exec_request(self, request: ProcessRequest) -> ProcessResult:
         argv = ["container", "exec", "--user", AGENT_USER]
+        secret_env_file: Path | None = None
         if request.workdir:
             argv.extend(["--workdir", request.workdir])
         for key, value in request.env:
             argv.extend(["--env", f"{key}={value}"])
         if _GITHUB_SECRET in request.secret_names:
-            if not os.environ.get(self._config.github_token_env):
+            token = os.environ.get(self._config.github_token_env)
+            if not token:
                 raise RuntimeError(
                     f"required host environment variable is missing: "
                     f"{self._config.github_token_env}"
                 )
-            argv.extend(["--env", self._config.github_token_env])
+            if any(character in token for character in ("\x00", "\r", "\n")):
+                raise RuntimeError("GitHub token contains an invalid environment-file character")
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                prefix="archetype-apple-secret-",
+                suffix=".env",
+                delete=False,
+            ) as env_file:
+                os.fchmod(env_file.fileno(), 0o600)
+                env_file.write(f"{self._config.github_token_env}={token}\n")
+                secret_env_file = Path(env_file.name)
+            argv.extend(["--env-file", str(secret_env_file)])
         argv.extend([self._sandbox_id, *request.argv])
-        return await run_host(argv, timeout_seconds=request.timeout_seconds)
+        try:
+            return await run_host(argv, timeout_seconds=request.timeout_seconds)
+        finally:
+            if secret_env_file is not None:
+                secret_env_file.unlink(missing_ok=True)
 
     async def _stage_oauth(self) -> None:
         archive = await self._auth_exec(

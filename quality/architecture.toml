@@ -344,7 +344,9 @@ allowed_app = [
 
 [[module_rule]]
 module = "archetype.app.missions.service"
-allowed_interfaces = []
+allowed_interfaces = [
+  "archetype.app.redaction.interfaces.iRedactionService",
+]
 allowed_app = []
 
 [[module_rule]]

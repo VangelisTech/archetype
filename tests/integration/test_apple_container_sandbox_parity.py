@@ -40,7 +40,11 @@ async def _container(*arguments: str) -> tuple[int, str, str]:
 
 
 @pytest.mark.asyncio
-async def test_apple_container_checkpoint_restores_session_owned_rootfs(tmp_path: Path) -> None:
+async def test_apple_container_checkpoint_restores_session_owned_rootfs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "apple-container-parity-canary")
     auth_volume = f"archetype-test-auth-{uuid4().hex[:12]}"
     returncode, _stdout, stderr = await _container("volume", "create", auth_volume)
     assert returncode == 0, stderr
@@ -61,6 +65,13 @@ async def test_apple_container_checkpoint_restores_session_owned_rootfs(tmp_path
     checkpoint = None
     try:
         original = await backend.create(spec)
+        secret_probe = await original.exec(
+            ProcessRequest(
+                ("sh", "-lc", 'test "$GITHUB_TOKEN" = apple-container-parity-canary'),
+                secret_names=("github",),
+            )
+        )
+        assert secret_probe.returncode == 0, secret_probe.stderr
         prepared = await original.exec(
             ProcessRequest(
                 (

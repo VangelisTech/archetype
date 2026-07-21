@@ -228,6 +228,11 @@ class _SecretOutputDriver:
         )
 
 
+async def _raise_after_sandbox_acquisition(*args, **kwargs):
+    del args, kwargs
+    raise RuntimeError("injected post-acquisition failure")
+
+
 @pytest.mark.asyncio
 async def test_explicit_graph_drives_revision_bound_retry_and_downstream_readiness(
     tmp_path: Path,
@@ -357,6 +362,58 @@ async def test_explicit_graph_drives_revision_bound_retry_and_downstream_readine
         )
         == result.tasks[-1].commit_shas[-1]
     )
+
+
+@pytest.mark.asyncio
+async def test_post_acquisition_failure_reuses_the_registered_sandbox_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    backend = _LocalBackend()
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "post-acquisition-failure",
+            config=AgentMissionConfig(
+                sandbox_backend=backend,
+                sandbox_environment="local-test@sha256:contract",
+                driver=_MissionDriver(workspace),
+                workspace=str(workspace),
+                max_ticks=20,
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "post_acquisition_failure"),
+                namespace="contract",
+            ),
+        ) as missions:
+            monkeypatch.setattr(
+                missions._service._harness,
+                "execute",
+                _raise_after_sandbox_acquisition,
+            )
+            submitted = await missions.submit(
+                repository=str(remote),
+                branch="agent/post-acquisition-failure",
+                tasks=(
+                    AgentTask(
+                        "implementation",
+                        "This process is deliberately interrupted.",
+                        (CommandValidator("focused", ("true",)),),
+                        max_dispatches=1,
+                    ),
+                ),
+            )
+
+            result = await missions.run(submitted)
+
+            assert result.status == "failed"
+            sandbox_rows = latest(await missions.query(Sandbox)).to_pylist()
+            sandbox = Sandbox.get_prefix()
+            assert len(sandbox_rows) == 1
+            assert sandbox_rows[0][f"{sandbox}sandbox_id"] == "sandbox-contract"
+            assert sandbox_rows[0][f"{sandbox}status"] == SandboxStatus.CLOSED.value
 
 
 @pytest.mark.parametrize("checkpoint_fails", [False, True])

@@ -60,11 +60,15 @@ async def test_exec_maps_symbolic_secrets_without_putting_values_in_argv(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, ...]] = []
+    observed_env_files: list[tuple[Path, str]] = []
 
     async def fake_run_host(argv, *, timeout_seconds: int, stdin: str | None = None):
         del timeout_seconds, stdin
-        calls.append(tuple(argv))
-        return ProcessResult(tuple(argv), 0, stdout="ok")
+        command = tuple(argv)
+        calls.append(command)
+        env_file = Path(command[command.index("--env-file") + 1])
+        observed_env_files.append((env_file, env_file.read_text(encoding="utf-8")))
+        return ProcessResult(command, 0, stdout="ok")
 
     monkeypatch.setenv("GITHUB_TOKEN", "must-not-enter-argv")
     monkeypatch.setattr(
@@ -87,9 +91,12 @@ async def test_exec_maps_symbolic_secrets_without_putting_values_in_argv(
     assert session.capabilities.home_directory == "/home/agent"
     argv = calls[0]
     assert argv[:4] == ("container", "exec", "--user", "agent")
-    assert "GITHUB_TOKEN" in argv
+    assert "--env-file" in argv
+    assert "GITHUB_TOKEN" not in argv
     assert not any("must-not-enter-argv" in argument for argument in argv)
     assert "--volume" not in argv
+    assert observed_env_files[0][1] == "GITHUB_TOKEN=must-not-enter-argv\n"
+    assert not observed_env_files[0][0].exists()
 
 
 @pytest.mark.asyncio

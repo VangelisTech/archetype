@@ -149,8 +149,11 @@ scans sources, persists immutable content-addressed objects, writes optional
 media-specific indexes, and publishes the common file index last. There is no
 artifact claim, lease, receipt, or reconciliation protocol around that path.
 Provider checkpoints remain sandbox recovery objects rather than artifact
-workflow stages. Future live-event, OTel, and proxy exporters consume the same
-redaction port; they do not fork scanner policy.
+workflow stages. Agent Missions does not implicitly crawl a sandbox after a
+task decision: a provider export must first select and sanitize declared files,
+then submit valid `ArtifactSource` values through this port. Future live-event,
+OTel, and proxy exporters consume the same redaction port; they do not fork
+scanner policy.
 
 `iTranscriptIngestionService` is a composition port, not another storage
 authority. Its implementation snapshots and redacts through

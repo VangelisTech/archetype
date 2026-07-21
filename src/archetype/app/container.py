@@ -153,17 +153,7 @@ class ServiceContainer:
         return MissionService(
             config=config,
             sandbox_service=SandboxService((config.sandbox_backend,)),
-            redact_text=lambda value, scope: (
-                self.redaction_service.redact_text(
-                    value,
-                    scope=scope,
-                ).text
-            ),
-            validate_metadata=lambda value, field: self.redaction_service.assert_safe_metadata(
-                value,
-                field=field,
-            ),
-            redaction_policy_id=self.redaction_service.policy_id,
+            redaction_service=self.redaction_service,
             **kwargs,
         )
 
