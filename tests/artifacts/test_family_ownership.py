@@ -26,10 +26,14 @@ def test_root_exports_are_the_family_contracts() -> None:
 def test_context_identity_is_uuidv7_and_task_is_required() -> None:
     import pytest
 
-    context = ArtifactContext(task="Explain the submitted evidence")
+    artifact_id = str(uuid7())
+    context = ArtifactContext(
+        task="Explain the submitted evidence",
+        artifact_ids=(artifact_id,),
+    )
     assert uuid7_timestamp_ms(context.context_id) > 0
     with pytest.raises(ValueError, match="task must not be empty"):
-        ArtifactContext(task=" ")
+        ArtifactContext(task=" ", artifact_ids=(artifact_id,))
 
 
 def test_artifact_ref_derives_time_from_uuidv7() -> None:
@@ -88,12 +92,28 @@ def test_artifact_contracts_reject_ambiguous_identity_and_unbounded_batches() ->
         ArtifactRef(**(valid | {"xxhash3_64": "not-a-digest"}))
 
     context_id = str(uuid7())
-    assert ArtifactContext(task="Analyze", context_id=context_id).context_id == context_id
+    artifact_id = str(uuid7())
+    assert (
+        ArtifactContext(
+            task="Analyze",
+            artifact_ids=(artifact_id,),
+            context_id=context_id,
+        ).context_id
+        == context_id
+    )
     with pytest.raises(ValueError, match="UUIDv7"):
         ArtifactContext(
             task="Analyze",
+            artifact_ids=(artifact_id,),
             context_id="00000000-0000-4000-8000-000000000000",
         )
+    with pytest.raises(ValueError, match="IDs must be UUIDv7"):
+        ArtifactContext(
+            task="Analyze",
+            artifact_ids=("00000000-0000-4000-8000-000000000000",),
+        )
+    with pytest.raises(ValueError, match="IDs must be unique"):
+        ArtifactContext(task="Analyze", artifact_ids=(artifact_id, artifact_id))
     with pytest.raises(ValueError, match="must be >="):
         ArtifactStoreConfig(max_artifact_bytes=2, max_ingestion_bytes=1)
 

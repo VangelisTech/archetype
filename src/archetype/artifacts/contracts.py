@@ -128,6 +128,9 @@ class ArtifactContext(BaseModel):
     model_config = dict(frozen=True)
 
     task: str = Field(description="Authoritative task applied to every artifact")
+    artifact_ids: tuple[str, ...] = Field(
+        description="UUIDv7 occurrence identities selected as evidence",
+    )
     context_id: str = Field(
         default_factory=_uuidv7_string,
         description="UUIDv7 identity for this interpretation",
@@ -140,6 +143,21 @@ class ArtifactContext(BaseModel):
         if not value:
             raise ValueError("artifact context task must not be empty")
         return value
+
+    @field_validator("artifact_ids")
+    @classmethod
+    def _artifact_occurrences_required(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if not value:
+            raise ValueError("artifact context must name at least one artifact occurrence")
+        normalized: list[str] = []
+        for artifact_id in value:
+            parsed = UUID(artifact_id)
+            if parsed.version != 7:
+                raise ValueError("artifact context IDs must be UUIDv7")
+            normalized.append(str(parsed))
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("artifact context IDs must be unique")
+        return tuple(normalized)
 
     @field_validator("context_id")
     @classmethod

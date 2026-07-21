@@ -491,10 +491,12 @@ class StorageService:
     ) -> int:
         """Append rows absent by key within this service's execution authority.
 
-        The producer graph is evaluated once. After an optimistic conflict,
-        the frozen candidate rows are anti-joined against the refreshed table
-        before another write. This prevents the stale-pending retry bug where
-        two writers can publish the same logical key.
+        The producer graph is evaluated once and duplicate candidate keys are
+        rejected before persistence. After an optimistic conflict, the frozen
+        candidate rows are anti-joined against the refreshed table before
+        another write. This prevents both same-batch ambiguity and the
+        stale-pending retry bug where two writers can publish the same logical
+        key.
         """
         self._require_frame(rows)
         if not key_columns:
@@ -510,7 +512,20 @@ class StorageService:
                         self._native_table(table).refresh()
 
                     if candidates is None:
-                        candidates = self._align_table_schema(table, rows, table_name)
+                        aligned = self._align_table_schema(table, rows, table_name)
+                        candidates = await self._blocking(
+                            aligned.collect,
+                            num_preview_rows=0,
+                        )
+                        candidate_count = candidates.count_rows()
+                        distinct_key_count = await self._blocking(
+                            candidates.distinct(*key_columns).count_rows
+                        )
+                        if distinct_key_count != candidate_count:
+                            raise ValueError(
+                                f"conditional append for table {table_name!r} contains "
+                                f"duplicate key values for {key_columns!r}"
+                            )
                     existing = self._read_table(table, store.io_config).select(*key_columns)
                     pending = candidates.join(existing, on=list(key_columns), how="anti")
                     pending = await self._blocking(

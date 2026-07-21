@@ -52,6 +52,12 @@ reason = "Conflict-safe append boundary: StorageService materializes producer ro
 path = "src/archetype/app/storage/service.py"
 line = 517
 method = "collect"
+reason = "Conditional producer boundary: StorageService freezes the aligned candidate plan once so duplicate-key validation and optimistic Iceberg retries cannot re-run external or nondeterministic expressions."
+
+[[entries]]
+path = "src/archetype/app/storage/service.py"
+line = 532
+method = "collect"
 reason = "Conditional append boundary: StorageService materializes the anti-join after each refreshed Iceberg snapshot so a conflicting writer cannot cause a stale retry to duplicate an existing logical key."
 
 [[entries]]

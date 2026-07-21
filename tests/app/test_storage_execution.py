@@ -126,6 +126,35 @@ async def test_plain_and_conditional_appends_round_trip(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("values", ([1, 1], [1, 2]))
+async def test_conditional_append_rejects_duplicate_keys_within_candidate_batch(tmp_path, values):
+    service = StorageService()
+    storage = _storage(tmp_path)
+    candidates = daft.from_pydict(
+        {
+            "event_id": ["same", "same"],
+            "value": values,
+        }
+    )
+    try:
+        with pytest.raises(
+            ValueError,
+            match=r"conditional append .* contains duplicate key values .*event_id",
+        ):
+            await service.append_missing(
+                storage,
+                "unique_events",
+                candidates,
+                key_columns=("event_id",),
+            )
+
+        rows = (await service.read_table(storage, "unique_events")).to_pylist()
+        assert rows == []
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_app_table_schema_drift_fails_before_write(tmp_path):
     service = StorageService()
     storage = _storage(tmp_path)

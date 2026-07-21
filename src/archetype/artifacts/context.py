@@ -25,11 +25,12 @@ def analyze_artifacts(
     provider: str | Provider | None = None,
     model: str | None = None,
 ) -> DataFrame:
-    """Run one parallel, task-anchored analysis against each artifact file."""
+    """Analyze an explicit set of artifact occurrences in parallel."""
 
     missing = sorted(_INDEX_COLUMNS - set(index.schema().column_names()))
     if missing:
         raise ValueError("artifact index is missing context column(s): " + ", ".join(missing))
+    selected = index.where(col("artifact_id").is_in(context.artifact_ids))
     message = daft_format(
         "Context ID: {}\nTask: {}\nArtifact: {} ({})\n"
         "Analyze this artifact only as evidence for the task. Identify concrete facts, "
@@ -39,7 +40,7 @@ def analyze_artifacts(
         col("logical_path"),
         col("mime_type"),
     )
-    return index.select(
+    return selected.select(
         "artifact_id",
         "logical_path",
         "object_uri",
@@ -76,7 +77,7 @@ def synthesize_artifact_context(
     missing = sorted(required - set(analyses.schema().column_names()))
     if missing:
         raise ValueError("artifact analyses are missing column(s): " + ", ".join(missing))
-    summaries = analyses.with_column(
+    summaries = analyses.where(col("artifact_id").is_in(context.artifact_ids)).with_column(
         "_artifact_analysis",
         daft_format(
             "Artifact {} [{}]\n{}",

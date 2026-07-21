@@ -285,14 +285,19 @@ second storage service or copy the files again.
 ```python
 from daft.ai.provider import load_openai
 
-from archetype import ArtifactContext
+from archetype import ArtifactContext, ArtifactSource
 from archetype.artifacts import analyze_artifacts, synthesize_artifact_context
 
-context = ArtifactContext(
-    task="Explain whether this change preserves immutable source identity."
-)
 provider = load_openai()
 
+submitted = await world.ingest_artifacts(
+    ArtifactSource(source_uri="./evidence/change.patch", logical_path="change.patch"),
+    ArtifactSource(source_uri="./evidence/design.md", logical_path="design.md"),
+)
+context = ArtifactContext(
+    task="Explain whether this change preserves immutable source identity.",
+    artifact_ids=tuple(artifact.artifact_id for artifact in submitted),
+)
 index = await world.artifacts()
 analyses = analyze_artifacts(
     index,
@@ -308,12 +313,17 @@ synthesis = synthesize_artifact_context(
 )
 ```
 
-The first transform gives Daft one prompt per artifact, so files can be
-analyzed in parallel. Every prompt carries the task, context ID, logical path,
-MIME type, and the staged `daft.File`. Artifact contents are explicitly marked
-as untrusted evidence rather than instructions. The second transform reduces
-the attributed observations into one answer while retaining logical paths and
-artifact IDs.
+`ArtifactContext` binds the authoritative task and exact artifact occurrence
+IDs under one context ID, so the same interpretation identity cannot silently
+refer to a different evidence set. The first transform never treats the
+complete world index as an implicit context pack: Daft filters it by those IDs
+before giving the selected artifacts one prompt each. Files can be analyzed in
+parallel without issuing model calls for unrelated run artifacts. Every prompt
+carries the task, context ID, logical path, MIME type, and the staged
+`daft.File`. Artifact contents are explicitly marked as untrusted evidence
+rather than instructions. The second transform applies the same selection and
+reduces the attributed observations into one answer while retaining logical
+paths and artifact IDs.
 
 These are family-owned DataFrame transforms, not application orchestration.
 They do not choose a catalog, persist model output, or decide mission state.
