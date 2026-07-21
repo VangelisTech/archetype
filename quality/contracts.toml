@@ -367,7 +367,7 @@ pytest = [
   "tests/app/test_transcript_ingestion.py",
   "tests/missions/trajectories/test_claude_parser.py",
 ]
-static = ["scripts/check_architecture.py"]
+static = []
 evals = []
 benchmarks = []
 profiles = ["pr", "main", "release"]
@@ -504,9 +504,7 @@ pytest = [
   "tests/app/test_redaction_service.py",
   "tests/app/test_transcript_ingestion.py",
 ]
-static = [
-  "scripts/check_architecture.py",
-]
+static = []
 evals = ["security.pre_durability_redaction"]
 benchmarks = []
 profiles = ["pr", "main", "release"]

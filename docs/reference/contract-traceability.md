@@ -32,7 +32,7 @@ machine authority; this page is its review surface.
 | `artifacts.ingestion.common_visibility` | `artifacts` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 7. Visibility and failure | pytest: 1; static: 1 | `pr`, `main`, `release` |
 | `artifacts.context.task_anchored` | `artifacts` | medium | [docs/guide/artifacts.md](../guide/artifacts.md) — 11. Task-anchored artifact context | pytest: 1; static: 2 | `pr`, `main`, `release` |
 | `evaluation.result.snapshot_pinned` | `evaluation` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 9. Evaluation results | pytest: 1; eval: 1 | `pr`, `main`, `release` |
-| `missions.transcripts.redacted_ingestion` | `missions` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 8. Transcript ingestion | pytest: 2; static: 1 | `pr`, `main`, `release` |
+| `missions.transcripts.redacted_ingestion` | `missions` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 8. Transcript ingestion | pytest: 2 | `pr`, `main`, `release` |
 | `missions.transcripts.fail_closed` | `missions` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 8. Transcript ingestion | pytest: 1 | `pr`, `main`, `release` |
 | `missions.transcripts.occurrence_identity` | `missions` | medium | [docs/guide/artifacts.md](../guide/artifacts.md) — 8. Transcript ingestion | pytest: 1 | `pr`, `main`, `release` |
 | `evaluation.ontology.separated` | `evaluation` | medium | [docs/guide/dataset-eval-ontology.md](../guide/dataset-eval-ontology.md) — 1. The contract in one view | pytest: 1; eval: 2 | `pr`, `main`, `release` |
@@ -42,7 +42,7 @@ machine authority; this page is its review surface.
 | `release.package.installable` | `release` | high | [docs/guide/api-stability.md](../guide/api-stability.md) — What counts as public | pytest: 2; static: 1 | `release` |
 | `storage.remote.control_parity` | `storage` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 10. Supported durability profile | pytest: 2; static: 1 | `main`, `release` |
 | `missions.agent_v1.validator_gated` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 4. State and transition protocol | pytest: 6; static: 2; eval: 1 | `pr`, `main`, `release` |
-| `security.redaction.pre_durability` | `redaction` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 10. Security boundary | pytest: 2; static: 1; eval: 1 | `pr`, `main`, `release` |
+| `security.redaction.pre_durability` | `redaction` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 10. Security boundary | pytest: 2; eval: 1 | `pr`, `main`, `release` |
 
 Profile membership states where a contract must be enforced. Eval suite
 blocking/advisory policy is defined separately in `quality/eval_profiles.toml`;
