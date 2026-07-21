@@ -61,6 +61,38 @@ allowed_app = []
     return policy
 
 
+def _write_storage_capability_policy(root: Path) -> Path:
+    owner = root / "src" / "archetype" / "app" / "storage" / "service.py"
+    owner.parent.mkdir(parents=True, exist_ok=True)
+    if not owner.exists():
+        owner.write_text("class StorageService:\n    pass\n", encoding="utf-8")
+    policy = _write_policy(root)
+    policy.write_text(
+        policy.read_text(encoding="utf-8")
+        + """
+
+[[capability_rule]]
+name = "storage-execution-authority"
+consumer = "archetype.app"
+owner = "archetype.app.storage.service"
+owned_attributes = [
+  "collect",
+  "write_iceberg",
+  "current_catalog",
+  "create_table",
+  "create_table_if_not_exists",
+]
+owned_symbols = [
+  "daft.read_iceberg",
+  "pyiceberg.exceptions.CommitFailedException",
+]
+mediated_attributes = { to_pylist = "materialize", to_pydict = "materialize", to_arrow = "materialize", count_rows = "materialize", show = "materialize", iter_rows = "materialize" }
+""",
+        encoding="utf-8",
+    )
+    return policy
+
+
 def _write_family_policy(
     root: Path,
     *,
@@ -284,10 +316,10 @@ def test_artifacts_family_scope_rejects_synthetic_reverse_app_dependency(
     tmp_path: Path,
 ) -> None:
     """#558 acceptance: an artifacts-family module importing app authority fails."""
-    bundles = tmp_path / "src" / "archetype" / "artifacts" / "bundles.py"
-    bundles.parent.mkdir(parents=True)
-    bundles.write_text(
-        "from archetype.app.storage.catalog import artifact_publication_key\n",
+    contracts = tmp_path / "src" / "archetype" / "artifacts" / "contracts.py"
+    contracts.parent.mkdir(parents=True)
+    contracts.write_text(
+        "from archetype.app.ingestion.service import IngestionService\n",
         encoding="utf-8",
     )
     rules = """
@@ -305,7 +337,7 @@ allowed_families = []
 
     assert not result.policy_errors
     assert {(violation.rule, violation.target) for violation in result.violations} == {
-        ("top_level_family_outward_dependency", "archetype.app.storage.catalog"),
+        ("top_level_family_outward_dependency", "archetype.app.ingestion.service"),
     }
 
 
@@ -1016,6 +1048,168 @@ expires = "v1"
     assert any(
         "uses a wildcard instead of an exact edge" in error for error in result.policy_errors
     )
+
+
+@pytest.mark.parametrize(
+    ("source", "rule", "target"),
+    [
+        ("def run(df):\n    df.collect()\n", "capability_ownership", "collect"),
+        (
+            "async def run(df, blocking):\n    await blocking(df.collect)\n",
+            "capability_ownership",
+            "collect",
+        ),
+        (
+            "from daft import read_iceberg as load\n\ndef run():\n    load('table')\n",
+            "capability_ownership",
+            "daft.read_iceberg",
+        ),
+        (
+            "def run(df):\n    df.write_iceberg('table')\n",
+            "capability_ownership",
+            "write_iceberg",
+        ),
+        (
+            "def run(session):\n    session.current_catalog()\n",
+            "capability_ownership",
+            "current_catalog",
+        ),
+        (
+            "def run(catalog):\n    catalog.create_table('table')\n",
+            "capability_ownership",
+            "create_table",
+        ),
+        (
+            "def run(catalog):\n    catalog.create_table_if_not_exists('table')\n",
+            "capability_ownership",
+            "create_table_if_not_exists",
+        ),
+        (
+            "def run(df):\n    return df.to_pylist()\n",
+            "capability_mediation",
+            "to_pylist",
+        ),
+        (
+            "def run(df):\n    return df.to_pydict()\n",
+            "capability_mediation",
+            "to_pydict",
+        ),
+        (
+            "def run(df):\n    return df.to_arrow()\n",
+            "capability_mediation",
+            "to_arrow",
+        ),
+        (
+            "def run(df):\n    return df.count_rows()\n",
+            "capability_mediation",
+            "count_rows",
+        ),
+        (
+            "def run(df):\n    return df.show()\n",
+            "capability_mediation",
+            "show",
+        ),
+        (
+            "def run(df):\n    return list(df.iter_rows())\n",
+            "capability_mediation",
+            "iter_rows",
+        ),
+        (
+            "from pyiceberg.exceptions import CommitFailedException\n\n"
+            "def run():\n"
+            "    try:\n"
+            "        pass\n"
+            "    except CommitFailedException:\n"
+            "        pass\n",
+            "capability_ownership",
+            "pyiceberg.exceptions.CommitFailedException",
+        ),
+    ],
+)
+def test_storage_execution_capabilities_have_one_app_owner(
+    tmp_path: Path,
+    source: str,
+    rule: str,
+    target: str,
+) -> None:
+    probe = tmp_path / "src" / "archetype" / "app" / "probe.py"
+    probe.parent.mkdir(parents=True, exist_ok=True)
+    probe.write_text(source, encoding="utf-8")
+
+    result = checker.audit_repository(
+        _write_storage_capability_policy(tmp_path),
+        repo_root=tmp_path,
+    )
+
+    assert not result.policy_errors
+    assert [(violation.rule, violation.target) for violation in result.violations] == [
+        (rule, target)
+    ]
+
+
+def test_storage_execution_owner_and_mediated_consumers_pass(tmp_path: Path) -> None:
+    probe = tmp_path / "src" / "archetype" / "app" / "probe.py"
+    owner = tmp_path / "src" / "archetype" / "app" / "storage" / "service.py"
+    api = tmp_path / "src" / "archetype" / "api" / "models.py"
+    core = tmp_path / "src" / "archetype" / "core" / "store.py"
+    for path in (probe, owner, api, core):
+        path.parent.mkdir(parents=True, exist_ok=True)
+    probe.write_text(
+        "async def run(storage, df):\n"
+        "    materialized = await storage.materialize(df)\n"
+        "    rows = materialized.to_pylist()\n"
+        "    mapping = materialized.to_pydict()\n"
+        "    arrow = materialized.to_arrow()\n"
+        "    count = materialized.count_rows()\n"
+        "    shown = materialized.show()\n"
+        "    streamed = list(materialized.iter_rows())\n"
+        "    inline = (await storage.materialize(df)).to_pylist()\n"
+        "    return rows, mapping, arrow, count, shown, streamed, inline\n",
+        encoding="utf-8",
+    )
+    owner.write_text(
+        "from daft import read_iceberg\n"
+        "from pyiceberg.exceptions import CommitFailedException\n\n"
+        "def execute(df, session, catalog):\n"
+        "    df.collect()\n"
+        "    df.write_iceberg('table')\n"
+        "    session.current_catalog()\n"
+        "    catalog.create_table('table')\n"
+        "    catalog.create_table_if_not_exists('table')\n"
+        "    read_iceberg('table')\n"
+        "    return CommitFailedException\n",
+        encoding="utf-8",
+    )
+    api.write_text("def render(df):\n    return df.collect().to_pylist()\n", encoding="utf-8")
+    core.write_text("def persist(df):\n    df.write_iceberg('table')\n", encoding="utf-8")
+
+    result = checker.audit_repository(
+        _write_storage_capability_policy(tmp_path),
+        repo_root=tmp_path,
+    )
+
+    assert result.ok
+
+
+def test_reassignment_revokes_materialization_proof(tmp_path: Path) -> None:
+    probe = tmp_path / "src" / "archetype" / "app" / "probe.py"
+    probe.parent.mkdir(parents=True, exist_ok=True)
+    probe.write_text(
+        "async def run(storage, df, replacement):\n"
+        "    materialized = await storage.materialize(df)\n"
+        "    materialized = replacement\n"
+        "    return materialized.to_pylist()\n",
+        encoding="utf-8",
+    )
+
+    result = checker.audit_repository(
+        _write_storage_capability_policy(tmp_path),
+        repo_root=tmp_path,
+    )
+
+    assert [(violation.rule, violation.target) for violation in result.violations] == [
+        ("capability_mediation", "to_pylist")
+    ]
 
 
 def test_repository_architecture_policy_passes() -> None:

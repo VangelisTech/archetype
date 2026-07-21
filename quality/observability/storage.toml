@@ -11,16 +11,12 @@ operations = [
   "catalog.ControlCatalog.list_worlds",
   "catalog.ControlCatalog.register_signature",
   "catalog.ControlCatalog.list_signatures",
+  "catalog.ControlCatalog.acquire_fence",
+  "catalog.ControlCatalog.current_fence_epoch",
   "catalog.ControlCatalog.max_manifest_tick",
-  "catalog.ControlCatalog.acquire_artifact_publication",
-  "catalog.ControlCatalog.recover_artifact_publication",
-  "catalog.ControlCatalog.get_artifact_publication",
-  "catalog.ControlCatalog.renew_artifact_publication",
-  "catalog.ControlCatalog.record_artifact_uploads",
-  "catalog.ControlCatalog.complete_artifact_publication",
-  "catalog.ControlCatalog.fail_artifact_publication",
-  "catalog.ControlCatalog.expire_artifact_publication",
-  "catalog.ControlCatalog.list_due_artifact_publications",
+  "catalog.ControlCatalog.publish_manifest",
+  "catalog.ControlCatalog.visible_tokens",
+  "catalog.ControlCatalog.list_manifests",
   "catalog.ControlCatalog.admit_commands",
   "catalog.ControlCatalog.lease_commands",
   "catalog.ControlCatalog.fail_command",
@@ -28,6 +24,9 @@ operations = [
   "catalog.ControlCatalog.list_commands",
   "catalog.ControlCatalog.pending_command_count",
   "catalog.ControlCatalog.max_reserved_entity_id",
+  "catalog.ControlCatalog.lease_evaluation",
+  "catalog.ControlCatalog.complete_evaluation",
+  "catalog.ControlCatalog.release_evaluation",
   "catalog.ControlCatalog.read_outbox",
   "catalog.ControlCatalog.mark_outbox_projected",
   "catalog.ControlCatalog.close",
@@ -35,19 +34,24 @@ operations = [
   "interfaces.iStorageService.require_iceberg_identity",
   "interfaces.iStorageService.get_control_catalog",
   "interfaces.iStorageService.get_or_create_store",
-  "interfaces.iStorageService.get_iceberg_context",
+  "interfaces.iStorageService.materialize",
+  "interfaces.iStorageService.read_table",
+  "interfaces.iStorageService.append_table",
+  "interfaces.iStorageService.append_missing",
   "interfaces.iStorageService.shutdown",
 ]
 signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
-authority = "Store/catalog state, fencing epochs, leases, transactional rows, and durable receipts remain authoritative."
+authority = "The SQLite or remote Durable Object control state, Catalog-resolved Iceberg snapshots, fencing epochs, command and evaluation leases, transactional rows, and tick manifests remain authoritative."
 evidence = [
   "docs/guide/atomic-visibility.md",
+  "docs/guide/artifacts.md",
   "docs/guide/service-protocols.md",
   "tests/app/test_atomic_visibility.py",
   "tests/app/test_remote_catalog_parity.py",
+  "tests/app/test_storage_execution.py",
 ]
-rationale = "Storage has no approved direct signal; catalog transactions and backend receipts are the durability authority."
+rationale = "StorageService centralizes terminal Daft admission, table registration, schema checks, and conflict retry; durable control transactions and Iceberg snapshots expose the result without a parallel signal."
 
 [[legacy]]
 rule = "raw_exception_logging"

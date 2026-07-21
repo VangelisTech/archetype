@@ -18,7 +18,11 @@ from archetype.missions.trajectories.components import (
     TrajectoryTurn,
     TranscriptArtifactRef,
 )
-from archetype.missions.trajectories.contracts import TrajectorySelection, Turn
+from archetype.missions.trajectories.contracts import (
+    TrajectorySelection,
+    TranscriptIngestionResult,
+    Turn,
+)
 from archetype.missions.trajectories.transforms import (
     actions_from_observations,
     audit_row_to_event,
@@ -41,6 +45,7 @@ __all__ = [
     "TrajectorySelection",
     "TrajectoryTurn",
     "TranscriptArtifactRef",
+    "TranscriptIngestionResult",
     "Turn",
     "CLAUDE_TRANSCRIPT_TABLE",
     "ClaudeTranscriptSource",

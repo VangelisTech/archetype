@@ -241,20 +241,9 @@ async def test_batch_threshold_creates_one_snapshot_per_batch(tmp_path):
 
 @pytest.mark.asyncio
 async def test_failed_flush_rejects_new_rows_without_unbounded_growth(tmp_path):
-    class FailingContext:
-        table = object()
-
-        def create_table_if_not_exists(self, _name, _schema):
-            return self.table
-
-        async def append(self, _table, _frame):
-            raise RuntimeError("storage unavailable")
-
     class FailingStorage:
-        context = FailingContext()
-
-        async def get_iceberg_context(self, _config):
-            return self.context
+        async def append_table(self, _config, _table_name, _frame):
+            raise RuntimeError("storage unavailable")
 
     audit = AuditLog(FailingStorage(), _storage(tmp_path), flush_rows=2)
     ctx = ActorCtx(id=uuid7(), roles={"admin"})

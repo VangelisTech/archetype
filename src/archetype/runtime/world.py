@@ -36,17 +36,7 @@ from archetype.app.models import (
     RunResult,
     WorldInfo,
 )
-from archetype.artifacts.bundles import (
-    ArtifactBundleRequest,
-    ArtifactPublishReceipt,
-    ArtifactReconcileResult,
-)
-from archetype.artifacts.contracts import (
-    ArtifactProcessor,
-    ArtifactReceipt,
-    ArtifactWriteReceipt,
-    TranscriptIngestionReceipt,
-)
+from archetype.artifacts.contracts import ArtifactRef, ArtifactSource
 from archetype.core.component import Component
 from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
 from archetype.core.hooks import HookEvent
@@ -54,7 +44,6 @@ from archetype.missions.trajectories import TrajectorySelection
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
-    from pathlib import Path
 
     from daft import DataFrame
 
@@ -67,8 +56,12 @@ if TYPE_CHECKING:
         IterationResult,
     )
     from archetype.core.hooks import HookHandle
+    from archetype.evaluation.components import EvalReceipt
     from archetype.evaluation.contracts import GraderContract
-    from archetype.missions.trajectories import ClaudeTranscriptSource
+    from archetype.missions.trajectories import (
+        ClaudeTranscriptSource,
+        TranscriptIngestionResult,
+    )
     from archetype.runtime.runtime import ArchetypeRuntime, SyncArchetypeRuntime
 
 _FireMode = Any  # Literal["blocking", "spawn"] — kept loose for forward compat
@@ -300,44 +293,22 @@ class RuntimeWorld:
             wid = await self._ensure_id()
             return await self._app.create_entity(wid, list(components))
 
-    async def publish(
-        self,
-        *components: Component,
-        external_id: str,
-        producer: str = "default",
-    ) -> ArtifactReceipt:
-        """Persist an external artifact exactly once per external identity.
+    async def ingest_artifacts(self, *sources: ArtifactSource) -> tuple[ArtifactRef, ...]:
+        """Copy files into the artifact store and index their metadata."""
 
-        Artifacts become durable immediately and do not join the active simulation.
-        Repeating an identity with the same payload returns the original
-        receipt; repeating it with a different payload raises an error.
-        """
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            return await self._app.ingest_artifact(
-                wid, list(components), external_id=external_id, producer=producer
-            )
-
-    async def ingest_files(
-        self,
-        paths: str | Path | list[str | Path],
-        processor: ArtifactProcessor,
-    ) -> ArtifactWriteReceipt:
-        """Process files with Daft and persist typed rows in an Iceberg artifact table."""
-        async with self._state.op_lock:
-            wid = await self._ensure_id()
-            return await self._app.ingest_files(
+            return await self._app.ingest_artifacts(
                 wid,
-                paths,
-                processor,
+                sources,
                 storage_config=self._state.storage_config,
             )
 
     async def ingest_claude_transcript(
         self,
         source: ClaudeTranscriptSource,
-    ) -> TranscriptIngestionReceipt:
-        """Redact and publish one Claude JSONL source as typed artifact rows."""
+    ) -> TranscriptIngestionResult:
+        """Redact and index one Claude JSONL session as mission evidence."""
 
         async with self._state.op_lock:
             wid = await self._ensure_id()
@@ -347,31 +318,14 @@ class RuntimeWorld:
                 storage_config=self._state.storage_config,
             )
 
-    async def write_artifacts(
-        self,
-        table_name: str,
-        artifacts: DataFrame,
-    ) -> ArtifactWriteReceipt:
-        """Persist an existing Daft pipeline in a typed Iceberg artifact table."""
-        async with self._state.op_lock:
-            wid = await self._ensure_id()
-            return await self._app.write_artifacts(
-                wid,
-                table_name,
-                artifacts,
-                storage_config=self._state.storage_config,
-            )
+    async def transcript_rows(self) -> DataFrame:
+        """Return normalized coding-agent transcript rows for this run."""
 
-    async def publish_artifact_bundle(
-        self, request: ArtifactBundleRequest
-    ) -> ArtifactPublishReceipt:
-        """Durably publish one portable attempt bundle and provider checkpoint."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            if str(request.world_id) != str(wid):
-                raise ValueError("artifact bundle world_id does not match this world handle")
-            return await self._app.publish_artifact_bundle(
-                request, storage_config=self._state.storage_config
+            return await self._app.query_transcript_rows(
+                wid,
+                storage_config=self._state.storage_config,
             )
 
     async def spawn_many(self, entities: list[list[Component]]) -> list[int]:
@@ -560,11 +514,10 @@ class RuntimeWorld:
         contract: GraderContract,
         grader: TrajectoryGrader,
         evaluation_id: str,
-        producer: str = "evals",
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
-    ) -> ArtifactReceipt:
-        """Persist one evaluation receipt for an evaluation identity.
+    ) -> EvalReceipt:
+        """Persist one evaluation result for an evaluation identity.
 
         The receipt is pinned to the current snapshot and grader contract.
         Repeating an evaluation identity returns its original receipt without
@@ -578,7 +531,6 @@ class RuntimeWorld:
                 contract=contract,
                 grader=grader,
                 evaluation_id=evaluation_id,
-                producer=producer,
                 ticks=ticks,
                 entity_ids=entity_ids,
             )
@@ -735,41 +687,13 @@ class RuntimeWorld:
             wid = await self._ensure_id()
             return await self._app.get_audit_history(wid, limit=limit, **filters)
 
-    async def artifacts(self, table_name: str) -> DataFrame:
-        """Return this run's rows from a typed Iceberg artifact table."""
+    async def artifacts(self) -> DataFrame:
+        """Return this run's common file-artifact index."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
             return await self._app.query_artifacts(
                 wid,
-                table_name,
                 storage_config=self._state.storage_config,
-            )
-
-    async def artifact_bundles(
-        self,
-        *,
-        attempt_id: str | None = None,
-        kinds: list[str] | None = None,
-    ) -> DataFrame:
-        """Return portable evidence rows indexed for this world's current run."""
-        async with self._state.op_lock:
-            wid = await self._ensure_id()
-            info = await self._resolve_info(wid)
-            return await self._app.query_artifact_bundles(
-                wid,
-                str(info.run_id or ""),
-                attempt_id=attempt_id,
-                kinds=kinds,
-            )
-
-    async def reconcile_artifact_bundles(self, *, limit: int = 100) -> ArtifactReconcileResult:
-        """Run one bounded recovery pass for interrupted bundle publications."""
-        async with self._state.op_lock:
-            wid = await self._ensure_id()
-            return await self._app.reconcile_artifact_bundles(
-                wid,
-                storage_config=self._state.storage_config,
-                limit=limit,
             )
 
     async def list_processors(self) -> list[ProcessorInfo]:
@@ -863,34 +787,21 @@ class SyncRuntimeWorld:
     def spawn_many(self, entities: list[list[Component]]) -> list[int]:
         return self._run(lambda: self._world.spawn_many(entities))
 
-    def publish(
-        self, *components: Component, external_id: str, producer: str = "default"
-    ) -> ArtifactReceipt:
-        """Persist an external artifact exactly once per external identity."""
-        return self._run(
-            lambda: self._world.publish(*components, external_id=external_id, producer=producer)
-        )
-
-    def ingest_files(
-        self,
-        paths: str | Path | list[str | Path],
-        processor: ArtifactProcessor,
-    ) -> ArtifactWriteReceipt:
-        return self._run(lambda: self._world.ingest_files(paths, processor))
+    def ingest_artifacts(self, *sources: ArtifactSource) -> tuple[ArtifactRef, ...]:
+        return self._run(lambda: self._world.ingest_artifacts(*sources))
 
     def ingest_claude_transcript(
         self,
         source: ClaudeTranscriptSource,
-    ) -> TranscriptIngestionReceipt:
+    ) -> TranscriptIngestionResult:
         """Sync mirror of redacted Claude transcript ingestion."""
 
         return self._run(lambda: self._world.ingest_claude_transcript(source))
 
-    def write_artifacts(self, table_name: str, artifacts: DataFrame) -> ArtifactWriteReceipt:
-        return self._run(lambda: self._world.write_artifacts(table_name, artifacts))
+    def transcript_rows(self) -> DataFrame:
+        """Return normalized coding-agent transcript rows for this run."""
 
-    def publish_artifact_bundle(self, request: ArtifactBundleRequest) -> ArtifactPublishReceipt:
-        return self._run(lambda: self._world.publish_artifact_bundle(request))
+        return self._run(self._world.transcript_rows)
 
     def spawn_batch(
         self, *components_or_count: Component | int, count: int | None = None
@@ -976,18 +887,16 @@ class SyncRuntimeWorld:
         contract: GraderContract,
         grader: TrajectoryGrader,
         evaluation_id: str,
-        producer: str = "evals",
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
-    ) -> ArtifactReceipt:
-        """Persist one evaluation receipt for an evaluation identity."""
+    ) -> EvalReceipt:
+        """Persist one evaluation result for an evaluation identity."""
         return self._run(
             lambda: self._world.evaluate(
                 *component_types,
                 contract=contract,
                 grader=grader,
                 evaluation_id=evaluation_id,
-                producer=producer,
                 ticks=ticks,
                 entity_ids=entity_ids,
             )
@@ -1047,19 +956,8 @@ class SyncRuntimeWorld:
     def history(self, *, limit: int = 100, **filters: Any) -> DataFrame:
         return self._run(lambda: self._world.history(limit=limit, **filters))
 
-    def artifacts(self, table_name: str) -> DataFrame:
-        return self._run(lambda: self._world.artifacts(table_name))
-
-    def artifact_bundles(
-        self,
-        *,
-        attempt_id: str | None = None,
-        kinds: list[str] | None = None,
-    ) -> DataFrame:
-        return self._run(lambda: self._world.artifact_bundles(attempt_id=attempt_id, kinds=kinds))
-
-    def reconcile_artifact_bundles(self, *, limit: int = 100) -> ArtifactReconcileResult:
-        return self._run(lambda: self._world.reconcile_artifact_bundles(limit=limit))
+    def artifacts(self) -> DataFrame:
+        return self._run(self._world.artifacts)
 
     def list_processors(self) -> list[ProcessorInfo]:
         return self._run(lambda: self._world.list_processors())

@@ -405,7 +405,8 @@ class QueryService:
             return []
 
         frame = await self._audit.query(world_id=world_id, status="queued", limit=limit)
-        rows = frame.to_pylist()
+        materialized = await self._storage_service.materialize(frame)
+        rows = materialized.to_pylist()
         result: list[Command] = []
         for row in rows:
             command_id = row["command_id"]

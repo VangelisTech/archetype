@@ -35,6 +35,7 @@ from archetype.core.config import RunConfig
 
 if TYPE_CHECKING:
     from archetype.app.models import EpisodeConfig, RolloutConfig
+    from archetype.app.storage.interfaces import iStorageService
     from archetype.app.world.interfaces import iWorldService
 
 
@@ -46,8 +47,13 @@ class SimulationService:
     separately gated. The audit unit is the rollout call, not each fork.
     """
 
-    def __init__(self, world_service: iWorldService) -> None:
+    def __init__(
+        self,
+        world_service: iWorldService,
+        storage_service: iStorageService,
+    ) -> None:
         self._world_service = world_service
+        self._storage_service = storage_service
         self._drain_commands: Callable[[str | UUID, int], Awaitable[object]] | None = None
         self._reset_quota: Callable[[], None] | None = None
 
@@ -218,7 +224,8 @@ class SimulationService:
         # lazy_audit: the all/any decision must enter Python control flow to end
         # the episode loop; a Python bool cannot remain a lazy Daft expression.
         # Reduced to one row above, so this materializes a single scalar pair.
-        stats = summary.to_pylist()
+        materialized = await self._storage_service.materialize(summary)
+        stats = materialized.to_pylist()
         if not stats:
             return False
         n_total = stats[0]["n_total"] or 0

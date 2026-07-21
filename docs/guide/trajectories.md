@@ -11,8 +11,9 @@ Archetype provides separate schemas for headers, turns, commands, observations,
 actions, and rewards; it does not hide trajectory evidence in one JSON
 document. Small, already-safe evidence may be authored as Component rows. Raw
 coding-agent transcripts use the artifact boundary described below: only a
-lightweight Component index joins the mission graph, while sanitized narrative
-lives in a typed artifact table.
+sanitized file enters the common artifact index, while normalized narrative
+lives in a typed ingestion table. Transcript ingestion does not silently add
+entities to the mission graph.
 
 ## Ownership
 
@@ -23,7 +24,7 @@ lives in a typed artifact table.
 | `archetype.missions.trajectories.claude` | Claude source configuration and pure parsing of already-sanitized text. No file I/O or durability. |
 | `archetype.missions.trajectories.transforms` | Pure row and lazy DataFrame transforms; no service access. |
 | `archetype.app.missions.trajectory_service` | Internal composition of persisted query access and evaluation graders. |
-| `archetype.app.artifacts.transcript_service` | Internal file snapshot, redaction, claim, and typed-row workflow. |
+| `archetype.app.missions.transcript_service` | Internal snapshot, redaction, sanitized-file ingestion, and normalized-row workflow. |
 | `RuntimeWorld.query_trajectory()` | Recommended filtered read path. |
 | `RuntimeWorld.grade_trajectory()` | Recommended query-then-grade path. |
 | `RuntimeWorld.ingest_claude_transcript()` | Recommended source-to-artifact workflow. |
@@ -38,7 +39,7 @@ and mission processors remain authoritative for task transitions.
 |---|---|
 | `Trajectory` | Header and coordinates for one trajectory. |
 | `TrajectoryTurn` | One historical or explicitly authored conversational/tool-use turn. New raw-transcript ingestion does not write it. |
-| `TranscriptArtifactRef` | Lightweight trajectory/mission link to a sanitized typed transcript table and its source digest. |
+| `TranscriptArtifactRef` | Optional explicitly authored Component link to a sanitized transcript artifact. Raw-transcript ingestion does not write it. |
 | `TrajectoryCommandEvent` | One command or audit event. |
 | `TrajectoryObservation` | One observed tick or external event. |
 | `TrajectoryAction` | One action aligned to the trajectory sequence. |
@@ -168,14 +169,14 @@ through without translation objects.
 
 Raw coding-agent transcripts, tool inputs and outputs, frames, and other large
 or secret-bearing content are artifacts. They require pre-durability redaction,
-stable source/content identity, and typed artifact-table publication.
+content identity, and typed ingestion.
 
 ```python
 from pathlib import Path
 
 from archetype.missions.trajectories import ClaudeTranscriptSource
 
-receipt = await world.ingest_claude_transcript(
+result = await world.ingest_claude_transcript(
     ClaudeTranscriptSource(
         path=Path("session.jsonl"),
         mission_id="mission-42",
@@ -185,17 +186,19 @@ receipt = await world.ingest_claude_transcript(
 
 The missions family parses already-sanitized text into immutable `LoadedSession`
 and `Turn` values. It neither opens the source path nor exposes a method that
-turns the session into spawnable entities. The artifact-owned application
+turns the session into spawnable entities. The mission-owned application
 workflow performs the stable snapshot, quarantine/redaction, complete parse,
-claim-backed publication, and typed Iceberg append.
+sanitized artifact ingestion, and typed Iceberg append.
 
-The claim publishes one `Trajectory` header with `TranscriptArtifactRef` and
-`AssetRef`. The normalized table then stores one session row plus ordered turn
-rows linked by the same canonical `trajectory_id`. The local path is absent
-from both. Query the lightweight header through `query_trajectory()` and the
-narrative through `world.artifacts("coding_agent_transcript_rows")`.
+The common artifact index stores the sanitized file occurrence and its
+content-addressed object URI. The `coding_agent_transcript_rows` table stores
+one session row plus ordered turn rows linked by the same canonical
+`trajectory_id` and `source_artifact_id`. The submitted local path is absent
+from both durable tables. `TranscriptIngestionResult` returns the portable
+`ArtifactRef`, linkage, row count, and redaction outcome;
+`world.transcript_rows()` reads the normalized rows for analysis.
 
 `TrajectoryTurn` remains the one class identity for historical Component rows
 and deliberate safe authoring. Compatibility does not authorize a new raw
-transcript writer. See [Coding-agent transcript artifacts](artifacts.md#13-coding-agent-transcript-artifacts)
-for ordering, redaction, replay, and recovery semantics.
+transcript writer. See [Transcript ingestion](artifacts.md#8-transcript-ingestion)
+for ordering, redaction, occurrence identity, and failure semantics.

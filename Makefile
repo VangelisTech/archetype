@@ -27,6 +27,7 @@ help:
 	@echo "  make architecture-audit  Enforce dependency and encapsulation policy"
 	@echo "  make observability-audit Enforce signal safety and family dispositions"
 	@echo "  make version-inventory-audit  Validate pinned execution-environment inventory"
+	@echo "  make python-api-audit  Validate committed generated Python reference"
 	@echo "  make lint-fix       Lint and auto-fix"
 	@echo "  make check          Format + lint"
 	@echo "  make complexity     Cyclomatic complexity / maintainability report (radon)"
@@ -100,7 +101,7 @@ format:
 	@uv run ruff format $(RUFF_PATHS)
 
 .PHONY: lint
-lint: lazy-audit architecture-audit observability-audit version-inventory-audit api-boundary-audit idempotency-audit gate-coverage-audit redaction-audit
+lint: lazy-audit architecture-audit observability-audit version-inventory-audit python-api-audit api-boundary-audit idempotency-audit gate-coverage-audit
 	@uv run ruff check $(RUFF_PATHS)
 
 .PHONY: lint-fix
@@ -142,6 +143,10 @@ lazy-audit:
 api-boundary-audit:
 	@uv run python scripts/check_api_import_boundaries.py
 
+.PHONY: python-api-audit
+python-api-audit:
+	@PYTHONPATH=$(PYTHONPATH) uv run python scripts/generate_python_api_docs.py --check
+
 .PHONY: architecture-audit
 architecture-audit:
 	@uv run python scripts/check_architecture.py
@@ -167,10 +172,6 @@ idempotency-audit:
 .PHONY: gate-coverage-audit
 gate-coverage-audit:
 	@PYTHONPATH=$(PYTHONPATH) uv run python scripts/check_gate_coverage.py
-
-.PHONY: redaction-audit
-redaction-audit:
-	@uv run python scripts/check_pre_durability_redaction.py
 
 # Cyclomatic complexity + maintainability report.
 # Uses uvx so radon stays out of the project lock file.

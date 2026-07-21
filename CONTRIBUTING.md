@@ -11,19 +11,21 @@ currently maintainer-only while the contract surface stabilizes: a workflow
 closes outside PRs automatically. Bug reports and design discussion are
 welcome as issues.
 
-Two agreements govern outside contributions when they are accepted:
+Outside contributions, when they are accepted, require commit-level provenance:
 
 - **DCO** — every commit carries a `Signed-off-by` line (`git commit -s`)
   certifying you have the right to submit the work under Apache-2.0.
-- **CLA** — on your first pull request, a bot asks you to sign the
-  [Contributor License Agreement](CLA.md), which grants Vangelis
-  Technologies the rights described there, including the right to license
-  the contribution under other terms. One signature covers all future
-  contributions.
 
-Maintainer- and bot-authored pull requests are exempt from both checks; the
-allowlist lives in `.github/workflows/` (`cla.yml`, `dco.yml`,
-`pr-gate.yml`).
+The repository also contains the intended
+[Contributor License Agreement](CLA.md), which grants Vangelis Technologies
+the additional rights described there. Automated CLA collection is disabled
+while pull requests remain maintainer-only. Before outside contributions
+reopen, Vangelis will establish an organization-wide signing and retention
+process; a repository-local signatures branch is not the legal authority.
+
+Maintainer- and bot-authored pull requests are exempt from the DCO and outside
+contribution gates; their allowlists live in `.github/workflows/` (`dco.yml`
+and `pr-gate.yml`).
 
 ## Choose Package Ownership First
 

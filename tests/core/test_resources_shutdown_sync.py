@@ -30,7 +30,7 @@ async def test_storage_service_shutdown_calls_sync_shutdown(monkeypatch, tmp_pat
         await svc.shutdown()
     finally:
         svc._instances.clear()
-        svc._locks.clear()
+        svc._store_locks.clear()
 
 
 class _FailingAsyncStore:
@@ -82,10 +82,10 @@ async def test_storage_service_shutdown_continues_after_first_store_failure():
             "shutdown aborted on the first failing store; subsequent stores leaked"
         )
         assert svc._instances == {}, "_instances was not cleared after shutdown"
-        assert svc._locks == {}, "_locks was not cleared after shutdown"
+        assert svc._store_locks == {}, "_store_locks was not cleared after shutdown"
     finally:
         svc._instances.clear()
-        svc._locks.clear()
+        svc._store_locks.clear()
 
 
 @pytest.mark.asyncio
@@ -107,10 +107,10 @@ async def test_storage_service_shutdown_failing_in_middle_drains_all():
         assert first.shutdown_called
         assert last.shutdown_called, "store after the failing one in iteration order leaked"
         assert svc._instances == {}
-        assert svc._locks == {}
+        assert svc._store_locks == {}
     finally:
         svc._instances.clear()
-        svc._locks.clear()
+        svc._store_locks.clear()
 
 
 @pytest.mark.asyncio
@@ -125,7 +125,7 @@ async def test_storage_service_shutdown_cancellation_still_drains_and_clears():
 
     assert later.shutdown_called
     assert svc._instances == {}
-    assert svc._locks == {}
+    assert svc._store_locks == {}
     assert svc._catalogs == {}
 
 
@@ -141,5 +141,5 @@ async def test_storage_service_shutdown_cancellation_preserves_other_failure():
     assert isinstance(caught.value.__cause__, RuntimeError)
     assert "failure after cancellation" in str(caught.value.__cause__)
     assert svc._instances == {}
-    assert svc._locks == {}
+    assert svc._store_locks == {}
     assert svc._catalogs == {}

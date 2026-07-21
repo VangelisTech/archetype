@@ -24,10 +24,9 @@ The current contract set is split across design docs and executable tests.
 | [World Lifecycle](world-lifecycle.md) | Create/fork/destroy | Append-only lifecycle, info-class downgrade, fork sharing/copy rules. |
 | [Durable Discovery](durable-discovery.md) | Control catalog and cold reads | Catalog authority, `discover_worlds`/`open_world_readonly`, fail-closed cold queries. |
 | [Atomic Visibility](atomic-visibility.md) | Tick commit identity | Manifest-published ticks, commit tokens, writer fencing, epoch-0 legacy reads. |
-| [Artifacts](artifacts.md) | External-artifact ingestion | Typed Iceberg tables, Daft file processors, content identity, and claim-backed receipt compatibility. |
-| [Artifact Finalization](artifact-finalization.md) | Sandbox evidence durability | Provider checkpoints, portable bundle publication/replay, pre-durability redaction, indexing, and retention. |
+| [Artifacts](artifacts.md) | External-artifact ingestion | App-layer Daft Catalog registration, typed Iceberg tables, file/media scans, occurrence identity, and content-addressed objects. |
 | [Agent Missions V1](agent-missions.md) | Coding-agent software factory | Typed task graphs, previous-tick readiness, post-commit sandbox dispatch, validator-gated retry, and terminal mission rollup. |
-| [Dataset and Evaluation Ontology](dataset-eval-ontology.md) | Dataset/eval identity and vocabulary | Dataset-vs-runtime coordinates, trial/episode cardinality, typed-artifact ownership, and grader composition. |
+| [Dataset and Evaluation Ontology](dataset-eval-ontology.md) | Dataset/eval identity and vocabulary | Dataset-vs-runtime coordinates, trial/episode cardinality, typed-ingestion ownership, and grader composition. |
 | [Audit Log](audit-log.md) | Audit rows | Append-only audit history and query contract. |
 | [Repository Harness](repository-harness.md) | Executable evidence | Focused tests, contract matrices, repository scenarios, benchmarks, static audits, and mutation probes. |
 | [`tests/app/test_runtime_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_contracts.py) | Executable runtime contracts | Enforces activation single-flight, runtime-vs-world lifetime, fork isolation, spawn visibility, the actor-free trust boundary, and smoke paths. |
@@ -957,13 +956,10 @@ the constraints that any acceptable design must satisfy.
 | Coordinated tick retry after failed publish | Unpublished attempts stay invisible; retry produces exactly one visible attempt |
 | Cold discovery and reads | Repeated cold discovery and reads return stable durable state |
 | Fenced mutable resume | Resume continues from the last visible tick and stale-writer retries stay invisible |
-| Artifact publication replay | Identical producer identity and payload converges on one visible artifact/link; changed payload conflicts |
-| Artifact publication crash recovery | Lease takeover completes an appended orphan without creating a second visible publication |
-| `evaluate()` replay | Same evaluation identity, subject, and contract returns one receipt without re-grading |
+| Artifact ingestion replay | Not idempotent; every submission records a new UUIDv7 occurrence while identical bytes reuse one content-addressed object |
+| `evaluate()` replay | Same evaluation identity, subject, and contract returns the persisted result without re-grading |
 | Hard process crash and cold resume | Unpublished physical rows do not advance a fresh process beyond the last visible tick |
 | Independent writer-process race | Exactly one fenced writer publishes the contested tick |
-| Independent process `publish()` replay | Concurrent processes converge on one visible external artifact |
-| Independent process `evaluate()` replay | Concurrent processes grade once, and changed subjects conflict before grading |
 
 The durable rows above summarize the normative amendments in
 [Durable Discovery](durable-discovery.md),
@@ -976,19 +972,17 @@ executes the behavioral scenarios.
 The behavioral suite is an independent oracle: it does not call or import the
 feature tests under `tests/app/`. Each task builds fresh storage and asserts
 primarily on service-facing outcomes and durable query results. Deterministic
-fault injection targets only the documented manifest-publish and
-claim-completion boundaries; selected internal counters provide secondary
-failure diagnostics. Coverage is deliberately symmetric: repeated no-ops must
-collapse, non-idempotent simulation calls must remain distinct, concurrent
-durable submissions must converge, interrupted commits must recover, and
-identity reuse with changed content must fail loudly. A new matrix row
+fault injection targets the documented manifest-publish boundary; selected
+internal counters provide secondary failure diagnostics. Coverage is
+deliberately symmetric: repeated no-ops must collapse, explicitly
+occurrence-based submissions must remain distinct, interrupted tick commits
+must recover, and identity reuse with changed content must fail loudly. A new matrix row
 therefore requires a registered behavioral task, and a new task must trace
 back to at least one matrix row.
 
-Four tasks cross real OS-process boundaries over shared LanceDB and SQLite
-files: hard process death followed by cold resume, a two-writer fence race,
-eight-process artifact replay, and eight-process evaluation replay with an
-external grader-call ledger. The `infrastructure-idempotency` GitHub Actions
+Two tasks cross real OS-process boundaries over shared LanceDB and SQLite
+files: hard process death followed by cold resume and a two-writer fence race.
+The `infrastructure-idempotency` GitHub Actions
 job creates a disposable Iceberg table under a unique Cloudflare R2 object
 storage prefix and runs the integration under `tests/infrastructure/`; local
 development does not require Docker. The catalog metadata is isolated in a

@@ -27,7 +27,7 @@ from archetype._logging import configure_host_observability
 from archetype.app.application.interfaces import iRuntimeApplication
 from archetype.app.container import ServiceContainer
 from archetype.app.models import WorldInfo
-from archetype.artifacts.bundles import ArtifactSourceResolver, ArtifactStoreConfig
+from archetype.artifacts.contracts import ArtifactStoreConfig
 from archetype.core.config import CacheConfig, StorageConfig
 from archetype.core.hooks import HookEvent
 from archetype.runtime._config import coerce_cache, coerce_storage
@@ -65,7 +65,6 @@ class ArchetypeRuntime:
         *,
         log: str | None = None,
         artifact_store: ArtifactStoreConfig | None = None,
-        artifact_source_resolver: ArtifactSourceResolver | None = None,
     ) -> None:
         """Initialize the runtime.
 
@@ -73,10 +72,7 @@ class ArchetypeRuntime:
             log: Package log level: `debug`, `info`, `warning`, or `error`.
                 When omitted, `ARCHETYPE_LOG` is used and logging stays quiet
                 if that variable is unset.
-            artifact_store: Optional object-store and artifact-index
-                configuration for portable attempt bundles.
-            artifact_source_resolver: Optional provider resolver used to copy
-                immutable sandbox references into portable bundle objects.
+            artifact_store: Optional content-addressed object-store bounds.
         """
         # This constructor is an explicit trusted-script process host. Quiet
         # remains the default; stdlib logging and vendor-neutral tracing are
@@ -86,10 +82,7 @@ class ArchetypeRuntime:
             log=log,
         )
 
-        self._container = ServiceContainer(
-            artifact_store_config=artifact_store,
-            artifact_source_resolver=artifact_source_resolver,
-        )
+        self._container = ServiceContainer(artifact_store_config=artifact_store)
         self._application: iRuntimeApplication = self._container.application
         self._handles: WeakSet[RuntimeWorld] = WeakSet()
         self._mission_handles: WeakSet[RuntimeMissions] = WeakSet()
@@ -322,13 +315,11 @@ class ArchetypeRuntime:
         *,
         log: str | None = None,
         artifact_store: ArtifactStoreConfig | None = None,
-        artifact_source_resolver: ArtifactSourceResolver | None = None,
     ) -> SyncArchetypeRuntime:
         """Create the synchronous runtime facade."""
         return SyncArchetypeRuntime(
             log=log,
             artifact_store=artifact_store,
-            artifact_source_resolver=artifact_source_resolver,
         )
 
     def _register_handle(self, handle: RuntimeWorld) -> None:
@@ -357,12 +348,10 @@ class SyncArchetypeRuntime:
         *,
         log: str | None = None,
         artifact_store: ArtifactStoreConfig | None = None,
-        artifact_source_resolver: ArtifactSourceResolver | None = None,
     ) -> None:
         self._runtime = ArchetypeRuntime(
             log=log,
             artifact_store=artifact_store,
-            artifact_source_resolver=artifact_source_resolver,
         )
         self._runner: asyncio.Runner | None = None
 

@@ -225,6 +225,8 @@ class AgentArtifact(Component):
     task_id: int = 0
     execution_id: int = 0
     dispatch_id: str = ""
+    artifact_id: str = ""
+    logical_path: str = ""
     digest: str = ""
     uri: str = ""
     media_type: str = "application/octet-stream"

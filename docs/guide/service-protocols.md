@@ -45,7 +45,7 @@ ArchetypeRuntime -> iRuntimeApplication <- iCommandGateway <- FastAPI
 iRuntimeApplication
   -> iWorldService + iMutationService + iSimulationService
   -> iQueryService
-  -> iArtifactService + iArtifactTableService + iArtifactBundleService
+  -> iArtifactService
   -> iTranscriptIngestionService
   -> iEvaluationService
   -> iCommandScheduler
@@ -54,23 +54,23 @@ iRuntimeApplication
   -> iMissionService
   -> iPhysicalAIService
 
-iEvaluationService -> iQueryService + iArtifactService
-iArtifactBundleService -> iRedactionService + iStorageService + iWorldService
+iEvaluationService
+  -> iQueryService + iIngestionService + iStorageService + iWorldService
 iRedactionService -> no lower application family
-iArtifactService   -> iStorageService + iWorldService
-iArtifactTableService -> iStorageService + iWorldService
+iIngestionService  -> iStorageService + iWorldService
+iArtifactService   -> iIngestionService + iStorageService + iWorldService
 iTranscriptIngestionService
-  -> iArtifactService + iArtifactTableService
-  -> iRedactionService + iWorldService
+  -> iArtifactService + iIngestionService
+  -> iRedactionService + iStorageService + iWorldService
 iQueryService      -> iStorageService + iAuditLog
 iWorldService      -> iStorageService
 iMutationService   -> iWorldService
-iSimulationService -> iWorldService + injected callbacks
+iSimulationService -> iWorldService + iStorageService + injected callbacks
 iCommandScheduler  -> iWorldService + iMutationService
-iResearchService   -> iWorldService + iSimulationService
+iResearchService   -> iWorldService + iSimulationService + iStorageService
 iPhysicalAIService
   -> iWorldService + iMutationService + iSimulationService
-  -> iEvaluationService
+  -> iEvaluationService + iStorageService
 iAuditLog          -> iStorageService
 
 RuntimeMissions -> iRuntimeApplication -> iMissionService
@@ -89,17 +89,16 @@ application facade.
 |---|---|---|---|
 | `iRuntimeApplication` | `RuntimeApplication` | runtime, `CommandGateway` | Actor-free canonical product operations and per-world serialization |
 | `iCommandGateway` | `CommandGateway` | FastAPI and other untrusted adapters | RBAC/quota authorization, delegation, access audit |
-| `iStorageService` | `StorageService` | world, query, artifacts, audit | Store pooling, catalog/control-authority and storage-context lifetime |
-| `iWorldService` | `WorldService` | mutation, simulation, commands, artifacts, research, physical AI, application | Live-world lifecycle, durable discovery, coordinate lookup |
+| `iStorageService` | `StorageService` | world, simulation, query, ingestion, artifacts, evaluation, transcripts, research, physical AI, audit | Store/session lifetime, control authority, terminal Daft execution, and app-table catalog/read/write/retry authority |
+| `iWorldService` | `WorldService` | mutation, simulation, commands, ingestion, artifacts, evaluation, transcripts, research, physical AI, application | Live-world lifecycle, durable discovery, coordinate lookup |
 | `iMutationService` | `MutationService` | application, commands, physical AI | Entity/component/processor mutation staging |
 | `iSimulationService` | `SimulationService` | application, research, physical AI | Step, run, episode and rollout execution |
 | `iQueryService` | `QueryService` | application, evaluation | Persisted ECS reads, signature/lineage discovery and compatibility history |
-| `iArtifactService` | `ArtifactService` | application, evaluation | Claim-backed component publication and immutable snapshot pinning |
-| `iArtifactTableService` | `ArtifactTableService` | application | Typed file/row ingestion and contextual reads |
-| `iArtifactBundleService` | `ArtifactBundleService` | application | Portable evidence publication, indexing, and reconciliation |
-| `iTranscriptIngestionService` | `ClaudeTranscriptIngestionService` | application | Redact, parse, claim, and publish coding-agent transcripts without durable raw narrative |
-| `iRedactionService` | `RedactionService` | artifact bundles, transcript ingestion; future telemetry/proxy adapters | Provider-neutral pre-durability scanning, deterministic text redaction, safe receipts, and quarantine |
-| `iEvaluationService` | `EvaluationService` | application, physical AI | Query, grade, validate and publish evaluation evidence |
+| `iIngestionService` | `IngestionService` | artifacts, transcripts, evaluation | Add world/run identity and select plain or caller-keyed conditional append through storage |
+| `iArtifactService` | `ArtifactService` | application, transcript ingestion | Discover and scan files, persist content-addressed objects, publish typed media indexes, then expose the common file index |
+| `iTranscriptIngestionService` | `TranscriptIngestionService` | application | Snapshot and redact a coding-agent transcript, ingest the sanitized file, and append normalized mission rows |
+| `iRedactionService` | `RedactionService` | transcript ingestion; future telemetry/proxy adapters | Provider-neutral pre-durability scanning, deterministic text redaction, safe receipts, and quarantine |
+| `iEvaluationService` | `EvaluationService` | application, physical AI | Pin persisted world state, lease grader execution through the shared control authority, and append one typed evaluation result |
 | `iCommandScheduler` | `CommandScheduler` | application | Durable admission, leasing, dispatch, retry, settlement and outbox inspection |
 | `iAuditLog` | `AuditLog` | application, gateway, query | Append-only access rows and command-outbox projection |
 | `iResearchService` | `AutoResearchService` | application | Multi-run autoresearch workflow and research ledger |
@@ -123,33 +122,43 @@ remains in `archetype.api`.
 
 Every `iCommandGateway` operation accepts `ActorCtx`, authorizes, delegates to
 `iRuntimeApplication`, and attempts an access event. It has no tick-drain
-method and owns no world, command ledger, grader, artifact claim, or storage.
+method and owns no world, command ledger, grader, artifact ingestion, or storage.
 
 ### World ports
 
 Live-world returns from `iWorldService` are legal only below the application
 boundary. `iMutationService` and `iSimulationService` are siblings over that
 port. Simulation imports neither commands nor gateway; the container supplies
-its drain and quota-reset callables.
+its drain and quota-reset callables. Its bounded episode-termination reduction
+is admitted through `iStorageService` before the scalar enters Python control
+flow.
 
 ### Durable workflow ports
 
 `iCommandScheduler` exposes the current combined scheduling/dispatch port over
 the control catalog. Tick publication performs terminal applied settlement.
-`iArtifactService` and `iEvaluationService` expose separate claim-backed
-workflows. `iArtifactBundleService` owns full attempt-bundle publication and
-reconciliation while provider checkpoints remain recovery objects. It consumes
-`iRedactionService` before its control, object, manifest, and index durability
-boundaries. Future live-event, OTel, and proxy exporters consume that same port;
-they do not fork scanner policy.
+`iIngestionService` owns the general typed-ingestion policy boundary: it
+supplies the world/run envelope and selects either a plain append or a
+caller-keyed conditional append. It has no knowledge of files, media,
+transcripts, or graders. `iStorageService` owns the corresponding physical
+boundary: terminal Daft admission, `daft.Catalog` table registration, schema
+alignment, lazy table reads, Iceberg writes, and optimistic-conflict retry.
+
+`iArtifactService` specializes that primitive for files. It discovers and
+scans sources, persists immutable content-addressed objects, writes optional
+media-specific indexes, and publishes the common file index last. There is no
+artifact claim, lease, receipt, or reconciliation protocol around that path.
+Provider checkpoints remain sandbox recovery objects rather than artifact
+workflow stages. Future live-event, OTel, and proxy exporters consume the same
+redaction port; they do not fork scanner policy.
 
 `iTranscriptIngestionService` is a composition port, not another storage
 authority. Its implementation snapshots and redacts through
-`iRedactionService`, parses with the pure missions-family adapter, publishes the
-lightweight source/trajectory claim through `iArtifactService`, and writes
-sanitized rows through `iArtifactTableService`. The source claim precedes the
-typed append so a changed-content conflict fires before new rows become
-durable; an identical retry can repair a missing append idempotently.
+`iRedactionService`, parses with the pure missions-family adapter, ingests the
+sanitized snapshot through `iArtifactService`, and appends normalized rows
+through `iIngestionService`. Raw narrative never crosses a durability boundary.
+Each ingestion is a new artifact occurrence; normalized row identity is scoped
+to that source artifact.
 `iAuditLog` is a projection/read port, not the authority for command outcome.
 
 ### Agent Missions V1
@@ -197,7 +206,8 @@ See [Agent Missions V1](agent-missions.md).
 because external simulator and model resources are implementations beneath
 that capability. `iPhysicalAIService` is the app-internal workflow port. Its
 implementation composes world lifecycle, entity/processor mutation, episode
-execution, and persisted evaluation reads; it does not own those authorities.
+execution, persisted evaluation reads, and storage-admitted terminal report
+projection; it does not own those authorities.
 
 `RuntimeApplication` is the only consumer exposed to the runtime. The
 application service has no public constructor contract, accepts no gateway or
@@ -224,11 +234,12 @@ concrete service remains internal, and `ServiceContainer` remains unsupported.
 The top-level family never imports that port in return. Public classification
 is explicit and is not inferred from either side of the annotation.
 
-The artifacts family completed this migration under #558: `ArtifactMeta` and
-`AssetRef` live in `archetype.artifacts.components`, the typed-table and
-content-addressing contracts live in `archetype.artifacts.contracts`, and the
-bundle value contracts live in `archetype.artifacts.bundles`. The evaluation
-family completed it under #557: `EvalReceipt` lives in
+The artifacts family owns the supported `ArtifactSource`, `ArtifactRef`, and
+`ArtifactStoreConfig` file contracts. `archetype.ingestion` owns one reusable
+`FileIngestionPipeline` and its pure bounded scanners; application policy and
+authority remain under `archetype.app.ingestion`, `archetype.app.artifacts`,
+and `archetype.app.storage`. The evaluation family completed its split under
+issue #557: `EvalReceipt` lives in
 `archetype.evaluation.components`, and the grading value contracts and
 identity digests live in `archetype.evaluation.contracts`. Current paths
 that predate this rule are migration state, not alternate ownership. The
@@ -241,8 +252,8 @@ evaluation ports.
 
 The physical-AI split completed #589: typed request/report values and pure
 optimization live under `archetype.physical_ai`, while
-`iPhysicalAIService` composes world, mutation, simulation, and evaluation
-ports under `archetype.app.physical_ai`. The root `app/models.py`
+`iPhysicalAIService` composes world, mutation, simulation, evaluation, and
+storage ports under `archetype.app.physical_ai`. The root `app/models.py`
 boundary-model split remains owned by #560.
 
 The root policy and its `quality/architecture.d/` fragments currently carry no
@@ -295,5 +306,5 @@ resources.
 - [Durable Commands](durable-commands.md)
 - [Audit Log](audit-log.md)
 - [Execution Hierarchy](execution-hierarchy.md)
-- [Artifact Finalization](artifact-finalization.md)
+- [Artifacts](artifacts.md)
 - [Agent Missions V1](agent-missions.md)

@@ -16,8 +16,8 @@ Each archetype signature maps to a single table, named by the archetype's determ
 
 `StorageService` owns the conversion from user-facing `StorageConfig` into
 backend-native core store inputs. The core stores do not interpret
-`StorageConfig` themselves. Archetype supplies one concrete catalog factory:
-a local Iceberg warehouse with SQLite metadata.
+`StorageConfig` themselves. Archetype supplies one concrete data-plane catalog
+factory: a local Iceberg warehouse with SQLite-backed PyIceberg metadata.
 
 ```python
 from archetype.core.config import StorageConfig, StorageBackend
@@ -33,13 +33,34 @@ storage_service = StorageService()
 
 On first use, the local path initializes:
 
-1. An **Iceberg SqlCatalog** backed by SQLite for metadata
+1. An **Iceberg SqlCatalog** backed by SQLite for table metadata
 2. A **Daft Session** attached to the catalog
 3. The **namespace** (created if it doesn't exist)
 
 For LanceDB, `StorageService` passes the resolved storage URI and namespace
 directly to `AsyncLancedbStore`. It does not build a Daft session/catalog for
 the LanceDB backend.
+
+### Control plane and data plane
+
+Local SQLite can appear in two deliberately separate roles:
+
+| Plane | Local implementation | Remote implementation | Authority |
+|---|---|---|---|
+| Control | `SqliteControlCatalog` | Durable Object control catalog | World identity, writer fences, visibility manifests, deferred commands, and narrow workflow leases |
+| Data | PyIceberg `SqlCatalog` plus local files | Caller-configured Iceberg catalog plus object storage | Table metadata, atomic snapshots, manifests, and data files |
+
+The control catalog answers whether a writer or workflow action is admitted
+and which committed state is visible. Iceberg answers whether one table update
+committed atomically and which files belong to its snapshot. Iceberg's
+serializable table history does not replace cross-table workflow coordination,
+and the control catalog does not store artifact bytes or analytical rows.
+
+`StorageService` composes both planes for one storage identity. The built-in
+local Iceberg path therefore has a control-catalog SQLite database and a
+separate PyIceberg metadata database. A managed deployment can independently
+replace the first with the Durable Object control catalog and the second with a
+caller-configured catalog attached to Daft.
 
 ### Managed and remote Iceberg
 
@@ -224,9 +245,37 @@ storage = StorageConfig(
 | `AsyncStore` | Daft `Session`, optional Daft `IOConfig` |
 | `AsyncLancedbStore` | resolved `uri`, `namespace` |
 
-Storage context helpers live in `archetype.app.storage.service` as
-compatibility shims for the old `StorageContext` name. New code should use the
-Daft-native session and app-level factories.
+## Application Daft execution authority
+
+`StorageService` is the sole terminal Daft execution authority for application
+families. It exposes four narrow operations:
+
+| Operation | Contract |
+|---|---|
+| `materialize(frame)` | Admit and execute one Archetype-owned lazy plan, returning the completed frame |
+| `read_table(config, name)` | Resolve an existing registered app table and return a lazy Iceberg read |
+| `append_table(config, name, rows)` | Register or schema-check the table, materialize the producer once, and append all rows |
+| `append_missing(config, name, rows, key_columns=...)` | Register or schema-check the table, anti-join visible keys, and append only missing rows |
+
+The service uses one reentrant execution gate for terminal plans and for
+appends made by its pooled ECS stores. Reentrancy lets a cached-store append
+flush into its inner store in the same task; a background flush or another
+application job waits its turn. Daft still parallelizes the admitted plan over
+rows and partitions. The gate coordinates local submissions so application
+services do not independently saturate or reorder one process's Daft runtime.
+
+This gate is not an Iceberg lock. Iceberg commits remain optimistic and atomic.
+A plain append freezes its producer result once and can reuse it after a
+metadata refresh. A conditional append refreshes after a conflict and
+recomputes its anti-join against the new snapshot before retrying. That
+distinction prevents a stale retry from publishing a logical key that another
+writer committed first.
+
+Application families may construct lazy DataFrame transforms. They request
+materialization or table persistence from `iStorageService`; they do not call
+Daft collection, Iceberg read/write, or catalog table-creation primitives
+directly. Public query callers still own execution of the lazy DataFrames
+returned across the runtime boundary.
 
 ## Store API
 

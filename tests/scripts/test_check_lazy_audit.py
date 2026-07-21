@@ -191,6 +191,29 @@ def test_collect_is_never_sanctioned(tmp_path):
         assert not s.sanctioned, ".collect() must never be sanctioned"
 
 
+def test_bound_collect_reference_is_gated(tmp_path):
+    py = _write_py(
+        tmp_path,
+        "bound_collect.py",
+        """\
+        async def execute(df, blocking):
+            return await blocking(df.collect)
+        """,
+    )
+
+    sites = _scan_file(py, "bound_collect.py")
+
+    assert [(site.line, site.method, site.sanctioned) for site in sites] == [(2, "collect", False)]
+
+
+def test_collect_call_reports_one_attribute_site(tmp_path):
+    py = _write_py(tmp_path, "one_collect.py", "result = frame.collect()\n")
+
+    sites = _scan_file(py, "one_collect.py")
+
+    assert [(site.line, site.method) for site in sites] == [(1, "collect")]
+
+
 def test_non_call_text_is_ignored(tmp_path):
     py = _write_py(
         tmp_path,

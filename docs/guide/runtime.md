@@ -144,36 +144,36 @@ their values were derived. The sync runtime exposes the same operations.
 
 ### R12 — Typed artifacts and transcript evidence
 
-The supported target vocabulary is artifact/evidence publication. Runtime
-methods may ingest files, structured rows, or content and return typed artifact
-receipts. The runtime does not inspect storage catalogs, implement content
-identity, complete publication claims, or expose generic domain "artifacts."
+`world.ingest_artifacts(*sources)` is the supported file-ingestion boundary.
+Each `ArtifactSource` names one exact file or Daft-readable glob and may supply
+an explicit portable logical path. Recursive discovery is expressed by the
+glob itself. The application scans metadata, computes SHA-256 and
+XXH3-64 in one pass, writes an immutable content-addressed object, publishes
+any media-specific index, and then publishes the common `artifact_files` row.
+It returns one `ArtifactRef` per occurrence. A repeated submission is a new
+UUIDv7 occurrence that may point to the same content object.
+
+`world.artifacts()` returns the current world's current-run common file index
+as a Daft DataFrame. Table registration, world/run envelope columns, schema
+checking, and Iceberg append semantics remain internal to the app-layer
+ingestion authority. The runtime neither inspects `daft.Catalog` nor exposes
+the concrete ingestion or artifact services.
 
 `world.ingest_claude_transcript(source)` is the recommended coding-agent
 transcript boundary. `ClaudeTranscriptSource` carries local input configuration
 and stable project/session identity. The application workflow snapshots and
-redacts the file, parses only the sanitized copy, publishes its lightweight
-trajectory/source claim, and appends normalized rows to the Iceberg transcript
-table. The returned `TranscriptIngestionReceipt` reports both authorities and
-their replay outcome. The runtime does not open the source file, write
+redacts the file, parses only the sanitized copy, ingests that copy as an
+artifact, and appends normalized rows to the Iceberg transcript table. The
+returned `TranscriptIngestionResult` identifies the sanitized `ArtifactRef`,
+row count, trajectory linkage, and redaction outcome. The runtime does not open
+the source file, write
 narrative Components, or coordinate those steps itself. Sync world handles
-expose the same operation.
+expose the same operation. `world.transcript_rows()` returns the normalized
+session and turn rows for the current run.
 
-The artifact-bundle DTOs exported from the top-level `archetype` package are
-supported runtime contracts: `ArtifactBundleRequest`, `ArtifactCandidate`,
-`ArtifactIndexRecord`, `ArtifactPublishReceipt`, `ArtifactReconcileResult`,
-`ArtifactSourceResolver`, `BoundedArtifactSourceResolver`,
-`ArtifactStoreConfig`, and `MaterializedArtifact`.
-Their physical home is the `archetype.artifacts.bundles` family module
-(#558); application code imports the top-level names. A top-level path does
-not make additional names supported, and nothing here grants access to the
-concrete artifact service.
-
-`world.ingest_files()`, `world.write_artifacts()`, and `world.artifacts()` are
-the lower-level typed-table surfaces used by other domains and custom
-processors. `world.publish()` is the claim-backed Component artifact surface.
-They are separate because an artifact table row, a source claim, and a portable
-artifact bundle have different durability and replay contracts.
+`ArtifactSource`, `ArtifactRef`, and `ArtifactStoreConfig` are the supported
+top-level file contracts. Nothing here promotes `IngestionService`,
+`ArtifactService`, their ports, or the service container to public API.
 
 ### R13 — Observability is host-configured and quiet by default
 

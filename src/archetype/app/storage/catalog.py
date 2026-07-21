@@ -12,31 +12,32 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Durable control catalog — private implementation resource of StorageService.
+"""Durable control authority — private implementation resource of StorageService.
 
-The catalog makes Archetype's *existing* registries durable: which worlds live
-in a store, and which archetype tables (signatures) hold their rows. It is the
-authority for discovery; the process-local registries in WorldService and the
-stores remain what they always were — caches.
+The catalog makes world discovery, writer fencing, tick visibility, deferred
+commands, command settlement, evaluation execution leases, and the
+transactional outbox durable. The process-local registries in WorldService and
+the stores remain caches. Domain tables such as artifact indexes and evaluation
+results live in Iceberg instead of becoming control-catalog workflow state.
 
 Design rules (issue #272, design review 2026-07-14):
 
 - The catalog location is a **pure function of the storage identity**: the
   same StorageConfig always resolves the same catalog, across processes,
   restarts, and crashes.
-- Records are compact pointers (a world row, a signature row with its stored
-  Arrow schema). Never operational state: no entity directories, no lineage
-  copies (``core/lineage`` is already durable), no manifest snapshots.
+- Records are compact control facts: world/signature descriptors, writer
+  fences, tick manifests, commands, evaluation leases, and outbox rows. There
+  are no entity directories, lineage copies, artifact claims, or domain payload
+  indexes.
 - Append-only in spirit: worlds transition status; nothing is deleted.
 - Same identity + same content → idempotent no-op. Same identity + different
   content → loud ``CatalogConflictError``. Fail closed, never fail quiet.
-- SQLite is the control plane (LanceDB ``merge_insert`` is proven non-CAS
-  under concurrency). Single-host authority in v0.3; the protocol leaves room
-  for a shared backend later.
+- SQLite is the reference and default single-host control plane (LanceDB
+  ``merge_insert`` is proven non-CAS under concurrency). The Cloudflare Durable
+  Object implementation provides the same authority across hosts.
 
 This module is deliberately not a service: it has no distinct authority or
-gate surface (``docs/guide/service-protocols.md`` § new-service bar). A2 will
-extend it with manifest heads and claims.
+gate surface (``docs/guide/service-protocols.md`` § new-service bar).
 """
 
 from __future__ import annotations
@@ -45,9 +46,7 @@ import asyncio
 import hashlib
 import json
 import logging
-import math
 import os
-import re
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -58,92 +57,15 @@ import pyarrow as pa
 from uuid_utils import uuid7
 
 from archetype._storage_uri import local_storage_path, normalized_storage_uri
-from archetype.app.errors import AvailabilityError, ConflictError
-from archetype.app.limits import MAX_ICEBERG_SNAPSHOT_ID
+from archetype.app.errors import ConflictError
 from archetype.core.config import StorageConfig
 from archetype.core.interfaces import StaleWriterError
 from archetype.core.paths import require_safe_namespace, resolve_local_root
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 8
+_SCHEMA_VERSION = 9
 _DIGEST_DOMAIN = "archetype.catalog.v1"
-_MAX_PORTABLE_COUNTER = (1 << 53) - 1
-_MAX_ARTIFACT_LEASE_MS = 24 * 60 * 60 * 1000
-_MAX_ARTIFACT_RETRY_WINDOW_MS = 365 * 24 * 60 * 60 * 1000
-_MAX_ARTIFACT_RETRY_DELAY_MS = 365 * 24 * 60 * 60 * 1000
-_ARTIFACT_RETRY_EXPIRED_DETAIL = "artifact publication retry window elapsed before upload"
-
-_SHA256_RE = re.compile(r"[0-9a-f]{64}")
-
-
-def _now_ms() -> int:
-    """Catalog-authoritative wall time for leases and durable scheduling."""
-
-    return time.time_ns() // 1_000_000
-
-
-def _require_sha256(value: str, *, field: str) -> str:
-    if not isinstance(value, str):
-        raise TypeError(f"{field} must be a string")
-    if _SHA256_RE.fullmatch(value) is None:
-        raise ValueError(f"{field} must be a lowercase SHA-256 digest")
-    return value
-
-
-def _require_bounded_text(value: str, *, field: str, max_chars: int) -> str:
-    if not isinstance(value, str):
-        raise TypeError(f"{field} must be a string")
-    if not value.strip():
-        raise ValueError(f"{field} must not be empty")
-    if len(value) > max_chars:
-        raise ValueError(f"{field} exceeds {max_chars} characters")
-    return value
-
-
-def _require_portable_counter(value: int, *, field: str = "fence_epoch") -> int:
-    """Require an exact non-boolean fence portable through the Worker wire."""
-
-    if type(value) is not int:
-        raise TypeError(f"{field} must be an integer")
-    if value < 0 or value > _MAX_PORTABLE_COUNTER:
-        raise ValueError(f"{field} must be between 0 and {_MAX_PORTABLE_COUNTER}")
-    return value
-
-
-def _require_artifact_milliseconds(
-    value: int,
-    *,
-    field: str,
-    maximum: int,
-    allow_zero: bool = True,
-) -> int:
-    if type(value) is not int:
-        raise TypeError(f"{field} must be an integer number of milliseconds")
-    minimum = 0 if allow_zero else 1
-    if value < minimum or value > maximum:
-        raise ValueError(f"{field} must be between {minimum} and {maximum} milliseconds")
-    return value
-
-
-def _require_artifact_lease_ms(value: int) -> int:
-    return _require_artifact_milliseconds(
-        value,
-        field="artifact lease_ms",
-        maximum=_MAX_ARTIFACT_LEASE_MS,
-        allow_zero=False,
-    )
-
-
-def _require_artifact_lease_seconds(value: float) -> float:
-    if type(value) not in {int, float} or not math.isfinite(value):
-        raise TypeError("artifact lease_seconds must be a finite number")
-    if value <= 0 or value > _MAX_ARTIFACT_LEASE_MS / 1000:
-        raise ValueError(
-            "artifact lease_seconds must be greater than zero and no greater than "
-            f"{_MAX_ARTIFACT_LEASE_MS / 1000:g}"
-        )
-    return float(value)
 
 
 class CatalogConflictError(ConflictError):
@@ -278,7 +200,7 @@ class WorldRecord:
     run_id: str | None
     parent_world_id: str | None
     status: str  # "active" | "destroyed"
-    tick_head: int  # advisory until A2 manifests land
+    tick_head: int  # advisory discovery head derived from published manifests
 
 
 @dataclass(frozen=True)
@@ -298,92 +220,6 @@ class ManifestRecord:
     writer_epoch: int
     table_ids: tuple[str, ...]
     created_at: str
-
-
-class ClaimConflictError(ConflictError):
-    """Same external id claimed/completed with a different payload digest."""
-
-    public_detail = "Claim conflicts with existing state"
-
-
-class ClaimPendingError(ConflictError):
-    """A live lease holds this claim; back off — never blind-retry."""
-
-    public_detail = "Claim is currently pending"
-
-
-@dataclass(frozen=True)
-class ClaimRecord:
-    """One artifact-publication claim: the exactly-once-visible authority.
-
-    A artifact is visible iff its claim is COMPLETE — completion publishes the
-    claim's commit token into the visible set, the same mechanism ticks use.
-    """
-
-    scope_key: str
-    world_id: str
-    run_id: str
-    producer: str
-    external_id: str
-    payload_digest: str
-    status: str  # "PENDING" | "COMPLETE"
-    commit_token: str
-    tick: int
-    artifact_entity_id: int
-    table_id: str | None
-    claimant: str
-    lease_expires_at: float
-    fence_epoch: int
-
-
-class ArtifactPublicationConflictError(ConflictError):
-    """An artifact publication identity was reused for different content."""
-
-    public_detail = "Artifact publication conflicts with existing state"
-
-
-class ArtifactPublicationPendingError(AvailabilityError):
-    """Another reconciler holds the live lease for this publication."""
-
-    public_detail = "Artifact publication is currently being reconciled"
-
-
-class ArtifactPublicationExpiredError(ConflictError):
-    """A publication exhausted its durable retry window before upload."""
-
-    public_detail = "Artifact publication retry window expired"
-
-
-@dataclass(frozen=True)
-class ArtifactPublicationRecord:
-    """Durable control-plane state for one portable evidence bundle."""
-
-    publication_key: str
-    world_id: str
-    run_id: str
-    attempt_id: str
-    idempotency_key: str
-    request_digest: str
-    status: str
-    request_json: str
-    records_json: str
-    claimant: str
-    lease_expires_at: float
-    retry_until_ms: int
-    attempt_count: int
-    index_snapshot_id: int
-    manifest_uri: str
-    last_error: str
-    created_at: str
-    updated_at: str
-    completed_at: str | None
-
-
-@dataclass(frozen=True)
-class ArtifactPublicationCandidate:
-    """Digest-only discovery reference; exact recovery returns replay authority."""
-
-    publication_key: str
 
 
 @dataclass(frozen=True)
@@ -463,8 +299,30 @@ class OutboxRecord:
     projected_at: str | None
 
 
+@dataclass(frozen=True)
+class EvaluationLease:
+    """One durable serialization lease for a potentially expensive grader.
+
+    The result itself remains an Iceberg row. This record only decides which
+    process may execute the grader while that row is absent. ``acquired`` is
+    the disposition of the current lease request, not persisted state.
+    """
+
+    world_id: str
+    run_id: str
+    evaluation_id: str
+    subject_digest: str
+    contract_digest: str
+    status: str  # "RUNNING" | "RETRYABLE" | "COMPLETE"
+    owner: str | None
+    lease_expires_at: float | None
+    created_at: str
+    updated_at: str
+    acquired: bool
+
+
 class ControlCatalog(Protocol):
-    """What StorageService exposes to the app layer. A2 extends this."""
+    """Shared local/remote authority exposed by StorageService."""
 
     async def register_world(self, record: WorldRecord) -> None: ...
     async def set_world_status(self, world_id: str, status: str) -> None: ...
@@ -473,78 +331,32 @@ class ControlCatalog(Protocol):
     async def list_worlds(self) -> list[WorldRecord]: ...
     async def register_signature(self, record: SignatureRecord) -> None: ...
     async def list_signatures(self) -> list[SignatureRecord]: ...
+    async def acquire_fence(self, world_id: str, holder: str) -> int: ...
+    async def current_fence_epoch(self, world_id: str) -> int | None: ...
     async def max_manifest_tick(self, world_id: str, run_id: str) -> int | None: ...
-    async def acquire_artifact_publication(
+    async def publish_manifest(
         self,
-        *,
         world_id: str,
         run_id: str,
-        attempt_id: str,
-        idempotency_key: str,
-        request_digest: str,
-        request_json: str,
-        claimant: str,
-        retry_window_ms: int,
-        retry_not_after_ms: int | None = None,
-        lease_ms: int = 900_000,
-    ) -> tuple[str, ArtifactPublicationRecord]: ...
-    async def recover_artifact_publication(
-        self,
-        world_id: str,
-        publication_key: str,
-        claimant: str,
+        tick: int,
+        commit_token: str,
+        writer_epoch: int,
+        table_ids: list[str],
         *,
-        lease_ms: int,
-    ) -> tuple[str, ArtifactPublicationRecord | None]: ...
-    async def get_artifact_publication(
-        self, world_id: str, publication_key: str
-    ) -> ArtifactPublicationRecord | None: ...
-    async def renew_artifact_publication(
-        self,
-        world_id: str,
-        publication_key: str,
-        claimant: str,
-        *,
-        lease_seconds: float,
-    ) -> ArtifactPublicationRecord: ...
-    async def record_artifact_uploads(
-        self,
-        world_id: str,
-        publication_key: str,
-        claimant: str,
-        records_json: str,
-        manifest_uri: str,
+        command_ids: list[str] | None = None,
+        lease_owner: str | None = None,
     ) -> None: ...
-    async def complete_artifact_publication(
+    async def visible_tokens(
         self,
         world_id: str,
-        publication_key: str,
-        claimant: str,
-        index_snapshot_id: int,
-    ) -> None: ...
-    async def fail_artifact_publication(
+        run_id: str,
+        ticks: list[int] | None = None,
+    ) -> dict[int, list[str]] | None: ...
+    async def list_manifests(
         self,
         world_id: str,
-        publication_key: str,
-        claimant: str,
-        error: str,
-        *,
-        retry_delay_ms: int,
-    ) -> None: ...
-    async def expire_artifact_publication(
-        self,
-        world_id: str,
-        publication_key: str,
-        claimant: str,
-        error: str,
-    ) -> None: ...
-    async def list_due_artifact_publications(
-        self,
-        world_id: str,
-        *,
-        limit: int = 100,
-        after_publication_key: str = "",
-    ) -> list[ArtifactPublicationCandidate]: ...
+        run_id: str | None = None,
+    ) -> list[ManifestRecord]: ...
     async def admit_commands(
         self, world_id: str, admissions: list[CommandAdmission]
     ) -> list[CommandRecord]: ...
@@ -573,6 +385,31 @@ class ControlCatalog(Protocol):
     ) -> list[CommandRecord]: ...
     async def pending_command_count(self, world_id: str) -> int: ...
     async def max_reserved_entity_id(self, world_id: str) -> int | None: ...
+    async def lease_evaluation(
+        self,
+        world_id: str,
+        run_id: str,
+        evaluation_id: str,
+        subject_digest: str,
+        contract_digest: str,
+        owner: str,
+        *,
+        lease_seconds: float = 300.0,
+    ) -> EvaluationLease: ...
+    async def complete_evaluation(
+        self,
+        world_id: str,
+        run_id: str,
+        evaluation_id: str,
+        owner: str,
+    ) -> None: ...
+    async def release_evaluation(
+        self,
+        world_id: str,
+        run_id: str,
+        evaluation_id: str,
+        owner: str,
+    ) -> None: ...
     async def read_outbox(self, world_id: str, *, limit: int = 1000) -> list[OutboxRecord]: ...
     async def mark_outbox_projected(self, world_id: str, event_ids: list[str]) -> None: ...
     async def close(self) -> None: ...
@@ -617,47 +454,6 @@ CREATE TABLE IF NOT EXISTS writer_fence (
     holder TEXT NOT NULL,
     acquired_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS claims (
-    scope_key TEXT PRIMARY KEY,
-    world_id TEXT NOT NULL,
-    run_id TEXT NOT NULL,
-    producer TEXT NOT NULL,
-    external_id TEXT NOT NULL,
-    payload_digest TEXT NOT NULL,
-    status TEXT NOT NULL,
-    commit_token TEXT NOT NULL,
-    tick INTEGER NOT NULL,
-    artifact_entity_id INTEGER NOT NULL DEFAULT 0,
-    table_id TEXT,
-    claimant TEXT NOT NULL,
-    lease_expires_at REAL NOT NULL,
-    fence_epoch INTEGER NOT NULL,
-    created_at TEXT NOT NULL,
-    completed_at TEXT
-);
-CREATE TABLE IF NOT EXISTS artifact_publications (
-    publication_key TEXT PRIMARY KEY,
-    world_id TEXT NOT NULL,
-    run_id TEXT NOT NULL,
-    attempt_id TEXT NOT NULL,
-    idempotency_key TEXT NOT NULL,
-    request_digest TEXT NOT NULL,
-    status TEXT NOT NULL,
-    request_json TEXT NOT NULL,
-    records_json TEXT NOT NULL DEFAULT '[]',
-    claimant TEXT NOT NULL,
-    lease_expires_at REAL NOT NULL,
-    retry_until_ms INTEGER NOT NULL,
-    attempt_count INTEGER NOT NULL DEFAULT 1,
-    index_snapshot_id INTEGER NOT NULL DEFAULT 0,
-    manifest_uri TEXT NOT NULL DEFAULT '',
-    last_error TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    completed_at TEXT
-);
-CREATE INDEX IF NOT EXISTS artifact_publications_due
-ON artifact_publications (world_id, status, lease_expires_at);
 CREATE TABLE IF NOT EXISTS commands (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
     command_id TEXT NOT NULL UNIQUE,
@@ -685,6 +481,19 @@ CREATE TABLE IF NOT EXISTS commands (
 );
 CREATE INDEX IF NOT EXISTS commands_due_idx
     ON commands (world_id, status, scheduled_tick, priority, sequence);
+CREATE TABLE IF NOT EXISTS evaluation_leases (
+    world_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    evaluation_id TEXT NOT NULL,
+    subject_digest TEXT NOT NULL,
+    contract_digest TEXT NOT NULL,
+    status TEXT NOT NULL,
+    owner TEXT,
+    lease_expires_at REAL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (world_id, run_id, evaluation_id)
+);
 CREATE TABLE IF NOT EXISTS outbox (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id TEXT NOT NULL UNIQUE,
@@ -712,6 +521,8 @@ class SqliteControlCatalog:
     asyncio lock (SQLite write transactions are single-writer anyway)."""
 
     def __init__(self, path: Path, *, busy_timeout_ms: int = 5000) -> None:
+        if busy_timeout_ms < 0:
+            raise ValueError("busy_timeout_ms must be non-negative")
         self.path = path
         self._busy_timeout_ms = busy_timeout_ms
         self._conn: sqlite3.Connection | None = None
@@ -723,40 +534,53 @@ class SqliteControlCatalog:
         if self._conn is not None:
             return self._conn
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute(f"PRAGMA busy_timeout={self._busy_timeout_ms}")
-        journal = str(conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]).upper()
-        if journal != "WAL":
-            logger.warning("catalog %s: journal_mode=%s (WAL unavailable)", self.path, journal)
-        conn.execute("PRAGMA synchronous=FULL")
-        conn.executescript(_DDL)
-        version = int(
-            conn.execute("SELECT value FROM catalog_meta WHERE key='schema_version'").fetchone()[0]
-        )
-        if version > _SCHEMA_VERSION:
-            conn.close()
-            raise CatalogSchemaMismatchError(
-                f"catalog {self.path} has schema_version={version}, "
-                f"this build expects {_SCHEMA_VERSION}"
+        deadline = time.monotonic() + max(self._busy_timeout_ms, 0) / 1000
+        delay = 0.005
+        while True:
+            conn = sqlite3.connect(
+                self.path,
+                timeout=max(self._busy_timeout_ms, 0) / 1000,
+                check_same_thread=False,
             )
-        if version < _SCHEMA_VERSION:
-            # Version 5 retires the generic artifact vocabulary. Preserve existing
-            # catalogs by renaming the publication-row identifier in place.
-            claim_columns = {
-                str(row["name"]) for row in conn.execute("PRAGMA table_info(claims)").fetchall()
-            }
-            if "fact_entity_id" in claim_columns and "artifact_entity_id" not in claim_columns:
-                conn.execute(
-                    "ALTER TABLE claims RENAME COLUMN fact_entity_id TO artifact_entity_id"
+            try:
+                conn.row_factory = sqlite3.Row
+                conn.execute(f"PRAGMA busy_timeout={self._busy_timeout_ms}")
+                journal = str(conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]).upper()
+                if journal != "WAL":
+                    logger.warning(
+                        "catalog %s: journal_mode=%s (WAL unavailable)", self.path, journal
+                    )
+                conn.execute("PRAGMA synchronous=FULL")
+                conn.executescript(_DDL)
+                version = int(
+                    conn.execute(
+                        "SELECT value FROM catalog_meta WHERE key='schema_version'"
+                    ).fetchone()[0]
                 )
-            conn.execute(
-                "UPDATE catalog_meta SET value=? WHERE key='schema_version'",
-                (str(_SCHEMA_VERSION),),
-            )
-        conn.commit()
-        self._conn = conn
-        return conn
+                if version > _SCHEMA_VERSION:
+                    raise CatalogSchemaMismatchError(
+                        f"catalog {self.path} has schema_version={version}, "
+                        f"this build expects {_SCHEMA_VERSION}"
+                    )
+                if version < _SCHEMA_VERSION:
+                    conn.execute(
+                        "UPDATE catalog_meta SET value=? WHERE key='schema_version'",
+                        (str(_SCHEMA_VERSION),),
+                    )
+                conn.commit()
+                self._conn = conn
+                return conn
+            except sqlite3.OperationalError as exc:
+                conn.close()
+                busy = "locked" in str(exc).lower() or "busy" in str(exc).lower()
+                remaining = deadline - time.monotonic()
+                if not busy or remaining <= 0:
+                    raise
+                time.sleep(min(delay, remaining))
+                delay = min(delay * 2, 0.1)
+            except BaseException:
+                conn.close()
+                raise
 
     async def _run(self, fn, *args):
         async with self._lock:
@@ -847,756 +671,6 @@ class SqliteControlCatalog:
             conn = self._connect_sync()
             rows = conn.execute("SELECT * FROM worlds ORDER BY world_id").fetchall()
             return [_world_from_row(row) for row in rows]
-
-        return await self._run(_list)
-
-    # ── artifact claims (issue #274) ────────────────────────────────────────
-
-    async def acquire_claim(
-        self,
-        *,
-        world_id: str,
-        run_id: str,
-        producer: str,
-        external_id: str,
-        payload_digest: str,
-        claimant: str,
-        tick: int,
-        lease_seconds: float = 30.0,
-    ) -> tuple[str, ClaimRecord]:
-        """Put-if-absent claim acquisition with lease takeover.
-
-        Returns (outcome, record) where outcome is one of:
-        - "acquired": this claimant owns a fresh PENDING claim (new token).
-        - "recovered": this claimant took over an expired PENDING claim —
-          the original token is kept only long enough to probe for an
-          already-appended orphan. A recovery with no orphan must re-arm
-          the claim with a fresh token before appending.
-        - "duplicate": an identical artifact is already COMPLETE — the original
-          record is the receipt; nothing to do.
-        Raises ClaimConflictError on same id + different digest, and
-        ClaimPendingError while another claimant's lease is live.
-        """
-        scope_key = claim_scope_key(world_id, run_id, producer, external_id)
-
-        def _acquire() -> tuple[str, ClaimRecord]:
-            conn = self._connect_sync()
-            with conn:
-                conn.execute("BEGIN IMMEDIATE")
-                row = conn.execute(
-                    "SELECT * FROM claims WHERE scope_key=?", (scope_key,)
-                ).fetchone()
-                now = time.time()
-                if row is not None:
-                    existing = _claim_from_row(row)
-                    if existing.payload_digest != payload_digest:
-                        raise ClaimConflictError(
-                            f"external id {external_id!r} from {producer!r} was "
-                            f"submitted with a different payload digest "
-                            f"(claim {existing.status}); refusing"
-                        )
-                    if existing.status == "COMPLETE":
-                        return ("duplicate", existing)
-                    if existing.lease_expires_at > now:
-                        raise ClaimPendingError(
-                            f"a live lease ({existing.claimant}) holds claim "
-                            f"{external_id!r}; retry after it completes or expires"
-                        )
-                    conn.execute(
-                        "UPDATE claims SET claimant=?, lease_expires_at=? WHERE scope_key=?",
-                        (claimant, now + lease_seconds, scope_key),
-                    )
-                    return (
-                        "recovered",
-                        _claim_from_row(
-                            conn.execute(
-                                "SELECT * FROM claims WHERE scope_key=?", (scope_key,)
-                            ).fetchone()
-                        ),
-                    )
-                fence = conn.execute(
-                    "SELECT epoch FROM writer_fence WHERE world_id=?", (world_id,)
-                ).fetchone()
-                epoch = int(fence["epoch"]) if fence is not None else 0
-                token = f"artifact-{scope_key[:32]}"
-                cursor = conn.execute(
-                    "INSERT INTO claims (scope_key, world_id, run_id, producer, external_id, "
-                    "payload_digest, status, commit_token, tick, artifact_entity_id, table_id, "
-                    "claimant, lease_expires_at, fence_epoch, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, 0, NULL, ?, ?, ?, ?)",
-                    (
-                        scope_key,
-                        world_id,
-                        run_id,
-                        producer,
-                        external_id,
-                        payload_digest,
-                        token,
-                        tick,
-                        claimant,
-                        now + lease_seconds,
-                        epoch,
-                        _utcnow(),
-                    ),
-                )
-                # Catalog-allocated artifact entity id: unique per storage identity,
-                # in the negative metadata band, clear of lineage's small ids.
-                # (lastrowid is always set after a successful INSERT.)
-                artifact_eid = -(100_000 + int(cursor.lastrowid or 0))
-                conn.execute(
-                    "UPDATE claims SET artifact_entity_id=? WHERE scope_key=?",
-                    (artifact_eid, scope_key),
-                )
-                return (
-                    "acquired",
-                    _claim_from_row(
-                        conn.execute(
-                            "SELECT * FROM claims WHERE scope_key=?", (scope_key,)
-                        ).fetchone()
-                    ),
-                )
-
-        return await self._run(_acquire)
-
-    async def rearm_claim(
-        self,
-        world_id: str,
-        scope_key: str,
-        claimant: str,
-        commit_token: str,
-    ) -> ClaimRecord:
-        """Rotate a recovered, empty claim to a fresh commit identity.
-
-        This is a claimant-checked CAS. Rows appended late by the expired
-        owner retain the old token and can therefore never become visible
-        when the recovered claim completes.
-        """
-
-        def _rearm() -> ClaimRecord:
-            conn = self._connect_sync()
-            with conn:
-                conn.execute("BEGIN IMMEDIATE")
-                row = conn.execute(
-                    "SELECT * FROM claims WHERE scope_key=?", (scope_key,)
-                ).fetchone()
-                if row is None:
-                    raise ClaimConflictError(f"no claim recorded for scope {scope_key}")
-                existing = _claim_from_row(row)
-                if existing.world_id != world_id:
-                    raise ClaimConflictError(
-                        f"claim {scope_key} belongs to world {existing.world_id}, not {world_id}"
-                    )
-                if existing.status != "PENDING":
-                    raise ClaimConflictError(
-                        f"claim {scope_key} is already {existing.status}; refusing to re-arm"
-                    )
-                if existing.claimant != claimant:
-                    raise ClaimPendingError(
-                        f"claim {scope_key} is held by {existing.claimant}; "
-                        "this claimant cannot re-arm it"
-                    )
-                if existing.commit_token == commit_token:
-                    raise ClaimConflictError(
-                        f"claim {scope_key} re-arm must use a fresh commit token"
-                    )
-                conn.execute(
-                    "UPDATE claims SET commit_token=?, table_id=NULL WHERE scope_key=?",
-                    (commit_token, scope_key),
-                )
-                return _claim_from_row(
-                    conn.execute("SELECT * FROM claims WHERE scope_key=?", (scope_key,)).fetchone()
-                )
-
-        return await self._run(_rearm)
-
-    async def record_claim_table(self, world_id: str, scope_key: str, table_id: str) -> None:
-        """Record where a claim's rows will land, BEFORE the append.
-
-        Lets lease-takeover recovery probe the exact table for orphan rows
-        by commit token — and complete without re-running the payload
-        builder (for evaluations: without re-grading)."""
-
-        def _record() -> None:
-            conn = self._connect_sync()
-            with conn:
-                conn.execute(
-                    "UPDATE claims SET table_id=? WHERE scope_key=? AND status='PENDING'",
-                    (table_id, scope_key),
-                )
-
-        await self._run(_record)
-
-    async def complete_claim(
-        self, world_id: str, scope_key: str, claimant: str, table_id: str
-    ) -> None:
-        """Publish the artifact's visibility and complete the claim — one CAS.
-
-        Verifies the caller still holds the claim (PENDING + claimant match);
-        completion puts the claim's commit token into the visible set. A lost
-        lease fails closed: the taker-over owns completion now.
-        """
-
-        def _complete() -> None:
-            conn = self._connect_sync()
-            with conn:
-                conn.execute("BEGIN IMMEDIATE")
-                row = conn.execute(
-                    "SELECT status, claimant FROM claims WHERE scope_key=?", (scope_key,)
-                ).fetchone()
-                if row is None:
-                    raise ClaimConflictError(f"no claim recorded for scope {scope_key}")
-                if row["status"] == "COMPLETE":
-                    return  # idempotent: recovery may race the original claimant
-                if row["claimant"] != claimant:
-                    raise ClaimPendingError(
-                        f"claim {scope_key} was taken over by {row['claimant']}; "
-                        "this claimant no longer owns completion"
-                    )
-                conn.execute(
-                    "UPDATE claims SET status='COMPLETE', table_id=?, completed_at=? "
-                    "WHERE scope_key=?",
-                    (table_id, _utcnow(), scope_key),
-                )
-
-        await self._run(_complete)
-
-    async def get_claim(self, world_id: str, scope_key: str) -> ClaimRecord | None:
-        def _get() -> ClaimRecord | None:
-            conn = self._connect_sync()
-            row = conn.execute("SELECT * FROM claims WHERE scope_key=?", (scope_key,)).fetchone()
-            return _claim_from_row(row) if row is not None else None
-
-        return await self._run(_get)
-
-    # ── artifact publications ────────────────────────────────────────────────
-
-    async def acquire_artifact_publication(
-        self,
-        *,
-        world_id: str,
-        run_id: str,
-        attempt_id: str,
-        idempotency_key: str,
-        request_digest: str,
-        request_json: str,
-        claimant: str,
-        retry_window_ms: int,
-        retry_not_after_ms: int | None = None,
-        lease_ms: int = 900_000,
-    ) -> tuple[str, ArtifactPublicationRecord]:
-        """Claim one bundle publication or recover its interrupted phase.
-
-        The request is recorded before external I/O. A recovered ``UPLOADED``
-        row contains all object metadata needed to finish indexing without
-        reopening the provider checkpoint.
-        """
-        claimant = _require_bounded_text(
-            claimant, field="artifact publication claimant", max_chars=1024
-        )
-        retry_window_ms = _require_artifact_milliseconds(
-            retry_window_ms,
-            field="artifact retry_window_ms",
-            maximum=_MAX_ARTIFACT_RETRY_WINDOW_MS,
-        )
-        if retry_not_after_ms is not None:
-            retry_not_after_ms = _require_portable_counter(
-                retry_not_after_ms, field="artifact retry_not_after_ms"
-            )
-        lease_ms = _require_artifact_lease_ms(lease_ms)
-        publication_key = artifact_publication_key(world_id, run_id, idempotency_key)
-
-        def _acquire() -> tuple[str, ArtifactPublicationRecord]:
-            conn = self._connect_sync()
-            with conn:
-                conn.execute("BEGIN IMMEDIATE")
-                row = conn.execute(
-                    "SELECT * FROM artifact_publications WHERE publication_key=?",
-                    (publication_key,),
-                ).fetchone()
-                now_ms = _now_ms()
-                now_text = _utcnow()
-                if row is not None:
-                    existing = _artifact_publication_from_row(row)
-                    if existing.request_digest != request_digest:
-                        raise ArtifactPublicationConflictError(
-                            f"artifact idempotency key {idempotency_key!r} was reused "
-                            "with a different publication request"
-                        )
-                    outcome, recovered = _recover_artifact_publication_row(
-                        conn,
-                        existing,
-                        claimant=claimant,
-                        lease_ms=lease_ms,
-                        now_ms=now_ms,
-                        now_text=now_text,
-                    )
-                    assert recovered is not None
-                    return outcome, recovered
-
-                retry_until_ms = now_ms + retry_window_ms
-                if retry_not_after_ms is not None:
-                    retry_until_ms = min(retry_until_ms, retry_not_after_ms)
-                initially_expired = retry_until_ms <= now_ms
-                status = "EXPIRED" if initially_expired else "PENDING"
-                lease_expires_at = 0.0 if initially_expired else (now_ms + lease_ms) / 1000
-                last_error = _ARTIFACT_RETRY_EXPIRED_DETAIL if initially_expired else ""
-                completed_at = now_text if initially_expired else None
-
-                conn.execute(
-                    "INSERT INTO artifact_publications (publication_key, world_id, run_id, "
-                    "attempt_id, idempotency_key, request_digest, status, request_json, "
-                    "records_json, claimant, lease_expires_at, retry_until_ms, attempt_count, "
-                    "last_error, created_at, updated_at, completed_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, 1, ?, ?, ?, ?)",
-                    (
-                        publication_key,
-                        world_id,
-                        run_id,
-                        attempt_id,
-                        idempotency_key,
-                        request_digest,
-                        status,
-                        request_json,
-                        claimant,
-                        lease_expires_at,
-                        retry_until_ms,
-                        last_error,
-                        now_text,
-                        now_text,
-                        completed_at,
-                    ),
-                )
-                created = conn.execute(
-                    "SELECT * FROM artifact_publications WHERE publication_key=?",
-                    (publication_key,),
-                ).fetchone()
-                return (
-                    "expired" if initially_expired else "acquired",
-                    _artifact_publication_from_row(created),
-                )
-
-        return await self._run(_acquire)
-
-    async def recover_artifact_publication(
-        self,
-        world_id: str,
-        publication_key: str,
-        claimant: str,
-        *,
-        lease_ms: int,
-    ) -> tuple[str, ArtifactPublicationRecord | None]:
-        """Acquire one exact durable publication without echoing source content."""
-
-        publication_key = _require_sha256(publication_key, field="publication_key")
-        claimant = _require_bounded_text(
-            claimant, field="artifact publication claimant", max_chars=1024
-        )
-        lease_ms = _require_artifact_lease_ms(lease_ms)
-
-        def _recover() -> tuple[str, ArtifactPublicationRecord | None]:
-            conn = self._connect_sync()
-            with conn:
-                conn.execute("BEGIN IMMEDIATE")
-                row = conn.execute(
-                    "SELECT * FROM artifact_publications WHERE publication_key=? AND world_id=?",
-                    (publication_key, world_id),
-                ).fetchone()
-                if row is None:
-                    return "obsolete", None
-                return _recover_artifact_publication_row(
-                    conn,
-                    _artifact_publication_from_row(row),
-                    claimant=claimant,
-                    lease_ms=lease_ms,
-                    now_ms=_now_ms(),
-                    now_text=_utcnow(),
-                )
-
-        return await self._run(_recover)
-
-    async def renew_artifact_publication(
-        self,
-        world_id: str,
-        publication_key: str,
-        claimant: str,
-        *,
-        lease_seconds: float,
-    ) -> ArtifactPublicationRecord:
-        """Extend a publication lease while a long upload/index stage runs."""
-
-        lease_seconds = _require_artifact_lease_seconds(lease_seconds)
-
-        def _renew() -> ArtifactPublicationRecord:
-            conn = self._connect_sync()
-            with conn:
-                conn.execute("BEGIN IMMEDIATE")
-                row = conn.execute(
-                    "SELECT * FROM artifact_publications WHERE publication_key=? AND world_id=?",
-                    (publication_key, world_id),
-                ).fetchone()
-                if row is None:
-                    raise ArtifactPublicationConflictError(
-                        f"no artifact publication recorded for {publication_key}"
-                    )
-                existing = _artifact_publication_from_row(row)
-                if existing.status in {"INDEXED", "EXPIRED"}:
-                    return existing
-                if existing.claimant != claimant:
-                    raise ArtifactPublicationPendingError(
-                        f"artifact publication {publication_key} was taken over by "
-                        f"{existing.claimant}"
-                    )
-                now_ms = _now_ms()
-                if existing.status == "PENDING" and existing.retry_until_ms <= now_ms:
-                    expired_at = _utcnow()
-                    conn.execute(
-                        "UPDATE artifact_publications SET status='EXPIRED', "
-                        "lease_expires_at=0, last_error=?, updated_at=?, completed_at=? "
-                        "WHERE publication_key=? AND status='PENDING'",
-                        (
-                            _ARTIFACT_RETRY_EXPIRED_DETAIL,
-                            expired_at,
-                            expired_at,
-                            publication_key,
-                        ),
-                    )
-                    return _artifact_publication_from_row(
-                        conn.execute(
-                            "SELECT * FROM artifact_publications WHERE publication_key=?",
-                            (publication_key,),
-                        ).fetchone()
-                    )
-                if existing.lease_expires_at <= now_ms / 1000:
-                    raise ArtifactPublicationPendingError(
-                        f"artifact publication {publication_key} lease expired before renewal"
-                    )
-                conn.execute(
-                    "UPDATE artifact_publications SET lease_expires_at=?, updated_at=? "
-                    "WHERE publication_key=?",
-                    ((now_ms / 1000) + lease_seconds, _utcnow(), publication_key),
-                )
-                updated = conn.execute(
-                    "SELECT * FROM artifact_publications WHERE publication_key=?",
-                    (publication_key,),
-                ).fetchone()
-                return _artifact_publication_from_row(updated)
-
-        return await self._run(_renew)
-
-    async def record_artifact_uploads(
-        self,
-        world_id: str,
-        publication_key: str,
-        claimant: str,
-        records_json: str,
-        manifest_uri: str,
-    ) -> None:
-        """Persist uploaded object metadata before the Iceberg index commit."""
-
-        def _record() -> bool:
-            conn = self._connect_sync()
-            with conn:
-                conn.execute("BEGIN IMMEDIATE")
-                row = conn.execute(
-                    "SELECT * FROM artifact_publications WHERE publication_key=? AND world_id=?",
-                    (publication_key, world_id),
-                ).fetchone()
-                if row is None:
-                    raise ArtifactPublicationConflictError(
-                        f"no artifact publication recorded for {publication_key}"
-                    )
-                existing = _artifact_publication_from_row(row)
-                if existing.status == "INDEXED":
-                    return False
-                if existing.status == "EXPIRED":
-                    raise ArtifactPublicationExpiredError(
-                        f"artifact publication {publication_key} has expired"
-                    )
-                if existing.claimant != claimant:
-                    raise ArtifactPublicationPendingError(
-                        f"artifact publication {publication_key} was taken over by "
-                        f"{existing.claimant}"
-                    )
-                if existing.status == "UPLOADED":
-                    if (
-                        existing.records_json == records_json
-                        and existing.manifest_uri == manifest_uri
-                    ):
-                        return False
-                    raise ArtifactPublicationConflictError(
-                        f"artifact publication {publication_key} already recorded "
-                        "different uploaded objects"
-                    )
-                now_ms = _now_ms()
-                if existing.retry_until_ms <= now_ms:
-                    expired_at = _utcnow()
-                    conn.execute(
-                        "UPDATE artifact_publications SET status='EXPIRED', "
-                        "lease_expires_at=0, last_error=?, updated_at=?, completed_at=? "
-                        "WHERE publication_key=? AND status='PENDING'",
-                        (
-                            _ARTIFACT_RETRY_EXPIRED_DETAIL,
-                            expired_at,
-                            expired_at,
-                            publication_key,
-                        ),
-                    )
-                    return True
-                if existing.lease_expires_at <= now_ms / 1000:
-                    raise ArtifactPublicationPendingError(
-                        f"artifact publication {publication_key} lease expired before uploads"
-                    )
-                conn.execute(
-                    "UPDATE artifact_publications SET status='UPLOADED', records_json=?, "
-                    "manifest_uri=?, last_error='', updated_at=? WHERE publication_key=?",
-                    (records_json, manifest_uri, _utcnow(), publication_key),
-                )
-                return False
-
-        expired = await self._run(_record)
-        if expired:
-            raise ArtifactPublicationExpiredError(
-                f"artifact publication {publication_key} expired before uploads"
-            )
-
-    async def complete_artifact_publication(
-        self,
-        world_id: str,
-        publication_key: str,
-        claimant: str,
-        index_snapshot_id: int,
-    ) -> None:
-        """Mark the bundle indexed after its query rows become visible."""
-
-        if (
-            isinstance(index_snapshot_id, bool)
-            or not isinstance(index_snapshot_id, int)
-            or index_snapshot_id <= 0
-            or index_snapshot_id > MAX_ICEBERG_SNAPSHOT_ID
-        ):
-            raise ValueError("index_snapshot_id must be a positive integer no greater than 2^63-1")
-
-        def _complete() -> None:
-            conn = self._connect_sync()
-            with conn:
-                conn.execute("BEGIN IMMEDIATE")
-                row = conn.execute(
-                    "SELECT * FROM artifact_publications WHERE publication_key=? AND world_id=?",
-                    (publication_key, world_id),
-                ).fetchone()
-                if row is None:
-                    raise ArtifactPublicationConflictError(
-                        f"no artifact publication recorded for {publication_key}"
-                    )
-                existing = _artifact_publication_from_row(row)
-                if existing.status == "INDEXED":
-                    if existing.index_snapshot_id == index_snapshot_id:
-                        return
-                    raise ArtifactPublicationConflictError(
-                        f"artifact publication {publication_key} was indexed at snapshot "
-                        f"{existing.index_snapshot_id}, not {index_snapshot_id}"
-                    )
-                if existing.status != "UPLOADED":
-                    raise ArtifactPublicationConflictError(
-                        f"artifact publication {publication_key} cannot move from "
-                        f"{existing.status} to INDEXED"
-                    )
-                if existing.claimant != claimant:
-                    raise ArtifactPublicationPendingError(
-                        f"artifact publication {publication_key} was taken over by "
-                        f"{existing.claimant}"
-                    )
-                if existing.lease_expires_at <= _now_ms() / 1000:
-                    raise ArtifactPublicationPendingError(
-                        f"artifact publication {publication_key} lease expired before completion"
-                    )
-                completed = _utcnow()
-                conn.execute(
-                    "UPDATE artifact_publications SET status='INDEXED', "
-                    "index_snapshot_id=?, last_error='', updated_at=?, completed_at=? "
-                    "WHERE publication_key=?",
-                    (
-                        index_snapshot_id,
-                        completed,
-                        completed,
-                        publication_key,
-                    ),
-                )
-
-        await self._run(_complete)
-
-    async def fail_artifact_publication(
-        self,
-        world_id: str,
-        publication_key: str,
-        claimant: str,
-        error: str,
-        *,
-        retry_delay_ms: int,
-    ) -> None:
-        """Release a failed phase for a later bounded reconciliation pass."""
-
-        claimant = _require_bounded_text(
-            claimant, field="artifact publication claimant", max_chars=1024
-        )
-        if not isinstance(error, str):
-            raise TypeError("artifact publication error must be a string")
-        if len(error) > 8000:
-            raise ValueError("artifact publication error exceeds 8000 characters")
-        retry_delay_ms = _require_artifact_milliseconds(
-            retry_delay_ms,
-            field="artifact retry_delay_ms",
-            maximum=_MAX_ARTIFACT_RETRY_DELAY_MS,
-        )
-
-        def _fail() -> None:
-            conn = self._connect_sync()
-            with conn:
-                conn.execute("BEGIN IMMEDIATE")
-                row = conn.execute(
-                    "SELECT * FROM artifact_publications WHERE publication_key=? AND world_id=?",
-                    (publication_key, world_id),
-                ).fetchone()
-                if row is None or row["status"] in {"INDEXED", "EXPIRED"}:
-                    return
-                if row["claimant"] != claimant:
-                    raise ArtifactPublicationPendingError(
-                        f"artifact publication {publication_key} is no longer owned by {claimant}"
-                    )
-                existing = _artifact_publication_from_row(row)
-                now_ms = _now_ms()
-                if existing.status == "PENDING" and existing.retry_until_ms <= now_ms:
-                    expired_at = _utcnow()
-                    conn.execute(
-                        "UPDATE artifact_publications SET status='EXPIRED', "
-                        "lease_expires_at=0, last_error=?, updated_at=?, completed_at=? "
-                        "WHERE publication_key=? AND status='PENDING'",
-                        (
-                            _ARTIFACT_RETRY_EXPIRED_DETAIL,
-                            expired_at,
-                            expired_at,
-                            publication_key,
-                        ),
-                    )
-                    return
-                if existing.lease_expires_at <= now_ms / 1000:
-                    raise ArtifactPublicationPendingError(
-                        f"artifact publication {publication_key} lease expired before failure"
-                    )
-                conn.execute(
-                    "UPDATE artifact_publications SET last_error=?, lease_expires_at=?, "
-                    "updated_at=? WHERE publication_key=?",
-                    (
-                        error,
-                        (now_ms + retry_delay_ms) / 1000,
-                        _utcnow(),
-                        publication_key,
-                    ),
-                )
-
-        await self._run(_fail)
-
-    async def expire_artifact_publication(
-        self,
-        world_id: str,
-        publication_key: str,
-        claimant: str,
-        error: str,
-    ) -> None:
-        """Terminally expire a PENDING bundle after its replay window closes."""
-
-        claimant = _require_bounded_text(
-            claimant, field="artifact publication claimant", max_chars=1024
-        )
-        if not isinstance(error, str):
-            raise TypeError("artifact publication error must be a string")
-        if len(error) > 8000:
-            raise ValueError("artifact publication error exceeds 8000 characters")
-
-        def _expire() -> None:
-            conn = self._connect_sync()
-            with conn:
-                conn.execute("BEGIN IMMEDIATE")
-                row = conn.execute(
-                    "SELECT * FROM artifact_publications WHERE publication_key=? AND world_id=?",
-                    (publication_key, world_id),
-                ).fetchone()
-                if row is None:
-                    raise ArtifactPublicationConflictError(
-                        f"no artifact publication recorded for {publication_key}"
-                    )
-                if row["status"] in {"INDEXED", "EXPIRED"}:
-                    return
-                if row["status"] == "UPLOADED":
-                    raise ArtifactPublicationConflictError(
-                        "uploaded artifact publications must be indexed, not expired"
-                    )
-                if row["claimant"] != claimant:
-                    raise ArtifactPublicationPendingError(
-                        f"artifact publication {publication_key} was taken over"
-                    )
-                existing = _artifact_publication_from_row(row)
-                if existing.lease_expires_at <= _now_ms() / 1000:
-                    raise ArtifactPublicationPendingError(
-                        f"artifact publication {publication_key} lease expired before expiry"
-                    )
-                completed = _utcnow()
-                conn.execute(
-                    "UPDATE artifact_publications SET status='EXPIRED', last_error=?, "
-                    "updated_at=?, completed_at=? WHERE publication_key=?",
-                    (error, completed, completed, publication_key),
-                )
-
-        await self._run(_expire)
-
-    async def get_artifact_publication(
-        self, world_id: str, publication_key: str
-    ) -> ArtifactPublicationRecord | None:
-        def _get() -> ArtifactPublicationRecord | None:
-            row = (
-                self._connect_sync()
-                .execute(
-                    "SELECT * FROM artifact_publications WHERE publication_key=? AND world_id=?",
-                    (publication_key, world_id),
-                )
-                .fetchone()
-            )
-            return _artifact_publication_from_row(row) if row is not None else None
-
-        return await self._run(_get)
-
-    async def list_due_artifact_publications(
-        self,
-        world_id: str,
-        *,
-        limit: int = 100,
-        after_publication_key: str = "",
-    ) -> list[ArtifactPublicationCandidate]:
-        if type(limit) is not int or limit < 1 or limit > 10_000:
-            raise ValueError("artifact publication page limit must be between 1 and 10000")
-        if after_publication_key != "":
-            after_publication_key = _require_sha256(
-                after_publication_key, field="after_publication_key"
-            )
-
-        def _list() -> list[ArtifactPublicationCandidate]:
-            now = _now_ms() / 1000
-            rows = (
-                self._connect_sync()
-                .execute(
-                    "SELECT publication_key FROM artifact_publications WHERE world_id=? "
-                    "AND status IN ('PENDING', 'UPLOADED') AND lease_expires_at<=? "
-                    "AND publication_key>? ORDER BY publication_key LIMIT ?",
-                    (world_id, now, after_publication_key, limit),
-                )
-                .fetchall()
-            )
-            return [
-                ArtifactPublicationCandidate(
-                    publication_key=_require_sha256(row["publication_key"], field="publication_key")
-                )
-                for row in rows
-            ]
 
         return await self._run(_list)
 
@@ -1949,6 +1023,175 @@ class SqliteControlCatalog:
 
         return await self._run(_max)
 
+    # ── evaluation execution serialization ────────────────────────────────
+
+    async def lease_evaluation(
+        self,
+        world_id: str,
+        run_id: str,
+        evaluation_id: str,
+        subject_digest: str,
+        contract_digest: str,
+        owner: str,
+        *,
+        lease_seconds: float = 300.0,
+    ) -> EvaluationLease:
+        """Atomically select the one process allowed to execute a grader.
+
+        Identity mismatches are returned to the evaluation service so it can
+        preserve its public ``ValueError`` contract. A live lease owned by a
+        different process is observationally ``acquired=False``. Expired and
+        explicitly released leases may be taken over; a caller may also renew
+        its own lease by calling this method again.
+        """
+        if not evaluation_id.strip():
+            raise ValueError("evaluation_id must be non-empty")
+        if not owner.strip():
+            raise ValueError("evaluation lease owner must be non-empty")
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
+
+        def _lease() -> EvaluationLease:
+            conn = self._connect_sync()
+            now_seconds = time.time()
+            now = _utcnow()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT * FROM evaluation_leases WHERE "
+                    "world_id=? AND run_id=? AND evaluation_id=?",
+                    (world_id, run_id, evaluation_id),
+                ).fetchone()
+                if row is None:
+                    conn.execute(
+                        "INSERT INTO evaluation_leases "
+                        "(world_id, run_id, evaluation_id, subject_digest, "
+                        "contract_digest, status, owner, lease_expires_at, "
+                        "created_at, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, 'RUNNING', ?, ?, ?, ?)",
+                        (
+                            world_id,
+                            run_id,
+                            evaluation_id,
+                            subject_digest,
+                            contract_digest,
+                            owner,
+                            now_seconds + lease_seconds,
+                            now,
+                            now,
+                        ),
+                    )
+                    inserted = conn.execute(
+                        "SELECT * FROM evaluation_leases WHERE "
+                        "world_id=? AND run_id=? AND evaluation_id=?",
+                        (world_id, run_id, evaluation_id),
+                    ).fetchone()
+                    assert inserted is not None
+                    return _evaluation_lease_from_row(inserted, acquired=True)
+
+                existing = _evaluation_lease_from_row(row, acquired=False)
+                same_identity = (
+                    existing.subject_digest == subject_digest
+                    and existing.contract_digest == contract_digest
+                )
+                if not same_identity or existing.status == "COMPLETE":
+                    return existing
+                if existing.status not in {"RUNNING", "RETRYABLE"}:
+                    raise CatalogSchemaMismatchError(
+                        f"evaluation {evaluation_id!r} has invalid lease status "
+                        f"{existing.status!r} in catalog {self.path}"
+                    )
+
+                available = (
+                    existing.status == "RETRYABLE"
+                    or existing.owner == owner
+                    or (existing.lease_expires_at or 0.0) <= now_seconds
+                )
+                if not available:
+                    return existing
+                conn.execute(
+                    "UPDATE evaluation_leases SET status='RUNNING', owner=?, "
+                    "lease_expires_at=?, updated_at=? WHERE "
+                    "world_id=? AND run_id=? AND evaluation_id=?",
+                    (
+                        owner,
+                        now_seconds + lease_seconds,
+                        now,
+                        world_id,
+                        run_id,
+                        evaluation_id,
+                    ),
+                )
+                updated = conn.execute(
+                    "SELECT * FROM evaluation_leases WHERE "
+                    "world_id=? AND run_id=? AND evaluation_id=?",
+                    (world_id, run_id, evaluation_id),
+                ).fetchone()
+                assert updated is not None
+                return _evaluation_lease_from_row(updated, acquired=True)
+
+        return await self._run(_lease)
+
+    async def complete_evaluation(
+        self,
+        world_id: str,
+        run_id: str,
+        evaluation_id: str,
+        owner: str,
+    ) -> None:
+        """Mark an Iceberg-backed evaluation result as durably available."""
+
+        def _complete() -> None:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT status, owner FROM evaluation_leases WHERE "
+                    "world_id=? AND run_id=? AND evaluation_id=?",
+                    (world_id, run_id, evaluation_id),
+                ).fetchone()
+                if row is None:
+                    raise CatalogConflictError(
+                        f"evaluation {evaluation_id!r} has no durable execution lease"
+                    )
+                if row["status"] == "COMPLETE":
+                    return
+                if row["status"] != "RUNNING" or row["owner"] != owner:
+                    raise CatalogConflictError(
+                        f"evaluation {evaluation_id!r} is not leased by {owner}"
+                    )
+                conn.execute(
+                    "UPDATE evaluation_leases SET status='COMPLETE', owner=NULL, "
+                    "lease_expires_at=NULL, updated_at=? WHERE "
+                    "world_id=? AND run_id=? AND evaluation_id=?",
+                    (_utcnow(), world_id, run_id, evaluation_id),
+                )
+
+        await self._run(_complete)
+
+    async def release_evaluation(
+        self,
+        world_id: str,
+        run_id: str,
+        evaluation_id: str,
+        owner: str,
+    ) -> None:
+        """Make a failed grader execution immediately retryable."""
+
+        def _release() -> None:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    "UPDATE evaluation_leases SET status='RETRYABLE', owner=NULL, "
+                    "lease_expires_at=NULL, updated_at=? WHERE "
+                    "world_id=? AND run_id=? AND evaluation_id=? "
+                    "AND status='RUNNING' AND owner=?",
+                    (_utcnow(), world_id, run_id, evaluation_id, owner),
+                )
+
+        await self._run(_release)
+
     async def cancel_commands(self, world_id: str, *, reason: str) -> int:
         """Terminally reject unsettled commands when their world is destroyed."""
 
@@ -2183,16 +1426,10 @@ class SqliteControlCatalog:
     async def visible_tokens(
         self, world_id: str, run_id: str, ticks: list[int] | None = None
     ) -> dict[int, list[str]] | None:
-        """The reader-side visibility map for one (world, run).
+        """Return manifest commit tokens that make persisted tick rows visible.
 
-        Unions tick manifests with COMPLETE artifact claims (issue #274): a tick
-        may carry one manifest token plus any number of artifact tokens. None
-        only when the pair has neither manifests nor claims AND no fence —
-        an uncoordinated or pre-#273 world whose rows are implicitly visible.
-        A fence or any claim activates filtering; only published manifests
-        and COMPLETE claim tokens are then visible. When the first claim is
-        added to a never-fenced legacy run, its empty epoch-0 token remains
-        allowed so coordination does not hide pre-existing rows.
+        None denotes pre-coordination history with no writer fence. Once a
+        world has a fence, an absent manifest means no rows are visible.
         """
 
         def _tokens() -> dict[int, list[str]] | None:
@@ -2201,38 +1438,21 @@ class SqliteControlCatalog:
                 "SELECT 1 FROM manifests WHERE world_id=? AND run_id=? LIMIT 1",
                 (world_id, run_id),
             ).fetchone()
-            any_claim = conn.execute(
-                "SELECT 1 FROM claims WHERE world_id=? AND run_id=? LIMIT 1",
-                (world_id, run_id),
-            ).fetchone()
             fence = conn.execute(
                 "SELECT 1 FROM writer_fence WHERE world_id=?", (world_id,)
             ).fetchone()
-            if any_manifest is None and any_claim is None:
-                # Distinguish true pre-#273 history (never fenced — implicitly
-                # visible) from a coordinated world whose first commit hasn't
-                # published (fence exists — nothing is visible yet).
+            if any_manifest is None:
                 return None if fence is None else {}
             if ticks is None:
                 tick_clause, args = "", []
             else:
                 placeholders = ",".join("?" for _ in ticks)
-                tick_clause = f" AND tick IN ({placeholders})"
-                args = [int(t) for t in ticks]
+                tick_clause = " AND tick IN (" + placeholders + ")"
+                args = [int(tick) for tick in ticks]
             visible: dict[int, list[str]] = {}
-            if any_manifest is None and fence is None:
-                legacy_ticks = [0] if ticks is None else [int(tick) for tick in ticks]
-                for tick in legacy_ticks:
-                    visible.setdefault(tick, []).append("")
             for row in conn.execute(
                 "SELECT tick, commit_token FROM manifests WHERE world_id=? AND run_id=?"
                 + tick_clause,
-                (world_id, run_id, *args),
-            ).fetchall():
-                visible.setdefault(int(row["tick"]), []).append(row["commit_token"])
-            for row in conn.execute(
-                "SELECT tick, commit_token FROM claims "
-                "WHERE world_id=? AND run_id=? AND status='COMPLETE'" + tick_clause,
                 (world_id, run_id, *args),
             ).fetchall():
                 visible.setdefault(int(row["tick"]), []).append(row["commit_token"])
@@ -2271,211 +1491,26 @@ class SqliteControlCatalog:
         return await self._run(_list)
 
 
-def claim_scope_key(world_id: str, run_id: str, producer: str, external_id: str) -> str:
-    """Deterministic claim identity: (storage is the catalog itself)."""
-    payload = json.dumps(
-        {
-            "domain": _DIGEST_DOMAIN,
-            "kind": "claim-scope",
-            "world_id": world_id,
-            "run_id": run_id,
-            "producer": producer,
-            "external_id": external_id,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def artifact_publication_key(world_id: str, run_id: str, idempotency_key: str) -> str:
-    """Deterministic bundle identity within one storage control catalog."""
-    payload = json.dumps(
-        {
-            "domain": _DIGEST_DOMAIN,
-            "kind": "artifact-publication",
-            "world_id": world_id,
-            "run_id": run_id,
-            "idempotency_key": idempotency_key,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _claim_from_row(row: sqlite3.Row) -> ClaimRecord:
-    return ClaimRecord(
-        scope_key=row["scope_key"],
+def _evaluation_lease_from_row(
+    row: sqlite3.Row,
+    *,
+    acquired: bool,
+) -> EvaluationLease:
+    return EvaluationLease(
         world_id=row["world_id"],
         run_id=row["run_id"],
-        producer=row["producer"],
-        external_id=row["external_id"],
-        payload_digest=row["payload_digest"],
+        evaluation_id=row["evaluation_id"],
+        subject_digest=row["subject_digest"],
+        contract_digest=row["contract_digest"],
         status=row["status"],
-        commit_token=row["commit_token"],
-        tick=int(row["tick"]),
-        artifact_entity_id=int(row["artifact_entity_id"]),
-        table_id=row["table_id"],
-        claimant=row["claimant"],
-        lease_expires_at=float(row["lease_expires_at"]),
-        fence_epoch=int(row["fence_epoch"]),
-    )
-
-
-def _artifact_publication_from_row(row: sqlite3.Row) -> ArtifactPublicationRecord:
-    raw_snapshot_id = row["index_snapshot_id"]
-    status = row["status"]
-    if not isinstance(status, str) or status not in {
-        "PENDING",
-        "UPLOADED",
-        "INDEXED",
-        "EXPIRED",
-    }:
-        raise RuntimeError(f"local artifact publication has invalid status {status!r}")
-    raw_lease_expires_at = row["lease_expires_at"]
-    raw_retry_until_ms = row["retry_until_ms"]
-    raw_attempt_count = row["attempt_count"]
-    if (
-        type(raw_lease_expires_at) not in {int, float}
-        or not math.isfinite(raw_lease_expires_at)
-        or raw_lease_expires_at < 0
-        or raw_lease_expires_at > _MAX_PORTABLE_COUNTER
-    ):
-        raise RuntimeError("local artifact publication has invalid lease_expires_at")
-    if (
-        type(raw_retry_until_ms) is not int
-        or raw_retry_until_ms < 0
-        or raw_retry_until_ms > _MAX_PORTABLE_COUNTER
-    ):
-        raise RuntimeError("local artifact publication has invalid retry_until_ms")
-    if (
-        type(raw_attempt_count) is not int
-        or raw_attempt_count < 1
-        or raw_attempt_count > _MAX_PORTABLE_COUNTER
-    ):
-        raise RuntimeError("local artifact publication has invalid attempt_count")
-    if type(raw_snapshot_id) is not int:
-        raise RuntimeError("local artifact publication has a lossy snapshot ID")
-    if status == "INDEXED":
-        if not 1 <= raw_snapshot_id <= MAX_ICEBERG_SNAPSHOT_ID:
-            raise RuntimeError("local INDEXED artifact publication snapshot ID is out of range")
-    elif raw_snapshot_id != 0:
-        raise RuntimeError("local unindexed artifact publication has a nonzero snapshot ID")
-    return ArtifactPublicationRecord(
-        publication_key=row["publication_key"],
-        world_id=row["world_id"],
-        run_id=row["run_id"],
-        attempt_id=row["attempt_id"],
-        idempotency_key=row["idempotency_key"],
-        request_digest=row["request_digest"],
-        status=status,
-        request_json=row["request_json"],
-        records_json=row["records_json"],
-        claimant=row["claimant"],
-        lease_expires_at=float(raw_lease_expires_at),
-        retry_until_ms=raw_retry_until_ms,
-        attempt_count=raw_attempt_count,
-        index_snapshot_id=raw_snapshot_id,
-        manifest_uri=row["manifest_uri"],
-        last_error=row["last_error"],
+        owner=row["owner"],
+        lease_expires_at=(
+            float(row["lease_expires_at"]) if row["lease_expires_at"] is not None else None
+        ),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
-        completed_at=row["completed_at"],
+        acquired=acquired,
     )
-
-
-def _recover_artifact_publication_row(
-    conn: sqlite3.Connection,
-    existing: ArtifactPublicationRecord,
-    *,
-    claimant: str,
-    lease_ms: int,
-    now_ms: int,
-    now_text: str,
-) -> tuple[str, ArtifactPublicationRecord]:
-    """Apply the exact source-native recovery state machine under one write lock."""
-
-    if existing.status == "INDEXED":
-        return "duplicate", existing
-    if existing.status == "EXPIRED":
-        return "expired", existing
-    if existing.status not in {"PENDING", "UPLOADED"}:
-        raise ArtifactPublicationConflictError(
-            f"artifact publication {existing.publication_key} has invalid status {existing.status}"
-        )
-    if existing.status == "PENDING" and existing.retry_until_ms <= now_ms:
-        conn.execute(
-            "UPDATE artifact_publications SET status='EXPIRED', lease_expires_at=0, "
-            "last_error=?, updated_at=?, completed_at=? WHERE publication_key=? "
-            "AND status='PENDING'",
-            (
-                _ARTIFACT_RETRY_EXPIRED_DETAIL,
-                now_text,
-                now_text,
-                existing.publication_key,
-            ),
-        )
-        row = conn.execute(
-            "SELECT * FROM artifact_publications WHERE publication_key=?",
-            (existing.publication_key,),
-        ).fetchone()
-        assert row is not None
-        return "expired", _artifact_publication_from_row(row)
-    if existing.lease_expires_at > now_ms / 1000:
-        if existing.claimant == claimant:
-            updated = conn.execute(
-                "UPDATE artifact_publications SET lease_expires_at=?, updated_at=? "
-                "WHERE publication_key=? AND status=? AND claimant=?",
-                (
-                    (now_ms + lease_ms) / 1000,
-                    now_text,
-                    existing.publication_key,
-                    existing.status,
-                    claimant,
-                ),
-            )
-            if updated.rowcount != 1:
-                raise ArtifactPublicationPendingError(
-                    f"artifact publication {existing.publication_key} changed before renewal"
-                )
-            row = conn.execute(
-                "SELECT * FROM artifact_publications WHERE publication_key=?",
-                (existing.publication_key,),
-            ).fetchone()
-            assert row is not None
-            return "owned", _artifact_publication_from_row(row)
-        raise ArtifactPublicationPendingError(
-            f"a live lease holds artifact publication {existing.publication_key}"
-        )
-    if existing.attempt_count >= _MAX_PORTABLE_COUNTER:
-        raise ArtifactPublicationConflictError(
-            f"artifact publication {existing.publication_key} exhausted its portable "
-            "attempt counter"
-        )
-    updated = conn.execute(
-        "UPDATE artifact_publications SET claimant=?, lease_expires_at=?, "
-        "attempt_count=attempt_count+1, updated_at=? WHERE publication_key=? "
-        "AND status=? AND lease_expires_at<=?",
-        (
-            claimant,
-            (now_ms + lease_ms) / 1000,
-            now_text,
-            existing.publication_key,
-            existing.status,
-            now_ms / 1000,
-        ),
-    )
-    if updated.rowcount != 1:
-        raise ArtifactPublicationPendingError(
-            f"artifact publication {existing.publication_key} changed before recovery"
-        )
-    row = conn.execute(
-        "SELECT * FROM artifact_publications WHERE publication_key=?",
-        (existing.publication_key,),
-    ).fetchone()
-    assert row is not None
-    return "recovered", _artifact_publication_from_row(row)
 
 
 def _command_from_row(row: sqlite3.Row) -> CommandRecord:

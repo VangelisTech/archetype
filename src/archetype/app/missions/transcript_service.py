@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Redacted, claim-backed ingestion for Claude coding-agent transcripts."""
+"""Redacted coding-agent transcript workflow owned by Agent Missions."""
 
 from __future__ import annotations
 
@@ -12,24 +12,26 @@ from tempfile import TemporaryDirectory
 from typing import Any
 
 import daft
+from daft import DataFrame
 from pydantic import JsonValue
 
-from archetype.app.artifacts.interfaces import iArtifactService, iArtifactTableService
+from archetype.app.artifacts.interfaces import iArtifactService
+from archetype.app.ingestion.interfaces import iIngestionService
 from archetype.app.redaction.interfaces import iRedactionService
 from archetype.app.redaction.models import RedactionReceipt
+from archetype.app.storage.interfaces import iStorageService
 from archetype.app.world.interfaces import iWorldService
-from archetype.artifacts.components import AssetRef
-from archetype.artifacts.contracts import TranscriptIngestionReceipt
+from archetype.artifacts.contracts import ArtifactSource
 from archetype.core.config import StorageBackend, StorageConfig
 from archetype.missions.trajectories import (
     CLAUDE_TRANSCRIPT_TABLE,
     ClaudeTranscriptSource,
     LoadedSession,
-    TranscriptArtifactRef,
+    TranscriptIngestionResult,
     parse_claude_transcript,
 )
 
-_PRODUCER = "claude-transcripts"
+_TRANSCRIPT_ROWS = CLAUDE_TRANSCRIPT_TABLE
 
 
 def _canonical_digest(value: dict[str, Any]) -> str:
@@ -41,6 +43,14 @@ def _canonical_digest(value: dict[str, Any]) -> str:
         allow_nan=False,
     ).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _receipt_columns(prefix: str, receipt: RedactionReceipt) -> dict[str, Any]:
@@ -163,7 +173,7 @@ def _artifact_rows(
     source_uri: str,
     source_content_hash: str,
     source_receipt: RedactionReceipt,
-    artifact_entity_id: int,
+    source_artifact_id: str,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     source_columns = {
@@ -178,26 +188,28 @@ def _artifact_rows(
             {
                 "source_uri": f"{source_uri}#row={row_key}",
                 "content_hash": _canonical_digest(payload),
-                "source_artifact_entity_id": artifact_entity_id,
+                "source_artifact_id": source_artifact_id,
                 **payload,
             }
         )
     return rows
 
 
-class ClaudeTranscriptIngestionService:
-    """Publish sanitized transcript rows while preserving raw-source identity."""
+class TranscriptIngestionService:
+    """Sanitize a session, persist its source artifact, and index normalized rows."""
 
     def __init__(
         self,
         artifact_service: iArtifactService,
-        artifact_table_service: iArtifactTableService,
+        ingestion_service: iIngestionService,
         redaction_service: iRedactionService,
+        storage_service: iStorageService,
         world_service: iWorldService,
     ) -> None:
         self._artifacts = artifact_service
-        self._tables = artifact_table_service
+        self._ingestion = ingestion_service
         self._redaction = redaction_service
+        self._storage = storage_service
         self._worlds = world_service
 
     async def ingest(
@@ -206,8 +218,8 @@ class ClaudeTranscriptIngestionService:
         source: ClaudeTranscriptSource,
         *,
         storage_config: StorageConfig | None = None,
-    ) -> TranscriptIngestionReceipt:
-        """Scan, parse, claim, and publish one Claude JSONL source."""
+    ) -> TranscriptIngestionResult:
+        """Scan, parse, sanitize, and index one Claude JSONL source."""
 
         effective = self._resolve_storage(world_id, storage_config)
         if effective.backend != StorageBackend.ICEBERG:
@@ -236,70 +248,76 @@ class ClaudeTranscriptIngestionService:
             if session is None:
                 raise ValueError("Claude transcript contains no dialogue turns")
             normalized, row_receipts = _normalize_session(session, self._redaction)
-
-        status, redaction_count, rule_ids = _aggregate_redaction(
-            sanitized.receipt,
-            row_receipts,
-        )
-        safe_project = str(normalized[0]["project"])
-        trajectory = session.trajectory.model_copy(
-            update={
-                "task_id": safe_project,
-                "model": str(normalized[0]["model"]),
-            }
-        )
-        reference = TranscriptArtifactRef(
-            trajectory_id=trajectory.trajectory_id,
-            mission_id=source.mission_id,
-            source_uri=source.source_uri,
-            source_content_hash=sanitized.source_digest,
-            redaction_policy_id=self._redaction.policy_id,
-            redaction_status=status,
-            redaction_count=redaction_count,
-            redaction_rule_ids_json=json.dumps(list(rule_ids)),
-            table_name=CLAUDE_TRANSCRIPT_TABLE,
-        )
-        asset = AssetRef(
-            digest=sanitized.source_digest,
-            uri=source.source_uri,
-            media_type="application/x-ndjson",
-            size_bytes=sanitized.receipt.scanned_bytes,
-            created_at_ms=0,
-        )
-        claim = await self._artifacts.publish(
-            world_id,
-            [trajectory, reference, asset],
-            external_id=source.source_uri,
-            producer=_PRODUCER,
-            storage_config=effective,
-        )
+            status, redaction_count, rule_ids = _aggregate_redaction(
+                sanitized.receipt,
+                row_receipts,
+            )
+            safe_project = str(normalized[0]["project"])
+            trajectory = session.trajectory.model_copy(
+                update={
+                    "task_id": safe_project,
+                    "model": str(normalized[0]["model"]),
+                }
+            )
+            logical_path = f"claude/{safe_project}/{source.session_id}.jsonl"
+            sanitized_digest = _file_digest(sanitized.path)
+            (artifact,) = await self._artifacts.ingest(
+                world_id,
+                ArtifactSource(
+                    source_uri=str(sanitized.path),
+                    logical_path=logical_path,
+                ),
+                storage_config=effective,
+            )
+        if artifact.sha256 != sanitized_digest:
+            raise RuntimeError("transcript artifact digest changed after sanitization")
         rows = _artifact_rows(
             normalized,
             source_uri=source.source_uri,
             source_content_hash=sanitized.source_digest,
             source_receipt=sanitized.receipt,
-            artifact_entity_id=claim.artifact_entity_id,
+            source_artifact_id=artifact.artifact_id,
         )
-        table_receipt = await self._tables.write_artifacts(
+        rows_written = await self._ingestion.append(
             world_id,
-            CLAUDE_TRANSCRIPT_TABLE,
+            _TRANSCRIPT_ROWS,
             daft.from_pylist(rows),
             storage_config=effective,
         )
-        return TranscriptIngestionReceipt(
-            world_id=claim.world_id,
-            run_id=claim.run_id,
+        run_id = await self._run_id(world_id, effective)
+        return TranscriptIngestionResult(
+            world_id=str(world_id),
+            run_id=run_id,
             trajectory_id=trajectory.trajectory_id,
             mission_id=source.mission_id,
             source_uri=source.source_uri,
-            source_content_hash=sanitized.source_digest,
+            artifact=artifact,
+            rows_written=rows_written,
             redaction_policy_id=self._redaction.policy_id,
             redaction_status=status,
             redaction_count=redaction_count,
             redaction_rule_ids=rule_ids,
-            reference=claim,
-            rows=table_receipt,
         )
+
+    async def read(
+        self,
+        world_id: str,
+        *,
+        storage_config: StorageConfig | None = None,
+    ) -> DataFrame:
+        """Return normalized transcript rows for the current world run."""
+
+        return await self._ingestion.read(
+            str(world_id),
+            _TRANSCRIPT_ROWS,
+            storage_config=storage_config,
+        )
+
+    async def _run_id(self, world_id: str, storage: StorageConfig) -> str:
+        record = await self._storage.get_control_catalog(storage).get_world(str(world_id))
+        if record is None or not record.run_id:
+            raise RuntimeError(f"world {world_id} has no recorded run")
+        return str(record.run_id)
 
     def _resolve_storage(
         self,

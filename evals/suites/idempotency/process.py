@@ -228,82 +228,23 @@ def task_process_writer_fence_race() -> list[GraderResult]:
         ]
 
 
-def task_process_artifact_replay() -> list[GraderResult]:
-    """Eight processes submit one external artifact; one visible identity wins."""
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        uri = str(root / "store")
-        namespace = "artifact_race"
-        seed = _run("seed", uri, namespace, "--name", "artifact-race")
-        go = root / "go"
-        ready = [root / f"ready-{index}" for index in range(8)]
-        processes = [
-            _spawn(
-                "publish-artifact",
-                uri,
-                namespace,
-                "--world-id",
-                seed["world_id"],
-                "--ready",
-                str(marker),
-                "--go",
-                str(go),
-                "--external-id",
-                "shared-process-event",
-                "--producer",
-                "process-sensor",
-                "--value",
-                "21.5",
-            )
-            for marker in ready
-        ]
-        try:
-            _wait_for_markers(ready, processes)
-            go.write_text("go")
-            results = _collect(processes)
-        finally:
-            for proc in processes:
-                if proc.poll() is None:
-                    proc.kill()
-                    proc.wait(timeout=10)
-
-        artifacts = _run("query-artifacts", uri, namespace, "--world-id", seed["world_id"])
-        return [
-            state_check(
-                {
-                    "all_processes_converged_on_token": len(
-                        {result["commit_token"] for result in results}
-                    )
-                    == 1,
-                    "one_process_owned_the_append": sum(
-                        not result["duplicate"] for result in results
-                    )
-                    == 1,
-                    "one_artifact_is_visible": artifacts["rows"] == 1,
-                    "external_identity_is_durable": artifacts["external_ids"]
-                    == ["shared-process-event"],
-                    "one_visible_commit_identity": len(artifacts["commit_ids"]) == 1,
-                },
-                name="process_artifact_replay",
-            )
-        ]
-
-
-def task_process_evaluation_replay() -> list[GraderResult]:
-    """Concurrent processes grade once; changed subject conflicts before grading."""
+def run_process_evaluation_replay() -> list[GraderResult]:
+    """Independent service processes serialize one external grader call."""
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         uri = str(root / "store")
         namespace = "evaluation_race"
-        seed = _run("seed", uri, namespace, "--name", "evaluation-race")
+        backend = ("--backend", "iceberg")
+        seed = _run("seed", uri, namespace, *backend, "--name", "evaluation-race")
         go = root / "go"
         grader_log = root / "grader-calls.log"
-        ready = [root / f"ready-{index}" for index in range(8)]
+        ready = [root / f"ready-{index}" for index in range(4)]
         processes = [
             _spawn(
                 "evaluate",
                 uri,
                 namespace,
+                *backend,
                 "--world-id",
                 seed["world_id"],
                 "--ready",
@@ -327,13 +268,21 @@ def task_process_evaluation_replay() -> list[GraderResult]:
                     proc.kill()
                     proc.wait(timeout=10)
 
-        receipts = _run("query-receipts", uri, namespace, "--world-id", seed["world_id"])
+        evaluations = _run(
+            "query-evaluations",
+            uri,
+            namespace,
+            *backend,
+            "--world-id",
+            seed["world_id"],
+        )
         grader_calls_before_conflict = grader_log.read_text().splitlines()
-        _run("advance", uri, namespace, "--world-id", seed["world_id"])
+        _run("advance", uri, namespace, *backend, "--world-id", seed["world_id"])
         conflict = _run(
             "evaluate-conflict",
             uri,
             namespace,
+            *backend,
             "--world-id",
             seed["world_id"],
             "--evaluation-id",
@@ -346,18 +295,15 @@ def task_process_evaluation_replay() -> list[GraderResult]:
         return [
             state_check(
                 {
-                    "all_processes_converged_on_token": len(
-                        {result["commit_token"] for result in results}
+                    "all_processes_returned_same_result": len(
+                        {json.dumps(result, sort_keys=True) for result in results}
                     )
                     == 1,
-                    "one_process_owned_evaluation": sum(
-                        not result["duplicate"] for result in results
-                    )
-                    == 1,
-                    "external_grader_side_effect_happened_once": len(grader_calls_before_conflict)
-                    == 1,
-                    "one_receipt_is_visible": receipts["rows"] == 1,
-                    "receipt_identity_is_durable": receipts["evaluation_ids"]
+                    "external_grader_side_effect_happened_once": (
+                        len(grader_calls_before_conflict) == 1
+                    ),
+                    "one_result_is_visible": evaluations["rows"] == 1,
+                    "result_identity_is_durable": evaluations["evaluation_ids"]
                     == ["shared-process-evaluation"],
                     "changed_subject_conflicts": conflict["conflict"] is True,
                     "subject_conflict_did_not_run_grader": (

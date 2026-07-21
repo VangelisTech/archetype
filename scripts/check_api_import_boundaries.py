@@ -58,7 +58,7 @@ SERVICE_TYPE_NAMES = {
     "MutationService",
     "CommandGateway",
     "StorageService",
-    "ArtifactTableService",
+    "IngestionService",
     "ArtifactService",
     "ServiceContainer",
 }
@@ -70,7 +70,8 @@ SERVICE_PARAM_NAMES = {
     "mutation_service",
     "command_gateway",
     "storage_service",
-    "artifact_table_service",
+    "ingestion_service",
+    "artifact_service",
     "container",
     "broker",
 }

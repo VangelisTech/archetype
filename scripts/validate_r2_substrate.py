@@ -6,8 +6,8 @@
 Proves the remote substrate end to end with nothing but ``.env``:
 
 1. ``--seed``: create a world on R2 (LanceDB over the S3-compatible
-   endpoint) under the DEPLOYED Durable Objects control catalog — spawn,
-   step twice, ingest one durable artifact.
+   endpoint) under the DEPLOYED Durable Objects control catalog — spawn and
+   step twice.
 2. default: from a completely fresh process, discover that world through
    production Cloudflare, read its visible rows through Archetype, and then
    read the SAME table straight off the R2 bucket with plain Daft — no
@@ -82,24 +82,15 @@ async def seed() -> None:
         await container.mutation_service.create_entity(world.world_id, [Beacon(value=1.0)])
         await container.simulation_service.step(world.world_id, RunConfig())
         await container.simulation_service.step(world.world_id, RunConfig())
-        receipt = await container.artifact_service.publish(
-            str(world.world_id),
-            [Beacon(value=42.0)],
-            external_id="phase1-proof",
-            producer="validate-script",
-        )
         STATE_FILE.write_text(
             json.dumps(
                 {
                     "world_id": str(world.world_id),
                     "run_id": str(world.run_id),
-                    "artifact_token": receipt.commit_token,
                 }
             )
         )
-        print(
-            f"seeded world {world.world_id} on {BUCKET_URI} (artifact {receipt.commit_token[:14]})"
-        )
+        print(f"seeded world {world.world_id} on {BUCKET_URI}")
     finally:
         await container.shutdown()
 

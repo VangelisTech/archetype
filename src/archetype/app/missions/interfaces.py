@@ -14,7 +14,11 @@ from archetype.app.evaluation.interfaces import GraderOutput, TrajectoryGrader
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
 from archetype.missions.contracts import AgentTask, MissionResult, SubmittedMission
-from archetype.missions.trajectories import TrajectorySelection
+from archetype.missions.trajectories import (
+    ClaudeTranscriptSource,
+    TrajectorySelection,
+    TranscriptIngestionResult,
+)
 
 
 @runtime_checkable
@@ -78,4 +82,24 @@ class iTrajectoryService(Protocol):
     ) -> list[GraderOutput]: ...
 
 
-__all__ = ["iMissionService", "iTrajectoryService"]
+@runtime_checkable
+class iTranscriptIngestionService(Protocol):
+    """Sanitize and index coding-agent transcripts as mission evidence."""
+
+    async def ingest(
+        self,
+        world_id: str,
+        source: ClaudeTranscriptSource,
+        *,
+        storage_config: StorageConfig | None = None,
+    ) -> TranscriptIngestionResult: ...
+
+    async def read(
+        self,
+        world_id: str,
+        *,
+        storage_config: StorageConfig | None = None,
+    ) -> DataFrame: ...
+
+
+__all__ = ["iMissionService", "iTrajectoryService", "iTranscriptIngestionService"]

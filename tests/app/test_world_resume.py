@@ -22,8 +22,9 @@ from uuid_utils import uuid7
 
 from archetype.app.container import ServiceContainer
 from archetype.app.storage.catalog import SqliteControlCatalog, WorldRecord
+from archetype.artifacts import ArtifactSource
 from archetype.core.component import Component
-from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
 from archetype.core.interfaces import StaleWriterError
 
 pytestmark = pytest.mark.asyncio
@@ -151,16 +152,16 @@ async def test_resume_after_crash_resumes_at_last_visible_tick(tmp_path, monkeyp
         await fresh.shutdown()
 
 
-async def test_artifact_only_claim_does_not_advance_resume_tick(tmp_path):
+async def test_artifact_index_does_not_advance_resume_tick(tmp_path):
     c = ServiceContainer()
     try:
-        storage = _storage(tmp_path)
+        storage = _storage(tmp_path).model_copy(update={"backend": StorageBackend.ICEBERG})
         world = await c.world_service.create_world(WorldConfig(name="artifacts-first"), storage)
-        await c.artifact_service.publish(
-            world.world_id,
-            [Score(points=42.0)],
-            external_id="before-first-step",
-            producer="sensor",
+        output = tmp_path / "before-first-step.txt"
+        output.write_text("artifact before the first tick")
+        await c.artifact_service.ingest(
+            str(world.world_id),
+            ArtifactSource(source_uri=str(output)),
         )
         wid = str(world.world_id)
     finally:
@@ -169,7 +170,7 @@ async def test_artifact_only_claim_does_not_advance_resume_tick(tmp_path):
     fresh = ServiceContainer()
     try:
         resumed = await fresh.world_service.open_world_mutable(storage, wid)
-        assert resumed.tick == 0, "artifact claims are visible but are not tick manifests"
+        assert resumed.tick == 0, "artifact indexes are durable but are not tick manifests"
     finally:
         await fresh.shutdown()
 

@@ -43,10 +43,9 @@ Standalone scripts under the repository-root `experiments/` directory are
 consumers of the shipped library; they do not define an importable domain
 family or application authority.
 
-`ClaudeTranscriptSource` and `TranscriptIngestionReceipt` are supported types
+`ClaudeTranscriptSource` and `TranscriptIngestionResult` are supported types
 in the `RuntimeWorld.ingest_claude_transcript()` signature. They remain
-namespaced under `archetype.missions.trajectories` and
-`archetype.artifacts`; support does not require promotion to the
+namespaced under `archetype.missions.trajectories`; support does not require promotion to the
 root import surface. The parser's in-memory `LoadedSession` and the concrete
 artifact ingestion service remain implementation details.
 
@@ -78,6 +77,11 @@ Supported exports are additive within a release line. Removing or changing
 their meaning requires a versioned migration. Every classification or export
 change must update the Python reference manifest; the docs build rejects
 missing or stale entries.
+
+The file-artifact consolidation is the recorded `0.4.1` to `0.5` migration.
+Its removed bundle, claim, receipt, and reconciliation contracts must not ship
+in another `0.4.x` release. The replacement surface and direct call mapping are
+documented in [Artifacts and ingestion](artifacts.md#12-migration-from-the-04-artifact-surface).
 
 The authoritative boundary and dependency rules are in
 [Application Architecture](application-architecture.md).

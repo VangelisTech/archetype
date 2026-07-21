@@ -1,36 +1,36 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Evaluation receipts (issue #275, C): claim-before-grade.
+"""Snapshot-pinned evaluation evidence over the general ingestion service."""
 
-Exactly one VISIBLE durable receipt per evaluation_id — never exactly-once
-grader execution. The claim precedes the grader; replay returns the
-persisted receipt without re-grading; the subject is pinned by snapshot
-reference, never row-content hashing; receipts are evidence, never
-authority.
-"""
-
+import asyncio
 import json
 import subprocess
 import sys
 import textwrap
+import time
+from types import SimpleNamespace
 
+import daft
+import pyarrow as pa
 import pytest
 from uuid_utils import uuid7
 
 from archetype.app.container import ServiceContainer
+from archetype.app.evaluation import service as evaluation_module
 from archetype.app.gateway.auth.models import ActorCtx
-from archetype.app.storage.catalog import ClaimConflictError, SqliteControlCatalog, claim_scope_key
 from archetype.core.component import Component
-from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
 from archetype.evaluation.components import EvalReceipt
 from archetype.evaluation.contracts import GraderContract, Outcome, subject_digest
 
 pytestmark = [
     pytest.mark.asyncio,
-    pytest.mark.contract("evaluation.receipt.snapshot_pinned"),
+    pytest.mark.contract("evaluation.result.snapshot_pinned"),
     pytest.mark.integration,
 ]
+
+_EVALUATION_RESULTS = "evaluation_results"
 
 
 class Telemetry(Component):
@@ -38,7 +38,11 @@ class Telemetry(Component):
 
 
 def _storage(tmp_path) -> StorageConfig:
-    return StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+    return StorageConfig(
+        uri=str(tmp_path / "store"),
+        namespace="ns",
+        backend=StorageBackend.ICEBERG,
+    )
 
 
 def _ctx(role: str = "operator") -> ActorCtx:
@@ -55,32 +59,42 @@ def _contract(**overrides) -> GraderContract:
     return GraderContract(**base)
 
 
-async def _seeded_world(c: ServiceContainer, storage):
-    world = await c.world_service.create_world(WorldConfig(name="w"), storage)
-    await c.mutation_service.create_entity(world.world_id, [Telemetry(reading=0.8)])
-    await c.simulation_service.step(world.world_id, RunConfig())
+async def _seeded_world(container: ServiceContainer, storage):
+    world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+    await container.mutation_service.create_entity(world.world_id, [Telemetry(reading=0.8)])
+    await container.simulation_service.step(world.world_id, RunConfig())
     return world
 
 
 def _counting_grader(calls: list[int], outcome: Outcome):
     def grader(df):
         calls.append(1)
-        rows = df.to_pylist()
-        assert rows, "the pinned subject must have rows"
+        assert df.to_pylist(), "the pinned subject must have rows"
         return outcome
 
     return grader
 
 
-async def test_replay_returns_original_receipt_without_regrading(tmp_path):
-    c = ServiceContainer()
+async def _results(
+    container: ServiceContainer,
+    world_id: str,
+    storage_config: StorageConfig | None = None,
+):
+    return await container.ingestion_service.read(
+        world_id,
+        _EVALUATION_RESULTS,
+        storage_config=storage_config,
+    )
+
+
+async def test_replay_returns_persisted_result_without_regrading(tmp_path):
+    container = ServiceContainer()
     try:
-        storage = _storage(tmp_path)
-        world = await _seeded_world(c, storage)
+        world = await _seeded_world(container, _storage(tmp_path))
         calls: list[int] = []
         grader = _counting_grader(calls, Outcome(status="pass", score=0.8))
 
-        first = await c.command_gateway.evaluate(
+        first = await container.command_gateway.evaluate(
             _ctx(),
             world.world_id,
             [Telemetry],
@@ -88,9 +102,7 @@ async def test_replay_returns_original_receipt_without_regrading(tmp_path):
             grader=grader,
             evaluation_id="trial-1",
         )
-        assert not first.duplicate and len(calls) == 1
-
-        replay = await c.command_gateway.evaluate(
+        replay = await container.command_gateway.evaluate(
             _ctx(),
             world.world_id,
             [Telemetry],
@@ -98,43 +110,262 @@ async def test_replay_returns_original_receipt_without_regrading(tmp_path):
             grader=grader,
             evaluation_id="trial-1",
         )
-        assert replay.duplicate and replay.commit_token == first.commit_token
-        assert len(calls) == 1, "replay must not re-run the grader"
 
-        # The persisted receipt row is queryable evidence.
-        df = await c.query_service.query_components(
-            [EvalReceipt], str(world.world_id), str(world.run_id), storage
-        )
-        rows = df.to_pylist()
+        assert replay == first
+        assert calls == [1]
+        rows = (await _results(container, str(world.world_id))).to_pylist()
         assert len(rows) == 1
-        assert rows[0]["evalreceipt__outcome"] == "pass"
-        assert rows[0]["evalreceipt__evaluation_id"] == "trial-1"
+        assert rows[0]["outcome"] == "pass"
+        assert rows[0]["evaluation_id"] == "trial-1"
     finally:
-        await c.shutdown()
+        await container.shutdown()
 
 
-async def test_grader_reads_the_captured_snapshot_when_world_advances(tmp_path, monkeypatch):
-    """A step between snapshot capture and grading cannot change the subject rows."""
-    c = ServiceContainer()
+async def test_concurrent_service_graphs_run_paid_grader_once(tmp_path):
+    """Two independent containers converge through the durable catalog lease."""
+    storage = _storage(tmp_path)
+    first_container = ServiceContainer()
+    second_container = ServiceContainer()
+    first_task = None
+    second_task = None
+    release_grader = asyncio.Event()
+    try:
+        world = await _seeded_world(first_container, storage)
+        grader_started = asyncio.Event()
+        calls: list[int] = []
+
+        async def grader(df):
+            calls.append(1)
+            assert df.to_pylist()
+            grader_started.set()
+            await release_grader.wait()
+            return Outcome(status="pass", score=0.8)
+
+        first_task = asyncio.create_task(
+            first_container.command_gateway.evaluate(
+                _ctx(),
+                world.world_id,
+                [Telemetry],
+                contract=_contract(),
+                grader=grader,
+                evaluation_id="concurrent-paid-grade",
+            )
+        )
+        await asyncio.wait_for(grader_started.wait(), timeout=30)
+        second_task = asyncio.create_task(
+            second_container.command_gateway.evaluate(
+                _ctx(),
+                world.world_id,
+                [Telemetry],
+                contract=_contract(),
+                grader=grader,
+                evaluation_id="concurrent-paid-grade",
+                storage_config=storage,
+            )
+        )
+
+        await asyncio.sleep(0.2)
+        assert calls == [1]
+        assert not second_task.done()
+
+        release_grader.set()
+        first, second = await asyncio.gather(first_task, second_task)
+        assert first == second
+        assert calls == [1]
+        assert len((await _results(first_container, str(world.world_id))).to_pylist()) == 1
+    finally:
+        release_grader.set()
+        pending = [
+            task for task in (first_task, second_task) if task is not None and not task.done()
+        ]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        await second_container.shutdown()
+        await first_container.shutdown()
+
+
+async def test_expired_owner_with_persisted_result_recovers_without_regrading(tmp_path):
+    container = ServiceContainer()
     try:
         storage = _storage(tmp_path)
-        world = await _seeded_world(c, storage)
-        original_snapshot_ref = c.artifact_service.snapshot_ref
+        world = await _seeded_world(container, storage)
+        wid = str(world.world_id)
+        snapshot = await container.evaluation_service._snapshot(wid, storage)
+        contract = _contract()
+        subject = subject_digest(
+            wid,
+            snapshot.run_id,
+            snapshot_tick=snapshot.tick,
+            snapshot_tokens=list(snapshot.head_tokens),
+            component_names=[Telemetry.__name__],
+        )
+        catalog = container.storage_service.get_control_catalog(storage)
+        await catalog.lease_evaluation(
+            wid,
+            snapshot.run_id,
+            "append-before-crash",
+            subject,
+            contract.digest(),
+            "crashed-owner",
+            lease_seconds=0.01,
+        )
+        persisted = EvalReceipt(
+            evaluation_id="append-before-crash",
+            subject_digest=subject,
+            contract_digest=contract.digest(),
+            grader_id=contract.grader_id,
+            outcome="pass",
+            score=0.8,
+            graded_at_ms=int(time.time() * 1000),
+            evidence_json="{}",
+        )
+        await container.ingestion_service.append(
+            wid,
+            evaluation_module._EVALUATION_RESULTS,
+            daft.from_arrow(
+                pa.Table.from_pylist(
+                    [persisted.model_dump()],
+                    schema=evaluation_module._EVALUATION_SCHEMA,
+                )
+            ),
+            key_columns=("evaluation_id",),
+            storage_config=storage,
+        )
+        await asyncio.sleep(0.02)
+        calls: list[int] = []
 
-        async def _capture_then_advance(*args, **kwargs):
-            snapshot = await original_snapshot_ref(*args, **kwargs)
-            await c.simulation_service.step(world.world_id, RunConfig())
+        def must_not_grade(_df):
+            calls.append(1)
+            return Outcome(status="fail")
+
+        recovered = await container.command_gateway.evaluate(
+            _ctx(),
+            wid,
+            [Telemetry],
+            contract=contract,
+            grader=must_not_grade,
+            evaluation_id="append-before-crash",
+            storage_config=storage,
+        )
+
+        assert recovered == persisted
+        assert calls == []
+        complete = await catalog.lease_evaluation(
+            wid,
+            snapshot.run_id,
+            "append-before-crash",
+            subject,
+            contract.digest(),
+            "observer",
+        )
+        assert complete.status == "COMPLETE" and not complete.acquired
+    finally:
+        await container.shutdown()
+
+
+async def test_evaluation_heartbeat_renews_and_detects_lost_owner(monkeypatch):
+    monkeypatch.setattr(evaluation_module, "_EVALUATION_LEASE_SECONDS", 0.03)
+    monkeypatch.setattr(evaluation_module, "_EVALUATION_POLL_SECONDS", 0.001)
+    lease = SimpleNamespace(
+        world_id="world",
+        run_id="run",
+        evaluation_id="evaluation",
+        subject_digest="subject",
+        contract_digest="contract",
+    )
+
+    class Catalog:
+        def __init__(self, *, acquired=True, owner="owner"):
+            self.acquired = acquired
+            self.owner = owner
+            self.calls = 0
+
+        async def lease_evaluation(self, *_args, **_kwargs):
+            self.calls += 1
+            return SimpleNamespace(acquired=self.acquired, owner=self.owner)
+
+    renewing = Catalog()
+    stop = asyncio.Event()
+    lost = asyncio.Event()
+    task = asyncio.create_task(containerless_heartbeat(renewing, lease, stop=stop, lost=lost))
+    await asyncio.sleep(0.025)
+    stop.set()
+    await task
+    assert renewing.calls >= 1
+    assert not lost.is_set()
+
+    displaced = Catalog(acquired=False, owner="other")
+    lost = asyncio.Event()
+    await asyncio.wait_for(
+        containerless_heartbeat(displaced, lease, stop=asyncio.Event(), lost=lost),
+        timeout=1,
+    )
+    assert lost.is_set()
+
+
+async def test_failed_lease_release_does_not_mask_grader_failure(tmp_path, monkeypatch, caplog):
+    container = ServiceContainer()
+    try:
+        storage = _storage(tmp_path)
+        world = await _seeded_world(container, storage)
+        catalog = container.storage_service.get_control_catalog(storage)
+
+        async def fail_release(*_args, **_kwargs):
+            raise RuntimeError("release transport failed")
+
+        def fail_grader(_df):
+            raise ValueError("grader failed")
+
+        monkeypatch.setattr(catalog, "release_evaluation", fail_release)
+        with caplog.at_level("WARNING", logger=evaluation_module.__name__):
+            with pytest.raises(ValueError, match="grader failed"):
+                await container.command_gateway.evaluate(
+                    _ctx(),
+                    world.world_id,
+                    [Telemetry],
+                    contract=_contract(),
+                    grader=fail_grader,
+                    evaluation_id="failed-release-preserves-grader-error",
+                )
+
+        assert "failed to release durable evaluation lease" in caplog.text
+        assert "release transport failed" not in caplog.text
+    finally:
+        await container.shutdown()
+
+
+async def containerless_heartbeat(catalog, lease, *, stop, lost):
+    return await evaluation_module.EvaluationService._heartbeat_evaluation(
+        None,
+        catalog,
+        lease,
+        owner="owner",
+        stop=stop,
+        lost=lost,
+    )
+
+
+async def test_grader_reads_captured_snapshot_when_world_advances(tmp_path, monkeypatch):
+    container = ServiceContainer()
+    try:
+        world = await _seeded_world(container, _storage(tmp_path))
+        original_snapshot = container.evaluation_service._snapshot
+
+        async def capture_then_advance(*args, **kwargs):
+            snapshot = await original_snapshot(*args, **kwargs)
+            await container.simulation_service.step(world.world_id, RunConfig())
             return snapshot
 
-        monkeypatch.setattr(c.artifact_service, "snapshot_ref", _capture_then_advance)
+        monkeypatch.setattr(container.evaluation_service, "_snapshot", capture_then_advance)
         graded_ticks: list[int] = []
 
         def grader(df):
-            rows = df.to_pylist()
-            graded_ticks.extend(int(row["tick"]) for row in rows)
+            graded_ticks.extend(int(row["tick"]) for row in df.to_pylist())
             return Outcome(status="pass", score=1.0)
 
-        await c.command_gateway.evaluate(
+        await container.command_gateway.evaluate(
             _ctx(),
             world.world_id,
             [Telemetry],
@@ -143,79 +374,43 @@ async def test_grader_reads_the_captured_snapshot_when_world_advances(tmp_path, 
             evaluation_id="pinned-while-advancing",
         )
 
-        assert graded_ticks == [0], "the later tick must not leak into the pinned evaluation"
+        assert graded_ticks == [0]
     finally:
-        await c.shutdown()
+        await container.shutdown()
 
 
-async def test_grader_snapshot_includes_completed_artifact_claims(tmp_path):
-    """Pinned reads retain durable artifacts visible when the snapshot is captured."""
-    c = ServiceContainer()
+async def test_distinct_trials_record_distinct_results(tmp_path):
+    container = ServiceContainer()
     try:
-        storage = _storage(tmp_path)
-        world = await _seeded_world(c, storage)
-        await c.artifact_service.publish(
-            str(world.world_id),
-            [Telemetry(reading=1.2)],
-            external_id="sensor-reading-1",
-            producer="sensor",
-        )
-        graded_readings: list[float] = []
-
-        def grader(df):
-            graded_readings.extend(float(row["telemetry__reading"]) for row in df.to_pylist())
-            return Outcome(status="pass", score=1.0)
-
-        await c.command_gateway.evaluate(
-            _ctx(),
-            world.world_id,
-            [Telemetry],
-            contract=_contract(),
-            grader=grader,
-            evaluation_id="artifact-aware-snapshot",
-        )
-
-        assert sorted(graded_readings) == [0.8, 1.2]
-    finally:
-        await c.shutdown()
-
-
-async def test_new_trials_of_nondeterministic_graders_are_new_receipts(tmp_path):
-    c = ServiceContainer()
-    try:
-        storage = _storage(tmp_path)
-        world = await _seeded_world(c, storage)
+        world = await _seeded_world(container, _storage(tmp_path))
         calls: list[int] = []
 
-        for i, status in enumerate(("pass", "fail")):
-            receipt = await c.command_gateway.evaluate(
+        for index, status in enumerate(("pass", "fail")):
+            await container.command_gateway.evaluate(
                 _ctx(),
                 world.world_id,
                 [Telemetry],
                 contract=_contract(),
                 grader=_counting_grader(calls, Outcome(status=status)),
-                evaluation_id=f"trial-{i}",
+                evaluation_id=f"trial-{index}",
             )
-            assert not receipt.duplicate
-        assert len(calls) == 2, "each trial grades once — trials are a feature"
 
-        df = await c.query_service.query_components(
-            [EvalReceipt], str(world.world_id), str(world.run_id), storage
+        assert len(calls) == 2
+        outcomes = sorted(
+            row["outcome"] for row in (await _results(container, str(world.world_id))).to_pylist()
         )
-        outcomes = sorted(r["evalreceipt__outcome"] for r in df.to_pylist())
-        assert outcomes == ["fail", "pass"], "both trials visible, distinct ids"
+        assert outcomes == ["fail", "pass"]
     finally:
-        await c.shutdown()
+        await container.shutdown()
 
 
-async def test_same_id_different_contract_conflicts_loudly(tmp_path):
-    c = ServiceContainer()
+async def test_same_id_with_different_contract_conflicts(tmp_path):
+    container = ServiceContainer()
     try:
-        storage = _storage(tmp_path)
-        world = await _seeded_world(c, storage)
+        world = await _seeded_world(container, _storage(tmp_path))
         grader = _counting_grader([], Outcome(status="pass"))
 
-        await c.command_gateway.evaluate(
+        await container.command_gateway.evaluate(
             _ctx(),
             world.world_id,
             [Telemetry],
@@ -223,8 +418,8 @@ async def test_same_id_different_contract_conflicts_loudly(tmp_path):
             grader=grader,
             evaluation_id="trial-x",
         )
-        with pytest.raises(ClaimConflictError):
-            await c.command_gateway.evaluate(
+        with pytest.raises(ValueError, match="different subject or grader contract"):
+            await container.command_gateway.evaluate(
                 _ctx(),
                 world.world_id,
                 [Telemetry],
@@ -233,88 +428,17 @@ async def test_same_id_different_contract_conflicts_loudly(tmp_path):
                 evaluation_id="trial-x",
             )
     finally:
-        await c.shutdown()
-
-
-async def test_recovery_registers_orphaned_receipt_before_completion(tmp_path, monkeypatch):
-    """Takeover restores cold discovery without re-running the grader."""
-    c = ServiceContainer()
-    try:
-        storage = _storage(tmp_path)
-        world = await _seeded_world(c, storage)
-        wid = str(world.world_id)
-        calls: list[int] = []
-        grader = _counting_grader(calls, Outcome(status="pass", score=1.0))
-
-        real_register = SqliteControlCatalog.register_signature
-
-        async def _crash(self, *args, **kwargs):
-            raise RuntimeError("injected crash after append, before signature registration")
-
-        monkeypatch.setattr(SqliteControlCatalog, "register_signature", _crash)
-        with pytest.raises(RuntimeError, match="before signature registration"):
-            await c.command_gateway.evaluate(
-                _ctx(),
-                wid,
-                [Telemetry],
-                contract=_contract(),
-                grader=grader,
-                evaluation_id="crashy",
-            )
-        monkeypatch.setattr(SqliteControlCatalog, "register_signature", real_register)
-        assert len(calls) == 1
-
-        # Expire the lease: the owner is presumed dead.
-        catalog = c.storage_service.get_control_catalog(storage)
-        scope = claim_scope_key(wid, str(world.run_id), "evals", "crashy")
-        orphaned_claim = await catalog.get_claim(wid, scope)
-        assert orphaned_claim is not None and orphaned_claim.table_id
-        assert orphaned_claim.table_id not in {
-            record.table_id for record in await catalog.list_signatures()
-        }
-
-        def _expire():
-            conn = catalog._connect_sync()
-            with conn:
-                conn.execute("UPDATE claims SET lease_expires_at=0 WHERE scope_key=?", (scope,))
-
-        await catalog._run(_expire)
-
-        receipt = await c.command_gateway.evaluate(
-            _ctx(),
-            wid,
-            [Telemetry],
-            contract=_contract(),
-            grader=grader,
-            evaluation_id="crashy",
-        )
-        assert not receipt.duplicate
-        assert len(calls) == 1, "orphan found by token: the grader must NOT re-run"
-        assert receipt.table_id in {record.table_id for record in await catalog.list_signatures()}
-
-        # A fresh service has no live signature registry. It must discover the
-        # recovered receipt table from the catalog record published by takeover.
-        cold = ServiceContainer()
-        try:
-            df = await cold.query_service.query_components(
-                [EvalReceipt], wid, str(world.run_id), storage
-            )
-            assert len(df.to_pylist()) == 1, "exactly one cold-visible receipt"
-        finally:
-            await cold.shutdown()
-    finally:
-        await c.shutdown()
+        await container.shutdown()
 
 
 async def test_fail_closed_inputs(tmp_path):
-    c = ServiceContainer()
+    container = ServiceContainer()
     try:
         storage = _storage(tmp_path)
-        world = await _seeded_world(c, storage)
+        world = await _seeded_world(container, storage)
 
-        # Bare callable without a contract descriptor.
         with pytest.raises(ValueError, match="GraderContract"):
-            await c.command_gateway.evaluate(
+            await container.command_gateway.evaluate(
                 _ctx(),
                 world.world_id,
                 [Telemetry],
@@ -322,10 +446,8 @@ async def test_fail_closed_inputs(tmp_path):
                 grader=lambda df: Outcome(status="pass"),
                 evaluation_id="t",
             )
-
-        # Untyped grader output.
         with pytest.raises(ValueError, match="typed Outcome"):
-            await c.command_gateway.evaluate(
+            await container.command_gateway.evaluate(
                 _ctx(),
                 world.world_id,
                 [Telemetry],
@@ -334,10 +456,9 @@ async def test_fail_closed_inputs(tmp_path):
                 evaluation_id="t2",
             )
 
-        # A world with no published visibility has nothing to pin.
-        bare = await c.world_service.create_world(WorldConfig(name="unstepped"), storage)
+        bare = await container.world_service.create_world(WorldConfig(name="unstepped"), storage)
         with pytest.raises(RuntimeError, match="no published visibility"):
-            await c.command_gateway.evaluate(
+            await container.command_gateway.evaluate(
                 _ctx(),
                 bare.world_id,
                 [Telemetry],
@@ -345,25 +466,23 @@ async def test_fail_closed_inputs(tmp_path):
                 grader=lambda df: Outcome(status="pass"),
                 evaluation_id="t3",
             )
-
-        # Invalid outcome statuses and non-finite scores refuse at construction.
         with pytest.raises(ValueError):
             Outcome(status="maybe")
         with pytest.raises(ValueError):
             Outcome(status="pass", score=float("inf"))
     finally:
-        await c.shutdown()
+        await container.shutdown()
 
 
-async def test_receipt_is_attributable_from_the_pinned_snapshot(tmp_path):
-    c = ServiceContainer()
+async def test_result_is_attributable_to_pinned_snapshot(tmp_path):
+    container = ServiceContainer()
     try:
         storage = _storage(tmp_path)
-        world = await _seeded_world(c, storage)
+        world = await _seeded_world(container, storage)
         wid, rid = str(world.world_id), str(world.run_id)
         contract = _contract()
 
-        await c.command_gateway.evaluate(
+        await container.command_gateway.evaluate(
             _ctx(),
             wid,
             [Telemetry],
@@ -371,39 +490,34 @@ async def test_receipt_is_attributable_from_the_pinned_snapshot(tmp_path):
             grader=lambda df: Outcome(status="pass", score=0.8),
             evaluation_id="attrib",
         )
+        row = (await _results(container, wid)).to_pylist()[0]
 
-        df = await c.query_service.query_components([EvalReceipt], wid, rid, storage)
-        row = df.to_pylist()[0]
-
-        # Recompute the subject digest from the catalog's pinned snapshot —
-        # manifests only: receipts attach to a snapshot without perturbing it.
-        catalog = c.storage_service.get_control_catalog(storage)
+        catalog = container.storage_service.get_control_catalog(storage)
         manifests = await catalog.list_manifests(wid, rid)
-        head = max(m.tick for m in manifests)
+        head = max(manifest.tick for manifest in manifests)
         recomputed = subject_digest(
             wid,
             rid,
             snapshot_tick=head,
-            snapshot_tokens=sorted(m.commit_token for m in manifests if m.tick == head),
+            snapshot_tokens=sorted(
+                manifest.commit_token for manifest in manifests if manifest.tick == head
+            ),
             component_names=[Telemetry.__name__],
         )
-        assert row["evalreceipt__subject_digest"] == recomputed
-        assert row["evalreceipt__contract_digest"] == contract.digest()
+        assert row["subject_digest"] == recomputed
+        assert row["contract_digest"] == contract.digest()
     finally:
-        await c.shutdown()
+        await container.shutdown()
 
 
-async def test_flagship_worker_writes_then_cold_process_grades(tmp_path):
-    """The physical-AI flow: a worker subprocess writes trajectories; a
-    separate process cold-discovers the world and grades it — one visible
-    receipt, no live world, no shared memory."""
+async def test_cold_process_can_grade_persisted_world(tmp_path):
     script = textwrap.dedent(
         """
         import asyncio, json, sys
 
         from archetype.app.container import ServiceContainer
         from archetype.core.component import Component
-        from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+        from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
 
         class Telemetry(Component):
             reading: float = 0.0
@@ -411,7 +525,11 @@ async def test_flagship_worker_writes_then_cold_process_grades(tmp_path):
         async def main(uri):
             c = ServiceContainer()
             try:
-                storage = StorageConfig(uri=uri, namespace="ns")
+                storage = StorageConfig(
+                    uri=uri,
+                    namespace="ns",
+                    backend=StorageBackend.ICEBERG,
+                )
                 world = await c.world_service.create_world(WorldConfig(name="gpu"), storage)
                 await c.mutation_service.create_entity(world.world_id, [Telemetry(reading=0.9)])
                 for _ in range(3):
@@ -424,19 +542,23 @@ async def test_flagship_worker_writes_then_cold_process_grades(tmp_path):
         """
     )
     uri = str(tmp_path / "store")
-    proc = subprocess.run(
+    process = subprocess.run(
         [sys.executable, "-c", script, uri],
         capture_output=True,
         text=True,
         timeout=180,
     )
-    assert proc.returncode == 0, proc.stderr
-    info = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert process.returncode == 0, process.stderr
+    info = json.loads(process.stdout.strip().splitlines()[-1])
 
     cold = ServiceContainer()
     try:
-        storage = StorageConfig(uri=uri, namespace="ns")
-        receipt = await cold.command_gateway.evaluate(
+        storage = StorageConfig(
+            uri=uri,
+            namespace="ns",
+            backend=StorageBackend.ICEBERG,
+        )
+        result = await cold.command_gateway.evaluate(
             _ctx(),
             info["world_id"],
             [Telemetry],
@@ -447,12 +569,9 @@ async def test_flagship_worker_writes_then_cold_process_grades(tmp_path):
             evaluation_id="cold-grade-1",
             storage_config=storage,
         )
-        assert not receipt.duplicate
-
-        df = await cold.query_service.query_components(
-            [EvalReceipt], info["world_id"], info["run_id"], storage
-        )
-        rows = df.to_pylist()
-        assert len(rows) == 1 and rows[0]["evalreceipt__outcome"] == "pass"
+        assert result.outcome == "pass"
+        rows = (await _results(cold, info["world_id"], storage)).to_pylist()
+        assert len(rows) == 1
+        assert rows[0]["outcome"] == "pass"
     finally:
         await cold.shutdown()

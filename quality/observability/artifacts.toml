@@ -4,113 +4,14 @@ family = "artifacts"
 
 [[disposition]]
 operations = [
-  "interfaces.iArtifactBundleService.publish",
-  "interfaces.iArtifactBundleService.publish_prepared",
-]
-signals = ["child"]
-emission_workflows = ["artifact.bundle.publish", "artifact.bundle.resume"]
-outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
-authority = "The artifact publication row, object/index state, and publish receipt remain authoritative."
-evidence = [
-  "docs/guide/artifact-finalization.md",
-  "tests/app/test_artifact_publication.py",
-]
-span_names = ["artifact.publish", "artifact.upload", "artifact.index"]
-attribute_keys = [
-  "archetype.world.id",
-  "archetype.run.id",
-  "archetype.entity.id",
-  "archetype.tick",
-  "archetype.artifact.bundle.digest",
-  "archetype.artifact.count",
-]
-
-[[disposition]]
-operations = [
-  "interfaces.iArtifactBundleService.reconcile",
-  "interfaces.iArtifactBundleService.list_due_publications",
-  "interfaces.iArtifactBundleService.reconcile_publication",
-]
-signals = ["none"]
-outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
-authority = "The artifact publication lease and durable publication row prove reconciliation progress."
-evidence = [
-  "docs/guide/artifact-finalization.md",
-  "tests/app/test_artifact_publication.py",
-]
-rationale = "Reconciliation reuses durable publication state; no additional signal has been approved."
-
-# The resolver and processor protocols moved to the archetype.artifacts
-# family under #558; dispositions cover only application-family ports.
-[[disposition]]
-operations = [
-  "interfaces.iTranscriptIngestionService.ingest",
+  "interfaces.iArtifactService.ingest",
+  "interfaces.iArtifactService.index",
 ]
 signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome"]
-authority = "The source claim, lightweight trajectory reference, typed artifact rows, redaction receipt, and ingestion receipt prove the outcome."
+authority = "Content-addressed objects, the typed media indexes, and the common artifact index remain authoritative."
 evidence = [
   "docs/guide/artifacts.md",
-  "docs/guide/trajectories.md",
-  "tests/app/test_transcript_ingestion.py",
+  "tests/app/test_artifact_ingestion.py",
 ]
-rationale = "Transcript ingestion composes existing durable authorities; a duplicate service signal would not add evidence."
-
-[[disposition]]
-operations = [
-  "interfaces.iArtifactService.publish",
-  "interfaces.iArtifactService.publish_evaluation",
-  "interfaces.iArtifactService.snapshot_ref",
-  "interfaces.iArtifactTableService.ingest_files",
-  "interfaces.iArtifactTableService.write_artifacts",
-  "interfaces.iArtifactTableService.read_artifacts",
-  "interfaces.iArtifactBundleService.enabled",
-  "interfaces.iArtifactBundleService.prepare",
-  "interfaces.iArtifactBundleService.query",
-]
-signals = ["none"]
-outcomes = ["propagated_failure", "handled_outcome"]
-authority = "Validated artifact records, immutable object references, returned frames, and typed exceptions remain authoritative."
-evidence = [
-  "docs/guide/artifacts.md",
-  "tests/app/test_artifact_tables.py",
-]
-rationale = "No direct signal is approved for these artifact helpers and persisted read/write primitives."
-
-[[workflow]]
-id = "artifact.bundle.publish"
-qualified_scope = "archetype.app.artifacts.bundle_service.ArtifactBundleService.publish_prepared"
-signals = ["child"]
-outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
-authority = "The durable publication row and ArtifactPublishReceipt prove the operation outcome."
-evidence = [
-  "docs/guide/artifact-finalization.md",
-  "tests/app/test_artifact_publication.py",
-]
-span_names = ["artifact.publish"]
-attribute_keys = [
-  "archetype.world.id",
-  "archetype.run.id",
-  "archetype.entity.id",
-  "archetype.tick",
-]
-
-[[workflow]]
-id = "artifact.bundle.resume"
-qualified_scope = "archetype.app.artifacts.bundle_service.ArtifactBundleService._resume"
-signals = ["child"]
-outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
-authority = "The upload/index state in the publication row and final receipt prove resumed progress."
-evidence = [
-  "docs/guide/artifact-finalization.md",
-  "tests/app/test_artifact_publication.py",
-]
-span_names = ["artifact.upload", "artifact.index"]
-attribute_keys = [
-  "archetype.world.id",
-  "archetype.run.id",
-  "archetype.entity.id",
-  "archetype.tick",
-  "archetype.artifact.bundle.digest",
-  "archetype.artifact.count",
-]
+rationale = "ArtifactService configures the file pipeline, delegates envelope policy to IngestionService and terminal publication to StorageService; a second signal would not add authority."

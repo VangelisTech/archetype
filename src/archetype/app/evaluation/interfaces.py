@@ -32,7 +32,6 @@ class iEvaluationService(Protocol):
         contract: Any,
         grader: TrajectoryGrader,
         evaluation_id: str,
-        producer: str = "evals",
         storage_config: StorageConfig | None = None,
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,

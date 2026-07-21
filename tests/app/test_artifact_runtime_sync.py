@@ -1,30 +1,13 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Synchronous runtime parity for typed artifact tables."""
+"""Synchronous runtime parity for file artifact ingestion."""
 
-import hashlib
-
-import daft
-
-from archetype import ArchetypeRuntime
+from archetype import ArchetypeRuntime, ArtifactSource, ArtifactStoreConfig
 from archetype.core.config import StorageBackend, StorageConfig
 
 
-@daft.func(return_dtype=daft.DataType.string())
-def _read_text(file: daft.File) -> str:
-    with file.open() as stream:
-        return stream.read().decode("utf-8")
-
-
-class TextFacts:
-    table_name = "documents"
-
-    def process(self, files):
-        return files.with_column("text", _read_text(daft.col("file")))
-
-
-def test_sync_runtime_matches_file_pipeline_and_read_surfaces(tmp_path):
+def test_sync_runtime_ingests_and_queries_common_artifact_index(tmp_path):
     source = tmp_path / "source.txt"
     source.write_text("sync")
     storage = StorageConfig(
@@ -33,16 +16,12 @@ def test_sync_runtime_matches_file_pipeline_and_read_surfaces(tmp_path):
         backend=StorageBackend.ICEBERG,
     )
 
-    with ArchetypeRuntime.sync() as runtime:
+    with ArchetypeRuntime.sync(
+        artifact_store=ArtifactStoreConfig.local(tmp_path / "artifacts")
+    ) as runtime:
         world = runtime.world("sync-artifacts", storage=storage)
-        assert world.ingest_files(source, TextFacts()).rows_written == 1
+        (reference,) = world.ingest_artifacts(ArtifactSource(source_uri=str(source)))
 
-        direct = daft.from_pydict(
-            {
-                "source_uri": ["sensor://sync/1"],
-                "content_hash": [hashlib.sha256(b"sync-1").hexdigest()],
-                "value": [1],
-            }
-        )
-        assert world.write_artifacts("readings", direct).rows_written == 1
-        assert world.artifacts("documents").to_pylist()[0]["text"] == "sync"
+        assert world.artifacts().select("artifact_id", "logical_path").to_pylist() == [
+            {"artifact_id": reference.artifact_id, "logical_path": "source.txt"}
+        ]

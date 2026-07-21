@@ -272,9 +272,17 @@ def _root_export_owners(tree: ast.AST | None) -> tuple[dict[str, str], str | Non
 
 
 FRAGMENT_SECTIONS = frozenset(
-    {"exception", "family_rule", "module_rule", "package_rule", "top_level_family_rule"}
+    {
+        "capability_rule",
+        "exception",
+        "family_rule",
+        "module_rule",
+        "package_rule",
+        "top_level_family_rule",
+    }
 )
 _UNIQUE_RULE_KEYS = (
+    ("capability_rule", "name"),
     ("family_rule", "name"),
     ("top_level_family_rule", "name"),
     ("package_rule", "name"),
@@ -387,6 +395,117 @@ def _add_once(values: list[Violation], seen: set[tuple[str, str, str]], value: V
         values.append(value)
 
 
+def _enclosing_function(
+    tree: ast.AST, node: ast.AST
+) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    """Return the innermost lexical function containing ``node``."""
+
+    line = getattr(node, "lineno", 0)
+    end_line = getattr(node, "end_lineno", line)
+    candidates = [
+        candidate
+        for candidate in ast.walk(tree)
+        if isinstance(candidate, ast.FunctionDef | ast.AsyncFunctionDef)
+        and candidate.lineno <= line
+        and (candidate.end_lineno or candidate.lineno) >= end_line
+    ]
+    return max(candidates, key=lambda candidate: candidate.lineno, default=None)
+
+
+def _lexical_nodes(scope: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.AST]:
+    """Walk one function body without borrowing bindings from nested scopes."""
+
+    found: list[ast.AST] = []
+
+    def visit(node: ast.AST) -> None:
+        found.append(node)
+        for child in ast.iter_child_nodes(node):
+            if child is not scope and isinstance(
+                child,
+                ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda,
+            ):
+                continue
+            visit(child)
+
+    visit(scope)
+    return found
+
+
+def _assigned_names(node: ast.AST) -> set[str]:
+    """Return simple local names overwritten by one assignment-like node."""
+
+    targets: list[ast.AST] = []
+    if isinstance(node, ast.Assign):
+        targets.extend(node.targets)
+    elif isinstance(node, ast.AnnAssign | ast.AugAssign | ast.NamedExpr):
+        targets.append(node.target)
+    elif isinstance(node, ast.For | ast.AsyncFor):
+        targets.append(node.target)
+    elif isinstance(node, ast.comprehension):
+        targets.append(node.target)
+    elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+        targets.append(node.optional_vars)
+
+    names: set[str] = set()
+    for target in targets:
+        for candidate in ast.walk(target):
+            if isinstance(candidate, ast.Name):
+                names.add(candidate.id)
+    if isinstance(node, ast.ExceptHandler) and node.name:
+        names.add(node.name)
+    return names
+
+
+def _assignment_value(node: ast.AST) -> ast.AST | None:
+    if isinstance(node, ast.Assign | ast.AnnAssign | ast.NamedExpr):
+        return node.value
+    return None
+
+
+def _is_awaited_method(node: ast.AST | None, method: str) -> bool:
+    return (
+        isinstance(node, ast.Await)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Attribute)
+        and node.value.func.attr == method
+    )
+
+
+def _is_mediated_receiver(
+    tree: ast.AST,
+    attribute: ast.Attribute,
+    mediator: str,
+) -> bool:
+    """Prove that a terminal receiver came from an awaited mediator call.
+
+    An inline terminal such as
+    ``(await storage.materialize(df)).to_pydict()`` is accepted. A local
+    receiver is accepted only when its latest earlier binding in the same
+    lexical function is that awaited call; any intervening assignment revokes
+    the proof.
+    """
+
+    if _is_awaited_method(attribute.value, mediator):
+        return True
+    if not isinstance(attribute.value, ast.Name):
+        return False
+    scope = _enclosing_function(tree, attribute)
+    if scope is None:
+        return False
+
+    receiver = attribute.value.id
+    latest: ast.AST | None = None
+    latest_line = -1
+    for candidate in _lexical_nodes(scope):
+        line = getattr(candidate, "lineno", -1)
+        if line < 0 or line >= attribute.lineno or receiver not in _assigned_names(candidate):
+            continue
+        if line >= latest_line:
+            latest = candidate
+            latest_line = line
+    return _is_awaited_method(_assignment_value(latest) if latest is not None else None, mediator)
+
+
 def audit_repository(
     policy_path: Path = DEFAULT_POLICY,
     *,
@@ -428,6 +547,10 @@ def audit_repository(
     policy_version = int(policy["version"])
     package_rules = policy.get("package_rule", [])
     family_rules = policy.get("family_rule", [])
+    capability_rules = policy.get("capability_rule", [])
+    if not isinstance(capability_rules, list):
+        result.policy_errors.append("capability_rule must be an array of tables")
+        capability_rules = []
     top_level_family_rules = policy.get("top_level_family_rule", [])
     if not isinstance(top_level_family_rules, list):
         result.policy_errors.append("top_level_family_rule must be an array of tables")
@@ -693,6 +816,76 @@ def audit_repository(
                 f"module rule {module} allows unknown interfaces: " + ", ".join(unknown_interfaces)
             )
 
+    capability_policy: list[
+        tuple[str, str, str, frozenset[str], frozenset[str], dict[str, str]]
+    ] = []
+    capability_names: set[str] = set()
+    for index, rule in enumerate(capability_rules):
+        name = str(rule.get("name", "")).strip()
+        label = repr(name) if name else f"at index {index}"
+        consumer_scope = str(rule.get("consumer", "")).strip()
+        owner = str(rule.get("owner", "")).strip()
+        owned_attributes = frozenset(
+            str(value).strip() for value in rule.get("owned_attributes", [])
+        )
+        owned_symbols = frozenset(str(value).strip() for value in rule.get("owned_symbols", []))
+        raw_mediated = rule.get("mediated_attributes", {})
+        mediated_attributes = (
+            {str(key).strip(): str(value).strip() for key, value in raw_mediated.items()}
+            if isinstance(raw_mediated, dict)
+            else {}
+        )
+
+        if not name:
+            result.policy_errors.append(f"capability rule {label} has an empty name")
+        elif name in capability_names:
+            result.policy_errors.append(f"duplicate capability rule name: {name}")
+        capability_names.add(name)
+        if not consumer_scope:
+            result.policy_errors.append(f"capability rule {label} has an empty consumer scope")
+        elif not any(_matches_prefix(module, consumer_scope) for module in parsed):
+            result.policy_errors.append(
+                f"capability rule {label} references stale consumer scope: {consumer_scope}"
+            )
+        if not owner:
+            result.policy_errors.append(f"capability rule {label} has an empty owner")
+        elif owner not in parsed:
+            result.policy_errors.append(
+                f"capability rule {label} references missing owner module: {owner}"
+            )
+        elif consumer_scope and not _matches_prefix(owner, consumer_scope):
+            result.policy_errors.append(
+                f"capability rule {label} owner {owner} is outside {consumer_scope}"
+            )
+        if not isinstance(raw_mediated, dict):
+            result.policy_errors.append(
+                f"capability rule {label} mediated_attributes must be a table"
+            )
+        empty_values = sorted(
+            value
+            for value in (
+                *owned_attributes,
+                *owned_symbols,
+                *mediated_attributes.keys(),
+                *mediated_attributes.values(),
+            )
+            if not value
+        )
+        if empty_values:
+            result.policy_errors.append(f"capability rule {label} contains empty capability names")
+        if not owned_attributes and not owned_symbols and not mediated_attributes:
+            result.policy_errors.append(f"capability rule {label} owns no capabilities")
+        capability_policy.append(
+            (
+                name,
+                consumer_scope,
+                owner,
+                owned_attributes,
+                owned_symbols,
+                mediated_attributes,
+            )
+        )
+
     for module, (_path, tree, _is_package) in parsed.items():
         for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef) and node.name in concrete_types:
@@ -875,6 +1068,77 @@ def audit_repository(
                 )
 
         bindings = _bindings(tree, consumer, is_package)
+
+        for (
+            capability_name,
+            capability_consumer,
+            capability_owner,
+            owned_attributes,
+            owned_symbols,
+            mediated_attributes,
+        ) in capability_policy:
+            if consumer == capability_owner or not _matches_prefix(consumer, capability_consumer):
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Attribute):
+                    if node.attr in owned_attributes:
+                        _add_once(
+                            findings,
+                            seen,
+                            Violation(
+                                rule="capability_ownership",
+                                consumer=consumer,
+                                target=node.attr,
+                                path=path,
+                                line=node.lineno,
+                                detail=(
+                                    f"{consumer} references storage-owned execution capability "
+                                    f"{node.attr}; route it through {capability_owner} "
+                                    f"({capability_name})"
+                                ),
+                            ),
+                        )
+                    mediator = mediated_attributes.get(node.attr)
+                    if mediator is not None and not _is_mediated_receiver(tree, node, mediator):
+                        _add_once(
+                            findings,
+                            seen,
+                            Violation(
+                                rule="capability_mediation",
+                                consumer=consumer,
+                                target=node.attr,
+                                path=path,
+                                line=node.lineno,
+                                detail=(
+                                    f"{consumer} references {node.attr} without first awaiting "
+                                    f"{capability_owner}.{mediator}; application terminal reads "
+                                    "must enter Python only after storage admits execution"
+                                ),
+                            ),
+                        )
+
+                if not isinstance(node, ast.Name | ast.Attribute):
+                    continue
+                resolved = _resolved_name(node, bindings)
+                if resolved not in owned_symbols:
+                    continue
+                _add_once(
+                    findings,
+                    seen,
+                    Violation(
+                        rule="capability_ownership",
+                        consumer=consumer,
+                        target=resolved,
+                        path=path,
+                        line=node.lineno,
+                        detail=(
+                            f"{consumer} references storage-owned execution capability "
+                            f"{resolved}; route it through {capability_owner} "
+                            f"({capability_name})"
+                        ),
+                    ),
+                )
+
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
                 target = _resolved_name(node.func, bindings).rsplit(".", 1)[-1]

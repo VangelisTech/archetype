@@ -13,7 +13,10 @@ import pytest
 from archetype.core.aio.async_world import AsyncWorld
 from evals.run import build_harness
 from evals.suites import idempotency
-from evals.suites.idempotency.process import _wait_for_markers
+from evals.suites.idempotency.process import (
+    _wait_for_markers,
+    run_process_evaluation_replay,
+)
 
 pytestmark = [pytest.mark.process, pytest.mark.slow]
 
@@ -94,3 +97,9 @@ def test_process_readiness_failure_reports_child_stderr(tmp_path) -> None:
 
     assert "returncode=7" in str(exc_info.value)
     assert "worker boom" in str(exc_info.value)
+
+
+def test_process_evaluation_replay_serializes_external_grader() -> None:
+    results = run_process_evaluation_replay()
+
+    assert all(result.passed for result in results), results

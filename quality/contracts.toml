@@ -83,6 +83,25 @@ benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
+id = "storage.execution.single_authority"
+source = "docs/guide/application-architecture.md"
+section = "Storage execution authority"
+owner = "storage"
+risk = "high"
+pytest = [
+  "tests/app/test_storage_execution.py",
+  "tests/scripts/test_check_architecture.py",
+  "tests/scripts/test_check_lazy_audit.py",
+]
+static = [
+  "scripts/check_architecture.py",
+  "scripts/check_lazy_audit.py",
+]
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
 id = "runtime.trust.actor_free"
 source = "docs/guide/runtime.md"
 section = "R3 — Runtime is actor-free"
@@ -264,48 +283,115 @@ benchmarks = ["core.ecs.micro"]
 profiles = ["pr", "main", "release"]
 
 [[contract]]
-id = "artifacts.publication.exactly_once_visible"
+id = "ingestion.envelope.append_selection"
 source = "docs/guide/artifacts.md"
-section = "3. The claim lifecycle"
-owner = "artifacts"
+section = "5. Catalog and index contract"
+owner = "ingestion"
 risk = "high"
-pytest = ["tests/app/test_artifact_publication.py"]
-static = []
-evals = [
-  "idempotency.durable_artifact_replay",
-  "idempotency.durable_artifact_crash_recovery",
-  "idempotency.process_artifact_replay",
-  "spec.receipt_authority_firewall",
-]
+pytest = ["tests/app/test_ingestion_service.py"]
+static = ["scripts/check_architecture.py", "scripts/check_lazy_audit.py"]
+evals = []
 benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
-id = "evaluation.receipt.snapshot_pinned"
+id = "ingestion.catalog.cold_roundtrip"
 source = "docs/guide/artifacts.md"
-section = "7. Evaluation receipts: claim-before-grade"
+section = "5. Catalog and index contract"
+owner = "ingestion"
+risk = "high"
+pytest = [
+  "tests/app/test_ingestion_service.py::test_registered_table_is_queryable_from_fresh_application",
+  "tests/infrastructure/test_r2_artifact_context.py::test_huggingface_context_pack_round_trips_through_cloudflare_r2",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "artifacts.ingestion.occurrence_identity"
+source = "docs/guide/artifacts.md"
+section = "4. Occurrence and content identity"
+owner = "artifacts"
+risk = "high"
+pytest = ["tests/app/test_artifact_ingestion.py"]
+static = []
+evals = ["idempotency.artifact_occurrence_identity"]
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "artifacts.ingestion.common_visibility"
+source = "docs/guide/artifacts.md"
+section = "7. Visibility and failure"
+owner = "artifacts"
+risk = "high"
+pytest = ["tests/app/test_artifact_ingestion.py"]
+static = ["scripts/check_lazy_audit.py"]
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "artifacts.context.task_anchored"
+source = "docs/guide/artifacts.md"
+section = "11. Task-anchored artifact context"
+owner = "artifacts"
+risk = "medium"
+pytest = ["tests/artifacts/test_context_analysis.py"]
+static = ["scripts/check_architecture.py", "scripts/check_lazy_audit.py"]
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "evaluation.result.snapshot_pinned"
+source = "docs/guide/artifacts.md"
+section = "9. Evaluation results"
 owner = "evaluation"
 risk = "high"
 pytest = ["tests/app/test_eval_receipts.py"]
 static = []
-evals = [
-  "idempotency.evaluation_receipt_replay",
-  "idempotency.process_evaluation_replay",
-]
+evals = ["idempotency.evaluation_result_replay"]
 benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
-id = "artifacts.transcripts.redacted_claim"
+id = "missions.transcripts.redacted_ingestion"
 source = "docs/guide/artifacts.md"
-section = "13. Coding-agent transcript artifacts"
-owner = "artifacts"
+section = "8. Transcript ingestion"
+owner = "missions"
 risk = "high"
 pytest = [
   "tests/app/test_transcript_ingestion.py",
   "tests/missions/trajectories/test_claude_parser.py",
 ]
-static = ["scripts/check_pre_durability_redaction.py"]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "missions.transcripts.fail_closed"
+source = "docs/guide/artifacts.md"
+section = "8. Transcript ingestion"
+owner = "missions"
+risk = "high"
+pytest = ["tests/app/test_transcript_ingestion.py"]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "missions.transcripts.occurrence_identity"
+source = "docs/guide/artifacts.md"
+section = "8. Transcript ingestion"
+owner = "missions"
+risk = "medium"
+pytest = ["tests/app/test_transcript_ingestion.py"]
+static = []
 evals = []
 benchmarks = []
 profiles = ["pr", "main", "release"]
@@ -318,7 +404,7 @@ owner = "evaluation"
 risk = "medium"
 pytest = ["tests/evaluation/test_dataset_identity_contracts.py"]
 static = []
-evals = ["spec.dataset_eval_ontology"]
+evals = ["spec.dataset_eval_ontology", "spec.receipt_authority_firewall"]
 benchmarks = []
 profiles = ["pr", "main", "release"]
 
@@ -387,40 +473,6 @@ benchmarks = []
 profiles = ["main", "release"]
 
 [[contract]]
-id = "artifacts.bundle.publication_replay"
-source = "docs/guide/artifact-finalization.md"
-section = "5. Publication state machine"
-owner = "artifacts"
-risk = "high"
-pytest = [
-  "tests/app/test_artifact_bundle_models.py",
-  "tests/app/test_artifact_bundle_service.py",
-  "tests/app/test_artifact_publication_catalog.py",
-  "tests/app/test_remote_catalog_parity.py::test_artifact_publication_lifecycle_parity",
-]
-static = []
-evals = []
-benchmarks = []
-profiles = ["pr", "main", "release"]
-
-[[contract]]
-id = "artifacts.bundle.recovery_server_clock"
-source = "docs/guide/artifact-finalization.md"
-section = "6. Reconciler contract"
-owner = "artifacts"
-risk = "high"
-pytest = [
-  "tests/app/test_artifact_bundle_service.py",
-  "tests/app/test_artifact_publication_catalog.py",
-  "tests/app/test_remote_catalog_client.py",
-  "tests/app/test_remote_catalog_parity.py",
-]
-static = []
-evals = []
-benchmarks = []
-profiles = ["pr", "main", "release"]
-
-[[contract]]
 id = "missions.agent_v1.validator_gated"
 source = "docs/guide/agent-missions.md"
 section = "4. State and transition protocol"
@@ -444,19 +496,15 @@ profiles = ["pr", "main", "release"]
 
 [[contract]]
 id = "security.redaction.pre_durability"
-source = "docs/guide/artifact-finalization.md"
-section = "4. Pre-durability secret redaction"
+source = "docs/guide/artifacts.md"
+section = "10. Security boundary"
 owner = "redaction"
 risk = "high"
 pytest = [
   "tests/app/test_redaction_service.py",
-  "tests/app/test_artifact_bundle_service.py",
-  "tests/scripts/test_check_pre_durability_redaction.py",
+  "tests/app/test_transcript_ingestion.py",
 ]
-static = [
-  "scripts/check_pre_durability_redaction.py",
-  "scripts/check_architecture.py",
-]
+static = []
 evals = ["security.pre_durability_redaction"]
 benchmarks = []
 profiles = ["pr", "main", "release"]

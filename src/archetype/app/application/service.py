@@ -30,16 +30,15 @@ from archetype.app.models import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from archetype.app.artifacts.interfaces import (
-        iArtifactBundleService,
-        iArtifactService,
-        iArtifactTableService,
-        iTranscriptIngestionService,
-    )
+    from archetype.app.artifacts.interfaces import iArtifactService
     from archetype.app.audit.interfaces import iAuditLog
     from archetype.app.commands.interfaces import iCommandScheduler
     from archetype.app.evaluation.interfaces import iEvaluationService
-    from archetype.app.missions.interfaces import iMissionService, iTrajectoryService
+    from archetype.app.missions.interfaces import (
+        iMissionService,
+        iTrajectoryService,
+        iTranscriptIngestionService,
+    )
     from archetype.app.physical_ai.interfaces import iPhysicalAIService
     from archetype.app.query.interfaces import iQueryService
     from archetype.app.research.interfaces import iResearchService
@@ -89,9 +88,7 @@ class RuntimeApplication:
         commands: iCommandScheduler,
         audit: iAuditLog | None = None,
         research: iResearchService | None = None,
-        artifact_tables: iArtifactTableService | None = None,
         artifacts: iArtifactService | None = None,
-        artifact_bundles: iArtifactBundleService | None = None,
         transcripts: iTranscriptIngestionService | None = None,
         evaluations: iEvaluationService | None = None,
         trajectories: iTrajectoryService | None = None,
@@ -105,9 +102,7 @@ class RuntimeApplication:
         self._commands = commands
         self._audit = audit
         self._research = research
-        self._artifact_tables = artifact_tables
         self._artifacts = artifacts
-        self._artifact_bundles = artifact_bundles
         self._transcripts = transcripts
         self._evaluations = evaluations
         self._trajectories = trajectories
@@ -469,32 +464,14 @@ class RuntimeApplication:
 
     # Artifacts and evaluation --------------------------------------
 
-    async def ingest_artifact(
-        self,
-        world_id,
-        components,
-        *,
-        external_id,
-        producer="default",
-        storage_config=None,
-    ):
+    async def ingest_artifacts(self, world_id, sources, *, storage_config=None):
         if self._artifacts is None:
             raise RuntimeError("artifact service is not wired")
         async with self._admit():
-            return await self._artifacts.publish(
+            return await self._artifacts.ingest(
                 str(world_id),
-                components,
-                external_id=external_id,
-                producer=producer,
+                sources,
                 storage_config=storage_config,
-            )
-
-    async def ingest_files(self, world_id, paths, processor, *, storage_config=None):
-        if self._artifact_tables is None:
-            raise RuntimeError("artifact table service is not wired")
-        async with self._admit():
-            return await self._artifact_tables.ingest_files(
-                str(world_id), paths, processor, storage_config=storage_config
             )
 
     async def ingest_claude_transcript(self, world_id, source, *, storage_config=None):
@@ -505,43 +482,17 @@ class RuntimeApplication:
                 str(world_id), source, storage_config=storage_config
             )
 
-    async def write_artifacts(self, world_id, table_name, artifacts, *, storage_config=None):
-        if self._artifact_tables is None:
-            raise RuntimeError("artifact table service is not wired")
+    async def query_transcript_rows(self, world_id, *, storage_config=None):
+        if self._transcripts is None:
+            raise RuntimeError("transcript ingestion service is not wired")
         async with self._admit():
-            return await self._artifact_tables.write_artifacts(
-                str(world_id), table_name, artifacts, storage_config=storage_config
-            )
+            return await self._transcripts.read(str(world_id), storage_config=storage_config)
 
-    async def query_artifacts(self, world_id, table_name, *, storage_config=None):
-        if self._artifact_tables is None:
-            raise RuntimeError("artifact table service is not wired")
+    async def query_artifacts(self, world_id, *, storage_config=None):
+        if self._artifacts is None:
+            raise RuntimeError("artifact service is not wired")
         async with self._admit():
-            return await self._artifact_tables.read_artifacts(
-                str(world_id), table_name, storage_config=storage_config
-            )
-
-    async def publish_artifact_bundle(self, request, *, storage_config=None):
-        if self._artifact_bundles is None:
-            raise RuntimeError("artifact bundle service is not wired")
-        async with self._admit(), self._world_operation(request.world_id):
-            return await self._artifact_bundles.publish(request, storage_config=storage_config)
-
-    async def query_artifact_bundles(self, world_id, run_id, *, attempt_id=None, kinds=None):
-        if self._artifact_bundles is None:
-            raise RuntimeError("artifact bundle service is not wired")
-        async with self._admit():
-            return await self._artifact_bundles.query(
-                str(world_id), str(run_id), attempt_id=attempt_id, kinds=kinds
-            )
-
-    async def reconcile_artifact_bundles(self, world_id, *, storage_config=None, limit=100):
-        if self._artifact_bundles is None:
-            raise RuntimeError("artifact bundle service is not wired")
-        async with self._admit(), self._world_operation(world_id):
-            return await self._artifact_bundles.reconcile(
-                str(world_id), storage_config=storage_config, limit=limit
-            )
+            return await self._artifacts.index(str(world_id), storage_config=storage_config)
 
     async def run_graders(self, df, graders):
         if self._evaluations is None:
@@ -552,7 +503,7 @@ class RuntimeApplication:
     async def evaluate(self, world_id, components, **kwargs):
         if self._evaluations is None:
             raise RuntimeError("evaluation service is not wired")
-        async with self._admit():
+        async with self._admit(), self._world_operation(world_id):
             return await self._evaluations.evaluate(str(world_id), components, **kwargs)
 
     async def query_trajectory(

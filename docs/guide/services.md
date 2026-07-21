@@ -31,12 +31,13 @@ Arrows mean consumer to dependency:
 ArchetypeRuntime -> RuntimeApplication <- CommandGateway <- REST API
                          |
                          +-> MutationService -> WorldService -> StorageService
-                         +-> SimulationService -> WorldService
+                         +-> SimulationService -> WorldService + StorageService
                          +-> QueryService -> StorageService
-                         +-> ArtifactService -> StorageService + WorldService
-                         +-> ArtifactTableService -> StorageService + WorldService
-                         +-> EvaluationService -> QueryService + ArtifactService
-                         +-> AutoResearchService -> WorldService + SimulationService
+                         +-> IngestionService -> StorageService + WorldService
+                         +-> ArtifactService -> IngestionService + StorageService + WorldService
+                         +-> EvaluationService -> QueryService + IngestionService + StorageService + WorldService
+                         +-> AutoResearchService -> WorldService + SimulationService + StorageService
+                         +-> PhysicalAIService -> WorldService + MutationService + SimulationService + EvaluationService + StorageService
                          +-> CommandScheduler -> WorldService + MutationService
                          +-> AuditLog -> StorageService
 ```
@@ -49,8 +50,16 @@ imports. It also connects `CommandScheduler`'s transactional outbox to
 ## Storage family
 
 `StorageService` pools async stores and resolves local SQLite or remote control
-catalogs for a storage identity. It owns backend lifetime, not the meaning of a
-tick, command, artifact, or evaluation commit.
+catalogs for a storage identity. It is also the sole application authority for
+terminal Daft execution and for app-table registration, schema alignment,
+reads, writes, and optimistic conflict retry. It owns those physical and
+execution concerns, not the meaning of a tick, command, artifact, or evaluation
+commit.
+
+The SQLite or Durable Object control catalog owns fences, manifests, commands,
+and workflow leases. Daft Catalog, Iceberg snapshots, and object storage are the
+data plane. `StorageService` composes these distinct authorities; neither
+substitutes for the other.
 
 See [Stores](stores.md).
 
@@ -76,25 +85,33 @@ Daft DataFrames or safe descriptors. Its current audit dependency serves the
 history compatibility read; command outcome authority remains the command
 ledger/outbox.
 
-## Artifact family
+## Ingestion and artifact families
 
-The family has two explicit workflows:
+`IngestionService` supplies the world/run envelope and selects either a plain
+append or a caller-keyed conditional append. `StorageService` then owns table
+registration, schema comparison, Daft execution, and the Iceberg commit. The
+ingestion service does not know whether its rows describe files, transcripts,
+evaluations, or a future tabular source.
 
-- `ArtifactService` owns claim-backed component publication, snapshot pinning,
-  recovery, and receipts.
-- `ArtifactTableService` owns typed file/row ingestion keyed to world and run.
-
-Both use storage plus world/run coordinates. See [Artifacts](artifacts.md).
+`ArtifactService` is the one file-specialized workflow. It scans declared
+sources, persists content-addressed objects, writes typed media metadata, and
+publishes the common artifact index last. It composes `IngestionService`; it
+does not add a claim, lease, receipt, or reconciliation state machine. See
+[Artifacts](artifacts.md).
 
 ## Evaluation and research families
 
-`EvaluationService` reads through `iQueryService`, pins a subject through
-`iArtifactService`, executes caller-provided graders, validates typed outcomes,
-and publishes one durable receipt.
+`EvaluationService` pins persisted world state through storage/query authority,
+executes caller-provided graders, validates typed outcomes, and appends one
+durable evaluation result through `iIngestionService`.
 
 `AutoResearchService` owns the multi-iteration rollout workflow and its durable
-research ledger. It depends on world and simulation ports; scoring remains an
-explicit callback contract.
+research ledger. It depends on world and simulation ports, and uses storage for
+bounded persisted-control reads; scoring remains an explicit callback contract.
+
+`PhysicalAIService` composes world, mutation, simulation, and evaluation ports.
+It uses storage to materialize the bounded terminal projection from which it
+builds a typed report; the report is not a second state authority.
 
 ## Commands family
 
@@ -140,8 +157,10 @@ FastAPI consumes `iCommandGateway`; the CLI remains an HTTP client.
 - world family: `src/archetype/app/world/`
 - storage family: `src/archetype/app/storage/`
 - query family: `src/archetype/app/query/`
-- artifacts: `src/archetype/app/artifacts/`
-- artifact domain contracts and schemas: `src/archetype/artifacts/`
+- ingestion envelope and append selection: `src/archetype/app/ingestion/`
+- reusable file-ingestion pipeline and scanners: `src/archetype/ingestion/`
+- file artifacts: `src/archetype/app/artifacts/`
+- artifact file contracts: `src/archetype/artifacts/`
 - evaluation: `src/archetype/app/evaluation/`
 - evaluation domain contracts and receipt schema: `src/archetype/evaluation/`
 - research: `src/archetype/app/research/`

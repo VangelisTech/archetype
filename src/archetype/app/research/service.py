@@ -52,6 +52,7 @@ from archetype.core.config import RunConfig, WorldConfig
 from archetype.research import BranchHead, Experiment, Result, Run, RunStatus
 
 if TYPE_CHECKING:
+    from archetype.app.storage.interfaces import iStorageService
     from archetype.app.world.interfaces import iSimulationService, iWorldService
 
 logger = logging.getLogger(__name__)
@@ -169,9 +170,11 @@ class AutoResearchService:
         self,
         world_service: iWorldService,
         simulation_service: iSimulationService,
+        storage_service: iStorageService,
     ) -> None:
         self._world_service = world_service
         self._simulation_service = simulation_service
+        self._storage_service = storage_service
 
     async def run(
         self,
@@ -454,16 +457,24 @@ class AutoResearchService:
         """The active Experiment row, or None when the lab has no genesis."""
         if lab.tick == 0:
             return None
-        df = await lab.query_archetype(sig=(Experiment,), ticks=[lab.tick - 1])
-        rows = df.to_pylist()
+        df = (await lab.query_archetype(sig=(Experiment,), ticks=[lab.tick - 1])).select(
+            "experiment__name",
+            "experiment__metadata_json",
+        )
+        materialized = await self._storage_service.materialize(df)
+        rows = materialized.to_pylist()
         return rows[0] if rows else None
 
     async def _read_head(self, lab) -> dict | None:
         """The latest persisted BranchHead row, or None for a fresh world."""
         if lab.tick == 0:
             return None
-        df = await lab.query_archetype(sig=(BranchHead,), ticks=[lab.tick - 1])
-        rows = df.to_pylist()
+        df = (await lab.query_archetype(sig=(BranchHead,), ticks=[lab.tick - 1])).select(
+            "entity_id",
+            "branchhead__descriptor_json",
+        )
+        materialized = await self._storage_service.materialize(df)
+        rows = materialized.to_pylist()
         return rows[0] if rows else None
 
     async def _next_iteration(self, lab, config: AutoResearchConfig) -> int:
@@ -475,7 +486,12 @@ class AutoResearchService:
         """
         if lab.tick == 0:
             return 0
-        rows = (await lab.query_archetype(sig=(Run,), ticks=[lab.tick - 1])).to_pylist()
+        frame = (await lab.query_archetype(sig=(Run,), ticks=[lab.tick - 1])).select(
+            "run__run_id",
+            "run__status",
+        )
+        materialized = await self._storage_service.materialize(frame)
+        rows = materialized.to_pylist()
         prefix = f"{config.experiment_id}:iter"
         indices: list[int] = []
         for row in rows:

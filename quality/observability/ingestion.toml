@@ -1,0 +1,17 @@
+version = 1
+owner = "ingestion"
+family = "ingestion"
+
+[[disposition]]
+operations = [
+  "interfaces.iIngestionService.append",
+  "interfaces.iIngestionService.read",
+]
+signals = ["none"]
+outcomes = ["propagated_failure", "handled_outcome"]
+authority = "The StorageService-owned Iceberg snapshot and IngestionService's returned row count or lazy world/run-scoped read remain authoritative."
+evidence = [
+  "docs/guide/artifacts.md",
+  "tests/app/test_ingestion_service.py",
+]
+rationale = "Ingestion only adds the world/run envelope and selects plain or conditional append; StorageService exposes schema or commit failures and the durable table needs no parallel signal."

@@ -18,8 +18,9 @@ Daft is lazily evaluated. DataFrames represent computations, not results.
 Calling ``.collect()`` or ``.to_pylist()`` forces the frame through Python
 memory, defeats query planning, and stops scaling at in-memory size.
 
-Every such call inside ``src/`` is a contract exception against Archetype's
-lazy execution model. This script enumerates production call sites and
+Every such reference inside ``src/`` is a contract exception against
+Archetype's lazy execution model. This includes bound callables such as
+``await blocking(frame.collect)``. This script enumerates production sites and
 gates them against ``lazy_audit.toml``. New, undocumented sites cause a
 non-zero exit; stale entries (allowlisted lines that no longer hold a
 matching call) are also surfaced so the audit stays honest under refactors.
@@ -181,17 +182,17 @@ def _scan_file(path: Path, rel: str) -> list[Site]:
     sites: list[Site] = []
     seen: set[tuple[int, str]] = set()
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+        if not isinstance(node, ast.Attribute):
             continue
-        method = node.func.attr
+        method = node.attr
         if method not in _MATERIALIZATION_METHODS:
             continue
-        method_line = node.func.end_lineno or node.lineno
+        method_line = node.end_lineno or node.lineno
         key = (method_line, method)
         if key in seen:
             continue
         seen.add(key)
-        receiver = node.func.value
+        receiver = node.value
         sanctioned = (
             method == "to_pylist"
             and method_line in batch_line_params

@@ -56,7 +56,7 @@ DEFERRED_DISPATCHED = {
 # Direct-gated operations (CommandGateway exposes an explicit method; the
 # scheduler is not their application path).
 DIRECT_ONLY = {
-    "PUBLISH_ARTIFACT",
+    "INGEST_ARTIFACTS",
     "EVALUATE",
     "CREATE_WORLD",
     "DESTROY_WORLD",

@@ -24,7 +24,8 @@ def test_top_level_excludes_internal_service_wiring():
         "WorldService",
         "SimulationService",
         "QueryService",
-        "ArtifactTableService",
+        "IngestionService",
+        "ArtifactService",
         "StorageService",
     }
     assert internal.isdisjoint(archetype.__all__)
@@ -57,11 +58,11 @@ def test_entrypoint_injects_async_runtime():
     assert seen == {"runtime_type": "ArchetypeRuntime", "open": True}
 
 
-def test_sync_runtime_forwards_artifact_bundle_configuration(tmp_path):
+def test_sync_runtime_forwards_artifact_store_configuration(tmp_path):
     config = ArtifactStoreConfig.local(tmp_path / "artifacts")
 
     with ArchetypeRuntime.sync(artifact_store=config) as runtime:
-        assert runtime._runtime._container.artifact_bundle_service.enabled
+        assert runtime._runtime._container.artifact_service._store_config == config
 
 
 def test_public_api_marker_registers():

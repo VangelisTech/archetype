@@ -13,13 +13,15 @@ Arrows below mean consumer to dependency.
 | `WorldService` | `iStorageService` |
 | `AuditLog` | `iStorageService` |
 | `QueryService` | `iStorageService`, `iAuditLog` (history compatibility) |
-| `ArtifactTableService` | `iStorageService`, `iWorldService` |
-| `ArtifactService` | `iStorageService`, `iWorldService` |
-| `EvaluationService` | `iQueryService`, `iArtifactService` |
+| `IngestionService` | `iStorageService`, `iWorldService` |
+| `ArtifactService` | `iStorageService`, `iWorldService`, `iIngestionService` |
+| `TranscriptIngestionService` | `iArtifactService`, `iIngestionService`, `iRedactionService`, `iStorageService`, `iWorldService` |
+| `EvaluationService` | `iQueryService`, `iIngestionService`, `iStorageService`, `iWorldService` |
 | `MutationService` | `iWorldService` |
-| `SimulationService` | `iWorldService`, injected callbacks |
+| `SimulationService` | `iWorldService`, `iStorageService`, injected callbacks |
+| `PhysicalAIService` | `iWorldService`, `iMutationService`, `iSimulationService`, `iEvaluationService`, `iStorageService` |
 | `CommandScheduler` | `iWorldService`, `iMutationService` |
-| `AutoResearchService` | `iWorldService`, `iSimulationService` |
+| `AutoResearchService` | `iWorldService`, `iSimulationService`, `iStorageService` |
 | `RuntimeApplication` | family ports above |
 | `CommandGateway` | `iRuntimeApplication`, `iAuditLog` |
 

@@ -37,6 +37,30 @@ method = "to_pylist"
 reason = "HTTP JSON response boundary: convert the already-collected Daft result into row dictionaries for FastAPI's JSON encoder at the terminal REST boundary."
 
 [[entries]]
+path = "src/archetype/app/storage/service.py"
+line = 429
+method = "collect"
+reason = "Central application execution boundary: StorageService admits the caller's lazy Daft plan through its shared execution gate, materializes it off the event loop, and returns the completed frame."
+
+[[entries]]
+path = "src/archetype/app/storage/service.py"
+line = 465
+method = "collect"
+reason = "Conflict-safe append boundary: StorageService materializes producer rows exactly once so optimistic Iceberg retries can reuse the same payload instead of re-running external or nondeterministic expressions."
+
+[[entries]]
+path = "src/archetype/app/storage/service.py"
+line = 517
+method = "collect"
+reason = "Conditional producer boundary: StorageService freezes the aligned candidate plan once so duplicate-key validation and optimistic Iceberg retries cannot re-run external or nondeterministic expressions."
+
+[[entries]]
+path = "src/archetype/app/storage/service.py"
+line = 544
+method = "collect"
+reason = "Conditional append boundary: StorageService materializes the anti-join after each refreshed Iceberg snapshot so a conflicting writer cannot cause a stale retry to duplicate an existing logical key."
+
+[[entries]]
 path = "src/archetype/core/aio/async_store.py"
 line = 273
 method = "collect"
@@ -68,57 +92,39 @@ reason = "Lineage metadata extract: a fork's ancestor segments (bounded by fork 
 
 [[entries]]
 path = "src/archetype/app/research/service.py"
-line = 458
+line = 465
 method = "to_pylist"
-reason = "Single-row experiment-contract extract: the persisted identity and JSON configuration digest must enter Python control flow for exact collision rejection before the service records a resumed attempt; this is an imperative lifecycle gate, not a downstream dataframe computation."
+reason = "Single-row experiment-contract extract: StorageService has already admitted and materialized the query; the persisted identity and JSON configuration digest then enter Python control flow for exact collision rejection before resume."
 
 [[entries]]
 path = "src/archetype/app/research/service.py"
-line = 466
+line = 477
 method = "to_pylist"
-reason = "Single-row loop-state extract: the latest BranchHead row must enter Python control flow for incumbent score comparison and entity-id routing of the next append; these values drive imperative orchestration, not a further dataframe computation."
+reason = "Single-row loop-state extract: StorageService has already admitted and materialized the query; the latest BranchHead then enters Python control flow for incumbent comparison and entity-id routing."
 
 [[entries]]
 path = "src/archetype/app/research/service.py"
-line = 478
+line = 494
 method = "to_pylist"
-reason = "Bounded control-plane history extract: deterministic Run ids and terminal statuses must enter Python control flow to reject active, corrupt, duplicate, or non-contiguous attempts before resume; the result chooses whether any new work may start rather than feeding a dataframe computation."
+reason = "Bounded control-plane history extract: StorageService has already admitted and materialized the query; deterministic Run ids and statuses then enter Python control flow to reject ambiguous resume state."
 
 [[entries]]
 path = "src/archetype/app/world/simulation.py"
-line = 221
+line = 228
 method = "to_pylist"
-reason = "Episode-termination boundary: the value-based 'all entities done' check is reduced in Daft to a single (n_done, n_total) row, then materialized so the all/any decision can enter Python control flow and break the run_episode loop; a Python bool cannot remain a lazy Daft expression."
+reason = "Episode-termination boundary: StorageService admits and materializes the one-row (n_done, n_total) reduction before its all/any values enter Python control flow to stop the episode loop."
 
 [[entries]]
 path = "src/archetype/app/query/service.py"
-line = 408
+line = 409
 method = "to_pylist"
-reason = "Bounded compatibility boundary: queued audit rows are already filtered and limited lazily, then materialized into the legacy list[Command] return contract used by pre-gate callers."
-
-[[entries]]
-path = "src/archetype/app/storage/iceberg.py"
-line = 75
-method = "collect"
-reason = "Storage write boundary: Daft has already committed the artifact pipeline through its native Iceberg writer; only per-output-file row counts enter Python to construct the bounded write receipt. No artifact-row payload is materialized."
-
-[[entries]]
-path = "src/archetype/app/artifacts/table_service.py"
-line = 144
-method = "collect"
-reason = "File discovery boundary: materializes only the current call's file references, source URIs, and content hashes once before deduplication so zero matched sources are distinguishable from a retry and file bytes are not rehashed. Typed artifact payload rows remain lazy through the Iceberg write."
-
-[[entries]]
-path = "src/archetype/app/artifacts/table_service.py"
-line = 167
-method = "collect"
-reason = "Processor candidate boundary: materializes the distinct, existing-key-filtered identities derived from the already materialized discovery frame so the emptiness check, processor, and identity validation reuse one candidate set. It does not reread file bytes or materialize typed artifact payload rows."
+reason = "Bounded compatibility boundary: StorageService admits and materializes already filtered, limited audit rows before conversion into the legacy list[Command] return contract."
 
 [[entries]]
 path = "src/archetype/app/world/service.py"
-line = 741
+line = 742
 method = "to_pylist"
-reason = "Resume-time entity-directory extract (issue #273 A1-resume): the latest visible row per entity — already reduced in Daft to one (entity_id, tick, is_active) row per entity via groupby-max + join — must enter Python control flow to become the entity2sig registry and next_entity_id counter that route all subsequent mutations; imperative world reconstruction at the cold-resume boundary, bounded by live entity count, not a downstream dataframe computation."
+reason = "Resume-time entity-directory extract (issue #273 A1-resume): StorageService admits and materializes the groupby-max result before bounded live-entity rows become the imperative entity2sig registry and next_entity_id counter."
 
 [[entries]]
 path = "src/archetype/physical_ai/boundary.py"
@@ -128,51 +134,9 @@ reason = "series_to_rows helper: converts each Series parameter to a Python list
 
 [[entries]]
 path = "src/archetype/app/physical_ai/service.py"
-line = 98
-method = "collect"
-reason = "physical-evaluation grading boundary: latest-tick rows from the persisted episode query become typed task/sweep reports; this is the analysis edge and nothing downstream re-enters the DAG"
-
-[[entries]]
-path = "src/archetype/app/physical_ai/service.py"
-line = 98
+line = 108
 method = "to_pylist"
-reason = "same physical-evaluation grading boundary as the collect above: terminal rows enter Python for bounded success/length aggregation into typed reports"
-
-[[entries]]
-path = "src/archetype/app/artifacts/bundle_service.py"
-line = 1321
-method = "to_pylist"
-reason = "Artifact-manifest boundary: the caller-declared, size-bounded file set has already been hashed and MIME-classified by native Daft expressions; scalar metadata must enter Python to construct validated immutable index records and the canonical bundle manifest."
-
-[[entries]]
-path = "src/archetype/app/artifacts/bundle_service.py"
-line = 1373
-method = "to_pylist"
-reason = "Object-store completion boundary: each caller-declared, size-bounded upload has executed through Daft and its returned object URI must enter Python to construct the portable manifest and deterministic artifact-index rows."
-
-[[entries]]
-path = "src/archetype/app/artifacts/bundle_service.py"
-line = 1386
-method = "to_pylist"
-reason = "Single-object upload boundary: one generated bundle-manifest byte value is uploaded through Daft and its sole destination URI must enter the durable publication receipt and control-catalog record."
-
-[[entries]]
-path = "src/archetype/app/artifacts/bundle_service.py"
-line = 1440
-method = "to_pylist"
-reason = "Existing-object metadata authorization boundary: only paths and sizes beneath one deterministic content-addressed destination enter Python so each candidate URI can pass shared redaction policy and exact-size eligibility before any remote byte read."
-
-[[entries]]
-path = "src/archetype/app/artifacts/bundle_service.py"
-line = 1473
-method = "to_pylist"
-reason = "Existing-object byte-integrity boundary: one size-eligible, metadata-approved remote candidate is read through Daft and its bytes enter Python solely to verify exact size and SHA-256 before durable reuse."
-
-[[entries]]
-path = "src/archetype/app/artifacts/bundle_service.py"
-line = 1489
-method = "to_pylist"
-reason = "Bundle-index idempotency boundary: the Iceberg query is filtered to one deterministic bundle and its bounded artifact rows must enter Python for exact conflict detection and missing-row selection before an append."
+reason = "Physical-evaluation grading boundary: StorageService admits and materializes latest-tick ledger rows before bounded success and episode-length values become typed task or sweep reports."
 
 [[entries]]
 path = "src/archetype/graph/frames.py"

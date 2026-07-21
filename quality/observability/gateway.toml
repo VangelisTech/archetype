@@ -75,9 +75,7 @@ operations = [
   "interfaces.iCommandGateway.list_processors",
   "interfaces.iCommandGateway.list_hooks",
   "interfaces.iCommandGateway.list_resources",
-  "interfaces.iCommandGateway.ingest_artifact",
-  "interfaces.iCommandGateway.ingest_files",
-  "interfaces.iCommandGateway.write_artifacts",
+  "interfaces.iCommandGateway.ingest_artifacts",
   "interfaces.iCommandGateway.query_artifacts",
   "interfaces.iCommandGateway.evaluate",
 ]

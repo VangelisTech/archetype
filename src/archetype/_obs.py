@@ -363,7 +363,7 @@ def _classify_error(error: BaseException) -> str:
         return "authorization"
     if "SecretQuarantineError" in names or "PayloadRejectedError" in names:
         return "rejected"
-    if "ConflictError" in names or "ClaimConflictError" in names:
+    if "ConflictError" in names:
         return "conflict"
     if "AvailabilityError" in names or ConnectionError in bases:
         return "unavailable"
