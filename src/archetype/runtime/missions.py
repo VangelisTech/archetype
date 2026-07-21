@@ -17,6 +17,7 @@ from archetype.missions.contracts import (
     MissionResult,
     SubmittedMission,
 )
+from archetype.missions.sandboxes import CheckpointRef, SandboxIdentity
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -77,6 +78,15 @@ class RuntimeMissions:
         max_ticks: int | None = None,
     ) -> MissionResult:
         return await self._service.run(mission, max_ticks=max_ticks)
+
+    async def restore_sandbox(
+        self,
+        mission: SubmittedMission,
+        checkpoint: CheckpointRef,
+    ) -> SandboxIdentity:
+        """Explicitly restore the mission's process-local sandbox before running."""
+
+        return await self._service.restore_sandbox(mission, checkpoint)
 
     async def close(self) -> None:
         await self._shutdown_internal(from_runtime=False)

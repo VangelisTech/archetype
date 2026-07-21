@@ -147,13 +147,23 @@ class ServiceContainer:
         # Per-tick RBAC quota resets at each tick boundary (bug B1).
         self.simulation_service.set_quota_reset(reset_tick_counters)
 
-    @staticmethod
-    def _agent_mission_service(*, config: AgentMissionConfig, **kwargs) -> MissionService:
+    def _agent_mission_service(self, *, config: AgentMissionConfig, **kwargs) -> MissionService:
         """Compose one mission-owned sandbox lifetime beneath the app workflow."""
 
         return MissionService(
             config=config,
             sandbox_service=SandboxService((config.sandbox_backend,)),
+            redact_text=lambda value, scope: (
+                self.redaction_service.redact_text(
+                    value,
+                    scope=scope,
+                ).text
+            ),
+            validate_metadata=lambda value, field: self.redaction_service.assert_safe_metadata(
+                value,
+                field=field,
+            ),
+            redaction_policy_id=self.redaction_service.policy_id,
             **kwargs,
         )
 

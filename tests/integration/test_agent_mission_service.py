@@ -18,6 +18,7 @@ from archetype.missions import (
     AgentExecution,
     AgentMissionConfig,
     AgentTask,
+    Checkpoint,
     CommandValidator,
     Commit,
     DependsOn,
@@ -36,6 +37,8 @@ from archetype.missions.sandboxes import (
     ProcessRequest,
     ProcessResult,
     SandboxCapabilities,
+    SandboxEvent,
+    SandboxEventType,
     SandboxIdentity,
     SandboxSpec,
     SandboxStatus,
@@ -154,6 +157,74 @@ class _MissionDriver:
             result.stdout,
             result.stderr,
             session_id=f"session-{request.task_name}",
+        )
+
+
+class _CheckpointSession(_LocalSession):
+    def __init__(self, spec: SandboxSpec, *, fail: bool) -> None:
+        super().__init__(spec)
+        self.fail = fail
+        self.checkpoints = 0
+
+    @property
+    def capabilities(self) -> SandboxCapabilities:
+        return SandboxCapabilities(checkpoints=True, secret_names=("github",))
+
+    async def checkpoint(self) -> CheckpointRef:
+        self.checkpoints += 1
+        if self.fail:
+            raise RuntimeError("provider snapshot unavailable")
+        return CheckpointRef(
+            "local",
+            f"checkpoint-{self.checkpoints}",
+            f"local-checkpoint://{self.checkpoints}",
+            self.checkpoints,
+            environment=self.spec.environment,
+            source_sandbox_id=self.identity.sandbox_id,
+            owner_id=self.spec.metadata_dict().get("mission", ""),
+        )
+
+
+class _CheckpointBackend(_LocalBackend):
+    def __init__(self, *, fail: bool) -> None:
+        super().__init__()
+        self.fail = fail
+        self.restores = 0
+
+    async def create(self, spec: SandboxSpec) -> _CheckpointSession:
+        self.creates += 1
+        session = _CheckpointSession(spec, fail=self.fail)
+        self.session = session
+        return session
+
+    async def restore(
+        self,
+        spec: SandboxSpec,
+        checkpoint: CheckpointRef,
+    ) -> _CheckpointSession:
+        assert checkpoint.provider == self.name
+        self.restores += 1
+        session = _CheckpointSession(spec, fail=self.fail)
+        self.session = session
+        return session
+
+
+class _SecretOutputDriver:
+    def __init__(self, workspace: Path) -> None:
+        self.workspace = workspace
+
+    async def run(self, session, request, prompt: str) -> AgentProcessObservation:
+        del request, prompt
+        result = await session.exec(
+            ProcessRequest(
+                ("sh", "-lc", "printf 'done\\n' > feature.txt"),
+                workdir=str(self.workspace),
+            )
+        )
+        return AgentProcessObservation(
+            result.returncode,
+            stdout="successful output ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            session_id="session-redaction",
         )
 
 
@@ -286,3 +357,156 @@ async def test_explicit_graph_drives_revision_bound_retry_and_downstream_readine
         )
         == result.tasks[-1].commit_shas[-1]
     )
+
+
+@pytest.mark.parametrize("checkpoint_fails", [False, True])
+@pytest.mark.asyncio
+async def test_checkpoint_is_queryable_but_never_gates_a_valid_task(
+    tmp_path: Path,
+    checkpoint_fails: bool,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    backend = _CheckpointBackend(fail=checkpoint_fails)
+    observed: list[SandboxEvent] = []
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "checkpoint-contract",
+            config=AgentMissionConfig(
+                sandbox_backend=backend,
+                sandbox_environment="local-checkpoint-test",
+                driver=_SecretOutputDriver(workspace),
+                workspace=str(workspace),
+                on_sandbox_event=observed.append,
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "checkpoint_missions"),
+                namespace=f"checkpoint_{checkpoint_fails}",
+            ),
+        ) as missions:
+            submitted = await missions.submit(
+                repository=str(remote),
+                branch=f"agent/checkpoint-{checkpoint_fails}",
+                tasks=(
+                    AgentTask(
+                        "implementation",
+                        "Create feature.txt.",
+                        (CommandValidator("focused", ("test", "-f", "feature.txt")),),
+                    ),
+                ),
+            )
+
+            result = await missions.run(submitted)
+
+            assert result.status == "succeeded"
+            assert [
+                event.sandbox.sandbox_id
+                for event in observed
+                if event.kind is SandboxEventType.READY
+            ] == ["sandbox-contract"]
+            assert SandboxEventType.PROCESS_STARTED in {event.kind for event in observed}
+            assert SandboxEventType.PROCESS_FINISHED in {event.kind for event in observed}
+            checkpoint_rows = latest(await missions.query(Checkpoint)).to_pylist()
+            checkpoint = Checkpoint.get_prefix()
+            assert len(checkpoint_rows) == 1
+            assert checkpoint_rows[0][f"{checkpoint}restorable"] is (not checkpoint_fails)
+            if checkpoint_fails:
+                assert "provider snapshot unavailable" in checkpoint_rows[0][f"{checkpoint}error"]
+            else:
+                assert checkpoint_rows[0][f"{checkpoint}environment"] == "local-checkpoint-test"
+                assert checkpoint_rows[0][f"{checkpoint}source_sandbox_id"]
+
+            task_state = TaskState.get_prefix()
+            accepted_tick = min(
+                int(row["tick"])
+                for row in (await missions.query(TaskState)).to_pylist()
+                if row[f"{task_state}status"] == "accepted"
+            )
+            checkpoint_tick = int(checkpoint_rows[0]["tick"])
+            assert checkpoint_tick > accepted_tick
+
+            execution_rows = latest(await missions.query(AgentExecution)).to_pylist()
+            execution = AgentExecution.get_prefix()
+            assert "ghp_" not in execution_rows[0][f"{execution}agent_stdout"]
+            assert "<redacted:github-token>" in execution_rows[0][f"{execution}agent_stdout"]
+            assert execution_rows[0][f"{execution}redaction_policy_id"].startswith(
+                "archetype-secret-redaction-v1:"
+            )
+            sandbox_tick = min(
+                int(row["tick"]) for row in (await missions.query(Sandbox)).to_pylist()
+            )
+            execution_tick = min(
+                int(row["tick"]) for row in (await missions.query(AgentExecution)).to_pylist()
+            )
+            assert sandbox_tick <= execution_tick
+
+            if checkpoint_fails:
+                friction_rows = latest(await missions.query(FrictionLog)).to_pylist()
+                friction = FrictionLog.get_prefix()
+                checkpoint_friction = [
+                    row for row in friction_rows if row[f"{friction}kind"] == "checkpoint"
+                ]
+                assert len(checkpoint_friction) == 1
+            else:
+                with pytest.raises(KeyError, match="FrictionLog has never been spawned"):
+                    await missions.query(FrictionLog)
+
+
+@pytest.mark.asyncio
+async def test_explicit_restore_rehydrates_before_work_without_automatic_supervision(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    backend = _CheckpointBackend(fail=False)
+    observed: list[SandboxEvent] = []
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "explicit-restore-contract",
+            config=AgentMissionConfig(
+                sandbox_backend=backend,
+                sandbox_environment="local-checkpoint-test",
+                driver=_SecretOutputDriver(workspace),
+                workspace=str(workspace),
+                on_sandbox_event=observed.append,
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "restore_missions"),
+                namespace="restore_contract",
+            ),
+        ) as missions:
+            submitted = await missions.submit(
+                repository=str(remote),
+                branch="agent/explicit-restore",
+                tasks=(
+                    AgentTask(
+                        "implementation",
+                        "Create feature.txt.",
+                        (CommandValidator("focused", ("test", "-f", "feature.txt")),),
+                    ),
+                ),
+            )
+            checkpoint = CheckpointRef(
+                "local",
+                "checkpoint-before-run",
+                "local-checkpoint://before-run",
+                1,
+                environment="local-checkpoint-test",
+                source_sandbox_id="source-before-run",
+                owner_id=str(submitted.mission_id),
+            )
+
+            identity = await missions.restore_sandbox(submitted, checkpoint)
+            result = await missions.run(submitted)
+
+            assert identity.sandbox_id == "sandbox-contract"
+            assert result.status == "succeeded"
+            assert backend.creates == 0
+            assert backend.restores == 1
+            assert [
+                event.sandbox.sandbox_id
+                for event in observed
+                if event.kind is SandboxEventType.READY
+            ] == ["sandbox-contract"]

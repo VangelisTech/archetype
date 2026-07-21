@@ -6,6 +6,7 @@ family = "missions"
 operations = [
   "interfaces.iMissionService.submit",
   "interfaces.iMissionService.run",
+  "interfaces.iMissionService.restore_sandbox",
   "interfaces.iMissionService.close",
   "interfaces.iMissionService.query",
   "interfaces.iMissionService.world_id",

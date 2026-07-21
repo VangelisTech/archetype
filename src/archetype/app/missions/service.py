@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
@@ -17,6 +19,7 @@ from archetype.core.hooks import PostTick
 from archetype.graph import GraphView
 from archetype.missions.coding_agents.contracts import (
     AgentExecutionResult,
+    TaskDispatchRequest,
 )
 from archetype.missions.coding_agents.harness import (
     CodexDriver,
@@ -25,6 +28,7 @@ from archetype.missions.coding_agents.harness import (
 )
 from archetype.missions.components import (
     AgentExecution,
+    Checkpoint,
     Commit,
     FrictionLog,
     Mission,
@@ -60,13 +64,32 @@ from archetype.missions.relations import (
     RunsIn,
 )
 from archetype.missions.sandboxes import (
+    CheckpointRef,
+    SandboxEvent,
+    SandboxEventType,
     SandboxIdentity,
     SandboxKey,
     SandboxServiceProtocol,
+    SandboxSession,
     SandboxSpec,
     SandboxStatus,
+    live_observation_paths,
 )
 from archetype.missions.transitions import AgentExecutionStatus, MissionStatus
+
+
+@dataclass(frozen=True)
+class _ExecutionEnvelope:
+    result: AgentExecutionResult
+    sandbox_status: SandboxStatus
+    session: SandboxSession | None
+
+
+@dataclass(frozen=True)
+class _CheckpointCandidate:
+    result: AgentExecutionResult
+    execution_id: int
+    session: SandboxSession
 
 
 class MissionWorld(Protocol):
@@ -106,6 +129,9 @@ class MissionService:
         name: str,
         config: AgentMissionConfig,
         sandbox_service: SandboxServiceProtocol,
+        redact_text: Callable[[str, str], str],
+        validate_metadata: Callable[[str, str], object],
+        redaction_policy_id: str,
         storage: str | Path | StorageConfig | None = None,
     ) -> None:
         view = GraphView()
@@ -128,6 +154,9 @@ class MissionService:
         self._view = view
         self._outbox = outbox
         self._sandboxes = sandbox_service
+        self._redact_text = redact_text
+        self._validate_metadata = validate_metadata
+        self._redaction_policy_id = redaction_policy_id
         self._sandbox_provider = config.sandbox_backend.name
         self._sandbox_environment = config.sandbox_environment
         self._workspace = config.workspace
@@ -138,6 +167,9 @@ class MissionService:
         self._max_ticks = config.max_ticks
         self._sandbox_entities: dict[str, tuple[int, Sandbox]] = {}
         self._mission_sandboxes: dict[int, str] = {}
+        self._checkpoint_after_dispatch = config.checkpoint_after_dispatch
+        self._on_sandbox_event = config.on_sandbox_event
+        self._observed_sandbox_ids: set[str] = set()
 
     async def submit(
         self,
@@ -209,7 +241,39 @@ class MissionService:
         return SubmittedMission(
             mission_id=mission_id,
             task_ids=tuple((task.name, task_ids[task.name]) for task in submission.tasks),
+            repository=submission.repository,
+            branch=submission.branch,
+            base_ref=submission.base_ref,
         )
+
+    async def restore_sandbox(
+        self,
+        mission: SubmittedMission,
+        checkpoint: CheckpointRef,
+    ) -> SandboxIdentity:
+        """Restore one explicit checkpoint without automatically submitting work."""
+
+        if not mission.branch:
+            raise ValueError("restoring a submitted mission requires its branch identity")
+        key = SandboxKey(f"mission:{mission.mission_id}")
+        spec = self._sandbox_spec(mission.mission_id, mission.branch)
+        previous_sandbox_id = self._mission_sandboxes.get(mission.mission_id)
+        session = await self._sandboxes.restore(key, spec, checkpoint)
+        identity = session.identity
+        if previous_sandbox_id is not None and previous_sandbox_id != identity.sandbox_id:
+            previous_entity, previous_state = self._sandbox_entities[previous_sandbox_id]
+            closed = previous_state.model_copy(update={"status": SandboxStatus.CLOSED.value})
+            await self._world.update(previous_entity, closed)
+            self._sandbox_entities[previous_sandbox_id] = (previous_entity, closed)
+        self._mission_sandboxes[mission.mission_id] = identity.sandbox_id
+        await self._ensure_sandbox_entity(
+            mission.mission_id,
+            identity,
+            status=SandboxStatus.READY,
+        )
+        self._emit_sandbox_event(SandboxEventType.READY, identity)
+        await self._world.step()
+        return identity
 
     async def run(
         self,
@@ -223,14 +287,53 @@ class MissionService:
         if limit < 1:
             raise ValueError("max_ticks must be positive")
 
+        pending_checkpoints: list[tuple[int, _CheckpointCandidate]] = []
+        checkpoint_commit_pending = False
         for _ in range(limit):
             await self._world.step()
+            if checkpoint_commit_pending:
+                checkpoint_commit_pending = False
+
+            waiting: list[tuple[int, _CheckpointCandidate]] = []
+            for remaining_commits, candidate in pending_checkpoints:
+                remaining_commits -= 1
+                if remaining_commits == 0:
+                    await self._stage_checkpoint(candidate)
+                    checkpoint_commit_pending = True
+                else:
+                    waiting.append((remaining_commits, candidate))
+            pending_checkpoints = waiting
+
             requests = self._outbox.drain()
-            for result, sandbox_status in await self._execute(requests):
-                await self._stage_result(result, sandbox_status)
+            for envelope in await self._execute(requests):
+                execution_id = await self._stage_result(
+                    envelope.result,
+                    envelope.sandbox_status,
+                )
+                if (
+                    self._checkpoint_after_dispatch
+                    and envelope.session is not None
+                    and envelope.session.capabilities.checkpoints
+                ):
+                    # GraphView is previous-tick: one commit makes execution
+                    # evidence visible and the next commits the task decision.
+                    pending_checkpoints.append(
+                        (
+                            2,
+                            _CheckpointCandidate(
+                                envelope.result,
+                                execution_id,
+                                envelope.session,
+                            ),
+                        )
+                    )
 
             status = current_mission_status(self._view, mission.mission_id)
-            if status in {MissionStatus.SUCCEEDED, MissionStatus.FAILED}:
+            if (
+                status in {MissionStatus.SUCCEEDED, MissionStatus.FAILED}
+                and not pending_checkpoints
+                and not checkpoint_commit_pending
+            ):
                 await self._close_mission_sandbox(mission.mission_id)
                 await self._world.step()
                 info = await self._world.info()
@@ -270,23 +373,45 @@ class MissionService:
 
         return self._world.world_id
 
-    async def _execute(self, requests):
-        results: list[tuple[AgentExecutionResult, SandboxStatus]] = []
+    async def _execute(
+        self,
+        requests: Sequence[TaskDispatchRequest],
+    ) -> tuple[_ExecutionEnvelope, ...]:
+        results: list[_ExecutionEnvelope] = []
         for request in requests:
             key = SandboxKey(f"mission:{request.mission_id}")
-            spec = SandboxSpec(
-                provider=self._sandbox_provider,
-                environment=self._sandbox_environment,
-                workdir=self._workspace,
-                metadata=(
-                    ("mission", str(request.mission_id)),
-                    ("branch", request.branch),
-                ),
-            )
+            spec = self._sandbox_spec(request.mission_id, request.branch)
+            session: SandboxSession | None = None
             try:
                 session = await self._sandboxes.acquire(key, spec)
+                await self._ensure_sandbox_entity(
+                    request.mission_id,
+                    session.identity,
+                    status=SandboxStatus.READY,
+                )
+                self._emit_sandbox_event(SandboxEventType.READY, session.identity)
+                self._emit_sandbox_event(
+                    SandboxEventType.PROCESS_STARTED,
+                    session.identity,
+                    operation="coding-agent",
+                )
                 result = await self._harness.execute(session, request)
                 sandbox_status = await session.status()
+                self._emit_sandbox_event(
+                    SandboxEventType.PROCESS_FINISHED,
+                    session.identity,
+                    operation="coding-agent",
+                    returncode=result.agent_returncode,
+                )
+                if session.capabilities.live_output:
+                    trace_path = live_observation_paths(session.capabilities.observation_directory)[
+                        "stdout"
+                    ]
+                    trace_uri = (
+                        f"{result.sandbox.provider}-sandbox://"
+                        f"{result.sandbox.sandbox_id}{trace_path}"
+                    )
+                    result = replace(result, trace_uri=trace_uri)
             except Exception as exc:
                 sandbox_status = SandboxStatus.ERRORED
                 result = AgentExecutionResult(
@@ -307,32 +432,39 @@ class MissionService:
                     final_revision="",
                     error=f"{type(exc).__name__}: {exc}",
                 )
-            results.append((result, sandbox_status))
+            results.append(_ExecutionEnvelope(result, sandbox_status, session))
         return tuple(results)
 
     async def _stage_result(
         self,
         result: AgentExecutionResult,
         sandbox_status: SandboxStatus,
-    ) -> None:
+    ) -> int:
         retained_sandbox = self._sandbox_entities.get(result.sandbox.sandbox_id)
         if retained_sandbox is None:
-            sandbox_state = Sandbox(
-                provider=result.sandbox.provider,
-                sandbox_id=result.sandbox.sandbox_id,
-                environment=result.sandbox.environment,
-                worktree=result.worktree,
-                status=sandbox_status.value,
+            sandbox_entity = await self._ensure_sandbox_entity(
+                result.mission_id,
+                result.sandbox,
+                status=sandbox_status,
                 error=result.error if sandbox_status is SandboxStatus.ERRORED else "",
             )
-            sandbox_entity = await self._world.spawn(sandbox_state)
-            self._sandbox_entities[result.sandbox.sandbox_id] = (
-                sandbox_entity,
-                sandbox_state,
-            )
-            self._mission_sandboxes[result.mission_id] = result.sandbox.sandbox_id
         else:
-            sandbox_entity, _ = retained_sandbox
+            sandbox_entity, sandbox_state = retained_sandbox
+            updated = sandbox_state.model_copy(
+                update={
+                    "status": sandbox_status.value,
+                    "error": self._redact(
+                        result.error if sandbox_status is SandboxStatus.ERRORED else "",
+                        scope=f"mission:{result.mission_id}:sandbox-error",
+                    ),
+                }
+            )
+            if updated != sandbox_state:
+                await self._world.update(sandbox_entity, updated)
+                self._sandbox_entities[result.sandbox.sandbox_id] = (
+                    sandbox_entity,
+                    updated,
+                )
 
         execution_id = await self._world.spawn(
             AgentExecution(
@@ -343,9 +475,25 @@ class MissionService:
                 sandbox_id=result.sandbox.sandbox_id,
                 agent_session_id=result.agent_session_id,
                 agent_returncode=result.agent_returncode,
+                agent_stdout=self._redact(
+                    result.agent_stdout,
+                    scope=f"mission:{result.mission_id}:agent-stdout",
+                ),
+                agent_stderr=self._redact(
+                    result.agent_stderr,
+                    scope=f"mission:{result.mission_id}:agent-stderr",
+                ),
+                trace_uri=self._safe_metadata(
+                    result.trace_uri,
+                    field="AgentExecution.trace_uri",
+                ),
+                redaction_policy_id=self._redaction_policy_id,
                 starting_revision=result.starting_revision,
                 final_revision=result.final_revision,
-                error=result.error,
+                error=self._redact(
+                    result.error,
+                    scope=f"mission:{result.mission_id}:execution-error",
+                ),
             )
         )
         await self._world.spawn(Executes(source=execution_id, target=result.task_id))
@@ -362,8 +510,14 @@ class MissionService:
                     revision=observed.revision,
                     expected_returncode=observed.expected_returncode,
                     actual_returncode=observed.actual_returncode,
-                    stdout=observed.stdout,
-                    stderr=observed.stderr,
+                    stdout=self._redact(
+                        observed.stdout,
+                        scope=f"mission:{result.mission_id}:validator-stdout",
+                    ),
+                    stderr=self._redact(
+                        observed.stderr,
+                        scope=f"mission:{result.mission_id}:validator-stderr",
+                    ),
                 )
             )
             await self._world.spawn(ProducedBy(source=output_id, target=execution_id))
@@ -388,10 +542,99 @@ class MissionService:
                     execution_id=execution_id,
                     dispatch_id=result.dispatch_id,
                     kind=observed.kind,
-                    message=observed.message,
+                    message=self._redact(
+                        observed.message,
+                        scope=f"mission:{result.mission_id}:friction",
+                    ),
                 )
             )
             await self._world.spawn(ProducedBy(source=output_id, target=execution_id))
+        return execution_id
+
+    async def _stage_checkpoint(self, candidate: _CheckpointCandidate) -> None:
+        result = candidate.result
+        identity = candidate.session.identity
+        self._emit_sandbox_event(SandboxEventType.CHECKPOINT_STARTED, identity)
+        checkpoint: CheckpointRef | None = None
+        checkpoint_error = ""
+        try:
+            checkpoint = await candidate.session.checkpoint()
+        except Exception as exc:
+            checkpoint_error = self._redact(
+                f"{type(exc).__name__}: {exc}",
+                scope=f"mission:{result.mission_id}:checkpoint-error",
+            )
+            self._emit_sandbox_event(
+                SandboxEventType.CHECKPOINT_FAILED,
+                identity,
+                message=checkpoint_error,
+            )
+            friction_id = await self._world.spawn(
+                FrictionLog(
+                    task_id=result.task_id,
+                    execution_id=candidate.execution_id,
+                    dispatch_id=result.dispatch_id,
+                    kind="checkpoint",
+                    message=checkpoint_error,
+                )
+            )
+            await self._world.spawn(ProducedBy(source=friction_id, target=candidate.execution_id))
+        else:
+            self._emit_sandbox_event(
+                SandboxEventType.CHECKPOINT_FINISHED,
+                identity,
+                checkpoint_uri=checkpoint.uri,
+            )
+        output_id = await self._world.spawn(
+            Checkpoint(
+                task_id=result.task_id,
+                execution_id=candidate.execution_id,
+                dispatch_id=result.dispatch_id,
+                provider=checkpoint.provider if checkpoint is not None else identity.provider,
+                checkpoint_id=checkpoint.checkpoint_id if checkpoint is not None else "",
+                uri=checkpoint.uri if checkpoint is not None else "",
+                created_at_ms=checkpoint.created_at_ms if checkpoint is not None else 0,
+                environment=checkpoint.environment if checkpoint is not None else "",
+                source_sandbox_id=(
+                    checkpoint.source_sandbox_id if checkpoint is not None else identity.sandbox_id
+                ),
+                owner_id=checkpoint.owner_id if checkpoint is not None else "",
+                locality=checkpoint.locality.value if checkpoint is not None else "",
+                expires_at_ms=(
+                    checkpoint.expires_at_ms
+                    if checkpoint is not None and checkpoint.expires_at_ms is not None
+                    else 0
+                ),
+                integrity=checkpoint.integrity if checkpoint is not None else "",
+                restorable=checkpoint.restorable if checkpoint is not None else False,
+                error=checkpoint_error,
+            )
+        )
+        await self._world.spawn(ProducedBy(source=output_id, target=candidate.execution_id))
+
+    async def _ensure_sandbox_entity(
+        self,
+        mission_id: int,
+        identity: SandboxIdentity,
+        *,
+        status: SandboxStatus,
+        error: str = "",
+    ) -> int:
+        retained = self._sandbox_entities.get(identity.sandbox_id)
+        if retained is not None:
+            return retained[0]
+        sandbox_state = Sandbox(
+            provider=identity.provider,
+            sandbox_id=identity.sandbox_id,
+            environment=identity.environment,
+            worktree=self._workspace,
+            status=status.value,
+            error=self._redact(error, scope=f"mission:{mission_id}:sandbox-error"),
+        )
+        entity_id = await self._world.spawn(sandbox_state)
+        self._sandbox_entities[identity.sandbox_id] = (entity_id, sandbox_state)
+        self._mission_sandboxes[mission_id] = identity.sandbox_id
+        return entity_id
 
     async def _close_mission_sandbox(self, mission_id: int) -> None:
         await self._sandboxes.close(SandboxKey(f"mission:{mission_id}"))
@@ -403,6 +646,59 @@ class MissionService:
             entity_id,
             sandbox_state.model_copy(update={"status": SandboxStatus.CLOSED.value}),
         )
+
+    def _redact(self, value: str, *, scope: str) -> str:
+        if not value:
+            return ""
+        return self._redact_text(value, scope)
+
+    def _safe_metadata(self, value: str, *, field: str) -> str:
+        if value:
+            self._validate_metadata(value, field)
+        return value
+
+    def _sandbox_spec(self, mission_id: int, branch: str) -> SandboxSpec:
+        return SandboxSpec(
+            provider=self._sandbox_provider,
+            environment=self._sandbox_environment,
+            workdir=self._workspace,
+            metadata=(
+                ("mission", str(mission_id)),
+                ("branch", branch),
+            ),
+        )
+
+    def _emit_sandbox_event(
+        self,
+        kind: SandboxEventType,
+        identity: SandboxIdentity,
+        *,
+        operation: str = "",
+        returncode: int | None = None,
+        checkpoint_uri: str = "",
+        message: str = "",
+    ) -> None:
+        if kind is SandboxEventType.READY and identity.sandbox_id in self._observed_sandbox_ids:
+            return
+        if kind is SandboxEventType.READY:
+            self._observed_sandbox_ids.add(identity.sandbox_id)
+        if self._on_sandbox_event is None:
+            return
+        try:
+            self._on_sandbox_event(
+                SandboxEvent(
+                    kind=kind,
+                    sandbox=identity,
+                    timestamp_ms=int(time.time() * 1000),
+                    operation=operation,
+                    returncode=returncode,
+                    checkpoint_uri=checkpoint_uri,
+                    message=message,
+                )
+            )
+        except Exception:
+            # Observers are UI/operations consumers, never task authority.
+            return
 
 
 __all__ = ["MissionService", "MissionWorld"]
