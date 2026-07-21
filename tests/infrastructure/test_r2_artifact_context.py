@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -16,7 +18,7 @@ from daft.io import IOConfig, S3Config
 from daft.session import Session
 from pyarrow.fs import S3FileSystem
 from pyiceberg.catalog.sql import SqlCatalog
-from uuid_utils import uuid7
+from uuid_utils import UUID, uuid7
 
 from archetype.app.container import ServiceContainer
 from archetype.app.storage.service import StorageService
@@ -26,6 +28,7 @@ from archetype.ingestion import (
     ARTIFACT_AUDIO,
     ARTIFACT_DIFF,
     ARTIFACT_FILES,
+    ARTIFACT_IMAGES,
     ARTIFACT_PDF,
     ARTIFACT_TEXT,
     ARTIFACT_VIDEO,
@@ -43,6 +46,9 @@ _REQUIRED = (
     BUCKET,
 )
 _HF = "hf://datasets/Eventual-Inc/sample-files"
+_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+XfBvAAAAAElFTkSuQmCC"
+)
 
 pytestmark = [
     pytest.mark.contract("ingestion.catalog.cold_roundtrip"),
@@ -121,6 +127,7 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
     markdown = tmp_path / "mission.md"
     code = tmp_path / "pipeline.py"
     patch = tmp_path / "change.patch"
+    image = tmp_path / "pixel.png"
     transcript = tmp_path / "dogfood-project" / "session.jsonl"
     transcript.parent.mkdir()
     markdown.write_text("# Task\nAssess the multimodal artifact ingestion evidence.\n")
@@ -134,6 +141,7 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
         "+    # preserve artifact context\n"
         "     return path\n"
     )
+    image.write_bytes(_PNG)
     transcript.write_text(
         "\n".join(
             [
@@ -219,10 +227,11 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
                 ArtifactSource(source_uri=str(markdown), logical_root="context"),
                 ArtifactSource(source_uri=str(code), logical_root="context"),
                 ArtifactSource(source_uri=str(patch), logical_root="context"),
+                ArtifactSource(source_uri=str(image), logical_root="context"),
             ],
         )
 
-        assert len(references) == 7
+        assert len(references) == 8
         assert all(reference.uri.startswith(object_root) for reference in references)
         transcript_result = await container.transcript_ingestion_service.ingest(
             str(world.world_id),
@@ -260,6 +269,12 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
                 "logical_path",
                 "source_uri",
                 "object_uri",
+                "ingested_at",
+                "size_bytes",
+                "mime_type",
+                "media_family",
+                "sha256",
+                "xxhash3_64",
             )
             .to_pylist()
         )
@@ -272,6 +287,26 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
         assert all(row["run_id"] == run_id for row in common_rows)
         assert all(str(row["object_uri"]).startswith(object_root) for row in common_rows)
         assert any(str(row["source_uri"]).startswith("hf://") for row in common_rows)
+        for row in common_rows:
+            artifact_id = UUID(row["artifact_id"])
+            assert artifact_id.version == 7
+            assert row["ingested_at"] == datetime.fromtimestamp(
+                artifact_id.timestamp / 1000,
+                tz=UTC,
+            )
+            assert row["size_bytes"] > 0
+            assert len(row["sha256"]) == 64
+            assert len(row["xxhash3_64"]) == 16
+
+        image_rows = (
+            (await cold.ingestion_service.read(world_id, ARTIFACT_IMAGES, storage_config=storage))
+            .select("artifact_id", "width", "height", "format", "mode")
+            .to_pylist()
+        )
+        (image_row,) = image_rows
+        assert (image_row["width"], image_row["height"]) == (1, 1)
+        assert (image_row["format"], image_row["mode"]) == ("PNG", "RGBA")
+        assert common_by_id[image_row["artifact_id"]]["logical_path"] == "context/pixel.png"
 
         audio_rows = (
             (await cold.ingestion_service.read(world_id, ARTIFACT_AUDIO, storage_config=storage))
@@ -331,6 +366,9 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
         (diff,) = diff_rows
         assert (diff["file_count"], diff["hunk_count"], diff["additions"]) == (1, 1, 1)
         assert common_by_id[diff["artifact_id"]]["logical_path"] == "context/change.patch"
+        patch_common = common_by_id[diff["artifact_id"]]
+        assert patch_common["mime_type"] == "application/octet-stream"
+        assert patch_common["media_family"] == "text"
 
         transcript_rows = (
             (await cold.application.query_transcript_rows(world_id, storage_config=storage))
@@ -352,6 +390,7 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
 
         cold_counts = {
             ARTIFACT_FILES: len(common_rows),
+            ARTIFACT_IMAGES: len(image_rows),
             ARTIFACT_AUDIO: len(audio_rows),
             ARTIFACT_VIDEO: len(video_rows),
             ARTIFACT_PDF: len(pdf_rows),
@@ -360,7 +399,8 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
             CLAUDE_TRANSCRIPT_TABLE: len(transcript_rows),
         }
         assert cold_counts == {
-            "artifact_files": 8,
+            "artifact_files": 9,
+            "artifact_images": 1,
             "artifact_audio": 1,
             "artifact_video": 1,
             "artifact_pdf": 1,
