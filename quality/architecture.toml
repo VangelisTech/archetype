@@ -297,9 +297,7 @@ allowed_interfaces = [
   "archetype.app.storage.interfaces.iStorageService",
   "archetype.app.world.interfaces.iWorldService",
 ]
-allowed_app = [
-  "archetype.app.artifacts.pipeline",
-]
+allowed_app = []
 
 [[module_rule]]
 module = "archetype.app.redaction.service"

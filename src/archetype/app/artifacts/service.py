@@ -6,33 +6,84 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
+from glob import has_magic
+from pathlib import Path
 
-from daft import DataFrame, col, lit
-from daft.functions import file as daft_file
+import daft
+from daft import DataFrame, lit
 from uuid_utils import UUID
 
 from archetype._storage_uri import local_storage_path
-from archetype.app.artifacts.pipeline import SourcePlan, persist_objects, scan_sources
 from archetype.app.ingestion.interfaces import iIngestionService
 from archetype.app.storage.interfaces import iStorageService
 from archetype.app.world.interfaces import iWorldService
 from archetype.artifacts.contracts import ArtifactRef, ArtifactSource, ArtifactStoreConfig
 from archetype.core.config import StorageBackend, StorageConfig
-from archetype.ingestion.audio import ARTIFACT_AUDIO, audio_index
-from archetype.ingestion.diffs import ARTIFACT_DIFF, diff_index
-from archetype.ingestion.documents import ARTIFACT_PDF, pdf_index
-from archetype.ingestion.files import ARTIFACT_FILES, common_index
-from archetype.ingestion.images import ARTIFACT_IMAGES, image_index
-from archetype.ingestion.text import ARTIFACT_TEXT, text_index
-from archetype.ingestion.video import ARTIFACT_VIDEO, video_index
-
-_MEDIA_INDEXES = (
-    ("audio", ARTIFACT_AUDIO, audio_index),
-    ("image", ARTIFACT_IMAGES, image_index),
-    ("pdf", ARTIFACT_PDF, pdf_index),
-    ("text", ARTIFACT_TEXT, text_index),
-    ("video", ARTIFACT_VIDEO, video_index),
+from archetype.ingestion.pipeline import (
+    ARTIFACT_FILES,
+    FileIngestionPipeline,
 )
+
+
+@dataclass(frozen=True)
+class SourcePlan:
+    """Resolved application source policy for one declared artifact."""
+
+    index: int
+    source: ArtifactSource
+    path: str
+    source_root: str
+
+
+def plan_source(index: int, source: ArtifactSource) -> SourcePlan:
+    """Resolve local directory and glob semantics without content I/O."""
+
+    local = local_storage_path(source.source_uri)
+    if local is None:
+        path = source.source_uri.rstrip("/") + "/**/*" if source.recursive else source.source_uri
+        return SourcePlan(index, source, path, source.source_uri)
+
+    if not has_magic(source.source_uri) and local.exists():
+        if local.is_dir():
+            if not source.recursive:
+                raise IsADirectoryError(
+                    f"artifact source is a directory but recursive=False: {local}"
+                )
+            return SourcePlan(index, source, str(local / "**/*"), str(local))
+        if source.recursive:
+            raise NotADirectoryError(f"artifact source is a file but recursive=True: {local}")
+        return SourcePlan(index, source, str(local), str(local.parent))
+
+    root = source.source_uri
+    if has_magic(root):
+        wildcard = min(
+            position
+            for position in (root.find("*"), root.find("?"), root.find("["))
+            if position >= 0
+        )
+        prefix = root[:wildcard]
+        root = str(Path(prefix) if prefix.endswith("/") else Path(prefix).parent)
+    return SourcePlan(index, source, source.source_uri, root)
+
+
+def scan_sources(
+    sources: tuple[ArtifactSource, ...],
+    pipeline: FileIngestionPipeline,
+) -> tuple[DataFrame, tuple[SourcePlan, ...]]:
+    """Compose declared sources into one uniformly typed lazy scan."""
+
+    plans = tuple(plan_source(index, source) for index, source in enumerate(sources))
+    frames = []
+    for plan in plans:
+        frame = pipeline.scan(
+            plan.path,
+            source_root=plan.source_root,
+            logical_root=plan.source.logical_root,
+            logical_path=plan.source.logical_path,
+        ).with_column("_source_index", lit(plan.index))
+        frames.append(frame)
+    return daft.concat(frames), plans
 
 
 class ArtifactService:
@@ -68,7 +119,16 @@ class ArtifactService:
         declared = self._normalize_sources(sources)
         wid, storage, tick = await self._world_context(world_id, storage_config)
         config = self._effective_store_config(storage)
-        discovered, plans = scan_sources(declared, io_config=storage.io_config)
+        object_uri = self._object_root(storage, config)
+        local_object_root = local_storage_path(object_uri)
+        pipeline = FileIngestionPipeline(
+            io_config=config.io_config,
+            object_uri=object_uri,
+            local_object_root=(str(local_object_root) if local_object_root is not None else None),
+            max_artifact_bytes=config.max_artifact_bytes,
+            max_connections=config.max_connections,
+        )
+        discovered, plans = scan_sources(declared, pipeline)
 
         # Materialize UUIDv7 and both hashes exactly once before multiple media
         # indexes consume the frame. Rebuilding this lazy node would assign a
@@ -78,47 +138,34 @@ class ArtifactService:
         if discovered.count_rows() == 0:
             return ()
 
-        object_uri = self._object_root(storage, config)
         stored = await self._storage_service.materialize(
-            persist_objects(
-                discovered.with_column("tick", lit(tick)),
-                object_uri=object_uri,
-                config=config,
-            )
+            pipeline.persist(discovered.with_column("tick", lit(tick)))
         )
 
         # Specialized parsers must read the durable object, not reopen the
         # acquisition URI. Remote sources may be slow, mutable, or disappear
         # after the content-addressed copy completes.
-        indexed = stored.with_column(
-            "file",
-            daft_file(col("object_uri"), io_config=config.io_config),
-        )
+        indexed = pipeline.reopen(stored)
 
         # Typed extensions are not visibility roots. A failure here leaves no
         # common row for public readers to observe.
         stored_values = stored.to_pydict()
         present_families = set(stored_values["media_family"])
-        for family, table, project in _MEDIA_INDEXES:
-            if family not in present_families:
-                continue
+        logical_paths = stored_values["logical_path"]
+        has_diff = any(str(path).lower().endswith((".diff", ".patch")) for path in logical_paths)
+        for table, index in pipeline.specialized_indexes(
+            indexed,
+            media_families=present_families,
+            include_diff=has_diff,
+        ):
             await self._ingestion.append(
                 wid,
                 table,
-                project(indexed),
+                index,
                 storage_config=storage,
             )
 
-        logical_paths = stored_values["logical_path"]
-        if any(str(path).lower().endswith((".diff", ".patch")) for path in logical_paths):
-            await self._ingestion.append(
-                wid,
-                ARTIFACT_DIFF,
-                diff_index(indexed),
-                storage_config=storage,
-            )
-
-        common = common_index(stored)
+        common = pipeline.common_index(stored)
         await self._ingestion.append(
             wid,
             ARTIFACT_FILES,

@@ -15,8 +15,7 @@ import xxhash
 from pypdf import PdfWriter
 from uuid_utils import UUID
 
-import archetype.app.artifacts.service as artifact_service_module
-from archetype.app.artifacts.pipeline import plan_source
+from archetype.app.artifacts.service import plan_source
 from archetype.app.container import ServiceContainer
 from archetype.artifacts.contracts import ArtifactSource, ArtifactStoreConfig
 from archetype.core.config import StorageBackend, StorageConfig, WorldConfig
@@ -24,12 +23,13 @@ from archetype.ingestion import (
     ARTIFACT_AUDIO,
     ARTIFACT_DIFF,
     ARTIFACT_FILES,
+    ARTIFACT_IMAGES,
     ARTIFACT_PDF,
     ARTIFACT_TEXT,
     ARTIFACT_VIDEO,
+    FileIngestionPipeline,
+    logical_path_for,
 )
-from archetype.ingestion.files import logical_path_for
-from archetype.ingestion.images import ARTIFACT_IMAGES
 
 _PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+XfBvAAAAAElFTkSuQmCC"
@@ -396,7 +396,7 @@ async def test_mixed_context_pack_runs_every_concrete_index(tmp_path):
             await container.ingestion_service.read(str(world.world_id), ARTIFACT_FILES)
         ).to_pylist()
         patch_row = next(row for row in common if row["logical_path"].endswith(".patch"))
-        assert patch_row["mime_type"] == "text/x-diff"
+        assert patch_row["mime_type"] == "application/octet-stream"
         assert patch_row["media_family"] == "text"
     finally:
         await container.shutdown()
@@ -407,14 +407,14 @@ async def test_mixed_context_pack_runs_every_concrete_index(tmp_path):
 async def test_media_metadata_reads_staged_object_not_acquisition_source(tmp_path, monkeypatch):
     source = tmp_path / "ephemeral.wav"
     _write_audio(source)
-    real_persist = artifact_service_module.persist_objects
+    real_persist = FileIngestionPipeline.persist
 
-    def persist_then_remove(*args, **kwargs):
-        staged = real_persist(*args, **kwargs).collect(num_preview_rows=0)
+    def persist_then_remove(pipeline, *args, **kwargs):
+        staged = real_persist(pipeline, *args, **kwargs).collect(num_preview_rows=0)
         source.unlink()
         return staged
 
-    monkeypatch.setattr(artifact_service_module, "persist_objects", persist_then_remove)
+    monkeypatch.setattr(FileIngestionPipeline, "persist", persist_then_remove)
     container = ServiceContainer(
         artifact_store_config=ArtifactStoreConfig.local(tmp_path / "artifact-store")
     )

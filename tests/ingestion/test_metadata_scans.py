@@ -13,39 +13,33 @@ import pytest
 import xxhash
 from uuid_utils import UUID, uuid7
 
-from archetype.ingestion.diffs import scan_diff_metadata
-from archetype.ingestion.files import (
-    detect_mime_type,
+from archetype.ingestion import (
+    FileIngestionPipeline,
     hash_file,
     ingestion_time_for,
     media_family_for,
+    scan_diff_metadata,
+    scan_text_metadata,
 )
-from archetype.ingestion.text import scan_text_metadata
 
 
 def test_file_classification_and_hashing_are_deterministic() -> None:
-    assert detect_mime_type("change.patch", "application/octet-stream") == "text/x-diff"
-    assert detect_mime_type("image.bin", "image/png") == "image/png"
-    assert detect_mime_type("context.json", "application/octet-stream") == "application/json"
-    assert (
-        detect_mime_type("context.unknown", "application/octet-stream")
-        == "application/octet-stream"
-    )
-
-    expected_families = {
-        "application/pdf": "pdf",
-        "image/png": "image",
-        "audio/wav": "audio",
-        "video/mp4": "video",
-        "text/markdown": "text",
-        "application/json": "text",
-        "application/x-ndjson": "text",
-        "application/xml": "text",
-        "application/octet-stream": "binary",
-    }
-    assert {
-        mime_type: media_family_for(mime_type) for mime_type in expected_families
-    } == expected_families
+    expected_families = [
+        ("application/pdf", "paper.pdf", "pdf"),
+        ("image/png", "image.bin", "image"),
+        ("audio/wav", "audio.bin", "audio"),
+        ("video/mp4", "video.bin", "video"),
+        ("text/markdown", "brief.md", "text"),
+        ("application/json", "context.json", "text"),
+        ("application/x-ndjson", "context.jsonl", "text"),
+        ("application/xml", "context.xml", "text"),
+        ("application/octet-stream", "change.patch", "text"),
+        ("application/octet-stream", "context.unknown", "binary"),
+    ]
+    assert [
+        media_family_for(mime_type, logical_path)
+        for mime_type, logical_path, _expected in expected_families
+    ] == [_expected for _mime, _path, _expected in expected_families]
 
     payload = b"one-pass artifact content"
     assert hash_file(BytesIO(payload)) == {
@@ -53,6 +47,17 @@ def test_file_classification_and_hashing_are_deterministic() -> None:
         "xxhash3_64": xxhash.xxh3_64_hexdigest(payload),
         "size_bytes": len(payload),
     }
+
+
+def test_pipeline_uses_daft_file_mime_type_directly(tmp_path) -> None:
+    patch = tmp_path / "change.patch"
+    patch.write_text("+line\n")
+
+    row = (
+        FileIngestionPipeline().scan(str(patch)).select("mime_type", "media_family").to_pylist()[0]
+    )
+
+    assert row == {"mime_type": "application/octet-stream", "media_family": "text"}
 
 
 def test_ingestion_time_requires_uuidv7() -> None:
