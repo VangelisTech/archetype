@@ -14,7 +14,12 @@ from archetype.core.config import StorageConfig
 
 @runtime_checkable
 class iIngestionService(Protocol):
-    """Register, append, and read world-scoped tables through Daft Catalog."""
+    """Envelope typed rows and select a StorageService-owned append.
+
+    This port knows world/run identity and caller-declared logical keys. Table
+    registration, schema checks, terminal Daft execution, and Iceberg retry
+    remain storage responsibilities.
+    """
 
     async def append(
         self,
@@ -24,7 +29,9 @@ class iIngestionService(Protocol):
         *,
         key_columns: tuple[str, ...] = (),
         storage_config: StorageConfig | None = None,
-    ) -> int: ...
+    ) -> int:
+        """Add the world/run envelope and append all rows or only absent keys."""
+        ...
 
     async def read(
         self,
@@ -32,4 +39,6 @@ class iIngestionService(Protocol):
         table_name: str,
         *,
         storage_config: StorageConfig | None = None,
-    ) -> DataFrame: ...
+    ) -> DataFrame:
+        """Return a lazy table read scoped to the world's current run."""
+        ...

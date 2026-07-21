@@ -65,12 +65,12 @@ iTranscriptIngestionService
 iQueryService      -> iStorageService + iAuditLog
 iWorldService      -> iStorageService
 iMutationService   -> iWorldService
-iSimulationService -> iWorldService + injected callbacks
+iSimulationService -> iWorldService + iStorageService + injected callbacks
 iCommandScheduler  -> iWorldService + iMutationService
-iResearchService   -> iWorldService + iSimulationService
+iResearchService   -> iWorldService + iSimulationService + iStorageService
 iPhysicalAIService
   -> iWorldService + iMutationService + iSimulationService
-  -> iEvaluationService
+  -> iEvaluationService + iStorageService
 iAuditLog          -> iStorageService
 
 RuntimeMissions -> iRuntimeApplication -> iMissionService
@@ -89,12 +89,12 @@ application facade.
 |---|---|---|---|
 | `iRuntimeApplication` | `RuntimeApplication` | runtime, `CommandGateway` | Actor-free canonical product operations and per-world serialization |
 | `iCommandGateway` | `CommandGateway` | FastAPI and other untrusted adapters | RBAC/quota authorization, delegation, access audit |
-| `iStorageService` | `StorageService` | world, query, ingestion, artifacts, evaluation, transcripts, audit | Store pooling, catalog/control-authority and storage-context lifetime |
+| `iStorageService` | `StorageService` | world, simulation, query, ingestion, artifacts, evaluation, transcripts, research, physical AI, audit | Store/session lifetime, control authority, terminal Daft execution, and app-table catalog/read/write/retry authority |
 | `iWorldService` | `WorldService` | mutation, simulation, commands, ingestion, artifacts, evaluation, transcripts, research, physical AI, application | Live-world lifecycle, durable discovery, coordinate lookup |
 | `iMutationService` | `MutationService` | application, commands, physical AI | Entity/component/processor mutation staging |
 | `iSimulationService` | `SimulationService` | application, research, physical AI | Step, run, episode and rollout execution |
 | `iQueryService` | `QueryService` | application, evaluation | Persisted ECS reads, signature/lineage discovery and compatibility history |
-| `iIngestionService` | `IngestionService` | artifacts, transcripts, evaluation | Register typed tables in `daft.Catalog`; add world/run identity; schema-check, deduplicate and append Iceberg rows |
+| `iIngestionService` | `IngestionService` | artifacts, transcripts, evaluation | Add world/run identity and select plain or caller-keyed conditional append through storage |
 | `iArtifactService` | `ArtifactService` | application, transcript ingestion | Discover and scan files, persist content-addressed objects, publish typed media indexes, then expose the common file index |
 | `iTranscriptIngestionService` | `TranscriptIngestionService` | application | Snapshot and redact a coding-agent transcript, ingest the sanitized file, and append normalized mission rows |
 | `iRedactionService` | `RedactionService` | transcript ingestion; future telemetry/proxy adapters | Provider-neutral pre-durability scanning, deterministic text redaction, safe receipts, and quarantine |
@@ -129,16 +129,20 @@ method and owns no world, command ledger, grader, artifact ingestion, or storage
 Live-world returns from `iWorldService` are legal only below the application
 boundary. `iMutationService` and `iSimulationService` are siblings over that
 port. Simulation imports neither commands nor gateway; the container supplies
-its drain and quota-reset callables.
+its drain and quota-reset callables. Its bounded episode-termination reduction
+is admitted through `iStorageService` before the scalar enters Python control
+flow.
 
 ### Durable workflow ports
 
 `iCommandScheduler` exposes the current combined scheduling/dispatch port over
 the control catalog. Tick publication performs terminal applied settlement.
-`iIngestionService` owns the general typed-table boundary: it registers tables
-in `daft.Catalog`, supplies the world/run envelope, checks the registered
-schema, removes already-visible logical keys, and commits an Iceberg append.
-It has no knowledge of files, media, transcripts, or graders.
+`iIngestionService` owns the general typed-ingestion policy boundary: it
+supplies the world/run envelope and selects either a plain append or a
+caller-keyed conditional append. It has no knowledge of files, media,
+transcripts, or graders. `iStorageService` owns the corresponding physical
+boundary: terminal Daft admission, `daft.Catalog` table registration, schema
+alignment, lazy table reads, Iceberg writes, and optimistic-conflict retry.
 
 `iArtifactService` specializes that primitive for files. It discovers and
 scans sources, persists immutable content-addressed objects, writes optional
@@ -202,7 +206,8 @@ See [Agent Missions V1](agent-missions.md).
 because external simulator and model resources are implementations beneath
 that capability. `iPhysicalAIService` is the app-internal workflow port. Its
 implementation composes world lifecycle, entity/processor mutation, episode
-execution, and persisted evaluation reads; it does not own those authorities.
+execution, persisted evaluation reads, and storage-admitted terminal report
+projection; it does not own those authorities.
 
 `RuntimeApplication` is the only consumer exposed to the runtime. The
 application service has no public constructor contract, accepts no gateway or
@@ -230,10 +235,10 @@ The top-level family never imports that port in return. Public classification
 is explicit and is not inferred from either side of the annotation.
 
 The artifacts family owns the supported `ArtifactSource`, `ArtifactRef`, and
-`ArtifactStoreConfig` file contracts. General table identity lives under
-`archetype.ingestion`; file/media transforms live in specialized ingestion
-modules; application authority remains under `archetype.app.ingestion` and
-`archetype.app.artifacts`. The evaluation family completed its split under
+`ArtifactStoreConfig` file contracts. `archetype.ingestion` owns one reusable
+`FileIngestionPipeline` and its pure bounded scanners; application policy and
+authority remain under `archetype.app.ingestion`, `archetype.app.artifacts`,
+and `archetype.app.storage`. The evaluation family completed its split under
 issue #557: `EvalReceipt` lives in
 `archetype.evaluation.components`, and the grading value contracts and
 identity digests live in `archetype.evaluation.contracts`. Current paths
@@ -247,8 +252,8 @@ evaluation ports.
 
 The physical-AI split completed #589: typed request/report values and pure
 optimization live under `archetype.physical_ai`, while
-`iPhysicalAIService` composes world, mutation, simulation, and evaluation
-ports under `archetype.app.physical_ai`. The root `app/models.py`
+`iPhysicalAIService` composes world, mutation, simulation, evaluation, and
+storage ports under `archetype.app.physical_ai`. The root `app/models.py`
 boundary-model split remains owned by #560.
 
 The root policy and its `quality/architecture.d/` fragments currently carry no

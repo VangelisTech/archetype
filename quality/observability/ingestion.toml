@@ -9,9 +9,9 @@ operations = [
 ]
 signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome"]
-authority = "The registered Daft Catalog table, its Iceberg snapshot, and the returned typed table version remain authoritative."
+authority = "The StorageService-owned Iceberg snapshot and IngestionService's returned row count or lazy world/run-scoped read remain authoritative."
 evidence = [
   "docs/guide/artifacts.md",
   "tests/app/test_ingestion_service.py",
 ]
-rationale = "Catalog snapshots and typed exceptions expose the complete ingestion outcome without a parallel signal."
+rationale = "Ingestion only adds the world/run envelope and selects plain or conditional append; StorageService exposes schema or commit failures and the durable table needs no parallel signal."

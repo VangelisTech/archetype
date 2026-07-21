@@ -29,6 +29,7 @@ def _storage(tmp_path) -> StorageConfig:
     )
 
 
+@pytest.mark.contract("storage.execution.single_authority")
 @pytest.mark.asyncio
 async def test_terminal_materializations_share_one_execution_lane(monkeypatch):
     service = StorageService()

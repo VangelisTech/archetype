@@ -31,12 +31,13 @@ Arrows mean consumer to dependency:
 ArchetypeRuntime -> RuntimeApplication <- CommandGateway <- REST API
                          |
                          +-> MutationService -> WorldService -> StorageService
-                         +-> SimulationService -> WorldService
+                         +-> SimulationService -> WorldService + StorageService
                          +-> QueryService -> StorageService
                          +-> IngestionService -> StorageService + WorldService
                          +-> ArtifactService -> IngestionService + StorageService + WorldService
-                         +-> EvaluationService -> QueryService + IngestionService
-                         +-> AutoResearchService -> WorldService + SimulationService
+                         +-> EvaluationService -> QueryService + IngestionService + StorageService + WorldService
+                         +-> AutoResearchService -> WorldService + SimulationService + StorageService
+                         +-> PhysicalAIService -> WorldService + MutationService + SimulationService + EvaluationService + StorageService
                          +-> CommandScheduler -> WorldService + MutationService
                          +-> AuditLog -> StorageService
 ```
@@ -49,8 +50,16 @@ imports. It also connects `CommandScheduler`'s transactional outbox to
 ## Storage family
 
 `StorageService` pools async stores and resolves local SQLite or remote control
-catalogs for a storage identity. It owns backend lifetime, not the meaning of a
-tick, command, artifact, or evaluation commit.
+catalogs for a storage identity. It is also the sole application authority for
+terminal Daft execution and for app-table registration, schema alignment,
+reads, writes, and optimistic conflict retry. It owns those physical and
+execution concerns, not the meaning of a tick, command, artifact, or evaluation
+commit.
+
+The SQLite or Durable Object control catalog owns fences, manifests, commands,
+and workflow leases. Daft Catalog, Iceberg snapshots, and object storage are the
+data plane. `StorageService` composes these distinct authorities; neither
+substitutes for the other.
 
 See [Stores](stores.md).
 
@@ -78,11 +87,11 @@ ledger/outbox.
 
 ## Ingestion and artifact families
 
-`IngestionService` is the general typed-table authority. It registers tables in
-`daft.Catalog`, supplies world/run envelope columns, enforces the registered
-schema, removes already-visible logical keys, and appends through Iceberg. It
-does not know whether its rows describe files, transcripts, evaluations, or a
-future tabular source.
+`IngestionService` supplies the world/run envelope and selects either a plain
+append or a caller-keyed conditional append. `StorageService` then owns table
+registration, schema comparison, Daft execution, and the Iceberg commit. The
+ingestion service does not know whether its rows describe files, transcripts,
+evaluations, or a future tabular source.
 
 `ArtifactService` is the one file-specialized workflow. It scans declared
 sources, persists content-addressed objects, writes typed media metadata, and
@@ -97,8 +106,12 @@ executes caller-provided graders, validates typed outcomes, and appends one
 durable evaluation result through `iIngestionService`.
 
 `AutoResearchService` owns the multi-iteration rollout workflow and its durable
-research ledger. It depends on world and simulation ports; scoring remains an
-explicit callback contract.
+research ledger. It depends on world and simulation ports, and uses storage for
+bounded persisted-control reads; scoring remains an explicit callback contract.
+
+`PhysicalAIService` composes world, mutation, simulation, and evaluation ports.
+It uses storage to materialize the bounded terminal projection from which it
+builds a typed report; the report is not a second state authority.
 
 ## Commands family
 
@@ -144,8 +157,8 @@ FastAPI consumes `iCommandGateway`; the CLI remains an HTTP client.
 - world family: `src/archetype/app/world/`
 - storage family: `src/archetype/app/storage/`
 - query family: `src/archetype/app/query/`
-- ingestion authority: `src/archetype/app/ingestion/`
-- reusable ingestion table contracts/transforms: `src/archetype/ingestion/`
+- ingestion envelope and append selection: `src/archetype/app/ingestion/`
+- reusable file-ingestion pipeline and scanners: `src/archetype/ingestion/`
 - file artifacts: `src/archetype/app/artifacts/`
 - artifact file contracts: `src/archetype/artifacts/`
 - evaluation: `src/archetype/app/evaluation/`

@@ -174,25 +174,30 @@ responsibility is strict:
 
 | Owner | Columns / concern |
 |---|---|
-| `IngestionService` | Owning `world_id` / `run_id`, registered table schema, caller-declared logical key, strict append and dedup behavior |
-| Dataset adapter | Table name and logical key; `benchmark`, `suite`, `task_key`, `episode_id`, stream/timing fields, domain payload |
+| `IngestionService` | Owning `world_id` / `run_id` envelope and plain-versus-key-conditional append selection |
+| `StorageService` | Daft execution admission, Catalog table registration and reads, typed schema checks, Iceberg append, conflict refresh and retry |
+| Dataset adapter | Stable table name and optional logical key; `benchmark`, `suite`, `task_key`, `episode_id`, stream/timing fields, domain payload |
 | Live-trial exporter | Optional source `RuntimeSlice` provenance in addition to dataset coordinates |
 
-**The IngestionService envelope is storage ownership, not dataset identity.**
+**The IngestionService envelope is application ownership, not dataset identity.**
 Its `world_id` and `run_id` scope the table view. The dataset adapter still
-declares its natural logical key. That envelope **does not replace dataset
-coordinates** and does not prove where an imported episode originally ran.
+passes its natural logical key as `key_columns` when duplicate suppression is
+required; an empty key requests a plain append. That envelope **does not
+replace dataset coordinates** and does not prove where an imported episode
+originally ran.
 
 For example, importing an external dataset creates an Archetype world/run for
 the ingestion operation. Those envelope values name the owner of the typed
 table rows, not a fictional original simulation. Conversely, exporting a live
 trial MAY persist its source `RuntimeSlice` as typed payload provenance.
 
-Typed tables fail on schema drift. Adapters MUST normalize native vocabulary
-before the `IngestionService` boundary and MUST NOT depend on silent widening.
-Large media is ingested through `ArtifactService` and referenced by
-`ArtifactRef` or `artifact_id` from domain rows rather than represented by an
-opaque filesystem path.
+Typed tables fail on schema drift at the storage boundary. Adapters MUST
+normalize native vocabulary before the `IngestionService` boundary and MUST
+NOT depend on silent widening. Large media is ingested through the one
+`ArtifactService`, whose configured `FileIngestionPipeline` publishes common
+and specialized file indexes through the same ingestion and storage path.
+Domain rows reference that evidence by `ArtifactRef` or `artifact_id` rather
+than by an opaque filesystem path.
 
 ## 6. Grading symmetry and receipts
 

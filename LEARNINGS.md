@@ -226,7 +226,9 @@ Everything must be Arrow-serializable for LanceDB storage:
 
 Use `daft.from_files` for local or remote globs. It creates lazy `daft.File`
 references; `daft.functions.file_path` preserves the canonical source URI and
-`File.open()` streams content through the configured `IOConfig`.
+`File.open()` streams content through the configured `IOConfig`. Ask
+`File.mime_type()` for Daft's built-in MIME classification; do not reintroduce
+a Python `mimetypes` fallback.
 
 ```python
 from daft import col
@@ -235,6 +237,20 @@ from daft.functions import file_path
 files = daft.from_files("s3://bucket/inputs/**/*.json", io_config=io_config)
 files = files.with_column("source_uri", file_path(col("file")))
 ```
+
+Archetype's reusable file path is intentionally cohesive:
+
+- `archetype.ingestion.pipeline.FileIngestionPipeline` keeps scan, UUIDv7
+  occurrence identity, MIME classification, content-addressed persistence,
+  durable-object reopening, and every common or media-specific Daft index in
+  one readable graph;
+- `archetype.ingestion.scanners` contains only pure bounded stream algorithms;
+- the UUIDv7 supplies both `artifact_id` and `ingested_at`;
+- SHA-256, XXH3-64, and byte size are computed in one streaming pass; and
+- nested metadata structs are unnested directly into each narrow index.
+
+Keep resize, resample, transcode, OCR, and embeddings as explicit derivative
+artifact workflows. They must not silently mutate the submitted occurrence.
 
 For weights-as-data patterns:
 
@@ -261,11 +277,20 @@ There are two distinct concepts, unfortunately both historically called "resourc
 | Concept | Module | Purpose |
 |---------|--------|---------|
 | **Resources** | `core/resources.py` | Type-safe DI container for processors |
-| **StorageService** | `app/storage/service.py` | Pools stores and resolves control catalogs |
+| **StorageService** | `app/storage/service.py` | Admits terminal Daft execution; owns app tables, store pools, and control catalogs |
 
-**StorageService** is internal infrastructure plumbing. `ServiceContainer`
-owns it and `WorldService` uses its store pool. It is never placed in a
-world's resource container.
+**StorageService** is internal application authority. `ServiceContainer` owns
+one and application services share it. It is the materialization point for
+Archetype-owned Daft plans: app code delegates terminal execution through
+`materialize`, and table producers use `read_table`, `append_table`, or
+`append_missing`. Table registration, typed schema comparison, Iceberg writes,
+and optimistic conflict retry remain beside that execution gate. It is never
+placed in a world's resource container.
+
+`IngestionService` does not duplicate those mechanics. It resolves the durable
+world/run envelope and chooses plain append or key-conditional append. File
+policy belongs to the one `ArtifactService`, which configures the reusable
+`FileIngestionPipeline` and publishes its tables through ingestion.
 
 **Resources** is the runtime DI container that passes services to processors. Each world has one.
 
@@ -368,6 +393,9 @@ This means:
    or mutable source feeds more than one downstream branch. Reassign the
    returned frame (`df = df.collect()`); reusing the original lazy frame runs
    its upstream plan again. Never materialize history or payload rows for this.
+   Within `archetype.app`, build the reduction lazily and ask
+   `StorageService.materialize()` to admit the terminal work instead of calling
+   `.collect()` directly.
 
 5. **Don't import actor patterns.** No `asyncio.gather` over collected rows. No building dicts from pylist loops and feeding them back through batch UDFs. If you find yourself doing this, you're fighting the execution model.
 
@@ -412,8 +440,9 @@ df = df.with_column("outbox__messages", agent.respond(col("agent__name"), ...))
 
 ## Lazy-Audit UDF-Boundary Exemption (Jun 2026)
 
-``scripts/check_lazy_audit.py`` gates every ``.collect()`` and
-``.to_pylist()`` call in ``src/`` against ``lazy_audit.toml``.  There is
+``scripts/check_lazy_audit.py`` gates every ``.collect`` reference (including a
+bound callable) and ``.to_pylist()`` call in ``src/`` against
+``lazy_audit.toml``. There is
 **one sanctioned exception** that does not require an allowlist entry:
 
 > ``Series.to_pylist()`` called on a *parameter* of a function decorated
@@ -448,6 +477,12 @@ Rules:
 - ``DataFrame.collect()`` anywhere → requires entry.
 - ``Series.to_pylist()`` **outside** a batch-UDF → requires entry.
 - ``collect()`` inside a batch-UDF on a DataFrame (not a parameter) → requires entry.
+
+Application code has an additional ownership rule: terminal Daft, Iceberg,
+and Catalog-table operations belong to `StorageService`. A bounded app
+`to_pylist()` conversion is legal only after awaiting
+`StorageService.materialize()`, and the conversion still needs its specific
+`lazy_audit.toml` reason.
 
 See ``lazy_audit.toml`` for the authoritative policy header and
 ``tests/scripts/test_check_lazy_audit.py`` for positive/negative coverage.
@@ -640,6 +675,9 @@ for entry in history:
     order `MESSAGE` envelopes; applications define payloads, routing, and realization
 11. **Tick-gating** for expensive operations (LLM calls, inner worlds)
 12. **Keep columns in DAG** — avoid intermediate `.collect()` breaking lazy evaluation
+13. **Route app-owned terminal Daft work through `StorageService`** — keep
+    execution admission, Catalog operations, schema checks, and Iceberg retry
+    in one authority
 
 ---
 
@@ -656,8 +694,9 @@ That live-process boundary is not the durability boundary. Persisted worlds can
 be discovered and queried from a fresh process. Mutable cold resume reconstructs
 a world from visible rows and manifests, then acquires a writer fence. The local
 SQLite control catalog coordinates processes on one host; deployments that need
-cross-host fencing use the remote control catalog. One live writer per world is
-the invariant, not one process for the whole deployment. See
+cross-host fencing use the remote Cloudflare Durable Object control catalog. One
+live writer per world is the invariant, not one process for the whole
+deployment. See
 `docs/guide/durable-discovery.md`, `docs/guide/atomic-visibility.md`, and
 `docs/guide/world-lifecycle.md` for the normative contracts.
 
@@ -670,6 +709,13 @@ the invariant, not one process for the whole deployment. See
   one live world's in-memory execution. Multi-process discovery, cold reads,
   and fenced resume are control-plane capabilities, not a replacement for
   Daft's data-plane execution model.
+- **Keep control and data durability separate.** SQLite or the remote Durable
+  Object owns small transactional control state: world records, writer fences,
+  commands, and manifests. Iceberg owns append-only data tables, atomic
+  snapshots, and optimistic multi-writer commits. An in-process Daft execution
+  gate controls local materialization pressure and ordering; it does not
+  replace Iceberg conflict detection or turn the control catalog into a wrapper
+  transaction around the data table.
 - **World lifecycle operations are direct gated calls.** `create_world`,
   `fork_world`, and `destroy_world` flow through `iCommandGateway` for RBAC and
   access audit, then delegate to `iRuntimeApplication`. `CommandScheduler`

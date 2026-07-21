@@ -43,9 +43,10 @@ archetype/
 │   │   ├── gateway/     #   CommandGateway + RBAC/auth
 │   │   ├── commands/    #   Durable scheduler/dispatcher
 │   │   ├── world/       #   Lifecycle, mutation, simulation
-│   │   ├── storage/     #   Store pool + control authority
+│   │   ├── storage/     #   Daft execution, Catalog, stores + control authority
 │   │   ├── query/       #   Persisted read path
-│   │   ├── artifacts/   #   Publication + typed ingestion
+│   │   ├── ingestion/   #   World/run envelope + append selection
+│   │   ├── artifacts/   #   File source policy + typed index publication
 │   │   ├── evaluation/  #   Grading + receipts
 │   │   ├── research/    #   Autoresearch workflows
 │   │   ├── audit/       #   Append-only projection
@@ -229,7 +230,15 @@ Roles (flat, not hierarchical):
   before implementing it.
 - Preserve the lazy Daft DAG. Prefer expressions and DataFrame transforms;
   `.collect()` or `.to_pylist()` in `src/` needs a documented
-  `lazy_audit.toml` exception at a real execution boundary.
+  `lazy_audit.toml` exception at a real execution boundary. Application-owned
+  terminal Daft work flows through `StorageService`; keep Catalog table
+  registration/read/write, schema comparison, and Iceberg retry there.
+- Keep storage planes distinct. SQLite or the remote Durable Object is the
+  transactional control authority for world records, fences, commands, and
+  manifests. Iceberg is the data authority for atomic table snapshots and
+  optimistic multi-writer commits. `IngestionService` adds the world/run
+  envelope and selects plain versus key-conditional append; it does not
+  duplicate storage execution.
 - A tick is a commit boundary: compute all archetypes before persistence, and
   do not consume staged mutations or advance the tick until durable visibility
   is published. Failed ticks must remain retryable.
@@ -292,6 +301,8 @@ change, and report the exact validation that ran. See
 | `src/archetype/app/container.py` | Service wiring |
 | `src/archetype/app/gateway/service.py` | Authorized ingress gateway |
 | `src/archetype/app/commands/service.py` | Durable scheduler and dispatcher |
+| `src/archetype/app/storage/service.py` | Daft execution and durable storage authority |
+| `src/archetype/ingestion/pipeline.py` | Cohesive reusable file-ingestion graph |
 | `src/archetype/core/aio/async_world.py` | World runtime |
 | `tests/app/test_runtime_contracts.py` | Executable runtime contracts |
 | `tests/sync/test_sync_stack_contracts.py` | Executable sync engine contracts |

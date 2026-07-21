@@ -42,14 +42,16 @@ operations = [
 ]
 signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
-authority = "Store/catalog state, fencing epochs, command and evaluation leases, transactional rows, and commit manifests remain authoritative."
+authority = "The SQLite or remote Durable Object control state, Catalog-resolved Iceberg snapshots, fencing epochs, command and evaluation leases, transactional rows, and tick manifests remain authoritative."
 evidence = [
   "docs/guide/atomic-visibility.md",
+  "docs/guide/artifacts.md",
   "docs/guide/service-protocols.md",
   "tests/app/test_atomic_visibility.py",
   "tests/app/test_remote_catalog_parity.py",
+  "tests/app/test_storage_execution.py",
 ]
-rationale = "Storage has no approved direct signal; catalog transactions and backend receipts are the durability authority."
+rationale = "StorageService centralizes terminal Daft admission, table registration, schema checks, and conflict retry; durable control transactions and Iceberg snapshots expose the result without a parallel signal."
 
 [[legacy]]
 rule = "raw_exception_logging"

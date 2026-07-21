@@ -117,7 +117,10 @@ SPEC_CASES: tuple[SpecCase, ...] = (
     SpecCase(
         spec_id="dataset-eval-ontology.3",
         source="dataset-eval-ontology.md",
-        anchors=("IngestionService envelope is storage ownership", "does not replace dataset"),
+        anchors=(
+            "IngestionService envelope is application ownership",
+            "does not prove where an imported episode",
+        ),
         task_id="spec.dataset_eval_ontology",
     ),
 )

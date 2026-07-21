@@ -18,9 +18,10 @@ Arrows below mean consumer to dependency.
 | `TranscriptIngestionService` | `iArtifactService`, `iIngestionService`, `iRedactionService`, `iStorageService`, `iWorldService` |
 | `EvaluationService` | `iQueryService`, `iIngestionService`, `iStorageService`, `iWorldService` |
 | `MutationService` | `iWorldService` |
-| `SimulationService` | `iWorldService`, injected callbacks |
+| `SimulationService` | `iWorldService`, `iStorageService`, injected callbacks |
+| `PhysicalAIService` | `iWorldService`, `iMutationService`, `iSimulationService`, `iEvaluationService`, `iStorageService` |
 | `CommandScheduler` | `iWorldService`, `iMutationService` |
-| `AutoResearchService` | `iWorldService`, `iSimulationService` |
+| `AutoResearchService` | `iWorldService`, `iSimulationService`, `iStorageService` |
 | `RuntimeApplication` | family ports above |
 | `CommandGateway` | `iRuntimeApplication`, `iAuditLog` |
 

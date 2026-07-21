@@ -22,6 +22,7 @@ def _storage(tmp_path: Path) -> StorageConfig:
     )
 
 
+@pytest.mark.contract("ingestion.envelope.append_selection")
 @pytest.mark.asyncio
 async def test_append_registers_table_in_active_daft_catalog(tmp_path):
     container = ServiceContainer()

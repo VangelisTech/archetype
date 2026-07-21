@@ -1,6 +1,6 @@
 # Storage, ingestion, and artifact execution refactor
 
-**Status:** Accepted for implementation  
+**Status:** Implemented and dogfooded; PR verification awaits the concurrent documentation rewrite
 **Date:** 2026-07-21  
 **Tracking pull request:** #619
 
@@ -23,6 +23,32 @@ mission state machine:
 This plan preserves the already-completed Mission V1, orphan-family moves,
 legacy attempt-kernel removal, artifact claim removal, and first multimodal R2
 proof.
+
+## Implementation result
+
+The implementation now matches the target dependency flow:
+
+- `StorageService` owns the reentrant application Daft lane, app-table Catalog
+  operations, schema alignment, plain and conditional append, and optimistic
+  conflict retry.
+- `IngestionService` owns only the world/run envelope and append selection.
+- one `FileIngestionPipeline` owns the visible file graph; `scanners.py` owns
+  only pure bounded stream parsing; one `ArtifactService` composes the workflow.
+- architecture enforcement rejects app-layer Daft collection, direct Iceberg
+  operations, Catalog table creation, retry ownership, and unmediated Python
+  row conversion outside storage.
+- 1,667 non-documentation source contracts pass, the static profile passes,
+  the documentation site builds, and the contract/spec eval suites pass.
+- the live Cloudflare R2 dogfood uploaded eight file occurrences plus one
+  sanitized transcript artifact, cold-opened a fresh application graph, and
+  queried all eight populated tables. Image, audio, video, PDF, Markdown, code,
+  patch/diff, and transcript rows were joined back to the common index; UUIDv7
+  timestamps, SHA-256, XXH3-64, and Daft MIME classification were verified.
+
+Automatic capture of arbitrary sandbox outputs by `MissionService` was not
+added. Mission V1 already persists the state-transition evidence it owns;
+choosing which sandbox files become artifacts remains a separate explicit
+workflow rather than hidden post-processing in the mission kernel.
 
 ## Contract card
 
@@ -304,7 +330,7 @@ reuses verified content bytes.
 9. Reconcile normative docs, contract registry, generated references, and
    teaching examples.
 10. Run focused concurrency tests, complete PR verification, cold R2 dogfood,
-    and one mission handoff from sandbox outputs through cold artifact query.
+    and the redacted transcript-to-artifact handoff through a cold query.
 
 Each step is an atomic commit and is pushed to the existing branch. The PR is
 opened and reviewed normally; it is not auto-merged manually.
@@ -322,7 +348,7 @@ opened and reviewed normally; it is not auto-merged manually.
 - World atomic-visibility and stale-writer contracts remain unchanged.
 - Transcript redaction still precedes all durability.
 - Evaluation concurrency remains one paid grader execution per identity.
-- Fresh-process local and Cloudflare R2 reads discover every durable table.
+- Fresh-application local and Cloudflare R2 reads discover every durable table.
 - Static, contract, process, integration, documentation, and R2 profiles pass.
 
 ## Explicit non-goals

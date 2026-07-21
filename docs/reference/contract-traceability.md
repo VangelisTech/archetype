@@ -13,6 +13,7 @@ machine authority; this page is its review surface.
 | `missions.environment.pinned` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 5. Sandbox and validator protocol | pytest: 3; static: 1 | `pr`, `main`, `release` |
 | `architecture.dependencies.enforced` | `app` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 11. Static enforcement | pytest: 1; static: 1; eval: 2 | `pr`, `main`, `release` |
 | `architecture.protocols.complete` | `app` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 8. Protocol policy and wiring | pytest: 1; static: 1; eval: 1 | `pr`, `main`, `release` |
+| `storage.execution.single_authority` | `storage` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — Storage execution authority | pytest: 3; static: 2 | `pr`, `main`, `release` |
 | `runtime.trust.actor_free` | `runtime` | high | [docs/guide/runtime.md](../guide/runtime.md) — R3 — Runtime is actor-free | pytest: 1; static: 1; eval: 1 | `pr`, `main`, `release` |
 | `runtime.lifecycle.single_flight_and_drain` | `runtime` | high | [docs/guide/specification.md](../guide/specification.md) — Concurrency Contract | pytest: 2; eval: 2 | `pr`, `main`, `release` |
 | `gateway.authorization.rbac` | `gateway` | high | [docs/guide/command-gate.md](../guide/command-gate.md) — 1. The gate model | pytest: 3; static: 1; eval: 5 | `pr`, `main`, `release` |
@@ -25,7 +26,7 @@ machine authority; this page is its review surface.
 | `world.mutations.compose_deterministically` | `world` | high | [docs/guide/specification.md](../guide/specification.md) — Mutation materialization | pytest: 1; eval: 4 | `pr`, `main`, `release` |
 | `query.cold_reads.correct` | `query` | high | [docs/guide/specification.md](../guide/specification.md) — QueryService | pytest: 2; eval: 3; benchmark: 1 | `pr`, `main`, `release` |
 | `storage.cache.concurrent_no_loss` | `storage` | high | [docs/guide/stores.md](../guide/stores.md) — Write-Behind Cache | pytest: 1; eval: 2; benchmark: 1 | `pr`, `main`, `release` |
-| `ingestion.catalog.typed_append` | `ingestion` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 5. Catalog and index contract | pytest: 1; static: 2 | `pr`, `main`, `release` |
+| `ingestion.envelope.append_selection` | `ingestion` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 5. Catalog and index contract | pytest: 1; static: 2 | `pr`, `main`, `release` |
 | `ingestion.catalog.cold_roundtrip` | `ingestion` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 5. Catalog and index contract | pytest: 2 | `pr`, `main`, `release` |
 | `artifacts.ingestion.occurrence_identity` | `artifacts` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 4. Occurrence and content identity | pytest: 1; eval: 1 | `pr`, `main`, `release` |
 | `artifacts.ingestion.common_visibility` | `artifacts` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 7. Visibility and failure | pytest: 1; static: 1 | `pr`, `main`, `release` |

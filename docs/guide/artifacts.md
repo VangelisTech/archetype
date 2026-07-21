@@ -11,22 +11,32 @@ The feature is split at the authority boundary:
 
 ```text
 archetype.ingestion
-  table contracts + lazy file/media DataFrame transforms
+  FileIngestionPipeline + bounded stream scanners
 
 archetype.app.ingestion
-  world/run envelope + Daft Catalog registration + Iceberg append/read
+  world/run envelope + plain/conditional append selection
 
 archetype.app.artifacts
-  source discovery + object persistence + typed index composition
+  source policy + pipeline configuration + typed index publication
+
+archetype.app.storage
+  Daft execution + Catalog table registration/read/write + Iceberg retry
 
 archetype.app.missions
   transcript-specific redaction, parsing, and normalized row ingestion
 ```
 
-`archetype.ingestion` is reusable family code. It can inspect and project a
-DataFrame, but it cannot choose a catalog, namespace, world, or run.
-`IngestionService` owns those durable application decisions and is the only
-layer in this stack that registers tables in `daft.Catalog`.
+`archetype.ingestion` is reusable family code. Its cohesive
+`FileIngestionPipeline` keeps the lazy Daft graph for scan, persistence,
+reopening, and every common or specialized index together. Only pure bounded
+stream algorithms live separately in `scanners.py`. Neither module can choose
+a catalog, namespace, world, or run.
+
+`IngestionService` adds the application-owned world/run envelope and selects a
+plain or key-conditional append. `StorageService` is the single authority that
+admits terminal Daft execution, registers and resolves tables in
+`daft.Catalog`, compares schemas, reads and writes Iceberg, and retries
+optimistic commit conflicts.
 
 `ArtifactService` is the one file-artifact service. It composes general
 ingestion; image, audio, video, PDF, and text handling are not separate
@@ -111,18 +121,33 @@ one object URI. Analysis can group by `sha256` for content identity or by
 
 ## 5. Catalog and index contract
 
-`IngestionService.append()` accepts an `IngestionTable` and a typed Daft
-DataFrame. At the application boundary it:
+`IngestionService.append()` accepts a stable table name, a typed Daft
+DataFrame, and optional `key_columns`. At the application boundary it:
 
-1. resolves the world and current run
-2. adds the `world_id` and `run_id` envelope
-3. registers the table in the active `daft.Catalog`
-4. rejects schema drift
-5. anti-joins the table's declared keys
-6. appends the remaining rows to Iceberg
+1. resolves the world, current run, and storage configuration
+2. rejects caller-supplied `world_id` or `run_id`
+3. verifies that every requested key column exists
+4. adds the `world_id` and `run_id` envelope
+5. delegates a plain append when `key_columns` is empty, or a conditional
+   append when keys are present
 
-`IngestionTable.key_columns` defines write identity inside one world run. It is
-not a global business key and does not create a claim protocol.
+The conditional key is `("world_id", "run_id", *key_columns)`. It describes
+row identity for this append-only table view; it is not a global business key
+and does not create a claim protocol.
+
+`StorageService` performs the storage half: it creates or resolves the table
+through the active `daft.Catalog`, rejects typed schema drift, materializes the
+candidate graph once, and writes Iceberg. Conditional writes anti-join against
+the current table. If another writer wins an optimistic Iceberg commit,
+`StorageService` refreshes the table and recomputes that anti-join before
+retrying, so a stale pending set cannot duplicate the same logical key.
+
+The control and data planes remain distinct. The local SQLite control catalog,
+or the remote Cloudflare Durable Object implementation, owns world records,
+writer fences, command admission, and other small transactional coordination.
+Iceberg owns the artifact and ingestion data tables, their atomic snapshots,
+and multi-writer optimistic commits. The control catalog does not wrap an
+Iceberg append in a second transaction.
 
 The artifact common index is `artifact_files`, keyed by `artifact_id`:
 
@@ -140,15 +165,16 @@ specific supported query API needs them.
 
 Reads may not depend on registration state held by the writer process. Given
 the same storage configuration and durable world record, a fresh application
-graph must discover each existing `IngestionTable` through `daft.Catalog` and
-return only its current world/run rows. This cold-read rule applies equally to
-the common artifact index, typed media extensions, and normalized transcript
-rows.
+graph must resolve each existing named table through `daft.Catalog` and return
+only its current world/run rows. This cold-read rule applies equally to the
+common artifact index, typed media extensions, and normalized transcript rows.
 
 ## 6. Typed media indexes
 
-The file scan classifies each row once. Present families receive a narrow
-extension table sharing the same `artifact_id`:
+The file scan asks `daft.File.mime_type()` for MIME classification; there is no
+Python `mimetypes` fallback. Routing may additionally inspect the logical suffix
+to recognize source text and patches without rewriting the MIME value. Present
+families receive a narrow extension table sharing the same `artifact_id`:
 
 | Table | Built-in metadata |
 |---|---|
@@ -164,9 +190,11 @@ Nested metadata structs are unnested directly into the table projection. A
 diff row under the same `artifact_id`. Unknown binary files need no extension
 table; their common rows are still complete.
 
-These modules perform metadata scans only. Resize, resample, transcode,
-thumbnail, OCR, and embedding helpers are future derivative workflows. They
-must produce new artifacts instead of silently changing submitted bytes.
+The `FileIngestionPipeline` owns these Daft branches together. `scanners.py`
+contains only the pure bounded stream parsers used for hashes, PDF metadata,
+text shape, and patch structure. Resize, resample, transcode, thumbnail, OCR,
+and embedding helpers are future derivative workflows. They must produce new
+artifacts instead of silently changing submitted bytes.
 
 Every specialized scan reads `object_uri`, after persistence, rather than
 reopening `source_uri`. This is a real durability boundary: remote source bytes
@@ -243,8 +271,9 @@ unsupported containers, and unrewritable secret-bearing inputs are quarantined
 before any object or catalog row becomes durable.
 
 The common rule is simple: specialized workflows own pre-durability safety;
-`ArtifactService` owns exact file persistence and indexing; `IngestionService`
-owns catalog authority.
+`ArtifactService` owns exact file persistence and indexing;
+`IngestionService` owns the world/run envelope and append choice; and
+`StorageService` owns Catalog and terminal Daft execution authority.
 
 ## 11. Task-anchored artifact context
 
@@ -300,7 +329,7 @@ real Cloudflare stack:
 
 ```text
 Hugging Face Markdown + MP3 + MP4 + PDF
-local Markdown + Python + git patch + sanitized Claude transcript
+local Markdown + Python + git patch + PNG + sanitized Claude transcript
   -> content-addressed R2 objects
   -> Daft Catalog / Iceberg tables whose metadata and data live on R2
   -> fresh catalog + fresh application graph
@@ -311,7 +340,8 @@ The cold query result is deliberately reviewable as one small table:
 
 | Table | Rows | Join back to `artifact_files` |
 | --- | ---: | --- |
-| `artifact_files` | 8 | visibility root |
+| `artifact_files` | 9 | visibility root |
+| `artifact_images` | 1 | `artifact_id` |
 | `artifact_audio` | 1 | `artifact_id` |
 | `artifact_video` | 1 | `artifact_id` |
 | `artifact_pdf` | 1 | `artifact_id` |
@@ -319,10 +349,11 @@ The cold query result is deliberately reviewable as one small table:
 | `artifact_diff` | 1 | `artifact_id` |
 | `coding_agent_transcript_rows` | 3 | `source_artifact_id` |
 
-The test checks metadata and logical-path attribution after the restart, not
-merely that the table names exist, then destroys its unique catalog namespace
-and R2 prefixes.
-Local contract tests generate real WAV, MP4, and PDF fixtures and additionally
+The test checks metadata and logical-path attribution after the restart, UUIDv7
+identity-derived timestamps, both content hashes, and Daft's unmodified MIME
+classification—not merely that the table names exist. It then destroys its
+unique catalog namespace and R2 prefixes. Local contract tests generate real
+PNG, WAV, MP4, and PDF fixtures and additionally
 delete an acquisition source after object persistence, proving that metadata
 scans use the staged object. Live model calls remain an explicit
 credential-bearing external check; the deterministic contract tests validate

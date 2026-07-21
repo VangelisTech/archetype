@@ -200,5 +200,5 @@ from both durable tables. `TranscriptIngestionResult` returns the portable
 
 `TrajectoryTurn` remains the one class identity for historical Component rows
 and deliberate safe authoring. Compatibility does not authorize a new raw
-transcript writer. See [Coding-agent transcript artifacts](artifacts.md#13-coding-agent-transcript-artifacts)
+transcript writer. See [Transcript ingestion](artifacts.md#8-transcript-ingestion)
 for ordering, redaction, occurrence identity, and failure semantics.

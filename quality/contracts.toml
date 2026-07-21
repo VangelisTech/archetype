@@ -83,6 +83,25 @@ benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
+id = "storage.execution.single_authority"
+source = "docs/guide/application-architecture.md"
+section = "Storage execution authority"
+owner = "storage"
+risk = "high"
+pytest = [
+  "tests/app/test_storage_execution.py",
+  "tests/scripts/test_check_architecture.py",
+  "tests/scripts/test_check_lazy_audit.py",
+]
+static = [
+  "scripts/check_architecture.py",
+  "scripts/check_lazy_audit.py",
+]
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
 id = "runtime.trust.actor_free"
 source = "docs/guide/runtime.md"
 section = "R3 — Runtime is actor-free"
@@ -264,7 +283,7 @@ benchmarks = ["core.ecs.micro"]
 profiles = ["pr", "main", "release"]
 
 [[contract]]
-id = "ingestion.catalog.typed_append"
+id = "ingestion.envelope.append_selection"
 source = "docs/guide/artifacts.md"
 section = "5. Catalog and index contract"
 owner = "ingestion"

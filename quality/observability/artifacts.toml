@@ -14,4 +14,4 @@ evidence = [
   "docs/guide/artifacts.md",
   "tests/app/test_artifact_ingestion.py",
 ]
-rationale = "Artifact ingestion delegates durable table publication to IngestionService; a second service signal would not add authority."
+rationale = "ArtifactService configures the file pipeline, delegates envelope policy to IngestionService and terminal publication to StorageService; a second signal would not add authority."

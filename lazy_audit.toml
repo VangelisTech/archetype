@@ -38,19 +38,19 @@ reason = "HTTP JSON response boundary: convert the already-collected Daft result
 
 [[entries]]
 path = "src/archetype/app/storage/service.py"
-line = 430
+line = 429
 method = "collect"
 reason = "Central application execution boundary: StorageService admits the caller's lazy Daft plan through its shared execution gate, materializes it off the event loop, and returns the completed frame."
 
 [[entries]]
 path = "src/archetype/app/storage/service.py"
-line = 466
+line = 465
 method = "collect"
 reason = "Conflict-safe append boundary: StorageService materializes producer rows exactly once so optimistic Iceberg retries can reuse the same payload instead of re-running external or nondeterministic expressions."
 
 [[entries]]
 path = "src/archetype/app/storage/service.py"
-line = 518
+line = 517
 method = "collect"
 reason = "Conditional append boundary: StorageService materializes the anti-join after each refreshed Iceberg snapshot so a conflicting writer cannot cause a stale retry to duplicate an existing logical key."
 

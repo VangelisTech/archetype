@@ -12,12 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Storage Service
-
-Resolves StorageConfig → concrete store. Pools instances by config key.
-Caller-configured Daft sessions are the extension point for managed Iceberg.
-"""
+"""Application storage execution and durability authority."""
 
 from __future__ import annotations
 
@@ -176,9 +171,11 @@ def create_async_store(
     """Create an async store from a StorageConfig.
 
     For LanceDB: uses resolved uri + namespace directly.
-    For Iceberg without a session: builds Archetype's concrete local
-    SQLite-catalog lakehouse. A supplied session is already authoritative for
-    catalog, namespace, and credentials and passes through unchanged.
+    For Iceberg without a session: builds Archetype's concrete local lakehouse,
+    whose PyIceberg catalog metadata uses SQLite. That data-catalog metadata is
+    distinct from ``ControlCatalog`` transaction state. A supplied session is
+    already authoritative for catalog, namespace, and credentials and passes
+    through unchanged.
     """
     store: iAsyncStore
     # Unconditional: the injected-session Iceberg branch must reject an unsafe
@@ -225,10 +222,12 @@ def create_async_store(
 
 
 class StorageService:
-    """Creates and pools async stores. Manages storage lifecycle.
+    """Coordinate Daft execution and manage both durable storage planes.
 
-    Multiton semantics: stores with the same location, backend, cache, and
-    effective Daft ``IOConfig`` share one instance.
+    Multiton semantics make stores with the same location, backend, cache, and
+    effective Daft ``IOConfig`` share one instance. The local execution gate
+    orders terminal plans within this process; Iceberg's atomic optimistic
+    commits remain the cross-process data-table authority.
     """
 
     def __init__(self, session: Session | None = None) -> None:
@@ -434,7 +433,7 @@ class StorageService:
         storage_config: StorageConfig,
         table_name: str,
     ) -> DataFrame:
-        """Build a lazy read for one existing app-owned Iceberg table."""
+        """Resolve one existing app-owned table and return its lazy Iceberg read."""
         store = await self._iceberg_store(storage_config)
         async with self._execution_gate.admit():
             catalog, identifier = self._catalog_identity(store, table_name)
@@ -448,7 +447,7 @@ class StorageService:
         table_name: str,
         rows: DataFrame,
     ) -> int:
-        """Materialize and append rows, retrying optimistic Iceberg conflicts."""
+        """Register, align, materialize, and append with optimistic retry."""
         self._require_frame(rows)
         store = await self._iceberg_store(storage_config)
         frozen: DataFrame | None = None
