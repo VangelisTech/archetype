@@ -738,7 +738,8 @@ class WorldService:
                 left_on=["entity_id", "tick"],
                 right_on=["entity_id", "latest_tick"],
             ).select("entity_id", "tick", "is_active")
-            rows = current.to_pylist()
+            materialized = await self._storage_service.materialize(current)
+            rows = materialized.to_pylist()
             for row in rows:
                 eid, tick = int(row["entity_id"]), int(row["tick"])
                 if row_head is None or tick > row_head:

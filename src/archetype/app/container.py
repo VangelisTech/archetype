@@ -106,12 +106,13 @@ class ServiceContainer:
 
         # Services that depend on WorldService
         self.mutation_service = MutationService(self.world_service)
-        self.simulation_service = SimulationService(self.world_service)
+        self.simulation_service = SimulationService(self.world_service, self.storage_service)
         self.physical_ai_service = PhysicalAIService(
             self.world_service,
             self.mutation_service,
             self.simulation_service,
             self.evaluation_service,
+            self.storage_service,
         )
         self.command_scheduler = CommandScheduler(self.world_service, self.mutation_service)
         self.audit_log.set_outbox_source(
@@ -120,7 +121,11 @@ class ServiceContainer:
         )
 
         # AutoResearch — depends on WorldService + SimulationService
-        self.autoresearch_service = AutoResearchService(self.world_service, self.simulation_service)
+        self.autoresearch_service = AutoResearchService(
+            self.world_service,
+            self.simulation_service,
+            self.storage_service,
+        )
 
         self.application = RuntimeApplication(
             mutations=self.mutation_service,

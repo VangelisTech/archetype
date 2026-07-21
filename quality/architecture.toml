@@ -178,6 +178,7 @@ name = "research-family"
 consumer = "archetype.app.research"
 allowed_app = [
   "archetype.app.research",
+  "archetype.app.storage.interfaces",
   "archetype.app.world.interfaces",
   "archetype.app.models",
 ]
@@ -188,6 +189,7 @@ consumer = "archetype.app.physical_ai"
 allowed_app = [
   "archetype.app.physical_ai",
   "archetype.app.evaluation.interfaces",
+  "archetype.app.storage.interfaces",
   "archetype.app.world.interfaces",
   "archetype.app.models",
 ]
@@ -266,7 +268,10 @@ allowed_app = []
 
 [[module_rule]]
 module = "archetype.app.world.simulation"
-allowed_interfaces = ["archetype.app.world.interfaces.iWorldService"]
+allowed_interfaces = [
+  "archetype.app.storage.interfaces.iStorageService",
+  "archetype.app.world.interfaces.iWorldService",
+]
 allowed_app = ["archetype.app.models"]
 
 [[module_rule]]
@@ -352,6 +357,7 @@ allowed_app = [
 module = "archetype.app.physical_ai.service"
 allowed_interfaces = [
   "archetype.app.evaluation.interfaces.iEvaluationService",
+  "archetype.app.storage.interfaces.iStorageService",
   "archetype.app.world.interfaces.iMutationService",
   "archetype.app.world.interfaces.iSimulationService",
   "archetype.app.world.interfaces.iWorldService",
@@ -363,6 +369,7 @@ allowed_app = [
 [[module_rule]]
 module = "archetype.app.research.service"
 allowed_interfaces = [
+  "archetype.app.storage.interfaces.iStorageService",
   "archetype.app.world.interfaces.iSimulationService",
   "archetype.app.world.interfaces.iWorldService",
 ]

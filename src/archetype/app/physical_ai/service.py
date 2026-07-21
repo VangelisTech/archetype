@@ -15,11 +15,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from daft import DataFrame
+from daft import DataFrame, col
 from uuid_utils import uuid7
 
 from archetype.app.evaluation.interfaces import iEvaluationService
 from archetype.app.models import EpisodeConfig
+from archetype.app.storage.interfaces import iStorageService
 from archetype.app.world.interfaces import (
     iMutationService,
     iSimulationService,
@@ -91,15 +92,20 @@ def _trial_components(
     return components
 
 
-def _latest_rows(frame: DataFrame) -> dict[int, dict[str, Any]]:
+async def _latest_rows(
+    frame: DataFrame,
+    storage_service: iStorageService,
+) -> dict[int, dict[str, Any]]:
     """Materialize terminal rows at the report-producing analysis boundary."""
 
-    latest: dict[int, dict[str, Any]] = {}
-    for row in frame.collect().to_pylist():
-        entity_id = int(row["entity_id"])
-        if entity_id not in latest or int(row["tick"]) > int(latest[entity_id]["tick"]):
-            latest[entity_id] = row
-    return latest
+    heads = frame.groupby("entity_id").agg(col("tick").max().alias("latest_tick"))
+    terminal = frame.join(
+        heads,
+        left_on=["entity_id", "tick"],
+        right_on=["entity_id", "latest_tick"],
+    ).select(*frame.column_names)
+    materialized = await storage_service.materialize(terminal)
+    return {int(row["entity_id"]): row for row in materialized.to_pylist()}
 
 
 def _reset_policy(policy_client: PolicyClient | None) -> None:
@@ -117,11 +123,13 @@ class PhysicalAIService:
         mutation_service: iMutationService,
         simulation_service: iSimulationService,
         evaluation_service: iEvaluationService,
+        storage_service: iStorageService,
     ) -> None:
         self._worlds = world_service
         self._mutations = mutation_service
         self._simulation = simulation_service
         self._evaluations = evaluation_service
+        self._storage = storage_service
 
     async def evaluate_task(
         self,
@@ -179,13 +187,14 @@ class PhysicalAIService:
         if episode.run_id is None:
             raise RuntimeError("physical evaluation completed without an active run identity")
         run_id = episode.run_id
-        final = _latest_rows(
+        final = await _latest_rows(
             await self._evaluations.query_components(
                 [ManipStatus, ManipTask],
                 world_id=world_id,
                 run_id=run_id,
                 storage_config=config.storage,
-            )
+            ),
+            self._storage,
         )
         if len(final) != config.trials:
             raise ValueError(
@@ -268,13 +277,14 @@ class PhysicalAIService:
         if episode.run_id is None:
             raise RuntimeError("physical sweep completed without an active run identity")
         run_id = episode.run_id
-        final = _latest_rows(
+        final = await _latest_rows(
             await self._evaluations.query_components(
                 [ManipStatus, ManipTask],
                 world_id=world_id,
                 run_id=run_id,
                 storage_config=config.storage,
-            )
+            ),
+            self._storage,
         )
 
         rows_by_instruction: dict[str, list[dict[str, Any]]] = {

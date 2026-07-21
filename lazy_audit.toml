@@ -68,39 +68,39 @@ reason = "Lineage metadata extract: a fork's ancestor segments (bounded by fork 
 
 [[entries]]
 path = "src/archetype/app/research/service.py"
-line = 458
+line = 465
 method = "to_pylist"
-reason = "Single-row experiment-contract extract: the persisted identity and JSON configuration digest must enter Python control flow for exact collision rejection before the service records a resumed attempt; this is an imperative lifecycle gate, not a downstream dataframe computation."
+reason = "Single-row experiment-contract extract: StorageService has already admitted and materialized the query; the persisted identity and JSON configuration digest then enter Python control flow for exact collision rejection before resume."
 
 [[entries]]
 path = "src/archetype/app/research/service.py"
-line = 466
+line = 477
 method = "to_pylist"
-reason = "Single-row loop-state extract: the latest BranchHead row must enter Python control flow for incumbent score comparison and entity-id routing of the next append; these values drive imperative orchestration, not a further dataframe computation."
+reason = "Single-row loop-state extract: StorageService has already admitted and materialized the query; the latest BranchHead then enters Python control flow for incumbent comparison and entity-id routing."
 
 [[entries]]
 path = "src/archetype/app/research/service.py"
-line = 478
+line = 494
 method = "to_pylist"
-reason = "Bounded control-plane history extract: deterministic Run ids and terminal statuses must enter Python control flow to reject active, corrupt, duplicate, or non-contiguous attempts before resume; the result chooses whether any new work may start rather than feeding a dataframe computation."
+reason = "Bounded control-plane history extract: StorageService has already admitted and materialized the query; deterministic Run ids and statuses then enter Python control flow to reject ambiguous resume state."
 
 [[entries]]
 path = "src/archetype/app/world/simulation.py"
-line = 221
+line = 228
 method = "to_pylist"
-reason = "Episode-termination boundary: the value-based 'all entities done' check is reduced in Daft to a single (n_done, n_total) row, then materialized so the all/any decision can enter Python control flow and break the run_episode loop; a Python bool cannot remain a lazy Daft expression."
+reason = "Episode-termination boundary: StorageService admits and materializes the one-row (n_done, n_total) reduction before its all/any values enter Python control flow to stop the episode loop."
 
 [[entries]]
 path = "src/archetype/app/query/service.py"
-line = 408
+line = 409
 method = "to_pylist"
-reason = "Bounded compatibility boundary: queued audit rows are already filtered and limited lazily, then materialized into the legacy list[Command] return contract used by pre-gate callers."
+reason = "Bounded compatibility boundary: StorageService admits and materializes already filtered, limited audit rows before conversion into the legacy list[Command] return contract."
 
 [[entries]]
 path = "src/archetype/app/world/service.py"
-line = 741
+line = 742
 method = "to_pylist"
-reason = "Resume-time entity-directory extract (issue #273 A1-resume): the latest visible row per entity — already reduced in Daft to one (entity_id, tick, is_active) row per entity via groupby-max + join — must enter Python control flow to become the entity2sig registry and next_entity_id counter that route all subsequent mutations; imperative world reconstruction at the cold-resume boundary, bounded by live entity count, not a downstream dataframe computation."
+reason = "Resume-time entity-directory extract (issue #273 A1-resume): StorageService admits and materializes the groupby-max result before bounded live-entity rows become the imperative entity2sig registry and next_entity_id counter."
 
 [[entries]]
 path = "src/archetype/physical_ai/boundary.py"
@@ -110,15 +110,9 @@ reason = "series_to_rows helper: converts each Series parameter to a Python list
 
 [[entries]]
 path = "src/archetype/app/physical_ai/service.py"
-line = 98
-method = "collect"
-reason = "physical-evaluation grading boundary: latest-tick rows from the persisted episode query become typed task/sweep reports; this is the analysis edge and nothing downstream re-enters the DAG"
-
-[[entries]]
-path = "src/archetype/app/physical_ai/service.py"
-line = 98
+line = 108
 method = "to_pylist"
-reason = "same physical-evaluation grading boundary as the collect above: terminal rows enter Python for bounded success/length aggregation into typed reports"
+reason = "Physical-evaluation grading boundary: StorageService admits and materializes latest-tick ledger rows before bounded success and episode-length values become typed task or sweep reports."
 
 [[entries]]
 path = "src/archetype/graph/frames.py"
