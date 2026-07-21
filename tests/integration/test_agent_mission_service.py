@@ -189,6 +189,7 @@ class _CheckpointBackend(_LocalBackend):
     def __init__(self, *, fail: bool) -> None:
         super().__init__()
         self.fail = fail
+        self.restore_fails = False
         self.restores = 0
 
     async def create(self, spec: SandboxSpec) -> _CheckpointSession:
@@ -204,6 +205,8 @@ class _CheckpointBackend(_LocalBackend):
     ) -> _CheckpointSession:
         assert checkpoint.provider == self.name
         self.restores += 1
+        if self.restore_fails:
+            raise RuntimeError("provider restore unavailable")
         session = _CheckpointSession(spec, fail=self.fail)
         self.session = session
         return session
@@ -567,3 +570,82 @@ async def test_explicit_restore_rehydrates_before_work_without_automatic_supervi
                 for event in observed
                 if event.kind is SandboxEventType.READY
             ] == ["sandbox-contract"]
+
+
+@pytest.mark.asyncio
+async def test_failed_explicit_restore_closes_the_replaced_sandbox_evidence(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    backend = _CheckpointBackend(fail=False)
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "failed-restore-contract",
+            config=AgentMissionConfig(
+                sandbox_backend=backend,
+                sandbox_environment="local-checkpoint-test",
+                driver=_SecretOutputDriver(workspace),
+                workspace=str(workspace),
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "failed_restore_missions"),
+                namespace="failed_restore_contract",
+            ),
+        ) as missions:
+            submitted = await missions.submit(
+                repository=str(remote),
+                branch="agent/failed-restore",
+                tasks=(
+                    AgentTask(
+                        "implementation",
+                        "Create feature.txt.",
+                        (CommandValidator("focused", ("test", "-f", "feature.txt")),),
+                    ),
+                ),
+            )
+
+            def checkpoint(identifier: str) -> CheckpointRef:
+                return CheckpointRef(
+                    "local",
+                    identifier,
+                    f"local-checkpoint://{identifier}",
+                    1,
+                    environment="local-checkpoint-test",
+                    source_sandbox_id=f"source-{identifier}",
+                    owner_id=str(submitted.mission_id),
+                )
+
+            await missions.restore_sandbox(submitted, checkpoint("initial"))
+            assert backend.session is not None
+            replaced = backend.session
+
+            with pytest.raises(ValueError, match="owner"):
+                await missions.restore_sandbox(
+                    submitted,
+                    CheckpointRef(
+                        "local",
+                        "wrong-owner",
+                        "local-checkpoint://wrong-owner",
+                        1,
+                        environment="local-checkpoint-test",
+                        source_sandbox_id="source-wrong-owner",
+                        owner_id="another-mission",
+                    ),
+                )
+            sandbox_rows = latest(await missions.query(Sandbox)).to_pylist()
+            sandbox = Sandbox.get_prefix()
+            assert sandbox_rows[0][f"{sandbox}status"] == SandboxStatus.READY.value
+            assert replaced.closed == 0
+
+            backend.restore_fails = True
+
+            with pytest.raises(RuntimeError, match="provider restore unavailable"):
+                await missions.restore_sandbox(submitted, checkpoint("replacement"))
+
+            sandbox_rows = latest(await missions.query(Sandbox)).to_pylist()
+            assert len(sandbox_rows) == 1
+            assert sandbox_rows[0][f"{sandbox}sandbox_id"] == "sandbox-contract"
+            assert sandbox_rows[0][f"{sandbox}status"] == SandboxStatus.CLOSED.value
+            assert replaced.closed == 1

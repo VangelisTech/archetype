@@ -255,13 +255,22 @@ class MissionService:
         key = SandboxKey(f"mission:{mission.mission_id}")
         spec = self._sandbox_spec(mission.mission_id, mission.branch)
         previous_sandbox_id = self._mission_sandboxes.get(mission.mission_id)
-        session = await self._sandboxes.restore(key, spec, checkpoint)
+        try:
+            session = await self._sandboxes.restore(key, spec, checkpoint)
+        except Exception:
+            retained = self._sandboxes.session(key)
+            replaced_is_gone = retained is None or (
+                previous_sandbox_id is not None
+                and retained.identity.sandbox_id != previous_sandbox_id
+            )
+            if previous_sandbox_id is not None and replaced_is_gone:
+                await self._mark_sandbox_closed(previous_sandbox_id)
+                self._mission_sandboxes.pop(mission.mission_id, None)
+                await self._world.step()
+            raise
         identity = session.identity
         if previous_sandbox_id is not None and previous_sandbox_id != identity.sandbox_id:
-            previous_entity, previous_state = self._sandbox_entities[previous_sandbox_id]
-            closed = previous_state.model_copy(update={"status": SandboxStatus.CLOSED.value})
-            await self._world.update(previous_entity, closed)
-            self._sandbox_entities[previous_sandbox_id] = (previous_entity, closed)
+            await self._mark_sandbox_closed(previous_sandbox_id)
         self._mission_sandboxes[mission.mission_id] = identity.sandbox_id
         await self._ensure_sandbox_entity(
             mission.mission_id,
@@ -642,11 +651,13 @@ class MissionService:
         sandbox_id = self._mission_sandboxes.get(mission_id)
         if sandbox_id is None:
             return
+        await self._mark_sandbox_closed(sandbox_id)
+
+    async def _mark_sandbox_closed(self, sandbox_id: str) -> None:
         entity_id, sandbox_state = self._sandbox_entities[sandbox_id]
-        await self._world.update(
-            entity_id,
-            sandbox_state.model_copy(update={"status": SandboxStatus.CLOSED.value}),
-        )
+        closed = sandbox_state.model_copy(update={"status": SandboxStatus.CLOSED.value})
+        await self._world.update(entity_id, closed)
+        self._sandbox_entities[sandbox_id] = (entity_id, closed)
 
     def _redact(self, value: str, *, scope: str) -> str:
         if not value:
