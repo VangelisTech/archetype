@@ -3,6 +3,7 @@
 
 """Transport behavior for the remote control-catalog client."""
 
+import json
 from unittest.mock import AsyncMock
 
 import httpx
@@ -113,6 +114,23 @@ def _outbox_row():
     }
 
 
+def _evaluation_lease_row(**overrides):
+    row = {
+        "run_id": "run-1",
+        "evaluation_id": "evaluation-1",
+        "subject_digest": "subject",
+        "contract_digest": "contract",
+        "status": "RUNNING",
+        "owner": "worker-1",
+        "lease_expires_at": 30.0,
+        "created_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "acquired": True,
+    }
+    row.update(overrides)
+    return row
+
+
 async def test_command_ledger_transport_round_trip_is_typed_and_scoped():
     requests: list[httpx.Request] = []
     catalog = await _catalog_with(
@@ -218,5 +236,40 @@ async def test_outbox_transport_preserves_order_and_projection_progress():
         assert dict(requests[0].url.params) == {"limit": "8"}
         assert requests[1].method == "POST"
         assert requests[1].content == b'{"event_ids":["event-1"]}'
+    finally:
+        await catalog.close()
+
+
+async def test_evaluation_lease_transport_is_typed_and_scoped():
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with(
+        [
+            httpx.Response(200, json=_evaluation_lease_row()),
+            httpx.Response(200, json={"ok": True}),
+            httpx.Response(200, json={"ok": True}),
+        ],
+        requests,
+    )
+    try:
+        lease = await catalog.lease_evaluation(
+            "world-1",
+            "run-1",
+            "evaluation-1",
+            "subject",
+            "contract",
+            "worker-1",
+            lease_seconds=45,
+        )
+        await catalog.complete_evaluation("world-1", "run-1", "evaluation-1", "worker-1")
+        await catalog.release_evaluation("world-1", "run-1", "evaluation-1", "worker-1")
+
+        assert lease.world_id == "world-1"
+        assert lease.acquired and lease.owner == "worker-1"
+        assert [request.url.path for request in requests] == [
+            "/ns/test/w/world-1/evaluations/lease",
+            "/ns/test/w/world-1/evaluations/complete",
+            "/ns/test/w/world-1/evaluations/release",
+        ]
+        assert json.loads(requests[0].content)["lease_seconds"] == 45
     finally:
         await catalog.close()

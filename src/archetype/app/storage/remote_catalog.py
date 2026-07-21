@@ -28,6 +28,7 @@ from archetype.app.storage.catalog import (
     CommandAdmission,
     CommandConflictError,
     CommandRecord,
+    EvaluationLease,
     ManifestRecord,
     OutboxRecord,
     SignatureRecord,
@@ -274,6 +275,67 @@ class RemoteControlCatalog:
         value = response.json().get("entity_id")
         return int(value) if value is not None else None
 
+    # ── evaluation execution serialization ────────────────────────────────
+
+    async def lease_evaluation(
+        self,
+        world_id: str,
+        run_id: str,
+        evaluation_id: str,
+        subject_digest: str,
+        contract_digest: str,
+        owner: str,
+        *,
+        lease_seconds: float = 300.0,
+    ) -> EvaluationLease:
+        response = await self._call(
+            "POST",
+            f"/w/{world_id}/evaluations/lease",
+            {
+                "run_id": run_id,
+                "evaluation_id": evaluation_id,
+                "subject_digest": subject_digest,
+                "contract_digest": contract_digest,
+                "owner": owner,
+                "lease_seconds": lease_seconds,
+            },
+        )
+        return _evaluation_lease_from_json(world_id, response.json())
+
+    async def complete_evaluation(
+        self,
+        world_id: str,
+        run_id: str,
+        evaluation_id: str,
+        owner: str,
+    ) -> None:
+        await self._call(
+            "POST",
+            f"/w/{world_id}/evaluations/complete",
+            {
+                "run_id": run_id,
+                "evaluation_id": evaluation_id,
+                "owner": owner,
+            },
+        )
+
+    async def release_evaluation(
+        self,
+        world_id: str,
+        run_id: str,
+        evaluation_id: str,
+        owner: str,
+    ) -> None:
+        await self._call(
+            "POST",
+            f"/w/{world_id}/evaluations/release",
+            {
+                "run_id": run_id,
+                "evaluation_id": evaluation_id,
+                "owner": owner,
+            },
+        )
+
     async def cancel_commands(self, world_id: str, *, reason: str) -> int:
         response = await self._call("POST", f"/w/{world_id}/commands/cancel", {"reason": reason})
         return int(response.json()["count"])
@@ -329,6 +391,24 @@ def _world_from_json(row: dict) -> WorldRecord:
         parent_world_id=row.get("parent_world_id"),
         status=row["status"],
         tick_head=int(row.get("tick_head", 0)),
+    )
+
+
+def _evaluation_lease_from_json(world_id: str, row: dict) -> EvaluationLease:
+    return EvaluationLease(
+        world_id=world_id,
+        run_id=row["run_id"],
+        evaluation_id=row["evaluation_id"],
+        subject_digest=row["subject_digest"],
+        contract_digest=row["contract_digest"],
+        status=row["status"],
+        owner=row.get("owner"),
+        lease_expires_at=(
+            float(row["lease_expires_at"]) if row.get("lease_expires_at") is not None else None
+        ),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        acquired=bool(row["acquired"]),
     )
 
 

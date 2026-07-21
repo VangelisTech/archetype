@@ -1,8 +1,8 @@
 # archetype-control-catalog
 
 The remote control catalog (issue #281): Cloudflare Durable Objects serving
-Archetype's discovery, fencing, manifests, durable commands, and transactional
-outbox across hosts. The
+Archetype's discovery, fencing, manifests, durable commands, evaluation
+execution leases, and transactional outbox across hosts. The
 Python client is `archetype.app.storage.remote_catalog.RemoteControlCatalog`;
 `SqliteControlCatalog` remains the reference implementation and the default.
 
@@ -11,8 +11,9 @@ Python client is `archetype.app.storage.remote_catalog.RemoteControlCatalog`;
 - `CatalogDirectoryDO` — one per storage identity: worlds + signatures
   (cross-world discovery; low write rate).
 - `WorldCommitDO` — one per world: writer fence, tick manifests, durable
-  command leases and settlement, and transactional outbox (the per-tick hot
-  path; serialized execution makes publish a straight-line transaction).
+  command leases and settlement, evaluation leases, and transactional outbox
+  (the serialized control path; serialized execution makes publish a
+  straight-line transaction).
 
 ## Deploy
 

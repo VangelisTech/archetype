@@ -3,18 +3,25 @@
 
 """Snapshot-pinned evaluation evidence over the general ingestion service."""
 
+import asyncio
 import json
 import subprocess
 import sys
 import textwrap
+import time
+from types import SimpleNamespace
 
+import daft
+import pyarrow as pa
 import pytest
 from uuid_utils import uuid7
 
 from archetype.app.container import ServiceContainer
+from archetype.app.evaluation import service as evaluation_module
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
+from archetype.evaluation.components import EvalReceipt
 from archetype.evaluation.contracts import GraderContract, Outcome, subject_digest
 from archetype.ingestion import IngestionTable
 
@@ -113,6 +120,200 @@ async def test_replay_returns_persisted_result_without_regrading(tmp_path):
         assert rows[0]["evaluation_id"] == "trial-1"
     finally:
         await container.shutdown()
+
+
+async def test_concurrent_service_graphs_run_paid_grader_once(tmp_path):
+    """Two independent containers converge through the durable catalog lease."""
+    storage = _storage(tmp_path)
+    first_container = ServiceContainer()
+    second_container = ServiceContainer()
+    first_task = None
+    second_task = None
+    release_grader = asyncio.Event()
+    try:
+        world = await _seeded_world(first_container, storage)
+        grader_started = asyncio.Event()
+        calls: list[int] = []
+
+        async def grader(df):
+            calls.append(1)
+            assert df.to_pylist()
+            grader_started.set()
+            await release_grader.wait()
+            return Outcome(status="pass", score=0.8)
+
+        first_task = asyncio.create_task(
+            first_container.command_gateway.evaluate(
+                _ctx(),
+                world.world_id,
+                [Telemetry],
+                contract=_contract(),
+                grader=grader,
+                evaluation_id="concurrent-paid-grade",
+            )
+        )
+        await asyncio.wait_for(grader_started.wait(), timeout=30)
+        second_task = asyncio.create_task(
+            second_container.command_gateway.evaluate(
+                _ctx(),
+                world.world_id,
+                [Telemetry],
+                contract=_contract(),
+                grader=grader,
+                evaluation_id="concurrent-paid-grade",
+                storage_config=storage,
+            )
+        )
+
+        await asyncio.sleep(0.2)
+        assert calls == [1]
+        assert not second_task.done()
+
+        release_grader.set()
+        first, second = await asyncio.gather(first_task, second_task)
+        assert first == second
+        assert calls == [1]
+        assert len((await _results(first_container, str(world.world_id))).to_pylist()) == 1
+    finally:
+        release_grader.set()
+        pending = [
+            task for task in (first_task, second_task) if task is not None and not task.done()
+        ]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        await second_container.shutdown()
+        await first_container.shutdown()
+
+
+async def test_expired_owner_with_persisted_result_recovers_without_regrading(tmp_path):
+    container = ServiceContainer()
+    try:
+        storage = _storage(tmp_path)
+        world = await _seeded_world(container, storage)
+        wid = str(world.world_id)
+        snapshot = await container.evaluation_service._snapshot(wid, storage)
+        contract = _contract()
+        subject = subject_digest(
+            wid,
+            snapshot.run_id,
+            snapshot_tick=snapshot.tick,
+            snapshot_tokens=list(snapshot.head_tokens),
+            component_names=[Telemetry.__name__],
+        )
+        catalog = container.storage_service.get_control_catalog(storage)
+        await catalog.lease_evaluation(
+            wid,
+            snapshot.run_id,
+            "append-before-crash",
+            subject,
+            contract.digest(),
+            "crashed-owner",
+            lease_seconds=0.01,
+        )
+        persisted = EvalReceipt(
+            evaluation_id="append-before-crash",
+            subject_digest=subject,
+            contract_digest=contract.digest(),
+            grader_id=contract.grader_id,
+            outcome="pass",
+            score=0.8,
+            graded_at_ms=int(time.time() * 1000),
+            evidence_json="{}",
+        )
+        await container.ingestion_service.append(
+            wid,
+            evaluation_module._EVALUATION_RESULTS,
+            daft.from_arrow(
+                pa.Table.from_pylist(
+                    [persisted.model_dump()],
+                    schema=evaluation_module._EVALUATION_SCHEMA,
+                )
+            ),
+            storage_config=storage,
+        )
+        await asyncio.sleep(0.02)
+        calls: list[int] = []
+
+        def must_not_grade(_df):
+            calls.append(1)
+            return Outcome(status="fail")
+
+        recovered = await container.command_gateway.evaluate(
+            _ctx(),
+            wid,
+            [Telemetry],
+            contract=contract,
+            grader=must_not_grade,
+            evaluation_id="append-before-crash",
+            storage_config=storage,
+        )
+
+        assert recovered == persisted
+        assert calls == []
+        complete = await catalog.lease_evaluation(
+            wid,
+            snapshot.run_id,
+            "append-before-crash",
+            subject,
+            contract.digest(),
+            "observer",
+        )
+        assert complete.status == "COMPLETE" and not complete.acquired
+    finally:
+        await container.shutdown()
+
+
+async def test_evaluation_heartbeat_renews_and_detects_lost_owner(monkeypatch):
+    monkeypatch.setattr(evaluation_module, "_EVALUATION_LEASE_SECONDS", 0.03)
+    monkeypatch.setattr(evaluation_module, "_EVALUATION_POLL_SECONDS", 0.001)
+    lease = SimpleNamespace(
+        world_id="world",
+        run_id="run",
+        evaluation_id="evaluation",
+        subject_digest="subject",
+        contract_digest="contract",
+    )
+
+    class Catalog:
+        def __init__(self, *, acquired=True, owner="owner"):
+            self.acquired = acquired
+            self.owner = owner
+            self.calls = 0
+
+        async def lease_evaluation(self, *_args, **_kwargs):
+            self.calls += 1
+            return SimpleNamespace(acquired=self.acquired, owner=self.owner)
+
+    renewing = Catalog()
+    stop = asyncio.Event()
+    lost = asyncio.Event()
+    task = asyncio.create_task(containerless_heartbeat(renewing, lease, stop=stop, lost=lost))
+    await asyncio.sleep(0.025)
+    stop.set()
+    await task
+    assert renewing.calls >= 1
+    assert not lost.is_set()
+
+    displaced = Catalog(acquired=False, owner="other")
+    lost = asyncio.Event()
+    await asyncio.wait_for(
+        containerless_heartbeat(displaced, lease, stop=asyncio.Event(), lost=lost),
+        timeout=1,
+    )
+    assert lost.is_set()
+
+
+async def containerless_heartbeat(catalog, lease, *, stop, lost):
+    return await evaluation_module.EvaluationService._heartbeat_evaluation(
+        None,
+        catalog,
+        lease,
+        owner="owner",
+        stop=stop,
+        lost=lost,
+    )
 
 
 async def test_grader_reads_captured_snapshot_when_world_advances(tmp_path, monkeypatch):

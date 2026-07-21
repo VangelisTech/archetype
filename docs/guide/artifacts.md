@@ -219,8 +219,13 @@ row to `evaluation_results`, keyed by `evaluation_id` inside the world run.
 
 Reusing an evaluation ID with the same pinned subject and grader contract
 returns the persisted result without grading again. Reusing it for a different
-subject or contract fails loudly. This is application-level serialization and
-catalog identity, not an artifact claim or cross-process lease protocol.
+subject or contract fails loudly. The result remains an ordinary Iceberg row;
+a narrow evaluation lease in the existing control catalog serializes grader
+execution across processes until that row is durable. Failed owners release
+immediately, expired owners can be recovered, and recovery checks for an
+already-appended result before running the grader again. This coordination is
+evaluation-specific and does not add claims or publication state to artifact
+ingestion.
 
 ## 10. Security boundary
 

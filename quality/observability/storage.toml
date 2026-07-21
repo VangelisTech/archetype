@@ -24,6 +24,9 @@ operations = [
   "catalog.ControlCatalog.list_commands",
   "catalog.ControlCatalog.pending_command_count",
   "catalog.ControlCatalog.max_reserved_entity_id",
+  "catalog.ControlCatalog.lease_evaluation",
+  "catalog.ControlCatalog.complete_evaluation",
+  "catalog.ControlCatalog.release_evaluation",
   "catalog.ControlCatalog.read_outbox",
   "catalog.ControlCatalog.mark_outbox_projected",
   "catalog.ControlCatalog.close",
@@ -36,7 +39,7 @@ operations = [
 ]
 signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
-authority = "Store/catalog state, fencing epochs, command leases, transactional rows, and commit manifests remain authoritative."
+authority = "Store/catalog state, fencing epochs, command and evaluation leases, transactional rows, and commit manifests remain authoritative."
 evidence = [
   "docs/guide/atomic-visibility.md",
   "docs/guide/service-protocols.md",

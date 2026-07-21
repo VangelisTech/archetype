@@ -17,19 +17,31 @@ import os
 import time
 from pathlib import Path
 
+from uuid_utils import uuid7
+
 from archetype.app.container import ServiceContainer
+from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.storage.catalog import SqliteControlCatalog
 from archetype.core.component import Component
-from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
 from archetype.core.interfaces import StaleWriterError
+from archetype.evaluation.contracts import GraderContract, Outcome
+from archetype.ingestion import IngestionTable
 
 
 class ProcessReading(Component):
     value: float = 0.0
 
 
+_EVALUATION_RESULTS = IngestionTable("evaluation_results", key_columns=("evaluation_id",))
+
+
 def _storage(args: argparse.Namespace) -> StorageConfig:
-    return StorageConfig(uri=args.uri, namespace=args.namespace)
+    return StorageConfig(
+        uri=args.uri,
+        namespace=args.namespace,
+        backend=StorageBackend(args.backend),
+    )
 
 
 def _emit(payload: dict) -> None:
@@ -158,6 +170,92 @@ async def query_world(args: argparse.Namespace) -> None:
         await container.shutdown()
 
 
+async def evaluate_world(args: argparse.Namespace) -> None:
+    """Race a paid-style grader through a fresh service graph."""
+    container = ServiceContainer()
+    try:
+        storage = _storage(args)
+        _ready(args.ready)
+        _wait_for(args.go)
+
+        def grader(frame):
+            with Path(args.grader_log).open("a") as log:
+                log.write(f"{os.getpid()}\n")
+            return Outcome(status="pass", score=float(frame.count_rows()))
+
+        result = await container.command_gateway.evaluate(
+            ActorCtx(id=uuid7(), roles={"operator"}),
+            args.world_id,
+            [ProcessReading],
+            contract=GraderContract(
+                grader_id="process-evaluation",
+                implementation_version="1",
+            ),
+            grader=grader,
+            evaluation_id=args.evaluation_id,
+            storage_config=storage,
+        )
+        _emit(result.model_dump())
+    finally:
+        await container.shutdown()
+
+
+async def query_evaluations(args: argparse.Namespace) -> None:
+    container = ServiceContainer()
+    try:
+        rows = await container.ingestion_service.read(
+            args.world_id,
+            _EVALUATION_RESULTS,
+            storage_config=_storage(args),
+        )
+        values = rows.select("evaluation_id").to_pydict()
+        _emit({"rows": rows.count_rows(), "evaluation_ids": values["evaluation_id"]})
+    finally:
+        await container.shutdown()
+
+
+async def advance(args: argparse.Namespace) -> None:
+    container = ServiceContainer()
+    try:
+        storage = _storage(args)
+        world = await container.world_service.open_world_mutable(storage, args.world_id)
+        await container.simulation_service.step(world.world_id, RunConfig())
+        _emit({"tick": world.tick})
+    finally:
+        await container.shutdown()
+
+
+async def evaluate_conflict(args: argparse.Namespace) -> None:
+    container = ServiceContainer()
+    try:
+        storage = _storage(args)
+
+        def grader(_frame):
+            with Path(args.grader_log).open("a") as log:
+                log.write(f"conflict:{os.getpid()}\n")
+            return Outcome(status="pass", score=1.0)
+
+        conflict = False
+        try:
+            await container.command_gateway.evaluate(
+                ActorCtx(id=uuid7(), roles={"operator"}),
+                args.world_id,
+                [ProcessReading],
+                contract=GraderContract(
+                    grader_id="process-evaluation",
+                    implementation_version="1",
+                ),
+                grader=grader,
+                evaluation_id=args.evaluation_id,
+                storage_config=storage,
+            )
+        except ValueError:
+            conflict = True
+        _emit({"conflict": conflict})
+    finally:
+        await container.shutdown()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -168,16 +266,27 @@ def build_parser() -> argparse.ArgumentParser:
             "resume-verify",
             "resume-race",
             "query-world",
+            "evaluate",
+            "query-evaluations",
+            "advance",
+            "evaluate-conflict",
         ),
     )
     parser.add_argument("--uri", required=True)
     parser.add_argument("--namespace", default="process_idempotency")
+    parser.add_argument(
+        "--backend",
+        choices=tuple(backend.value for backend in StorageBackend),
+        default=StorageBackend.LANCEDB.value,
+    )
     parser.add_argument("--world-id")
     parser.add_argument("--name", default="process-world")
     parser.add_argument("--value", type=float, default=1.0)
     parser.add_argument("--exit-code", type=int, default=91)
     parser.add_argument("--ready")
     parser.add_argument("--go")
+    parser.add_argument("--evaluation-id", default="process-evaluation")
+    parser.add_argument("--grader-log")
     return parser
 
 
@@ -189,6 +298,10 @@ async def _main() -> None:
         "resume-verify": resume_verify,
         "resume-race": resume_race,
         "query-world": query_world,
+        "evaluate": evaluate_world,
+        "query-evaluations": query_evaluations,
+        "advance": advance,
+        "evaluate-conflict": evaluate_conflict,
     }
     await commands[args.command](args)
 

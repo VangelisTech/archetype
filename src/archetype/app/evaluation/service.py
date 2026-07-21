@@ -21,17 +21,21 @@ caller-provided graders over Daft DataFrames.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import socket
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from inspect import isawaitable
+from typing import Any, Protocol
 
 import daft
 import pyarrow as pa
 from daft import DataFrame
 from pydantic_core import to_jsonable_python
-from uuid_utils import UUID
+from uuid_utils import UUID, uuid7
 
 from archetype.app.evaluation.interfaces import GraderOutput, TrajectoryGrader
 from archetype.app.ingestion.interfaces import iIngestionService
@@ -50,6 +54,8 @@ from archetype.evaluation.contracts import (
 from archetype.ingestion.contracts import IngestionTable
 
 _EVALUATION_RESULTS = IngestionTable("evaluation_results", key_columns=("evaluation_id",))
+_EVALUATION_LEASE_SECONDS = 300.0
+_EVALUATION_POLL_SECONDS = 0.05
 _EVALUATION_SCHEMA = pa.schema(
     [
         ("evaluation_id", pa.large_string()),
@@ -73,6 +79,20 @@ class _PinnedSnapshot:
     head_tokens: tuple[str, ...]
     visibility_tokens: tuple[str, ...]
     storage_config: StorageConfig
+
+
+class _EvaluationIdentity(Protocol):
+    subject_digest: str
+    contract_digest: str
+
+
+class _EvaluationLease(_EvaluationIdentity, Protocol):
+    world_id: str
+    run_id: str
+    evaluation_id: str
+    status: str
+    owner: str | None
+    acquired: bool
 
 
 class EvaluationService:
@@ -106,7 +126,11 @@ class EvaluationService:
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
     ):
-        """Grade a pinned snapshot and append one typed evaluation result."""
+        """Grade a pinned snapshot once and append one typed evaluation result.
+
+        Iceberg owns the result. A narrow control-catalog lease serializes the
+        potentially paid grader across processes while that result is absent.
+        """
         if not isinstance(contract, GraderContract):
             raise ValueError(
                 "persisted receipts require a GraderContract descriptor; "
@@ -130,51 +154,198 @@ class EvaluationService:
             snapshot.storage_config,
         )
         if existing is not None:
-            if existing.subject_digest != subject or existing.contract_digest != contract_digest:
-                raise ValueError(
-                    f"evaluation_id {evaluation_id!r} already names a different "
-                    "subject or grader contract"
-                )
-            return existing
+            self._require_same_identity(existing, evaluation_id, subject, contract_digest)
+
+        catalog = self._storage.get_control_catalog(snapshot.storage_config)
+        owner = f"{socket.gethostname()}:{os.getpid()}:{uuid7()}"
+        lease, settled = await self._acquire_evaluation(
+            catalog,
+            world_id=str(world_id),
+            run_id=snapshot.run_id,
+            evaluation_id=evaluation_id,
+            subject_digest=subject,
+            contract_digest=contract_digest,
+            owner=owner,
+            storage_config=snapshot.storage_config,
+        )
+        if settled is not None:
+            return settled
+        assert lease is not None and lease.acquired
+
         snapshot_ticks = (
             [tick for tick in ticks if tick <= snapshot.tick]
             if ticks is not None
             else list(range(snapshot.tick + 1))
         )
 
-        frame = await self._query_service.query_components(
-            list(components),
-            world_id,
-            snapshot.run_id,
-            snapshot.storage_config,
-            ticks=snapshot_ticks,
-            entity_ids=entity_ids,
-            visibility_tokens=list(snapshot.visibility_tokens),
+        stop_heartbeat = asyncio.Event()
+        lease_lost = asyncio.Event()
+        heartbeat = asyncio.create_task(
+            self._heartbeat_evaluation(
+                catalog,
+                lease,
+                owner=owner,
+                stop=stop_heartbeat,
+                lost=lease_lost,
+            )
         )
-        outputs = await self.run_graders(frame, [grader])
-        typed = [output for output in outputs if isinstance(output, Outcome)]
-        if len(typed) != len(outputs):
-            raise ValueError("persisted evaluations require typed Outcome results")
-        if len(typed) != 1:
-            raise ValueError("a persisted evaluation must produce exactly one Outcome")
-        outcome = typed[0]
-        result = EvalReceipt(
-            evaluation_id=evaluation_id,
-            subject_digest=subject,
-            contract_digest=contract_digest,
-            grader_id=contract.grader_id,
-            outcome=outcome.status,
-            score=outcome.score,
-            graded_at_ms=int(time.time() * 1000),
-            evidence_json=json.dumps(to_jsonable_python(outcome.evidence)),
-        )
-        await self._ingestion.append(
-            world_id,
-            _EVALUATION_RESULTS,
-            daft.from_arrow(pa.Table.from_pylist([result.model_dump()], schema=_EVALUATION_SCHEMA)),
-            storage_config=snapshot.storage_config,
-        )
-        return result
+        try:
+            # Recovery check: a prior owner may have appended the Iceberg row
+            # and crashed before completing its control record.
+            existing = await self._existing_result(
+                world_id,
+                evaluation_id,
+                snapshot.storage_config,
+            )
+            if existing is not None:
+                self._require_same_identity(existing, evaluation_id, subject, contract_digest)
+                stop_heartbeat.set()
+                await heartbeat
+                if lease_lost.is_set():
+                    raise RuntimeError(
+                        f"lost durable lease while recovering evaluation {evaluation_id!r}"
+                    )
+                await catalog.complete_evaluation(
+                    str(world_id), snapshot.run_id, evaluation_id, owner
+                )
+                return existing
+
+            frame = await self._query_service.query_components(
+                list(components),
+                world_id,
+                snapshot.run_id,
+                snapshot.storage_config,
+                ticks=snapshot_ticks,
+                entity_ids=entity_ids,
+                visibility_tokens=list(snapshot.visibility_tokens),
+            )
+            outputs = await self.run_graders(frame, [grader])
+            typed = [output for output in outputs if isinstance(output, Outcome)]
+            if len(typed) != len(outputs):
+                raise ValueError("persisted evaluations require typed Outcome results")
+            if len(typed) != 1:
+                raise ValueError("a persisted evaluation must produce exactly one Outcome")
+            outcome = typed[0]
+            result = EvalReceipt(
+                evaluation_id=evaluation_id,
+                subject_digest=subject,
+                contract_digest=contract_digest,
+                grader_id=contract.grader_id,
+                outcome=outcome.status,
+                score=outcome.score,
+                graded_at_ms=int(time.time() * 1000),
+                evidence_json=json.dumps(to_jsonable_python(outcome.evidence)),
+            )
+            if lease_lost.is_set():
+                raise RuntimeError(f"lost durable lease for evaluation {evaluation_id!r}")
+            await self._ingestion.append(
+                world_id,
+                _EVALUATION_RESULTS,
+                daft.from_arrow(
+                    pa.Table.from_pylist([result.model_dump()], schema=_EVALUATION_SCHEMA)
+                ),
+                storage_config=snapshot.storage_config,
+            )
+            stop_heartbeat.set()
+            await heartbeat
+            if lease_lost.is_set():
+                raise RuntimeError(f"lost durable lease for evaluation {evaluation_id!r}")
+            await catalog.complete_evaluation(str(world_id), snapshot.run_id, evaluation_id, owner)
+            return result
+        except BaseException:
+            stop_heartbeat.set()
+            if not heartbeat.done():
+                await heartbeat
+            try:
+                await catalog.release_evaluation(
+                    str(world_id), snapshot.run_id, evaluation_id, owner
+                )
+            finally:
+                raise
+
+    async def _acquire_evaluation(
+        self,
+        catalog: Any,
+        *,
+        world_id: str,
+        run_id: str,
+        evaluation_id: str,
+        subject_digest: str,
+        contract_digest: str,
+        owner: str,
+        storage_config: StorageConfig,
+    ) -> tuple[_EvaluationLease | None, EvalReceipt | None]:
+        """Wait for a racing result or return this process's durable lease."""
+        while True:
+            lease = await catalog.lease_evaluation(
+                world_id,
+                run_id,
+                evaluation_id,
+                subject_digest,
+                contract_digest,
+                owner,
+                lease_seconds=_EVALUATION_LEASE_SECONDS,
+            )
+            self._require_same_identity(lease, evaluation_id, subject_digest, contract_digest)
+            if lease.status == "COMPLETE":
+                result = await self._existing_result(world_id, evaluation_id, storage_config)
+                if result is None:
+                    raise RuntimeError(
+                        f"evaluation {evaluation_id!r} is complete in the control catalog "
+                        "but its Iceberg result is missing"
+                    )
+                self._require_same_identity(result, evaluation_id, subject_digest, contract_digest)
+                return None, result
+            if lease.acquired:
+                return lease, None
+            await asyncio.sleep(_EVALUATION_POLL_SECONDS)
+
+    async def _heartbeat_evaluation(
+        self,
+        catalog: Any,
+        lease: _EvaluationLease,
+        *,
+        owner: str,
+        stop: asyncio.Event,
+        lost: asyncio.Event,
+    ) -> None:
+        """Renew a live grader lease; crash recovery still comes from expiry."""
+        interval = max(_EVALUATION_LEASE_SECONDS / 3, _EVALUATION_POLL_SECONDS)
+        while True:
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=interval)
+                return
+            except TimeoutError:
+                pass
+            try:
+                renewed = await catalog.lease_evaluation(
+                    lease.world_id,
+                    lease.run_id,
+                    lease.evaluation_id,
+                    lease.subject_digest,
+                    lease.contract_digest,
+                    owner,
+                    lease_seconds=_EVALUATION_LEASE_SECONDS,
+                )
+            except Exception:
+                lost.set()
+                return
+            if not renewed.acquired or renewed.owner != owner:
+                lost.set()
+                return
+
+    @staticmethod
+    def _require_same_identity(
+        record: _EvaluationIdentity,
+        evaluation_id: str,
+        subject_digest: str,
+        contract_digest: str,
+    ) -> None:
+        if record.subject_digest != subject_digest or record.contract_digest != contract_digest:
+            raise ValueError(
+                f"evaluation_id {evaluation_id!r} already names a different "
+                "subject or grader contract"
+            )
 
     async def _snapshot(
         self,

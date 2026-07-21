@@ -15,10 +15,10 @@
 """Durable control authority — private implementation resource of StorageService.
 
 The catalog makes world discovery, writer fencing, tick visibility, deferred
-commands, command settlement, and the transactional outbox durable. The
-process-local registries in WorldService and the stores remain caches. Domain
-tables such as artifact indexes and evaluation results live in Iceberg instead
-of becoming control-catalog workflow state.
+commands, command settlement, evaluation execution leases, and the
+transactional outbox durable. The process-local registries in WorldService and
+the stores remain caches. Domain tables such as artifact indexes and evaluation
+results live in Iceberg instead of becoming control-catalog workflow state.
 
 Design rules (issue #272, design review 2026-07-14):
 
@@ -26,8 +26,9 @@ Design rules (issue #272, design review 2026-07-14):
   same StorageConfig always resolves the same catalog, across processes,
   restarts, and crashes.
 - Records are compact control facts: world/signature descriptors, writer
-  fences, tick manifests, commands, and outbox rows. There are no entity
-  directories, lineage copies, artifact claims, or domain payload indexes.
+  fences, tick manifests, commands, evaluation leases, and outbox rows. There
+  are no entity directories, lineage copies, artifact claims, or domain payload
+  indexes.
 - Append-only in spirit: worlds transition status; nothing is deleted.
 - Same identity + same content → idempotent no-op. Same identity + different
   content → loud ``CatalogConflictError``. Fail closed, never fail quiet.
@@ -63,7 +64,7 @@ from archetype.core.paths import require_safe_namespace, resolve_local_root
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 8
+_SCHEMA_VERSION = 9
 _DIGEST_DOMAIN = "archetype.catalog.v1"
 
 
@@ -298,6 +299,28 @@ class OutboxRecord:
     projected_at: str | None
 
 
+@dataclass(frozen=True)
+class EvaluationLease:
+    """One durable serialization lease for a potentially expensive grader.
+
+    The result itself remains an Iceberg row. This record only decides which
+    process may execute the grader while that row is absent. ``acquired`` is
+    the disposition of the current lease request, not persisted state.
+    """
+
+    world_id: str
+    run_id: str
+    evaluation_id: str
+    subject_digest: str
+    contract_digest: str
+    status: str  # "RUNNING" | "RETRYABLE" | "COMPLETE"
+    owner: str | None
+    lease_expires_at: float | None
+    created_at: str
+    updated_at: str
+    acquired: bool
+
+
 class ControlCatalog(Protocol):
     """Shared local/remote authority exposed by StorageService."""
 
@@ -362,6 +385,31 @@ class ControlCatalog(Protocol):
     ) -> list[CommandRecord]: ...
     async def pending_command_count(self, world_id: str) -> int: ...
     async def max_reserved_entity_id(self, world_id: str) -> int | None: ...
+    async def lease_evaluation(
+        self,
+        world_id: str,
+        run_id: str,
+        evaluation_id: str,
+        subject_digest: str,
+        contract_digest: str,
+        owner: str,
+        *,
+        lease_seconds: float = 300.0,
+    ) -> EvaluationLease: ...
+    async def complete_evaluation(
+        self,
+        world_id: str,
+        run_id: str,
+        evaluation_id: str,
+        owner: str,
+    ) -> None: ...
+    async def release_evaluation(
+        self,
+        world_id: str,
+        run_id: str,
+        evaluation_id: str,
+        owner: str,
+    ) -> None: ...
     async def read_outbox(self, world_id: str, *, limit: int = 1000) -> list[OutboxRecord]: ...
     async def mark_outbox_projected(self, world_id: str, event_ids: list[str]) -> None: ...
     async def close(self) -> None: ...
@@ -433,6 +481,19 @@ CREATE TABLE IF NOT EXISTS commands (
 );
 CREATE INDEX IF NOT EXISTS commands_due_idx
     ON commands (world_id, status, scheduled_tick, priority, sequence);
+CREATE TABLE IF NOT EXISTS evaluation_leases (
+    world_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    evaluation_id TEXT NOT NULL,
+    subject_digest TEXT NOT NULL,
+    contract_digest TEXT NOT NULL,
+    status TEXT NOT NULL,
+    owner TEXT,
+    lease_expires_at REAL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (world_id, run_id, evaluation_id)
+);
 CREATE TABLE IF NOT EXISTS outbox (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id TEXT NOT NULL UNIQUE,
@@ -962,6 +1023,175 @@ class SqliteControlCatalog:
 
         return await self._run(_max)
 
+    # ── evaluation execution serialization ────────────────────────────────
+
+    async def lease_evaluation(
+        self,
+        world_id: str,
+        run_id: str,
+        evaluation_id: str,
+        subject_digest: str,
+        contract_digest: str,
+        owner: str,
+        *,
+        lease_seconds: float = 300.0,
+    ) -> EvaluationLease:
+        """Atomically select the one process allowed to execute a grader.
+
+        Identity mismatches are returned to the evaluation service so it can
+        preserve its public ``ValueError`` contract. A live lease owned by a
+        different process is observationally ``acquired=False``. Expired and
+        explicitly released leases may be taken over; a caller may also renew
+        its own lease by calling this method again.
+        """
+        if not evaluation_id.strip():
+            raise ValueError("evaluation_id must be non-empty")
+        if not owner.strip():
+            raise ValueError("evaluation lease owner must be non-empty")
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
+
+        def _lease() -> EvaluationLease:
+            conn = self._connect_sync()
+            now_seconds = time.time()
+            now = _utcnow()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT * FROM evaluation_leases WHERE "
+                    "world_id=? AND run_id=? AND evaluation_id=?",
+                    (world_id, run_id, evaluation_id),
+                ).fetchone()
+                if row is None:
+                    conn.execute(
+                        "INSERT INTO evaluation_leases "
+                        "(world_id, run_id, evaluation_id, subject_digest, "
+                        "contract_digest, status, owner, lease_expires_at, "
+                        "created_at, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, 'RUNNING', ?, ?, ?, ?)",
+                        (
+                            world_id,
+                            run_id,
+                            evaluation_id,
+                            subject_digest,
+                            contract_digest,
+                            owner,
+                            now_seconds + lease_seconds,
+                            now,
+                            now,
+                        ),
+                    )
+                    inserted = conn.execute(
+                        "SELECT * FROM evaluation_leases WHERE "
+                        "world_id=? AND run_id=? AND evaluation_id=?",
+                        (world_id, run_id, evaluation_id),
+                    ).fetchone()
+                    assert inserted is not None
+                    return _evaluation_lease_from_row(inserted, acquired=True)
+
+                existing = _evaluation_lease_from_row(row, acquired=False)
+                same_identity = (
+                    existing.subject_digest == subject_digest
+                    and existing.contract_digest == contract_digest
+                )
+                if not same_identity or existing.status == "COMPLETE":
+                    return existing
+                if existing.status not in {"RUNNING", "RETRYABLE"}:
+                    raise CatalogSchemaMismatchError(
+                        f"evaluation {evaluation_id!r} has invalid lease status "
+                        f"{existing.status!r} in catalog {self.path}"
+                    )
+
+                available = (
+                    existing.status == "RETRYABLE"
+                    or existing.owner == owner
+                    or (existing.lease_expires_at or 0.0) <= now_seconds
+                )
+                if not available:
+                    return existing
+                conn.execute(
+                    "UPDATE evaluation_leases SET status='RUNNING', owner=?, "
+                    "lease_expires_at=?, updated_at=? WHERE "
+                    "world_id=? AND run_id=? AND evaluation_id=?",
+                    (
+                        owner,
+                        now_seconds + lease_seconds,
+                        now,
+                        world_id,
+                        run_id,
+                        evaluation_id,
+                    ),
+                )
+                updated = conn.execute(
+                    "SELECT * FROM evaluation_leases WHERE "
+                    "world_id=? AND run_id=? AND evaluation_id=?",
+                    (world_id, run_id, evaluation_id),
+                ).fetchone()
+                assert updated is not None
+                return _evaluation_lease_from_row(updated, acquired=True)
+
+        return await self._run(_lease)
+
+    async def complete_evaluation(
+        self,
+        world_id: str,
+        run_id: str,
+        evaluation_id: str,
+        owner: str,
+    ) -> None:
+        """Mark an Iceberg-backed evaluation result as durably available."""
+
+        def _complete() -> None:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT status, owner FROM evaluation_leases WHERE "
+                    "world_id=? AND run_id=? AND evaluation_id=?",
+                    (world_id, run_id, evaluation_id),
+                ).fetchone()
+                if row is None:
+                    raise CatalogConflictError(
+                        f"evaluation {evaluation_id!r} has no durable execution lease"
+                    )
+                if row["status"] == "COMPLETE":
+                    return
+                if row["status"] != "RUNNING" or row["owner"] != owner:
+                    raise CatalogConflictError(
+                        f"evaluation {evaluation_id!r} is not leased by {owner}"
+                    )
+                conn.execute(
+                    "UPDATE evaluation_leases SET status='COMPLETE', owner=NULL, "
+                    "lease_expires_at=NULL, updated_at=? WHERE "
+                    "world_id=? AND run_id=? AND evaluation_id=?",
+                    (_utcnow(), world_id, run_id, evaluation_id),
+                )
+
+        await self._run(_complete)
+
+    async def release_evaluation(
+        self,
+        world_id: str,
+        run_id: str,
+        evaluation_id: str,
+        owner: str,
+    ) -> None:
+        """Make a failed grader execution immediately retryable."""
+
+        def _release() -> None:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    "UPDATE evaluation_leases SET status='RETRYABLE', owner=NULL, "
+                    "lease_expires_at=NULL, updated_at=? WHERE "
+                    "world_id=? AND run_id=? AND evaluation_id=? "
+                    "AND status='RUNNING' AND owner=?",
+                    (_utcnow(), world_id, run_id, evaluation_id, owner),
+                )
+
+        await self._run(_release)
+
     async def cancel_commands(self, world_id: str, *, reason: str) -> int:
         """Terminally reject unsettled commands when their world is destroyed."""
 
@@ -1259,6 +1489,28 @@ class SqliteControlCatalog:
             ]
 
         return await self._run(_list)
+
+
+def _evaluation_lease_from_row(
+    row: sqlite3.Row,
+    *,
+    acquired: bool,
+) -> EvaluationLease:
+    return EvaluationLease(
+        world_id=row["world_id"],
+        run_id=row["run_id"],
+        evaluation_id=row["evaluation_id"],
+        subject_digest=row["subject_digest"],
+        contract_digest=row["contract_digest"],
+        status=row["status"],
+        owner=row["owner"],
+        lease_expires_at=(
+            float(row["lease_expires_at"]) if row["lease_expires_at"] is not None else None
+        ),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        acquired=acquired,
+    )
 
 
 def _command_from_row(row: sqlite3.Row) -> CommandRecord:

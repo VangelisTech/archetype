@@ -9,9 +9,10 @@
 //   signatures: the cross-world discovery queries per-world sharding cannot
 //   answer. Low write rate by construction (create/fork/first-append only).
 // - WorldCommitDO — one instance per world id. Writer fence, tick manifests,
-//   command ledger/outbox: the per-tick hot path. A Durable Object executes
-//   requests serially, so the fence is structural — publish is a straight-
-//   line transaction with no CAS gymnastics.
+//   command ledger/outbox, and evaluation execution leases: the serialized
+//   control path. A Durable Object executes requests serially, so the fence is
+//   structural — publish is a straight-line transaction with no CAS
+//   gymnastics.
 //
 // Auth: a single bearer token (CATALOG_TOKEN secret). The Python client is
 // archetype.app.storage.remote_catalog.RemoteControlCatalog; semantics must match
@@ -24,7 +25,7 @@ export interface Env {
 }
 
 const JSON_HEADERS = { "content-type": "application/json" };
-const CATALOG_PROTOCOL_VERSION = 6;
+const CATALOG_PROTOCOL_VERSION = 7;
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), { status, headers: JSON_HEADERS });
@@ -371,6 +372,13 @@ export class WorldCommitDO implements DurableObject {
       );
       CREATE INDEX IF NOT EXISTS commands_due_idx
         ON commands (status, scheduled_tick, priority, sequence);
+      CREATE TABLE IF NOT EXISTS evaluation_leases (
+        run_id TEXT NOT NULL, evaluation_id TEXT NOT NULL,
+        subject_digest TEXT NOT NULL, contract_digest TEXT NOT NULL,
+        status TEXT NOT NULL, owner TEXT, lease_expires_at REAL,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        PRIMARY KEY (run_id, evaluation_id)
+      );
       CREATE TABLE IF NOT EXISTS outbox (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
         event_id TEXT NOT NULL UNIQUE, aggregate_type TEXT NOT NULL,
@@ -428,6 +436,149 @@ export class WorldCommitDO implements DurableObject {
         });
         return json(result);
       }
+    }
+
+    if (route[0] === "evaluations" && route[1] === "lease" && method === "POST") {
+      const body = (await request.json()) as Record<string, unknown>;
+      const runId = String(body.run_id ?? "");
+      const evaluationId = String(body.evaluation_id ?? "");
+      const subjectDigest = String(body.subject_digest ?? "");
+      const contractDigest = String(body.contract_digest ?? "");
+      const owner = String(body.owner ?? "");
+      const leaseSeconds = Number(body.lease_seconds ?? 300);
+      if (
+        !runId ||
+        !evaluationId.trim() ||
+        !subjectDigest ||
+        !contractDigest ||
+        !owner.trim() ||
+        !Number.isFinite(leaseSeconds) ||
+        leaseSeconds <= 0
+      ) {
+        return json({ error: "invalid_request", message: "invalid evaluation lease" }, 422);
+      }
+      const nowSec = Date.now() / 1000;
+      const record = this.state.storage.transactionSync(() => {
+        const rows = this.sql
+          .exec(
+            "SELECT * FROM evaluation_leases WHERE run_id = ? AND evaluation_id = ?",
+            runId,
+            evaluationId,
+          )
+          .toArray() as Array<Record<string, unknown>>;
+        if (rows.length === 0) {
+          this.sql.exec(
+            "INSERT INTO evaluation_leases (run_id, evaluation_id, subject_digest, contract_digest, status, owner, lease_expires_at, created_at, updated_at) " +
+              "VALUES (?, ?, ?, ?, 'RUNNING', ?, ?, ?, ?)",
+            runId,
+            evaluationId,
+            subjectDigest,
+            contractDigest,
+            owner,
+            nowSec + leaseSeconds,
+            now,
+            now,
+          );
+          const inserted = this.sql
+            .exec(
+              "SELECT * FROM evaluation_leases WHERE run_id = ? AND evaluation_id = ?",
+              runId,
+              evaluationId,
+            )
+            .toArray()[0] as Record<string, unknown>;
+          return { ...inserted, acquired: true };
+        }
+
+        const existing = rows[0];
+        const sameIdentity =
+          existing.subject_digest === subjectDigest &&
+          existing.contract_digest === contractDigest;
+        if (!sameIdentity || existing.status === "COMPLETE") {
+          return { ...existing, acquired: false };
+        }
+        if (existing.status !== "RUNNING" && existing.status !== "RETRYABLE") {
+          throw new Error(
+            `invalid evaluation lease status ${String(existing.status)}`,
+          );
+        }
+        const available =
+          existing.status === "RETRYABLE" ||
+          existing.owner === owner ||
+          Number(existing.lease_expires_at ?? 0) <= nowSec;
+        if (!available) return { ...existing, acquired: false };
+
+        this.sql.exec(
+          "UPDATE evaluation_leases SET status = 'RUNNING', owner = ?, lease_expires_at = ?, updated_at = ? WHERE run_id = ? AND evaluation_id = ?",
+          owner,
+          nowSec + leaseSeconds,
+          now,
+          runId,
+          evaluationId,
+        );
+        const updated = this.sql
+          .exec(
+            "SELECT * FROM evaluation_leases WHERE run_id = ? AND evaluation_id = ?",
+            runId,
+            evaluationId,
+          )
+          .toArray()[0] as Record<string, unknown>;
+        return { ...updated, acquired: true };
+      });
+      return json(record);
+    }
+
+    if (route[0] === "evaluations" && route[1] === "complete" && method === "POST") {
+      const body = (await request.json()) as Record<string, unknown>;
+      const runId = String(body.run_id ?? "");
+      const evaluationId = String(body.evaluation_id ?? "");
+      const owner = String(body.owner ?? "");
+      try {
+        this.state.storage.transactionSync(() => {
+          const rows = this.sql
+            .exec(
+              "SELECT status, owner FROM evaluation_leases WHERE run_id = ? AND evaluation_id = ?",
+              runId,
+              evaluationId,
+            )
+            .toArray() as Array<Record<string, unknown>>;
+          if (rows.length === 0) {
+            throw new Error(`catalog_conflict:evaluation ${evaluationId} has no durable execution lease`);
+          }
+          const existing = rows[0];
+          if (existing.status === "COMPLETE") return;
+          if (existing.status !== "RUNNING" || existing.owner !== owner) {
+            throw new Error(`catalog_conflict:evaluation ${evaluationId} is not leased by ${owner}`);
+          }
+          this.sql.exec(
+            "UPDATE evaluation_leases SET status = 'COMPLETE', owner = NULL, lease_expires_at = NULL, updated_at = ? WHERE run_id = ? AND evaluation_id = ?",
+            now,
+            runId,
+            evaluationId,
+          );
+        });
+        return json({ ok: true });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.startsWith("catalog_conflict:")) {
+          return conflict("catalog_conflict", message.slice("catalog_conflict:".length));
+        }
+        throw error;
+      }
+    }
+
+    if (route[0] === "evaluations" && route[1] === "release" && method === "POST") {
+      const body = (await request.json()) as Record<string, unknown>;
+      this.state.storage.transactionSync(() => {
+        this.sql.exec(
+          "UPDATE evaluation_leases SET status = 'RETRYABLE', owner = NULL, lease_expires_at = NULL, updated_at = ? " +
+            "WHERE run_id = ? AND evaluation_id = ? AND status = 'RUNNING' AND owner = ?",
+          now,
+          String(body.run_id ?? ""),
+          String(body.evaluation_id ?? ""),
+          String(body.owner ?? ""),
+        );
+      });
+      return json({ ok: true });
     }
 
     if (route[0] === "commands" && route[1] === "admit" && method === "POST") {

@@ -226,3 +226,90 @@ def task_process_writer_fence_race() -> list[GraderResult]:
                 name="process_writer_fence_race",
             )
         ]
+
+
+def run_process_evaluation_replay() -> list[GraderResult]:
+    """Independent service processes serialize one external grader call."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        uri = str(root / "store")
+        namespace = "evaluation_race"
+        backend = ("--backend", "iceberg")
+        seed = _run("seed", uri, namespace, *backend, "--name", "evaluation-race")
+        go = root / "go"
+        grader_log = root / "grader-calls.log"
+        ready = [root / f"ready-{index}" for index in range(4)]
+        processes = [
+            _spawn(
+                "evaluate",
+                uri,
+                namespace,
+                *backend,
+                "--world-id",
+                seed["world_id"],
+                "--ready",
+                str(marker),
+                "--go",
+                str(go),
+                "--evaluation-id",
+                "shared-process-evaluation",
+                "--grader-log",
+                str(grader_log),
+            )
+            for marker in ready
+        ]
+        try:
+            _wait_for_markers(ready, processes)
+            go.write_text("go")
+            results = _collect(processes)
+        finally:
+            for proc in processes:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=10)
+
+        evaluations = _run(
+            "query-evaluations",
+            uri,
+            namespace,
+            *backend,
+            "--world-id",
+            seed["world_id"],
+        )
+        grader_calls_before_conflict = grader_log.read_text().splitlines()
+        _run("advance", uri, namespace, *backend, "--world-id", seed["world_id"])
+        conflict = _run(
+            "evaluate-conflict",
+            uri,
+            namespace,
+            *backend,
+            "--world-id",
+            seed["world_id"],
+            "--evaluation-id",
+            "shared-process-evaluation",
+            "--grader-log",
+            str(grader_log),
+        )
+        grader_calls_after_conflict = grader_log.read_text().splitlines()
+
+        return [
+            state_check(
+                {
+                    "all_processes_returned_same_result": len(
+                        {json.dumps(result, sort_keys=True) for result in results}
+                    )
+                    == 1,
+                    "external_grader_side_effect_happened_once": (
+                        len(grader_calls_before_conflict) == 1
+                    ),
+                    "one_result_is_visible": evaluations["rows"] == 1,
+                    "result_identity_is_durable": evaluations["evaluation_ids"]
+                    == ["shared-process-evaluation"],
+                    "changed_subject_conflicts": conflict["conflict"] is True,
+                    "subject_conflict_did_not_run_grader": (
+                        grader_calls_after_conflict == grader_calls_before_conflict
+                    ),
+                },
+                name="process_evaluation_replay",
+            )
+        ]

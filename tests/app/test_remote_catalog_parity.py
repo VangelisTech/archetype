@@ -351,6 +351,64 @@ async def test_command_ledger_and_outbox_parity(tmp_path, worker_url):
         await catalog.close()
 
 
+async def test_evaluation_lease_parity(tmp_path, worker_url):
+    for catalog in await _both(tmp_path, worker_url):
+        first = await catalog.lease_evaluation(
+            "w1",
+            "r1",
+            "eval-1",
+            "subject-a",
+            "contract-a",
+            "owner-a",
+            lease_seconds=30,
+        )
+        waiting = await catalog.lease_evaluation(
+            "w1",
+            "r1",
+            "eval-1",
+            "subject-a",
+            "contract-a",
+            "owner-b",
+            lease_seconds=30,
+        )
+        mismatch = await catalog.lease_evaluation(
+            "w1",
+            "r1",
+            "eval-1",
+            "subject-b",
+            "contract-a",
+            "owner-b",
+            lease_seconds=30,
+        )
+        assert first.acquired and first.owner == "owner-a"
+        assert not waiting.acquired and waiting.owner == "owner-a"
+        assert not mismatch.acquired and mismatch.subject_digest == "subject-a"
+
+        await catalog.release_evaluation("w1", "r1", "eval-1", "owner-a")
+        recovered = await catalog.lease_evaluation(
+            "w1",
+            "r1",
+            "eval-1",
+            "subject-a",
+            "contract-a",
+            "owner-b",
+        )
+        assert recovered.acquired and recovered.owner == "owner-b"
+
+        await catalog.complete_evaluation("w1", "r1", "eval-1", "owner-b")
+        complete = await catalog.lease_evaluation(
+            "w1",
+            "r1",
+            "eval-1",
+            "subject-a",
+            "contract-a",
+            "owner-c",
+        )
+        assert complete.status == "COMPLETE"
+        assert not complete.acquired and complete.owner is None
+        await catalog.close()
+
+
 async def test_world_deactivation_rejects_open_and_future_commands(tmp_path, worker_url):
     admission = CommandAdmission(
         command_id="c-before-destroy",
