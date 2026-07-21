@@ -334,3 +334,28 @@ Source: [`examples/13_biome_rts.py`](https://github.com/VangelisTech/archetype/b
 
 The hosted physical-AI episode path has no numbered example script; its
 runnable snippet and contract live in [Physical AI](physical-ai.md).
+
+---
+
+## 14. Live Biome Agent
+
+Run a closed-loop mission against Sander Mertens' actual Biome executable.
+The agent observes reflected deposits, selects a requested resource and a free
+power cell, composes Biome's real `buildings.Drill` and `buildings.Solar`
+prefabs through Flecs REST, and waits for native power/mining systems to prove
+the result. Archetype persists the goal, decision, and terminal evidence.
+
+```bash
+# Clone pinned upstream sources into .context, build, launch, act, and verify.
+uv run python examples/14_biome_agent.py --launch --keep-open
+
+# Or control a Biome process already listening on port 27750.
+uv run python examples/14_biome_agent.py --require-live
+```
+
+Source: [`examples/14_biome_agent.py`](https://github.com/VangelisTech/archetype/blob/main/examples/14_biome_agent.py)
+
+This example is opt-in external dogfood, not a local simulation stand-in. In
+ordinary example smoke runs it exits with an explicit skip when no Biome
+server is present. See [Prefab Libraries](prefab-libraries.md#literal-biome-dogfood)
+for the ownership boundary, upstream pins, and reproducibility notes.

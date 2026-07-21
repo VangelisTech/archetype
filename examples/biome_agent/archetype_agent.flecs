@@ -1,0 +1,74 @@
+// Archetype-owned mission scene evaluated by the upstream Biome executable.
+// It references Biome's own prefab library; it does not reproduce that library.
+
+include config/sky
+include config/view
+include config/assets
+include config/resources
+include config/buildings
+include config/environment
+include player
+
+using biome
+using flecs.engine.*
+using flecs.script
+
+camera {
+    Position3: {0, 22, 90}
+    LookAt: {0, 4, 0}
+    CameraController: {terrain: terrain.Terrain, clearance: 2}
+}
+
+$ {
+    terrain.Terrain: {
+        width: 48
+        height: 48
+        sample_kind: Linear
+        scale: 25
+        octaves: 4
+        warp_octaves: 2
+        warp: 1.1
+        ridge_freq: 1.7
+        ridge_octaves: 2
+        ridge_mix: 0.25
+        height_offset: 0.5
+        height_gain: 1.2
+        height_base: 0.3
+        max_height: 15
+    }
+
+    weather.Atmosphere: {
+        o2_content: 0.0
+        co2_content: 0.05
+        atmosphere_height: 100
+    }
+
+    weather.Config: {
+        sun: sky.sun
+        seed_ground: {temperature: -15, moisture: 0.4, water: 0.05, frozen: 0}
+        seed_air: {temperature: -15, vapor: 0.0}
+        seed_variation: 0.2
+    }
+}
+
+mission {
+    iron_site : environment.IronOre {
+        TerrainPosition: {
+            terrain: terrain.Terrain
+            x: 18
+            y: 24
+            span_x: 1
+            span_y: 1
+        }
+    }
+
+    copper_site : environment.CopperOre {
+        TerrainPosition: {
+            terrain: terrain.Terrain
+            x: 30
+            y: 24
+            span_x: 1
+            span_y: 1
+        }
+    }
+}

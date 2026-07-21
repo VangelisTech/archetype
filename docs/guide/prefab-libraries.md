@@ -7,7 +7,9 @@ queried, versioned by tick, forked, graded, and composed with the same
 relationship tools as a runtime scene.  The RTS capstone in
 `examples/biome_rts/` demonstrates the pattern with harvesters, turrets,
 nested tools, command hierarchies, supply lines, visibility, and targeting.
-It is a reference package, not a shipped `archetype` family.
+It is a reference package, not a shipped `archetype` family. The live
+dogfood in `examples/biome_agent/` crosses the next boundary: it controls
+Sander Mertens' actual Biome ECS world instead of recreating another RTS.
 
 ## Current relation and temporal-view contract
 
@@ -271,3 +273,98 @@ the proposed [graph-system](../design/graph-system.md) and
 [prefab-registry](../design/prefab-registry.md) design records for rationale
 and the ruled, not-yet-implemented cross-world registry; those records do not
 expand the implemented contract.
+
+## Literal Biome dogfood
+
+`examples/14_biome_agent.py` treats Biome for what it already is: an
+executable ECS asset library and environment. It does not translate `Drill`
+into a Python class or reproduce the miner, power, storage, placement, or
+logistics systems.
+
+```text
+live Biome world ── reflected observation ──> policy
+       │                                      │
+       │                           place Drill + Solar
+       │                                      │
+       <──────────── managed Flecs script ─────┘
+       │
+       ├── native placement selects the deposit
+       ├── native power energizes the Drill
+       ├── native miner depletes the deposit
+       └── native storage receives the resource
+                          │
+                          └──> Archetype goal/action/outcome history
+```
+
+This yields two ECS worlds with different authority:
+
+| World | Owns | Does not own |
+|---|---|---|
+| Biome/Flecs | Prefabs, scene entities, placement, power, mining, storage, rendering, simulation time | Agent mission history or benchmark grading |
+| Archetype | Goal, policy decision, episode phase, terminal result, durable `(world_id, run_id, tick)` evidence | Biome's native transition logic |
+
+The adapter reads `biome.miner.Deposit`,
+`flecs.engine.terrain.TerrainPosition`, `biome.power.PowerConsumer`,
+`biome.miner.Miner`, and `biome.resources.Storage` through the Flecs Remote
+API. Its one high-level action installs a managed Flecs script containing
+instances of the upstream `buildings.Drill` and `buildings.Solar` prefabs. A
+run succeeds only after the Drill is powered, targets the selected deposit,
+and the deposit's native amount decreases by the requested quantity.
+
+That action boundary also demonstrates the relation-copy rule. Archetype's
+generic `instantiate()` neither copies arbitrary relations nor returns an
+old-to-new ID map. Domain code interprets a durable decision and materializes
+the required external entities/relations explicitly. The generic prefab
+operation is not silently expanded to understand Biome placement or power.
+
+### Run it
+
+The fully reproducible path is one command:
+
+```bash
+uv run python examples/14_biome_agent.py --launch --keep-open
+```
+
+On first use, the bootstrap clones the upstream repositories under the
+gitignored `.context/upstream/` directory, checks out exact revisions, stages
+the Archetype-owned mission scene, builds Biome, launches its graphical app
+and REST server, runs the Copper extraction goal, and leaves the game open.
+Omit `--keep-open` to terminate only the child process that the example
+started. Use `--resource Iron --amount 25` to change the mission goal.
+
+If Biome is already running:
+
+```bash
+uv run python examples/14_biome_agent.py --require-live
+```
+
+The pinned compatibility set is:
+
+| Project | Revision | Reason |
+|---|---|---|
+| `SanderMertens/biome` | `d3372c2b3d7491b9260727292c27e554d12c0478` | Upstream game and prefab library used by the dogfood |
+| `SanderMertens/flecs` | `fd137d63deccded67aba4a0dd8a8a4231d24e897` on `script_await` | Public branch containing the async script task/future API used by Biome |
+
+The bootstrap passes `FETCHCONTENT_SOURCE_DIR_FLECS` to CMake because the
+checked-in Biome CMake configuration currently names Sander's local Flecs
+checkout. Reconfiguring after the Flecs checkout is necessary so CMake's
+source glob includes `src/addons/script/async.c`. The mission scene omits the
+upstream HUD because this compatibility revision eagerly evaluates its
+zero-capacity resource gauge and aborts the remainder of the default scene;
+all environment and Drill systems remain upstream-native.
+
+!!! warning "Flecs REST is a trusted local control boundary"
+
+    The upstream executable starts an unauthenticated, mutating REST server
+    whose default bind address is `0.0.0.0:27750`. Run this dogfood only on a
+    trusted local network or behind an appropriate host firewall; do not
+    expose the port to an untrusted network. `BiomeClient` refuses
+    non-loopback target URLs by default, and validates every identifier it
+    interpolates into a managed script, but that does not change the server's
+    bind address or add server-side authorization.
+
+At the pinned Biome revision the upstream repository does not declare a
+license. Archetype therefore does not vendor, modify, package, or redistribute
+Biome source or assets. The bootstrap creates a local checkout for the user.
+Obtain permission or a declared upstream license before distributing a
+derived Biome build.
