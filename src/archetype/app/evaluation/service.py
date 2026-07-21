@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import socket
 import time
@@ -52,6 +53,8 @@ from archetype.evaluation.contracts import (
     subject_digest,
 )
 from archetype.ingestion.contracts import IngestionTable
+
+logger = logging.getLogger(__name__)
 
 _EVALUATION_RESULTS = IngestionTable("evaluation_results", key_columns=("evaluation_id",))
 _EVALUATION_LEASE_SECONDS = 300.0
@@ -260,8 +263,9 @@ class EvaluationService:
                 await catalog.release_evaluation(
                     str(world_id), snapshot.run_id, evaluation_id, owner
                 )
-            finally:
-                raise
+            except Exception:
+                logger.warning("failed to release durable evaluation lease")
+            raise
 
     async def _acquire_evaluation(
         self,

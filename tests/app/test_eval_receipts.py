@@ -305,6 +305,37 @@ async def test_evaluation_heartbeat_renews_and_detects_lost_owner(monkeypatch):
     assert lost.is_set()
 
 
+async def test_failed_lease_release_does_not_mask_grader_failure(tmp_path, monkeypatch, caplog):
+    container = ServiceContainer()
+    try:
+        storage = _storage(tmp_path)
+        world = await _seeded_world(container, storage)
+        catalog = container.storage_service.get_control_catalog(storage)
+
+        async def fail_release(*_args, **_kwargs):
+            raise RuntimeError("release transport failed")
+
+        def fail_grader(_df):
+            raise ValueError("grader failed")
+
+        monkeypatch.setattr(catalog, "release_evaluation", fail_release)
+        with caplog.at_level("WARNING", logger=evaluation_module.__name__):
+            with pytest.raises(ValueError, match="grader failed"):
+                await container.command_gateway.evaluate(
+                    _ctx(),
+                    world.world_id,
+                    [Telemetry],
+                    contract=_contract(),
+                    grader=fail_grader,
+                    evaluation_id="failed-release-preserves-grader-error",
+                )
+
+        assert "failed to release durable evaluation lease" in caplog.text
+        assert "release transport failed" not in caplog.text
+    finally:
+        await container.shutdown()
+
+
 async def containerless_heartbeat(catalog, lease, *, stop, lost):
     return await evaluation_module.EvaluationService._heartbeat_evaluation(
         None,
