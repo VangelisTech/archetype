@@ -30,7 +30,7 @@ from archetype.ingestion import (
     ARTIFACT_TEXT,
     ARTIFACT_VIDEO,
 )
-from archetype.missions.trajectories import ClaudeTranscriptSource
+from archetype.missions.trajectories import CLAUDE_TRANSCRIPT_TABLE, ClaudeTranscriptSource
 
 ACCESS_KEY_ID = os.environ.get("R2_ACCESS_KEY_ID")
 SECRET_ACCESS_KEY = os.environ.get("R2_SECRET_ACCESS_KEY")
@@ -45,6 +45,7 @@ _REQUIRED = (
 _HF = "hf://datasets/Eventual-Inc/sample-files"
 
 pytestmark = [
+    pytest.mark.contract("ingestion.catalog.cold_roundtrip"),
     pytest.mark.asyncio,
     pytest.mark.integration,
     pytest.mark.external,
@@ -230,56 +231,16 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
         )
         assert transcript_result.rows_written == 3
         assert transcript_result.artifact.uri.startswith(object_root)
-        assert (
-            await container.transcript_ingestion_service.read(
-                str(world.world_id), storage_config=storage
-            )
-        ).count_rows() == 3
-        common = await container.ingestion_service.read(str(world.world_id), ARTIFACT_FILES)
-        assert common.count_rows() == 8
-        common_rows = common.select("logical_path", "source_uri", "object_uri").to_pylist()
-        assert all(row["object_uri"].startswith(object_root) for row in common_rows)
-        assert any(str(row["source_uri"]).startswith("hf://") for row in common_rows)
-
-        (audio,) = (
-            await container.ingestion_service.read(str(world.world_id), ARTIFACT_AUDIO)
-        ).to_pylist()
-        assert audio["sample_rate"] == 16_000
-        assert audio["duration_seconds"] > 150
-
-        (video,) = (
-            await container.ingestion_service.read(str(world.world_id), ARTIFACT_VIDEO)
-        ).to_pylist()
-        assert video["width"] == 1_920
-        assert video["height"] == 1_080
-        assert video["duration_seconds"] > 150
-
-        (pdf,) = (
-            await container.ingestion_service.read(str(world.world_id), ARTIFACT_PDF)
-        ).to_pylist()
-        assert pdf["page_count"] == 26
-
-        text = await container.ingestion_service.read(str(world.world_id), ARTIFACT_TEXT)
-        assert sorted(text.select("language").to_pydict()["language"]) == [
-            "diff",
-            "jsonl",
-            "markdown",
-            "markdown",
-            "python",
-        ]
-        (diff,) = (
-            await container.ingestion_service.read(str(world.world_id), ARTIFACT_DIFF)
-        ).to_pylist()
-        assert (diff["file_count"], diff["hunk_count"], diff["additions"]) == (1, 1, 1)
         world_id = str(world.world_id)
+        run_id = str(world.run_id)
         await container.shutdown()
         await storage_service.shutdown()
         container = None
         storage_service = None
 
-        # A fresh catalog instance and application graph must discover the
-        # same R2-backed tables and read the common index; no process-local
-        # Daft registration may be required for the cold path.
+        # A fresh catalog instance and application graph must discover and
+        # query every populated R2-backed table. No process-local Daft
+        # registration from the writer may be required for the cold path.
         cold_catalog = _catalog(catalog_path, warehouse)
         cold_storage = StorageService(_session(cold_catalog, namespace))
         cold = ServiceContainer(
@@ -290,17 +251,124 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
                 io_config=storage.io_config,
             ),
         )
-        cold_index = await cold.artifact_service.index(world_id, storage_config=storage)
-        assert cold_index.count_rows() == 8
-        assert {
-            "artifact_files",
-            "artifact_audio",
-            "artifact_video",
-            "artifact_pdf",
-            "artifact_text",
-            "artifact_diff",
-            "coding_agent_transcript_rows",
-        }.issubset({name for _, name in cold_catalog.list_tables(namespace)})
+        common_rows = (
+            (await cold.application.query_artifacts(world_id, storage_config=storage))
+            .select(
+                "world_id",
+                "run_id",
+                "artifact_id",
+                "logical_path",
+                "source_uri",
+                "object_uri",
+            )
+            .to_pylist()
+        )
+        common_by_id = {row["artifact_id"]: row for row in common_rows}
+        expected_ids = {reference.artifact_id for reference in references} | {
+            transcript_result.artifact.artifact_id
+        }
+        assert set(common_by_id) == expected_ids
+        assert all(row["world_id"] == world_id for row in common_rows)
+        assert all(row["run_id"] == run_id for row in common_rows)
+        assert all(str(row["object_uri"]).startswith(object_root) for row in common_rows)
+        assert any(str(row["source_uri"]).startswith("hf://") for row in common_rows)
+
+        audio_rows = (
+            (await cold.ingestion_service.read(world_id, ARTIFACT_AUDIO, storage_config=storage))
+            .select("artifact_id", "sample_rate", "duration_seconds")
+            .to_pylist()
+        )
+        (audio,) = audio_rows
+        assert audio["sample_rate"] == 16_000
+        assert audio["duration_seconds"] > 150
+        assert common_by_id[audio["artifact_id"]]["logical_path"] == "context/talk.mp3"
+
+        video_rows = (
+            (await cold.ingestion_service.read(world_id, ARTIFACT_VIDEO, storage_config=storage))
+            .select("artifact_id", "width", "height", "duration_seconds")
+            .to_pylist()
+        )
+        (video,) = video_rows
+        assert video["width"] == 1_920
+        assert video["height"] == 1_080
+        assert video["duration_seconds"] > 150
+        assert common_by_id[video["artifact_id"]]["logical_path"] == "context/talk.mp4"
+
+        pdf_rows = (
+            (await cold.ingestion_service.read(world_id, ARTIFACT_PDF, storage_config=storage))
+            .select("artifact_id", "page_count")
+            .to_pylist()
+        )
+        (pdf,) = pdf_rows
+        assert pdf["page_count"] == 26
+        assert common_by_id[pdf["artifact_id"]]["logical_path"] == "context/paper.pdf"
+
+        text_rows = (
+            (await cold.ingestion_service.read(world_id, ARTIFACT_TEXT, storage_config=storage))
+            .select("artifact_id", "language")
+            .to_pylist()
+        )
+        assert sorted(row["language"] for row in text_rows) == [
+            "diff",
+            "jsonl",
+            "markdown",
+            "markdown",
+            "python",
+        ]
+        assert {common_by_id[row["artifact_id"]]["logical_path"] for row in text_rows} == {
+            "claude/dogfood-project/session.jsonl",
+            "context/change.patch",
+            "context/daft-samples.md",
+            "context/mission.md",
+            "context/pipeline.py",
+        }
+
+        diff_rows = (
+            (await cold.ingestion_service.read(world_id, ARTIFACT_DIFF, storage_config=storage))
+            .select("artifact_id", "file_count", "hunk_count", "additions")
+            .to_pylist()
+        )
+        (diff,) = diff_rows
+        assert (diff["file_count"], diff["hunk_count"], diff["additions"]) == (1, 1, 1)
+        assert common_by_id[diff["artifact_id"]]["logical_path"] == "context/change.patch"
+
+        transcript_rows = (
+            (await cold.application.query_transcript_rows(world_id, storage_config=storage))
+            .select("source_artifact_id", "mission_id", "row_kind", "seq", "role", "content")
+            .to_pylist()
+        )
+        assert {row["source_artifact_id"] for row in transcript_rows} == {
+            transcript_result.artifact.artifact_id
+        }
+        assert {row["mission_id"] for row in transcript_rows} == {"r2-context-dogfood"}
+        assert sorted((row["row_kind"], row["seq"]) for row in transcript_rows) == [
+            ("session", -1),
+            ("turn", 0),
+            ("turn", 1),
+        ]
+        assert common_by_id[transcript_result.artifact.artifact_id]["logical_path"] == (
+            "claude/dogfood-project/session.jsonl"
+        )
+
+        cold_counts = {
+            ARTIFACT_FILES.name: len(common_rows),
+            ARTIFACT_AUDIO.name: len(audio_rows),
+            ARTIFACT_VIDEO.name: len(video_rows),
+            ARTIFACT_PDF.name: len(pdf_rows),
+            ARTIFACT_TEXT.name: len(text_rows),
+            ARTIFACT_DIFF.name: len(diff_rows),
+            CLAUDE_TRANSCRIPT_TABLE: len(transcript_rows),
+        }
+        assert cold_counts == {
+            "artifact_files": 8,
+            "artifact_audio": 1,
+            "artifact_video": 1,
+            "artifact_pdf": 1,
+            "artifact_text": 5,
+            "artifact_diff": 1,
+            "coding_agent_transcript_rows": 3,
+        }
+        assert set(cold_counts).issubset({name for _, name in cold_catalog.list_tables(namespace)})
     finally:
         if cold is not None:
             await cold.shutdown()

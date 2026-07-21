@@ -138,6 +138,13 @@ The artifact common index is `artifact_files`, keyed by `artifact_id`:
 and typed extension tables remain internal service-layer surfaces until a
 specific supported query API needs them.
 
+Reads may not depend on registration state held by the writer process. Given
+the same storage configuration and durable world record, a fresh application
+graph must discover each existing `IngestionTable` through `daft.Catalog` and
+return only its current world/run rows. This cold-read rule applies equally to
+the common artifact index, typed media extensions, and normalized transcript
+rows.
+
 ## 6. Typed media indexes
 
 The file scan classifies each row once. Present families receive a narrow
@@ -297,11 +304,24 @@ local Markdown + Python + git patch + sanitized Claude transcript
   -> content-addressed R2 objects
   -> Daft Catalog / Iceberg tables whose metadata and data live on R2
   -> fresh catalog + fresh application graph
-  -> cold artifact discovery
+  -> cold queries of every populated table
 ```
 
-The test asserts the concrete audio, video, PDF, text, diff, transcript, and
-common-index rows, then destroys its unique catalog namespace and R2 prefixes.
+The cold query result is deliberately reviewable as one small table:
+
+| Table | Rows | Join back to `artifact_files` |
+| --- | ---: | --- |
+| `artifact_files` | 8 | visibility root |
+| `artifact_audio` | 1 | `artifact_id` |
+| `artifact_video` | 1 | `artifact_id` |
+| `artifact_pdf` | 1 | `artifact_id` |
+| `artifact_text` | 5 | `artifact_id` |
+| `artifact_diff` | 1 | `artifact_id` |
+| `coding_agent_transcript_rows` | 3 | `source_artifact_id` |
+
+The test checks metadata and logical-path attribution after the restart, not
+merely that the table names exist, then destroys its unique catalog namespace
+and R2 prefixes.
 Local contract tests generate real WAV, MP4, and PDF fixtures and additionally
 delete an acquisition source after object persistence, proving that metadata
 scans use the staged object. Live model calls remain an explicit

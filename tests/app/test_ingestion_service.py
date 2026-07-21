@@ -70,6 +70,43 @@ async def test_append_registers_table_in_active_daft_catalog(tmp_path):
         await container.shutdown()
 
 
+@pytest.mark.contract("ingestion.catalog.cold_roundtrip")
+@pytest.mark.asyncio
+async def test_registered_table_is_queryable_from_fresh_application(tmp_path, monkeypatch):
+    monkeypatch.setenv("ARCHETYPE_CATALOG_DIR", str(tmp_path / "control"))
+    storage = _storage(tmp_path)
+    writer = ServiceContainer()
+    try:
+        world = await writer.world_service.create_world(WorldConfig(name="w"), storage)
+        world_id = str(world.world_id)
+        run_id = str(world.run_id)
+        await writer.ingestion_service.append(
+            world_id,
+            READINGS,
+            daft.from_pydict({"reading_id": ["r1"], "value": [21.5]}),
+        )
+    finally:
+        await writer.shutdown()
+
+    reader = ServiceContainer()
+    try:
+        rows = await reader.ingestion_service.read(
+            world_id,
+            READINGS,
+            storage_config=storage,
+        )
+        assert rows.to_pylist() == [
+            {
+                "world_id": world_id,
+                "run_id": run_id,
+                "reading_id": "r1",
+                "value": 21.5,
+            }
+        ]
+    finally:
+        await reader.shutdown()
+
+
 @pytest.mark.asyncio
 async def test_append_is_idempotent_by_declared_key(tmp_path):
     container = ServiceContainer()

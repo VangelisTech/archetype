@@ -276,6 +276,21 @@ benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
+id = "ingestion.catalog.cold_roundtrip"
+source = "docs/guide/artifacts.md"
+section = "5. Catalog and index contract"
+owner = "ingestion"
+risk = "high"
+pytest = [
+  "tests/app/test_ingestion_service.py::test_registered_table_is_queryable_from_fresh_application",
+  "tests/infrastructure/test_r2_artifact_context.py::test_huggingface_context_pack_round_trips_through_cloudflare_r2",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
 id = "artifacts.ingestion.occurrence_identity"
 source = "docs/guide/artifacts.md"
 section = "4. Occurrence and content identity"
