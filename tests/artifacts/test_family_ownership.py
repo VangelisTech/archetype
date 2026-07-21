@@ -11,15 +11,25 @@ from pathlib import Path
 from uuid_utils import uuid7
 
 import archetype
-from archetype.artifacts import ArtifactRef, ArtifactSource, ArtifactStoreConfig
+from archetype.artifacts import ArtifactContext, ArtifactRef, ArtifactSource, ArtifactStoreConfig
 
 _SRC = Path(__file__).resolve().parents[2] / "src" / "archetype"
 
 
 def test_root_exports_are_the_family_contracts() -> None:
     assert archetype.ArtifactRef is ArtifactRef
+    assert archetype.ArtifactContext is ArtifactContext
     assert archetype.ArtifactSource is ArtifactSource
     assert archetype.ArtifactStoreConfig is ArtifactStoreConfig
+
+
+def test_context_identity_is_uuidv7_and_task_is_required() -> None:
+    import pytest
+
+    context = ArtifactContext(task="Explain the submitted evidence")
+    assert uuid7_timestamp_ms(context.context_id) > 0
+    with pytest.raises(ValueError, match="task must not be empty"):
+        ArtifactContext(task=" ")
 
 
 def test_artifact_ref_derives_time_from_uuidv7() -> None:

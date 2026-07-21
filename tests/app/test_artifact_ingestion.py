@@ -5,16 +5,28 @@
 
 import base64
 import hashlib
+import wave
 from pathlib import Path
 
+import av
+import numpy as np
 import pytest
 import xxhash
+from pypdf import PdfWriter
 from uuid_utils import UUID
 
+import archetype.app.artifacts.service as artifact_service_module
 from archetype.app.container import ServiceContainer
 from archetype.artifacts.contracts import ArtifactSource, ArtifactStoreConfig
 from archetype.core.config import StorageBackend, StorageConfig, WorldConfig
-from archetype.ingestion.files import ARTIFACT_FILES
+from archetype.ingestion import (
+    ARTIFACT_AUDIO,
+    ARTIFACT_DIFF,
+    ARTIFACT_FILES,
+    ARTIFACT_PDF,
+    ARTIFACT_TEXT,
+    ARTIFACT_VIDEO,
+)
 from archetype.ingestion.images import ARTIFACT_IMAGES
 
 _PNG = base64.b64decode(
@@ -32,6 +44,38 @@ def _storage(tmp_path: Path) -> StorageConfig:
 
 async def _world(container: ServiceContainer, storage: StorageConfig):
     return await container.world_service.create_world(WorldConfig(name="w"), storage)
+
+
+def _write_audio(path: Path) -> None:
+    with wave.open(str(path), "wb") as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(8_000)
+        stream.writeframes(b"\x00\x00" * 800)
+
+
+def _write_video(path: Path) -> None:
+    with av.open(str(path), mode="w") as container:
+        stream = container.add_stream("mpeg4", rate=10)
+        stream.width = 16
+        stream.height = 16
+        stream.pix_fmt = "yuv420p"
+        for index in range(6):
+            pixels = np.full((16, 16, 3), index * 20, dtype=np.uint8)
+            frame = av.VideoFrame.from_ndarray(pixels, format="rgb24")
+            for packet in stream.encode(frame):
+                container.mux(packet)
+        for packet in stream.encode():
+            container.mux(packet)
+
+
+def _write_pdf(path: Path) -> None:
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.add_blank_page(width=72, height=72)
+    writer.add_metadata({"/Title": "Context paper", "/Author": "Archetype"})
+    with path.open("wb") as stream:
+        writer.write(stream)
 
 
 @pytest.mark.asyncio
@@ -190,5 +234,138 @@ async def test_common_index_is_published_last(tmp_path, monkeypatch):
 
         iceberg = await container.storage_service.get_iceberg_context(storage)
         assert not iceberg.catalog.has_table("ns.artifact_files")
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_mixed_context_pack_runs_every_concrete_index(tmp_path):
+    container = ServiceContainer(
+        artifact_store_config=ArtifactStoreConfig.local(tmp_path / "artifact-store")
+    )
+    try:
+        storage = _storage(tmp_path)
+        world = await _world(container, storage)
+        audio = tmp_path / "context.wav"
+        video = tmp_path / "context.mp4"
+        pdf = tmp_path / "context.pdf"
+        markdown = tmp_path / "brief.md"
+        code = tmp_path / "pipeline.py"
+        patch = tmp_path / "change.patch"
+        _write_audio(audio)
+        _write_video(video)
+        _write_pdf(pdf)
+        markdown.write_text("# Context\nReview the attached implementation.\n")
+        code.write_text("def ingest(path: str) -> str:\n    return path\n")
+        patch.write_text(
+            "diff --git a/pipeline.py b/pipeline.py\n"
+            "--- a/pipeline.py\n"
+            "+++ b/pipeline.py\n"
+            "@@ -1,2 +1,3 @@\n"
+            " def ingest(path: str) -> str:\n"
+            "+    # retain source identity\n"
+            "     return path\n"
+        )
+
+        references = await container.artifact_service.ingest(
+            str(world.world_id),
+            [
+                ArtifactSource(source_uri=str(audio), logical_root="context"),
+                ArtifactSource(source_uri=str(video), logical_root="context"),
+                ArtifactSource(source_uri=str(pdf), logical_root="context"),
+                ArtifactSource(source_uri=str(markdown), logical_root="context"),
+                ArtifactSource(source_uri=str(code), logical_root="context"),
+                ArtifactSource(source_uri=str(patch), logical_root="context"),
+            ],
+        )
+
+        assert len(references) == 6
+        audio_rows = (
+            await container.ingestion_service.read(str(world.world_id), ARTIFACT_AUDIO)
+        ).to_pylist()
+        assert len(audio_rows) == 1
+        assert audio_rows[0]["sample_rate"] == 8_000
+        assert audio_rows[0]["channels"] == 1
+        assert audio_rows[0]["duration_seconds"] == pytest.approx(0.1)
+
+        video_rows = (
+            await container.ingestion_service.read(str(world.world_id), ARTIFACT_VIDEO)
+        ).to_pylist()
+        assert len(video_rows) == 1
+        assert video_rows[0]["width"] == 16
+        assert video_rows[0]["height"] == 16
+        assert video_rows[0]["fps"] == pytest.approx(10.0)
+        assert video_rows[0]["frame_count"] == 6
+
+        pdf_rows = (
+            await container.ingestion_service.read(str(world.world_id), ARTIFACT_PDF)
+        ).to_pylist()
+        assert len(pdf_rows) == 1
+        assert pdf_rows[0]["page_count"] == 2
+        assert pdf_rows[0]["title"] == "Context paper"
+        assert pdf_rows[0]["author"] == "Archetype"
+
+        text_rows = sorted(
+            (
+                await container.ingestion_service.read(str(world.world_id), ARTIFACT_TEXT)
+            ).to_pylist(),
+            key=lambda row: row["language"],
+        )
+        assert [row["language"] for row in text_rows] == ["diff", "markdown", "python"]
+        assert [row["text_kind"] for row in text_rows] == [
+            "diff",
+            "markdown",
+            "source_code",
+        ]
+        assert all(row["utf8"] for row in text_rows)
+
+        (diff_row,) = (
+            await container.ingestion_service.read(str(world.world_id), ARTIFACT_DIFF)
+        ).to_pylist()
+        assert diff_row["format"] == "git"
+        assert diff_row["file_count"] == 1
+        assert diff_row["hunk_count"] == 1
+        assert diff_row["additions"] == 1
+        assert diff_row["deletions"] == 0
+
+        common = (
+            await container.ingestion_service.read(str(world.world_id), ARTIFACT_FILES)
+        ).to_pylist()
+        patch_row = next(row for row in common if row["logical_path"].endswith(".patch"))
+        assert patch_row["mime_type"] == "text/x-diff"
+        assert patch_row["media_family"] == "text"
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_media_metadata_reads_staged_object_not_acquisition_source(tmp_path, monkeypatch):
+    source = tmp_path / "ephemeral.wav"
+    _write_audio(source)
+    real_persist = artifact_service_module.persist_objects
+
+    def persist_then_remove(*args, **kwargs):
+        staged = real_persist(*args, **kwargs).collect(num_preview_rows=0)
+        source.unlink()
+        return staged
+
+    monkeypatch.setattr(artifact_service_module, "persist_objects", persist_then_remove)
+    container = ServiceContainer(
+        artifact_store_config=ArtifactStoreConfig.local(tmp_path / "artifact-store")
+    )
+    try:
+        storage = _storage(tmp_path)
+        world = await _world(container, storage)
+        await container.artifact_service.ingest(
+            str(world.world_id), ArtifactSource(source_uri=str(source))
+        )
+
+        assert not source.exists()
+        audio = await container.ingestion_service.read(str(world.world_id), ARTIFACT_AUDIO)
+        assert audio.select("sample_rate", "channels").to_pylist() == [
+            {"sample_rate": 8_000, "channels": 1}
+        ]
     finally:
         await container.shutdown()

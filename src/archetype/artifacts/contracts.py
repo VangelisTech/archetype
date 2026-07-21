@@ -11,10 +11,14 @@ from pathlib import Path, PurePosixPath
 
 from daft.io import IOConfig
 from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
-from uuid_utils import UUID
+from uuid_utils import UUID, uuid7
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _XXHASH3_64 = re.compile(r"^[0-9a-f]{16}$")
+
+
+def _uuidv7_string() -> str:
+    return str(uuid7())
 
 
 def _portable_path(value: str, *, optional: bool) -> str:
@@ -116,6 +120,34 @@ class ArtifactRef(BaseModel):
         """Derive ingestion time from the UUIDv7 identity."""
 
         return datetime.fromtimestamp(UUID(self.artifact_id).timestamp / 1000, tz=UTC)
+
+
+class ArtifactContext(BaseModel):
+    """One task-scoped interpretation of an immutable artifact set."""
+
+    model_config = dict(frozen=True)
+
+    task: str = Field(description="Authoritative task applied to every artifact")
+    context_id: str = Field(
+        default_factory=_uuidv7_string,
+        description="UUIDv7 identity for this interpretation",
+    )
+
+    @field_validator("task")
+    @classmethod
+    def _task_required(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("artifact context task must not be empty")
+        return value
+
+    @field_validator("context_id")
+    @classmethod
+    def _uuidv7_context(cls, value: str) -> str:
+        parsed = UUID(value)
+        if parsed.version != 7:
+            raise ValueError("artifact context_id must be UUIDv7")
+        return str(parsed)
 
 
 class ArtifactStoreConfig(BaseModel):

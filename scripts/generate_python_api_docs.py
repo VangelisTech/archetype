@@ -65,12 +65,15 @@ PAGES: tuple[ReferencePage, ...] = (
         "artifacts",
         "File artifacts",
         "Recommended API",
-        "Declare files, configure bounded content-addressed storage, and retain portable "
-        "references to indexed artifact occurrences.",
+        "Declare files, configure bounded content-addressed storage, retain portable "
+        "references to indexed artifact occurrences, and anchor interpretation to a task.",
         (
+            "ArtifactContext",
             "ArtifactSource",
             "ArtifactRef",
             "ArtifactStoreConfig",
+            "analyze_artifacts",
+            "synthesize_artifact_context",
         ),
     ),
     ReferencePage(
@@ -221,6 +224,11 @@ ALIASES: dict[str, str] = {
 # These types are part of the public signature closure but are intentionally
 # namespaced rather than promoted to the top-level import surface.
 SUPPLEMENTAL: dict[str, tuple[str, str]] = {
+    "analyze_artifacts": ("archetype.artifacts", "analyze_artifacts"),
+    "synthesize_artifact_context": (
+        "archetype.artifacts",
+        "synthesize_artifact_context",
+    ),
     "ActorCtx": ("archetype.app.gateway.auth", "ActorCtx"),
     "HookEvent": ("archetype.core.hooks", "HookEvent"),
     "HookHandle": ("archetype.core.hooks", "HookHandle"),
@@ -277,6 +285,7 @@ RECORDS = frozenset(
         "EpisodeResult",
         "RolloutConfig",
         "RolloutResult",
+        "ArtifactContext",
         "ArtifactSource",
         "ArtifactRef",
         "ArtifactStoreConfig",

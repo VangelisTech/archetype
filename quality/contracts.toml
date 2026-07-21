@@ -300,6 +300,18 @@ benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
+id = "artifacts.context.task_anchored"
+source = "docs/guide/artifacts.md"
+section = "11. Task-anchored artifact context"
+owner = "artifacts"
+risk = "medium"
+pytest = ["tests/artifacts/test_context_analysis.py"]
+static = ["scripts/check_architecture.py", "scripts/check_lazy_audit.py"]
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
 id = "evaluation.result.snapshot_pinned"
 source = "docs/guide/artifacts.md"
 section = "9. Evaluation results"

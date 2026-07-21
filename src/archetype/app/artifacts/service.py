@@ -7,7 +7,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from daft import DataFrame, lit
+from daft import DataFrame, col, lit
+from daft.functions import file as daft_file
 from uuid_utils import UUID
 
 from archetype._storage_uri import local_storage_path
@@ -18,15 +19,18 @@ from archetype.app.world.interfaces import iWorldService
 from archetype.artifacts.contracts import ArtifactRef, ArtifactSource, ArtifactStoreConfig
 from archetype.core.config import StorageBackend, StorageConfig
 from archetype.ingestion.audio import ARTIFACT_AUDIO, audio_index
+from archetype.ingestion.diffs import ARTIFACT_DIFF, diff_index
 from archetype.ingestion.documents import ARTIFACT_PDF, pdf_index
 from archetype.ingestion.files import ARTIFACT_FILES, common_index
 from archetype.ingestion.images import ARTIFACT_IMAGES, image_index
+from archetype.ingestion.text import ARTIFACT_TEXT, text_index
 from archetype.ingestion.video import ARTIFACT_VIDEO, video_index
 
 _MEDIA_INDEXES = (
     ("audio", ARTIFACT_AUDIO, audio_index),
     ("image", ARTIFACT_IMAGES, image_index),
     ("pdf", ARTIFACT_PDF, pdf_index),
+    ("text", ARTIFACT_TEXT, text_index),
     ("video", ARTIFACT_VIDEO, video_index),
 )
 
@@ -81,16 +85,33 @@ class ArtifactService:
             config=config,
         ).collect(num_preview_rows=0)
 
+        # Specialized parsers must read the durable object, not reopen the
+        # acquisition URI. Remote sources may be slow, mutable, or disappear
+        # after the content-addressed copy completes.
+        indexed = stored.with_column(
+            "file",
+            daft_file(col("object_uri"), io_config=config.io_config),
+        )
+
         # Typed extensions are not visibility roots. A failure here leaves no
         # common row for public readers to observe.
-        present_families = set(stored.select("media_family").to_pydict()["media_family"])
+        present_families = set(indexed.select("media_family").to_pydict()["media_family"])
         for family, table, project in _MEDIA_INDEXES:
             if family not in present_families:
                 continue
             await self._ingestion.append(
                 wid,
                 table,
-                project(stored),
+                project(indexed),
+                storage_config=storage,
+            )
+
+        logical_paths = indexed.select("logical_path").to_pydict()["logical_path"]
+        if any(str(path).lower().endswith((".diff", ".patch")) for path in logical_paths):
+            await self._ingestion.append(
+                wid,
+                ARTIFACT_DIFF,
+                diff_index(indexed),
                 storage_config=storage,
             )
 

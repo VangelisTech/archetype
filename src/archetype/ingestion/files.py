@@ -22,6 +22,12 @@ from archetype.ingestion.contracts import IngestionTable
 
 ARTIFACT_FILES = IngestionTable("artifact_files", key_columns=("artifact_id",))
 _COPY_BUFFER = 1 << 20
+_MIME_OVERRIDES = {
+    ".diff": "text/x-diff",
+    ".jsonl": "application/x-ndjson",
+    ".ndjson": "application/x-ndjson",
+    ".patch": "text/x-diff",
+}
 _HASHES = DataType.struct(
     {
         "sha256": DataType.string(),
@@ -79,6 +85,9 @@ def _logical_path(
 
 @daft.func(return_dtype=DataType.string())
 def _mime_type(file: daft.File, source_uri: str) -> str:
+    override = _MIME_OVERRIDES.get(_uri_path(source_uri).suffix.lower())
+    if override is not None:
+        return override
     detected = file.mime_type()
     if detected != "application/octet-stream":
         return detected

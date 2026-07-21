@@ -149,14 +149,22 @@ extension table sharing the same `artifact_id`:
 | `artifact_audio` | stream metadata and derived duration |
 | `artifact_video` | stream metadata and derived duration |
 | `artifact_pdf` | page count, encryption flag, title, author |
+| `artifact_text` | text kind, language, line count, UTF-8 validity |
+| `artifact_diff` | patch format, files, hunks, additions, deletions, binary files |
 
-Nested metadata structs are unnested directly into the table projection. Text
-and unknown binary files need no extension table in V1; their common rows are
-still complete.
+Nested metadata structs are unnested directly into the table projection. A
+`.diff` or `.patch` occurrence has both a text row and a narrower structural
+diff row under the same `artifact_id`. Unknown binary files need no extension
+table; their common rows are still complete.
 
 These modules perform metadata scans only. Resize, resample, transcode,
 thumbnail, OCR, and embedding helpers are future derivative workflows. They
 must produce new artifacts instead of silently changing submitted bytes.
+
+Every specialized scan reads `object_uri`, after persistence, rather than
+reopening `source_uri`. This is a real durability boundary: remote source bytes
+may change or disappear immediately after the content-addressed copy, while
+the typed index must describe the immutable object that Archetype retained.
 
 ## 7. Visibility and failure
 
@@ -225,3 +233,73 @@ before any object or catalog row becomes durable.
 The common rule is simple: specialized workflows own pre-durability safety;
 `ArtifactService` owns exact file persistence and indexing; `IngestionService`
 owns catalog authority.
+
+## 11. Task-anchored artifact context
+
+`ArtifactContext` names one task-scoped interpretation of an artifact set. Its
+UUIDv7 `context_id` identifies the interpretation; artifact UUIDs continue to
+identify the individual ingestion occurrences. The contract does not create a
+second storage service or copy the files again.
+
+```python
+from daft.ai.provider import load_openai
+
+from archetype import ArtifactContext
+from archetype.artifacts import analyze_artifacts, synthesize_artifact_context
+
+context = ArtifactContext(
+    task="Explain whether this change preserves immutable source identity."
+)
+provider = load_openai()
+
+index = await world.artifacts()
+analyses = analyze_artifacts(
+    index,
+    context,
+    provider=provider,
+    model="gpt-5-mini",
+)
+synthesis = synthesize_artifact_context(
+    analyses,
+    context,
+    provider=provider,
+    model="gpt-5-mini",
+)
+```
+
+The first transform gives Daft one prompt per artifact, so files can be
+analyzed in parallel. Every prompt carries the task, context ID, logical path,
+MIME type, and the staged `daft.File`. Artifact contents are explicitly marked
+as untrusted evidence rather than instructions. The second transform reduces
+the attributed observations into one answer while retaining logical paths and
+artifact IDs.
+
+These are family-owned DataFrame transforms, not application orchestration.
+They do not choose a catalog, persist model output, or decide mission state.
+A mission processor may persist the resulting rows or use them as evidence for
+a transition. The selected Daft AI provider determines which content
+modalities its model accepts; storage and typed indexing support do not imply
+that every model can directly interpret every media type.
+
+### Cloud dogfood
+
+The protected infrastructure test sends one bounded context pack through the
+real Cloudflare stack:
+
+```text
+Hugging Face Markdown + MP3 + MP4 + PDF
+local Markdown + Python + git patch + sanitized Claude transcript
+  -> content-addressed R2 objects
+  -> R2 Data Catalog / Iceberg typed tables
+  -> fresh catalog + fresh application graph
+  -> cold artifact discovery
+```
+
+The test asserts the concrete audio, video, PDF, text, diff, transcript, and
+common-index rows, then destroys its unique catalog namespace and R2 prefixes.
+Local contract tests generate real WAV, MP4, and PDF fixtures and additionally
+delete an acquisition source after object persistence, proving that metadata
+scans use the staged object. Live model calls remain an explicit
+credential-bearing external check; the deterministic contract tests validate
+the task anchoring and source attribution without pretending that a mocked
+provider is model evidence.

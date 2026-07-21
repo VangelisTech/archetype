@@ -98,13 +98,13 @@ reason = "Bounded compatibility boundary: queued audit rows are already filtered
 
 [[entries]]
 path = "src/archetype/app/artifacts/service.py"
-line = 72
+line = 76
 method = "collect"
 reason = "Artifact occurrence boundary: execute UUIDv7 assignment and the bounded file scan's single-pass SHA-256/XXH3 hashing exactly once so every typed media sink and the common index share one occurrence identity without rereading source bytes."
 
 [[entries]]
 path = "src/archetype/app/artifacts/service.py"
-line = 82
+line = 86
 method = "collect"
 reason = "Object persistence boundary: execute each bounded content-addressed copy or Daft upload once so typed metadata indexes and the common visibility index reuse the same durable object URI without repeating external writes."
 

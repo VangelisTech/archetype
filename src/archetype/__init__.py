@@ -97,6 +97,7 @@ __all__ = [
     "RolloutConfig",
     "RolloutResult",
     "ArtifactRef",
+    "ArtifactContext",
     "ArtifactSource",
     "ArtifactStoreConfig",
     # Physical-AI workflow values
@@ -176,6 +177,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "RolloutConfig": ("archetype.app.models", "RolloutConfig"),
     "RolloutResult": ("archetype.app.models", "RolloutResult"),
     "ArtifactRef": ("archetype.artifacts.contracts", "ArtifactRef"),
+    "ArtifactContext": ("archetype.artifacts.contracts", "ArtifactContext"),
     "ArtifactSource": ("archetype.artifacts.contracts", "ArtifactSource"),
     "ArtifactStoreConfig": ("archetype.artifacts.contracts", "ArtifactStoreConfig"),
     # Physical-AI workflow values
