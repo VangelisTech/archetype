@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from glob import has_magic
+from typing import Any
 from urllib.parse import urlsplit
 
 import daft
@@ -38,7 +39,11 @@ def scan_sources(
 ) -> DataFrame:
     """Compose declared sources into one uniformly typed lazy scan."""
 
-    frames = []
+    # Daft 0.7's glob scan has no micro-partition when every pattern matches
+    # zero files, so materializing that otherwise valid empty graph fails
+    # before application-level required-source validation can run. A typed,
+    # zero-row exact scan is the concat identity and keeps discovery lazy.
+    frames = [pipeline.scan([], pattern=False).with_column("_source_index", lit(-1))]
     for index, source in enumerate(sources):
         frame = pipeline.scan(
             source.source_uri,
@@ -95,8 +100,9 @@ class ArtifactService:
         # Materialize UUIDv7 occurrence identity and source naming once before
         # persistence. Rebuilding this node would assign different identities.
         discovered = await self._storage_service.materialize(discovered)
-        self._validate_discovery(discovered, declared)
-        if discovered.count_rows() == 0:
+        discovered_values = discovered.to_pydict()
+        self._validate_discovery(discovered_values, declared)
+        if not discovered_values["artifact_id"]:
             return ()
 
         stored = await self._storage_service.materialize(
@@ -133,7 +139,7 @@ class ArtifactService:
             common,
             storage_config=storage,
         )
-        return self._references(stored)
+        return self._references(stored_values)
 
     async def index(
         self,
@@ -202,12 +208,9 @@ class ArtifactService:
 
     @staticmethod
     def _validate_discovery(
-        files: DataFrame,
+        columns: dict[str, list[Any]],
         sources: tuple[ArtifactSource, ...],
     ) -> None:
-        columns = (
-            files.to_pydict() if files.count_rows() else {"_source_index": [], "logical_path": []}
-        )
         source_indexes = [int(value) for value in columns.get("_source_index", [])]
         logical_paths = [str(value) for value in columns.get("logical_path", [])]
         for index, source in enumerate(sources):
@@ -219,8 +222,7 @@ class ArtifactService:
             raise ValueError("artifact sources resolve to duplicate logical paths")
 
     @staticmethod
-    def _references(files: DataFrame) -> tuple[ArtifactRef, ...]:
-        values = files.to_pydict()
+    def _references(values: dict[str, list[Any]]) -> tuple[ArtifactRef, ...]:
         return tuple(
             ArtifactRef(
                 artifact_id=str(artifact_id),

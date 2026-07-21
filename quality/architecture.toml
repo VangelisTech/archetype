@@ -45,7 +45,7 @@ owned_symbols = [
   "daft.read_iceberg",
   "pyiceberg.exceptions.CommitFailedException",
 ]
-mediated_attributes = { to_pylist = "materialize" }
+mediated_attributes = { to_pylist = "materialize", to_pydict = "materialize", to_arrow = "materialize", count_rows = "materialize", show = "materialize", iter_rows = "materialize" }
 
 [top_level_family_policy]
 forbidden_outward = [

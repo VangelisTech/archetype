@@ -270,6 +270,43 @@ async def test_required_source_and_logical_path_collisions_fail_closed(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_empty_glob_sources_reach_application_validation(tmp_path):
+    container = ServiceContainer(
+        artifact_store_config=ArtifactStoreConfig.local(tmp_path / "artifact-store")
+    )
+    try:
+        storage = _storage(tmp_path)
+        world = await _world(container, storage)
+        missing_pattern = str(tmp_path / "*.missing")
+
+        assert (
+            await container.artifact_service.ingest(
+                str(world.world_id),
+                ArtifactSource(source_uri=missing_pattern, required=False),
+            )
+            == ()
+        )
+        with pytest.raises(FileNotFoundError, match="matched no files"):
+            await container.artifact_service.ingest(
+                str(world.world_id), ArtifactSource(source_uri=missing_pattern)
+            )
+
+        present = tmp_path / "present.txt"
+        present.write_text("present")
+        references = await container.artifact_service.ingest(
+            str(world.world_id),
+            [
+                ArtifactSource(source_uri=missing_pattern, required=False),
+                ArtifactSource(source_uri=str(tmp_path / "*.txt")),
+            ],
+        )
+
+        assert [reference.logical_path for reference in references] == ["present.txt"]
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_common_index_is_published_last(tmp_path, monkeypatch):
     container = ServiceContainer(
         artifact_store_config=ArtifactStoreConfig.local(tmp_path / "artifact-store")

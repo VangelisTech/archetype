@@ -258,8 +258,8 @@ def _materialize_remote_object(file: daft.File) -> dict[str, str | int | bytes]:
 
 @daft.func(return_dtype=_PDF_METADATA)
 def _pdf_metadata(file: daft.File) -> dict[str, Any]:
-    # PdfReader performs many seeks. One bounded read avoids hundreds of
-    # object-store range requests for a single metadata scan.
+    # PdfReader performs many seeks. One explicit in-memory materialization
+    # avoids hundreds of object-store range requests for one metadata scan.
     with file.open() as stream:
         return scan_pdf_metadata(stream.read())
 

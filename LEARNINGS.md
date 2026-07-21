@@ -245,7 +245,8 @@ Archetype's reusable file path is intentionally cohesive:
   occurrence identity, MIME classification, content-addressed persistence,
   durable-object reopening, and every common or media-specific Daft index in
   one readable graph;
-- `archetype.ingestion.scanners` contains only pure streaming algorithms;
+- `archetype.ingestion.scanners` contains only pure metadata algorithms,
+  streaming where the format permits it;
 - the UUIDv7 supplies both `artifact_id` and `ingested_at`;
 - SHA-256, XXH3-64, and byte size are computed in one streaming pass; and
 - nested metadata structs are unnested directly into each narrow index.

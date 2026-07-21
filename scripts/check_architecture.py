@@ -478,7 +478,8 @@ def _is_mediated_receiver(
 ) -> bool:
     """Prove that a terminal receiver came from an awaited mediator call.
 
-    Inline ``(await storage.materialize(df)).to_pylist()`` is accepted. A local
+    An inline terminal such as
+    ``(await storage.materialize(df)).to_pydict()`` is accepted. A local
     receiver is accepted only when its latest earlier binding in the same
     lexical function is that awaited call; any intervening assignment revokes
     the proof.

@@ -28,8 +28,9 @@ archetype.app.missions
 
 `archetype.ingestion` is reusable family code. Its cohesive
 `FileIngestionPipeline` keeps the lazy Daft graph for scan, persistence,
-reopening, and every common or specialized index together. Only pure streaming
-algorithms live separately in `scanners.py`. Neither module can choose
+reopening, and every common or specialized index together. Only pure metadata
+algorithms live separately in `scanners.py`; they stream where the format
+permits it. Neither module can choose
 a catalog, namespace, world, or run.
 
 `IngestionService` adds the application-owned world/run envelope and selects a
@@ -193,7 +194,7 @@ diff row under the same `artifact_id`. Unknown binary files need no extension
 table; their common rows are still complete.
 
 The `FileIngestionPipeline` owns these Daft branches together. `scanners.py`
-contains only the pure stream parsers used for hashes, PDF metadata,
+contains only the pure parsers used for hashes, PDF metadata,
 text shape, and patch structure. Resize, resample, transcode, thumbnail, OCR,
 and embedding helpers are future derivative workflows. They must produce new
 artifacts instead of silently changing submitted bytes.

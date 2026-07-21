@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pure bounded stream parsers used by the file-ingestion Daft graph."""
+"""Pure metadata parsers used by the file-ingestion Daft graph."""
 
 from __future__ import annotations
 
@@ -80,7 +80,7 @@ def hash_file(stream: BinaryIO) -> dict[str, str | int]:
 
 
 def scan_pdf_metadata(payload: bytes) -> dict[str, Any]:
-    """Read bounded PDF catalog metadata from an in-memory artifact."""
+    """Read PDF catalog metadata from an in-memory artifact."""
 
     reader = PdfReader(BytesIO(payload))
     metadata = reader.metadata

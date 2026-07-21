@@ -86,7 +86,7 @@ owned_symbols = [
   "daft.read_iceberg",
   "pyiceberg.exceptions.CommitFailedException",
 ]
-mediated_attributes = { to_pylist = "materialize" }
+mediated_attributes = { to_pylist = "materialize", to_pydict = "materialize", to_arrow = "materialize", count_rows = "materialize", show = "materialize", iter_rows = "materialize" }
 """,
         encoding="utf-8",
     )
@@ -1090,6 +1090,31 @@ expires = "v1"
             "to_pylist",
         ),
         (
+            "def run(df):\n    return df.to_pydict()\n",
+            "capability_mediation",
+            "to_pydict",
+        ),
+        (
+            "def run(df):\n    return df.to_arrow()\n",
+            "capability_mediation",
+            "to_arrow",
+        ),
+        (
+            "def run(df):\n    return df.count_rows()\n",
+            "capability_mediation",
+            "count_rows",
+        ),
+        (
+            "def run(df):\n    return df.show()\n",
+            "capability_mediation",
+            "show",
+        ),
+        (
+            "def run(df):\n    return list(df.iter_rows())\n",
+            "capability_mediation",
+            "iter_rows",
+        ),
+        (
             "from pyiceberg.exceptions import CommitFailedException\n\n"
             "def run():\n"
             "    try:\n"
@@ -1133,8 +1158,13 @@ def test_storage_execution_owner_and_mediated_consumers_pass(tmp_path: Path) -> 
         "async def run(storage, df):\n"
         "    materialized = await storage.materialize(df)\n"
         "    rows = materialized.to_pylist()\n"
+        "    mapping = materialized.to_pydict()\n"
+        "    arrow = materialized.to_arrow()\n"
+        "    count = materialized.count_rows()\n"
+        "    shown = materialized.show()\n"
+        "    streamed = list(materialized.iter_rows())\n"
         "    inline = (await storage.materialize(df)).to_pylist()\n"
-        "    return rows, inline\n",
+        "    return rows, mapping, arrow, count, shown, streamed, inline\n",
         encoding="utf-8",
     )
     owner.write_text(
