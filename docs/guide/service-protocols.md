@@ -105,8 +105,8 @@ application facade.
 | `iMissionService` | `MissionService` | application, `RuntimeMissions` | Materialize task graphs, own the batteries-included world bundle, drain committed dispatches into external work, stage factual observations, and project terminal results |
 | `iPhysicalAIService` | `PhysicalAIService` | application | Create batched evaluation worlds, install physical processors, run episodes, and derive typed reports from persisted state |
 | Family resource service `missions.SandboxService` | `missions.SandboxService` | `MissionService` | Select a configured backend and acquire, reuse, close, and shut down mission-keyed sessions; no task-transition authority |
-| Family resource port `missions.SandboxBackend` | configured provider adapter, including `ModalSandboxBackend` | `missions.SandboxService` | Create or restore provider-owned isolated sessions |
-| Family resource port `missions.SandboxSession` | provider session adapter, including `ModalSandboxSession` | `CodingAgentHarness`, `missions.SandboxService` | Expose process, status, checkpoint, and close operations for one live sandbox |
+| Family resource port `missions.SandboxBackend` | configured Apple Container, Docker, or Modal adapter | `missions.SandboxService` | Create or restore provider-owned isolated sessions |
+| Family resource port `missions.SandboxSession` | provider session adapter | `CodingAgentHarness`, `missions.SandboxService` | Expose capability, process, status, checkpoint, and close operations for one live sandbox |
 
 ## 4. Boundary rules
 
@@ -172,6 +172,15 @@ The configured backend creates or restores a provider-owned session;
 tasks in one mission can reuse the retained session without making that live
 handle durable authority.
 
+Apple Container is the macOS operational adapter, Docker is the Linux/CI
+protocol reference, and Modal is the paid remote adapter. Checkpoint-capable
+sessions preserve their owned writable filesystem, excluding credential and
+external mounts, through a provider-native reference carrying environment,
+owner, locality, expiry, and integrity metadata. Capture occurs only after the
+task decision commits and remains best-effort evidence. Restore explicitly
+closes and replaces the mission's retained live session; it is not automatic
+fleet recovery or process-restart mission continuation.
+
 `iMissionService` is the app-internal workflow port implemented by
 `MissionService`. The service composes a structural mission world with the
 built-in Components, processors, relationships, graph view, committed-intent
@@ -185,8 +194,10 @@ Graph materialization records each authored `TaskValidator`. The harness then
 prepares the repository, runs the coding agent and those validator commands,
 performs Git publication, and returns facts that the service records as
 `AgentExecution`, `ValidationResult`, `Commit`, and `FrictionLog`
-Components and relations. Validator success is derived from expected and
-actual return codes; neither the harness, sandbox, nor service decides task
+Components and relations. The sandbox identity is staged immediately after
+acquisition; bounded `SandboxEvent` callbacks expose it synchronously for live,
+non-authoritative operator updates. Validator success is derived from expected
+and actual return codes; neither the harness, sandbox, nor service decides task
 state. Processors alone accept a task, retry it, exhaust its dispatch budget,
 unlock dependent tasks, and roll terminal task states up to the mission.
 

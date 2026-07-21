@@ -268,6 +268,9 @@ submitted = await missions.submit(
     tasks=(AgentTask(...),),
 )
 mission_result = await missions.run(submitted)
+# Optional replacement of this known mission's retained sandbox; this is not
+# cold process-resume or dispatch reconciliation:
+# await missions.restore_sandbox(submitted, checkpoint_ref)
 
 eid = await world.spawn(Position(x=0), Velocity(dx=1))
 ids = await world.spawn_batch(Position(x=0), count=10_000)
