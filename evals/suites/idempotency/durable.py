@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 from uuid_utils import uuid7
@@ -21,17 +22,15 @@ from archetype.app.container import ServiceContainer
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.storage.catalog import (
     CatalogConflictError,
-    ClaimConflictError,
     SqliteControlCatalog,
     WorldRecord,
-    claim_scope_key,
 )
-from archetype.artifacts.components import ArtifactMeta
+from archetype.artifacts import ArtifactSource
 from archetype.core.component import Component
-from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
 from archetype.core.interfaces import StaleWriterError
-from archetype.evaluation.components import EvalReceipt
 from archetype.evaluation.contracts import GraderContract, Outcome
+from archetype.ingestion import IngestionTable
 from evals.graders import exact_match, state_check
 from evals.types import GraderResult
 
@@ -66,15 +65,7 @@ async def _visible_rows(
     return frame.to_pylist()
 
 
-async def _expire_claim(catalog: SqliteControlCatalog, scope: str) -> None:
-    """Model owner death so the documented lease-takeover path can run."""
-
-    def expire() -> None:
-        conn = catalog._connect_sync()
-        with conn:
-            conn.execute("UPDATE claims SET lease_expires_at=0 WHERE scope_key=?", (scope,))
-
-    await catalog._run(expire)
+_EVALUATION_RESULTS = IngestionTable("evaluation_results", key_columns=("evaluation_id",))
 
 
 def task_atomic_publish_retry() -> list[GraderResult]:
@@ -272,138 +263,78 @@ async def _task_resume_and_writer_fencing() -> list[GraderResult]:
             await resumed.shutdown()
 
 
-def task_durable_artifact_replay() -> list[GraderResult]:
-    """Concurrent identical artifacts converge; changed content conflicts."""
-    return asyncio.run(_task_durable_artifact_replay())
+def task_artifact_occurrence_identity() -> list[GraderResult]:
+    """Every submission is an occurrence while equal bytes reuse one object."""
+    return asyncio.run(_task_artifact_occurrence_identity())
 
 
-async def _task_durable_artifact_replay() -> list[GraderResult]:
+async def _task_artifact_occurrence_identity() -> list[GraderResult]:
     with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
         container = ServiceContainer()
         try:
-            storage = StorageConfig(uri=f"{tmp}/store", namespace="artifacts")
-            world = await _seed_world(container, storage, name="artifact-world")
-            wid, rid = str(world.world_id), str(world.run_id)
-
-            async def submit():
-                return await container.artifact_service.publish(
-                    wid,
-                    [DurableReading(value=21.5)],
-                    external_id="sensor:event-1",
-                    producer="sensor",
-                )
-
-            receipts = await asyncio.gather(*(submit() for _ in range(32)))
-            rows = await _visible_rows(container, ArtifactMeta, wid, rid, storage)
-            conflict_loud = False
-            try:
-                await container.artifact_service.publish(
-                    wid,
-                    [DurableReading(value=99.0)],
-                    external_id="sensor:event-1",
-                    producer="sensor",
-                )
-            except ClaimConflictError:
-                conflict_loud = True
-
-            return [
-                state_check(
-                    {
-                        "all_callers_share_commit_token": len(
-                            {receipt.commit_token for receipt in receipts}
-                        )
-                        == 1,
-                        "one_caller_performed_append": sum(
-                            not receipt.duplicate for receipt in receipts
-                        )
-                        == 1,
-                        "one_artifact_is_visible": len(rows) == 1,
-                        "visible_artifact_keeps_external_identity": (
-                            rows[0]["artifactmeta__external_id"] == "sensor:event-1"
-                            if rows
-                            else False
-                        ),
-                        "changed_payload_conflicts": conflict_loud,
-                    },
-                    name="durable_artifact_replay",
-                )
-            ]
-        finally:
-            await container.shutdown()
-
-
-def task_durable_artifact_crash_recovery() -> list[GraderResult]:
-    """An append-before-complete crash is recovered without duplication."""
-    return asyncio.run(_task_durable_artifact_crash_recovery())
-
-
-async def _task_durable_artifact_crash_recovery() -> list[GraderResult]:
-    with tempfile.TemporaryDirectory() as tmp:
-        container = ServiceContainer()
-        try:
-            storage = StorageConfig(uri=f"{tmp}/store", namespace="artifact-crash")
-            world = await _seed_world(container, storage, name="artifact-crash")
-            wid, rid = str(world.world_id), str(world.run_id)
-
-            async def crash_complete(self, *args, **kwargs):
-                raise RuntimeError("injected crash after artifact append")
-
-            crashed = False
-            with patch.object(SqliteControlCatalog, "complete_claim", crash_complete):
-                try:
-                    await container.artifact_service.publish(
-                        wid,
-                        [DurableReading(value=3.0)],
-                        external_id="crash-boundary",
-                        producer="sensor",
-                    )
-                except RuntimeError as exc:
-                    crashed = "injected crash" in str(exc)
-
-            invisible = await _visible_rows(container, ArtifactMeta, wid, rid, storage)
-            catalog = container.storage_service.get_control_catalog(storage)
-            scope = claim_scope_key(wid, rid, "sensor", "crash-boundary")
-            await _expire_claim(catalog, scope)
-            receipt = await container.artifact_service.publish(
-                wid,
-                [DurableReading(value=3.0)],
-                external_id="crash-boundary",
-                producer="sensor",
+            storage = StorageConfig(
+                uri=str(root / "store"),
+                namespace="artifact-occurrences",
+                backend=StorageBackend.ICEBERG,
             )
-            recovered = await _visible_rows(container, ArtifactMeta, wid, rid, storage)
+            world = await container.world_service.create_world(
+                WorldConfig(name="artifact-occurrences"), storage
+            )
+            first = root / "first.txt"
+            second = root / "second.txt"
+            first.write_text("same bytes")
+            second.write_text("same bytes")
+
+            submitted = await container.artifact_service.ingest(
+                str(world.world_id),
+                (
+                    ArtifactSource(source_uri=str(first)),
+                    ArtifactSource(source_uri=str(second)),
+                ),
+            )
+            (retry,) = await container.artifact_service.ingest(
+                str(world.world_id), ArtifactSource(source_uri=str(first))
+            )
+            rows = (await container.artifact_service.index(str(world.world_id))).to_pylist()
+            refs = (*submitted, retry)
 
             return [
                 state_check(
                     {
-                        "fault_was_injected": crashed,
-                        "pending_claim_was_invisible": invisible == [],
-                        "takeover_kept_original_claim": not receipt.duplicate,
-                        "takeover_exposed_one_artifact": len(recovered) == 1,
-                        "recovered_external_identity": (
-                            recovered[0]["artifactmeta__external_id"] == "crash-boundary"
-                            if recovered
-                            else False
-                        ),
+                        "each_submission_has_uuidv7_identity": len(
+                            {reference.artifact_id for reference in refs}
+                        )
+                        == 3,
+                        "equal_bytes_share_one_object": len({reference.uri for reference in refs})
+                        == 1,
+                        "equal_bytes_share_sha256": len({reference.sha256 for reference in refs})
+                        == 1,
+                        "all_occurrences_are_indexed": len(rows) == 3,
                     },
-                    name="durable_artifact_crash_recovery",
+                    name="artifact_occurrence_identity",
                 )
             ]
         finally:
             await container.shutdown()
 
 
-def task_evaluation_receipt_replay() -> list[GraderResult]:
-    """Receipt replay returns the original evidence without re-grading."""
-    return asyncio.run(_task_evaluation_receipt_replay())
+def task_evaluation_result_replay() -> list[GraderResult]:
+    """Result replay returns the persisted evidence without re-grading."""
+    return asyncio.run(_task_evaluation_result_replay())
 
 
-async def _task_evaluation_receipt_replay() -> list[GraderResult]:
+async def _task_evaluation_result_replay() -> list[GraderResult]:
     with tempfile.TemporaryDirectory() as tmp:
         container = ServiceContainer()
         try:
-            storage = StorageConfig(uri=f"{tmp}/store", namespace="receipts")
-            world = await _seed_world(container, storage, name="receipt-world")
-            wid, rid = str(world.world_id), str(world.run_id)
+            storage = StorageConfig(
+                uri=f"{tmp}/store",
+                namespace="evaluation-results",
+                backend=StorageBackend.ICEBERG,
+            )
+            world = await _seed_world(container, storage, name="evaluation-world")
+            wid = str(world.world_id)
             calls: list[int] = []
 
             def grader(frame):
@@ -431,7 +362,13 @@ async def _task_evaluation_receipt_replay() -> list[GraderResult]:
                 grader=grader,
                 evaluation_id="stable-evaluation",
             )
-            rows = await _visible_rows(container, EvalReceipt, wid, rid, storage)
+            rows = (
+                await container.ingestion_service.read(
+                    wid,
+                    _EVALUATION_RESULTS,
+                    storage_config=storage,
+                )
+            ).to_pylist()
 
             conflict_loud = False
             try:
@@ -446,22 +383,18 @@ async def _task_evaluation_receipt_replay() -> list[GraderResult]:
                     grader=grader,
                     evaluation_id="stable-evaluation",
                 )
-            except ClaimConflictError:
+            except ValueError:
                 conflict_loud = True
 
             return [
                 state_check(
                     {
                         "first_call_graded_once": calls == [1],
-                        "first_receipt_is_original": not first.duplicate,
-                        "replay_is_marked_duplicate": replay.duplicate,
-                        "replay_returns_original_token": (
-                            replay.commit_token == first.commit_token
-                        ),
-                        "one_receipt_is_visible": len(rows) == 1,
+                        "replay_returns_persisted_result": replay == first,
+                        "one_result_is_visible": len(rows) == 1,
                         "changed_contract_conflicts": conflict_loud,
                     },
-                    name="evaluation_receipt_replay",
+                    name="evaluation_result_replay",
                 )
             ]
         finally:

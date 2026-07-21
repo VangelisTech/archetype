@@ -158,7 +158,8 @@ src/archetype/app/
   world/             world lifecycle, mutation, and simulation
   storage/           stores, catalog/control authority, backend construction
   query/             persisted ECS read paths
-  artifacts/         ingestion, transcript workflows, publication claims, storage and indexes
+  ingestion/         Daft Catalog registration and typed Iceberg appends
+  artifacts/         file discovery, immutable object storage and media indexes
   redaction/         pre-durability secret scanning, receipts and quarantine
   evaluation/        grading orchestration, snapshot pinning and receipt writes
   commands/          durable ledger, scheduling, dispatch, settlement
@@ -269,12 +270,13 @@ gateway, runtime, API, or CLI boundary.
 | Simulation | Step, run, episode, and rollout | World port plus named command-drain and quota-reset callables |
 | Query | Persisted ECS reads, durable discovery, and compatibility history reads | Storage and audit ports |
 | Redaction | Provider-neutral secret scanning, deterministic text redaction, safe receipts and quarantine | None |
-| Artifacts | Durable ingestion, immutable content, coding-agent transcript normalization, contextual links, publication claims and indexes | Redaction, storage and world-coordinate ports |
-| Evaluation | Snapshot pinning, grader contracts, grading, evidence and durable receipts | Query and artifact ports |
+| Ingestion | Register typed tables in `daft.Catalog`; add world/run identity; enforce schema and logical-key append semantics | Storage and world-coordinate ports |
+| Artifacts | File discovery, metadata scans, immutable content-addressed objects, and common/media indexes | Ingestion, storage and world-coordinate ports |
+| Evaluation | Snapshot pinning, grader contracts, grading, evidence and durable results | Query, ingestion, storage and world-coordinate ports |
 | Commands | Durable admission, order, leasing, dispatch, retry, settlement and dead letters | Control catalog plus world and mutation ports |
 | Audit | Transactional journal/outbox and analytical projection | Storage or control-authority ports |
 | Research | Multi-run research workflows | World and simulation ports plus explicit evaluator callbacks |
-| Missions | Graph materialization, tick/external-I/O composition, terminal projection, and trajectory query/evaluation composition. Family processors retain transition authority; trajectory evidence cannot advance tasks. | Consumes a structural mission world and the family-owned sandbox resource. Trajectory reads consume query and evaluation ports. |
+| Missions | Graph materialization, tick/external-I/O composition, terminal projection, transcript ingestion, and trajectory query/evaluation composition. Family processors retain transition authority; trajectory evidence cannot advance tasks. | Consumes a structural mission world, family-owned sandbox resource, artifact/ingestion/redaction ports for transcripts, and query/evaluation ports for trajectory reads. |
 | RuntimeApplication | Canonical actor-free application facade and per-world operation serialization | Approved family workflow ports only |
 | CommandGateway | Authorization, safe downgrade, access-audit notification, delegation | RuntimeApplication port, authorizer, audit-journal port |
 | ServiceContainer | Concrete construction, ownership, and callback wiring | Every concrete implementation it constructs |
@@ -297,7 +299,7 @@ The gateway:
 5. returns a boundary-safe result.
 
 The gateway owns no worlds, services, command queue, grading workflow,
-publication claim, durable receipt, or audit storage. It is stateless policy
+ingestion transaction, durable result, or audit storage. It is stateless policy
 machinery over injected ports.
 
 `ActorCtx` does not cross below the gateway. When an admitted operation needs
@@ -319,9 +321,10 @@ Durability is family-specific rather than one service-level flag:
 | Deferred command outcome | Commit coordinator plus command ledger | Terminal applied outcomes settle atomically with the manifest that makes them visible |
 | Agent Mission dispatch | Mission world tick plus post-tick outbox | A `dispatched` task row is durably visible before any sandbox request leaves the world |
 | Agent Mission acceptance | Mission processors plus world tick | Revision-bound validation, execution, and pushed-commit observations are staged as data; the next task-decision tick accepts, retries, or exhausts the task |
-| Artifact ingestion | Artifact workflow plus publication claim | Content/rows are durable and their contextual index is published |
-| Coding-agent transcript | Source claim, redaction authority, and typed artifact table | The complete source is sanitized and parsed before the claim; the claim precedes the idempotent typed-row append so changed content conflicts before row durability |
-| Evaluation | Evaluation workflow | Subject and grader contract are pinned and the typed receipt is published |
+| Typed ingestion | `IngestionService` plus Iceberg catalog | The registered schema accepts the rows and one Iceberg append makes the new logical keys visible |
+| Artifact ingestion | `ArtifactService` plus `IngestionService` | The immutable object and any media-specific rows are durable before the common `artifact_files` occurrence becomes visible |
+| Coding-agent transcript | Redaction, artifact, and typed-ingestion authorities | Raw narrative never becomes durable; the sanitized artifact is indexed before normalized rows keyed to its `artifact_id` are appended |
+| Evaluation | Evaluation workflow plus `IngestionService` | Subject and grader contract are pinned and the typed evaluation result is appended |
 | Audit | Transactional outbox plus projection | Authoritative event is durable; analytical Iceberg projection may lag |
 
 The store/updater owns physical append and flush. The owning workflow defines
@@ -334,10 +337,11 @@ trusted runtime operations and authorized remote admission may use it. The
 gateway authorizes remote admission and delegates; simulation invokes a named
 commands-family drain callback at the tick boundary.
 
-`ArtifactService` owns claim-backed component publication;
-`ArtifactTableService` owns typed file/row ingestion. Both are artifact-family
-authorities. `ClaudeTranscriptIngestionService` composes those ports with
-redaction and the pure missions parser; it creates no third storage authority.
+`IngestionService` is the general typed-table authority and owns
+`daft.Catalog` registration. `ArtifactService` specializes it for files and
+media metadata. Mission-owned `TranscriptIngestionService` composes those
+ports with redaction and the pure missions parser; it creates no third storage
+authority.
 Durable external material is described as an artifact, evidence object, typed
 dataset row, or evaluation receipt—never as a universal fact.
 
@@ -463,15 +467,12 @@ top-level dispositions for `artifacts`, `evaluation`, `graph`, `missions`,
 imports, concrete construction, concrete inheritance, and persistent
 Component placement.
 
-The artifact relocation (#558) is complete: `ArtifactMeta` and `AssetRef`
-live in `archetype.artifacts.components`, the typed-table and
-content-addressing contracts live in `archetype.artifacts.contracts`, the
-bundle value contracts live in `archetype.artifacts.bundles`, and
-`archetype.app.artifacts` retains publication, indexing, reconciliation, and
-storage authority while importing those domain definitions inward. The
-catalog-bound `PreparedArtifactBundleRequest` remains application-owned
-because its validation binds to the control catalog's publication-key
-derivation.
+The ingestion/artifact split is complete. `archetype.ingestion` owns reusable
+table contracts and pure file/media transforms;
+`archetype.app.ingestion.IngestionService` owns catalog registration and typed
+Iceberg append authority. `archetype.artifacts` owns `ArtifactSource`,
+`ArtifactRef`, and `ArtifactStoreConfig`; `archetype.app.artifacts` retains the
+single file-ingestion workflow and object-storage authority.
 
 The evaluation relocation (#557) is complete: `EvalReceipt` lives in
 `archetype.evaluation.components`, the grading value contracts and identity
@@ -482,10 +483,10 @@ while importing those domain definitions inward.
 The research, trajectory, physical-AI, physical-workflow, ontology, HTN, and
 transcript stages have landed. The physical workflow is reachable only through
 `RuntimeApplication` and `ArchetypeRuntime`; its former raw-service bridges and
-all six Issue #589 architecture exceptions are gone. Transcript publication is
-reachable through the runtime, writes only sanitized narrative to typed
-artifact rows, and retains lightweight mission linkage as claim-backed
-Components. The provisional `archetype.experiments` package and its two unsafe
+all six Issue #589 architecture exceptions are gone. Transcript ingestion is
+reachable through the runtime and writes only sanitized narrative to typed
+rows linked to the common artifact occurrence. It does not implicitly spawn
+mission Components. The provisional `archetype.experiments` package and its two unsafe
 logging exceptions are gone. The architecture manifest currently has no owned
 migration exceptions.
 

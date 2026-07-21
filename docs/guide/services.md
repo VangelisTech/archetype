@@ -33,9 +33,9 @@ ArchetypeRuntime -> RuntimeApplication <- CommandGateway <- REST API
                          +-> MutationService -> WorldService -> StorageService
                          +-> SimulationService -> WorldService
                          +-> QueryService -> StorageService
-                         +-> ArtifactService -> StorageService + WorldService
-                         +-> ArtifactTableService -> StorageService + WorldService
-                         +-> EvaluationService -> QueryService + ArtifactService
+                         +-> IngestionService -> StorageService + WorldService
+                         +-> ArtifactService -> IngestionService + StorageService + WorldService
+                         +-> EvaluationService -> QueryService + IngestionService
                          +-> AutoResearchService -> WorldService + SimulationService
                          +-> CommandScheduler -> WorldService + MutationService
                          +-> AuditLog -> StorageService
@@ -76,21 +76,25 @@ Daft DataFrames or safe descriptors. Its current audit dependency serves the
 history compatibility read; command outcome authority remains the command
 ledger/outbox.
 
-## Artifact family
+## Ingestion and artifact families
 
-The family has two explicit workflows:
+`IngestionService` is the general typed-table authority. It registers tables in
+`daft.Catalog`, supplies world/run envelope columns, enforces the registered
+schema, removes already-visible logical keys, and appends through Iceberg. It
+does not know whether its rows describe files, transcripts, evaluations, or a
+future tabular source.
 
-- `ArtifactService` owns claim-backed component publication, snapshot pinning,
-  recovery, and receipts.
-- `ArtifactTableService` owns typed file/row ingestion keyed to world and run.
-
-Both use storage plus world/run coordinates. See [Artifacts](artifacts.md).
+`ArtifactService` is the one file-specialized workflow. It scans declared
+sources, persists content-addressed objects, writes typed media metadata, and
+publishes the common artifact index last. It composes `IngestionService`; it
+does not add a claim, lease, receipt, or reconciliation state machine. See
+[Artifacts](artifacts.md).
 
 ## Evaluation and research families
 
-`EvaluationService` reads through `iQueryService`, pins a subject through
-`iArtifactService`, executes caller-provided graders, validates typed outcomes,
-and publishes one durable receipt.
+`EvaluationService` pins persisted world state through storage/query authority,
+executes caller-provided graders, validates typed outcomes, and appends one
+durable evaluation result through `iIngestionService`.
 
 `AutoResearchService` owns the multi-iteration rollout workflow and its durable
 research ledger. It depends on world and simulation ports; scoring remains an
@@ -140,8 +144,10 @@ FastAPI consumes `iCommandGateway`; the CLI remains an HTTP client.
 - world family: `src/archetype/app/world/`
 - storage family: `src/archetype/app/storage/`
 - query family: `src/archetype/app/query/`
-- artifacts: `src/archetype/app/artifacts/`
-- artifact domain contracts and schemas: `src/archetype/artifacts/`
+- ingestion authority: `src/archetype/app/ingestion/`
+- reusable ingestion table contracts/transforms: `src/archetype/ingestion/`
+- file artifacts: `src/archetype/app/artifacts/`
+- artifact file contracts: `src/archetype/artifacts/`
 - evaluation: `src/archetype/app/evaluation/`
 - evaluation domain contracts and receipt schema: `src/archetype/evaluation/`
 - research: `src/archetype/app/research/`

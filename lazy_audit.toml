@@ -97,22 +97,22 @@ method = "to_pylist"
 reason = "Bounded compatibility boundary: queued audit rows are already filtered and limited lazily, then materialized into the legacy list[Command] return contract used by pre-gate callers."
 
 [[entries]]
-path = "src/archetype/app/storage/iceberg.py"
-line = 75
+path = "src/archetype/app/artifacts/service.py"
+line = 72
 method = "collect"
-reason = "Storage write boundary: Daft has already committed the artifact pipeline through its native Iceberg writer; only per-output-file row counts enter Python to construct the bounded write receipt. No artifact-row payload is materialized."
+reason = "Artifact occurrence boundary: execute UUIDv7 assignment and the bounded file scan's single-pass SHA-256/XXH3 hashing exactly once so every typed media sink and the common index share one occurrence identity without rereading source bytes."
 
 [[entries]]
-path = "src/archetype/app/artifacts/table_service.py"
-line = 144
+path = "src/archetype/app/artifacts/service.py"
+line = 82
 method = "collect"
-reason = "File discovery boundary: materializes only the current call's file references, source URIs, and content hashes once before deduplication so zero matched sources are distinguishable from a retry and file bytes are not rehashed. Typed artifact payload rows remain lazy through the Iceberg write."
+reason = "Object persistence boundary: execute each bounded content-addressed copy or Daft upload once so typed metadata indexes and the common visibility index reuse the same durable object URI without repeating external writes."
 
 [[entries]]
-path = "src/archetype/app/artifacts/table_service.py"
-line = 167
+path = "src/archetype/app/ingestion/service.py"
+line = 64
 method = "collect"
-reason = "Processor candidate boundary: materializes the distinct, existing-key-filtered identities derived from the already materialized discovery frame so the emptiness check, processor, and identity validation reuse one candidate set. It does not reread file bytes or materialize typed artifact payload rows."
+reason = "Catalog append boundary: materialize the already key-filtered incoming rows exactly once so an empty idempotent retry creates no Iceberg snapshot and a non-empty UDF pipeline cannot execute separately for counting and writing."
 
 [[entries]]
 path = "src/archetype/app/world/service.py"
@@ -137,42 +137,6 @@ path = "src/archetype/app/physical_ai/service.py"
 line = 98
 method = "to_pylist"
 reason = "same physical-evaluation grading boundary as the collect above: terminal rows enter Python for bounded success/length aggregation into typed reports"
-
-[[entries]]
-path = "src/archetype/app/artifacts/bundle_service.py"
-line = 1321
-method = "to_pylist"
-reason = "Artifact-manifest boundary: the caller-declared, size-bounded file set has already been hashed and MIME-classified by native Daft expressions; scalar metadata must enter Python to construct validated immutable index records and the canonical bundle manifest."
-
-[[entries]]
-path = "src/archetype/app/artifacts/bundle_service.py"
-line = 1373
-method = "to_pylist"
-reason = "Object-store completion boundary: each caller-declared, size-bounded upload has executed through Daft and its returned object URI must enter Python to construct the portable manifest and deterministic artifact-index rows."
-
-[[entries]]
-path = "src/archetype/app/artifacts/bundle_service.py"
-line = 1386
-method = "to_pylist"
-reason = "Single-object upload boundary: one generated bundle-manifest byte value is uploaded through Daft and its sole destination URI must enter the durable publication receipt and control-catalog record."
-
-[[entries]]
-path = "src/archetype/app/artifacts/bundle_service.py"
-line = 1440
-method = "to_pylist"
-reason = "Existing-object metadata authorization boundary: only paths and sizes beneath one deterministic content-addressed destination enter Python so each candidate URI can pass shared redaction policy and exact-size eligibility before any remote byte read."
-
-[[entries]]
-path = "src/archetype/app/artifacts/bundle_service.py"
-line = 1473
-method = "to_pylist"
-reason = "Existing-object byte-integrity boundary: one size-eligible, metadata-approved remote candidate is read through Daft and its bytes enter Python solely to verify exact size and SHA-256 before durable reuse."
-
-[[entries]]
-path = "src/archetype/app/artifacts/bundle_service.py"
-line = 1489
-method = "to_pylist"
-reason = "Bundle-index idempotency boundary: the Iceberg query is filtered to one deterministic bundle and its bounded artifact rows must enter Python for exact conflict detection and missing-row selection before an append."
 
 [[entries]]
 path = "src/archetype/graph/frames.py"

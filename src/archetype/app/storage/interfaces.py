@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
+from archetype.app.storage.catalog import ControlCatalog
 from archetype.core.config import CacheConfig, StorageConfig
 
 
@@ -19,7 +20,7 @@ class iStorageService(Protocol):
 
     def require_iceberg_identity(self, storage_config: StorageConfig) -> None: ...
 
-    def get_control_catalog(self, storage_config: StorageConfig) -> Any: ...
+    def get_control_catalog(self, storage_config: StorageConfig) -> ControlCatalog: ...
 
     async def get_or_create_store(
         self,

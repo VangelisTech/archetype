@@ -43,10 +43,9 @@ Standalone scripts under the repository-root `experiments/` directory are
 consumers of the shipped library; they do not define an importable domain
 family or application authority.
 
-`ClaudeTranscriptSource` and `TranscriptIngestionReceipt` are supported types
+`ClaudeTranscriptSource` and `TranscriptIngestionResult` are supported types
 in the `RuntimeWorld.ingest_claude_transcript()` signature. They remain
-namespaced under `archetype.missions.trajectories` and
-`archetype.artifacts`; support does not require promotion to the
+namespaced under `archetype.missions.trajectories`; support does not require promotion to the
 root import surface. The parser's in-memory `LoadedSession` and the concrete
 artifact ingestion service remain implementation details.
 

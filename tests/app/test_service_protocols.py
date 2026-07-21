@@ -11,14 +11,8 @@ import pytest
 
 from archetype.app.application.interfaces import iRuntimeApplication
 from archetype.app.application.service import RuntimeApplication
-from archetype.app.artifacts.bundle_service import ArtifactBundleService
-from archetype.app.artifacts.interfaces import (
-    iArtifactBundleService,
-    iArtifactService,
-    iArtifactTableService,
-)
+from archetype.app.artifacts.interfaces import iArtifactService
 from archetype.app.artifacts.service import ArtifactService
-from archetype.app.artifacts.table_service import ArtifactTableService
 from archetype.app.audit.interfaces import iAuditLog
 from archetype.app.audit.service import AuditLog
 from archetype.app.commands.interfaces import iCommandScheduler
@@ -28,12 +22,16 @@ from archetype.app.evaluation.interfaces import iEvaluationService
 from archetype.app.evaluation.service import EvaluationService
 from archetype.app.gateway.interfaces import iCommandGateway
 from archetype.app.gateway.service import CommandGateway
+from archetype.app.ingestion.interfaces import iIngestionService
+from archetype.app.ingestion.service import IngestionService
 from archetype.app.missions.interfaces import (
     iMissionService,
     iTrajectoryService,
+    iTranscriptIngestionService,
 )
 from archetype.app.missions.service import MissionService
 from archetype.app.missions.trajectory_service import TrajectoryService
+from archetype.app.missions.transcript_service import TranscriptIngestionService
 from archetype.app.query.interfaces import iQueryService
 from archetype.app.query.service import QueryService
 from archetype.app.redaction.interfaces import iRedactionService
@@ -56,10 +54,10 @@ SERVICE_PROTOCOLS = (
     (MutationService, iMutationService),
     (SimulationService, iSimulationService),
     (QueryService, iQueryService),
+    (IngestionService, iIngestionService),
     (ArtifactService, iArtifactService),
-    (ArtifactTableService, iArtifactTableService),
-    (ArtifactBundleService, iArtifactBundleService),
     (MissionService, iMissionService),
+    (TranscriptIngestionService, iTranscriptIngestionService),
     (TrajectoryService, iTrajectoryService),
     (RedactionService, iRedactionService),
     (EvaluationService, iEvaluationService),
@@ -95,9 +93,9 @@ async def test_container_wiring_conforms_to_every_family_protocol() -> None:
             (container.mutation_service, iMutationService),
             (container.simulation_service, iSimulationService),
             (container.query_service, iQueryService),
+            (container.ingestion_service, iIngestionService),
             (container.artifact_service, iArtifactService),
-            (container.artifact_table_service, iArtifactTableService),
-            (container.artifact_bundle_service, iArtifactBundleService),
+            (container.transcript_ingestion_service, iTranscriptIngestionService),
             (container.trajectory_service, iTrajectoryService),
             (container.redaction_service, iRedactionService),
             (container.evaluation_service, iEvaluationService),

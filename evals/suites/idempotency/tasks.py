@@ -43,17 +43,14 @@ from archetype.core.sync import QueryManager, SyncStore, UpdateManager
 from evals.graders import exact_match, state_check
 from evals.harness import EvalHarness
 from evals.suites.idempotency.durable import (
+    task_artifact_occurrence_identity,
     task_atomic_publish_retry,
-    task_durable_artifact_crash_recovery,
-    task_durable_artifact_replay,
     task_durable_discovery,
-    task_evaluation_receipt_replay,
+    task_evaluation_result_replay,
     task_resume_and_writer_fencing,
 )
 from evals.suites.idempotency.process import (
-    task_process_artifact_replay,
     task_process_crash_cold_resume,
-    task_process_evaluation_replay,
     task_process_writer_fence_race,
 )
 from evals.types import GraderResult
@@ -223,27 +220,20 @@ IDEMPOTENCY_CASES: tuple[IdempotencyCase, ...] = (
         task_id="idempotency.resume_and_writer_fencing",
     ),
     IdempotencyCase(
-        operation="Artifact publication replay",
+        operation="Artifact ingestion replay",
         expected_contract=(
-            "Identical producer identity and payload converges on one visible artifact/link; "
-            "changed payload conflicts"
+            "Not idempotent; every submission records a new UUIDv7 occurrence while "
+            "identical bytes reuse one content-addressed object"
         ),
-        task_id="idempotency.durable_artifact_replay",
-    ),
-    IdempotencyCase(
-        operation="Artifact publication crash recovery",
-        expected_contract=(
-            "Lease takeover completes an appended orphan without creating a second visible "
-            "publication"
-        ),
-        task_id="idempotency.durable_artifact_crash_recovery",
+        task_id="idempotency.artifact_occurrence_identity",
     ),
     IdempotencyCase(
         operation="`evaluate()` replay",
         expected_contract=(
-            "Same evaluation identity, subject, and contract returns one receipt without re-grading"
+            "Same evaluation identity, subject, and contract returns the persisted result "
+            "without re-grading"
         ),
-        task_id="idempotency.evaluation_receipt_replay",
+        task_id="idempotency.evaluation_result_replay",
     ),
     IdempotencyCase(
         operation="Hard process crash and cold resume",
@@ -256,18 +246,6 @@ IDEMPOTENCY_CASES: tuple[IdempotencyCase, ...] = (
         operation="Independent writer-process race",
         expected_contract="Exactly one fenced writer publishes the contested tick",
         task_id="idempotency.process_writer_fence_race",
-    ),
-    IdempotencyCase(
-        operation="Independent process `publish()` replay",
-        expected_contract="Concurrent processes converge on one visible external artifact",
-        task_id="idempotency.process_artifact_replay",
-    ),
-    IdempotencyCase(
-        operation="Independent process `evaluate()` replay",
-        expected_contract=(
-            "Concurrent processes grade once, and changed subjects conflict before grading"
-        ),
-        task_id="idempotency.process_evaluation_replay",
     ),
 )
 
@@ -1195,22 +1173,16 @@ def register(harness: EvalHarness) -> None:
         desc="Fenced resume owns the next tick and stale writer attempts remain invisible.",
     )
     harness.add(
-        "idempotency.durable_artifact_replay",
+        "idempotency.artifact_occurrence_identity",
         suite=SUITE,
-        fn=task_durable_artifact_replay,
-        desc="Concurrent artifact replay converges and identity-content conflicts fail loudly.",
+        fn=task_artifact_occurrence_identity,
+        desc="Artifact submissions keep occurrence identity while equal bytes reuse one object.",
     )
     harness.add(
-        "idempotency.durable_artifact_crash_recovery",
+        "idempotency.evaluation_result_replay",
         suite=SUITE,
-        fn=task_durable_artifact_crash_recovery,
-        desc="Lease takeover completes an appended orphan without a duplicate visible artifact.",
-    )
-    harness.add(
-        "idempotency.evaluation_receipt_replay",
-        suite=SUITE,
-        fn=task_evaluation_receipt_replay,
-        desc="Evaluation replay returns one receipt without re-running the grader.",
+        fn=task_evaluation_result_replay,
+        desc="Evaluation replay returns the persisted result without re-running the grader.",
     )
     harness.add(
         "idempotency.process_crash_cold_resume",
@@ -1223,16 +1195,4 @@ def register(harness: EvalHarness) -> None:
         suite=SUITE,
         fn=task_process_writer_fence_race,
         desc="Two independent writer processes race and exactly one publishes.",
-    )
-    harness.add(
-        "idempotency.process_artifact_replay",
-        suite=SUITE,
-        fn=task_process_artifact_replay,
-        desc="Concurrent processes converge on one externally identified artifact.",
-    )
-    harness.add(
-        "idempotency.process_evaluation_replay",
-        suite=SUITE,
-        fn=task_process_evaluation_replay,
-        desc="Concurrent processes grade once and changed subjects conflict before grading.",
     )

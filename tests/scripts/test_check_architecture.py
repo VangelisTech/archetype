@@ -284,10 +284,10 @@ def test_artifacts_family_scope_rejects_synthetic_reverse_app_dependency(
     tmp_path: Path,
 ) -> None:
     """#558 acceptance: an artifacts-family module importing app authority fails."""
-    bundles = tmp_path / "src" / "archetype" / "artifacts" / "bundles.py"
-    bundles.parent.mkdir(parents=True)
-    bundles.write_text(
-        "from archetype.app.storage.catalog import artifact_publication_key\n",
+    contracts = tmp_path / "src" / "archetype" / "artifacts" / "contracts.py"
+    contracts.parent.mkdir(parents=True)
+    contracts.write_text(
+        "from archetype.app.ingestion.service import IngestionService\n",
         encoding="utf-8",
     )
     rules = """
@@ -305,7 +305,7 @@ allowed_families = []
 
     assert not result.policy_errors
     assert {(violation.rule, violation.target) for violation in result.violations} == {
-        ("top_level_family_outward_dependency", "archetype.app.storage.catalog"),
+        ("top_level_family_outward_dependency", "archetype.app.ingestion.service"),
     }
 
 

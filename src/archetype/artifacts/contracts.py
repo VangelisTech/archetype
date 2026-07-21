@@ -1,170 +1,142 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Typed artifact-table contracts and claim-backed publication receipts.
-
-Pure artifact value contracts: the processor protocol, table-name and
-envelope constants, content/identity digest helpers, and publication receipt
-values. The persistent ECS schemas live in ``archetype.artifacts.components``;
-publication, indexing, and storage authority remain under
-``archetype.app.artifacts``.
-"""
+"""Reusable file-artifact inputs, references, and object-store bounds."""
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
-import time
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Protocol
+from datetime import UTC, datetime
+from pathlib import Path, PurePosixPath
 
-from daft import DataFrame
-from pydantic_core import to_jsonable_python
+from daft.io import IOConfig
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
+from uuid_utils import UUID
 
-from archetype.artifacts.components import AssetRef
-from archetype.core.component import Component
-
-_ARTIFACT_DIGEST_DOMAIN = "archetype.artifact.v1"
-ARTIFACT_ID_COLUMN = "artifact_id"
-ARTIFACT_KEY_COLUMNS = ("world_id", "run_id", "source_uri", "content_hash")
-ARTIFACT_ENVELOPE_COLUMNS = (ARTIFACT_ID_COLUMN, *ARTIFACT_KEY_COLUMNS)
-_ARTIFACT_TABLE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_XXHASH3_64 = re.compile(r"^[0-9a-f]{16}$")
 
 
-class ArtifactProcessor(Protocol):
-    """Transform each ``daft.File`` input into one typed artifact row.
-
-    Processors preserve ``source_uri`` and ``content_hash``. ``ArtifactTableService``
-    owns the remaining envelope columns and removes the execution-only
-    ``file`` column before persistence.
-    """
-
-    table_name: str
-
-    def process(self, files: DataFrame) -> DataFrame: ...
+def _portable_path(value: str, *, optional: bool) -> str:
+    normalized = value.strip().replace("\\", "/").strip("/")
+    if not normalized and optional:
+        return ""
+    path = PurePosixPath(normalized)
+    if not normalized or path.is_absolute() or ".." in path.parts:
+        raise ValueError("must be a portable relative path")
+    return path.as_posix()
 
 
-def artifact_table_id(table_name: str) -> str:
-    """Return the physical Iceberg identifier for a logical artifact table."""
-    if not _ARTIFACT_TABLE_NAME.fullmatch(table_name):
-        raise ValueError(
-            "artifact table names must start with a letter or underscore, contain "
-            "only letters, digits, and underscores, and be at most 63 characters"
-        )
-    return f"artifacts__{table_name}"
+class ArtifactSource(BaseModel):
+    """One file, glob, or recursive prefix submitted for artifact ingestion."""
 
+    model_config = dict(frozen=True)
 
-def digest_bytes(data: bytes) -> str:
-    """Content digest for asset bytes (sha256, hex)."""
-    return hashlib.sha256(data).hexdigest()
-
-
-def digest_file(path: str | Path, chunk_size: int = 1 << 20) -> str:
-    """Content digest for a file on disk, streamed."""
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        while chunk := f.read(chunk_size):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def asset_ref_for_file(path: str | Path, *, media_type: str = "") -> AssetRef:
-    """Build a content-addressed reference for a local artifact."""
-    p = Path(path)
-    return AssetRef(
-        digest=digest_file(p),
-        uri=str(p),
-        media_type=media_type,
-        size_bytes=p.stat().st_size,
-        created_at_ms=int(time.time() * 1000),
-    )
-
-
-def artifact_payload_digest(components: list[Component]) -> str:
-    """Server-computed canonical digest of an artifact payload.
-
-    Caller-supplied hashes are never trusted; the digest is derived from
-    the component types and field values in canonical JSON, order-invariant
-    across the component list.
-    """
-    payload = sorted(
-        (
-            {
-                "type": type(c).__name__,
-                "fields": to_jsonable_python(c.model_dump()),
-            }
-            for c in components
-        ),
-        key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
-    )
-    canonical = json.dumps(
-        {"domain": _ARTIFACT_DIGEST_DOMAIN, "payload": payload},
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-        allow_nan=False,
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-@dataclass(frozen=True)
-class ArtifactReceipt:
-    """Describe one claim-backed durable artifact publication."""
-
-    world_id: str
-    run_id: str
-    producer: str
-    external_id: str
-    payload_digest: str
-    commit_token: str
-    artifact_entity_id: int
-    tick: int
-    table_id: str
-    duplicate: bool
-
-
-@dataclass(frozen=True)
-class ArtifactWriteReceipt:
-    """Describe one committed write to a typed Iceberg artifact table."""
-
-    world_id: str
-    run_id: str
-    table_name: str
-    table_id: str
-    sources_matched: int | None
-    rows_written: int
-    snapshot_id: int | None
-
-    @property
-    def duplicate(self) -> bool | None:
-        if self.rows_written > 0:
-            return False
-        if self.sources_matched is None:
-            return None
-        return self.sources_matched > 0
-
-
-@dataclass(frozen=True)
-class TranscriptIngestionReceipt:
-    """Result of claim-backed, redacted transcript artifact ingestion."""
-
-    world_id: str
-    run_id: str
-    trajectory_id: str
-    mission_id: str
     source_uri: str
-    source_content_hash: str
-    redaction_policy_id: str
-    redaction_status: str
-    redaction_count: int
-    redaction_rule_ids: tuple[str, ...]
-    reference: ArtifactReceipt
-    rows: ArtifactWriteReceipt
+    logical_root: str = ""
+    logical_path: str = ""
+    recursive: bool = False
+    required: bool = True
 
+    @field_validator("source_uri")
+    @classmethod
+    def _source_required(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("source_uri must not be empty")
+        return value
+
+    @field_validator("logical_root")
+    @classmethod
+    def _valid_logical_root(cls, value: str) -> str:
+        return _portable_path(value, optional=True)
+
+    @field_validator("logical_path")
+    @classmethod
+    def _valid_logical_path(cls, value: str) -> str:
+        return _portable_path(value, optional=True)
+
+    @model_validator(mode="after")
+    def _directory_uses_root(self) -> ArtifactSource:
+        if self.recursive and self.logical_path:
+            raise ValueError("recursive sources use logical_root, not logical_path")
+        return self
+
+
+class ArtifactRef(BaseModel):
+    """Portable reference to one indexed, content-addressed file occurrence."""
+
+    model_config = dict(frozen=True)
+
+    artifact_id: str
+    logical_path: str
+    uri: str
+    sha256: str
+    xxhash3_64: str
+    media_type: str
+    size_bytes: int = Field(ge=0)
+
+    @field_validator("artifact_id")
+    @classmethod
+    def _uuidv7_identity(cls, value: str) -> str:
+        parsed = UUID(value)
+        if parsed.version != 7:
+            raise ValueError("artifact_id must be UUIDv7")
+        return str(parsed)
+
+    @field_validator("logical_path")
+    @classmethod
+    def _logical_path(cls, value: str) -> str:
+        return _portable_path(value, optional=False)
+
+    @field_validator("uri", "media_type")
+    @classmethod
+    def _nonempty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must not be empty")
+        return value
+
+    @field_validator("sha256")
+    @classmethod
+    def _sha256_digest(cls, value: str) -> str:
+        if not _SHA256.fullmatch(value):
+            raise ValueError("sha256 must be a lowercase SHA-256 hex digest")
+        return value
+
+    @field_validator("xxhash3_64")
+    @classmethod
+    def _fast_digest(cls, value: str) -> str:
+        if not _XXHASH3_64.fullmatch(value):
+            raise ValueError("xxhash3_64 must be a lowercase XXH3-64 hex digest")
+        return value
+
+    @computed_field
     @property
-    def duplicate(self) -> bool:
-        """Whether both the source claim and typed rows already existed."""
+    def ingested_at(self) -> datetime:
+        """Derive ingestion time from the UUIDv7 identity."""
 
-        return self.reference.duplicate and self.rows.rows_written == 0
+        return datetime.fromtimestamp(UUID(self.artifact_id).timestamp / 1000, tz=UTC)
+
+
+class ArtifactStoreConfig(BaseModel):
+    """Bound object copying while leaving index authority in the world catalog."""
+
+    model_config = dict(frozen=True, arbitrary_types_allowed=True)
+
+    object_uri: str | Path | None = None
+    io_config: IOConfig | None = None
+    max_connections: int = Field(default=32, ge=1)
+    max_artifact_bytes: int = Field(default=1 << 30, gt=0)
+    max_ingestion_bytes: int = Field(default=4 << 30, gt=0)
+
+    @model_validator(mode="after")
+    def _bounded_batch(self) -> ArtifactStoreConfig:
+        if self.max_ingestion_bytes < self.max_artifact_bytes:
+            raise ValueError("max_ingestion_bytes must be >= max_artifact_bytes")
+        return self
+
+    @classmethod
+    def local(cls, root: str | Path) -> ArtifactStoreConfig:
+        """Place content-addressed objects beneath a local root."""
+
+        return cls(object_uri=Path(root))

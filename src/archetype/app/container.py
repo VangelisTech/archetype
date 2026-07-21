@@ -19,17 +19,16 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 
 from archetype.app.application.service import RuntimeApplication
-from archetype.app.artifacts.bundle_service import ArtifactBundleService
 from archetype.app.artifacts.service import ArtifactService
-from archetype.app.artifacts.table_service import ArtifactTableService
-from archetype.app.artifacts.transcript_service import ClaudeTranscriptIngestionService
 from archetype.app.audit.service import AuditLog
 from archetype.app.commands.service import CommandScheduler
 from archetype.app.evaluation.service import EvaluationService
 from archetype.app.gateway.auth import reset_tick_counters
 from archetype.app.gateway.service import CommandGateway
+from archetype.app.ingestion.service import IngestionService
 from archetype.app.missions.service import MissionService
 from archetype.app.missions.trajectory_service import TrajectoryService
+from archetype.app.missions.transcript_service import TranscriptIngestionService
 from archetype.app.physical_ai.service import PhysicalAIService
 from archetype.app.query.service import QueryService
 from archetype.app.redaction.interfaces import iRedactionService
@@ -39,7 +38,7 @@ from archetype.app.storage.service import StorageService
 from archetype.app.world.mutation import MutationService
 from archetype.app.world.service import WorldService
 from archetype.app.world.simulation import SimulationService
-from archetype.artifacts.bundles import ArtifactSourceResolver, ArtifactStoreConfig
+from archetype.artifacts.contracts import ArtifactStoreConfig
 from archetype.core.config import StorageConfig
 from archetype.missions.contracts import AgentMissionConfig
 from archetype.missions.sandboxes.service import SandboxService
@@ -59,7 +58,6 @@ class ServiceContainer:
         storage_service: StorageService | None = None,
         audit_storage_config: StorageConfig | None = None,
         artifact_store_config: ArtifactStoreConfig | None = None,
-        artifact_source_resolver: ArtifactSourceResolver | None = None,
         redaction_service: iRedactionService | None = None,
     ):
         if storage_service is not None and storage_service.has_injected_session:
@@ -81,22 +79,26 @@ class ServiceContainer:
         self.world_service = WorldService(self.storage_service)
         self.audit_log = AuditLog(self.storage_service, audit_storage_config)
         self.query_service = QueryService(self.storage_service, self.audit_log)
-        self.artifact_table_service = ArtifactTableService(self.storage_service, self.world_service)
-        self.artifact_service = ArtifactService(self.storage_service, self.world_service)
-        self.artifact_bundle_service = ArtifactBundleService(
+        self.ingestion_service = IngestionService(self.storage_service, self.world_service)
+        self.artifact_service = ArtifactService(
             self.storage_service,
             self.world_service,
+            self.ingestion_service,
             artifact_store_config,
-            artifact_source_resolver,
-            redaction_service=self.redaction_service,
         )
-        self.transcript_ingestion_service = ClaudeTranscriptIngestionService(
+        self.transcript_ingestion_service = TranscriptIngestionService(
             self.artifact_service,
-            self.artifact_table_service,
+            self.ingestion_service,
             self.redaction_service,
+            self.storage_service,
             self.world_service,
         )
-        self.evaluation_service = EvaluationService(self.query_service, self.artifact_service)
+        self.evaluation_service = EvaluationService(
+            self.query_service,
+            self.ingestion_service,
+            self.storage_service,
+            self.world_service,
+        )
         self.trajectory_service = TrajectoryService(
             self.query_service,
             self.evaluation_service,
@@ -127,9 +129,7 @@ class ServiceContainer:
             queries=self.query_service,
             commands=self.command_scheduler,
             audit=self.audit_log,
-            artifact_tables=self.artifact_table_service,
             artifacts=self.artifact_service,
-            artifact_bundles=self.artifact_bundle_service,
             transcripts=self.transcript_ingestion_service,
             evaluations=self.evaluation_service,
             trajectories=self.trajectory_service,

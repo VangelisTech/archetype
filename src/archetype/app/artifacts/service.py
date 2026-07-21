@@ -1,418 +1,230 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Publication Service (issue #274): replay-safe external artifacts.
-
-Deliberately small and NOT MutationService: mutations stage RAM state that
-persists on a later simulation step, so either crash outcome for an artifact
-would be wrong (a completed claim over RAM-only rows, or publication driving
-a tick through every processor). Artifacts write durable rows directly, under
-the claim's own commit identity, and become visible in the same catalog
-transaction that completes the claim.
-
-Exactly-once means exactly one logically VISIBLE artifact per
-(storage, world, run, producer, external_id). Physical appends may retry —
-duplicates stay invisible because their tokens never enter the visible set.
-
-Artifacts are non-processable by construction: they use catalog-allocated
-entity ids in the negative metadata band, so they never enter entity2sig,
-never join active simulation, and are excluded from resume's entity
-directory. They are ordinary queryable rows in every other respect.
-"""
+"""The single application service for file artifact ingestion and indexing."""
 
 from __future__ import annotations
 
-import asyncio
-import json
-import logging
-import os
-import socket
-import time
-from dataclasses import dataclass
+from collections.abc import Sequence
 
-import daft
-import pyarrow as pa
-from uuid_utils import uuid7
+from daft import DataFrame, lit
+from uuid_utils import UUID
 
-from archetype.app.storage.catalog import (
-    CatalogSchemaMismatchError,
-    ClaimPendingError,
-    ClaimRecord,
-    SignatureRecord,
-    arrow_schema_descriptor,
-    claim_scope_key,
-    schema_fingerprint,
-)
+from archetype._storage_uri import local_storage_path
+from archetype.app.artifacts.pipeline import SourcePlan, persist_objects, scan_sources
+from archetype.app.ingestion.interfaces import iIngestionService
 from archetype.app.storage.interfaces import iStorageService
 from archetype.app.world.interfaces import iWorldService
-from archetype.artifacts.components import ArtifactMeta
-from archetype.artifacts.contracts import ArtifactReceipt, artifact_payload_digest
-from archetype.core.archetype import Archetype
-from archetype.core.component import Component
-from archetype.core.config import StorageConfig
+from archetype.artifacts.contracts import ArtifactRef, ArtifactSource, ArtifactStoreConfig
+from archetype.core.config import StorageBackend, StorageConfig
+from archetype.ingestion.audio import ARTIFACT_AUDIO, audio_index
+from archetype.ingestion.documents import ARTIFACT_PDF, pdf_index
+from archetype.ingestion.files import ARTIFACT_FILES, common_index
+from archetype.ingestion.images import ARTIFACT_IMAGES, image_index
+from archetype.ingestion.video import ARTIFACT_VIDEO, video_index
 
-logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class PinnedSnapshot:
-    """Immutable simulation visibility captured for one evaluation."""
-
-    run_id: str
-    tick: int
-    head_tokens: tuple[str, ...]
-    visibility_tokens: tuple[str, ...]
-    storage_config: StorageConfig
+_MEDIA_INDEXES = (
+    ("audio", ARTIFACT_AUDIO, audio_index),
+    ("image", ARTIFACT_IMAGES, image_index),
+    ("pdf", ARTIFACT_PDF, pdf_index),
+    ("video", ARTIFACT_VIDEO, video_index),
+)
 
 
 class ArtifactService:
-    """Own the artifact-publication lifecycle: PENDING → append → flush → COMPLETE."""
+    """Copy files into object storage and publish their typed catalog indexes.
 
-    def __init__(self, storage_service: iStorageService, world_service: iWorldService) -> None:
+    Object persistence and specialized metadata tables complete before the
+    common ``artifact_files`` row becomes visible. That common index is the
+    public commit point; no claim, lease, receipt, or reconciliation state is
+    introduced around the operation.
+    """
+
+    def __init__(
+        self,
+        storage_service: iStorageService,
+        world_service: iWorldService,
+        ingestion_service: iIngestionService,
+        store_config: ArtifactStoreConfig | None = None,
+    ) -> None:
         self._storage_service = storage_service
         self._world_service = world_service
+        self._ingestion = ingestion_service
+        self._store_config = store_config or ArtifactStoreConfig()
 
-    async def publish(
+    async def ingest(
         self,
         world_id: str,
-        components: list[Component],
+        sources: ArtifactSource | Sequence[ArtifactSource],
         *,
-        external_id: str,
-        producer: str = "default",
         storage_config: StorageConfig | None = None,
-        lease_seconds: float = 30.0,
-    ) -> ArtifactReceipt:
-        """Publish one external artifact, exactly-once-visible.
+    ) -> tuple[ArtifactRef, ...]:
+        """Ingest one bounded set of sources and return portable references."""
 
-        Works against live worlds (storage resolved from the registry) and
-        cold ones (explicit ``storage_config``; the world must be recorded
-        in the catalog). Concurrent identical submissions converge: one
-        caller appends, the rest receive the original receipt.
-        """
-        if not components:
-            raise ValueError("an artifact needs at least one component")
+        declared = self._normalize_sources(sources)
+        wid, storage, tick = await self._world_context(world_id, storage_config)
+        config = self._effective_store_config(storage)
+        discovered, plans = scan_sources(declared, io_config=storage.io_config)
 
-        async def _ready(_claim: ClaimRecord) -> list[Component]:
-            return components
+        # Materialize UUIDv7 and both hashes exactly once before multiple media
+        # indexes consume the frame. Rebuilding this lazy node would assign a
+        # different occurrence identity to each sink.
+        discovered = discovered.collect(num_preview_rows=0)
+        self._validate_discovery(discovered, plans, config)
+        if discovered.count_rows() == 0:
+            return ()
 
-        return await self._publish(
-            world_id,
-            external_id=external_id,
-            producer=producer,
-            payload_digest=artifact_payload_digest(components),
-            component_types=[type(component) for component in components],
-            build_components=_ready,
-            storage_config=storage_config,
-            lease_seconds=lease_seconds,
-        )
+        object_uri = self._object_root(storage, config)
+        stored = persist_objects(
+            discovered.with_column("tick", lit(tick)),
+            object_uri=object_uri,
+            config=config,
+        ).collect(num_preview_rows=0)
 
-    async def publish_evaluation(
-        self,
-        world_id: str,
-        *,
-        evaluation_id: str,
-        producer: str,
-        identity_digest: str,
-        component_types: list[type[Component]],
-        build_components,
-        storage_config: StorageConfig | None = None,
-        lease_seconds: float = 30.0,
-    ) -> ArtifactReceipt:
-        """Claim-BEFORE-grade (issue #275): the payload is built only after
-        this claimant owns the claim.
-
-        ``identity_digest`` names what the evaluation is OF (subject +
-        contract), never the graded outcome — trials of nondeterministic
-        graders share it while concluding differently. ``build_components``
-        (the grader, composed by the gate layer) runs at most once per
-        completed claim: a duplicate returns the persisted receipt without
-        re-grading, and a lease takeover that finds the orphan rows
-        completes without re-running. ``component_types`` declares the
-        persisted shape so takeover can restore a missing signature record
-        without rebuilding the graded payload.
-        """
-        return await self._publish(
-            world_id,
-            external_id=evaluation_id,
-            producer=producer,
-            payload_digest=identity_digest,
-            component_types=component_types,
-            build_components=build_components,
-            storage_config=storage_config,
-            lease_seconds=lease_seconds,
-        )
-
-    async def _publish(
-        self,
-        world_id: str,
-        *,
-        external_id: str,
-        producer: str,
-        payload_digest: str,
-        component_types: list[type[Component]],
-        build_components,
-        storage_config: StorageConfig | None,
-        lease_seconds: float,
-    ) -> ArtifactReceipt:
-        if not external_id.strip():
-            raise ValueError("external_id must be a non-empty producer-scoped identity")
-
-        wid = str(world_id)
-        effective = self._resolve_storage(wid, storage_config)
-        catalog = self._storage_service.get_control_catalog(effective)
-        record = await catalog.get_world(wid)
-        if record is None:
-            raise KeyError(f"world {wid} is not recorded in catalog for {effective.uri}")
-        run_id = record.run_id
-        if not run_id:
-            raise RuntimeError(f"world {wid} has no recorded run; nothing to attach artifacts to")
-        manifest_tick = await catalog.max_manifest_tick(wid, str(run_id))
-        claim_tick = record.tick_head if manifest_tick is None else manifest_tick
-        sig, table_id, signature_record = self._signature(component_types)
-
-        claimant = f"{socket.gethostname()}:{os.getpid()}:{uuid7().hex[:8]}"
-        deadline = time.monotonic() + max(lease_seconds, 1.0) * 2
-
-        while True:
-            try:
-                outcome, claim = await catalog.acquire_claim(
-                    world_id=wid,
-                    run_id=str(run_id),
-                    producer=producer,
-                    external_id=external_id,
-                    payload_digest=payload_digest,
-                    claimant=claimant,
-                    tick=claim_tick,
-                    lease_seconds=lease_seconds,
-                )
-            except ClaimPendingError:
-                # Another claimant is mid-flight on the identical artifact.
-                # Converge on its outcome instead of erroring: exactly one
-                # visible artifact either way.
-                claim = await self._await_settled(catalog, wid, str(run_id), producer, external_id)
-                if claim is not None:
-                    return self._receipt(claim, duplicate=True)
-                if time.monotonic() > deadline:
-                    raise
+        # Typed extensions are not visibility roots. A failure here leaves no
+        # common row for public readers to observe.
+        present_families = set(stored.select("media_family").to_pydict()["media_family"])
+        for family, table, project in _MEDIA_INDEXES:
+            if family not in present_families:
                 continue
-            break
-
-        if outcome == "duplicate":
-            return self._receipt(claim, duplicate=True)
-
-        store = await self._storage_service.get_or_create_store(effective, None)
-
-        if outcome == "recovered":
-            # First probe the expired writer's token. If its append is durable,
-            # publish that orphan without rebuilding or re-appending.
-            found = False
-            if claim.table_id:
-                if claim.table_id != table_id:
-                    raise RuntimeError(
-                        f"claim {claim.scope_key} records table {claim.table_id}, but the "
-                        f"declared component shape resolves to {table_id}"
-                    )
-                try:
-                    existing = await store.get_existing_table_df(claim.table_id, wid, str(run_id))
-                    orphaned = existing.where(existing["commit_token"] == claim.commit_token)
-                    found = orphaned.count_rows() > 0
-                except KeyError:
-                    pass
-            if found:
-                assert claim.table_id is not None
-                await store.flush()
-                physical = await store.get_existing_table_schema(claim.table_id)
-                if not signature_record.matches(physical):
-                    raise CatalogSchemaMismatchError(
-                        f"recovered table {claim.table_id} does not match its declared "
-                        "component schema; refusing to publish the claim"
-                    )
-                # The original claimant may have died after append but before
-                # signature registration. Restore discovery BEFORE making its
-                # token visible by completing the claim.
-                await catalog.register_signature(signature_record)
-                await catalog.complete_claim(wid, claim.scope_key, claimant, claim.table_id)
-                settled = await catalog.get_claim(wid, claim.scope_key)
-                return self._receipt(settled if settled is not None else claim, duplicate=False)
-
-            # No orphan exists yet. Rotate before rebuilding so an expired,
-            # slow writer that appends later can never share the published
-            # token with this recovery attempt.
-            claim = await catalog.rearm_claim(
+            await self._ingestion.append(
                 wid,
-                claim.scope_key,
-                claimant,
-                f"artifact-{claim.scope_key[:16]}-{uuid7().hex}",
+                table,
+                project(stored),
+                storage_config=storage,
             )
 
-        components = await build_components(claim)
-        if not components:
-            raise ValueError("an artifact needs at least one component")
-        actual_types = {type(component) for component in components}
-        declared_types = set(component_types)
-        if actual_types != declared_types:
-            raise ValueError(
-                "built artifact components do not match their declared types: "
-                f"declared={sorted(t.__name__ for t in declared_types)}, "
-                f"actual={sorted(t.__name__ for t in actual_types)}"
-            )
-        await catalog.record_claim_table(wid, claim.scope_key, table_id)
+        common = common_index(stored)
+        await self._ingestion.append(
+            wid,
+            ARTIFACT_FILES,
+            common,
+            storage_config=storage,
+        )
+        return self._references(common)
 
-        await self._append_artifact(store, sig, claim, components, wid, str(run_id))
+    async def index(
+        self,
+        world_id: str,
+        *,
+        storage_config: StorageConfig | None = None,
+    ) -> DataFrame:
+        """Return this world's current-run common artifact index."""
 
-        # Artifacts are discoverable like everything else.
-        await catalog.register_signature(signature_record)
-
-        # Visibility must never outrun durability (same rule as ticks).
-        await store.flush()
-        await catalog.complete_claim(wid, claim.scope_key, claimant, table_id)
-        settled = await catalog.get_claim(wid, claim.scope_key)
-        return self._receipt(settled if settled is not None else claim, duplicate=False)
-
-    async def snapshot_ref(
-        self, world_id: str, storage_config: StorageConfig | None = None
-    ) -> PinnedSnapshot:
-        """Capture the world's immutable simulation visibility.
-
-        Persisted receipts require a pinned subject (issue #275); a world
-        with no published visibility has nothing immutable to pin — fail
-        closed rather than hash a moving target. ``head_tokens`` identify
-        the snapshot for the subject digest; ``visibility_tokens`` pin the
-        full manifest prefix that the grader may read.
-        """
-        wid = str(world_id)
-        effective = self._resolve_storage(wid, storage_config)
-        catalog = self._storage_service.get_control_catalog(effective)
-        record = await catalog.get_world(wid)
-        if record is None:
-            raise KeyError(f"world {wid} is not recorded in catalog for {effective.uri}")
-        if not record.run_id:
-            raise RuntimeError(f"world {wid} has no recorded run; nothing to pin")
-        # Manifests ONLY: the subject is the simulation snapshot. Artifact and
-        # receipt tokens are evidence ATTACHED to that snapshot — including
-        # them would let every completed receipt perturb the identity of the
-        # subject it was graded against.
-        manifests = await catalog.list_manifests(wid, str(record.run_id))
-        if not manifests:
-            raise RuntimeError(
-                f"world {wid} has no published visibility to pin a subject against "
-                "(step it at least once before evaluating)"
-            )
-        head = max(m.tick for m in manifests)
-        # Keep the subject identity manifest-only, but pin every row that is
-        # visible at capture time. Completed artifact claims publish their own
-        # commit tokens and may share a tick with a manifest; omitting them
-        # would make durable artifacts disappear from the grader's exact-token
-        # read even though an ordinary query can see them.
-        visible = await catalog.visible_tokens(wid, str(record.run_id))
-        visibility_tokens = {
-            token for tick, tokens in (visible or {}).items() if tick <= head for token in tokens
-        }
-        return PinnedSnapshot(
-            run_id=str(record.run_id),
-            tick=head,
-            head_tokens=tuple(sorted(m.commit_token for m in manifests if m.tick == head)),
-            visibility_tokens=tuple(sorted(visibility_tokens)),
-            storage_config=effective,
+        return await self._ingestion.read(
+            str(world_id),
+            ARTIFACT_FILES,
+            storage_config=storage_config,
         )
 
-    # ── internals ────────────────────────────────────────────────────────────
+    async def _world_context(
+        self,
+        world_id: str,
+        storage_config: StorageConfig | None,
+    ) -> tuple[str, StorageConfig, int]:
+        wid = str(world_id)
+        live = self._world_service.storage_record(wid)
+        storage = storage_config or (live[0] if live is not None else StorageConfig())
+        if storage.backend != StorageBackend.ICEBERG:
+            raise ValueError("artifact ingestion requires StorageBackend.ICEBERG")
+        control = self._storage_service.get_control_catalog(storage)
+        record = await control.get_world(wid)
+        if record is None:
+            raise KeyError(f"world {wid} is not recorded in catalog for {storage.uri}")
+        if not record.run_id:
+            raise RuntimeError(f"world {wid} has no recorded run; artifacts need a run key")
+        if self._world_service.has_world(UUID(wid)):
+            tick = int(self._world_service.get_world(UUID(wid)).tick)
+        else:
+            tick = int(record.tick_head)
+        return wid, storage, tick
+
+    def _effective_store_config(self, storage: StorageConfig) -> ArtifactStoreConfig:
+        if self._store_config.io_config is not None or storage.io_config is None:
+            return self._store_config
+        return self._store_config.model_copy(update={"io_config": storage.io_config})
 
     @staticmethod
-    def _signature(
-        component_types: list[type[Component]],
-    ) -> tuple[tuple[type[Component], ...], str, SignatureRecord]:
-        if not component_types:
-            raise ValueError("an artifact needs at least one declared component type")
-        if any(not isinstance(component_type, type) for component_type in component_types):
-            raise TypeError("component_types must contain Component classes")
-        if any(not issubclass(component_type, Component) for component_type in component_types):
-            raise TypeError("component_types must contain Component classes")
+    def _object_root(storage: StorageConfig, config: ArtifactStoreConfig) -> str:
+        if config.object_uri is not None:
+            return str(config.object_uri)
+        local = local_storage_path(str(storage.uri))
+        if local is not None:
+            return str(local / "artifacts")
+        return str(storage.uri).rstrip("/") + "/artifacts"
 
-        sig = tuple(
-            sorted({*component_types, ArtifactMeta}, key=lambda component: component.__name__)
-        )
-        table_id = Archetype.get_name(sig)
-        schema = Archetype.get_archetype_schema(sig)
-        return (
-            sig,
-            table_id,
-            SignatureRecord(
-                table_id=table_id,
-                component_names=tuple(component.__name__ for component in sig),
-                schema_json=json.dumps(arrow_schema_descriptor(schema)),
-                fingerprint=schema_fingerprint(schema),
-            ),
-        )
+    @staticmethod
+    def _normalize_sources(
+        sources: ArtifactSource | Sequence[ArtifactSource],
+    ) -> tuple[ArtifactSource, ...]:
+        if isinstance(sources, ArtifactSource):
+            values = (sources,)
+        else:
+            values = tuple(sources)
+        if not values:
+            raise ValueError("artifact ingestion requires at least one source")
+        if any(not isinstance(value, ArtifactSource) for value in values):
+            raise TypeError("sources must contain ArtifactSource values")
+        return values
 
-    def _resolve_storage(
-        self, world_id: str, storage_config: StorageConfig | None
-    ) -> StorageConfig:
-        if storage_config is not None:
-            return storage_config
-        live = self._world_service.storage_record(world_id)
-        if live is not None:
-            return live[0]
-        return StorageConfig()
-
-    async def _append_artifact(
-        self,
-        store,
-        sig: tuple,
-        claim: ClaimRecord,
-        components: list[Component],
-        world_id: str,
-        run_id: str,
+    @staticmethod
+    def _validate_discovery(
+        files: DataFrame,
+        plans: tuple[SourcePlan, ...],
+        config: ArtifactStoreConfig,
     ) -> None:
-        meta = ArtifactMeta(
-            producer=claim.producer,
-            external_id=claim.external_id,
-            payload_digest=claim.payload_digest,
-            commit_id=claim.commit_token,
-        )
-        row = Archetype.to_row_dict(
-            entity_id=claim.artifact_entity_id,
-            tick=claim.tick,
-            components=[*components, meta],
-            world_id=world_id,
-            run_id=run_id,
-        )
-        row["commit_token"] = claim.commit_token
-        row["writer_epoch"] = claim.fence_epoch
-        schema = Archetype.get_archetype_schema(sig)
-        df = daft.from_arrow(pa.Table.from_pylist([row], schema=schema))
-        await store.append(sig, df)
+        columns = files.select("_source_index", "logical_path", "size_bytes").to_pydict()
+        source_indexes = [int(value) for value in columns.get("_source_index", [])]
+        logical_paths = [str(value) for value in columns.get("logical_path", [])]
+        sizes = [int(value) for value in columns.get("size_bytes", [])]
+        for plan in plans:
+            if plan.source.required and plan.index not in source_indexes:
+                raise FileNotFoundError(
+                    f"required artifact source matched no files: {plan.source.source_uri}"
+                )
+        if len(logical_paths) != len(set(logical_paths)):
+            raise ValueError("artifact sources resolve to duplicate logical paths")
+        oversized = [size for size in sizes if size > config.max_artifact_bytes]
+        if oversized:
+            raise ValueError(
+                f"artifact is {max(oversized)} bytes; per-artifact limit is "
+                f"{config.max_artifact_bytes}"
+            )
+        total = sum(sizes)
+        if total > config.max_ingestion_bytes:
+            raise ValueError(
+                f"artifact ingestion is {total} bytes; batch limit is {config.max_ingestion_bytes}"
+            )
 
-    async def _await_settled(
-        self, catalog, world_id: str, run_id: str, producer: str, external_id: str
-    ) -> ClaimRecord | None:
-        """Poll briefly for a racing claimant's completion.
-
-        Returns the COMPLETE claim, or None when the lease looks abandoned
-        (the caller then retries acquisition and takes the lease over).
-        """
-        scope = claim_scope_key(world_id, run_id, producer, external_id)
-        for _ in range(100):
-            claim = await catalog.get_claim(world_id, scope)
-            if claim is None:
-                return None
-            if claim.status == "COMPLETE":
-                return claim
-            if claim.lease_expires_at <= time.time():
-                return None
-            await asyncio.sleep(0.05)
-        return None
-
-    def _receipt(self, claim: ClaimRecord, *, duplicate: bool) -> ArtifactReceipt:
-        return ArtifactReceipt(
-            world_id=claim.world_id,
-            run_id=claim.run_id,
-            producer=claim.producer,
-            external_id=claim.external_id,
-            payload_digest=claim.payload_digest,
-            commit_token=claim.commit_token,
-            artifact_entity_id=claim.artifact_entity_id,
-            tick=claim.tick,
-            table_id=claim.table_id or "",
-            duplicate=duplicate,
+    @staticmethod
+    def _references(common: DataFrame) -> tuple[ArtifactRef, ...]:
+        values = common.select(
+            "artifact_id",
+            "logical_path",
+            "object_uri",
+            "sha256",
+            "xxhash3_64",
+            "mime_type",
+            "size_bytes",
+        ).to_pydict()
+        return tuple(
+            ArtifactRef(
+                artifact_id=str(artifact_id),
+                logical_path=str(logical_path),
+                uri=str(uri),
+                sha256=str(sha256),
+                xxhash3_64=str(fast_hash),
+                media_type=str(media_type),
+                size_bytes=int(size_bytes),
+            )
+            for artifact_id, logical_path, uri, sha256, fast_hash, media_type, size_bytes in zip(
+                values["artifact_id"],
+                values["logical_path"],
+                values["object_uri"],
+                values["sha256"],
+                values["xxhash3_64"],
+                values["mime_type"],
+                values["size_bytes"],
+                strict=True,
+            )
         )

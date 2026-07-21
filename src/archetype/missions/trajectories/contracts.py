@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from archetype.artifacts.contracts import ArtifactRef
+
 if TYPE_CHECKING:
     from archetype.missions.trajectories.components import TrajectoryTurn
 
@@ -119,3 +121,20 @@ class TrajectorySelection:
             )
             if values
         }
+
+
+@dataclass(frozen=True)
+class TranscriptIngestionResult:
+    """Durable outputs from sanitizing and indexing one coding-agent session."""
+
+    world_id: str
+    run_id: str
+    trajectory_id: str
+    mission_id: str
+    source_uri: str
+    artifact: ArtifactRef
+    rows_written: int
+    redaction_policy_id: str
+    redaction_status: str
+    redaction_count: int
+    redaction_rule_ids: tuple[str, ...]

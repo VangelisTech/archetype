@@ -159,7 +159,7 @@ class StorageService:
             )
         self._required_session_identity = requested
 
-    def get_control_catalog(self, storage_config: StorageConfig):
+    def get_control_catalog(self, storage_config: StorageConfig) -> ControlCatalog:
         """The durable control catalog for a storage location (pooled).
 
         Default: the local SQLite catalog (the reference implementation,

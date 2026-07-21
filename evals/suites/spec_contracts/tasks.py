@@ -88,9 +88,9 @@ SPEC_CASES: tuple[SpecCase, ...] = (
         task_id="spec.info_class_downgrades",
     ),
     SpecCase(
-        spec_id="durable-artifacts.7",
-        source="artifacts.md",
-        anchors=("evidence, never authority", "no authority"),
+        spec_id="dataset-eval-ontology.4",
+        source="dataset-eval-ontology.md",
+        anchors=("evidence, never authority", "evaluation owns those decisions"),
         task_id="spec.receipt_authority_firewall",
     ),
     SpecCase(
@@ -117,7 +117,7 @@ SPEC_CASES: tuple[SpecCase, ...] = (
     SpecCase(
         spec_id="dataset-eval-ontology.3",
         source="dataset-eval-ontology.md",
-        anchors=("ArtifactTableService envelope is storage ownership", "does not replace dataset"),
+        anchors=("IngestionService envelope is storage ownership", "does not replace dataset"),
         task_id="spec.dataset_eval_ontology",
     ),
 )
@@ -198,7 +198,7 @@ _EXPECTED_ROLE_MATRIX: dict[str, frozenset[CommandType]] = {
             CommandType.AUTORESEARCH,
             CommandType.FORK_WORLD,
             CommandType.DESTROY_WORLD,
-            CommandType.PUBLISH_ARTIFACT,
+            CommandType.INGEST_ARTIFACTS,
             CommandType.EVALUATE,
         }
     ),
@@ -224,9 +224,7 @@ _COMMAND_GATE_MAP: dict[str, CommandType] = {
     "discover_worlds": CommandType.LIST_WORLDS,
     "open_world_readonly": CommandType.GET_WORLD_INFO,
     "resume_world": CommandType.CREATE_WORLD,
-    "ingest_artifact": CommandType.PUBLISH_ARTIFACT,
-    "ingest_files": CommandType.PUBLISH_ARTIFACT,
-    "write_artifacts": CommandType.PUBLISH_ARTIFACT,
+    "ingest_artifacts": CommandType.INGEST_ARTIFACTS,
     "query_artifacts": CommandType.QUERY_WORLD,
     "evaluate": CommandType.EVALUATE,
     "step": CommandType.STEP,
@@ -651,13 +649,13 @@ def _registered_task_ids() -> list[str]:
 
 
 def task_receipt_authority_firewall() -> list[GraderResult]:
-    """Receipt and artifact components carry evidence, never authority.
+    """Evaluation results and artifact references carry no authority.
 
     The non-negotiable boundary (issue #275): no field on a persisted
-    receipt/artifact component may name an authority decision. A PASS means one
+    result/reference may name an authority decision. A PASS means one
     grader passed under one pinned contract — the layer above owns meaning.
     """
-    from archetype.artifacts.components import ArtifactMeta, AssetRef
+    from archetype.artifacts import ArtifactRef
     from archetype.evaluation.components import EvalReceipt
 
     forbidden = {
@@ -673,9 +671,9 @@ def task_receipt_authority_firewall() -> list[GraderResult]:
         "permitted",
     }
     checks = {}
-    for component in (EvalReceipt, ArtifactMeta, AssetRef):
-        fields = {name.lower() for name in component.model_fields}
-        checks[f"{component.__name__}_carries_no_authority"] = not (fields & forbidden)
+    for model in (EvalReceipt, ArtifactRef):
+        fields = {name.lower() for name in model.model_fields}
+        checks[f"{model.__name__}_carries_no_authority"] = not (fields & forbidden)
     return [state_check(checks, name="receipt_authority_firewall")]
 
 
@@ -769,7 +767,7 @@ def register(harness: EvalHarness) -> None:
         "spec.receipt_authority_firewall",
         suite=SUITE,
         fn=task_receipt_authority_firewall,
-        desc="Receipt/artifact components carry no authority fields (evidence only).",
+        desc="Evaluation evidence and artifact references carry no authority fields.",
     )
     harness.add(
         "spec.dataset_eval_ontology",

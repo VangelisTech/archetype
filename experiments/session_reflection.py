@@ -4,8 +4,9 @@
 """Reflect over Claude Code history through the supported artifact boundary.
 
 The script discovers local source files, but Archetype owns every safety and
-durability concern: each transcript is snapshotted, redacted, claim-published,
-and normalized into a typed artifact table before analysis. Raw narrative is
+durability concern: each transcript is snapshotted, redacted, stored as a
+sanitized artifact, and normalized into a typed ingestion table before
+analysis. Raw narrative is
 never written as mission Component state.
 
 Usage:
@@ -25,10 +26,7 @@ from daft.functions import lower, startswith
 
 from archetype import ArchetypeRuntime, StorageConfig
 from archetype.core.config import StorageBackend
-from archetype.missions.trajectories import (
-    CLAUDE_TRANSCRIPT_TABLE,
-    ClaudeTranscriptSource,
-)
+from archetype.missions.trajectories import ClaudeTranscriptSource
 
 CORRECTION_OPENERS = (
     "no ",
@@ -110,7 +108,7 @@ async def main() -> None:
             print(f"No dialogue sessions found ({skipped} empty/noise files skipped).")
             return
 
-        rows = await world.artifacts(CLAUDE_TRANSCRIPT_TABLE)
+        rows = await world.transcript_rows()
         sessions = rows.where(col("row_kind") == "session")
         turns = rows.where(col("row_kind") == "turn")
 

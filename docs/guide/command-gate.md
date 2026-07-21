@@ -261,7 +261,7 @@ Log](audit-log.md); fields include:
 
 Access evidence records the authorization decision and request identity. It is
 not proof that asynchronous or multi-step domain work committed. Command
-outcomes, tick manifests, artifact receipts, evaluation receipts, and research
+outcomes, tick manifests, artifact indexes, evaluation results, and research
 ledgers are authoritative for their own workflows. Their transactional outbox
 events are projected into the analytical audit history independently.
 

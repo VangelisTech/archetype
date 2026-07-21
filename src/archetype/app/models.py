@@ -39,8 +39,8 @@ class CommandType(StrEnum):
     """
 
     # Entity-level commands
-    PUBLISH_ARTIFACT = "publish_artifact"  # Durable external artifact publication
-    EVALUATE = "evaluate"  # Claim-before-grade: one visible receipt per evaluation_id
+    INGEST_ARTIFACTS = "ingest_artifacts"
+    EVALUATE = "evaluate"
     SPAWN = "spawn"
     DESPAWN = "despawn"
     UPDATE = "update"

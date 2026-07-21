@@ -13,9 +13,10 @@ Arrows below mean consumer to dependency.
 | `WorldService` | `iStorageService` |
 | `AuditLog` | `iStorageService` |
 | `QueryService` | `iStorageService`, `iAuditLog` (history compatibility) |
-| `ArtifactTableService` | `iStorageService`, `iWorldService` |
-| `ArtifactService` | `iStorageService`, `iWorldService` |
-| `EvaluationService` | `iQueryService`, `iArtifactService` |
+| `IngestionService` | `iStorageService`, `iWorldService` |
+| `ArtifactService` | `iStorageService`, `iWorldService`, `iIngestionService` |
+| `TranscriptIngestionService` | `iArtifactService`, `iIngestionService`, `iRedactionService`, `iStorageService`, `iWorldService` |
+| `EvaluationService` | `iQueryService`, `iIngestionService`, `iStorageService`, `iWorldService` |
 | `MutationService` | `iWorldService` |
 | `SimulationService` | `iWorldService`, injected callbacks |
 | `CommandScheduler` | `iWorldService`, `iMutationService` |

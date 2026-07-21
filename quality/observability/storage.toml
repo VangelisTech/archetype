@@ -11,16 +11,12 @@ operations = [
   "catalog.ControlCatalog.list_worlds",
   "catalog.ControlCatalog.register_signature",
   "catalog.ControlCatalog.list_signatures",
+  "catalog.ControlCatalog.acquire_fence",
+  "catalog.ControlCatalog.current_fence_epoch",
   "catalog.ControlCatalog.max_manifest_tick",
-  "catalog.ControlCatalog.acquire_artifact_publication",
-  "catalog.ControlCatalog.recover_artifact_publication",
-  "catalog.ControlCatalog.get_artifact_publication",
-  "catalog.ControlCatalog.renew_artifact_publication",
-  "catalog.ControlCatalog.record_artifact_uploads",
-  "catalog.ControlCatalog.complete_artifact_publication",
-  "catalog.ControlCatalog.fail_artifact_publication",
-  "catalog.ControlCatalog.expire_artifact_publication",
-  "catalog.ControlCatalog.list_due_artifact_publications",
+  "catalog.ControlCatalog.publish_manifest",
+  "catalog.ControlCatalog.visible_tokens",
+  "catalog.ControlCatalog.list_manifests",
   "catalog.ControlCatalog.admit_commands",
   "catalog.ControlCatalog.lease_commands",
   "catalog.ControlCatalog.fail_command",
@@ -40,7 +36,7 @@ operations = [
 ]
 signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
-authority = "Store/catalog state, fencing epochs, leases, transactional rows, and durable receipts remain authoritative."
+authority = "Store/catalog state, fencing epochs, command leases, transactional rows, and commit manifests remain authoritative."
 evidence = [
   "docs/guide/atomic-visibility.md",
   "docs/guide/service-protocols.md",

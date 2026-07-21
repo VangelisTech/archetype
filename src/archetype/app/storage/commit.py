@@ -3,7 +3,7 @@
 
 """Catalog-backed commit coordinator (issue #273).
 
-Implements the core ``iCommitCoordinator`` protocol over the SQLite control
+Implements the core ``iCommitCoordinator`` protocol over the selected control
 catalog: one fenced writer epoch per world, one commit token per tick
 attempt, manifest published LAST. Core never imports this module — the
 coordinator is injected into worlds by WorldService, the same way stores are.
@@ -20,7 +20,7 @@ from archetype.core.archetype import Archetype
 from archetype.core.interfaces import ArchetypeSignature, CommitContext
 
 if TYPE_CHECKING:
-    from archetype.app.storage.catalog import SqliteControlCatalog
+    from archetype.app.storage.catalog import ControlCatalog
 
 
 class CatalogCommitCoordinator:
@@ -38,7 +38,7 @@ class CatalogCommitCoordinator:
     the steady-state cost stays one manifest transaction per tick.
     """
 
-    def __init__(self, catalog: SqliteControlCatalog, *, epoch: int) -> None:
+    def __init__(self, catalog: ControlCatalog, *, epoch: int) -> None:
         self._catalog = catalog
         self._epoch = epoch
         self._registered: set[str] = set()

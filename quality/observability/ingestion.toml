@@ -1,0 +1,17 @@
+version = 1
+owner = "ingestion"
+family = "ingestion"
+
+[[disposition]]
+operations = [
+  "interfaces.iIngestionService.append",
+  "interfaces.iIngestionService.read",
+]
+signals = ["none"]
+outcomes = ["propagated_failure", "handled_outcome"]
+authority = "The registered Daft Catalog table, its Iceberg snapshot, and the returned typed table version remain authoritative."
+evidence = [
+  "docs/guide/artifacts.md",
+  "tests/app/test_ingestion_service.py",
+]
+rationale = "Catalog snapshots and typed exceptions expose the complete ingestion outcome without a parallel signal."

@@ -100,7 +100,7 @@ format:
 	@uv run ruff format $(RUFF_PATHS)
 
 .PHONY: lint
-lint: lazy-audit architecture-audit observability-audit version-inventory-audit api-boundary-audit idempotency-audit gate-coverage-audit redaction-audit
+lint: lazy-audit architecture-audit observability-audit version-inventory-audit api-boundary-audit idempotency-audit gate-coverage-audit
 	@uv run ruff check $(RUFF_PATHS)
 
 .PHONY: lint-fix
@@ -167,10 +167,6 @@ idempotency-audit:
 .PHONY: gate-coverage-audit
 gate-coverage-audit:
 	@PYTHONPATH=$(PYTHONPATH) uv run python scripts/check_gate_coverage.py
-
-.PHONY: redaction-audit
-redaction-audit:
-	@uv run python scripts/check_pre_durability_redaction.py
 
 # Cyclomatic complexity + maintainability report.
 # Uses uvx so radon stays out of the project lock file.

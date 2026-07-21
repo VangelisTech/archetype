@@ -48,7 +48,7 @@ PAGES: tuple[ReferencePage, ...] = (
         "runtime-models",
         "Runtime models",
         "Recommended API",
-        "Configuration, result, receipt, and introspection records returned by world operations.",
+        "Configuration, result, and introspection records returned by world operations.",
         (
             "ProcessorInfo",
             "HookInfo",
@@ -59,39 +59,29 @@ PAGES: tuple[ReferencePage, ...] = (
             "EpisodeResult",
             "RolloutConfig",
             "RolloutResult",
-            "ArtifactReceipt",
-            "ArtifactWriteReceipt",
         ),
     ),
     ReferencePage(
-        "artifact-bundles",
-        "Durable artifact bundles",
+        "artifacts",
+        "File artifacts",
         "Recommended API",
-        "These top-level `archetype` exports are supported runtime contracts. "
-        "Use them to configure durable sandbox-checkpoint evidence, publish portable "
-        "artifacts, and query or reconcile their content-addressed index; the rendered "
-        "implementation-module paths are internal.",
+        "Declare files, configure bounded content-addressed storage, and retain portable "
+        "references to indexed artifact occurrences.",
         (
-            "ArtifactBundleRequest",
-            "ArtifactCandidate",
-            "ArtifactIndexRecord",
-            "ArtifactPublishReceipt",
-            "ArtifactReconcileResult",
-            "ArtifactSourceResolver",
-            "BoundedArtifactSourceResolver",
+            "ArtifactSource",
+            "ArtifactRef",
             "ArtifactStoreConfig",
-            "MaterializedArtifact",
         ),
     ),
     ReferencePage(
         "transcripts",
         "Coding-agent transcripts",
         "Recommended API",
-        "Ingest Claude Code JSONL through a redacted, replay-safe artifact boundary and "
-        "retain only lightweight trajectory linkage in world history.",
+        "Ingest Claude Code JSONL through a redacted artifact boundary and append "
+        "normalized mission rows linked to the sanitized file occurrence.",
         (
             "ClaudeTranscriptSource",
-            "TranscriptIngestionReceipt",
+            "TranscriptIngestionResult",
         ),
     ),
     ReferencePage(
@@ -99,7 +89,7 @@ PAGES: tuple[ReferencePage, ...] = (
         "Building blocks",
         "Extension API",
         "Use these types to define component data, processors, and processor resources.",
-        ("Component", "AsyncProcessor", "ArtifactProcessor", "Resources"),
+        ("Component", "AsyncProcessor", "Resources"),
     ),
     ReferencePage(
         "hooks",
@@ -239,9 +229,9 @@ SUPPLEMENTAL: dict[str, tuple[str, str]] = {
         "archetype.missions.trajectories",
         "ClaudeTranscriptSource",
     ),
-    "TranscriptIngestionReceipt": (
-        "archetype.artifacts",
-        "TranscriptIngestionReceipt",
+    "TranscriptIngestionResult": (
+        "archetype.missions.trajectories",
+        "TranscriptIngestionResult",
     ),
     "IterationResult": ("archetype.app.research.contracts", "IterationResult"),
     "EnvClient": ("archetype.physical_ai.manipulation", "EnvClient"),
@@ -287,17 +277,11 @@ RECORDS = frozenset(
         "EpisodeResult",
         "RolloutConfig",
         "RolloutResult",
-        "ArtifactReceipt",
-        "ArtifactWriteReceipt",
-        "ClaudeTranscriptSource",
-        "TranscriptIngestionReceipt",
-        "ArtifactBundleRequest",
-        "ArtifactCandidate",
-        "ArtifactIndexRecord",
-        "ArtifactPublishReceipt",
-        "ArtifactReconcileResult",
+        "ArtifactSource",
+        "ArtifactRef",
         "ArtifactStoreConfig",
-        "MaterializedArtifact",
+        "ClaudeTranscriptSource",
+        "TranscriptIngestionResult",
         "ProcessorInfo",
         "HookInfo",
         "ResourceInfo",
@@ -332,10 +316,7 @@ RECORDS = frozenset(
 EXPLICIT_MEMBERS: dict[str, tuple[str, ...]] = {
     "RunConfig": ("dev", "benchmark"),
     "AutoResearchResult": ("improved",),
-    "ArtifactWriteReceipt": ("duplicate",),
-    "TranscriptIngestionReceipt": ("duplicate",),
-    "ArtifactBundleRequest": ("canonical_json", "digest"),
-    "ArtifactStoreConfig": ("local", "retention_seconds"),
+    "ArtifactStoreConfig": ("local",),
     "GraderContract": ("digest",),
     "PhysicalTaskEvalReport": ("success_rate", "mean_length"),
     "InstructionSweepReport": ("scores", "best"),

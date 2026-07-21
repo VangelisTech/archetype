@@ -411,48 +411,17 @@ class CommandGateway:
 
     # Artifacts and evaluation --------------------------------------
 
-    async def ingest_artifact(
-        self,
-        ctx,
-        world_id,
-        components,
-        *,
-        external_id,
-        producer="default",
-        storage_config=None,
-    ):
-        self._gate(Command(type=CommandType.PUBLISH_ARTIFACT), ctx)
-        result = await self._application.ingest_artifact(
-            world_id,
-            components,
-            external_id=external_id,
-            producer=producer,
-            storage_config=storage_config,
+    async def ingest_artifacts(self, ctx, world_id, sources, *, storage_config=None):
+        self._gate(Command(type=CommandType.INGEST_ARTIFACTS), ctx)
+        result = await self._application.ingest_artifacts(
+            world_id, sources, storage_config=storage_config
         )
-        await self._emit(ctx, "ingest_artifact", world_id)
+        await self._emit(ctx, "ingest_artifacts", world_id)
         return result
 
-    async def ingest_files(self, ctx, world_id, paths, processor, *, storage_config=None):
-        self._gate(Command(type=CommandType.PUBLISH_ARTIFACT), ctx)
-        result = await self._application.ingest_files(
-            world_id, paths, processor, storage_config=storage_config
-        )
-        await self._emit(ctx, "ingest_files", world_id)
-        return result
-
-    async def write_artifacts(self, ctx, world_id, table_name, artifacts, *, storage_config=None):
-        self._gate(Command(type=CommandType.PUBLISH_ARTIFACT), ctx)
-        result = await self._application.write_artifacts(
-            world_id, table_name, artifacts, storage_config=storage_config
-        )
-        await self._emit(ctx, "write_artifacts", world_id)
-        return result
-
-    async def query_artifacts(self, ctx, world_id, table_name, *, storage_config=None):
+    async def query_artifacts(self, ctx, world_id, *, storage_config=None):
         self._gate(Command(type=CommandType.QUERY_WORLD), ctx)
-        result = await self._application.query_artifacts(
-            world_id, table_name, storage_config=storage_config
-        )
+        result = await self._application.query_artifacts(world_id, storage_config=storage_config)
         await self._emit(ctx, "query_artifacts", world_id)
         return result
 
@@ -466,8 +435,8 @@ class CommandGateway:
             payload_json=json.dumps(
                 {
                     "evaluation_id": kwargs.get("evaluation_id"),
-                    "duplicate": result.duplicate,
                     "grader_id": kwargs["contract"].grader_id,
+                    "outcome": result.outcome,
                 }
             ),
         )

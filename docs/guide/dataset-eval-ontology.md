@@ -166,21 +166,21 @@ runtime EpisodeResult
 This is what “datasets are frozen trials” means. It does not require one
 runtime world, run, or `EpisodeResult` per trial.
 
-## 5. Persistence in typed artifact tables
+## 5. Persistence in typed ingestion tables
 
-Dataset readers and exporters write domain rows through the typed Iceberg
-artifact-table path in [Artifacts](artifacts.md). The division of
+Dataset readers and exporters write domain rows through the app-layer typed
+Iceberg ingestion path. The division of
 responsibility is strict:
 
 | Owner | Columns / concern |
 |---|---|
-| `ArtifactTableService` | `artifact_id`, owning `world_id` / `run_id`, `source_uri`, `content_hash`, strict append and dedup behavior |
-| Dataset adapter | `benchmark`, `suite`, `task_key`, `episode_id`, stream/timing fields, domain payload |
+| `IngestionService` | Owning `world_id` / `run_id`, registered table schema, caller-declared logical key, strict append and dedup behavior |
+| Dataset adapter | Table name and logical key; `benchmark`, `suite`, `task_key`, `episode_id`, stream/timing fields, domain payload |
 | Live-trial exporter | Optional source `RuntimeSlice` provenance in addition to dataset coordinates |
 
-**The ArtifactTableService envelope is storage ownership and write identity.** Its
-`world_id` and `run_id` scope the artifact view; `source_uri` and `content_hash`
-form part of the logical write key. That envelope **does not replace dataset
+**The IngestionService envelope is storage ownership, not dataset identity.**
+Its `world_id` and `run_id` scope the table view. The dataset adapter still
+declares its natural logical key. That envelope **does not replace dataset
 coordinates** and does not prove where an imported episode originally ran.
 
 For example, importing an external dataset creates an Archetype world/run for
@@ -189,9 +189,10 @@ table rows, not a fictional original simulation. Conversely, exporting a live
 trial MAY persist its source `RuntimeSlice` as typed payload provenance.
 
 Typed tables fail on schema drift. Adapters MUST normalize native vocabulary
-before the `ArtifactTableService` boundary and MUST NOT depend on silent widening.
-Large media remains content-addressed data referenced from typed rows rather
-than an opaque path masquerading as identity.
+before the `IngestionService` boundary and MUST NOT depend on silent widening.
+Large media is ingested through `ArtifactService` and referenced by
+`ArtifactRef` or `artifact_id` from domain rows rather than represented by an
+opaque filesystem path.
 
 ## 6. Grading symmetry and receipts
 

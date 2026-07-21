@@ -3,9 +3,9 @@
 
 """Pure Claude JSONL parsing into in-memory trajectory authoring values.
 
-This module performs no file I/O and writes no Components. Artifact-owned
-application adapters are responsible for source snapshots, redaction,
-quarantine, and durability before calling :func:`parse_claude_transcript`.
+This module performs no file I/O and writes no Components. The mission-owned
+transcript workflow is responsible for source snapshots, redaction, quarantine,
+and artifact durability before calling :func:`parse_claude_transcript`.
 """
 
 from __future__ import annotations

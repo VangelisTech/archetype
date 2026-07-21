@@ -213,7 +213,7 @@ The pattern transfers by changing the vocabulary, not the substrate:
 
 Keep reusable descriptions on prefab entities, add execution or episode state
 at instantiation, and grade populations through history and `IsA` lineage.
-Claims, authorization, artifact publication, and cross-world registry control
+Authorization, artifact ingestion, and cross-world registry control
 remain application authority; a domain library should not absorb those
 responsibilities.
 

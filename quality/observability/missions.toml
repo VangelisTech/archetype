@@ -11,6 +11,8 @@ operations = [
   "interfaces.iMissionService.world_id",
   "interfaces.iTrajectoryService.query",
   "interfaces.iTrajectoryService.grade",
+  "interfaces.iTranscriptIngestionService.ingest",
+  "interfaces.iTranscriptIngestionService.read",
   "service.MissionWorld.info",
   "service.MissionWorld.query",
   "service.MissionWorld.reserve_ids",

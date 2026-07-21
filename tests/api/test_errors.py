@@ -18,8 +18,6 @@ from archetype.app.redaction import SecretQuarantineError
 from archetype.app.storage.catalog import (
     CatalogConflictError,
     CatalogSchemaMismatchError,
-    ClaimConflictError,
-    ClaimPendingError,
     SqliteControlCatalog,
 )
 from archetype.core.errors import TickExecutionError, TickFailure
@@ -29,8 +27,6 @@ from archetype.core.errors import TickExecutionError, TickFailure
     ("error_type", "public_detail"),
     [
         (CatalogConflictError, "Catalog entry conflicts with existing state"),
-        (ClaimConflictError, "Claim conflicts with existing state"),
-        (ClaimPendingError, "Claim is currently pending"),
     ],
 )
 def test_catalog_conflicts_map_through_public_contract(

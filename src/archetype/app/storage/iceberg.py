@@ -18,7 +18,7 @@ import asyncio
 from dataclasses import dataclass
 
 from daft import DataFrame, Schema, read_iceberg
-from daft.catalog import Table
+from daft.catalog import Catalog, Table
 from daft.io import IOConfig
 from daft.session import Session
 from pyiceberg.exceptions import CommitFailedException
@@ -32,6 +32,21 @@ class IcebergCatalogContext:
 
     session: Session
     io_config: IOConfig | None
+
+    @property
+    def catalog(self) -> Catalog:
+        """Return the catalog attached to the authoritative Daft session."""
+        catalog = self.session.current_catalog()
+        if catalog is None:
+            raise RuntimeError("Daft session has no current catalog")
+        return catalog
+
+    def qualify(self, table_name: str) -> str:
+        """Qualify an app table for direct ``daft.Catalog`` operations."""
+        namespace = self.session.current_namespace()
+        if namespace is None:
+            raise RuntimeError("Daft session has no current namespace")
+        return f"{namespace}.{table_name}"
 
     def has_table(self, table_name: str) -> bool:
         return self.session.has_table(table_name)
@@ -64,16 +79,6 @@ class IcebergCatalogContext:
                     raise
                 await asyncio.sleep(min(0.005 * (2**attempt), 0.1))
                 self._native_table(table).refresh()
-
-    async def append_counted(self, table: Table, frame: DataFrame) -> int:
-        """Execute one arbitrary artifact pipeline and return its committed row count."""
-        written = frame.write_iceberg(
-            self._native_table(table),
-            mode="append",
-            io_config=self.io_config,
-        )
-        files = written.collect(num_preview_rows=0).to_pydict()
-        return sum(files["rows"])
 
     def current_snapshot_id(self, table: Table) -> int | None:
         native = self._native_table(table)

@@ -4,14 +4,12 @@ source_root = "src"
 [concrete_services]
 types = [
   "ArtifactService",
-  "ArtifactBundleService",
-  "ArtifactTableService",
-  "ClaudeTranscriptIngestionService",
   "AuditLog",
   "AutoResearchService",
   "CommandGateway",
   "CommandScheduler",
   "EvaluationService",
+  "IngestionService",
   "MutationService",
   "MissionService",
   "PhysicalAIService",
@@ -22,6 +20,7 @@ types = [
   "ServiceContainer",
   "SimulationService",
   "StorageService",
+  "TranscriptIngestionService",
   "TrajectoryService",
   "WorldService",
 ]
@@ -125,9 +124,16 @@ name = "artifact-family"
 consumer = "archetype.app.artifacts"
 allowed_app = [
   "archetype.app.artifacts",
-  "archetype.app.limits",
-  "archetype.app.redaction.interfaces",
-  "archetype.app.redaction.models",
+  "archetype.app.ingestion.interfaces",
+  "archetype.app.storage.interfaces",
+  "archetype.app.world.interfaces",
+]
+
+[[family_rule]]
+name = "ingestion-family"
+consumer = "archetype.app.ingestion"
+allowed_app = [
+  "archetype.app.ingestion",
   "archetype.app.storage",
   "archetype.app.world.interfaces",
 ]
@@ -145,8 +151,10 @@ name = "evaluation-family"
 consumer = "archetype.app.evaluation"
 allowed_app = [
   "archetype.app.evaluation",
+  "archetype.app.ingestion.interfaces",
   "archetype.app.query.interfaces",
-  "archetype.app.artifacts.interfaces",
+  "archetype.app.storage.interfaces",
+  "archetype.app.world.interfaces",
   "archetype.app.models",
 ]
 
@@ -155,8 +163,14 @@ name = "mission-family"
 consumer = "archetype.app.missions"
 allowed_app = [
   "archetype.app.missions",
+  "archetype.app.artifacts.interfaces",
   "archetype.app.evaluation.interfaces",
+  "archetype.app.ingestion.interfaces",
   "archetype.app.query.interfaces",
+  "archetype.app.redaction.interfaces",
+  "archetype.app.redaction.models",
+  "archetype.app.storage.interfaces",
+  "archetype.app.world.interfaces",
 ]
 
 [[family_rule]]
@@ -194,7 +208,6 @@ name = "application-family"
 consumer = "archetype.app.application"
 allowed_app = [
   "archetype.app.application",
-  "archetype.app.artifacts.bundle_models",
   "archetype.app.artifacts.interfaces",
   "archetype.app.audit.interfaces",
   "archetype.app.commands.interfaces",
@@ -267,7 +280,7 @@ allowed_app = [
 ]
 
 [[module_rule]]
-module = "archetype.app.artifacts.table_service"
+module = "archetype.app.ingestion.service"
 allowed_interfaces = [
   "archetype.app.storage.interfaces.iStorageService",
   "archetype.app.world.interfaces.iWorldService",
@@ -279,37 +292,12 @@ allowed_app = [
 [[module_rule]]
 module = "archetype.app.artifacts.service"
 allowed_interfaces = [
+  "archetype.app.ingestion.interfaces.iIngestionService",
   "archetype.app.storage.interfaces.iStorageService",
   "archetype.app.world.interfaces.iWorldService",
 ]
 allowed_app = [
-  "archetype.app.storage.catalog",
-]
-
-[[module_rule]]
-module = "archetype.app.artifacts.bundle_service"
-allowed_interfaces = [
-  "archetype.app.redaction.interfaces.iRedactionService",
-  "archetype.app.storage.interfaces.iStorageService",
-  "archetype.app.world.interfaces.iWorldService",
-]
-allowed_app = [
-  "archetype.app.artifacts.bundle_models",
-  "archetype.app.limits",
-  "archetype.app.redaction.models",
-  "archetype.app.storage.catalog",
-]
-
-[[module_rule]]
-module = "archetype.app.artifacts.transcript_service"
-allowed_interfaces = [
-  "archetype.app.artifacts.interfaces.iArtifactService",
-  "archetype.app.artifacts.interfaces.iArtifactTableService",
-  "archetype.app.redaction.interfaces.iRedactionService",
-  "archetype.app.world.interfaces.iWorldService",
-]
-allowed_app = [
-  "archetype.app.redaction.models",
+  "archetype.app.artifacts.pipeline",
 ]
 
 [[module_rule]]
@@ -322,10 +310,12 @@ allowed_app = [
 [[module_rule]]
 module = "archetype.app.evaluation.service"
 allowed_interfaces = [
-  "archetype.app.artifacts.interfaces.iArtifactService",
   "archetype.app.evaluation.interfaces.GraderOutput",
   "archetype.app.evaluation.interfaces.TrajectoryGrader",
+  "archetype.app.ingestion.interfaces.iIngestionService",
   "archetype.app.query.interfaces.iQueryService",
+  "archetype.app.storage.interfaces.iStorageService",
+  "archetype.app.world.interfaces.iWorldService",
 ]
 allowed_app = [
   "archetype.app.models",
@@ -345,6 +335,19 @@ allowed_interfaces = [
   "archetype.app.query.interfaces.iQueryService",
 ]
 allowed_app = []
+
+[[module_rule]]
+module = "archetype.app.missions.transcript_service"
+allowed_interfaces = [
+  "archetype.app.artifacts.interfaces.iArtifactService",
+  "archetype.app.ingestion.interfaces.iIngestionService",
+  "archetype.app.redaction.interfaces.iRedactionService",
+  "archetype.app.storage.interfaces.iStorageService",
+  "archetype.app.world.interfaces.iWorldService",
+]
+allowed_app = [
+  "archetype.app.redaction.models",
+]
 
 [[module_rule]]
 module = "archetype.app.physical_ai.service"
@@ -394,14 +397,12 @@ allowed_app = [
 [[module_rule]]
 module = "archetype.app.application.service"
 allowed_interfaces = [
-  "archetype.app.artifacts.interfaces.iArtifactBundleService",
   "archetype.app.artifacts.interfaces.iArtifactService",
-  "archetype.app.artifacts.interfaces.iArtifactTableService",
-  "archetype.app.artifacts.interfaces.iTranscriptIngestionService",
   "archetype.app.audit.interfaces.iAuditLog",
   "archetype.app.commands.interfaces.iCommandScheduler",
   "archetype.app.evaluation.interfaces.iEvaluationService",
   "archetype.app.missions.interfaces.iMissionService",
+  "archetype.app.missions.interfaces.iTranscriptIngestionService",
   "archetype.app.missions.interfaces.iTrajectoryService",
   "archetype.app.physical_ai.interfaces.iPhysicalAIService",
   "archetype.app.query.interfaces.iQueryService",
