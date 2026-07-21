@@ -13,7 +13,6 @@ from archetype.ingestion.pipeline import (
     ARTIFACT_VIDEO,
     FileIngestionPipeline,
     ingestion_time_for,
-    logical_path_for,
     media_family_for,
 )
 from archetype.ingestion.scanners import (
@@ -34,7 +33,6 @@ __all__ = [
     "FileIngestionPipeline",
     "hash_file",
     "ingestion_time_for",
-    "logical_path_for",
     "media_family_for",
     "scan_diff_metadata",
     "scan_pdf_metadata",

@@ -9,12 +9,15 @@ import hashlib
 import os
 import tempfile
 from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, cast
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote
 
 import daft
+import xxhash
 from daft import DataFrame, DataType, col, lit
+from daft.file.file import BUFFER_COPY
 from daft.functions import (
     audio_file,
     audio_metadata,
@@ -36,7 +39,6 @@ from daft.io import IOConfig
 from uuid_utils import UUID
 
 from archetype.ingestion.scanners import (
-    hash_file,
     scan_diff_metadata,
     scan_pdf_metadata,
     scan_text_metadata,
@@ -50,7 +52,6 @@ ARTIFACT_PDF = "artifact_pdf"
 ARTIFACT_TEXT = "artifact_text"
 ARTIFACT_DIFF = "artifact_diff"
 
-_COPY_BUFFER = 1 << 20
 _TEXT_SUFFIXES = {
     ".c",
     ".cc",
@@ -81,11 +82,20 @@ _TEXT_SUFFIXES = {
     ".yaml",
     ".yml",
 }
-_HASHES = DataType.struct(
+_PERSISTED_OBJECT = DataType.struct(
     {
         "sha256": DataType.string(),
         "xxhash3_64": DataType.string(),
         "size_bytes": DataType.int64(),
+        "object_uri": DataType.string(),
+    }
+)
+_MATERIALIZED_OBJECT = DataType.struct(
+    {
+        "sha256": DataType.string(),
+        "xxhash3_64": DataType.string(),
+        "size_bytes": DataType.int64(),
+        "object_bytes": DataType.binary(),
     }
 )
 _PDF_METADATA = DataType.struct(
@@ -116,37 +126,6 @@ _DIFF_METADATA = DataType.struct(
 )
 
 
-def _uri_path(value: str) -> PurePosixPath:
-    parsed = urlparse(value)
-    raw = unquote(parsed.path) if parsed.scheme else value
-    return PurePosixPath(raw.replace("\\", "/"))
-
-
-def logical_path_for(
-    source_uri: str,
-    *,
-    source_root: str = "",
-    logical_root: str = "",
-    logical_path: str = "",
-) -> str:
-    """Return a portable occurrence path independent of physical location."""
-
-    if logical_path:
-        relative = PurePosixPath(logical_path)
-    else:
-        source = _uri_path(source_uri)
-        root = _uri_path(source_root) if source_root else source.parent
-        try:
-            relative = source.relative_to(root)
-        except ValueError:
-            relative = PurePosixPath(source.name)
-    result = PurePosixPath(logical_root) / relative
-    normalized = result.as_posix().strip("/")
-    if not normalized or result.is_absolute() or ".." in result.parts:
-        raise ValueError("logical paths must be non-empty portable relative paths")
-    return normalized
-
-
 def ingestion_time_for(artifact_id: str) -> datetime:
     """Derive the UTC ingestion time encoded by a UUIDv7 artifact ID."""
 
@@ -173,17 +152,24 @@ def media_family_for(mime_type: str, logical_path: str = "") -> str:
 
 @daft.func(return_dtype=DataType.string())
 def _logical_path(
-    source_uri: str,
-    source_root: str,
-    logical_root: str,
+    file: daft.File,
     logical_path: str,
 ) -> str:
-    return logical_path_for(
-        source_uri,
-        source_root=source_root,
-        logical_root=logical_root,
-        logical_path=logical_path,
-    )
+    """Apply portable workflow naming after Daft resolves the physical file."""
+
+    value = logical_path or unquote(file.name)
+    normalized = value.strip().replace("\\", "/").strip("/")
+    path = PurePosixPath(normalized)
+    if not normalized or path.is_absolute() or ".." in path.parts:
+        raise ValueError("logical paths must be non-empty portable relative paths")
+    return path.as_posix()
+
+
+@daft.func(return_dtype=DataType.bool())
+def _file_exists(file: daft.File) -> bool:
+    """Keep exact-source existence checks inside the Daft discovery graph."""
+
+    return file.exists()
 
 
 @daft.func(return_dtype=DataType.string())
@@ -203,101 +189,71 @@ def _uuid7_timestamp(artifact_id: str) -> datetime:
     return ingestion_time_for(artifact_id)
 
 
-@daft.func(return_dtype=_HASHES)
-def _file_hashes(file: daft.File) -> dict[str, str | int]:
-    with file.open(buffer_size=_COPY_BUFFER) as stream:
-        return hash_file(cast(BinaryIO, stream))
+def _copy_and_hash(file: daft.File, target: BinaryIO) -> dict[str, str | int]:
+    """Copy one file while deriving both hashes and size from those same bytes."""
+
+    sha256 = hashlib.sha256()
+    fast = xxhash.xxh3_64()
+    size = 0
+    with file.open(buffer_size=BUFFER_COPY) as source:
+        while chunk := source.read(BUFFER_COPY):
+            sha256.update(chunk)
+            fast.update(chunk)
+            size += len(chunk)
+            target.write(chunk)
+    return {
+        "sha256": sha256.hexdigest(),
+        "xxhash3_64": fast.hexdigest(),
+        "size_bytes": size,
+    }
 
 
-@daft.func(return_dtype=DataType.string())
-def _copy_local_object(
+def _persist_local_file(
     file: daft.File,
-    sha256: str,
-    size_bytes: int,
     root: str,
-    max_artifact_bytes: int,
-) -> str:
-    if size_bytes > max_artifact_bytes:
-        raise ValueError(
-            f"artifact is {size_bytes} bytes; per-artifact limit is {max_artifact_bytes}"
-        )
-    destination = Path(root) / "objects" / "sha256" / sha256[:2] / sha256
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{sha256}-", dir=destination.parent)
+) -> dict[str, str | int]:
+    """Stage, identify, and atomically publish one local object in one read."""
+
+    staging = Path(root) / "objects" / ".staging"
+    staging.mkdir(parents=True, exist_ok=True)
+    temporary: str | None = None
     try:
-        with os.fdopen(descriptor, "wb") as target, file.open(buffer_size=_COPY_BUFFER) as source:
-            actual_sha256 = hashlib.sha256()
-            actual_size = 0
-            while chunk := source.read(_COPY_BUFFER):
-                actual_size += len(chunk)
-                if actual_size > max_artifact_bytes:
-                    raise ValueError(
-                        f"artifact is larger than {max_artifact_bytes} bytes; "
-                        "per-artifact limit exceeded while persisting"
-                    )
-                actual_sha256.update(chunk)
-                target.write(chunk)
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix="artifact-",
+            dir=staging,
+            delete=False,
+        ) as target:
+            temporary = target.name
+            identity = _copy_and_hash(file, cast(BinaryIO, target))
 
-        actual_digest = actual_sha256.hexdigest()
-        if actual_size != size_bytes or actual_digest != sha256:
-            raise ValueError(
-                "artifact source changed after discovery: "
-                f"expected {size_bytes} bytes with SHA-256 {sha256}, "
-                f"read {actual_size} bytes with SHA-256 {actual_digest}"
-            )
-
-        if destination.is_file() and destination.stat().st_size == actual_size:
-            existing_digest = hashlib.sha256()
-            with destination.open("rb") as existing:
-                while chunk := existing.read(_COPY_BUFFER):
-                    existing_digest.update(chunk)
-            if existing_digest.hexdigest() == actual_digest:
-                os.unlink(temporary)
-                return destination.resolve().as_uri()
-
+        sha256 = str(identity["sha256"])
+        destination = Path(root) / "objects" / "sha256" / sha256[:2] / sha256
+        destination.parent.mkdir(parents=True, exist_ok=True)
         os.replace(temporary, destination)
-    except BaseException:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
-        raise
-    return destination.resolve().as_uri()
+        temporary = None
+        return identity | {"object_uri": destination.resolve().as_uri()}
+    finally:
+        if temporary is not None:
+            Path(temporary).unlink(missing_ok=True)
 
 
-@daft.func(return_dtype=DataType.binary())
-def _read_bounded(
-    file: daft.File,
-    sha256: str,
-    size_bytes: int,
-    max_artifact_bytes: int,
-) -> bytes:
-    if size_bytes > max_artifact_bytes:
-        raise ValueError(
-            f"artifact is {size_bytes} bytes; per-artifact limit is {max_artifact_bytes}"
-        )
-    payload = bytearray()
-    actual_sha256 = hashlib.sha256()
-    actual_size = 0
-    with file.open(buffer_size=_COPY_BUFFER) as stream:
-        while chunk := stream.read(_COPY_BUFFER):
-            actual_size += len(chunk)
-            if actual_size > max_artifact_bytes:
-                raise ValueError(
-                    f"artifact is larger than {max_artifact_bytes} bytes; "
-                    "per-artifact limit exceeded while persisting"
-                )
-            actual_sha256.update(chunk)
-            payload.extend(chunk)
+@daft.func(return_dtype=_PERSISTED_OBJECT)
+def _persist_local_object(file: daft.File, root: str) -> dict[str, str | int]:
+    return _persist_local_file(file, root)
 
-    actual_digest = actual_sha256.hexdigest()
-    if actual_size != size_bytes or actual_digest != sha256:
-        raise ValueError(
-            "artifact source changed after discovery: "
-            f"expected {size_bytes} bytes with SHA-256 {sha256}, "
-            f"read {actual_size} bytes with SHA-256 {actual_digest}"
-        )
-    return bytes(payload)
+
+@daft.func(return_dtype=_MATERIALIZED_OBJECT)
+def _materialize_remote_object(file: daft.File) -> dict[str, str | int | bytes]:
+    """Read once for Daft 0.7's Binary-only upload expression.
+
+    Daft 0.7.19 has no public streaming File-to-File write API. Keep this
+    limitation explicit until its writable File and multipart APIs land.
+    """
+
+    target = BytesIO()
+    identity = _copy_and_hash(file, target)
+    return identity | {"object_bytes": target.getvalue()}
 
 
 @daft.func(return_dtype=_PDF_METADATA)
@@ -339,36 +295,40 @@ class FileIngestionPipeline:
         io_config: IOConfig | None = None,
         object_uri: str = "",
         local_object_root: str | None = None,
-        max_artifact_bytes: int = 256 * 1024 * 1024,
         max_connections: int = 32,
     ) -> None:
         self.io_config = io_config
         self.object_uri = object_uri.rstrip("/")
         self.local_object_root = local_object_root
-        self.max_artifact_bytes = max_artifact_bytes
         self.max_connections = max_connections
 
     def scan(
         self,
         path: str | list[str],
         *,
-        source_root: str = "",
-        logical_root: str = "",
+        pattern: bool = False,
         logical_path: str = "",
     ) -> DataFrame:
         """Build one lazy row per file with identity and common metadata."""
 
-        files = daft.from_files(path, io_config=self.io_config)
+        if pattern:
+            discovered = daft.from_glob_path(path, io_config=self.io_config)
+            files = discovered.select(
+                daft_file(col("path"), io_config=self.io_config).alias("file")
+            )
+        else:
+            paths = [path] if isinstance(path, str) else path
+            files = daft.from_pydict({"source_uri": paths}).with_column(
+                "file",
+                daft_file(col("source_uri"), io_config=self.io_config),
+            )
+            files = files.where(_file_exists(col("file"))).select("file")
+
         files = files.with_column("artifact_id", uuid(version="v7").cast(DataType.string()))
         files = files.with_column("source_uri", file_path(col("file")))
         files = files.with_column(
             "logical_path",
-            _logical_path(
-                col("source_uri"),
-                lit(source_root),
-                lit(logical_root),
-                lit(logical_path),
-            ),
+            _logical_path(col("file"), lit(logical_path)),
         )
         files = files.with_column("ingested_at", _uuid7_timestamp(col("artifact_id")))
         files = files.with_column("mime_type", _mime_type(col("file")))
@@ -376,7 +336,6 @@ class FileIngestionPipeline:
             "media_family",
             _media_family(col("mime_type"), col("logical_path")),
         )
-        files = files.with_column("_hashes", _file_hashes(col("file")))
         return files.select(
             "file",
             "artifact_id",
@@ -385,7 +344,6 @@ class FileIngestionPipeline:
             "logical_path",
             "mime_type",
             "media_family",
-            col("_hashes").unnest(),
         )
 
     def persist(self, files: DataFrame) -> DataFrame:
@@ -394,43 +352,40 @@ class FileIngestionPipeline:
         if not self.object_uri:
             raise ValueError("file ingestion persistence requires an object_uri")
         if self.local_object_root is not None:
-            return files.with_column(
-                "object_uri",
-                _copy_local_object(
-                    col("file"),
-                    col("sha256"),
-                    col("size_bytes"),
-                    lit(self.local_object_root),
-                    lit(self.max_artifact_bytes),
-                ),
+            return (
+                files.with_column(
+                    "_persisted_object",
+                    _persist_local_object(col("file"), lit(self.local_object_root)),
+                )
+                .select("*", col("_persisted_object").unnest())
+                .exclude("_persisted_object")
             )
 
-        folders = files.with_column(
-            "_object_folder",
+        materialized = (
+            files.with_column(
+                "_materialized_object",
+                _materialize_remote_object(col("file")),
+            )
+            .select("*", col("_materialized_object").unnest())
+            .exclude("_materialized_object")
+        )
+        addressed = materialized.with_column(
+            "_object_uri",
             daft_format(
                 f"{self.object_uri}/objects/sha256/{{}}/{{}}",
                 col("sha256").left(2),
                 col("sha256"),
             ),
         )
-        folders = folders.with_column(
-            "_object_bytes",
-            _read_bounded(
-                col("file"),
-                col("sha256"),
-                col("size_bytes"),
-                lit(self.max_artifact_bytes),
-            ),
-        )
-        return folders.with_column(
+        return addressed.with_column(
             "object_uri",
             upload(
-                col("_object_bytes"),
-                col("_object_folder"),
+                col("object_bytes"),
+                col("_object_uri"),
                 max_connections=self.max_connections,
                 io_config=self.io_config,
             ),
-        ).exclude("_object_folder", "_object_bytes")
+        ).exclude("_object_uri", "object_bytes")
 
     def reopen(self, files: DataFrame) -> DataFrame:
         """Bind specialized scanners to the immutable stored object."""

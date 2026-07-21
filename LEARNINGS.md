@@ -224,11 +224,12 @@ Everything must be Arrow-serializable for LanceDB storage:
 
 ## File Handling: `daft.File`
 
-Use `daft.from_files` for local or remote globs. It creates lazy `daft.File`
-references; `daft.functions.file_path` preserves the canonical source URI and
-`File.open()` streams content through the configured `IOConfig`. Ask
-`File.mime_type()` for Daft's built-in MIME classification; do not reintroduce
-a Python `mimetypes` fallback.
+Construct exact sources as `daft.File` values and use Daft's glob scan for
+declared local or remote patterns. This distinction keeps query parameters in
+exact signed URLs out of glob syntax. `daft.functions.file_path` preserves the
+canonical source URI and `File.open()` streams content through the configured
+`IOConfig`. Ask `File.mime_type()` for Daft's built-in MIME classification; do
+not reintroduce a Python `mimetypes` fallback.
 
 ```python
 from daft import col
@@ -244,10 +245,15 @@ Archetype's reusable file path is intentionally cohesive:
   occurrence identity, MIME classification, content-addressed persistence,
   durable-object reopening, and every common or media-specific Daft index in
   one readable graph;
-- `archetype.ingestion.scanners` contains only pure bounded stream algorithms;
+- `archetype.ingestion.scanners` contains only pure streaming algorithms;
 - the UUIDv7 supplies both `artifact_id` and `ingested_at`;
 - SHA-256, XXH3-64, and byte size are computed in one streaming pass; and
 - nested metadata structs are unnested directly into each narrow index.
+
+`BUFFER_COPY` controls the size of each sequential read. It is not a total file
+size limit. Local content-addressed persistence stages and hashes the bytes in
+one pass, then atomically publishes the digest path without rereading either
+the source or an existing destination.
 
 Keep resize, resample, transcode, OCR, and embeddings as explicit derivative
 artifact workflows. They must not silently mutate the submitted occurrence.

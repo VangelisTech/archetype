@@ -64,14 +64,11 @@ def test_source_rejects_nonportable_logical_paths() -> None:
         ArtifactSource(source_uri="result.txt", logical_path="../result.txt")
 
 
-def test_artifact_contracts_reject_ambiguous_identity_and_unbounded_batches() -> None:
+def test_artifact_contracts_reject_ambiguous_identity() -> None:
     import pytest
 
     with pytest.raises(ValueError, match="source_uri"):
         ArtifactSource(source_uri=" ")
-    assert ArtifactSource(source_uri="result.txt", logical_root="").logical_root == ""
-    with pytest.raises(ValueError, match="recursive sources"):
-        ArtifactSource(source_uri="results", recursive=True, logical_path="result.txt")
 
     valid = {
         "artifact_id": str(uuid7()),
@@ -114,8 +111,7 @@ def test_artifact_contracts_reject_ambiguous_identity_and_unbounded_batches() ->
         )
     with pytest.raises(ValueError, match="IDs must be unique"):
         ArtifactContext(task="Analyze", artifact_ids=(artifact_id, artifact_id))
-    with pytest.raises(ValueError, match="must be >="):
-        ArtifactStoreConfig(max_artifact_bytes=2, max_ingestion_bytes=1)
+    assert ArtifactStoreConfig(max_connections=2).max_connections == 2
 
 
 def _imports(path: Path) -> set[str]:

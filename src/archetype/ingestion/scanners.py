@@ -12,9 +12,9 @@ from pathlib import PurePosixPath
 from typing import Any, BinaryIO
 
 import xxhash
+from daft.file.file import BUFFER_COPY
 from pypdf import PdfReader
 
-_COPY_BUFFER = 1 << 20
 _LANGUAGES = {
     ".c": "c",
     ".cc": "cpp",
@@ -68,7 +68,7 @@ def hash_file(stream: BinaryIO) -> dict[str, str | int]:
     sha256 = hashlib.sha256()
     fast = xxhash.xxh3_64()
     size = 0
-    while chunk := stream.read(_COPY_BUFFER):
+    while chunk := stream.read(BUFFER_COPY):
         sha256.update(chunk)
         fast.update(chunk)
         size += len(chunk)
@@ -103,7 +103,7 @@ def scan_text_metadata(
     line_count = 0
     size = 0
     final_byte = b""
-    while chunk := stream.read(_COPY_BUFFER):
+    while chunk := stream.read(BUFFER_COPY):
         size += len(chunk)
         final_byte = chunk[-1:]
         line_count += chunk.count(b"\n")
@@ -168,7 +168,7 @@ def scan_diff_metadata(stream: BinaryIO) -> dict[str, str | int]:
             binary_files += 1
 
     buffered = b""
-    while chunk := stream.read(_COPY_BUFFER):
+    while chunk := stream.read(BUFFER_COPY):
         lines = (buffered + chunk).split(b"\n")
         buffered = lines.pop()
         for line in lines:

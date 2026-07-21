@@ -6,10 +6,8 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 from glob import has_magic
-from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit
 
 import daft
 from daft import DataFrame, lit
@@ -27,112 +25,28 @@ from archetype.ingestion.pipeline import (
 )
 
 
-@dataclass(frozen=True)
-class SourcePlan:
-    """Resolved application source policy for one declared artifact."""
+def _is_pattern(source_uri: str) -> bool:
+    """Classify only URI path wildcards; signed-query ``?`` stays exact."""
 
-    index: int
-    source: ArtifactSource
-    path: str
-    source_root: str
-
-
-def _remote_parent(uri: str) -> str:
-    """Return a remote URI's parent without treating its scheme as a path."""
-
-    parsed = urlsplit(uri)
-    path = parsed.path.rstrip("/")
-    parent = path.rpartition("/")[0]
-    # The authority is already the root for an object directly in a bucket.
-    if parent == "/":
-        parent = ""
-    return urlunsplit((parsed.scheme, parsed.netloc, parent, "", ""))
-
-
-def _remote_glob_root(uri: str) -> str:
-    """Return the stable non-magic URI prefix used for logical paths."""
-
-    parsed = urlsplit(uri)
-    wildcard = min(
-        position
-        for position in (parsed.path.find("*"), parsed.path.find("?"), parsed.path.find("["))
-        if position >= 0
-    )
-    prefix = parsed.path[:wildcard]
-    root = prefix.rstrip("/") if prefix.endswith("/") else prefix.rpartition("/")[0]
-    if root == "/":
-        root = ""
-    return urlunsplit((parsed.scheme, parsed.netloc, root, "", ""))
-
-
-def _remote_has_magic(uri: str) -> bool:
-    """Treat wildcard syntax in the URI path, not query credentials, as a glob."""
-
-    return has_magic(urlsplit(uri).path)
-
-
-def plan_source(index: int, source: ArtifactSource) -> SourcePlan:
-    """Resolve local directory and glob semantics without content I/O."""
-
-    local = local_storage_path(source.source_uri)
-    if local is None:
-        if _remote_has_magic(source.source_uri):
-            return SourcePlan(
-                index,
-                source,
-                source.source_uri,
-                _remote_glob_root(source.source_uri),
-            )
-        if source.recursive:
-            root = source.source_uri.rstrip("/")
-            return SourcePlan(index, source, root + "/**/*", root)
-        return SourcePlan(
-            index,
-            source,
-            source.source_uri,
-            _remote_parent(source.source_uri),
-        )
-
-    if not has_magic(source.source_uri) and local.exists():
-        if local.is_dir():
-            if not source.recursive:
-                raise IsADirectoryError(
-                    f"artifact source is a directory but recursive=False: {local}"
-                )
-            return SourcePlan(index, source, str(local / "**/*"), str(local))
-        if source.recursive:
-            raise NotADirectoryError(f"artifact source is a file but recursive=True: {local}")
-        return SourcePlan(index, source, str(local), str(local.parent))
-
-    root = source.source_uri
-    if has_magic(root):
-        wildcard = min(
-            position
-            for position in (root.find("*"), root.find("?"), root.find("["))
-            if position >= 0
-        )
-        prefix = root[:wildcard]
-        root = str(Path(prefix) if prefix.endswith("/") else Path(prefix).parent)
-    return SourcePlan(index, source, source.source_uri, root)
+    parsed = urlsplit(source_uri)
+    return has_magic(parsed.path if parsed.scheme else source_uri)
 
 
 def scan_sources(
     sources: tuple[ArtifactSource, ...],
     pipeline: FileIngestionPipeline,
-) -> tuple[DataFrame, tuple[SourcePlan, ...]]:
+) -> DataFrame:
     """Compose declared sources into one uniformly typed lazy scan."""
 
-    plans = tuple(plan_source(index, source) for index, source in enumerate(sources))
     frames = []
-    for plan in plans:
+    for index, source in enumerate(sources):
         frame = pipeline.scan(
-            plan.path,
-            source_root=plan.source_root,
-            logical_root=plan.source.logical_root,
-            logical_path=plan.source.logical_path,
-        ).with_column("_source_index", lit(plan.index))
+            source.source_uri,
+            pattern=_is_pattern(source.source_uri),
+            logical_path=source.logical_path,
+        ).with_column("_source_index", lit(index))
         frames.append(frame)
-    return daft.concat(frames), plans
+    return daft.concat(frames)
 
 
 class ArtifactService:
@@ -163,7 +77,7 @@ class ArtifactService:
         *,
         storage_config: StorageConfig | None = None,
     ) -> tuple[ArtifactRef, ...]:
-        """Ingest one bounded set of sources and return portable references."""
+        """Ingest one set of sources and return portable references."""
 
         declared = self._normalize_sources(sources)
         wid, storage, tick = await self._world_context(world_id, storage_config)
@@ -174,16 +88,14 @@ class ArtifactService:
             io_config=config.io_config,
             object_uri=object_uri,
             local_object_root=(str(local_object_root) if local_object_root is not None else None),
-            max_artifact_bytes=config.max_artifact_bytes,
             max_connections=config.max_connections,
         )
-        discovered, plans = scan_sources(declared, pipeline)
+        discovered = scan_sources(declared, pipeline)
 
-        # Materialize UUIDv7 and both hashes exactly once before multiple media
-        # indexes consume the frame. Rebuilding this lazy node would assign a
-        # different occurrence identity to each sink.
+        # Materialize UUIDv7 occurrence identity and source naming once before
+        # persistence. Rebuilding this node would assign different identities.
         discovered = await self._storage_service.materialize(discovered)
-        self._validate_discovery(discovered, plans, config)
+        self._validate_discovery(discovered, declared)
         if discovered.count_rows() == 0:
             return ()
 
@@ -291,35 +203,20 @@ class ArtifactService:
     @staticmethod
     def _validate_discovery(
         files: DataFrame,
-        plans: tuple[SourcePlan, ...],
-        config: ArtifactStoreConfig,
+        sources: tuple[ArtifactSource, ...],
     ) -> None:
         columns = (
-            files.to_pydict()
-            if files.count_rows()
-            else {"_source_index": [], "logical_path": [], "size_bytes": []}
+            files.to_pydict() if files.count_rows() else {"_source_index": [], "logical_path": []}
         )
         source_indexes = [int(value) for value in columns.get("_source_index", [])]
         logical_paths = [str(value) for value in columns.get("logical_path", [])]
-        sizes = [int(value) for value in columns.get("size_bytes", [])]
-        for plan in plans:
-            if plan.source.required and plan.index not in source_indexes:
+        for index, source in enumerate(sources):
+            if source.required and index not in source_indexes:
                 raise FileNotFoundError(
-                    f"required artifact source matched no files: {plan.source.source_uri}"
+                    f"required artifact source matched no files: {source.source_uri}"
                 )
         if len(logical_paths) != len(set(logical_paths)):
             raise ValueError("artifact sources resolve to duplicate logical paths")
-        oversized = [size for size in sizes if size > config.max_artifact_bytes]
-        if oversized:
-            raise ValueError(
-                f"artifact is {max(oversized)} bytes; per-artifact limit is "
-                f"{config.max_artifact_bytes}"
-            )
-        total = sum(sizes)
-        if total > config.max_ingestion_bytes:
-            raise ValueError(
-                f"artifact ingestion is {total} bytes; batch limit is {config.max_ingestion_bytes}"
-            )
 
     @staticmethod
     def _references(files: DataFrame) -> tuple[ArtifactRef, ...]:

@@ -11,7 +11,7 @@ The feature is split at the authority boundary:
 
 ```text
 archetype.ingestion
-  FileIngestionPipeline + bounded stream scanners
+  FileIngestionPipeline + stream scanners
 
 archetype.app.ingestion
   world/run envelope + plain/conditional append selection
@@ -28,8 +28,8 @@ archetype.app.missions
 
 `archetype.ingestion` is reusable family code. Its cohesive
 `FileIngestionPipeline` keeps the lazy Daft graph for scan, persistence,
-reopening, and every common or specialized index together. Only pure bounded
-stream algorithms live separately in `scanners.py`. Neither module can choose
+reopening, and every common or specialized index together. Only pure streaming
+algorithms live separately in `scanners.py`. Neither module can choose
 a catalog, namespace, world, or run.
 
 `IngestionService` adds the application-owned world/run envelope and selects a
@@ -44,7 +44,8 @@ application services.
 
 ## 2. Public file contract
 
-Submit one file, a glob, or a recursive prefix with `ArtifactSource`:
+Submit one exact file or a Daft-readable glob with `ArtifactSource`. Express
+recursive discovery in the pattern itself, such as `./outputs/**/*`:
 
 ```python
 from archetype import ArchetypeRuntime, ArtifactSource
@@ -95,9 +96,10 @@ The three paths answer different questions:
 | `object_uri` | Where are the immutable bytes stored now? |
 
 `logical_path` is relative, slash-normalized, and rejects `..`. It remains
-portable when a sandbox disappears or an object-store prefix changes. A
-recursive source combines `logical_root` with each path relative to the source
-root. An explicit single-file `logical_path` wins for that file.
+portable when a sandbox disappears or an object-store prefix changes. An
+explicit `logical_path` wins; otherwise the resolved Daft file name is used.
+Collection patterns therefore require unique file names unless the caller
+submits the files separately with explicit logical paths.
 
 Two files in one ingestion may not resolve to the same logical path. The
 service fails before publishing either occurrence.
@@ -191,7 +193,7 @@ diff row under the same `artifact_id`. Unknown binary files need no extension
 table; their common rows are still complete.
 
 The `FileIngestionPipeline` owns these Daft branches together. `scanners.py`
-contains only the pure bounded stream parsers used for hashes, PDF metadata,
+contains only the pure stream parsers used for hashes, PDF metadata,
 text shape, and patch structure. Resize, resample, transcode, thumbnail, OCR,
 and embedding helpers are future derivative workflows. They must produce new
 artifacts instead of silently changing submitted bytes.
@@ -203,12 +205,12 @@ the typed index must describe the immutable object that Archetype retained.
 
 ## 7. Visibility and failure
 
-For each bounded ingestion, execution is ordered:
+For each ingestion, execution is ordered:
 
 ```text
-discover and hash
-  -> validate paths and byte limits
-  -> persist content-addressed objects
+discover Daft files and occurrence identities
+  -> validate required sources and logical paths
+  -> stream, hash, and persist content-addressed objects
   -> append present typed media indexes
   -> append artifact_files
   -> return ArtifactRef values
@@ -219,12 +221,19 @@ metadata scan cannot expose a common artifact row. Object bytes may already
 exist after such a failure; that is safe because content-addressed objects are
 immutable and unreferenced objects are not visible artifacts.
 
-The service bounds both each file and the complete submission through
-`ArtifactStoreConfig`. Required sources that match no files fail closed.
-The persistence read hashes and counts the bytes it actually copies, compares
-them with discovery, and enforces the size limit incrementally. If a mutable
-source changes between discovery and persistence, no object or index row is
-published under the stale content identity.
+Required sources that match no files fail closed. The local persistence pass
+streams through Daft's copy buffer into a same-filesystem temporary file while
+computing SHA-256, XXH3-64, and byte size from those same chunks. It then
+atomically publishes the resulting content address. A mutable source is
+therefore addressed by the bytes actually copied, without a discovery hash,
+verification reread, or destination reread.
+
+Daft 0.7.19 exposes read-only `File` values and its `upload()` expression
+accepts a Binary column rather than a streaming file source. Remote persistence
+therefore performs the same single source read but temporarily materializes
+that payload for upload. This implementation limitation is explicit and does
+not impose a total artifact-size policy; it can be replaced by Daft's public
+writable/multipart file surface when that ships.
 
 No claim or recovery state surrounds this pipeline. Callers retry by making a
 new occurrence. If the content copy already completed, the retry reuses the
@@ -395,8 +404,8 @@ occurrence identity and content durability while removing that orchestration:
 | `world.publish(...)` for external component rows | `world.spawn(...)` for world state, or an owning application workflow for durable tabular data |
 | `TranscriptIngestionReceipt` | `TranscriptIngestionResult` linked to the sanitized `ArtifactRef` |
 
-`ArtifactStoreConfig` retains its name but now configures only bounded object
-copying and file-ingestion I/O. Callers must construct the new model rather
-than expecting the former bundle/checkpoint fields. There are deliberately no
-compatibility aliases for claim, receipt, bundle-finalization, or reconciler
+`ArtifactStoreConfig` retains its name but now configures only the object root,
+file-ingestion I/O, and upload concurrency. Callers must construct the new model
+rather than expecting the former bundle/checkpoint fields. There are deliberately
+no compatibility aliases for claim, receipt, bundle-finalization, or reconciler
 types: preserving them would retain the machinery this migration removes.

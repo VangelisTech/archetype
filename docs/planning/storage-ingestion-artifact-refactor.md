@@ -178,7 +178,6 @@ submitted bytes in place.
 `ArtifactService` is the sole file-artifact application service. It owns:
 
 - source and logical-path policy;
-- artifact byte and batch limits;
 - object-root selection;
 - configuring the file pipeline once per ingestion;
 - requesting storage-owned materialization of discovery and persistence;
@@ -292,10 +291,10 @@ fresh UUIDv7 identity.
 
 ```text
 submit ArtifactSource values
-  -> resolve world, run, tick, object root, and limits
-  -> build lazy discovery / identity / hash graph
+  -> resolve world, run, tick, and object root
+  -> build lazy Daft discovery and occurrence-identity graph
   -> StorageService materializes once
-  -> build content-addressed persistence graph
+  -> build one-pass content-addressed copy/hash graph
   -> StorageService materializes durable objects
   -> reopen the immutable object for specialized metadata
   -> build typed index frames

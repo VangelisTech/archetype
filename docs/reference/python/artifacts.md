@@ -2,7 +2,7 @@
 
 # File artifacts
 
-**Recommended API.** Declare files, configure bounded content-addressed storage, retain portable references to indexed artifact occurrences, and anchor interpretation to a task.
+**Recommended API.** Declare files, configure content-addressed storage, retain portable references to indexed artifact occurrences, and anchor interpretation to a task.
 
 ::: archetype.artifacts.contracts.ArtifactContext
     options:
@@ -21,9 +21,7 @@
 | Field | Type | Default |
 | --- | --- | --- |
 | `source_uri` | `str` | `required` |
-| `logical_root` | `str` | `''` |
 | `logical_path` | `str` | `''` |
-| `recursive` | `bool` | `False` |
 | `required` | `bool` | `True` |
 
 ::: archetype.artifacts.contracts.ArtifactRef
@@ -50,8 +48,6 @@
 | `object_uri` | `str \| Path \| None` | `None` |
 | `io_config` | `IOConfig \| None` | `None` |
 | `max_connections` | `int` | `32` |
-| `max_artifact_bytes` | `int` | `1073741824` |
-| `max_ingestion_bytes` | `int` | `4294967296` |
 
 ::: archetype.artifacts.analyze_artifacts
 

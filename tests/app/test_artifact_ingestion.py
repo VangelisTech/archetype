@@ -6,7 +6,10 @@
 import base64
 import hashlib
 import wave
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
 
 import av
 import numpy as np
@@ -15,7 +18,7 @@ import xxhash
 from pypdf import PdfWriter
 from uuid_utils import UUID
 
-from archetype.app.artifacts.service import plan_source
+from archetype.app.artifacts.service import scan_sources
 from archetype.app.container import ServiceContainer
 from archetype.artifacts.contracts import ArtifactSource, ArtifactStoreConfig
 from archetype.core.config import StorageBackend, StorageConfig, WorldConfig
@@ -28,7 +31,6 @@ from archetype.ingestion import (
     ARTIFACT_TEXT,
     ARTIFACT_VIDEO,
     FileIngestionPipeline,
-    logical_path_for,
 )
 
 _PNG = base64.b64decode(
@@ -80,101 +82,52 @@ def _write_pdf(path: Path) -> None:
         writer.write(stream)
 
 
-def test_logical_paths_and_source_plans_preserve_declared_roots(tmp_path):
-    assert (
-        logical_path_for(
-            "s3://bucket/source/context%20pack/report.md",
-            source_root="s3://bucket/source",
-            logical_root="mission",
+class _QuietHandler(SimpleHTTPRequestHandler):
+    def log_message(self, _format, *_args):
+        pass
+
+
+def test_daft_pattern_scan_uses_portable_file_names(tmp_path):
+    first = tmp_path / "first.md"
+    second = tmp_path / "second.md"
+    first.write_text("first")
+    second.write_text("second")
+
+    rows = (
+        FileIngestionPipeline()
+        .scan(str(tmp_path / "*.md"), pattern=True)
+        .select("logical_path")
+        .to_pylist()
+    )
+
+    assert sorted(row["logical_path"] for row in rows) == ["first.md", "second.md"]
+
+
+def test_signed_query_url_is_read_as_one_exact_daft_file(tmp_path):
+    source = tmp_path / "report.md"
+    source.write_text("signed evidence")
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0),
+        partial(_QuietHandler, directory=str(tmp_path)),
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        source_uri = f"http://127.0.0.1:{server.server_port}/report.md?token=signed"
+        rows = (
+            scan_sources(
+                (ArtifactSource(source_uri=source_uri),),
+                FileIngestionPipeline(),
+            )
+            .select("source_uri", "logical_path")
+            .to_pylist()
         )
-        == "mission/context pack/report.md"
-    )
-    assert (
-        logical_path_for(
-            "s3://other/source/report.md",
-            source_root="s3://bucket/source",
-        )
-        == "report.md"
-    )
-    assert (
-        logical_path_for(
-            "file:///tmp/source/report.md",
-            logical_path="renamed/report.md",
-        )
-        == "renamed/report.md"
-    )
-    with pytest.raises(ValueError, match="portable relative"):
-        logical_path_for("result.md", logical_path="../result.md")
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
 
-    remote = plan_source(
-        0,
-        ArtifactSource(source_uri="s3://bucket/context", recursive=True),
-    )
-    assert remote.path == "s3://bucket/context/**/*"
-    assert remote.source_root == "s3://bucket/context"
-
-    directory = tmp_path / "context"
-    directory.mkdir()
-    local = plan_source(
-        1,
-        ArtifactSource(source_uri=str(directory), recursive=True),
-    )
-    assert local.path == str(directory / "**/*")
-    assert local.source_root == str(directory)
-    with pytest.raises(IsADirectoryError):
-        plan_source(2, ArtifactSource(source_uri=str(directory)))
-
-    document = directory / "report.md"
-    document.write_text("evidence")
-    with pytest.raises(NotADirectoryError):
-        plan_source(
-            3,
-            ArtifactSource(source_uri=str(document), recursive=True),
-        )
-
-    wildcard = plan_source(
-        4,
-        ArtifactSource(source_uri=str(directory / "*.md")),
-    )
-    assert wildcard.path == str(directory / "*.md")
-    assert wildcard.source_root == str(directory)
-
-
-def test_exact_remote_source_uses_parent_as_logical_root():
-    plan = plan_source(
-        0,
-        ArtifactSource(source_uri="s3://bucket/context/report.md"),
-    )
-
-    assert plan.path == "s3://bucket/context/report.md"
-    assert plan.source_root == "s3://bucket/context"
-    assert logical_path_for(plan.path, source_root=plan.source_root) == "report.md"
-
-
-def test_remote_query_credentials_do_not_turn_an_exact_source_into_a_glob():
-    source_uri = "https://example.com/context/report.md?token=signed"
-    plan = plan_source(0, ArtifactSource(source_uri=source_uri))
-
-    assert plan.path == source_uri
-    assert plan.source_root == "https://example.com/context"
-    assert logical_path_for(plan.path, source_root=plan.source_root) == "report.md"
-
-
-def test_remote_glob_preserves_paths_below_non_magic_prefix():
-    plan = plan_source(
-        0,
-        ArtifactSource(source_uri="s3://bucket/context/**/*.md"),
-    )
-
-    assert plan.path == "s3://bucket/context/**/*.md"
-    assert plan.source_root == "s3://bucket/context"
-    assert (
-        logical_path_for(
-            "s3://bucket/context/research/reports/result.md",
-            source_root=plan.source_root,
-        )
-        == "research/reports/result.md"
-    )
+    assert rows == [{"source_uri": source_uri, "logical_path": "report.md"}]
 
 
 @pytest.mark.asyncio
@@ -292,6 +245,13 @@ async def test_required_source_and_logical_path_collisions_fail_closed(tmp_path)
             await container.artifact_service.ingest(
                 str(world.world_id), ArtifactSource(source_uri=str(tmp_path / "missing.txt"))
             )
+        assert (
+            await container.artifact_service.ingest(
+                str(world.world_id),
+                ArtifactSource(source_uri=str(tmp_path / "optional.txt"), required=False),
+            )
+            == ()
+        )
 
         first = tmp_path / "first.txt"
         second = tmp_path / "second.txt"
@@ -371,12 +331,12 @@ async def test_mixed_context_pack_runs_every_concrete_index(tmp_path):
         references = await container.artifact_service.ingest(
             str(world.world_id),
             [
-                ArtifactSource(source_uri=str(audio), logical_root="context"),
-                ArtifactSource(source_uri=str(video), logical_root="context"),
-                ArtifactSource(source_uri=str(pdf), logical_root="context"),
-                ArtifactSource(source_uri=str(markdown), logical_root="context"),
-                ArtifactSource(source_uri=str(code), logical_root="context"),
-                ArtifactSource(source_uri=str(patch), logical_root="context"),
+                ArtifactSource(source_uri=str(audio), logical_path="context/context.wav"),
+                ArtifactSource(source_uri=str(video), logical_path="context/context.mp4"),
+                ArtifactSource(source_uri=str(pdf), logical_path="context/context.pdf"),
+                ArtifactSource(source_uri=str(markdown), logical_path="context/brief.md"),
+                ArtifactSource(source_uri=str(code), logical_path="context/pipeline.py"),
+                ArtifactSource(source_uri=str(patch), logical_path="context/change.patch"),
             ],
         )
 

@@ -66,7 +66,7 @@ PAGES: tuple[ReferencePage, ...] = (
         "artifacts",
         "File artifacts",
         "Recommended API",
-        "Declare files, configure bounded content-addressed storage, retain portable "
+        "Declare files, configure content-addressed storage, retain portable "
         "references to indexed artifact occurrences, and anchor interpretation to a task.",
         (
             "ArtifactContext",

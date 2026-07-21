@@ -224,10 +224,10 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
                     source_uri=f"{_HF}/papers/2102.04074v1.pdf",
                     logical_path="context/paper.pdf",
                 ),
-                ArtifactSource(source_uri=str(markdown), logical_root="context"),
-                ArtifactSource(source_uri=str(code), logical_root="context"),
-                ArtifactSource(source_uri=str(patch), logical_root="context"),
-                ArtifactSource(source_uri=str(image), logical_root="context"),
+                ArtifactSource(source_uri=str(markdown), logical_path="context/mission.md"),
+                ArtifactSource(source_uri=str(code), logical_path="context/pipeline.py"),
+                ArtifactSource(source_uri=str(patch), logical_path="context/change.patch"),
+                ArtifactSource(source_uri=str(image), logical_path="context/pixel.png"),
             ],
         )
 

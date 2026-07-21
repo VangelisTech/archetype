@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Reusable file-artifact inputs, references, and object-store bounds."""
+"""Reusable file-artifact inputs, references, and object-store configuration."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
 from daft.io import IOConfig
-from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
+from pydantic import BaseModel, Field, computed_field, field_validator
 from uuid_utils import UUID, uuid7
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -32,14 +32,12 @@ def _portable_path(value: str, *, optional: bool) -> str:
 
 
 class ArtifactSource(BaseModel):
-    """One file, glob, or recursive prefix submitted for artifact ingestion."""
+    """One exact file or Daft-readable pattern submitted for ingestion."""
 
     model_config = dict(frozen=True)
 
     source_uri: str
-    logical_root: str = ""
     logical_path: str = ""
-    recursive: bool = False
     required: bool = True
 
     @field_validator("source_uri")
@@ -50,21 +48,10 @@ class ArtifactSource(BaseModel):
             raise ValueError("source_uri must not be empty")
         return value
 
-    @field_validator("logical_root")
-    @classmethod
-    def _valid_logical_root(cls, value: str) -> str:
-        return _portable_path(value, optional=True)
-
     @field_validator("logical_path")
     @classmethod
     def _valid_logical_path(cls, value: str) -> str:
         return _portable_path(value, optional=True)
-
-    @model_validator(mode="after")
-    def _directory_uses_root(self) -> ArtifactSource:
-        if self.recursive and self.logical_path:
-            raise ValueError("recursive sources use logical_root, not logical_path")
-        return self
 
 
 class ArtifactRef(BaseModel):
@@ -169,21 +156,13 @@ class ArtifactContext(BaseModel):
 
 
 class ArtifactStoreConfig(BaseModel):
-    """Bound object copying while leaving index authority in the world catalog."""
+    """Configure content-addressed object storage and Daft file I/O."""
 
     model_config = dict(frozen=True, arbitrary_types_allowed=True)
 
     object_uri: str | Path | None = None
     io_config: IOConfig | None = None
     max_connections: int = Field(default=32, ge=1)
-    max_artifact_bytes: int = Field(default=1 << 30, gt=0)
-    max_ingestion_bytes: int = Field(default=4 << 30, gt=0)
-
-    @model_validator(mode="after")
-    def _bounded_batch(self) -> ArtifactStoreConfig:
-        if self.max_ingestion_bytes < self.max_artifact_bytes:
-            raise ValueError("max_ingestion_bytes must be >= max_artifact_bytes")
-        return self
 
     @classmethod
     def local(cls, root: str | Path) -> ArtifactStoreConfig:

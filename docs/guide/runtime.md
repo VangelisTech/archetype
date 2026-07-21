@@ -145,8 +145,9 @@ their values were derived. The sync runtime exposes the same operations.
 ### R12 — Typed artifacts and transcript evidence
 
 `world.ingest_artifacts(*sources)` is the supported file-ingestion boundary.
-Each `ArtifactSource` names one file, glob, or recursive prefix and supplies its
-portable logical path. The application scans metadata, computes SHA-256 and
+Each `ArtifactSource` names one exact file or Daft-readable glob and may supply
+an explicit portable logical path. Recursive discovery is expressed by the
+glob itself. The application scans metadata, computes SHA-256 and
 XXH3-64 in one pass, writes an immutable content-addressed object, publishes
 any media-specific index, and then publishes the common `artifact_files` row.
 It returns one `ArtifactRef` per occurrence. A repeated submission is a new
