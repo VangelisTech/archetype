@@ -243,6 +243,7 @@ class ModalSandboxSession:
             except Exception:
                 pass
             await self._emit_event_best_effort(SandboxEventType.CHECKPOINT_STARTED)
+            await self._scrub_live_output()
             try:
                 image = await self._sandbox.snapshot_filesystem.aio(
                     timeout=self._checkpoint_timeout_seconds,
@@ -365,6 +366,17 @@ class ModalSandboxSession:
             ProcessRequest(("mkdir", "-p", paths["directory"]), timeout_seconds=60),
         )
         self._raise(result, "create live observation directory")
+
+    async def _scrub_live_output(self) -> None:
+        paths = self._live_observation_paths()
+        result = await self._exec_on(
+            self._sandbox,
+            ProcessRequest(
+                ("rm", "-f", paths["stdout"], paths["stderr"]),
+                timeout_seconds=60,
+            ),
+        )
+        self._raise(result, "remove raw live output before checkpoint")
 
     def _trace_request(self, request: ProcessRequest) -> ProcessRequest:
         paths = self._live_observation_paths()

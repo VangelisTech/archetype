@@ -411,10 +411,10 @@ class _LifecycleSandbox:
                 del kwargs
                 owner.commands.append(tuple(argv))
                 if argv[:2] in {("rm", "-f"), ("rm", "-rf")}:
-                    target = str(argv[2])
-                    for path in tuple(owner.filesystem.values):
-                        if path == target or path.startswith(f"{target}/"):
-                            owner.filesystem.values.pop(path)
+                    for target in (str(value) for value in argv[2:]):
+                        for path in tuple(owner.filesystem.values):
+                            if path == target or path.startswith(f"{target}/"):
+                                owner.filesystem.values.pop(path)
                 elif argv[:2] == ("mv", "-f"):
                     value = owner.filesystem.values.pop(str(argv[2]))
                     owner.filesystem.values[str(argv[3])] = value
@@ -523,6 +523,66 @@ async def test_modal_checkpoint_outcome_survives_live_observation_failures(
 
     assert checkpoint.uri == "modal-image://im-checkpoint"
     assert await session.status() is SandboxStatus.READY
+
+
+@pytest.mark.asyncio
+async def test_modal_checkpoint_scrubs_raw_live_output_before_snapshot() -> None:
+    sandbox = _LifecycleSandbox("sb-agent")
+    paths = ModalSandboxSession.live_observation_paths()
+    sandbox.filesystem.values[paths["stdout"]] = "stdout credential canary"
+    sandbox.filesystem.values[paths["stderr"]] = "stderr credential canary"
+    sandbox.filesystem.values[paths["events"]] = "safe structured event\n"
+
+    class _Snapshot:
+        async def aio(self, **kwargs):
+            del kwargs
+            assert paths["stdout"] not in sandbox.filesystem.values
+            assert paths["stderr"] not in sandbox.filesystem.values
+            assert paths["events"] in sandbox.filesystem.values
+            return type("Image", (), {"object_id": "im-scrubbed"})()
+
+    sandbox.snapshot_filesystem = _Snapshot()
+    checkpoint = await _lifecycle_session(sandbox).checkpoint()
+
+    assert checkpoint.uri == "modal-image://im-scrubbed"
+    assert (
+        "rm",
+        "-f",
+        paths["stdout"],
+        paths["stderr"],
+    ) in sandbox.commands
+
+
+@pytest.mark.asyncio
+async def test_modal_checkpoint_fails_closed_when_live_output_scrub_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox = _LifecycleSandbox("sb-agent")
+    session = _lifecycle_session(sandbox)
+    snapshot_called = False
+
+    class _Snapshot:
+        async def aio(self, **kwargs):
+            nonlocal snapshot_called
+            del kwargs
+            snapshot_called = True
+            return type("Image", (), {"object_id": "im-unsafe"})()
+
+    async def execute(_sandbox, request: ProcessRequest, **kwargs) -> ProcessResult:
+        del _sandbox, kwargs
+        return ProcessResult(
+            request.argv,
+            7 if request.argv[:2] == ("rm", "-f") else 0,
+            stderr="scrub failed",
+        )
+
+    sandbox.snapshot_filesystem = _Snapshot()
+    monkeypatch.setattr(session, "_exec_on", execute)
+
+    with pytest.raises(RuntimeError, match="remove raw live output before checkpoint"):
+        await session.checkpoint()
+
+    assert snapshot_called is False
 
 
 @pytest.mark.asyncio
