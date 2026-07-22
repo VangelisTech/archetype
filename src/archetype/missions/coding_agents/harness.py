@@ -149,7 +149,7 @@ class CodingAgentHarness:
             starting_revision = starting_revision or final_revision
             agent = await self._driver.run(session, request, self._prompt(request))
             if agent.returncode != 0:
-                detail = self._tail(agent.stderr or agent.stdout, 600)
+                detail = agent.stderr or agent.stdout
                 friction.append(
                     FrictionObservation(
                         kind="agent_process",
@@ -178,8 +178,8 @@ class CodingAgentHarness:
                     expected_returncode=validator.spec.expected_returncode,
                     actual_returncode=result.returncode,
                     revision=final_revision,
-                    stdout=self._tail(result.stdout),
-                    stderr=self._tail(result.stderr),
+                    stdout=result.stdout,
+                    stderr=result.stderr,
                 )
                 for validator, result in raw_validation
             )
@@ -206,7 +206,7 @@ class CodingAgentHarness:
             else:
                 for result in validation:
                     if not result.passed:
-                        detail = self._tail(result.stderr or result.stdout, 600)
+                        detail = result.stderr or result.stdout
                         friction.append(
                             FrictionObservation(
                                 kind="validation",
@@ -228,8 +228,8 @@ class CodingAgentHarness:
                 agent_returncode=agent.returncode,
                 starting_revision=starting_revision,
                 final_revision=final_revision,
-                agent_stdout=self._tail(agent.stdout, 16_000),
-                agent_stderr=self._tail(agent.stderr, 16_000),
+                agent_stdout=agent.stdout,
+                agent_stderr=agent.stderr,
                 validation=validation,
                 commits=commits,
                 friction=tuple(friction),
@@ -249,8 +249,8 @@ class CodingAgentHarness:
                 agent_returncode=agent.returncode,
                 starting_revision=starting_revision,
                 final_revision=final_revision,
-                agent_stdout=self._tail(agent.stdout, 16_000),
-                agent_stderr=self._tail(agent.stderr, 16_000),
+                agent_stdout=agent.stdout,
+                agent_stderr=agent.stderr,
                 validation=validation,
                 commits=commits,
                 friction=tuple(friction),
@@ -436,14 +436,10 @@ class CodingAgentHarness:
     def _subject(value: str) -> str:
         return " ".join(value.strip().split())[:72] or "complete task"
 
-    @staticmethod
-    def _tail(value: str, limit: int = 4000) -> str:
-        return value[-limit:]
-
     @classmethod
     def _raise(cls, result: ProcessResult, label: str) -> None:
         if result.returncode != 0:
-            detail = cls._tail(result.stderr or result.stdout)
+            detail = result.stderr or result.stdout
             raise RuntimeError(f"{label} failed with exit code {result.returncode}: {detail}")
 
 

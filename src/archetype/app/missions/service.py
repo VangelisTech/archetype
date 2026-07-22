@@ -263,8 +263,9 @@ class MissionService:
             await self._world.spawn(
                 FrictionLog(
                     kind="sandbox_restore",
-                    message=self._redact(
+                    message=self._redact_and_tail(
                         f"{type(exc).__name__}: {exc}",
+                        limit=4_000,
                         scope=f"mission:{mission.mission_id}:sandbox-restore",
                     ),
                 )
@@ -491,8 +492,9 @@ class MissionService:
             updated = sandbox_state.model_copy(
                 update={
                     "status": sandbox_status.value,
-                    "error": self._redact(
+                    "error": self._redact_and_tail(
                         result.error if sandbox_status is SandboxStatus.ERRORED else "",
+                        limit=4_000,
                         scope=f"mission:{result.mission_id}:sandbox-error",
                     ),
                 }
@@ -513,12 +515,14 @@ class MissionService:
                 sandbox_id=result.sandbox.sandbox_id,
                 agent_session_id=result.agent_session_id,
                 agent_returncode=result.agent_returncode,
-                agent_stdout=self._redact(
+                agent_stdout=self._redact_and_tail(
                     result.agent_stdout,
+                    limit=16_000,
                     scope=f"mission:{result.mission_id}:agent-stdout",
                 ),
-                agent_stderr=self._redact(
+                agent_stderr=self._redact_and_tail(
                     result.agent_stderr,
+                    limit=16_000,
                     scope=f"mission:{result.mission_id}:agent-stderr",
                 ),
                 trace_uri=self._safe_metadata(
@@ -528,8 +532,9 @@ class MissionService:
                 redaction_policy_id=self._redaction_service.policy_id,
                 starting_revision=result.starting_revision,
                 final_revision=result.final_revision,
-                error=self._redact(
+                error=self._redact_and_tail(
                     result.error,
+                    limit=4_000,
                     scope=f"mission:{result.mission_id}:execution-error",
                 ),
             )
@@ -548,12 +553,14 @@ class MissionService:
                     revision=observed.revision,
                     expected_returncode=observed.expected_returncode,
                     actual_returncode=observed.actual_returncode,
-                    stdout=self._redact(
+                    stdout=self._redact_and_tail(
                         observed.stdout,
+                        limit=4_000,
                         scope=f"mission:{result.mission_id}:validator-stdout",
                     ),
-                    stderr=self._redact(
+                    stderr=self._redact_and_tail(
                         observed.stderr,
+                        limit=4_000,
                         scope=f"mission:{result.mission_id}:validator-stderr",
                     ),
                 )
@@ -580,8 +587,9 @@ class MissionService:
                     execution_id=execution_id,
                     dispatch_id=result.dispatch_id,
                     kind=observed.kind,
-                    message=self._redact(
+                    message=self._redact_and_tail(
                         observed.message,
+                        limit=4_000,
                         scope=f"mission:{result.mission_id}:friction",
                     ),
                 )
@@ -598,8 +606,9 @@ class MissionService:
         try:
             checkpoint = await candidate.session.checkpoint()
         except Exception as exc:
-            checkpoint_error = self._redact(
+            checkpoint_error = self._redact_and_tail(
                 f"{type(exc).__name__}: {exc}",
+                limit=4_000,
                 scope=f"mission:{result.mission_id}:checkpoint-error",
             )
             self._emit_sandbox_event(
@@ -665,8 +674,9 @@ class MissionService:
                 updated = sandbox_state.model_copy(
                     update={
                         "status": status.value,
-                        "error": self._redact(
+                        "error": self._redact_and_tail(
                             error,
+                            limit=4_000,
                             scope=f"mission:{mission_id}:sandbox-error",
                         ),
                     }
@@ -680,7 +690,11 @@ class MissionService:
             environment=identity.environment,
             worktree=self._workspace,
             status=status.value,
-            error=self._redact(error, scope=f"mission:{mission_id}:sandbox-error"),
+            error=self._redact_and_tail(
+                error,
+                limit=4_000,
+                scope=f"mission:{mission_id}:sandbox-error",
+            ),
         )
         entity_id = await self._world.spawn(sandbox_state)
         self._sandbox_entities[identity.sandbox_id] = (entity_id, sandbox_state)
@@ -705,8 +719,9 @@ class MissionService:
         errored = sandbox_state.model_copy(
             update={
                 "status": SandboxStatus.ERRORED.value,
-                "error": self._redact(
+                "error": self._redact_and_tail(
                     f"{type(exc).__name__}: {exc}",
+                    limit=4_000,
                     scope=f"sandbox:{sandbox_id}:close-error",
                 ),
             }
@@ -718,6 +733,11 @@ class MissionService:
         if not value:
             return ""
         return self._redaction_service.redact_text(value, scope=scope).text
+
+    def _redact_and_tail(self, value: str, *, limit: int, scope: str) -> str:
+        """Redact a complete observation before applying its storage bound."""
+
+        return self._redact(value, scope=scope)[-limit:]
 
     def _safe_metadata(self, value: str, *, field: str) -> str:
         if value:

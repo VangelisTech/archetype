@@ -229,9 +229,15 @@ class _SecretOutputDriver:
                 workdir=str(self.workspace),
             )
         )
+        token = "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        output_length = 16_000 + 110
+        suffix_length = output_length - 100 - len(token)
+        safe_line = "safe output line\n"
+        safe_suffix = (safe_line * (suffix_length // len(safe_line) + 1))[:suffix_length]
+        output = "x" * 100 + token + safe_suffix
         return AgentProcessObservation(
             result.returncode,
-            stdout="successful output ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            stdout=output,
             session_id="session-redaction",
         )
 
@@ -493,8 +499,13 @@ async def test_checkpoint_is_queryable_but_never_gates_a_valid_task(
 
             execution_rows = latest(await missions.query(AgentExecution)).to_pylist()
             execution = AgentExecution.get_prefix()
-            assert "ghp_" not in execution_rows[0][f"{execution}agent_stdout"]
-            assert "<redacted:github-token>" in execution_rows[0][f"{execution}agent_stdout"]
+            agent_stdout = execution_rows[0][f"{execution}agent_stdout"]
+            assert len(agent_stdout) == 16_000
+            assert "ghp_" not in agent_stdout
+            assert "A" * 20 not in agent_stdout
+            leading_x = len(agent_stdout) - len(agent_stdout.lstrip("x"))
+            assert 0 < leading_x < 100
+            assert agent_stdout.lstrip("x").startswith("<redacted:github-token>")
             assert execution_rows[0][f"{execution}redaction_policy_id"].startswith(
                 "archetype-secret-redaction-v1:"
             )
