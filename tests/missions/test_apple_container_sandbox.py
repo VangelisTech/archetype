@@ -213,11 +213,41 @@ async def test_checkpoint_restart_failure_marks_session_errored(
     )
     session = _session(tmp_path)
 
-    with pytest.raises(RuntimeError, match="restart after checkpoint"):
+    with pytest.raises(RuntimeError, match="completed checkpoint preserved at") as raised:
         await session.checkpoint()
 
     assert await session.status() is SandboxStatus.ERRORED
     assert not list(tmp_path.glob("*.partial"))
+    archives = list(tmp_path.glob("*.rootfs.tar"))
+    assert len(archives) == 1
+    assert archives[0].read_bytes() == b"rootfs"
+    assert str(archives[0]) in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_discards_incomplete_export_when_restart_also_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_run_host(argv, *, timeout_seconds: int, stdin: str | None = None):
+        del timeout_seconds, stdin
+        command = tuple(argv)
+        failed = command[:2] in {("container", "export"), ("container", "start")}
+        return ProcessResult(command, 7 if failed else 0, stderr="provider failed")
+
+    monkeypatch.setattr(
+        "archetype.missions.sandboxes.apple_container.run_host",
+        fake_run_host,
+    )
+    session = _session(tmp_path)
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await session.checkpoint()
+
+    assert "filesystem export" in str(raised.value.exceptions[0])
+    assert "restart after checkpoint" in str(raised.value.exceptions[1])
+    assert await session.status() is SandboxStatus.ERRORED
+    assert not list(tmp_path.iterdir())
 
 
 @pytest.mark.asyncio

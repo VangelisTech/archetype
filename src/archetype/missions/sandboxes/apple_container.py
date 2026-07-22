@@ -187,24 +187,31 @@ class AppleContainerSandboxSession:
             except BaseException as exc:
                 restart_error = exc
                 self._status = SandboxStatus.ERRORED
-            if export_error is not None or restart_error is not None:
+            if export_error is not None:
                 temporary.unlink(missing_ok=True)
-                if export_error is not None and restart_error is not None:
+                if restart_error is not None:
                     raise BaseExceptionGroup(
                         "Apple Container checkpoint export and restart both failed",
                         [export_error, restart_error],
                     )
-                if export_error is not None:
-                    raise export_error
-                assert restart_error is not None
-                raise restart_error
+                raise export_error
             try:
                 digest = await asyncio.to_thread(self._digest, temporary)
                 archive = state_dir / f"{digest}.rootfs.tar"
                 os.replace(temporary, archive)
-            except BaseException:
+            except BaseException as exc:
                 temporary.unlink(missing_ok=True)
+                if restart_error is not None:
+                    raise BaseExceptionGroup(
+                        "Apple Container checkpoint publication and restart both failed",
+                        [exc, restart_error],
+                    ) from None
                 raise
+            if restart_error is not None:
+                raise RuntimeError(
+                    "container restart after checkpoint failed; "
+                    f"completed checkpoint preserved at {archive}"
+                ) from restart_error
             return CheckpointRef(
                 provider=_PROVIDER,
                 checkpoint_id=digest,
