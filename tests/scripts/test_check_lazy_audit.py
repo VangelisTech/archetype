@@ -361,6 +361,68 @@ def test_unlisted_daft_execution_adapters_are_gated(tmp_path, method, statement)
 
 
 @pytest.mark.parametrize(
+    "source",
+    [
+        """\
+        import daft
+
+        df = daft.from_pydict({"x": [1]})
+        for row in df:
+            consume(row)
+        """,
+        """\
+        import daft
+
+        df = daft.from_pydict({"x": [1]})
+        alias = df
+        for row in alias:
+            consume(row)
+        """,
+    ],
+)
+def test_implicit_dataframe_for_iteration_is_gated(tmp_path, source):
+    py = _write_py(tmp_path, "iteration.py", source)
+
+    assert [site.method for site in _scan_file(py, "iteration.py")] == ["__iter__"]
+
+
+@pytest.mark.parametrize("method", ["to_dask_dataframe", "to_ray_dataset"])
+def test_locked_daft_execution_adapters_are_gated(tmp_path, method):
+    py = _write_py(
+        tmp_path,
+        "locked_adapter.py",
+        f"""\
+        import daft
+
+        df = daft.from_pydict({{"x": [1]}})
+        df.{method}()
+        """,
+    )
+
+    assert [site.method for site in _scan_file(py, "locked_adapter.py")] == [method]
+
+
+def test_attribute_held_dataframe_iteration_is_gated(tmp_path):
+    py = _write_py(
+        tmp_path,
+        "attribute_frame.py",
+        """\
+        import daft
+
+        class Holder:
+            def __init__(self):
+                self.frame = daft.from_pydict({"x": [1]})
+
+            def rows(self):
+                for row in self.frame:
+                    yield row
+        """,
+    )
+
+    assert [site.method for site in _scan_file(py, "attribute_frame.py")] == ["__iter__"]
+
+
+@pytest.mark.parametrize(
     "method",
     [
         "write_bigtable",
@@ -462,6 +524,98 @@ def test_unlisted_daft_module_write_table_is_gated(tmp_path):
     assert [site.method for site in sites] == ["write_table"]
 
 
+def test_imported_daft_write_table_is_gated(tmp_path):
+    py = _write_py(
+        tmp_path,
+        "imported_write.py",
+        """\
+        import daft
+        from daft import write_table
+
+        df = daft.from_pydict({"x": [1]})
+        write_table(df, "destination")
+        """,
+    )
+
+    assert [site.method for site in _scan_file(py, "imported_write.py")] == ["write_table"]
+
+
+@pytest.mark.parametrize(
+    ("owner_import", "owner_type"),
+    [
+        ("from daft.catalog import Catalog", "Catalog"),
+        ("from daft import Session", "Session"),
+    ],
+)
+@pytest.mark.parametrize("method", ["append", "write", "overwrite"])
+def test_get_table_result_writes_are_gated(tmp_path, owner_import, owner_type, method):
+    py = _write_py(
+        tmp_path,
+        "get_table_write.py",
+        f"""\
+        {owner_import}
+
+        def persist(owner: {owner_type}, frame):
+            table = owner.get_table("destination")
+            table.{method}(frame)
+        """,
+    )
+
+    assert [site.method for site in _scan_file(py, "get_table_write.py")] == [method]
+
+
+def test_reassignment_drops_dataframe_provenance(tmp_path):
+    py = _write_py(
+        tmp_path,
+        "reassigned.py",
+        """\
+        import daft
+
+        value = daft.from_pydict({"x": [1]})
+        value = CustomResult()
+        value.to_arrow()
+        """,
+    )
+
+    assert _scan_file(py, "reassigned.py") == []
+
+
+def test_same_name_provenance_does_not_cross_function_boundaries(tmp_path):
+    py = _write_py(
+        tmp_path,
+        "function_scopes.py",
+        """\
+        import daft
+
+        def execute_daft():
+            result = daft.from_pydict({"x": [1]})
+            return result.to_arrow()
+
+        def execute_custom():
+            result = CustomResult()
+            return result.to_arrow()
+        """,
+    )
+
+    sites = _scan_file(py, "function_scopes.py")
+
+    assert [(site.line, site.method) for site in sites] == [(5, "to_arrow")]
+
+
+def test_imported_custom_collect_is_not_gated(tmp_path):
+    py = _write_py(
+        tmp_path,
+        "custom_collect.py",
+        """\
+        from custom_executor import collect
+
+        collect([1, 2, 3])
+        """,
+    )
+
+    assert _scan_file(py, "custom_collect.py") == []
+
+
 @pytest.mark.parametrize(
     "source",
     [
@@ -486,6 +640,15 @@ def test_daft_arrow_export_is_gated_but_followup_pyarrow_conversion_is_not(tmp_p
     )
 
     assert [site.method for site in _scan_file(py, "arrow_export.py")] == ["to_arrow"]
+
+
+def test_real_lancedb_store_only_audits_daft_to_arrow():
+    relative = "src/archetype/core/aio/async_lancedb_store.py"
+    path = Path(__file__).resolve().parent.parent.parent / relative
+
+    sites = [site for site in _scan_file(path, relative) if site.method == "to_arrow"]
+
+    assert [(site.line, site.method) for site in sites] == [(359, "to_arrow")]
 
 
 def test_batch_udf_series_to_pylist_remains_executor_owned(tmp_path):
