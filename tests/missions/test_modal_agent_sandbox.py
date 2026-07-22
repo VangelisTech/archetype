@@ -472,6 +472,60 @@ async def test_modal_agent_exec_persists_oauth_and_durable_events() -> None:
 
 
 @pytest.mark.asyncio
+async def test_modal_agent_outcome_survives_live_observation_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _lifecycle_session(_LifecycleSandbox("sb-agent"))
+    executed = 0
+    executed_argv: tuple[str, ...] = ()
+
+    async def directory_failure() -> None:
+        raise RuntimeError("live directory unavailable")
+
+    async def event_failure(*args, **kwargs) -> None:
+        del args, kwargs
+        raise RuntimeError("live event unavailable")
+
+    async def execute(_sandbox, request: ProcessRequest, **kwargs) -> ProcessResult:
+        nonlocal executed, executed_argv
+        del _sandbox, kwargs
+        executed += 1
+        executed_argv = request.argv
+        return ProcessResult(("codex", "exec"), 0, stdout="completed")
+
+    monkeypatch.setattr(session, "_ensure_live_directory", directory_failure)
+    monkeypatch.setattr(session, "_emit_event", event_failure)
+    monkeypatch.setattr(session, "_exec_on", execute)
+
+    result = await session.exec(ProcessRequest(("codex", "exec"), close_stdin=True))
+
+    assert result.returncode == 0
+    assert result.stdout == "completed"
+    assert executed == 1
+    assert executed_argv == ("codex", "exec")
+    assert await session.status() is SandboxStatus.READY
+
+
+@pytest.mark.asyncio
+async def test_modal_checkpoint_outcome_survives_live_observation_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _lifecycle_session(_LifecycleSandbox("sb-agent"))
+
+    async def observation_failure(*args, **kwargs) -> None:
+        del args, kwargs
+        raise RuntimeError("live observation unavailable")
+
+    monkeypatch.setattr(session, "_ensure_live_directory", observation_failure)
+    monkeypatch.setattr(session, "_emit_event", observation_failure)
+
+    checkpoint = await session.checkpoint()
+
+    assert checkpoint.uri == "modal-image://im-checkpoint"
+    assert await session.status() is SandboxStatus.READY
+
+
+@pytest.mark.asyncio
 async def test_modal_session_error_checkpoint_and_close_states(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -564,6 +618,29 @@ async def test_modal_checkpoint_failure_invalid_identity_and_close_failures(
     await closing.close()
     assert await closing.status() is SandboxStatus.CLOSED
     assert close_calls == ["sb-agent", "sb-auth", "sb-auth"]
+
+
+@pytest.mark.asyncio
+async def test_modal_checkpoint_observation_failure_does_not_mask_provider_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _SnapshotFailure:
+        async def aio(self, **kwargs):
+            del kwargs
+            raise RuntimeError("snapshot unavailable")
+
+    sandbox = _LifecycleSandbox("sb-agent")
+    sandbox.snapshot_filesystem = _SnapshotFailure()
+    session = _lifecycle_session(sandbox)
+
+    async def event_failure(*args, **kwargs) -> None:
+        del args, kwargs
+        raise RuntimeError("event unavailable")
+
+    monkeypatch.setattr(session, "_emit_event", event_failure)
+
+    with pytest.raises(RuntimeError, match="snapshot unavailable"):
+        await session.checkpoint()
 
 
 @pytest.mark.asyncio

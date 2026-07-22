@@ -168,13 +168,19 @@ class ModalSandboxSession:
                     oauth_staged = True
                 actual_request = request
                 if is_agent:
-                    await self._ensure_live_directory()
-                    await self._emit_event(
+                    live_directory_ready = False
+                    try:
+                        await self._ensure_live_directory()
+                        live_directory_ready = True
+                    except Exception:
+                        pass
+                    await self._emit_event_best_effort(
                         SandboxEventType.PROCESS_STARTED,
                         operation=request.argv[0],
                     )
-                    actual_request = self._trace_request(request)
-                    heartbeat = asyncio.create_task(self._heartbeat())
+                    if live_directory_ready:
+                        actual_request = self._trace_request(request)
+                        heartbeat = asyncio.create_task(self._heartbeat())
                 result = await self._exec_on(
                     self._sandbox,
                     actual_request,
@@ -183,7 +189,7 @@ class ModalSandboxSession:
                     ),
                 )
                 if is_agent:
-                    await self._emit_event(
+                    await self._emit_event_best_effort(
                         SandboxEventType.PROCESS_FINISHED,
                         operation=request.argv[0],
                         returncode=result.returncode,
@@ -232,15 +238,18 @@ class ModalSandboxSession:
                 ),
             )
             self._raise(absent, "verify credential-free checkpoint")
-            await self._ensure_live_directory()
-            await self._emit_event(SandboxEventType.CHECKPOINT_STARTED)
+            try:
+                await self._ensure_live_directory()
+            except Exception:
+                pass
+            await self._emit_event_best_effort(SandboxEventType.CHECKPOINT_STARTED)
             try:
                 image = await self._sandbox.snapshot_filesystem.aio(
                     timeout=self._checkpoint_timeout_seconds,
                     ttl=self._checkpoint_ttl_seconds,
                 )
             except Exception as exc:
-                await self._emit_event(
+                await self._emit_event_best_effort(
                     SandboxEventType.CHECKPOINT_FAILED,
                     message=type(exc).__name__,
                 )
@@ -264,7 +273,7 @@ class ModalSandboxSession:
                     else None
                 ),
             )
-            await self._emit_event(
+            await self._emit_event_best_effort(
                 SandboxEventType.CHECKPOINT_FINISHED,
                 checkpoint_uri=checkpoint.uri,
             )
@@ -274,10 +283,7 @@ class ModalSandboxSession:
         async with self._lock:
             if self._status is SandboxStatus.CLOSED:
                 return
-            try:
-                await self._emit_event(SandboxEventType.CLOSING)
-            except Exception:
-                pass
+            await self._emit_event_best_effort(SandboxEventType.CLOSING)
             resources = tuple(self._close_resources.items())
             results = await asyncio.gather(
                 *(self._terminate(resource) for _label, resource in resources),
@@ -387,7 +393,29 @@ class ModalSandboxSession:
     async def _heartbeat(self) -> None:
         while True:
             await asyncio.sleep(self._heartbeat_seconds)
-            await self._emit_event(SandboxEventType.HEARTBEAT)
+            await self._emit_event_best_effort(SandboxEventType.HEARTBEAT)
+
+    async def _emit_event_best_effort(
+        self,
+        event_type: SandboxEventType,
+        *,
+        operation: str = "",
+        returncode: int | None = None,
+        checkpoint_uri: str = "",
+        message: str = "",
+    ) -> None:
+        """Emit non-authoritative live observation without changing provider outcomes."""
+
+        try:
+            await self._emit_event(
+                event_type,
+                operation=operation,
+                returncode=returncode,
+                checkpoint_uri=checkpoint_uri,
+                message=message,
+            )
+        except Exception:
+            pass
 
     async def _emit_event(
         self,
