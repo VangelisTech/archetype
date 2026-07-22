@@ -368,6 +368,15 @@ class MissionService:
                     ticks_completed=int(info.tick),
                 )
 
+        # Checkpoint evidence is best effort and does not consume the caller's
+        # mission-tick budget. Do not silently discard a post-dispatch
+        # checkpoint just because the task has not reached a terminal state.
+        for _remaining_commits, candidate in pending_checkpoints:
+            await self._stage_checkpoint(candidate)
+            checkpoint_commit_pending = True
+        if checkpoint_commit_pending:
+            await self._world.step()
+
         status = current_mission_status(self._view, mission.mission_id)
         raise RuntimeError(
             f"mission {mission.mission_id} did not terminate after {limit} ticks "

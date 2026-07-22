@@ -410,8 +410,11 @@ class _LifecycleSandbox:
             async def aio(*argv, **kwargs):
                 del kwargs
                 owner.commands.append(tuple(argv))
-                if argv[:2] == ("rm", "-f"):
-                    owner.filesystem.values.pop(str(argv[2]), None)
+                if argv[:2] in {("rm", "-f"), ("rm", "-rf")}:
+                    target = str(argv[2])
+                    for path in tuple(owner.filesystem.values):
+                        if path == target or path.startswith(f"{target}/"):
+                            owner.filesystem.values.pop(path)
                 elif argv[:2] == ("mv", "-f"):
                     value = owner.filesystem.values.pop(str(argv[2]))
                     owner.filesystem.values[str(argv[3])] = value
@@ -564,12 +567,13 @@ async def test_modal_checkpoint_failure_invalid_identity_and_close_failures(
 
 
 @pytest.mark.asyncio
-async def test_modal_oauth_persistence_failure_still_removes_mission_credential(
+async def test_modal_oauth_persistence_failure_still_removes_all_codex_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     payload = '{"access_token":"credential-canary"}'
     sandbox = _LifecycleSandbox("sb-agent")
     sandbox.filesystem.values["/root/.codex/auth.json"] = payload
+    sandbox.filesystem.values["/root/.codex/sessions/history.jsonl"] = "sensitive transcript"
     session = _lifecycle_session(sandbox)
 
     async def auth_failure(*arguments: str) -> ProcessResult:
@@ -578,7 +582,8 @@ async def test_modal_oauth_persistence_failure_still_removes_mission_credential(
     monkeypatch.setattr(session, "_auth_checked", auth_failure)
     with pytest.raises(RuntimeError, match="cannot persist"):
         await session._persist_and_remove_oauth()
-    assert any(command[:2] == ("rm", "-f") for command in sandbox.commands)
+    assert ("rm", "-rf", "/root/.codex") in sandbox.commands
+    assert not any(path.startswith("/root/.codex/") for path in sandbox.filesystem.values)
 
     for value, error in (("not-json", "valid JSON"), ("[]", "non-empty"), ("{}", "non-empty")):
         with pytest.raises(RuntimeError, match=error):

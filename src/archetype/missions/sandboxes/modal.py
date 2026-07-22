@@ -311,9 +311,7 @@ class ModalSandboxSession:
         except BaseException as exc:
             persistence_error = exc
         finally:
-            await self._checked(
-                ProcessRequest(("rm", "-f", _MISSION_AUTH_PATH), timeout_seconds=60)
-            )
+            await self._checked(ProcessRequest(("rm", "-rf", _CODEX_HOME), timeout_seconds=60))
         if persistence_error is not None:
             raise persistence_error
 

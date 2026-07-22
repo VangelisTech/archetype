@@ -562,6 +562,50 @@ async def test_terminal_mission_flushes_checkpoint_outside_the_tick_budget(
 
 
 @pytest.mark.asyncio
+async def test_tick_budget_exhaustion_flushes_pending_checkpoint(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    backend = _CheckpointBackend(fail=False)
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "exhausted-checkpoint-budget",
+            config=AgentMissionConfig(
+                sandbox_backend=backend,
+                sandbox_environment="local-checkpoint-test",
+                driver=_SecretOutputDriver(workspace),
+                workspace=str(workspace),
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "exhausted_checkpoint_budget"),
+                namespace="contract",
+            ),
+        ) as missions:
+            submitted = await missions.submit(
+                repository=str(remote),
+                branch="agent/exhausted-checkpoint-budget",
+                tasks=(
+                    AgentTask(
+                        "implementation",
+                        "Create feature.txt, but remain nonterminal.",
+                        (CommandValidator("never-valid", ("false",)),),
+                        max_dispatches=2,
+                    ),
+                ),
+            )
+
+            with pytest.raises(RuntimeError, match="did not terminate after 2 ticks"):
+                await missions.run(submitted, max_ticks=2)
+
+            assert backend.session is not None
+            assert backend.session.checkpoints == 1
+            checkpoint_rows = latest(await missions.query(Checkpoint)).to_pylist()
+            assert len(checkpoint_rows) == 1
+
+
+@pytest.mark.asyncio
 async def test_explicit_restore_rehydrates_before_work_without_automatic_supervision(
     tmp_path: Path,
 ) -> None:
