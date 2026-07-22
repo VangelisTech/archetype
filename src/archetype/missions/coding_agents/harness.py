@@ -100,6 +100,7 @@ class CodexDriver:
             stdout=result.stdout,
             stderr=result.stderr,
             session_id=self._session_id(result.stdout) or request.previous_agent_session_id,
+            trace_uri=result.trace_uri,
         )
 
     @staticmethod
@@ -230,6 +231,7 @@ class CodingAgentHarness:
                 final_revision=final_revision,
                 agent_stdout=agent.stdout,
                 agent_stderr=agent.stderr,
+                trace_uri=agent.trace_uri,
                 validation=validation,
                 commits=commits,
                 friction=tuple(friction),
@@ -251,6 +253,7 @@ class CodingAgentHarness:
                 final_revision=final_revision,
                 agent_stdout=agent.stdout,
                 agent_stderr=agent.stderr,
+                trace_uri=agent.trace_uri,
                 validation=validation,
                 commits=commits,
                 friction=tuple(friction),

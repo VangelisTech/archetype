@@ -415,9 +415,14 @@ class _LifecycleSandbox:
                         for path in tuple(owner.filesystem.values):
                             if path == target or path.startswith(f"{target}/"):
                                 owner.filesystem.values.pop(path)
+                elif argv[:2] == ("cp", "--"):
+                    owner.filesystem.values[str(argv[3])] = owner.filesystem.values[str(argv[2])]
                 elif argv[:2] == ("mv", "-f"):
                     value = owner.filesystem.values.pop(str(argv[2]))
                     owner.filesystem.values[str(argv[3])] = value
+                elif argv[:1] == ("bash",) and len(argv) > 7:
+                    owner.filesystem.values[str(argv[6])] = "out"
+                    owner.filesystem.values[str(argv[7])] = "err"
                 return _Process()
 
         return _Exec()
@@ -469,6 +474,25 @@ async def test_modal_agent_exec_persists_oauth_and_durable_events() -> None:
     assert "/root/.codex/auth.json" not in sandbox.filesystem.values
     assert auth.filesystem.values["/auth/auth.json"] == payload
     assert any(command[0] == "bash" for command in sandbox.commands)
+    assert result.trace_uri.startswith("modal-sandbox://sb-agent/")
+    trace_path = result.trace_uri.removeprefix("modal-sandbox://sb-agent")
+    assert "/executions/" in trace_path
+    assert sandbox.filesystem.values[trace_path] == "out"
+
+
+@pytest.mark.asyncio
+async def test_modal_agent_trace_is_scoped_to_one_process_invocation() -> None:
+    sandbox = _LifecycleSandbox("sb-agent")
+    session = _lifecycle_session(sandbox)
+
+    first = await session.exec(ProcessRequest(("codex", "exec", "first"), close_stdin=True))
+    second = await session.exec(ProcessRequest(("codex", "exec", "second"), close_stdin=True))
+
+    assert first.trace_uri and second.trace_uri
+    assert first.trace_uri != second.trace_uri
+    for trace_uri in (first.trace_uri, second.trace_uri):
+        trace_path = trace_uri.removeprefix("modal-sandbox://sb-agent")
+        assert sandbox.filesystem.values[trace_path] == "out"
 
 
 @pytest.mark.asyncio
@@ -503,6 +527,32 @@ async def test_modal_agent_outcome_survives_live_observation_failures(
     assert result.stdout == "completed"
     assert executed == 1
     assert executed_argv == ("codex", "exec")
+    assert result.trace_uri == ""
+    assert await session.status() is SandboxStatus.READY
+
+
+@pytest.mark.asyncio
+async def test_modal_agent_outcome_survives_execution_trace_capture_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _lifecycle_session(_LifecycleSandbox("sb-agent"))
+
+    async def execute(_sandbox, request: ProcessRequest, **kwargs) -> ProcessResult:
+        del _sandbox, kwargs
+        return ProcessResult(
+            request.argv,
+            7 if request.argv[:2] == ("cp", "--") else 0,
+            stdout="completed",
+            stderr="capture unavailable",
+        )
+
+    monkeypatch.setattr(session, "_exec_on", execute)
+
+    result = await session.exec(ProcessRequest(("codex", "exec"), close_stdin=True))
+
+    assert result.returncode == 0
+    assert result.stdout == "completed"
+    assert result.trace_uri == ""
     assert await session.status() is SandboxStatus.READY
 
 
@@ -529,8 +579,11 @@ async def test_modal_checkpoint_outcome_survives_live_observation_failures(
 async def test_modal_checkpoint_scrubs_raw_live_output_before_snapshot() -> None:
     sandbox = _LifecycleSandbox("sb-agent")
     paths = ModalSandboxSession.live_observation_paths()
+    captured = ModalSandboxSession.live_observation_paths("dispatch-one")
     sandbox.filesystem.values[paths["stdout"]] = "stdout credential canary"
     sandbox.filesystem.values[paths["stderr"]] = "stderr credential canary"
+    sandbox.filesystem.values[captured["stdout"]] = "captured stdout credential canary"
+    sandbox.filesystem.values[captured["stderr"]] = "captured stderr credential canary"
     sandbox.filesystem.values[paths["events"]] = "safe structured event\n"
 
     class _Snapshot:
@@ -538,6 +591,8 @@ async def test_modal_checkpoint_scrubs_raw_live_output_before_snapshot() -> None
             del kwargs
             assert paths["stdout"] not in sandbox.filesystem.values
             assert paths["stderr"] not in sandbox.filesystem.values
+            assert captured["stdout"] not in sandbox.filesystem.values
+            assert captured["stderr"] not in sandbox.filesystem.values
             assert paths["events"] in sandbox.filesystem.values
             return type("Image", (), {"object_id": "im-scrubbed"})()
 
@@ -547,9 +602,10 @@ async def test_modal_checkpoint_scrubs_raw_live_output_before_snapshot() -> None
     assert checkpoint.uri == "modal-image://im-scrubbed"
     assert (
         "rm",
-        "-f",
+        "-rf",
         paths["stdout"],
         paths["stderr"],
+        f"{paths['directory']}/executions",
     ) in sandbox.commands
 
 
@@ -572,7 +628,7 @@ async def test_modal_checkpoint_fails_closed_when_live_output_scrub_fails(
         del _sandbox, kwargs
         return ProcessResult(
             request.argv,
-            7 if request.argv[:2] == ("rm", "-f") else 0,
+            7 if request.argv[:2] == ("rm", "-rf") else 0,
             stderr="scrub failed",
         )
 

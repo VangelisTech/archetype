@@ -172,6 +172,8 @@ def test_sandbox_value_contracts_reject_ambiguous_or_unrecoverable_inputs() -> N
             CheckpointRef(*args, **kwargs)
     with pytest.raises(ValueError, match="artifact root"):
         live_observation_paths("relative")
+    with pytest.raises(ValueError, match="trace identity"):
+        live_observation_paths(trace_id="../another-process")
 
 
 def test_checkpoint_validation_requires_complete_same_provider_lineage() -> None:

@@ -400,8 +400,12 @@ the session-owned `/tmp/archetype-agent-missions/live/` spool, outside the
 target repository. `on_sandbox_event` receives bounded `SandboxEvent` values
 and exposes the provider identity as soon as acquisition completes, while
 `ModalSandboxSession.monitor("sb-...")` can attach from another process with
-byte-offset reads and bounded disconnect recovery. The authoritative ECS copy
-of execution and validator output is bounded and redacted before persistence.
+byte-offset reads and bounded disconnect recovery. Each successfully captured
+agent invocation is also copied to an execution-scoped spool path; only that
+per-call success returns the `trace_uri` persisted on `AgentExecution`. A
+failed best-effort trace setup leaves `trace_uri` empty instead of advertising
+a missing or stale file. The authoritative ECS copy of execution and validator
+output is bounded and redacted before persistence.
 Provider-native snapshots are recovery objects, not portable or sanitized
 artifact bundles. The consolidated `ArtifactService` accepts explicit file
 sources, but V1 intentionally does not crawl or publish arbitrary sandbox

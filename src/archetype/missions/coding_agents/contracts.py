@@ -80,6 +80,7 @@ class AgentProcessObservation:
     stdout: str = ""
     stderr: str = ""
     session_id: str = ""
+    trace_uri: str = ""
 
 
 @dataclass(frozen=True)

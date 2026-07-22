@@ -104,10 +104,18 @@ class _LocalSession:
 
 
 class _EditingDriver:
-    def __init__(self, workspace: Path, *, commit: bool, returncode: int = 0) -> None:
+    def __init__(
+        self,
+        workspace: Path,
+        *,
+        commit: bool,
+        returncode: int = 0,
+        trace_uri: str = "",
+    ) -> None:
         self.workspace = workspace
         self.commit = commit
         self.returncode = returncode
+        self.trace_uri = trace_uri
 
     async def run(self, session, request, prompt: str) -> AgentProcessObservation:
         command = "printf 'done\\n' > feature.txt"
@@ -124,6 +132,7 @@ class _EditingDriver:
             result.stdout,
             result.stderr or ("agent failed after editing" if self.returncode else ""),
             session_id="agent-session",
+            trace_uri=self.trace_uri,
         )
 
 
@@ -157,7 +166,11 @@ async def test_harness_preserves_agent_commits_and_publishes_the_validated_tree(
     remote = _remote(tmp_path)
     workspace = tmp_path / "sandbox" / "repo"
     harness = CodingAgentHarness(
-        _EditingDriver(workspace, commit=agent_commits),
+        _EditingDriver(
+            workspace,
+            commit=agent_commits,
+            trace_uri="local-sandbox://local-contract/traces/dispatch-1",
+        ),
         CodingAgentHarnessConfig(workspace=str(workspace)),
     )
     result = await harness.execute(
@@ -172,6 +185,7 @@ async def test_harness_preserves_agent_commits_and_publishes_the_validated_tree(
     assert result.commits[-1].sha == result.final_revision
     assert result.commits[-1].pushed is True
     assert result.commits[-1].final_revision is True
+    assert result.trace_uri == "local-sandbox://local-contract/traces/dispatch-1"
     assert [commit.message for commit in result.commits] == [
         "agent-authored change" if agent_commits else "implementation: Create feature.txt."
     ]

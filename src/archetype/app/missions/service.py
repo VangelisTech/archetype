@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -75,7 +75,6 @@ from archetype.missions.sandboxes import (
     SandboxSpec,
     SandboxStatus,
     SandboxTeardownError,
-    live_observation_paths,
 )
 from archetype.missions.transitions import AgentExecutionStatus, MissionStatus
 
@@ -438,15 +437,6 @@ class MissionService:
                     operation="coding-agent",
                     returncode=result.agent_returncode,
                 )
-                if session.capabilities.live_output:
-                    trace_path = live_observation_paths(session.capabilities.observation_directory)[
-                        "stdout"
-                    ]
-                    trace_uri = (
-                        f"{result.sandbox.provider}-sandbox://"
-                        f"{result.sandbox.sandbox_id}{trace_path}"
-                    )
-                    result = replace(result, trace_uri=trace_uri)
             except Exception as exc:
                 sandbox_status = SandboxStatus.ERRORED
                 result = AgentExecutionResult(

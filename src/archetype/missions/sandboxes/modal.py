@@ -15,6 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
+from uuid import uuid4
 
 from archetype.missions.sandboxes._image import (
     BASE_IMAGE_REF,
@@ -162,6 +163,7 @@ class ModalSandboxSession:
             heartbeat: asyncio.Task[None] | None = None
             oauth_staged = False
             operation_error: BaseException | None = None
+            trace_uri = ""
             try:
                 if uses_oauth:
                     await self._stage_oauth()
@@ -171,6 +173,7 @@ class ModalSandboxSession:
                     live_directory_ready = False
                     try:
                         await self._ensure_live_directory()
+                        await self._clear_live_output()
                         live_directory_ready = True
                     except Exception:
                         pass
@@ -194,6 +197,8 @@ class ModalSandboxSession:
                         operation=request.argv[0],
                         returncode=result.returncode,
                     )
+                    if live_directory_ready:
+                        trace_uri = await self._capture_live_output_best_effort(uuid4().hex)
             except asyncio.CancelledError as exc:
                 operation_error = exc
                 self._status = SandboxStatus.INTERRUPTED
@@ -222,6 +227,7 @@ class ModalSandboxSession:
                 returncode=result.returncode,
                 stdout=result.stdout,
                 stderr=result.stderr,
+                trace_uri=trace_uri,
             )
 
     async def checkpoint(self) -> CheckpointRef:
@@ -353,11 +359,11 @@ class ModalSandboxSession:
         await self._checked(ProcessRequest(("rm", "-rf", _CODEX_HOME), timeout_seconds=60))
 
     @classmethod
-    def live_observation_paths(cls) -> dict[str, str]:
-        return live_observation_paths()
+    def live_observation_paths(cls, trace_id: str = "") -> dict[str, str]:
+        return live_observation_paths(trace_id=trace_id)
 
-    def _live_observation_paths(self) -> dict[str, str]:
-        return live_observation_paths(self.capabilities.observation_directory)
+    def _live_observation_paths(self, trace_id: str = "") -> dict[str, str]:
+        return live_observation_paths(self.capabilities.observation_directory, trace_id)
 
     async def _ensure_live_directory(self) -> None:
         paths = self._live_observation_paths()
@@ -372,11 +378,47 @@ class ModalSandboxSession:
         result = await self._exec_on(
             self._sandbox,
             ProcessRequest(
-                ("rm", "-f", paths["stdout"], paths["stderr"]),
+                (
+                    "rm",
+                    "-rf",
+                    paths["stdout"],
+                    paths["stderr"],
+                    f"{paths['directory']}/executions",
+                ),
                 timeout_seconds=60,
             ),
         )
         self._raise(result, "remove raw live output before checkpoint")
+
+    async def _clear_live_output(self) -> None:
+        paths = self._live_observation_paths()
+        result = await self._exec_on(
+            self._sandbox,
+            ProcessRequest(("rm", "-f", paths["stdout"], paths["stderr"]), timeout_seconds=60),
+        )
+        self._raise(result, "clear stale live output before process")
+
+    async def _capture_live_output_best_effort(self, trace_id: str) -> str:
+        try:
+            current = self._live_observation_paths()
+            captured = self._live_observation_paths(trace_id)
+            mkdir = await self._exec_on(
+                self._sandbox,
+                ProcessRequest(("mkdir", "-p", captured["trace_directory"]), timeout_seconds=60),
+            )
+            self._raise(mkdir, "create execution trace directory")
+            for stream in ("stdout", "stderr"):
+                copied = await self._exec_on(
+                    self._sandbox,
+                    ProcessRequest(
+                        ("cp", "--", current[stream], captured[stream]),
+                        timeout_seconds=60,
+                    ),
+                )
+                self._raise(copied, f"capture execution {stream}")
+            return f"modal-sandbox://{self.identity.sandbox_id}{captured['stdout']}"
+        except Exception:
+            return ""
 
     def _trace_request(self, request: ProcessRequest) -> ProcessRequest:
         paths = self._live_observation_paths()

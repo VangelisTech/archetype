@@ -210,6 +210,7 @@ class ProcessResult:
     returncode: int
     stdout: str = ""
     stderr: str = ""
+    trace_uri: str = ""
 
 
 @dataclass(frozen=True)
@@ -273,6 +274,7 @@ def validate_checkpoint_for_spec(
 
 def live_observation_paths(
     root: str = "/tmp/archetype-agent-missions/live",
+    trace_id: str = "",
 ) -> dict[str, str]:
     """Return session-owned observation paths outside the target repository."""
 
@@ -280,12 +282,16 @@ def live_observation_paths(
     if not root_path.is_absolute() or str(root_path) in {"/", "."}:
         raise ValueError("live artifact root must be a non-root absolute path")
     directory = str(root_path).rstrip("/")
+    if trace_id and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", trace_id):
+        raise ValueError("live trace identity contains unsupported characters")
+    trace_directory = f"{directory}/executions/{trace_id}" if trace_id else directory
     return {
         "directory": directory,
+        "trace_directory": trace_directory,
         "status": f"{directory}/session.json",
         "events": f"{directory}/events.jsonl",
-        "stdout": f"{directory}/agent.stdout.log",
-        "stderr": f"{directory}/agent.stderr.log",
+        "stdout": f"{trace_directory}/agent.stdout.log",
+        "stderr": f"{trace_directory}/agent.stderr.log",
     }
 
 
