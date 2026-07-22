@@ -11,6 +11,186 @@
 # @daft.method.batch or @daft.func.batch function: Daft already owns execution.
 
 [[entries]]
+path = "tests/aio/test_async_processor.py"
+line = 44
+method = "collect"
+boundary_kind = "test-assertion"
+owner = "tests/aio"
+rationale = "Focused processor assertion executes the returned DataFrame so concrete values can be compared by the repository harness."
+
+[[entries]]
+path = "tests/aio/test_async_processor.py"
+line = 44
+method = "to_pylist"
+boundary_kind = "test-assertion"
+owner = "tests/aio"
+rationale = "Focused processor assertion converts the collected result to concrete rows for comparison by the repository harness."
+
+[[entries]]
+path = "tests/experiments/test_tragedy_of_the_commons.py"
+line = 48
+method = "collect"
+boundary_kind = "test-assertion"
+owner = "tests/experiments"
+rationale = "Example regression assertion executes the processor result so the repository harness can verify its concrete energy value."
+
+[[entries]]
+path = "tests/experiments/test_tragedy_of_the_commons.py"
+line = 48
+method = "to_pylist"
+boundary_kind = "test-assertion"
+owner = "tests/experiments"
+rationale = "Example regression assertion converts the collected processor result to a concrete row for exact comparison."
+
+[[entries]]
+path = "tests/integration/test_pr_triage_example.py"
+line = 42
+method = "collect"
+boundary_kind = "test-assertion"
+owner = "tests/integration"
+rationale = "Integration assertion executes the returned example DataFrame so triage actions can be compared concretely."
+
+[[entries]]
+path = "tests/integration/test_pr_triage_example.py"
+line = 42
+method = "to_pylist"
+boundary_kind = "test-assertion"
+owner = "tests/integration"
+rationale = "Integration assertion converts the collected example result to concrete rows for exact action comparison."
+
+[[entries]]
+path = "tests/missions/planning/test_htn_contract.py"
+line = 177
+method = "collect"
+boundary_kind = "test-assertion"
+owner = "tests/missions/planning"
+rationale = "HTN contract assertion executes the processor result so the repository harness can inspect the concrete planned row."
+
+[[entries]]
+path = "tests/missions/planning/test_htn_contract.py"
+line = 177
+method = "to_pylist"
+boundary_kind = "test-assertion"
+owner = "tests/missions/planning"
+rationale = "HTN contract assertion converts the collected processor result to one concrete row for contract comparison."
+
+[[entries]]
+path = "src/archetype/app/artifacts/service.py"
+line = 103
+method = "to_pydict"
+boundary_kind = "control-flow-extract"
+owner = "src/archetype/app/artifacts"
+rationale = "Bounded discovery extract: StorageService has materialized the source scan before validation and empty-result routing require concrete column values."
+
+[[entries]]
+path = "src/archetype/app/artifacts/service.py"
+line = 119
+method = "to_pydict"
+boundary_kind = "control-flow-extract"
+owner = "src/archetype/app/artifacts"
+rationale = "Bounded stored-artifact extract: StorageService has materialized persisted rows before media-family and logical-path values route specialized indexing."
+
+[[entries]]
+path = "src/archetype/app/evaluation/service.py"
+line = 404
+method = "to_pydict"
+boundary_kind = "control-flow-extract"
+owner = "src/archetype/app/evaluation"
+rationale = "Single-receipt extract: StorageService materializes the limited result before concrete fields reconstruct the typed evaluation receipt."
+
+[[entries]]
+path = "src/archetype/app/storage/service.py"
+line = 468
+method = "count_rows"
+boundary_kind = "storage-execution"
+owner = "src/archetype/app/storage"
+rationale = "Already-frozen append payload count controls whether the central storage boundary performs an Iceberg commit."
+
+[[entries]]
+path = "src/archetype/app/storage/service.py"
+line = 471
+method = "write_iceberg"
+boundary_kind = "storage-commit"
+owner = "src/archetype/app/storage"
+rationale = "Central storage commit publishes the frozen payload through the owned Iceberg write boundary."
+
+[[entries]]
+path = "src/archetype/app/storage/service.py"
+line = 520
+method = "count_rows"
+boundary_kind = "storage-execution"
+owner = "src/archetype/app/storage"
+rationale = "Already-frozen candidate count supports duplicate-key validation without rebuilding the producer graph."
+
+[[entries]]
+path = "src/archetype/app/storage/service.py"
+line = 525
+method = "count_rows"
+boundary_kind = "storage-execution"
+owner = "src/archetype/app/storage"
+rationale = "Bounded null-key existence check enters storage validation control flow before conditional append."
+
+[[entries]]
+path = "src/archetype/app/storage/service.py"
+line = 534
+method = "count_rows"
+boundary_kind = "storage-execution"
+owner = "src/archetype/app/storage"
+rationale = "Distinct-key count enters storage validation control flow to reject ambiguous conditional append batches."
+
+[[entries]]
+path = "src/archetype/app/storage/service.py"
+line = 547
+method = "count_rows"
+boundary_kind = "storage-execution"
+owner = "src/archetype/app/storage"
+rationale = "Materialized anti-join count controls whether the optimistic append retry has rows to publish."
+
+[[entries]]
+path = "src/archetype/app/storage/service.py"
+line = 556
+method = "write_iceberg"
+boundary_kind = "storage-commit"
+owner = "src/archetype/app/storage"
+rationale = "Central conditional storage commit publishes the conflict-checked pending payload through Iceberg."
+
+[[entries]]
+path = "src/archetype/core/aio/async_system.py"
+line = 106
+method = "count_rows"
+boundary_kind = "legacy"
+owner = "src/archetype/core/aio"
+rationale = "Debug-only processor row count is an existing core diagnostic execution boundary retained pending issue #530."
+removal_issue = "#530"
+
+[[entries]]
+path = "src/archetype/core/aio/async_world.py"
+line = 994
+method = "count_rows"
+boundary_kind = "legacy"
+owner = "src/archetype/core/aio"
+rationale = "Debug-only post-tick live-row count is an existing core diagnostic execution boundary retained pending issue #530."
+removal_issue = "#530"
+
+[[entries]]
+path = "src/archetype/core/sync/querier.py"
+line = 79
+method = "count_rows"
+boundary_kind = "legacy"
+owner = "src/archetype/core/sync"
+rationale = "Debug-only query row count is an existing core diagnostic execution boundary retained pending issue #530."
+removal_issue = "#530"
+
+[[entries]]
+path = "src/archetype/core/sync/querier.py"
+line = 81
+method = "show"
+boundary_kind = "legacy"
+owner = "src/archetype/core/sync"
+rationale = "Debug-only query display is an existing core diagnostic execution boundary retained pending issue #530."
+removal_issue = "#530"
+
+[[entries]]
 path = "src/archetype/api/models.py"
 line = 33
 method = "collect"

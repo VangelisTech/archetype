@@ -87,6 +87,8 @@ class TerminalRegistry:
     unproven_methods: frozenset[str]
     module_functions: frozenset[str]
     typed_methods: dict[str, frozenset[str]]
+    dataframe_container_attributes: frozenset[str]
+    dataframe_return_methods: frozenset[str]
 
 
 def _load_registry() -> TerminalRegistry:
@@ -107,6 +109,12 @@ def _load_registry() -> TerminalRegistry:
         unproven_methods=frozenset(dataframe["unproven_methods"]),
         module_functions=frozenset(data["module"]["functions"]),
         typed_methods=typed_methods,
+        dataframe_container_attributes=frozenset(
+            data.get("provenance", {}).get("dataframe_container_attributes", ())
+        ),
+        dataframe_return_methods=frozenset(
+            data.get("provenance", {}).get("dataframe_return_methods", ())
+        ),
     )
 
 
@@ -378,6 +386,7 @@ class _FlowAnalyzer(ast.NodeVisitor):
         self.class_attrs: dict[tuple[str, str], str] = {}
         self.local_types: set[str] = set()
         self.return_types: dict[str, str] = {}
+        self.method_return_types: dict[tuple[str, str], str] = {}
         self.sites: list[Site] = []
         self.seen: set[tuple[int, str]] = set()
 
@@ -393,6 +402,15 @@ class _FlowAnalyzer(ast.NodeVisitor):
             if right in proven:
                 return right
             return left or right
+        if isinstance(node, ast.Subscript):
+            element_type = self._annotation(node.slice)
+            if element_type in _REGISTRY.dataframe_types:
+                return f"container:{element_type}"
+            for child in ast.walk(node.slice):
+                if isinstance(child, ast.expr):
+                    element_type = self._annotation(child)
+                    if element_type in _REGISTRY.dataframe_types:
+                        return f"container:{element_type}"
         return _qualified_name(node, self.imports)
 
     def _type(self, node: ast.expr) -> str | None:
@@ -407,6 +425,9 @@ class _FlowAnalyzer(ast.NodeVisitor):
                 return self.class_attrs.get((self.class_name, node.attr))
             owner = self._type(node.value)
             if owner and owner.startswith("class:"):
+                qualified_attribute = f"{owner.removeprefix('class:')}.{node.attr}"
+                if qualified_attribute in _REGISTRY.dataframe_container_attributes:
+                    return "container:daft.DataFrame"
                 return self.class_attrs.get((owner.removeprefix("class:"), node.attr))
             return owner
         if isinstance(node, ast.Call):
@@ -419,6 +440,37 @@ class _FlowAnalyzer(ast.NodeVisitor):
                 return called
             if isinstance(node.func, ast.Attribute):
                 owner = self._type(node.func.value)
+                if owner and owner.startswith("class:"):
+                    qualified_method = f"{owner.removeprefix('class:')}.{node.func.attr}"
+                    if qualified_method in _REGISTRY.dataframe_return_methods:
+                        return "daft.DataFrame"
+                    returned = self.method_return_types.get(
+                        (owner.removeprefix("class:"), node.func.attr)
+                    )
+                    if returned:
+                        return returned
+                if node.func.attr == "values" and owner and owner.startswith("container:"):
+                    return owner.removeprefix("container:")
+                # The blocking adapter returns the result of the bound method
+                # supplied as its first argument.  Preserve provenance only
+                # when that callable's receiver is already proven.
+                if node.func.attr == "_blocking" and node.args:
+                    bound = node.args[0]
+                    if isinstance(bound, ast.Attribute):
+                        bound_owner = self._type(bound.value)
+                        if bound_owner in _REGISTRY.dataframe_types:
+                            return bound_owner
+                if node.func.attr == "materialize" and node.args:
+                    frame_type = self._type(node.args[0])
+                    if frame_type in _REGISTRY.dataframe_types:
+                        return frame_type
+                # Processor contracts transform and return the proven frame
+                # passed as their first argument.  This is argument-backed
+                # provenance, not a global inference from the method name.
+                if node.func.attr == "process" and node.args:
+                    frame_type = self._type(node.args[0])
+                    if frame_type in _REGISTRY.dataframe_types:
+                        return frame_type
                 if node.func.attr == "get_table" and owner in {
                     "daft.catalog.Catalog",
                     "daft.Session",
@@ -467,6 +519,13 @@ class _FlowAnalyzer(ast.NodeVisitor):
                         field_type = self._annotation(member.annotation)
                         if field_type:
                             self.class_attrs[(statement.name, member.target.id)] = field_type
+                    elif isinstance(member, ast.FunctionDef | ast.AsyncFunctionDef):
+                        returned = self._annotation(member.returns)
+                        if (
+                            returned in _REGISTRY.dataframe_types
+                            or returned in _REGISTRY.typed_methods
+                        ):
+                            self.method_return_types[(statement.name, member.name)] = returned
         for statement in node.body:
             if not isinstance(statement, ast.Import | ast.ImportFrom):
                 self.visit(statement)
@@ -528,8 +587,18 @@ class _FlowAnalyzer(ast.NodeVisitor):
                 self.env[arg.arg] = annotation
             elif annotation in self.local_types:
                 self.env[arg.arg] = f"class:{annotation}"
+            elif annotation and any(
+                fact.startswith(f"{annotation}.")
+                for fact in (
+                    *_REGISTRY.dataframe_container_attributes,
+                    *_REGISTRY.dataframe_return_methods,
+                )
+            ):
+                self.env[arg.arg] = f"class:{annotation}"
             elif annotation and annotation.split(".", 1)[0] in {"lancedb", "pyarrow"}:
                 self.env[arg.arg] = "foreign"
+        if self.class_name and node.args.args and node.args.args[0].arg in {"self", "cls"}:
+            self.env[node.args.args[0].arg] = f"class:{self.class_name}"
         for statement in node.body:
             self.visit(statement)
         self.env = outer
@@ -596,6 +665,22 @@ class _FlowAnalyzer(ast.NodeVisitor):
             self._check(node.iter, node.iter, "__iter__")
         for condition in node.ifs:
             self.visit(condition)
+
+    def _visit_comp(self, node: ast.GeneratorExp | ast.ListComp | ast.SetComp) -> None:
+        outer = self.env.copy()
+        for generator in node.generators:
+            self.visit(generator.iter)
+            if not isinstance(generator.iter, ast.Call):
+                self._check(generator.iter, generator.iter, "__iter__")
+            self._assign(generator.target, self._type(generator.iter))
+            for condition in generator.ifs:
+                self.visit(condition)
+        self.visit(node.elt)
+        self.env = outer
+
+    visit_GeneratorExp = _visit_comp
+    visit_ListComp = _visit_comp
+    visit_SetComp = _visit_comp
 
 
 def _scan_file(path: Path, rel: str) -> list[Site]:

@@ -44,6 +44,14 @@ methods = [
 [module]
 functions = ["daft.write_table"]
 
+[provenance]
+# Typed containers whose values are DataFrames.  Keep this list contract-based;
+# it is receiver provenance, not permission to match terminal spellings globally.
+dataframe_container_attributes = ["archetype.core.hooks.PostTick.results"]
+dataframe_return_methods = [
+  "archetype.app.storage.interfaces.iStorageService.materialize",
+]
+
 [catalog_table]
 types = ["daft.catalog.Table"]
 methods = ["append", "overwrite", "write"]
