@@ -514,6 +514,49 @@ async def test_checkpoint_is_queryable_but_never_gates_a_valid_task(
 
 
 @pytest.mark.asyncio
+async def test_terminal_mission_flushes_checkpoint_outside_the_tick_budget(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    backend = _CheckpointBackend(fail=False)
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "terminal-checkpoint-budget",
+            config=AgentMissionConfig(
+                sandbox_backend=backend,
+                sandbox_environment="local-checkpoint-test",
+                driver=_SecretOutputDriver(workspace),
+                workspace=str(workspace),
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "terminal_checkpoint_budget"),
+                namespace="contract",
+            ),
+        ) as missions:
+            submitted = await missions.submit(
+                repository=str(remote),
+                branch="agent/terminal-checkpoint-budget",
+                tasks=(
+                    AgentTask(
+                        "implementation",
+                        "Create feature.txt.",
+                        (CommandValidator("focused", ("test", "-f", "feature.txt")),),
+                    ),
+                ),
+            )
+
+            result = await missions.run(submitted, max_ticks=5)
+
+            assert result.status == "succeeded"
+            assert backend.session is not None
+            assert backend.session.checkpoints == 1
+            checkpoint_rows = latest(await missions.query(Checkpoint)).to_pylist()
+            assert len(checkpoint_rows) == 1
+
+
+@pytest.mark.asyncio
 async def test_explicit_restore_rehydrates_before_work_without_automatic_supervision(
     tmp_path: Path,
 ) -> None:

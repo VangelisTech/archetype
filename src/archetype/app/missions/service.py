@@ -335,11 +335,16 @@ class MissionService:
                     )
 
             status = current_mission_status(self._view, mission.mission_id)
-            if (
-                status in {MissionStatus.SUCCEEDED, MissionStatus.FAILED}
-                and not pending_checkpoints
-                and not checkpoint_commit_pending
-            ):
+            if status in {MissionStatus.SUCCEEDED, MissionStatus.FAILED}:
+                # A terminal task decision is authoritative. Any checkpoint
+                # still waiting on that decision can now be attempted without
+                # consuming more of the caller's simulation-tick budget.
+                for _remaining_commits, candidate in pending_checkpoints:
+                    await self._stage_checkpoint(candidate)
+                    checkpoint_commit_pending = True
+                pending_checkpoints.clear()
+                if checkpoint_commit_pending:
+                    await self._world.step()
                 await self._close_mission_sandbox(mission.mission_id)
                 await self._world.step()
                 info = await self._world.info()
