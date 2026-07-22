@@ -67,9 +67,43 @@ from pathlib import Path
 
 ROOTS: tuple[str, ...] = ("src",)
 ALLOWLIST_FILENAME = "lazy_audit.toml"
+REGISTRY_RELATIVE = "quality/daft_lazy_terminals.toml"
 SELF_RELATIVE = "scripts/check_lazy_audit.py"
 
-_MATERIALIZATION_METHODS = frozenset({"collect", "to_pylist"})
+
+@dataclass(frozen=True)
+class TerminalRegistry:
+    daft_version: str
+    dataframe_types: frozenset[str]
+    dataframe_constructors: frozenset[str]
+    dataframe_methods: frozenset[str]
+    unproven_methods: frozenset[str]
+    module_functions: frozenset[str]
+    typed_methods: dict[str, frozenset[str]]
+
+
+def _load_registry() -> TerminalRegistry:
+    path = Path(__file__).resolve().parent.parent / REGISTRY_RELATIVE
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    dataframe = data["dataframe"]
+    typed_methods: dict[str, frozenset[str]] = {}
+    for family in ("catalog_table", "catalog"):
+        section = data[family]
+        methods = frozenset(section["methods"])
+        for type_name in section["types"]:
+            typed_methods[str(type_name)] = methods
+    return TerminalRegistry(
+        daft_version=str(data["daft_version"]),
+        dataframe_types=frozenset(dataframe["types"]),
+        dataframe_constructors=frozenset(dataframe["constructors"]),
+        dataframe_methods=frozenset(dataframe["methods"]),
+        unproven_methods=frozenset(dataframe["unproven_methods"]),
+        module_functions=frozenset(data["module"]["functions"]),
+        typed_methods=typed_methods,
+    )
+
+
+_REGISTRY = _load_registry()
 
 
 @dataclass(frozen=True)
@@ -125,6 +159,150 @@ def _decorator_attr_chain(node: ast.expr) -> tuple[str, ...]:
     return tuple(parts)
 
 
+def _qualified_name(node: ast.expr, imports: dict[str, str]) -> str | None:
+    chain = _decorator_attr_chain(node)
+    if not chain:
+        return None
+    head = imports.get(chain[0], chain[0])
+    return ".".join((head, *chain[1:]))
+
+
+@dataclass
+class _Provenance:
+    imports: dict[str, str]
+    names: dict[str, str]
+    foreign: set[str]
+    foreign_types: set[str]
+    direct_dataframe_names: set[str]
+
+    def receiver_type(self, node: ast.expr) -> str | None:
+        if isinstance(node, ast.Name):
+            if node.id in self.foreign:
+                return "foreign"
+            return self.names.get(node.id)
+        if isinstance(node, ast.Call):
+            called = _qualified_name(node.func, self.imports)
+            if called in _REGISTRY.dataframe_constructors:
+                return "daft.DataFrame"
+            if called and (
+                called in self.foreign_types or called.split(".", 1)[0] in {"lancedb", "pyarrow"}
+            ):
+                return "foreign"
+            if isinstance(node.func, ast.Attribute):
+                return self.receiver_type(node.func.value)
+        if isinstance(node, ast.Attribute):
+            return self.receiver_type(node.value)
+        return None
+
+
+def _discover_provenance(tree: ast.AST) -> _Provenance:
+    """Collect bounded module/function import, annotation, and assignment facts."""
+    imports: dict[str, str] = {}
+    local_types = {node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imports[alias.asname or alias.name.split(".")[0]] = alias.name
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                imports[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+
+    provenance = _Provenance(imports, {}, set(), set(local_types), set())
+
+    def record(
+        name: str, annotation: ast.expr | None = None, value: ast.expr | None = None
+    ) -> None:
+        annotation_name = _qualified_name(annotation, imports) if annotation else None
+        if (
+            annotation_name in _REGISTRY.dataframe_types
+            or annotation_name in _REGISTRY.typed_methods
+        ):
+            provenance.names[name] = annotation_name
+            if annotation_name in _REGISTRY.dataframe_types:
+                provenance.direct_dataframe_names.add(name)
+            return
+        if annotation_name and (
+            annotation_name in provenance.foreign_types
+            or annotation_name.split(".", 1)[0] in {"lancedb", "pyarrow"}
+        ):
+            provenance.foreign.add(name)
+            return
+        if value is not None:
+            inferred = provenance.receiver_type(value)
+            if inferred == "foreign":
+                provenance.foreign.add(name)
+            elif inferred:
+                provenance.names[name] = inferred
+                called = (
+                    _qualified_name(value.func, imports) if isinstance(value, ast.Call) else None
+                )
+                if called in _REGISTRY.dataframe_constructors:
+                    provenance.direct_dataframe_names.add(name)
+
+    # A few passes allow simple aliases without becoming a data-flow engine.
+    for _ in range(3):
+        for node in ast.walk(tree):
+            if isinstance(node, ast.arg):
+                record(node.arg, node.annotation)
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                record(node.target.id, node.annotation, node.value)
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        record(target.id, value=node.value)
+    return provenance
+
+
+@dataclass(frozen=True)
+class _Candidate:
+    node: ast.AST
+    receiver: ast.expr | None
+    qualified: str | None
+    method: str
+
+
+def _discover_candidates(tree: ast.AST, imports: dict[str, str]) -> list[_Candidate]:
+    """Discover and normalize calls, bound methods, and implicit iteration."""
+    candidates: list[_Candidate] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            candidates.append(
+                _Candidate(node, node.value, _qualified_name(node, imports), node.attr)
+            )
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "iter"
+            and node.args
+        ):
+            candidates.append(_Candidate(node, node.args[0], "implicit", "__iter__"))
+        elif isinstance(node, ast.comprehension):
+            candidates.append(_Candidate(node.iter, node.iter, "implicit", "__iter__"))
+    return candidates
+
+
+def _candidate_is_terminal(candidate: _Candidate, provenance: _Provenance) -> bool:
+    if candidate.qualified in _REGISTRY.module_functions:
+        return True
+    if candidate.receiver is None:
+        return False
+    if candidate.qualified == "implicit":
+        return (
+            isinstance(candidate.receiver, ast.Name)
+            and candidate.receiver.id in provenance.direct_dataframe_names
+        )
+    receiver_type = provenance.receiver_type(candidate.receiver)
+    if receiver_type == "foreign":
+        return False
+    if receiver_type in _REGISTRY.dataframe_types:
+        return candidate.method in _REGISTRY.dataframe_methods
+    if receiver_type in _REGISTRY.typed_methods:
+        return candidate.method in _REGISTRY.typed_methods[receiver_type]
+    # Preserve the original audit's conservative treatment of its two methods,
+    # while local/import/assignment evidence above keeps known foreign values clean.
+    return candidate.method in _REGISTRY.unproven_methods
+
+
 def _is_batch_decorator(node: ast.expr) -> bool:
     chain = _decorator_attr_chain(node)
     return chain in _BATCH_DECORATOR_ATTRS
@@ -176,23 +354,23 @@ def _scan_file(path: Path, rel: str) -> list[Site]:
         return []
 
     tree = ast.parse(text)
+    provenance = _discover_provenance(tree)
 
     batch_line_params = _collect_batch_udf_param_lines(text)
     lines = text.splitlines()
     sites: list[Site] = []
     seen: set[tuple[int, str]] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Attribute):
+    for candidate in _discover_candidates(tree, provenance.imports):
+        if not _candidate_is_terminal(candidate, provenance):
             continue
-        method = node.attr
-        if method not in _MATERIALIZATION_METHODS:
-            continue
+        node = candidate.node
+        method = candidate.method
         method_line = node.end_lineno or node.lineno
         key = (method_line, method)
         if key in seen:
             continue
         seen.add(key)
-        receiver = node.value
+        receiver = candidate.receiver
         sanctioned = (
             method == "to_pylist"
             and method_line in batch_line_params
@@ -209,6 +387,17 @@ def _scan_file(path: Path, rel: str) -> list[Site]:
             )
         )
     return sorted(sites, key=lambda site: (site.line, site.method))
+
+
+def _locked_daft_version(root: Path) -> str | None:
+    lock = root / "uv.lock"
+    if not lock.exists():
+        return None
+    data = tomllib.loads(lock.read_text(encoding="utf-8"))
+    for package in data.get("package", []):
+        if package.get("name") == "daft":
+            return str(package.get("version"))
+    return None
 
 
 def scan(root: Path) -> list[Site]:
@@ -280,17 +469,16 @@ STERN_HEADER = (
 
 STERN_BODY = """\
 Daft is lazily evaluated. DataFrames represent computations, not results.
-.collect() and .to_pylist() force the frame through Python memory, defeat
-query planning, and stop scaling at in-memory dataset sizes. Every such
-call is a contract exception against Archetype's lazy execution model.
+Execution adapters and eager writes cross the lazy plan boundary. Every
+such operation is a contract exception against Archetype's lazy execution model.
 
 If you are reading this, the most likely answer is to rewrite the
 expression in Daft. Reach for where, select, with_column, agg, join,
-sort, distinct, count_rows before pulling rows into Python. See
+sort, and distinct before pulling rows into Python. See
 LEARNINGS.md and docs/guide/specification.md for the lazy contract.
 
 If the materialization is genuinely unavoidable (storage write boundary,
-single-row migration extract, debug logging, terminal test assertion),
+single-row migration extract or terminal test assertion),
 the exception must be documented in writing and visible in code review:
 
   * The reason field in lazy_audit.toml must state the technical reason
@@ -336,6 +524,16 @@ def main() -> int:
     del args  # we always scan the full repo so a moved call elsewhere can't slip through
 
     root = _project_root()
+    locked_version = _locked_daft_version(root)
+    if locked_version != _REGISTRY.daft_version:
+        print(STERN_HEADER, file=sys.stderr)
+        print(
+            f"\nDaft terminal registry expects version {_REGISTRY.daft_version}; "
+            f"uv.lock resolves {locked_version or 'no Daft package'}. "
+            f"Review and update {REGISTRY_RELATIVE} before accepting this version.\n",
+            file=sys.stderr,
+        )
+        return 2
     sites = scan(root)
 
     if "--list" in sys.argv:

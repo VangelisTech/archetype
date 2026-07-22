@@ -1,0 +1,50 @@
+# Execution-boundary vocabulary for the Daft version resolved in uv.lock.
+# A Daft upgrade must review and deliberately update this registry.
+daft_version = "0.7.19"
+
+[dataframe]
+types = ["daft.DataFrame"]
+constructors = ["daft.from_arrow", "daft.from_pandas", "daft.from_pydict", "daft.from_pylist"]
+# Legacy conservative coverage when bounded provenance is inconclusive.
+unproven_methods = ["collect", "to_pylist"]
+methods = [
+  "collect",
+  "count_rows",
+  "show",
+  "to_arrow",
+  "to_arrow_iter",
+  "to_pandas",
+  "to_pydict",
+  "to_pylist",
+  "iter_rows",
+  "iter_partitions",
+  "to_torch_dataloader",
+  "to_torch_iter_dataset",
+  "to_torch_map_dataset",
+  "__arrow_c_stream__",
+  "__iter__",
+  "write_bigtable",
+  "write_clickhouse",
+  "write_csv",
+  "write_deltalake",
+  "write_huggingface",
+  "write_iceberg",
+  "write_json",
+  "write_lance",
+  "write_paimon",
+  "write_parquet",
+  "write_sink",
+  "write_sql",
+  "write_turbopuffer",
+]
+
+[module]
+functions = ["daft.write_table"]
+
+[catalog_table]
+types = ["daft.catalog.Table"]
+methods = ["append", "overwrite", "write"]
+
+[catalog]
+types = ["daft.catalog.Catalog", "daft.Session"]
+methods = ["write_table"]
