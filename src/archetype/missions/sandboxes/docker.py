@@ -124,19 +124,33 @@ class DockerSandboxSession:
             if self._status is SandboxStatus.CLOSED:
                 raise RuntimeError("Docker sandbox session is closed")
             uses_oauth = _CODEX_SECRET in request.secret_names
-            if uses_oauth:
-                await self._stage_oauth()
+            oauth_staged = False
+            operation_error: BaseException | None = None
             try:
+                if uses_oauth:
+                    await self._stage_oauth()
+                    oauth_staged = True
                 result = await self._exec_request(request)
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as exc:
+                operation_error = exc
                 self._status = SandboxStatus.INTERRUPTED
                 raise
-            except BaseException:
+            except BaseException as exc:
+                operation_error = exc
                 self._status = SandboxStatus.ERRORED
                 raise
             finally:
                 if uses_oauth:
-                    await self._persist_and_remove_oauth()
+                    try:
+                        if oauth_staged:
+                            await self._persist_and_remove_oauth()
+                        else:
+                            await self._remove_oauth()
+                    except BaseException as exc:
+                        self._status = SandboxStatus.ERRORED
+                        if operation_error is not None:
+                            raise exc from operation_error
+                        raise
             return result
 
     async def checkpoint(self) -> CheckpointRef:
@@ -159,18 +173,25 @@ class DockerSandboxSession:
                 timeout=5 * 60,
             )
             self._raise(committed, "docker commit")
-            inspected = await self._host(
-                "image",
-                "inspect",
-                "--format",
-                "{{.Id}}",
-                tag,
-                timeout=60,
-            )
-            self._raise(inspected, "docker checkpoint inspect")
-            image_id = inspected.stdout.strip()
-            if not image_id.startswith("sha256:"):
-                raise RuntimeError(f"Docker checkpoint returned invalid image ID: {image_id!r}")
+            try:
+                inspected = await self._host(
+                    "image",
+                    "inspect",
+                    "--format",
+                    "{{.Id}}",
+                    tag,
+                    timeout=60,
+                )
+                self._raise(inspected, "docker checkpoint inspect")
+                image_id = inspected.stdout.strip()
+                if not image_id.startswith("sha256:"):
+                    raise RuntimeError(f"Docker checkpoint returned invalid image ID: {image_id!r}")
+            except BaseException:
+                try:
+                    await self._host("rmi", "--force", tag, timeout=60)
+                except BaseException:
+                    pass
+                raise
             return CheckpointRef(
                 provider=_PROVIDER,
                 checkpoint_id=image_id.removeprefix("sha256:"),
@@ -184,34 +205,35 @@ class DockerSandboxSession:
             )
 
     async def close(self) -> None:
-        if self._status is SandboxStatus.CLOSED:
-            return
-        resources = tuple(self._close_resources.items())
-        results = await asyncio.gather(
-            *(
-                self._host("rm", "--force", container_id, timeout=60)
-                for _label, container_id in resources
-            ),
-            return_exceptions=True,
-        )
-        failures: list[BaseException] = []
-        for (label, container_id), result in zip(resources, results, strict=True):
-            if isinstance(result, BaseException):
-                failures.append(result)
-            elif result.returncode != 0:
-                failures.append(
-                    RuntimeError(
-                        f"failed to delete Docker container {container_id}: {result.stderr}"
-                    )
-                )
-            else:
-                self._close_resources.pop(label, None)
-        if failures:
-            self._status = SandboxStatus.ERRORED
-            raise BaseExceptionGroup(
-                f"failed to close {len(failures)} Docker resource(s)", failures
+        async with self._lock:
+            if self._status is SandboxStatus.CLOSED:
+                return
+            resources = tuple(self._close_resources.items())
+            results = await asyncio.gather(
+                *(
+                    self._host("rm", "--force", container_id, timeout=60)
+                    for _label, container_id in resources
+                ),
+                return_exceptions=True,
             )
-        self._status = SandboxStatus.CLOSED
+            failures: list[BaseException] = []
+            for (label, container_id), result in zip(resources, results, strict=True):
+                if isinstance(result, BaseException):
+                    failures.append(result)
+                elif result.returncode != 0:
+                    failures.append(
+                        RuntimeError(
+                            f"failed to delete Docker container {container_id}: {result.stderr}"
+                        )
+                    )
+                else:
+                    self._close_resources.pop(label, None)
+            if failures:
+                self._status = SandboxStatus.ERRORED
+                raise BaseExceptionGroup(
+                    f"failed to close {len(failures)} Docker resource(s)", failures
+                )
+            self._status = SandboxStatus.CLOSED
 
     async def _exec_request(self, request: ProcessRequest) -> ProcessResult:
         argv = ["docker", "exec", "--user", AGENT_USER]
@@ -256,14 +278,14 @@ class DockerSandboxSession:
         self._raise(staged, "stage Codex OAuth credential")
 
     async def _persist_and_remove_oauth(self) -> None:
-        archive = await self._exec_request(
-            ProcessRequest(
-                ("sh", "-c", f"tar -C {AGENT_HOME} -czf - .codex | base64 -w 0"),
-                timeout_seconds=60,
-            )
-        )
         persistence_error: BaseException | None = None
         try:
+            archive = await self._exec_request(
+                ProcessRequest(
+                    ("sh", "-c", f"tar -C {AGENT_HOME} -czf - .codex | base64 -w 0"),
+                    timeout_seconds=60,
+                )
+            )
             self._raise(archive, "read refreshed Codex OAuth credential")
             persisted = await self._auth_exec(
                 "sh",
@@ -276,13 +298,26 @@ class DockerSandboxSession:
             self._raise(persisted, "persist refreshed Codex OAuth credential")
         except BaseException as exc:
             persistence_error = exc
-        finally:
-            removed = await self._exec_request(
-                ProcessRequest(("rm", "-rf", CODEX_HOME), timeout_seconds=60)
+        removal_error: BaseException | None = None
+        try:
+            await self._remove_oauth()
+        except BaseException as exc:
+            removal_error = exc
+        if persistence_error is not None and removal_error is not None:
+            raise BaseExceptionGroup(
+                "failed to persist and remove Docker OAuth credential",
+                [persistence_error, removal_error],
             )
-            self._raise(removed, "remove staged Codex OAuth credential")
         if persistence_error is not None:
             raise persistence_error
+        if removal_error is not None:
+            raise removal_error
+
+    async def _remove_oauth(self) -> None:
+        removed = await self._exec_request(
+            ProcessRequest(("rm", "-rf", CODEX_HOME), timeout_seconds=60)
+        )
+        self._raise(removed, "remove staged Codex OAuth credential")
 
     async def _auth_exec(
         self,

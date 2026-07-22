@@ -591,6 +591,97 @@ async def test_modal_oauth_persistence_failure_still_removes_all_codex_state(
 
 
 @pytest.mark.asyncio
+async def test_modal_oauth_reports_persistence_and_removal_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = '{"access_token":"credential-canary"}'
+    sandbox = _LifecycleSandbox("sb-agent")
+    sandbox.filesystem.values["/root/.codex/auth.json"] = payload
+    session = _lifecycle_session(sandbox)
+
+    async def persistence_failure(*arguments: str) -> ProcessResult:
+        raise RuntimeError(f"cannot persist {arguments[0]}")
+
+    async def removal_failure(_request: ProcessRequest) -> ProcessResult:
+        raise RuntimeError("cannot remove staged credential")
+
+    monkeypatch.setattr(session, "_auth_checked", persistence_failure)
+    monkeypatch.setattr(session, "_checked", removal_failure)
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await session._persist_and_remove_oauth()
+
+    assert "cannot persist" in str(raised.value.exceptions[0])
+    assert "cannot remove" in str(raised.value.exceptions[1])
+
+
+@pytest.mark.asyncio
+async def test_modal_oauth_stage_failure_marks_errored_and_cleans_partial_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _lifecycle_session(_LifecycleSandbox("sb-agent"))
+    removed = 0
+    executed = False
+
+    async def fail_stage() -> None:
+        raise RuntimeError("stage failed")
+
+    async def remove() -> None:
+        nonlocal removed
+        removed += 1
+
+    async def execute(*args, **kwargs) -> ProcessResult:
+        nonlocal executed
+        del args, kwargs
+        executed = True
+        return ProcessResult(("true",), 0)
+
+    monkeypatch.setattr(session, "_stage_oauth", fail_stage)
+    monkeypatch.setattr(session, "_remove_oauth", remove)
+    monkeypatch.setattr(session, "_exec_on", execute)
+
+    with pytest.raises(RuntimeError, match="stage failed"):
+        await session.exec(ProcessRequest(("true",), secret_names=("codex_oauth",)))
+
+    assert await session.status() is SandboxStatus.ERRORED
+    assert removed == 1
+    assert executed is False
+
+
+@pytest.mark.asyncio
+async def test_modal_close_waits_for_active_exec(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = _lifecycle_session(_LifecycleSandbox("sb-agent"))
+    started = asyncio.Event()
+    release = asyncio.Event()
+    terminated: list[str] = []
+
+    async def blocked_exec(*args, **kwargs) -> ProcessResult:
+        del args, kwargs
+        started.set()
+        await release.wait()
+        return ProcessResult(("true",), 0)
+
+    async def terminate(resource) -> None:
+        terminated.append(resource.object_id)
+
+    monkeypatch.setattr(session, "_exec_on", blocked_exec)
+    monkeypatch.setattr(session, "_terminate", terminate)
+
+    exec_task = asyncio.create_task(session.exec(ProcessRequest(("true",))))
+    await started.wait()
+    close_task = asyncio.create_task(session.close())
+    await asyncio.sleep(0)
+    assert not close_task.done()
+    assert terminated == []
+
+    release.set()
+    await exec_task
+    await close_task
+    assert terminated == ["sb-agent", "sb-auth"]
+    assert await session.status() is SandboxStatus.CLOSED
+
+
+@pytest.mark.asyncio
 async def test_modal_monitor_recovers_then_reports_provider_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

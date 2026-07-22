@@ -159,10 +159,13 @@ class ModalSandboxSession:
                 raise RuntimeError("Modal sandbox session is closed")
             uses_oauth = _CODEX_SECRET in request.secret_names
             is_agent = request.close_stdin
-            if uses_oauth:
-                await self._stage_oauth()
             heartbeat: asyncio.Task[None] | None = None
+            oauth_staged = False
+            operation_error: BaseException | None = None
             try:
+                if uses_oauth:
+                    await self._stage_oauth()
+                    oauth_staged = True
                 actual_request = request
                 if is_agent:
                     await self._ensure_live_directory()
@@ -185,10 +188,12 @@ class ModalSandboxSession:
                         operation=request.argv[0],
                         returncode=result.returncode,
                     )
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as exc:
+                operation_error = exc
                 self._status = SandboxStatus.INTERRUPTED
                 raise
-            except BaseException:
+            except BaseException as exc:
+                operation_error = exc
                 self._status = SandboxStatus.ERRORED
                 raise
             finally:
@@ -196,7 +201,16 @@ class ModalSandboxSession:
                     heartbeat.cancel()
                     await asyncio.gather(heartbeat, return_exceptions=True)
                 if uses_oauth:
-                    await self._persist_and_remove_oauth()
+                    try:
+                        if oauth_staged:
+                            await self._persist_and_remove_oauth()
+                        else:
+                            await self._remove_oauth()
+                    except BaseException as exc:
+                        self._status = SandboxStatus.ERRORED
+                        if operation_error is not None:
+                            raise exc from operation_error
+                        raise
             return ProcessResult(
                 argv=request.argv,
                 returncode=result.returncode,
@@ -257,27 +271,30 @@ class ModalSandboxSession:
             return checkpoint
 
     async def close(self) -> None:
-        if self._status is SandboxStatus.CLOSED:
-            return
-        try:
-            await self._emit_event(SandboxEventType.CLOSING)
-        except Exception:
-            pass
-        resources = tuple(self._close_resources.items())
-        results = await asyncio.gather(
-            *(self._terminate(resource) for _label, resource in resources),
-            return_exceptions=True,
-        )
-        failures: list[BaseException] = []
-        for (label, _resource), result in zip(resources, results, strict=True):
-            if isinstance(result, BaseException):
-                failures.append(result)
-            else:
-                self._close_resources.pop(label, None)
-        if failures:
-            self._status = SandboxStatus.ERRORED
-            raise BaseExceptionGroup(f"failed to close {len(failures)} Modal resource(s)", failures)
-        self._status = SandboxStatus.CLOSED
+        async with self._lock:
+            if self._status is SandboxStatus.CLOSED:
+                return
+            try:
+                await self._emit_event(SandboxEventType.CLOSING)
+            except Exception:
+                pass
+            resources = tuple(self._close_resources.items())
+            results = await asyncio.gather(
+                *(self._terminate(resource) for _label, resource in resources),
+                return_exceptions=True,
+            )
+            failures: list[BaseException] = []
+            for (label, _resource), result in zip(resources, results, strict=True):
+                if isinstance(result, BaseException):
+                    failures.append(result)
+                else:
+                    self._close_resources.pop(label, None)
+            if failures:
+                self._status = SandboxStatus.ERRORED
+                raise BaseExceptionGroup(
+                    f"failed to close {len(failures)} Modal resource(s)", failures
+                )
+            self._status = SandboxStatus.CLOSED
 
     async def _stage_oauth(self) -> None:
         try:
@@ -310,10 +327,23 @@ class ModalSandboxSession:
             await self._auth_checked("sync", _AUTH_MOUNT)
         except BaseException as exc:
             persistence_error = exc
-        finally:
-            await self._checked(ProcessRequest(("rm", "-rf", _CODEX_HOME), timeout_seconds=60))
+        removal_error: BaseException | None = None
+        try:
+            await self._remove_oauth()
+        except BaseException as exc:
+            removal_error = exc
+        if persistence_error is not None and removal_error is not None:
+            raise BaseExceptionGroup(
+                "failed to persist and remove Modal OAuth credential",
+                [persistence_error, removal_error],
+            )
         if persistence_error is not None:
             raise persistence_error
+        if removal_error is not None:
+            raise removal_error
+
+    async def _remove_oauth(self) -> None:
+        await self._checked(ProcessRequest(("rm", "-rf", _CODEX_HOME), timeout_seconds=60))
 
     @classmethod
     def live_observation_paths(cls) -> dict[str, str]:

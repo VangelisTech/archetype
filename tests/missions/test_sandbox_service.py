@@ -200,6 +200,20 @@ def test_checkpoint_validation_requires_complete_same_provider_lineage() -> None
         with pytest.raises(ValueError, match=error):
             validate_checkpoint_for_spec(checkpoint, spec)
 
+    with pytest.raises(ValueError, match="owner"):
+        validate_checkpoint_for_spec(
+            CheckpointRef(
+                "fake",
+                "id",
+                "fake://id",
+                1,
+                environment=spec.environment,
+                source_sandbox_id="source",
+                owner_id="another-mission",
+            ),
+            spec,
+        )
+
 
 @pytest.mark.asyncio
 async def test_acquire_is_single_flight_and_keyed_by_an_exact_spec() -> None:

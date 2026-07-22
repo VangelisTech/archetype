@@ -124,19 +124,33 @@ class AppleContainerSandboxSession:
             if self._status is SandboxStatus.CLOSED:
                 raise RuntimeError("Apple Container sandbox session is closed")
             uses_oauth = _CODEX_SECRET in request.secret_names
-            if uses_oauth:
-                await self._stage_oauth()
+            oauth_staged = False
+            operation_error: BaseException | None = None
             try:
+                if uses_oauth:
+                    await self._stage_oauth()
+                    oauth_staged = True
                 result = await self._exec_request(request)
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as exc:
+                operation_error = exc
                 self._status = SandboxStatus.INTERRUPTED
                 raise
-            except BaseException:
+            except BaseException as exc:
+                operation_error = exc
                 self._status = SandboxStatus.ERRORED
                 raise
             finally:
                 if uses_oauth:
-                    await self._persist_and_remove_oauth()
+                    try:
+                        if oauth_staged:
+                            await self._persist_and_remove_oauth()
+                        else:
+                            await self._remove_oauth()
+                    except BaseException as exc:
+                        self._status = SandboxStatus.ERRORED
+                        if operation_error is not None:
+                            raise exc from operation_error
+                        raise
             return result
 
     async def checkpoint(self) -> CheckpointRef:
@@ -154,8 +168,7 @@ class AppleContainerSandboxSession:
             temporary = state_dir / f".{self._sandbox_id}-{uuid4().hex}.tar.partial"
             stopped = await self._host("stop", "--time", "30", self._sandbox_id, timeout=60)
             self._raise(stopped, "container stop for checkpoint")
-            exported: ProcessResult | None = None
-            restart: ProcessResult | None = None
+            export_error: BaseException | None = None
             try:
                 exported = await self._host(
                     "export",
@@ -164,12 +177,28 @@ class AppleContainerSandboxSession:
                     self._sandbox_id,
                     timeout=self._config.checkpoint_timeout_seconds,
                 )
-            finally:
-                restart = await self._host("start", self._sandbox_id, timeout=60)
-            assert exported is not None and restart is not None
-            try:
-                self._raise(restart, "container restart after checkpoint")
                 self._raise(exported, "container filesystem export")
+            except BaseException as exc:
+                export_error = exc
+            restart_error: BaseException | None = None
+            try:
+                restart = await self._host("start", self._sandbox_id, timeout=60)
+                self._raise(restart, "container restart after checkpoint")
+            except BaseException as exc:
+                restart_error = exc
+                self._status = SandboxStatus.ERRORED
+            if export_error is not None or restart_error is not None:
+                temporary.unlink(missing_ok=True)
+                if export_error is not None and restart_error is not None:
+                    raise BaseExceptionGroup(
+                        "Apple Container checkpoint export and restart both failed",
+                        [export_error, restart_error],
+                    )
+                if export_error is not None:
+                    raise export_error
+                assert restart_error is not None
+                raise restart_error
+            try:
                 digest = await asyncio.to_thread(self._digest, temporary)
                 archive = state_dir / f"{digest}.rootfs.tar"
                 os.replace(temporary, archive)
@@ -189,30 +218,31 @@ class AppleContainerSandboxSession:
             )
 
     async def close(self) -> None:
-        if self._status is SandboxStatus.CLOSED:
-            return
-        resources = tuple(self._close_resources.items())
-        results = await asyncio.gather(
-            *(
-                self._host("delete", "--force", resource_id, timeout=60)
-                for _label, resource_id in resources
-            ),
-            return_exceptions=True,
-        )
-        failures: list[BaseException] = []
-        for (label, _resource_id), result in zip(resources, results, strict=True):
-            if isinstance(result, BaseException):
-                failures.append(result)
-            elif result.returncode != 0:
-                failures.append(RuntimeError(f"failed to delete {label}: {result.stderr}"))
-            else:
-                self._close_resources.pop(label, None)
-        if failures:
-            self._status = SandboxStatus.ERRORED
-            raise BaseExceptionGroup(
-                f"failed to close {len(failures)} Apple Container resource(s)", failures
+        async with self._lock:
+            if self._status is SandboxStatus.CLOSED:
+                return
+            resources = tuple(self._close_resources.items())
+            results = await asyncio.gather(
+                *(
+                    self._host("delete", "--force", resource_id, timeout=60)
+                    for _label, resource_id in resources
+                ),
+                return_exceptions=True,
             )
-        self._status = SandboxStatus.CLOSED
+            failures: list[BaseException] = []
+            for (label, _resource_id), result in zip(resources, results, strict=True):
+                if isinstance(result, BaseException):
+                    failures.append(result)
+                elif result.returncode != 0:
+                    failures.append(RuntimeError(f"failed to delete {label}: {result.stderr}"))
+                else:
+                    self._close_resources.pop(label, None)
+            if failures:
+                self._status = SandboxStatus.ERRORED
+                raise BaseExceptionGroup(
+                    f"failed to close {len(failures)} Apple Container resource(s)", failures
+                )
+            self._status = SandboxStatus.CLOSED
 
     async def _exec_request(self, request: ProcessRequest) -> ProcessResult:
         argv = ["container", "exec", "--user", AGENT_USER]
@@ -275,14 +305,14 @@ class AppleContainerSandboxSession:
         self._raise(staged, "stage Codex OAuth credential")
 
     async def _persist_and_remove_oauth(self) -> None:
-        archive = await self._exec_request(
-            ProcessRequest(
-                ("sh", "-c", f"tar -C {AGENT_HOME} -czf - .codex | base64 -w 0"),
-                timeout_seconds=60,
-            )
-        )
         persistence_error: BaseException | None = None
         try:
+            archive = await self._exec_request(
+                ProcessRequest(
+                    ("sh", "-c", f"tar -C {AGENT_HOME} -czf - .codex | base64 -w 0"),
+                    timeout_seconds=60,
+                )
+            )
             self._raise(archive, "read refreshed Codex OAuth credential")
             persisted = await self._auth_exec(
                 "sh",
@@ -295,13 +325,26 @@ class AppleContainerSandboxSession:
             self._raise(persisted, "persist refreshed Codex OAuth credential")
         except BaseException as exc:
             persistence_error = exc
-        finally:
-            removed = await self._exec_request(
-                ProcessRequest(("rm", "-rf", CODEX_HOME), timeout_seconds=60)
+        removal_error: BaseException | None = None
+        try:
+            await self._remove_oauth()
+        except BaseException as exc:
+            removal_error = exc
+        if persistence_error is not None and removal_error is not None:
+            raise BaseExceptionGroup(
+                "failed to persist and remove Apple Container OAuth credential",
+                [persistence_error, removal_error],
             )
-            self._raise(removed, "remove staged Codex OAuth credential")
         if persistence_error is not None:
             raise persistence_error
+        if removal_error is not None:
+            raise removal_error
+
+    async def _remove_oauth(self) -> None:
+        removed = await self._exec_request(
+            ProcessRequest(("rm", "-rf", CODEX_HOME), timeout_seconds=60)
+        )
+        self._raise(removed, "remove staged Codex OAuth credential")
 
     async def _auth_exec(
         self,

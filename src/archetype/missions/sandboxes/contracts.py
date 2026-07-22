@@ -265,7 +265,7 @@ def validate_checkpoint_for_spec(
     if not checkpoint.source_sandbox_id:
         raise ValueError("checkpoint has no source sandbox identity")
     owner = spec.metadata_dict().get("mission", "")
-    if owner and checkpoint.owner_id != owner:
+    if checkpoint.owner_id != owner:
         raise ValueError("checkpoint owner does not match sandbox spec")
     if checkpoint.expired(now_ms=now_ms):
         raise ValueError("checkpoint has expired")

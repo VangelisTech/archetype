@@ -116,6 +116,43 @@ async def test_checkpoint_uses_docker_commit_and_returns_immutable_image_id(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("inspect_result", "error"),
+    (
+        (ProcessResult(("inspect",), 7, stderr="inspect failed"), "checkpoint inspect"),
+        (ProcessResult(("inspect",), 0, stdout="floating-tag"), "invalid image ID"),
+    ),
+)
+async def test_checkpoint_removes_committed_tag_when_inspection_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    inspect_result: ProcessResult,
+    error: str,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_run_host(argv, *, timeout_seconds: int, stdin: str | None = None):
+        del timeout_seconds, stdin
+        command = tuple(argv)
+        calls.append(command)
+        if command[:3] == ("docker", "image", "inspect"):
+            return ProcessResult(
+                command,
+                inspect_result.returncode,
+                stdout=inspect_result.stdout,
+                stderr=inspect_result.stderr,
+            )
+        return ProcessResult(command, 0)
+
+    monkeypatch.setattr("archetype.missions.sandboxes.docker.run_host", fake_run_host)
+
+    with pytest.raises(RuntimeError, match=error):
+        await _session().checkpoint()
+
+    tag = next(call[-1] for call in calls if call[:2] == ("docker", "commit"))
+    assert calls[-1] == ("docker", "rmi", "--force", tag)
+
+
+@pytest.mark.asyncio
 async def test_checkpoint_refuses_to_commit_a_staged_credential(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -326,6 +363,97 @@ async def test_docker_oauth_round_trip_and_session_error_states(
         await session.exec(ProcessRequest(("true",)))
     with pytest.raises(RuntimeError, match="closed"):
         await session.checkpoint()
+
+
+@pytest.mark.asyncio
+async def test_docker_oauth_stage_failure_marks_errored_and_cleans_partial_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(oauth=True)
+    removed = 0
+    executed = False
+
+    async def fail_stage() -> None:
+        raise RuntimeError("stage failed")
+
+    async def remove() -> None:
+        nonlocal removed
+        removed += 1
+
+    async def execute(_request: ProcessRequest) -> ProcessResult:
+        nonlocal executed
+        executed = True
+        return ProcessResult(("true",), 0)
+
+    monkeypatch.setattr(session, "_stage_oauth", fail_stage)
+    monkeypatch.setattr(session, "_remove_oauth", remove)
+    monkeypatch.setattr(session, "_exec_request", execute)
+
+    with pytest.raises(RuntimeError, match="stage failed"):
+        await session.exec(ProcessRequest(("true",), secret_names=("codex_oauth",)))
+
+    assert await session.status() is SandboxStatus.ERRORED
+    assert removed == 1
+    assert executed is False
+
+
+@pytest.mark.asyncio
+async def test_docker_oauth_reports_persistence_and_removal_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(oauth=True)
+
+    async def exec_request(request: ProcessRequest) -> ProcessResult:
+        if request.argv[:2] == ("rm", "-rf"):
+            return ProcessResult(request.argv, 9, stderr="remove failed")
+        return ProcessResult(request.argv, 0, stdout="oauth-archive")
+
+    async def auth_exec(*arguments: str, timeout: int, stdin: str | None = None):
+        del timeout, stdin
+        return ProcessResult(tuple(arguments), 8, stderr="persist failed")
+
+    monkeypatch.setattr(session, "_exec_request", exec_request)
+    monkeypatch.setattr(session, "_auth_exec", auth_exec)
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await session._persist_and_remove_oauth()
+
+    assert "persist refreshed" in str(raised.value.exceptions[0])
+    assert "remove staged" in str(raised.value.exceptions[1])
+
+
+@pytest.mark.asyncio
+async def test_docker_close_waits_for_active_exec(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = _session()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    removed: list[str] = []
+
+    async def blocked_exec(request: ProcessRequest) -> ProcessResult:
+        started.set()
+        await release.wait()
+        return ProcessResult(request.argv, 0)
+
+    async def host(*arguments: str, timeout: int) -> ProcessResult:
+        del timeout
+        removed.append(arguments[-1])
+        return ProcessResult(arguments, 0)
+
+    monkeypatch.setattr(session, "_exec_request", blocked_exec)
+    monkeypatch.setattr(session, "_host", host)
+
+    exec_task = asyncio.create_task(session.exec(ProcessRequest(("true",))))
+    await started.wait()
+    close_task = asyncio.create_task(session.close())
+    await asyncio.sleep(0)
+    assert not close_task.done()
+    assert removed == []
+
+    release.set()
+    await exec_task
+    await close_task
+    assert removed == ["mission-container"]
+    assert await session.status() is SandboxStatus.CLOSED
 
 
 @pytest.mark.asyncio
