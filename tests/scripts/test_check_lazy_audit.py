@@ -628,6 +628,93 @@ def test_declared_return_union_and_attribute_provenance(tmp_path, source, method
     assert [site.method for site in _scan_file(py, "declared.py")] == [method]
 
 
+def test_dict_values_comprehension_uses_value_provenance(tmp_path):
+    py = _write_py(
+        tmp_path,
+        "dict_values.py",
+        """\
+        from daft import DataFrame
+
+        def inspect(frames: dict[str, DataFrame], labels: dict[DataFrame, str]):
+            frame_counts = [frame.count_rows() for frame in frames.values()]
+            label_counts = [label.count_rows() for label in labels.values()]
+            return frame_counts, label_counts
+        """,
+    )
+
+    assert [(site.line, site.method) for site in _scan_file(py, "dict_values.py")] == [
+        (4, "count_rows")
+    ]
+
+
+def test_list_parameter_comprehension_preserves_dataframe_provenance(tmp_path):
+    py = _write_py(
+        tmp_path,
+        "list_parameter.py",
+        """\
+        from daft import DataFrame
+
+        def inspect(frames: list[DataFrame]):
+            return [frame.count_rows() for frame in frames]
+        """,
+    )
+
+    assert [site.method for site in _scan_file(py, "list_parameter.py")] == ["count_rows"]
+
+
+def test_list_attribute_comprehension_preserves_dataframe_provenance(tmp_path):
+    py = _write_py(
+        tmp_path,
+        "list_attribute.py",
+        """\
+        from daft import DataFrame
+
+        class Holder:
+            frames: list[DataFrame]
+
+        def inspect(holder: Holder):
+            return [frame.count_rows() for frame in holder.frames]
+        """,
+    )
+
+    assert [site.method for site in _scan_file(py, "list_attribute.py")] == ["count_rows"]
+
+
+def test_dataframe_iteration_rows_do_not_inherit_terminal_authority(tmp_path):
+    py = _write_py(
+        tmp_path,
+        "dataframe_rows.py",
+        """\
+        from daft import DataFrame
+
+        def inspect(frame: DataFrame):
+            return [row.count_rows() for row in frame]
+        """,
+    )
+
+    assert [site.method for site in _scan_file(py, "dataframe_rows.py")] == ["__iter__"]
+
+
+def test_foreign_sequence_and_mapping_elements_are_not_dataframe_provenance(tmp_path):
+    py = _write_py(
+        tmp_path,
+        "foreign_collections.py",
+        """\
+        from collections.abc import Mapping, Sequence
+
+        class Custom:
+            def count_rows(self): ...
+
+        def inspect(items: Sequence[Custom], indexed: Mapping[str, Custom]):
+            sequence_counts = [item.count_rows() for item in items]
+            mapping_counts = [item.count_rows() for item in indexed.values()]
+            return sequence_counts, mapping_counts
+        """,
+    )
+
+    assert _scan_file(py, "foreign_collections.py") == []
+
+
 @pytest.mark.parametrize(
     ("source", "expected"),
     [
