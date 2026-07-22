@@ -27,38 +27,6 @@ owner = "src/archetype/api"
 rationale = "HTTP JSON response boundary: convert the already-collected Daft result into row dictionaries for FastAPI's JSON encoder at the terminal REST boundary."
 
 [[entries]]
-path = "src/archetype/api/routes/query.py"
-line = 252
-method = "count_rows"
-boundary_kind = "transport-serialization"
-owner = "src/archetype/api/routes"
-rationale = "Owned transport serialization in src/archetype/api/routes/query.py: the Daft count_rows terminal produces the concrete value or durable effect required at this named boundary."
-
-[[entries]]
-path = "src/archetype/app/artifacts/service.py"
-line = 103
-method = "to_pydict"
-boundary_kind = "control-flow-extract"
-owner = "src/archetype/app/artifacts"
-rationale = "Owned control flow extract in src/archetype/app/artifacts/service.py: the Daft to_pydict terminal produces the bounded concrete value required by this application boundary."
-
-[[entries]]
-path = "src/archetype/app/artifacts/service.py"
-line = 119
-method = "to_pydict"
-boundary_kind = "control-flow-extract"
-owner = "src/archetype/app/artifacts"
-rationale = "Owned control flow extract in src/archetype/app/artifacts/service.py: the Daft to_pydict terminal produces the bounded concrete value required by this application boundary."
-
-[[entries]]
-path = "src/archetype/app/evaluation/service.py"
-line = 404
-method = "to_pydict"
-boundary_kind = "control-flow-extract"
-owner = "src/archetype/app/evaluation"
-rationale = "Owned control flow extract in src/archetype/app/evaluation/service.py: the Daft to_pydict terminal produces the bounded concrete value required by this application boundary."
-
-[[entries]]
 path = "src/archetype/app/physical_ai/service.py"
 line = 108
 method = "to_pylist"
@@ -116,22 +84,6 @@ rationale = "Conflict-safe append boundary: StorageService materializes producer
 
 [[entries]]
 path = "src/archetype/app/storage/service.py"
-line = 468
-method = "count_rows"
-boundary_kind = "execution-boundary"
-owner = "src/archetype/app/storage"
-rationale = "Owned execution boundary in src/archetype/app/storage/service.py: the Daft count_rows terminal produces the concrete value or durable effect required at this named boundary."
-
-[[entries]]
-path = "src/archetype/app/storage/service.py"
-line = 471
-method = "write_iceberg"
-boundary_kind = "storage-commit"
-owner = "src/archetype/app/storage"
-rationale = "Owned storage commit in src/archetype/app/storage/service.py: the Daft write_iceberg terminal produces the concrete value or durable effect required at this named boundary."
-
-[[entries]]
-path = "src/archetype/app/storage/service.py"
 line = 517
 method = "collect"
 boundary_kind = "storage-execution"
@@ -140,51 +92,11 @@ rationale = "Conditional producer boundary: StorageService freezes the aligned c
 
 [[entries]]
 path = "src/archetype/app/storage/service.py"
-line = 520
-method = "count_rows"
-boundary_kind = "execution-boundary"
-owner = "src/archetype/app/storage"
-rationale = "Owned execution boundary in src/archetype/app/storage/service.py: the Daft count_rows terminal produces the concrete value or durable effect required at this named boundary."
-
-[[entries]]
-path = "src/archetype/app/storage/service.py"
-line = 525
-method = "count_rows"
-boundary_kind = "execution-boundary"
-owner = "src/archetype/app/storage"
-rationale = "Owned execution boundary in src/archetype/app/storage/service.py: the Daft count_rows terminal produces the concrete value or durable effect required at this named boundary."
-
-[[entries]]
-path = "src/archetype/app/storage/service.py"
-line = 534
-method = "count_rows"
-boundary_kind = "execution-boundary"
-owner = "src/archetype/app/storage"
-rationale = "Owned execution boundary in src/archetype/app/storage/service.py: the Daft count_rows terminal produces the concrete value or durable effect required at this named boundary."
-
-[[entries]]
-path = "src/archetype/app/storage/service.py"
 line = 544
 method = "collect"
 boundary_kind = "storage-execution"
 owner = "src/archetype/app/storage"
 rationale = "Conditional append boundary: StorageService materializes the anti-join after each refreshed Iceberg snapshot so a conflicting writer cannot cause a stale retry to duplicate an existing logical key."
-
-[[entries]]
-path = "src/archetype/app/storage/service.py"
-line = 547
-method = "count_rows"
-boundary_kind = "execution-boundary"
-owner = "src/archetype/app/storage"
-rationale = "Owned execution boundary in src/archetype/app/storage/service.py: the Daft count_rows terminal produces the concrete value or durable effect required at this named boundary."
-
-[[entries]]
-path = "src/archetype/app/storage/service.py"
-line = 556
-method = "write_iceberg"
-boundary_kind = "storage-commit"
-owner = "src/archetype/app/storage"
-rationale = "Owned storage commit in src/archetype/app/storage/service.py: the Daft write_iceberg terminal produces the concrete value or durable effect required at this named boundary."
 
 [[entries]]
 path = "src/archetype/app/world/service.py"
@@ -209,30 +121,6 @@ method = "to_arrow_iter"
 boundary_kind = "storage-execution"
 owner = "src/archetype/core/aio"
 rationale = "Owned storage execution in src/archetype/core/aio/async_cached_store.py: the Daft to_arrow_iter terminal produces the concrete value or durable effect required at this named boundary."
-
-[[entries]]
-path = "src/archetype/core/aio/async_lancedb_store.py"
-line = 201
-method = "to_arrow"
-boundary_kind = "execution-boundary"
-owner = "src/archetype/core/aio"
-rationale = "Owned execution boundary in src/archetype/core/aio/async_lancedb_store.py: the Daft to_arrow terminal produces the concrete value or durable effect required at this named boundary."
-
-[[entries]]
-path = "src/archetype/core/aio/async_lancedb_store.py"
-line = 288
-method = "to_arrow"
-boundary_kind = "execution-boundary"
-owner = "src/archetype/core/aio"
-rationale = "Owned execution boundary in src/archetype/core/aio/async_lancedb_store.py: the Daft to_arrow terminal produces the concrete value or durable effect required at this named boundary."
-
-[[entries]]
-path = "src/archetype/core/aio/async_lancedb_store.py"
-line = 333
-method = "to_arrow"
-boundary_kind = "execution-boundary"
-owner = "src/archetype/core/aio"
-rationale = "Owned execution boundary in src/archetype/core/aio/async_lancedb_store.py: the Daft to_arrow terminal produces the concrete value or durable effect required at this named boundary."
 
 [[entries]]
 path = "src/archetype/core/aio/async_lancedb_store.py"
@@ -284,15 +172,6 @@ rationale = "Temporary core row-count execution in src/archetype/core/aio/async_
 removal_issue = "#538"
 
 [[entries]]
-path = "src/archetype/core/aio/async_system.py"
-line = 106
-method = "count_rows"
-boundary_kind = "legacy"
-owner = "src/archetype/core/aio"
-rationale = "Temporary core row-count execution in src/archetype/core/aio/async_system.py; issue #538 owns removal because count_rows can execute and replay the lazy plan even when used as a preflight or diagnostic."
-removal_issue = "#538"
-
-[[entries]]
 path = "src/archetype/core/aio/async_world.py"
 line = 422
 method = "to_pylist"
@@ -301,39 +180,12 @@ owner = "src/archetype/core/aio"
 rationale = "Cross-archetype entity migration: extract the latest tick row as a Python dict for component-overlay, which mutates field-by-field before re-insertion into the new archetype."
 
 [[entries]]
-path = "src/archetype/core/aio/async_world.py"
-line = 994
-method = "count_rows"
-boundary_kind = "legacy"
-owner = "src/archetype/core/aio"
-rationale = "Temporary core row-count execution in src/archetype/core/aio/async_world.py; issue #538 owns removal because count_rows can execute and replay the lazy plan even when used as a preflight or diagnostic."
-removal_issue = "#538"
-
-[[entries]]
 path = "src/archetype/core/lineage.py"
 line = 105
 method = "to_pylist"
 boundary_kind = "control-flow-extract"
 owner = "src/archetype/core"
 rationale = "Lineage metadata extract: a fork's ancestor segments (bounded by fork depth, typically 1-3 rows) must become Python (world_id, run_id, up_to_tick) tuples because they route subsequent per-tick store queries; the routing decision cannot be expressed inside a single Daft plan."
-
-[[entries]]
-path = "src/archetype/core/sync/querier.py"
-line = 79
-method = "count_rows"
-boundary_kind = "legacy"
-owner = "src/archetype/core/sync"
-rationale = "Temporary core row-count execution in src/archetype/core/sync/querier.py; issue #538 owns removal because count_rows can execute and replay the lazy plan even when used as a preflight or diagnostic."
-removal_issue = "#538"
-
-[[entries]]
-path = "src/archetype/core/sync/querier.py"
-line = 81
-method = "show"
-boundary_kind = "legacy"
-owner = "src/archetype/core/sync"
-rationale = "Temporary core diagnostic execution in src/archetype/core/sync/querier.py; issue #530 owns removal because diagnostics must not introduce a separate Daft terminal."
-removal_issue = "#530"
 
 [[entries]]
 path = "src/archetype/core/sync/store.py"
@@ -404,14 +256,6 @@ owner = "src/archetype/core/sync"
 rationale = "Cross-archetype entity migration (sync mirror of async_world): extract the latest tick row for component overlay before re-insertion."
 
 [[entries]]
-path = "src/archetype/graph/cascade.py"
-line = 94
-method = "to_pylist"
-boundary_kind = "control-flow-extract"
-owner = "src/archetype/graph"
-rationale = "Mutation-planning boundary for cascade: despawn takes concrete ids, so _plan materializes the (edge id, source) pairs of the dangling edges; the liveness union, anti-join, and filters all run in the lazy plan and only ids cross into Python."
-
-[[entries]]
 path = "src/archetype/graph/frames.py"
 line = 65
 method = "to_pylist"
@@ -426,30 +270,6 @@ method = "to_pylist"
 boundary_kind = "control-flow-extract"
 owner = "src/archetype/graph"
 rationale = "Mutation-planning boundary for instantiation: spawning copies requires the template's concrete component values and child prefab ids; _rows is the single funnel and every entity filter runs in the lazy plan before it."
-
-[[entries]]
-path = "src/archetype/missions/projections.py"
-line = 109
-method = "to_pylist"
-boundary_kind = "control-flow-extract"
-owner = "src/archetype/missions"
-rationale = "Post-commit external-I/O boundary: the lazy frame is restricted to committed DISPATCHED tasks and joined to mission identity before those bounded intents become Python requests for sandbox processes; an OS process invocation cannot remain a Daft expression."
-
-[[entries]]
-path = "src/archetype/missions/projections.py"
-line = 135
-method = "to_pylist"
-boundary_kind = "control-flow-extract"
-owner = "src/archetype/missions"
-rationale = "Post-commit validator-command boundary: Guards and TaskValidator entities are joined lazily first, then the finite validators attached to dispatchable tasks become argv tuples consumed by the repository harness; process argv cannot remain a DataFrame value."
-
-[[entries]]
-path = "src/archetype/missions/projections.py"
-line = 176
-method = "to_pylist"
-boundary_kind = "control-flow-extract"
-owner = "src/archetype/missions"
-rationale = "Repair-turn boundary: prior AgentExecution and ValidationResult entities are joined lazily by execution before the finite previous-dispatch observations become a coding-agent prompt and session-resume request; the external driver requires concrete typed observations."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
@@ -533,22 +353,6 @@ rationale = "Assertion boundary in tests/aio/test_async_cached_store_behavior.py
 
 [[entries]]
 path = "tests/aio/test_async_cached_store_behavior.py"
-line = 239
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/aio"
-rationale = "Assertion boundary in tests/aio/test_async_cached_store_behavior.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/aio/test_async_cached_store_behavior.py"
-line = 239
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/aio"
-rationale = "Assertion boundary in tests/aio/test_async_cached_store_behavior.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/aio/test_async_cached_store_behavior.py"
 line = 270
 method = "collect"
 boundary_kind = "test-assertion"
@@ -629,22 +433,6 @@ rationale = "Assertion boundary in tests/aio/test_async_cached_store_behavior.py
 
 [[entries]]
 path = "tests/aio/test_async_cached_store_behavior.py"
-line = 367
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/aio"
-rationale = "Assertion boundary in tests/aio/test_async_cached_store_behavior.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/aio/test_async_cached_store_behavior.py"
-line = 367
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/aio"
-rationale = "Assertion boundary in tests/aio/test_async_cached_store_behavior.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/aio/test_async_cached_store_behavior.py"
 line = 396
 method = "collect"
 boundary_kind = "test-assertion"
@@ -658,38 +446,6 @@ method = "collect"
 boundary_kind = "test-assertion"
 owner = "tests/aio"
 rationale = "Assertion boundary in tests/aio/test_async_cached_store_behavior.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/aio/test_async_cached_store_behavior.py"
-line = 414
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/aio"
-rationale = "Assertion boundary in tests/aio/test_async_cached_store_behavior.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/aio/test_async_cached_store_behavior.py"
-line = 414
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/aio"
-rationale = "Assertion boundary in tests/aio/test_async_cached_store_behavior.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/aio/test_async_cached_store_behavior.py"
-line = 418
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/aio"
-rationale = "Assertion boundary in tests/aio/test_async_cached_store_behavior.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/aio/test_async_cached_store_behavior.py"
-line = 418
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/aio"
-rationale = "Assertion boundary in tests/aio/test_async_cached_store_behavior.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
 path = "tests/aio/test_async_cached_store_behavior.py"
@@ -732,86 +488,6 @@ owner = "tests/aio"
 rationale = "Assertion boundary in tests/aio/test_async_processor.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
-path = "tests/aio/test_async_processor.py"
-line = 44
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/aio"
-rationale = "Assertion boundary in tests/aio/test_async_processor.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/aio/test_async_processor.py"
-line = 44
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/aio"
-rationale = "Assertion boundary in tests/aio/test_async_processor.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/aio/test_async_query_updater.py"
-line = 79
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/aio"
-rationale = "Assertion boundary in tests/aio/test_async_query_updater.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/aio/test_async_query_updater.py"
-line = 79
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/aio"
-rationale = "Assertion boundary in tests/aio/test_async_query_updater.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/aio/test_async_query_updater.py"
-line = 85
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/aio"
-rationale = "Assertion boundary in tests/aio/test_async_query_updater.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/aio/test_async_query_updater.py"
-line = 85
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/aio"
-rationale = "Assertion boundary in tests/aio/test_async_query_updater.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/aio/test_async_query_updater.py"
-line = 91
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/aio"
-rationale = "Assertion boundary in tests/aio/test_async_query_updater.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/aio/test_async_query_updater.py"
-line = 92
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/aio"
-rationale = "Assertion boundary in tests/aio/test_async_query_updater.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/aio/test_async_query_updater.py"
-line = 93
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/aio"
-rationale = "Assertion boundary in tests/aio/test_async_query_updater.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/aio/test_async_query_updater.py"
-line = 104
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/aio"
-rationale = "Assertion boundary in tests/aio/test_async_query_updater.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
 path = "tests/aio/test_async_query_updater.py"
 line = 126
 method = "collect"
@@ -834,22 +510,6 @@ method = "count_rows"
 boundary_kind = "test-assertion"
 owner = "tests/aio"
 rationale = "Assertion boundary in tests/aio/test_async_query_updater.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/aio/test_async_store.py"
-line = 96
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/aio"
-rationale = "Assertion boundary in tests/aio/test_async_store.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/aio/test_async_store.py"
-line = 96
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/aio"
-rationale = "Assertion boundary in tests/aio/test_async_store.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
 path = "tests/aio/test_async_store.py"
@@ -882,22 +542,6 @@ method = "collect"
 boundary_kind = "test-assertion"
 owner = "tests/aio"
 rationale = "Assertion boundary in tests/aio/test_async_store.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/aio/test_async_store.py"
-line = 188
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/aio"
-rationale = "Assertion boundary in tests/aio/test_async_store.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/aio/test_async_store.py"
-line = 188
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/aio"
-rationale = "Assertion boundary in tests/aio/test_async_store.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
 path = "tests/aio/test_async_store.py"
@@ -1444,38 +1088,6 @@ owner = "tests/aio"
 rationale = "Assertion boundary in tests/aio/test_storage_context_namespace_isolation.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
-path = "tests/aio/test_storage_context_namespace_isolation.py"
-line = 49
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/aio"
-rationale = "Assertion boundary in tests/aio/test_storage_context_namespace_isolation.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/aio/test_storage_context_namespace_isolation.py"
-line = 49
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/aio"
-rationale = "Assertion boundary in tests/aio/test_storage_context_namespace_isolation.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/aio/test_storage_context_namespace_isolation.py"
-line = 53
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/aio"
-rationale = "Assertion boundary in tests/aio/test_storage_context_namespace_isolation.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/aio/test_storage_context_namespace_isolation.py"
-line = 53
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/aio"
-rationale = "Assertion boundary in tests/aio/test_storage_context_namespace_isolation.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
 path = "tests/api/test_query_filter.py"
 line = 26
 method = "collect"
@@ -1525,22 +1137,6 @@ rationale = "Assertion boundary in tests/api/test_query_filter.py: executes the 
 
 [[entries]]
 path = "tests/app/physical_ai/test_instruction_sweep.py"
-line = 170
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/app/physical_ai"
-rationale = "Assertion boundary in tests/app/physical_ai/test_instruction_sweep.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/physical_ai/test_instruction_sweep.py"
-line = 170
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app/physical_ai"
-rationale = "Assertion boundary in tests/app/physical_ai/test_instruction_sweep.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/physical_ai/test_instruction_sweep.py"
 line = 342
 method = "collect"
 boundary_kind = "test-assertion"
@@ -1557,22 +1153,6 @@ rationale = "Assertion boundary in tests/app/physical_ai/test_instruction_sweep.
 
 [[entries]]
 path = "tests/app/physical_ai/test_task_evaluation.py"
-line = 115
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/app/physical_ai"
-rationale = "Assertion boundary in tests/app/physical_ai/test_task_evaluation.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/physical_ai/test_task_evaluation.py"
-line = 115
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app/physical_ai"
-rationale = "Assertion boundary in tests/app/physical_ai/test_task_evaluation.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/physical_ai/test_task_evaluation.py"
 line = 154
 method = "collect"
 boundary_kind = "test-assertion"
@@ -1586,102 +1166,6 @@ method = "to_pylist"
 boundary_kind = "test-assertion"
 owner = "tests/app/physical_ai"
 rationale = "Assertion boundary in tests/app/physical_ai/test_task_evaluation.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_application_contracts.py"
-line = 61
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_application_contracts.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_artifact_ingestion.py"
-line = 100
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_artifact_ingestion.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_artifact_ingestion.py"
-line = 123
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_artifact_ingestion.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_artifact_ingestion.py"
-line = 191
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_artifact_ingestion.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_artifact_ingestion.py"
-line = 383
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_artifact_ingestion.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_artifact_ingestion.py"
-line = 391
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_artifact_ingestion.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_artifact_ingestion.py"
-line = 400
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_artifact_ingestion.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_artifact_ingestion.py"
-line = 409
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_artifact_ingestion.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_artifact_ingestion.py"
-line = 422
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_artifact_ingestion.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_artifact_ingestion.py"
-line = 431
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_artifact_ingestion.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_artifact_ingestion.py"
-line = 447
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_artifact_ingestion.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_artifact_ingestion.py"
-line = 464
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_artifact_ingestion.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
 path = "tests/app/test_artifact_runtime_sync.py"
@@ -1700,294 +1184,6 @@ owner = "tests/app"
 rationale = "Assertion boundary in tests/app/test_atomic_visibility.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
-path = "tests/app/test_atomic_visibility.py"
-line = 187
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_atomic_visibility.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_atomic_visibility.py"
-line = 330
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_atomic_visibility.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_atomic_visibility.py"
-line = 341
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_atomic_visibility.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_audit_contracts.py"
-line = 92
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_audit_contracts.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_audit_contracts.py"
-line = 123
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_audit_contracts.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_audit_contracts.py"
-line = 125
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_audit_contracts.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_audit_contracts.py"
-line = 131
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_audit_contracts.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_audit_contracts.py"
-line = 137
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_audit_contracts.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_audit_contracts.py"
-line = 157
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_audit_contracts.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_audit_contracts.py"
-line = 181
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_audit_contracts.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_audit_contracts.py"
-line = 184
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_audit_contracts.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_audit_contracts.py"
-line = 186
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_audit_contracts.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_audit_contracts.py"
-line = 189
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_audit_contracts.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_autoresearch_ledger.py"
-line = 91
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_autoresearch_ledger.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_autoresearch_ledger.py"
-line = 102
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_autoresearch_ledger.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_autoresearch_ledger.py"
-line = 114
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_autoresearch_ledger.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_autoresearch_ledger.py"
-line = 118
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_autoresearch_ledger.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_autoresearch_ledger.py"
-line = 127
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_autoresearch_ledger.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_autoresearch_ledger.py"
-line = 173
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_autoresearch_ledger.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_autoresearch_ledger.py"
-line = 271
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_autoresearch_ledger.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_autoresearch_ledger.py"
-line = 363
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_autoresearch_ledger.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_autoresearch_ledger.py"
-line = 392
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_autoresearch_ledger.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_autoresearch_ledger.py"
-line = 394
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_autoresearch_ledger.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_autoresearch_ledger.py"
-line = 396
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_autoresearch_ledger.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_autoresearch_ledger.py"
-line = 427
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_autoresearch_ledger.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_autoresearch_ledger.py"
-line = 446
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_autoresearch_ledger.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_autoresearch_ledger.py"
-line = 448
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_autoresearch_ledger.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_autoresearch_ledger.py"
-line = 474
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_autoresearch_ledger.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_autoresearch_ledger.py"
-line = 497
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_autoresearch_ledger.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_autoresearch_ledger.py"
-line = 499
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_autoresearch_ledger.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_autoresearch_ledger.py"
-line = 558
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_autoresearch_ledger.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_durable_commands.py"
-line = 299
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_durable_commands.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_durable_commands.py"
-line = 324
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_durable_commands.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_durable_commands.py"
-line = 389
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_durable_commands.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_durable_commands.py"
-line = 389
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_durable_commands.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_durable_discovery.py"
-line = 337
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_durable_discovery.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
 path = "tests/app/test_durable_discovery.py"
 line = 417
 method = "collect"
@@ -1996,24 +1192,8 @@ owner = "tests/app"
 rationale = "Assertion boundary in tests/app/test_durable_discovery.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
-path = "tests/app/test_durable_discovery.py"
-line = 609
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_durable_discovery.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
 path = "tests/app/test_eval_receipts.py"
 line = 72
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_eval_receipts.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_eval_receipts.py"
-line = 116
 method = "to_pylist"
 boundary_kind = "test-assertion"
 owner = "tests/app"
@@ -2029,14 +1209,6 @@ rationale = "Assertion boundary in tests/app/test_eval_receipts.py: executes the
 
 [[entries]]
 path = "tests/app/test_eval_receipts.py"
-line = 175
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_eval_receipts.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_eval_receipts.py"
 line = 365
 method = "to_pylist"
 boundary_kind = "test-assertion"
@@ -2045,31 +1217,7 @@ rationale = "Assertion boundary in tests/app/test_eval_receipts.py: executes the
 
 [[entries]]
 path = "tests/app/test_eval_receipts.py"
-line = 400
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_eval_receipts.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_eval_receipts.py"
-line = 493
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_eval_receipts.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_eval_receipts.py"
 line = 567
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_eval_receipts.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_eval_receipts.py"
-line = 573
 method = "to_pylist"
 boundary_kind = "test-assertion"
 owner = "tests/app"
@@ -2090,134 +1238,6 @@ method = "to_pylist"
 boundary_kind = "test-assertion"
 owner = "tests/app"
 rationale = "Assertion boundary in tests/app/test_eval_service.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_ingestion_service.py"
-line = 45
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_ingestion_service.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_ingestion_service.py"
-line = 83
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_ingestion_service.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_mutation_service.py"
-line = 75
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_mutation_service.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_mutation_service.py"
-line = 75
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_mutation_service.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_mutation_service.py"
-line = 122
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_mutation_service.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_mutation_service.py"
-line = 122
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_mutation_service.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_mutation_service.py"
-line = 229
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_mutation_service.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_mutation_service.py"
-line = 229
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_mutation_service.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_mutation_service.py"
-line = 241
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_mutation_service.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_mutation_service.py"
-line = 241
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_mutation_service.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_mutation_service.py"
-line = 308
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_mutation_service.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_mutation_service.py"
-line = 308
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_mutation_service.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_mutation_service.py"
-line = 350
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_mutation_service.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_mutation_service.py"
-line = 350
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_mutation_service.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_remote_catalog_parity.py"
-line = 511
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_remote_catalog_parity.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_remote_catalog_parity.py"
-line = 514
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_remote_catalog_parity.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
 path = "tests/app/test_runtime_autoresearch.py"
@@ -2258,14 +1278,6 @@ method = "to_pylist"
 boundary_kind = "test-assertion"
 owner = "tests/app"
 rationale = "Assertion boundary in tests/app/test_runtime_autoresearch.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_runtime_contracts.py"
-line = 157
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_runtime_contracts.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
 path = "tests/app/test_runtime_contracts.py"
@@ -2316,100 +1328,12 @@ owner = "tests/app"
 rationale = "Assertion boundary in tests/app/test_runtime_fork_storage.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
-path = "tests/app/test_runtime_fork_storage.py"
-line = 114
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_runtime_fork_storage.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_runtime_fork_storage.py"
-line = 122
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_runtime_fork_storage.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_runtime_fork_storage.py"
-line = 167
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_runtime_fork_storage.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_runtime_fork_storage.py"
-line = 211
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_runtime_fork_storage.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_spawn_audit_metadata.py"
-line = 64
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_spawn_audit_metadata.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
 path = "tests/app/test_storage_execution.py"
 line = 38
 method = "collect"
 boundary_kind = "test-assertion"
 owner = "tests/app"
 rationale = "Assertion boundary in tests/app/test_storage_execution.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_storage_execution.py"
-line = 61
-method = "to_pydict"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_storage_execution.py: executes the Daft to_pydict terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_storage_execution.py"
-line = 118
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_storage_execution.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_storage_execution.py"
-line = 121
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_storage_execution.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_storage_execution.py"
-line = 151
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_storage_execution.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_storage_execution.py"
-line = 182
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_storage_execution.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_storage_execution.py"
-line = 261
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_storage_execution.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
 path = "tests/app/test_trajectory_service.py"
@@ -2428,78 +1352,6 @@ owner = "tests/app"
 rationale = "Assertion boundary in tests/app/test_trajectory_service.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
-path = "tests/app/test_transcript_ingestion.py"
-line = 87
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_transcript_ingestion.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_transcript_ingestion.py"
-line = 90
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_transcript_ingestion.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_transcript_ingestion.py"
-line = 164
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_transcript_ingestion.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_transcript_ingestion.py"
-line = 165
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_transcript_ingestion.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_transcript_ingestion.py"
-line = 179
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_transcript_ingestion.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_transcript_ingestion.py"
-line = 180
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_transcript_ingestion.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_world_resume.py"
-line = 90
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_world_resume.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_world_resume.py"
-line = 150
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_world_resume.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_world_resume.py"
-line = 199
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_world_resume.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
 path = "tests/app/test_world_resume.py"
 line = 405
 method = "to_pylist"
@@ -2514,286 +1366,6 @@ method = "to_pylist"
 boundary_kind = "test-assertion"
 owner = "tests/app"
 rationale = "Assertion boundary in tests/app/test_world_resume.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_world_resume.py"
-line = 471
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_world_resume.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/app/test_world_resume.py"
-line = 514
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/app"
-rationale = "Assertion boundary in tests/app/test_world_resume.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/artifacts/test_context_analysis.py"
-line = 45
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/artifacts"
-rationale = "Assertion boundary in tests/artifacts/test_context_analysis.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/artifacts/test_context_analysis.py"
-line = 90
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/artifacts"
-rationale = "Assertion boundary in tests/artifacts/test_context_analysis.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/artifacts/test_context_analysis.py"
-line = 127
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/artifacts"
-rationale = "Assertion boundary in tests/artifacts/test_context_analysis.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_async_world_duplicate_spawn_overwrite.py"
-line = 42
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_async_world_duplicate_spawn_overwrite.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_async_world_error_propagation.py"
-line = 90
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_async_world_error_propagation.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_async_world_error_propagation.py"
-line = 96
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_async_world_error_propagation.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_async_world_error_propagation.py"
-line = 126
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_async_world_error_propagation.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_async_world_get_components_matrix.py"
-line = 111
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_async_world_get_components_matrix.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_async_world_get_components_matrix.py"
-line = 116
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_async_world_get_components_matrix.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_async_world_get_components_matrix.py"
-line = 121
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_async_world_get_components_matrix.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_async_world_get_components_matrix.py"
-line = 126
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_async_world_get_components_matrix.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_async_world_get_components_matrix.py"
-line = 131
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_async_world_get_components_matrix.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_async_world_get_components_matrix.py"
-line = 136
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_async_world_get_components_matrix.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_async_world_get_components_matrix.py"
-line = 137
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_async_world_get_components_matrix.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_async_world_get_components_union.py"
-line = 39
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_async_world_get_components_union.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_async_world_get_components_union.py"
-line = 46
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_async_world_get_components_union.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_async_world_get_components_union.py"
-line = 47
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_async_world_get_components_union.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_batch_spawn_contract.py"
-line = 88
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_batch_spawn_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_batch_spawn_contract.py"
-line = 93
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_batch_spawn_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_batch_spawn_contract.py"
-line = 152
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_batch_spawn_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_batch_spawn_contract.py"
-line = 153
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_batch_spawn_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_batch_spawn_contract.py"
-line = 279
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_batch_spawn_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_batch_spawn_contract.py"
-line = 283
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_batch_spawn_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_batch_spawn_contract.py"
-line = 375
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_batch_spawn_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_footgun_fixes.py"
-line = 100
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_footgun_fixes.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_footgun_fixes.py"
-line = 100
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_footgun_fixes.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_footgun_fixes.py"
-line = 110
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_footgun_fixes.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_footgun_fixes.py"
-line = 110
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_footgun_fixes.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_footgun_fixes.py"
-line = 149
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_footgun_fixes.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_footgun_fixes.py"
-line = 149
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_footgun_fixes.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_initial_conditions_contract.py"
-line = 54
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_initial_conditions_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_initial_conditions_contract.py"
-line = 87
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_initial_conditions_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_initial_conditions_contract.py"
-line = 91
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_initial_conditions_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
 path = "tests/core/test_resources_hooks_messaging.py"
@@ -2836,128 +1408,8 @@ owner = "tests/core"
 rationale = "Assertion boundary in tests/core/test_resources_hooks_messaging.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
-path = "tests/core/test_same_tick_mutation_composition.py"
-line = 52
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_same_tick_mutation_composition.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_same_tick_mutation_composition.py"
-line = 61
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_same_tick_mutation_composition.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_same_tick_mutation_composition.py"
-line = 84
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_same_tick_mutation_composition.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_same_tick_mutation_composition.py"
-line = 103
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_same_tick_mutation_composition.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/core/test_same_tick_mutation_composition.py"
-line = 127
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/core"
-rationale = "Assertion boundary in tests/core/test_same_tick_mutation_composition.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/examples/test_biome_rts_contract.py"
-line = 108
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/examples"
-rationale = "Assertion boundary in tests/examples/test_biome_rts_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
 path = "tests/examples/test_biome_rts_contract.py"
 line = 170
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/examples"
-rationale = "Assertion boundary in tests/examples/test_biome_rts_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/examples/test_biome_rts_contract.py"
-line = 183
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/examples"
-rationale = "Assertion boundary in tests/examples/test_biome_rts_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/examples/test_biome_rts_contract.py"
-line = 192
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/examples"
-rationale = "Assertion boundary in tests/examples/test_biome_rts_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/examples/test_biome_rts_contract.py"
-line = 196
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/examples"
-rationale = "Assertion boundary in tests/examples/test_biome_rts_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/examples/test_biome_rts_contract.py"
-line = 204
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/examples"
-rationale = "Assertion boundary in tests/examples/test_biome_rts_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/examples/test_biome_rts_contract.py"
-line = 216
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/examples"
-rationale = "Assertion boundary in tests/examples/test_biome_rts_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/examples/test_biome_rts_contract.py"
-line = 225
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/examples"
-rationale = "Assertion boundary in tests/examples/test_biome_rts_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/examples/test_biome_rts_contract.py"
-line = 229
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/examples"
-rationale = "Assertion boundary in tests/examples/test_biome_rts_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/examples/test_biome_rts_contract.py"
-line = 237
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/examples"
-rationale = "Assertion boundary in tests/examples/test_biome_rts_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/examples/test_biome_rts_contract.py"
-line = 242
 method = "to_pylist"
 boundary_kind = "test-assertion"
 owner = "tests/examples"
@@ -2972,172 +1424,12 @@ owner = "tests/examples"
 rationale = "Assertion boundary in tests/examples/test_biome_rts_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
-path = "tests/examples/test_biome_rts_contract.py"
-line = 304
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/examples"
-rationale = "Assertion boundary in tests/examples/test_biome_rts_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/examples/test_biome_rts_contract.py"
-line = 331
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/examples"
-rationale = "Assertion boundary in tests/examples/test_biome_rts_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/examples/test_biome_rts_contract.py"
-line = 348
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/examples"
-rationale = "Assertion boundary in tests/examples/test_biome_rts_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/experiments/test_tragedy_of_the_commons.py"
-line = 48
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/experiments"
-rationale = "Assertion boundary in tests/experiments/test_tragedy_of_the_commons.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/experiments/test_tragedy_of_the_commons.py"
-line = 48
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/experiments"
-rationale = "Assertion boundary in tests/experiments/test_tragedy_of_the_commons.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_cascade_contract.py"
-line = 94
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_cascade_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_cascade_contract.py"
-line = 122
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_cascade_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
 path = "tests/graph/test_depth_contract.py"
 line = 49
 method = "to_pylist"
 boundary_kind = "test-assertion"
 owner = "tests/graph"
 rationale = "Assertion boundary in tests/graph/test_depth_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_depth_contract.py"
-line = 152
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_depth_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_edge_contract.py"
-line = 63
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_edge_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_edge_contract.py"
-line = 97
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_edge_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_edge_contract.py"
-line = 98
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_edge_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_edge_contract.py"
-line = 117
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_edge_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_edge_contract.py"
-line = 119
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_edge_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_edge_contract.py"
-line = 141
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_edge_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_edge_contract.py"
-line = 145
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_edge_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_edge_contract.py"
-line = 168
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_edge_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_edge_contract.py"
-line = 235
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_edge_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_edge_contract.py"
-line = 240
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_edge_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_edge_contract.py"
-line = 257
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_edge_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_edge_contract.py"
-line = 275
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_edge_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
 path = "tests/graph/test_edge_contract.py"
@@ -3165,14 +1457,6 @@ rationale = "Assertion boundary in tests/graph/test_edge_contract.py: executes t
 
 [[entries]]
 path = "tests/graph/test_graph_view_contract.py"
-line = 56
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_graph_view_contract.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_graph_view_contract.py"
 line = 85
 method = "to_pylist"
 boundary_kind = "test-assertion"
@@ -3180,120 +1464,8 @@ owner = "tests/graph"
 rationale = "Assertion boundary in tests/graph/test_graph_view_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
-path = "tests/graph/test_graph_view_contract.py"
-line = 125
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_graph_view_contract.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_graph_view_contract.py"
-line = 128
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_graph_view_contract.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_graph_view_contract.py"
-line = 162
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_graph_view_contract.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_graph_view_contract.py"
-line = 186
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_graph_view_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_graph_view_contract.py"
-line = 207
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_graph_view_contract.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_prefab_contract.py"
-line = 82
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_prefab_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_prefab_contract.py"
-line = 88
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_prefab_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_prefab_contract.py"
-line = 91
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_prefab_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_prefab_contract.py"
-line = 114
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_prefab_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_prefab_contract.py"
-line = 120
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_prefab_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_prefab_contract.py"
-line = 124
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_prefab_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_prefab_contract.py"
-line = 152
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_prefab_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
 path = "tests/graph/test_prefab_contract.py"
 line = 191
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_prefab_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_prefab_contract.py"
-line = 220
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_prefab_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_prefab_contract.py"
-line = 299
 method = "to_pylist"
 boundary_kind = "test-assertion"
 owner = "tests/graph"
@@ -3308,54 +1480,6 @@ owner = "tests/graph"
 rationale = "Assertion boundary in tests/graph/test_prefab_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
-path = "tests/graph/test_prefab_contract.py"
-line = 334
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_prefab_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_prefab_contract.py"
-line = 368
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_prefab_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_prefab_contract.py"
-line = 371
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_prefab_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_prefab_contract.py"
-line = 492
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_prefab_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_prefab_contract.py"
-line = 544
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_prefab_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/graph/test_prefab_contract.py"
-line = 546
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/graph"
-rationale = "Assertion boundary in tests/graph/test_prefab_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
 path = "tests/graph/test_traverse_contract.py"
 line = 51
 method = "to_pylist"
@@ -3364,232 +1488,8 @@ owner = "tests/graph"
 rationale = "Assertion boundary in tests/graph/test_traverse_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
-path = "tests/infrastructure/test_r2_artifact_context.py"
-line = 279
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/infrastructure"
-rationale = "Assertion boundary in tests/infrastructure/test_r2_artifact_context.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/infrastructure/test_r2_artifact_context.py"
-line = 304
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/infrastructure"
-rationale = "Assertion boundary in tests/infrastructure/test_r2_artifact_context.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/infrastructure/test_r2_artifact_context.py"
-line = 314
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/infrastructure"
-rationale = "Assertion boundary in tests/infrastructure/test_r2_artifact_context.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/infrastructure/test_r2_artifact_context.py"
-line = 324
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/infrastructure"
-rationale = "Assertion boundary in tests/infrastructure/test_r2_artifact_context.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/infrastructure/test_r2_artifact_context.py"
-line = 335
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/infrastructure"
-rationale = "Assertion boundary in tests/infrastructure/test_r2_artifact_context.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/infrastructure/test_r2_artifact_context.py"
-line = 344
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/infrastructure"
-rationale = "Assertion boundary in tests/infrastructure/test_r2_artifact_context.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/infrastructure/test_r2_artifact_context.py"
-line = 364
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/infrastructure"
-rationale = "Assertion boundary in tests/infrastructure/test_r2_artifact_context.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/infrastructure/test_r2_artifact_context.py"
-line = 376
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/infrastructure"
-rationale = "Assertion boundary in tests/infrastructure/test_r2_artifact_context.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/infrastructure/test_r2_idempotency.py"
-line = 98
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/infrastructure"
-rationale = "Assertion boundary in tests/infrastructure/test_r2_idempotency.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/infrastructure/test_r2_idempotency.py"
-line = 106
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/infrastructure"
-rationale = "Assertion boundary in tests/infrastructure/test_r2_idempotency.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/infrastructure/test_r2_idempotency.py"
-line = 114
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/infrastructure"
-rationale = "Assertion boundary in tests/infrastructure/test_r2_idempotency.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/ingestion/test_metadata_scans.py"
-line = 57
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/ingestion"
-rationale = "Assertion boundary in tests/ingestion/test_metadata_scans.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/ingestion/test_persistence_integrity.py"
-line = 85
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/ingestion"
-rationale = "Assertion boundary in tests/ingestion/test_persistence_integrity.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/ingestion/test_persistence_integrity.py"
-line = 86
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/ingestion"
-rationale = "Assertion boundary in tests/ingestion/test_persistence_integrity.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/ingestion/test_persistence_integrity.py"
-line = 100
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/ingestion"
-rationale = "Assertion boundary in tests/ingestion/test_persistence_integrity.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/ingestion/test_persistence_integrity.py"
-line = 104
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/ingestion"
-rationale = "Assertion boundary in tests/ingestion/test_persistence_integrity.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/ingestion/test_persistence_integrity.py"
-line = 124
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/ingestion"
-rationale = "Assertion boundary in tests/ingestion/test_persistence_integrity.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/ingestion/test_persistence_integrity.py"
-line = 125
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/ingestion"
-rationale = "Assertion boundary in tests/ingestion/test_persistence_integrity.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/ingestion/test_persistence_integrity.py"
-line = 155
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/ingestion"
-rationale = "Assertion boundary in tests/ingestion/test_persistence_integrity.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/ingestion/test_persistence_integrity.py"
-line = 159
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/ingestion"
-rationale = "Assertion boundary in tests/ingestion/test_persistence_integrity.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_agent_mission_service.py"
-line = 234
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_agent_mission_service.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
 path = "tests/integration/test_agent_mission_service.py"
 line = 240
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_agent_mission_service.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_agent_mission_service.py"
-line = 252
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_agent_mission_service.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_agent_mission_service.py"
-line = 253
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_agent_mission_service.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_agent_mission_service.py"
-line = 255
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_agent_mission_service.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_agent_mission_service.py"
-line = 259
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_agent_mission_service.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_agent_mission_service.py"
-line = 260
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_agent_mission_service.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_agent_mission_service.py"
-line = 261
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_agent_mission_service.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_agent_mission_service.py"
-line = 263
 method = "to_pylist"
 boundary_kind = "test-assertion"
 owner = "tests/integration"
@@ -3604,212 +1504,12 @@ owner = "tests/integration"
 rationale = "Assertion boundary in tests/integration/test_agent_mission_service.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
-path = "tests/integration/test_command_flow.py"
-line = 108
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_command_flow.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_command_flow.py"
-line = 138
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_command_flow.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_command_flow.py"
-line = 290
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_command_flow.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_command_flow.py"
-line = 358
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_command_flow.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
 path = "tests/integration/test_episode_rollout.py"
 line = 178
 method = "to_pylist"
 boundary_kind = "test-assertion"
 owner = "tests/integration"
 rationale = "Assertion boundary in tests/integration/test_episode_rollout.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_fork_destroy_contracts.py"
-line = 98
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_fork_destroy_contracts.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_fork_destroy_contracts.py"
-line = 99
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_fork_destroy_contracts.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_fork_destroy_contracts.py"
-line = 168
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_fork_destroy_contracts.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_fork_destroy_contracts.py"
-line = 181
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_fork_destroy_contracts.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_fork_destroy_contracts.py"
-line = 205
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_fork_destroy_contracts.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_fork_destroy_contracts.py"
-line = 213
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_fork_destroy_contracts.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_fork_destroy_contracts.py"
-line = 284
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_fork_destroy_contracts.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_fork_destroy_contracts.py"
-line = 299
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_fork_destroy_contracts.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_fork_destroy_contracts.py"
-line = 325
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_fork_destroy_contracts.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_fork_destroy_contracts.py"
-line = 333
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_fork_destroy_contracts.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_fork_destroy_contracts.py"
-line = 380
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_fork_destroy_contracts.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_fork_destroy_contracts.py"
-line = 389
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_fork_destroy_contracts.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_fork_destroy_contracts.py"
-line = 433
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_fork_destroy_contracts.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_fork_destroy_contracts.py"
-line = 442
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_fork_destroy_contracts.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_fork_destroy_contracts.py"
-line = 483
-method = "to_pydict"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_fork_destroy_contracts.py: executes the Daft to_pydict terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_fork_destroy_contracts.py"
-line = 526
-method = "to_pydict"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_fork_destroy_contracts.py: executes the Daft to_pydict terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_fork_destroy_contracts.py"
-line = 557
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_fork_destroy_contracts.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_fork_destroy_contracts.py"
-line = 587
-method = "to_pydict"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_fork_destroy_contracts.py: executes the Daft to_pydict terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_fork_destroy_contracts.py"
-line = 651
-method = "to_pydict"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_fork_destroy_contracts.py: executes the Daft to_pydict terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_pr_triage_example.py"
-line = 42
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_pr_triage_example.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/integration/test_pr_triage_example.py"
-line = 42
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/integration"
-rationale = "Assertion boundary in tests/integration/test_pr_triage_example.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
 path = "tests/missions/planning/test_htn_contract.py"
@@ -3892,32 +1592,8 @@ owner = "tests/missions/planning"
 rationale = "Assertion boundary in tests/missions/planning/test_htn_contract.py: executes the Daft to_pydict terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
-path = "tests/physical_ai/test_boundary_helper.py"
-line = 119
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/physical_ai"
-rationale = "Assertion boundary in tests/physical_ai/test_boundary_helper.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/physical_ai/test_boundary_helper.py"
-line = 119
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/physical_ai"
-rationale = "Assertion boundary in tests/physical_ai/test_boundary_helper.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
 path = "tests/physical_ai/test_chunk_policy.py"
 line = 161
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/physical_ai"
-rationale = "Assertion boundary in tests/physical_ai/test_chunk_policy.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/physical_ai/test_chunk_policy.py"
-line = 327
 method = "to_pylist"
 boundary_kind = "test-assertion"
 owner = "tests/physical_ai"
@@ -3956,54 +1632,6 @@ owner = "tests/physical_ai"
 rationale = "Assertion boundary in tests/physical_ai/test_manipulation_harness.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
-path = "tests/physical_ai/test_mujoco_rollout.py"
-line = 79
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/physical_ai"
-rationale = "Assertion boundary in tests/physical_ai/test_mujoco_rollout.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/physical_ai/test_mujoco_rollout.py"
-line = 110
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/physical_ai"
-rationale = "Assertion boundary in tests/physical_ai/test_mujoco_rollout.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/physical_ai/test_policy_loop.py"
-line = 93
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/physical_ai"
-rationale = "Assertion boundary in tests/physical_ai/test_policy_loop.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/projections/test_overview_contract.py"
-line = 55
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/projections"
-rationale = "Assertion boundary in tests/projections/test_overview_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/projections/test_overview_contract.py"
-line = 74
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/projections"
-rationale = "Assertion boundary in tests/projections/test_overview_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/projections/test_overview_contract.py"
-line = 107
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/projections"
-rationale = "Assertion boundary in tests/projections/test_overview_contract.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
 path = "tests/projections/test_overview_contract.py"
 line = 132
 method = "to_pylist"
@@ -4028,22 +1656,6 @@ owner = "tests/storage"
 rationale = "Assertion boundary in tests/storage/test_lancedb_store_core.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
-path = "tests/storage/test_lancedb_store_core.py"
-line = 88
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/storage"
-rationale = "Assertion boundary in tests/storage/test_lancedb_store_core.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/storage/test_lancedb_store_core.py"
-line = 110
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/storage"
-rationale = "Assertion boundary in tests/storage/test_lancedb_store_core.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
 path = "tests/storage/test_lancedb_store_open_and_optimize.py"
 line = 37
 method = "to_pylist"
@@ -4052,46 +1664,6 @@ owner = "tests/storage"
 rationale = "Assertion boundary in tests/storage/test_lancedb_store_open_and_optimize.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
-path = "tests/storage/test_lancedb_store_open_and_optimize.py"
-line = 104
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/storage"
-rationale = "Assertion boundary in tests/storage/test_lancedb_store_open_and_optimize.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/storage/test_storage_roundtrip.py"
-line = 113
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/storage"
-rationale = "Assertion boundary in tests/storage/test_storage_roundtrip.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/storage/test_storage_roundtrip.py"
-line = 113
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/storage"
-rationale = "Assertion boundary in tests/storage/test_storage_roundtrip.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/storage/test_storage_roundtrip.py"
-line = 155
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/storage"
-rationale = "Assertion boundary in tests/storage/test_storage_roundtrip.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/storage/test_storage_roundtrip.py"
-line = 155
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/storage"
-rationale = "Assertion boundary in tests/storage/test_storage_roundtrip.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
 path = "tests/sync/test_sync_stack_contracts.py"
 line = 74
 method = "collect"
@@ -4102,70 +1674,6 @@ rationale = "Assertion boundary in tests/sync/test_sync_stack_contracts.py: exec
 [[entries]]
 path = "tests/sync/test_sync_stack_contracts.py"
 line = 74
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/sync"
-rationale = "Assertion boundary in tests/sync/test_sync_stack_contracts.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/sync/test_sync_stack_contracts.py"
-line = 232
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/sync"
-rationale = "Assertion boundary in tests/sync/test_sync_stack_contracts.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/sync/test_sync_stack_contracts.py"
-line = 232
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/sync"
-rationale = "Assertion boundary in tests/sync/test_sync_stack_contracts.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/sync/test_sync_stack_contracts.py"
-line = 332
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/sync"
-rationale = "Assertion boundary in tests/sync/test_sync_stack_contracts.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/sync/test_sync_stack_contracts.py"
-line = 332
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/sync"
-rationale = "Assertion boundary in tests/sync/test_sync_stack_contracts.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/sync/test_sync_stack_contracts.py"
-line = 381
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/sync"
-rationale = "Assertion boundary in tests/sync/test_sync_stack_contracts.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/sync/test_sync_stack_contracts.py"
-line = 382
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/sync"
-rationale = "Assertion boundary in tests/sync/test_sync_stack_contracts.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/sync/test_sync_stack_contracts.py"
-line = 412
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/sync"
-rationale = "Assertion boundary in tests/sync/test_sync_stack_contracts.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/sync/test_sync_stack_contracts.py"
-line = 412
 method = "to_pylist"
 boundary_kind = "test-assertion"
 owner = "tests/sync"
@@ -4202,46 +1710,6 @@ method = "to_pylist"
 boundary_kind = "test-assertion"
 owner = "tests/sync"
 rationale = "Assertion boundary in tests/sync/test_sync_stack_contracts.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/sync/test_sync_stack_contracts.py"
-line = 669
-method = "count_rows"
-boundary_kind = "test-assertion"
-owner = "tests/sync"
-rationale = "Assertion boundary in tests/sync/test_sync_stack_contracts.py: executes the Daft count_rows terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/sync/test_sync_world.py"
-line = 324
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/sync"
-rationale = "Assertion boundary in tests/sync/test_sync_world.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/sync/test_sync_world.py"
-line = 336
-method = "collect"
-boundary_kind = "test-assertion"
-owner = "tests/sync"
-rationale = "Assertion boundary in tests/sync/test_sync_world.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/sync/test_sync_world.py"
-line = 336
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/sync"
-rationale = "Assertion boundary in tests/sync/test_sync_world.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
-
-[[entries]]
-path = "tests/sync/test_sync_world.py"
-line = 360
-method = "to_pylist"
-boundary_kind = "test-assertion"
-owner = "tests/sync"
-rationale = "Assertion boundary in tests/sync/test_sync_world.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
 path = "bench/core/ecs/add_remove.py"
@@ -4340,62 +1808,6 @@ owner = "bench/observability"
 rationale = "Measurement boundary in bench/observability/daft_attribution.py: executes the Daft to_pylist terminal as the operation or validated result measured by this repository benchmark."
 
 [[entries]]
-path = "evals/infra/idempotency_worker.py"
-line = 118
-method = "to_pylist"
-boundary_kind = "evaluation-oracle"
-owner = "evals/infra"
-rationale = "Evaluation boundary in evals/infra/idempotency_worker.py: executes the Daft to_pylist terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/infra/idempotency_worker.py"
-line = 157
-method = "to_pylist"
-boundary_kind = "evaluation-oracle"
-owner = "evals/infra"
-rationale = "Evaluation boundary in evals/infra/idempotency_worker.py: executes the Daft to_pylist terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/infra/idempotency_worker.py"
-line = 183
-method = "count_rows"
-boundary_kind = "evaluation-oracle"
-owner = "evals/infra"
-rationale = "Evaluation boundary in evals/infra/idempotency_worker.py: executes the Daft count_rows terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/capability/tasks.py"
-line = 194
-method = "collect"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/capability"
-rationale = "Evaluation boundary in evals/suites/capability/tasks.py: executes the Daft collect terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/capability/tasks.py"
-line = 194
-method = "to_pydict"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/capability"
-rationale = "Evaluation boundary in evals/suites/capability/tasks.py: executes the Daft to_pydict terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/capability/tasks.py"
-line = 259
-method = "collect"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/capability"
-rationale = "Evaluation boundary in evals/suites/capability/tasks.py: executes the Daft collect terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/capability/tasks.py"
-line = 259
-method = "to_pydict"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/capability"
-rationale = "Evaluation boundary in evals/suites/capability/tasks.py: executes the Daft to_pydict terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
 path = "evals/suites/capability/tasks.py"
 line = 380
 method = "to_pylist"
@@ -4476,214 +1888,6 @@ owner = "evals/suites/idempotency"
 rationale = "Evaluation boundary in evals/suites/idempotency/durable.py: executes the Daft to_pylist terminal so the repository scenario can grade a concrete externally observable result."
 
 [[entries]]
-path = "evals/suites/idempotency/durable.py"
-line = 298
-method = "to_pylist"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/idempotency"
-rationale = "Evaluation boundary in evals/suites/idempotency/durable.py: executes the Daft to_pylist terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/idempotency/durable.py"
-line = 340
-method = "count_rows"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/idempotency"
-rationale = "Evaluation boundary in evals/suites/idempotency/durable.py: executes the Daft count_rows terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/idempotency/durable.py"
-line = 370
-method = "to_pylist"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/idempotency"
-rationale = "Evaluation boundary in evals/suites/idempotency/durable.py: executes the Daft to_pylist terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/idempotency/tasks.py"
-line = 544
-method = "to_pylist"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/idempotency"
-rationale = "Evaluation boundary in evals/suites/idempotency/tasks.py: executes the Daft to_pylist terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/idempotency/tasks.py"
-line = 609
-method = "to_pylist"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/idempotency"
-rationale = "Evaluation boundary in evals/suites/idempotency/tasks.py: executes the Daft to_pylist terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/idempotency/tasks.py"
-line = 675
-method = "count_rows"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/idempotency"
-rationale = "Evaluation boundary in evals/suites/idempotency/tasks.py: executes the Daft count_rows terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/idempotency/tasks.py"
-line = 676
-method = "count_rows"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/idempotency"
-rationale = "Evaluation boundary in evals/suites/idempotency/tasks.py: executes the Daft count_rows terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/idempotency/tasks.py"
-line = 709
-method = "to_pylist"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/idempotency"
-rationale = "Evaluation boundary in evals/suites/idempotency/tasks.py: executes the Daft to_pylist terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/idempotency/tasks.py"
-line = 757
-method = "to_pylist"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/idempotency"
-rationale = "Evaluation boundary in evals/suites/idempotency/tasks.py: executes the Daft to_pylist terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/idempotency/tasks.py"
-line = 790
-method = "to_pylist"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/idempotency"
-rationale = "Evaluation boundary in evals/suites/idempotency/tasks.py: executes the Daft to_pylist terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/idempotency/tasks.py"
-line = 927
-method = "to_pylist"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/idempotency"
-rationale = "Evaluation boundary in evals/suites/idempotency/tasks.py: executes the Daft to_pylist terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/idempotency/tasks.py"
-line = 935
-method = "to_pylist"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/idempotency"
-rationale = "Evaluation boundary in evals/suites/idempotency/tasks.py: executes the Daft to_pylist terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/idempotency/tasks.py"
-line = 978
-method = "collect"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/idempotency"
-rationale = "Evaluation boundary in evals/suites/idempotency/tasks.py: executes the Daft collect terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/idempotency/tasks.py"
-line = 979
-method = "to_pylist"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/idempotency"
-rationale = "Evaluation boundary in evals/suites/idempotency/tasks.py: executes the Daft to_pylist terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/idempotency/tasks.py"
-line = 989
-method = "collect"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/idempotency"
-rationale = "Evaluation boundary in evals/suites/idempotency/tasks.py: executes the Daft collect terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/idempotency/tasks.py"
-line = 990
-method = "to_pylist"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/idempotency"
-rationale = "Evaluation boundary in evals/suites/idempotency/tasks.py: executes the Daft to_pylist terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/idempotency/tasks.py"
-line = 1002
-method = "collect"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/idempotency"
-rationale = "Evaluation boundary in evals/suites/idempotency/tasks.py: executes the Daft collect terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/idempotency/tasks.py"
-line = 1003
-method = "to_pylist"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/idempotency"
-rationale = "Evaluation boundary in evals/suites/idempotency/tasks.py: executes the Daft to_pylist terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/idempotency/tasks.py"
-line = 1053
-method = "to_pylist"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/idempotency"
-rationale = "Evaluation boundary in evals/suites/idempotency/tasks.py: executes the Daft to_pylist terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/idempotency/tasks.py"
-line = 1054
-method = "to_pylist"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/idempotency"
-rationale = "Evaluation boundary in evals/suites/idempotency/tasks.py: executes the Daft to_pylist terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/idempotency/tasks.py"
-line = 1055
-method = "to_pylist"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/idempotency"
-rationale = "Evaluation boundary in evals/suites/idempotency/tasks.py: executes the Daft to_pylist terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/idempotency/tasks.py"
-line = 1056
-method = "to_pylist"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/idempotency"
-rationale = "Evaluation boundary in evals/suites/idempotency/tasks.py: executes the Daft to_pylist terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/regression/tasks.py"
-line = 410
-method = "to_pylist"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/regression"
-rationale = "Evaluation boundary in evals/suites/regression/tasks.py: executes the Daft to_pylist terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/regression/tasks.py"
-line = 421
-method = "to_pylist"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/regression"
-rationale = "Evaluation boundary in evals/suites/regression/tasks.py: executes the Daft to_pylist terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/regression/tasks.py"
-line = 432
-method = "to_pylist"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/regression"
-rationale = "Evaluation boundary in evals/suites/regression/tasks.py: executes the Daft to_pylist terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
-path = "evals/suites/regression/tasks.py"
-line = 745
-method = "to_pylist"
-boundary_kind = "evaluation-oracle"
-owner = "evals/suites/regression"
-rationale = "Evaluation boundary in evals/suites/regression/tasks.py: executes the Daft to_pylist terminal so the repository scenario can grade a concrete externally observable result."
-
-[[entries]]
 path = "examples/00_quickstart.py"
 line = 33
 method = "collect"
@@ -4700,38 +1904,6 @@ owner = "examples"
 rationale = "User-facing example boundary in examples/00_quickstart.py: executes the Daft to_pylist terminal to render or inspect the concrete result taught by the runnable example."
 
 [[entries]]
-path = "examples/01_world_mutations.py"
-line = 90
-method = "show"
-boundary_kind = "example-output"
-owner = "examples"
-rationale = "User-facing example boundary in examples/01_world_mutations.py: executes the Daft show terminal to render or inspect the concrete result taught by the runnable example."
-
-[[entries]]
-path = "examples/01_world_mutations.py"
-line = 99
-method = "show"
-boundary_kind = "example-output"
-owner = "examples"
-rationale = "User-facing example boundary in examples/01_world_mutations.py: executes the Daft show terminal to render or inspect the concrete result taught by the runnable example."
-
-[[entries]]
-path = "examples/01_world_mutations.py"
-line = 111
-method = "show"
-boundary_kind = "example-output"
-owner = "examples"
-rationale = "User-facing example boundary in examples/01_world_mutations.py: executes the Daft show terminal to render or inspect the concrete result taught by the runnable example."
-
-[[entries]]
-path = "examples/01_world_mutations.py"
-line = 131
-method = "count_rows"
-boundary_kind = "example-output"
-owner = "examples"
-rationale = "User-facing example boundary in examples/01_world_mutations.py: executes the Daft count_rows terminal to render or inspect the concrete result taught by the runnable example."
-
-[[entries]]
 path = "examples/02_fork_counterfactual.py"
 line = 70
 method = "to_pylist"
@@ -4746,14 +1918,6 @@ method = "to_pylist"
 boundary_kind = "example-output"
 owner = "examples"
 rationale = "User-facing example boundary in examples/02_fork_counterfactual.py: executes the Daft to_pylist terminal to render or inspect the concrete result taught by the runnable example."
-
-[[entries]]
-path = "examples/02_fork_counterfactual.py"
-line = 122
-method = "count_rows"
-boundary_kind = "example-output"
-owner = "examples"
-rationale = "User-facing example boundary in examples/02_fork_counterfactual.py: executes the Daft count_rows terminal to render or inspect the concrete result taught by the runnable example."
 
 [[entries]]
 path = "examples/03_time_travel.py"
@@ -4778,14 +1942,6 @@ method = "to_pylist"
 boundary_kind = "example-output"
 owner = "examples"
 rationale = "User-facing example boundary in examples/04_messaging.py: executes the Daft to_pylist terminal to render or inspect the concrete result taught by the runnable example."
-
-[[entries]]
-path = "examples/04_messaging.py"
-line = 287
-method = "show"
-boundary_kind = "example-output"
-owner = "examples"
-rationale = "User-facing example boundary in examples/04_messaging.py: executes the Daft show terminal to render or inspect the concrete result taught by the runnable example."
 
 [[entries]]
 path = "examples/04_messaging.py"
@@ -4964,38 +2120,6 @@ owner = "examples"
 rationale = "User-facing example boundary in examples/10_autoresearch.py: executes the Daft to_pylist terminal to render or inspect the concrete result taught by the runnable example."
 
 [[entries]]
-path = "examples/10_autoresearch.py"
-line = 108
-method = "show"
-boundary_kind = "example-output"
-owner = "examples"
-rationale = "User-facing example boundary in examples/10_autoresearch.py: executes the Daft show terminal to render or inspect the concrete result taught by the runnable example."
-
-[[entries]]
-path = "examples/11_graph_relationships.py"
-line = 57
-method = "to_pylist"
-boundary_kind = "example-output"
-owner = "examples"
-rationale = "User-facing example boundary in examples/11_graph_relationships.py: executes the Daft to_pylist terminal to render or inspect the concrete result taught by the runnable example."
-
-[[entries]]
-path = "examples/11_graph_relationships.py"
-line = 62
-method = "count_rows"
-boundary_kind = "example-output"
-owner = "examples"
-rationale = "User-facing example boundary in examples/11_graph_relationships.py: executes the Daft count_rows terminal to render or inspect the concrete result taught by the runnable example."
-
-[[entries]]
-path = "examples/12_prefabs.py"
-line = 63
-method = "to_pylist"
-boundary_kind = "example-output"
-owner = "examples"
-rationale = "User-facing example boundary in examples/12_prefabs.py: executes the Daft to_pylist terminal to render or inspect the concrete result taught by the runnable example."
-
-[[entries]]
 path = "examples/12_prefabs.py"
 line = 73
 method = "to_pylist"
@@ -5005,63 +2129,7 @@ rationale = "User-facing example boundary in examples/12_prefabs.py: executes th
 
 [[entries]]
 path = "examples/13_biome_rts.py"
-line = 82
-method = "to_pylist"
-boundary_kind = "example-output"
-owner = "examples"
-rationale = "User-facing example boundary in examples/13_biome_rts.py: executes the Daft to_pylist terminal to render or inspect the concrete result taught by the runnable example."
-
-[[entries]]
-path = "examples/13_biome_rts.py"
-line = 154
-method = "to_pylist"
-boundary_kind = "example-output"
-owner = "examples"
-rationale = "User-facing example boundary in examples/13_biome_rts.py: executes the Daft to_pylist terminal to render or inspect the concrete result taught by the runnable example."
-
-[[entries]]
-path = "examples/13_biome_rts.py"
-line = 157
-method = "to_pylist"
-boundary_kind = "example-output"
-owner = "examples"
-rationale = "User-facing example boundary in examples/13_biome_rts.py: executes the Daft to_pylist terminal to render or inspect the concrete result taught by the runnable example."
-
-[[entries]]
-path = "examples/13_biome_rts.py"
-line = 162
-method = "to_pylist"
-boundary_kind = "example-output"
-owner = "examples"
-rationale = "User-facing example boundary in examples/13_biome_rts.py: executes the Daft to_pylist terminal to render or inspect the concrete result taught by the runnable example."
-
-[[entries]]
-path = "examples/13_biome_rts.py"
-line = 165
-method = "to_pylist"
-boundary_kind = "example-output"
-owner = "examples"
-rationale = "User-facing example boundary in examples/13_biome_rts.py: executes the Daft to_pylist terminal to render or inspect the concrete result taught by the runnable example."
-
-[[entries]]
-path = "examples/13_biome_rts.py"
-line = 182
-method = "to_pylist"
-boundary_kind = "example-output"
-owner = "examples"
-rationale = "User-facing example boundary in examples/13_biome_rts.py: executes the Daft to_pylist terminal to render or inspect the concrete result taught by the runnable example."
-
-[[entries]]
-path = "examples/13_biome_rts.py"
 line = 196
-method = "to_pylist"
-boundary_kind = "example-output"
-owner = "examples"
-rationale = "User-facing example boundary in examples/13_biome_rts.py: executes the Daft to_pylist terminal to render or inspect the concrete result taught by the runnable example."
-
-[[entries]]
-path = "examples/13_biome_rts.py"
-line = 201
 method = "to_pylist"
 boundary_kind = "example-output"
 owner = "examples"
@@ -5098,22 +2166,6 @@ method = "to_pylist"
 boundary_kind = "example-output"
 owner = "examples"
 rationale = "User-facing example boundary in examples/simulation_script.py: executes the Daft to_pylist terminal to render or inspect the concrete result taught by the runnable example."
-
-[[entries]]
-path = "examples/simulation_script.py"
-line = 118
-method = "show"
-boundary_kind = "example-output"
-owner = "examples"
-rationale = "User-facing example boundary in examples/simulation_script.py: executes the Daft show terminal to render or inspect the concrete result taught by the runnable example."
-
-[[entries]]
-path = "experiments/cooperative_emergence.py"
-line = 153
-method = "to_pydict"
-boundary_kind = "experiment-observation"
-owner = "experiments"
-rationale = "Experimental observation boundary in experiments/cooperative_emergence.py: executes the Daft to_pydict terminal to inspect the concrete outcome of this non-product experiment."
 
 [[entries]]
 path = "experiments/session_reflection.py"
@@ -5157,43 +2209,11 @@ rationale = "Experimental observation boundary in experiments/session_reflection
 
 [[entries]]
 path = "experiments/session_reflection.py"
-line = 153
-method = "count_rows"
-boundary_kind = "experiment-observation"
-owner = "experiments"
-rationale = "Experimental observation boundary in experiments/session_reflection.py: executes the Daft count_rows terminal to inspect the concrete outcome of this non-product experiment."
-
-[[entries]]
-path = "experiments/session_reflection.py"
-line = 154
-method = "count_rows"
-boundary_kind = "experiment-observation"
-owner = "experiments"
-rationale = "Experimental observation boundary in experiments/session_reflection.py: executes the Daft count_rows terminal to inspect the concrete outcome of this non-product experiment."
-
-[[entries]]
-path = "experiments/session_reflection.py"
 line = 161
 method = "to_pylist"
 boundary_kind = "experiment-observation"
 owner = "experiments"
 rationale = "Experimental observation boundary in experiments/session_reflection.py: executes the Daft to_pylist terminal to inspect the concrete outcome of this non-product experiment."
-
-[[entries]]
-path = "experiments/session_reflection.py"
-line = 163
-method = "count_rows"
-boundary_kind = "experiment-observation"
-owner = "experiments"
-rationale = "Experimental observation boundary in experiments/session_reflection.py: executes the Daft count_rows terminal to inspect the concrete outcome of this non-product experiment."
-
-[[entries]]
-path = "experiments/session_reflection.py"
-line = 164
-method = "count_rows"
-boundary_kind = "experiment-observation"
-owner = "experiments"
-rationale = "Experimental observation boundary in experiments/session_reflection.py: executes the Daft count_rows terminal to inspect the concrete outcome of this non-product experiment."
 
 [[entries]]
 path = "experiments/session_reflection.py"
@@ -5250,11 +2270,18 @@ method = "to_pylist"
 boundary_kind = "repository-validation"
 owner = "scripts"
 rationale = "Repository tooling boundary in scripts/validate_r2_substrate.py: executes the Daft to_pylist terminal to validate or report a concrete checked-in harness result."
+[[entries]]
+path = "tests/sync/test_sync_stack_contracts.py"
+line = 191
+method = "collect"
+boundary_kind = "test-assertion"
+owner = "tests"
+rationale = "Assertion boundary in tests/sync/test_sync_stack_contracts.py: executes the Daft collect terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
-path = "scripts/validate_r2_substrate.py"
-line = 145
-method = "count_rows"
-boundary_kind = "repository-validation"
-owner = "scripts"
-rationale = "Repository tooling boundary in scripts/validate_r2_substrate.py: executes the Daft count_rows terminal to validate or report a concrete checked-in harness result."
+path = "tests/sync/test_sync_stack_contracts.py"
+line = 191
+method = "to_pylist"
+boundary_kind = "test-assertion"
+owner = "tests"
+rationale = "Assertion boundary in tests/sync/test_sync_stack_contracts.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."

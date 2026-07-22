@@ -360,6 +360,201 @@ def _collect_batch_udf_param_lines(source: str) -> dict[int, frozenset[str]]:
     return line_to_params
 
 
+class _FlowAnalyzer(ast.NodeVisitor):
+    """Bounded lexical data flow for the terminal forms in the registry.
+
+    Environments are deliberately statement ordered and function local.  This
+    is not general type inference: only imports, annotations, constructors,
+    aliases, attributes, and Catalog/Session ``get_table`` results propagate.
+    """
+
+    def __init__(self, rel: str, lines: list[str], batch_params: dict[int, frozenset[str]]) -> None:
+        self.rel = rel
+        self.lines = lines
+        self.batch_params = batch_params
+        self.imports: dict[str, str] = {}
+        self.env: dict[str, str] = {}
+        self.class_name: str | None = None
+        self.class_attrs: dict[tuple[str, str], str] = {}
+        self.local_types: set[str] = set()
+        self.sites: list[Site] = []
+        self.seen: set[tuple[int, str]] = set()
+
+    def _annotation(self, node: ast.expr | None) -> str | None:
+        return _qualified_name(node, self.imports) if node else None
+
+    def _type(self, node: ast.expr) -> str | None:
+        if isinstance(node, ast.Name):
+            return self.env.get(node.id)
+        if isinstance(node, ast.Attribute):
+            if (
+                isinstance(node.value, ast.Name)
+                and node.value.id in {"self", "cls"}
+                and self.class_name
+            ):
+                return self.class_attrs.get((self.class_name, node.attr))
+            return self._type(node.value)
+        if isinstance(node, ast.Call):
+            called = _qualified_name(node.func, self.imports)
+            if called in _REGISTRY.dataframe_constructors:
+                return "daft.DataFrame"
+            if called in _REGISTRY.typed_methods:
+                return called
+            if isinstance(node.func, ast.Attribute):
+                owner = self._type(node.func.value)
+                if node.func.attr == "get_table" and owner in {
+                    "daft.catalog.Catalog",
+                    "daft.Session",
+                }:
+                    return "daft.catalog.Table"
+                if node.func.attr == "schema" and owner in _REGISTRY.dataframe_types:
+                    return "foreign"
+                if node.func.attr in {"to_arrow", "to_pandas", "to_pydict", "to_pylist"}:
+                    return "foreign"
+                if owner == "foreign":
+                    return "foreign"
+                if owner:
+                    return owner
+                if node.func.attr == "collect":
+                    return "daft.DataFrame"
+            if called and (
+                called.split(".", 1)[0] in {"lancedb", "pyarrow"}
+                or called.rsplit(".", 1)[-1] in self.local_types
+            ):
+                return "foreign"
+            # A direct unknown constructor is positive evidence that the old
+            # value was replaced.  An unproven method chain stays unknown so
+            # the two historical receiver spellings can still be recognized.
+            if isinstance(node.func, ast.Name):
+                return "foreign"
+            return None
+        if isinstance(node, ast.Await):
+            return self._type(node.value)
+        return None
+
+    def _record(self, node: ast.AST, method: str, receiver: ast.expr | None) -> None:
+        line = node.end_lineno or node.lineno
+        key = (line, method)
+        if key in self.seen:
+            return
+        self.seen.add(key)
+        sanctioned = (
+            method == "to_pylist"
+            and line in self.batch_params
+            and isinstance(receiver, ast.Name)
+            and receiver.id in self.batch_params[line]
+        )
+        self.sites.append(Site(self.rel, line, method, self.lines[line - 1].lstrip(), sanctioned))
+
+    def _check(self, node: ast.AST, receiver: ast.expr | None, method: str) -> None:
+        if receiver is None:
+            return
+        receiver_type = self._type(receiver)
+        if receiver_type == "foreign":
+            return
+        if receiver_type in _REGISTRY.dataframe_types:
+            terminal = method in _REGISTRY.dataframe_methods
+        elif receiver_type in _REGISTRY.typed_methods:
+            terminal = method in _REGISTRY.typed_methods[receiver_type]
+        else:
+            terminal = method in _REGISTRY.unproven_methods
+        if terminal:
+            self._record(node, method, receiver)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            self.imports[alias.asname or alias.name.split(".")[0]] = alias.name
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if node.module:
+            for alias in node.names:
+                self.imports[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.local_types.add(node.name)
+        previous = self.class_name
+        self.class_name = node.name
+        for statement in node.body:
+            self.visit(statement)
+        self.class_name = previous
+
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        outer = self.env
+        self.env = {}
+        for arg in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs):
+            annotation = self._annotation(arg.annotation)
+            if annotation in _REGISTRY.dataframe_types or annotation in _REGISTRY.typed_methods:
+                self.env[arg.arg] = annotation
+            elif annotation and annotation.split(".", 1)[0] in {"lancedb", "pyarrow"}:
+                self.env[arg.arg] = "foreign"
+        for statement in node.body:
+            self.visit(statement)
+        self.env = outer
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def _assign(self, target: ast.expr, value_type: str | None) -> None:
+        if isinstance(target, ast.Name):
+            self.env.pop(target.id, None)
+            if value_type:
+                self.env[target.id] = value_type
+        elif (
+            isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Name)
+            and target.value.id in {"self", "cls"}
+            and self.class_name
+        ):
+            key = (self.class_name, target.attr)
+            self.class_attrs.pop(key, None)
+            if value_type:
+                self.class_attrs[key] = value_type
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self.visit(node.value)
+        value_type = self._type(node.value)
+        for target in node.targets:
+            self._assign(target, value_type)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if node.value:
+            self.visit(node.value)
+        value_type = self._annotation(node.annotation) or (
+            self._type(node.value) if node.value else None
+        )
+        self._assign(node.target, value_type)
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        self.visit(node.value)
+        self._check(node, node.value, node.attr)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        qualified = _qualified_name(node.func, self.imports)
+        if qualified in _REGISTRY.module_functions:
+            method = qualified.rsplit(".", 1)[-1]
+            self._record(node.func, method, None)
+        elif isinstance(node.func, ast.Name) and node.func.id == "iter" and node.args:
+            self._check(node, node.args[0], "__iter__")
+        self.generic_visit(node)
+
+    def visit_For(self, node: ast.For | ast.AsyncFor) -> None:
+        self.visit(node.iter)
+        if not isinstance(node.iter, ast.Call):
+            self._check(node.iter, node.iter, "__iter__")
+        for statement in node.body:
+            self.visit(statement)
+        for statement in node.orelse:
+            self.visit(statement)
+
+    visit_AsyncFor = visit_For
+
+    def visit_comprehension(self, node: ast.comprehension) -> None:
+        self.visit(node.iter)
+        if not isinstance(node.iter, ast.Call):
+            self._check(node.iter, node.iter, "__iter__")
+        for condition in node.ifs:
+            self.visit(condition)
+
+
 def _scan_file(path: Path, rel: str) -> list[Site]:
     try:
         text = path.read_text(encoding="utf-8")
@@ -367,39 +562,11 @@ def _scan_file(path: Path, rel: str) -> list[Site]:
         return []
 
     tree = ast.parse(text)
-    provenance = _discover_provenance(tree)
-
     batch_line_params = _collect_batch_udf_param_lines(text)
     lines = text.splitlines()
-    sites: list[Site] = []
-    seen: set[tuple[int, str]] = set()
-    for candidate in _discover_candidates(tree, provenance.imports):
-        if not _candidate_is_terminal(candidate, provenance):
-            continue
-        node = candidate.node
-        method = candidate.method
-        method_line = node.end_lineno or node.lineno
-        key = (method_line, method)
-        if key in seen:
-            continue
-        seen.add(key)
-        receiver = candidate.receiver
-        sanctioned = (
-            method == "to_pylist"
-            and method_line in batch_line_params
-            and isinstance(receiver, ast.Name)
-            and receiver.id in batch_line_params[method_line]
-        )
-        sites.append(
-            Site(
-                path=rel,
-                line=method_line,
-                method=method,
-                snippet=lines[method_line - 1].lstrip(),
-                sanctioned=sanctioned,
-            )
-        )
-    return sorted(sites, key=lambda site: (site.line, site.method))
+    analyzer = _FlowAnalyzer(rel, lines, batch_line_params)
+    analyzer.visit(tree)
+    return sorted(analyzer.sites, key=lambda site: (site.line, site.method))
 
 
 def _locked_daft_version(root: Path) -> str | None:
