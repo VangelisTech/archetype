@@ -15,10 +15,11 @@
 """Lazy-evaluation audit.
 
 Daft is lazily evaluated. DataFrames represent computations, not results.
-Calling ``.collect()`` or ``.to_pylist()`` forces the frame through Python
-memory, defeats query planning, and stops scaling at in-memory size.
+Daft exposes several conversions, iterators, display helpers, and writes that
+can execute or commit a lazy plan.
 
-Every such reference inside ``src/`` is a contract exception against
+Every such reference in checked-in product and repository-harness Python is a
+reviewed execution boundary against
 Archetype's lazy execution model. This includes bound callables such as
 ``await blocking(frame.collect)``. This script enumerates production sites and
 gates them against ``lazy_audit.toml``. New, undocumented sites cause a
@@ -49,10 +50,6 @@ The checker detects this pattern via AST analysis:
 ``DataFrame.collect()`` and ``DataFrame.to_pylist()`` anywhere, and
 ``Series.to_pylist()`` *outside* batch-UDF scope, still require entries.
 
-Tests are intentionally out of scope: terminal materialization at the
-assertion boundary is expected. The contract being audited is the
-production execution model, not test ergonomics.
-
 Run via ``make lazy-audit`` or as a pre-commit hook.
 """
 
@@ -62,10 +59,20 @@ import argparse
 import ast
 import sys
 import tomllib
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-ROOTS: tuple[str, ...] = ("src",)
+ROOTS: tuple[str, ...] = (
+    "src",
+    "tests",
+    "bench",
+    "evals",
+    "examples",
+    "experiments",
+    "scripts",
+    "quality",
+)
 ALLOWLIST_FILENAME = "lazy_audit.toml"
 REGISTRY_RELATIVE = "quality/daft_lazy_terminals.toml"
 SELF_RELATIVE = "scripts/check_lazy_audit.py"
@@ -120,7 +127,10 @@ class Entry:
     path: str
     line: int
     method: str
-    reason: str
+    boundary_kind: str
+    owner: str
+    rationale: str
+    removal_issue: str | None
 
 
 def _project_root() -> Path:
@@ -184,11 +194,15 @@ class _Provenance:
             called = _qualified_name(node.func, self.imports)
             if called in _REGISTRY.dataframe_constructors:
                 return "daft.DataFrame"
+            if called in _REGISTRY.typed_methods:
+                return called
             if called and (
                 called in self.foreign_types or called.split(".", 1)[0] in {"lancedb", "pyarrow"}
             ):
                 return "foreign"
             if isinstance(node.func, ast.Attribute):
+                if node.func.attr in {"to_arrow", "to_pandas", "to_pydict", "to_pylist"}:
+                    return "foreign"
                 return self.receiver_type(node.func.value)
         if isinstance(node, ast.Attribute):
             return self.receiver_type(node.value)
@@ -218,8 +232,6 @@ def _discover_provenance(tree: ast.AST) -> _Provenance:
             or annotation_name in _REGISTRY.typed_methods
         ):
             provenance.names[name] = annotation_name
-            if annotation_name in _REGISTRY.dataframe_types:
-                provenance.direct_dataframe_names.add(name)
             return
         if annotation_name and (
             annotation_name in provenance.foreign_types
@@ -298,8 +310,9 @@ def _candidate_is_terminal(candidate: _Candidate, provenance: _Provenance) -> bo
         return candidate.method in _REGISTRY.dataframe_methods
     if receiver_type in _REGISTRY.typed_methods:
         return candidate.method in _REGISTRY.typed_methods[receiver_type]
-    # Preserve the original audit's conservative treatment of its two methods,
-    # while local/import/assignment evidence above keeps known foreign values clean.
+    # Conservatively cover terminal spellings that are sufficiently Daft-specific
+    # when bounded provenance is inconclusive. Overloaded conversion and generic
+    # write names remain provenance-gated above.
     return candidate.method in _REGISTRY.unproven_methods
 
 
@@ -431,7 +444,12 @@ def load_allowlist(root: Path) -> tuple[list[Entry], str | None]:
                     path=str(raw["path"]),
                     line=int(raw["line"]),
                     method=str(raw["method"]),
-                    reason=str(raw.get("reason", "")).strip(),
+                    boundary_kind=str(raw["boundary_kind"]).strip(),
+                    owner=str(raw["owner"]).strip(),
+                    rationale=str(raw["rationale"]).strip(),
+                    removal_issue=(
+                        str(raw["removal_issue"]).strip() if "removal_issue" in raw else None
+                    ),
                 )
             )
         except (KeyError, TypeError, ValueError) as exc:
@@ -461,6 +479,16 @@ def _reason_is_substantive(reason: str) -> bool:
     return len(norm) >= 20
 
 
+def _entry_is_complete(entry: Entry) -> bool:
+    if not entry.boundary_kind or not entry.owner or not _reason_is_substantive(entry.rationale):
+        return False
+    return entry.boundary_kind != "legacy" or bool(
+        entry.removal_issue
+        and entry.removal_issue.startswith("#")
+        and entry.removal_issue[1:].isdigit()
+    )
+
+
 STERN_HEADER = (
     "─────────────────────────────────────────────────────────────────────\n"
     "LAZY EXECUTION AUDIT FAILED\n"
@@ -481,9 +509,11 @@ If the materialization is genuinely unavoidable (storage write boundary,
 single-row migration extract or terminal test assertion),
 the exception must be documented in writing and visible in code review:
 
-  * The reason field in lazy_audit.toml must state the technical reason
+  * Every entry must name its boundary kind and owner, and its rationale must
+    state the technical reason
     the boundary cannot be expressed lazily. Generic phrases ("needed",
     "for the test", "convenience") are rejected automatically.
+  * Legacy entries must name the issue that removes them.
   * The new entry must be called out in the PR description or as a PR
     comment so a human reviewer signs off on the exception explicitly.
 
@@ -555,14 +585,17 @@ def main() -> int:
 
     site_keys = {(s.path, s.line, s.method): s for s in audited_sites}
     allow_keys = {(e.path, e.line, e.method): e for e in allow}
+    key_counts = Counter((e.path, e.line, e.method) for e in allow)
 
     new_sites = [site_keys[k] for k in site_keys.keys() - allow_keys.keys()]
     stale_entries = [allow_keys[k] for k in allow_keys.keys() - site_keys.keys()]
-    weak_reasons = [e for e in allow if not _reason_is_substantive(e.reason)]
+    duplicate_entries = [allow_keys[k] for k, count in key_counts.items() if count > 1]
+    incomplete_entries = [e for e in allow if not _entry_is_complete(e)]
 
     new_sites.sort(key=lambda s: (s.path, s.line))
     stale_entries.sort(key=lambda e: (e.path, e.line))
-    weak_reasons.sort(key=lambda e: (e.path, e.line))
+    duplicate_entries.sort(key=lambda e: (e.path, e.line))
+    incomplete_entries.sort(key=lambda e: (e.path, e.line))
 
     # Always print sanctioned summary for visibility.
     if sanctioned_sites:
@@ -571,7 +604,7 @@ def main() -> int:
             f"(sanctioned @daft.method.batch / @daft.func.batch parameter access)."
         )
 
-    if not (new_sites or stale_entries or weak_reasons):
+    if not (new_sites or stale_entries or duplicate_entries or incomplete_entries):
         print(f"lazy audit: {len(audited_sites)} audited site(s), all accounted for.")
         return 0
 
@@ -582,7 +615,9 @@ def main() -> int:
         sys.stderr.write(_format_section("New, undocumented materialization points:", rendered))
 
     if stale_entries:
-        rendered = [f"{e.path}:{e.line}  .{e.method}()  reason={e.reason!r}" for e in stale_entries]
+        rendered = [
+            f"{e.path}:{e.line}  .{e.method}()  rationale={e.rationale!r}" for e in stale_entries
+        ]
         sys.stderr.write(
             _format_section(
                 "Stale allowlist entries (line no longer holds a matching call):",
@@ -590,11 +625,21 @@ def main() -> int:
             )
         )
 
-    if weak_reasons:
-        rendered = [f"{e.path}:{e.line}  .{e.method}()  reason={e.reason!r}" for e in weak_reasons]
+    if duplicate_entries:
+        rendered = [f"{e.path}:{e.line}  .{e.method}()" for e in duplicate_entries]
+        sys.stderr.write(
+            _format_section("Duplicate allowlist dispositions (one entry is required):", rendered)
+        )
+
+    if incomplete_entries:
+        rendered = [
+            f"{e.path}:{e.line}  .{e.method}()  kind={e.boundary_kind!r} "
+            f"owner={e.owner!r} rationale={e.rationale!r} removal_issue={e.removal_issue!r}"
+            for e in incomplete_entries
+        ]
         sys.stderr.write(
             _format_section(
-                "Allowlist entries with unjustified reasons (rejected at review):",
+                "Allowlist entries with incomplete dispositions (rejected at review):",
                 rendered,
             )
         )

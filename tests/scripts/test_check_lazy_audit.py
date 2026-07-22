@@ -414,6 +414,37 @@ def test_unlisted_daft_catalog_table_writes_are_gated(tmp_path, method):
     assert [site.method for site in sites] == [method]
 
 
+def test_catalog_write_provenance_flows_through_assignment(tmp_path):
+    py = _write_py(
+        tmp_path,
+        "catalog_alias.py",
+        """\
+        from daft.catalog import Table
+
+        def persist(table: Table, frame):
+            destination = table
+            destination.append(frame)
+        """,
+    )
+
+    assert [site.method for site in _scan_file(py, "catalog_alias.py")] == ["append"]
+
+
+def test_session_write_is_gated_from_annotation(tmp_path):
+    py = _write_py(
+        tmp_path,
+        "session_write.py",
+        """\
+        from daft import Session
+
+        def persist(session: Session, frame):
+            session.write_table("destination", frame)
+        """,
+    )
+
+    assert [site.method for site in _scan_file(py, "session_write.py")] == ["write_table"]
+
+
 def test_unlisted_daft_module_write_table_is_gated(tmp_path):
     py = _write_py(
         tmp_path,
@@ -445,6 +476,16 @@ def test_foreign_overlapping_method_names_are_not_gated(tmp_path, source):
     py = _write_py(tmp_path, "foreign.py", source)
 
     assert _scan_file(py, "foreign.py") == []
+
+
+def test_daft_arrow_export_is_gated_but_followup_pyarrow_conversion_is_not(tmp_path):
+    py = _write_py(
+        tmp_path,
+        "arrow_export.py",
+        "import daft\narrow = daft.from_pydict({'x': [1]}).to_arrow()\narrow.to_pylist()\n",
+    )
+
+    assert [site.method for site in _scan_file(py, "arrow_export.py")] == ["to_arrow"]
 
 
 def test_batch_udf_series_to_pylist_remains_executor_owned(tmp_path):
@@ -481,11 +522,49 @@ def test_locked_daft_version_drift_fails_closed(tmp_path, monkeypatch, capsys):
     assert "0.7.19" in output.out + output.err
 
 
+@pytest.mark.parametrize(
+    "root_name",
+    ["src", "tests", "bench", "evals", "examples", "experiments", "scripts", "quality"],
+)
+def test_scan_covers_every_checked_in_python_root(tmp_path, root_name):
+    target = tmp_path / root_name
+    target.mkdir()
+    _write_py(target, "terminal.py", "frame.collect()\n")
+
+    sites = mod.scan(tmp_path)
+
+    assert [(site.path, site.method) for site in sites] == [(f"{root_name}/terminal.py", "collect")]
+
+
 def test_failure_guidance_does_not_recommend_execution_for_diagnostics():
     guidance = mod.STERN_BODY.lower()
 
     assert "count_rows" not in guidance
     assert "debug logging" not in guidance
+
+
+def test_legacy_disposition_requires_numbered_removal_issue():
+    complete = mod.Entry(
+        path="src/probe.py",
+        line=1,
+        method="count_rows",
+        boundary_kind="legacy",
+        owner="core",
+        rationale="Temporary execution boundary retained only while its focused repair is pending.",
+        removal_issue="#538",
+    )
+    missing_issue = mod.Entry(
+        path=complete.path,
+        line=complete.line,
+        method=complete.method,
+        boundary_kind=complete.boundary_kind,
+        owner=complete.owner,
+        rationale=complete.rationale,
+        removal_issue=None,
+    )
+
+    assert mod._entry_is_complete(complete)
+    assert not mod._entry_is_complete(missing_issue)
 
 
 def test_full_scan_with_allowlist_passes(tmp_path):
@@ -501,7 +580,9 @@ def test_full_scan_with_allowlist_passes(tmp_path):
                 "path": "src/mypkg/boundary_module.py",
                 "line": 5,
                 "method": "to_pylist",
-                "reason": "Terminal query result returned to caller; cannot remain lazy past function boundary.",
+                "boundary_kind": "query-result",
+                "owner": "mypkg query adapter",
+                "rationale": "Terminal query result returned to caller; cannot remain lazy past function boundary.",
             }
         ],
     )

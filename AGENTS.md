@@ -229,8 +229,9 @@ Roles (flat, not hierarchical):
   extension when it can meet the requirement; discuss any core behavior change
   before implementing it.
 - Preserve the lazy Daft DAG. Prefer expressions and DataFrame transforms;
-  `.collect()` or `.to_pylist()` in `src/` needs a documented
-  `lazy_audit.toml` exception at a real execution boundary. Application-owned
+  every Daft execution, conversion, streaming, display, or write terminal in
+  checked-in Python needs an exact `lazy_audit.toml` disposition at a real
+  execution boundary. Application-owned
   terminal Daft work flows through `StorageService`; keep Catalog table
   registration/read/write, schema comparison, and Iceberg retry there.
 - Keep storage planes distinct. SQLite or the remote Durable Object is the

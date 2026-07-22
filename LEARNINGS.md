@@ -447,9 +447,10 @@ df = df.with_column("outbox__messages", agent.respond(col("agent__name"), ...))
 
 ## Lazy-Audit UDF-Boundary Exemption (Jun 2026)
 
-``scripts/check_lazy_audit.py`` gates every ``.collect`` reference (including a
-bound callable) and ``.to_pylist()`` call in ``src/`` against
-``lazy_audit.toml``. There is
+``scripts/check_lazy_audit.py`` gates the version-pinned set of Daft execution,
+conversion, streaming, display, and write terminals across product and
+repository-harness Python against ``lazy_audit.toml``. Every site records its
+exact path, method, boundary kind, owner, and rationale. There is
 **one sanctioned exception** that does not require an allowlist entry:
 
 > ``Series.to_pylist()`` called on a *parameter* of a function decorated
@@ -477,13 +478,10 @@ def query_rows(df):
     return df.to_pylist()  # ← DataFrame-level; still audited
 ```
 
-Rules:
-
-- ``Series.to_pylist()`` on a **batch-UDF parameter** → exempt, no entry.
-- ``DataFrame.to_pylist()`` anywhere → requires entry.
-- ``DataFrame.collect()`` anywhere → requires entry.
-- ``Series.to_pylist()`` **outside** a batch-UDF → requires entry.
-- ``collect()`` inside a batch-UDF on a DataFrame (not a parameter) → requires entry.
+The sole exemption is ``Series.to_pylist()`` on a batch-UDF parameter. Every
+other registry terminal requires a disposition, including test assertions,
+benchmarks, examples, eager writes, iterator/protocol exports, and conversions
+on an already materialized frame. Legacy exceptions name their removal issue.
 
 Application code has an additional ownership rule: terminal Daft, Iceberg,
 and Catalog-table operations belong to `StorageService`. A bounded app

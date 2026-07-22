@@ -132,9 +132,9 @@ benchmark-audit:
 static: format-check lint typecheck lock-check contract-audit benchmark-audit
 	@echo "Static validation passed"
 
-# Lazy-evaluation audit: gate .collect()/.to_pylist() call sites against
-# lazy_audit.toml. Every premature materialization is a contract exception
-# and must be justified in writing. See scripts/check_lazy_audit.py.
+# Lazy-evaluation audit: gate the version-pinned Daft terminal registry across
+# product and repository-harness Python. Every site needs an exact disposition
+# in lazy_audit.toml. See scripts/check_lazy_audit.py.
 .PHONY: lazy-audit
 lazy-audit:
 	@uv run python scripts/check_lazy_audit.py

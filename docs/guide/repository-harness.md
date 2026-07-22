@@ -46,6 +46,13 @@ Each tool answers a different question.
 | Executable documentation | `examples/` and the docs build | Do the surfaces Archetype teaches remain runnable and internally consistent? |
 | Mutation probe | `mutmut` | Would the focused assertions detect a controlled implementation error? |
 
+Repository-harness Daft terminals are evidence boundaries, not a blanket
+exception to lazy execution. The version-pinned lazy audit scans `tests/`,
+`bench/`, `evals/`, `examples/`, `experiments/`, scripts, and applicable
+quality tooling as well as `src/`; each detected terminal has an exact
+disposition in `lazy_audit.toml`. Do not add execution merely to produce a
+diagnostic or telemetry value.
+
 BDD describes how a change is developed: state observable behavior before
 implementation. It is not another test directory. In this repository the
 sharper name is **contract-first development with executable contract tests**.
