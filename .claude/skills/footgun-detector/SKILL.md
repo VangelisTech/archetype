@@ -31,7 +31,9 @@ Before analyzing, read these files for context — they contain the rules the di
 - `AGENTS.md` — Architecture, service layer, RBAC, conventions
 - `.claude/skills/archetype-processors/SKILL.md` — Processor rules
 - `.claude/skills/archetype-components/SKILL.md` — Component rules
-- `.claude/skills/daft-patterns/SKILL.md` — Daft DataFrame rules
+- `.claude/skills/daft-patterns/SKILL.md` — Daft DataFrame rules (mental model + authoring)
+- For wrong-shape Daft that is not a silent runtime bug, defer to `/daft-antipatterns`
+  rather than stretching these categories into taste nits.
 
 You do NOT need to read these if you already have them in context from this session.
 
