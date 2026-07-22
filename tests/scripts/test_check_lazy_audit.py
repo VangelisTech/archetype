@@ -628,6 +628,106 @@ def test_declared_return_union_and_attribute_provenance(tmp_path, source, method
     assert [site.method for site in _scan_file(py, "declared.py")] == [method]
 
 
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "from daft import DataFrame\n"
+            "class StorageService:\n"
+            "    async def materialize(self, frame: DataFrame) -> DataFrame: ...\n"
+            "async def load(storage: StorageService, frame: DataFrame):\n"
+            "    materialized = await storage.materialize(frame)\n"
+            "    return materialized.to_pydict()\n",
+            [(6, "to_pydict", "return materialized.to_pydict()")],
+        ),
+        (
+            "from daft import DataFrame\n"
+            "class StorageService:\n"
+            "    async def materialize(self, frame: DataFrame) -> DataFrame: ...\n"
+            "async def load(storage: StorageService, frame: DataFrame):\n"
+            "    return (await storage.materialize(frame)).to_pydict()\n",
+            [(5, "to_pydict", "return (await storage.materialize(frame)).to_pydict()")],
+        ),
+        (
+            "from collections.abc import Callable\n"
+            "from typing import Any\n"
+            "from daft import DataFrame\n"
+            "class Store:\n"
+            "    async def _blocking(self, call: Callable[..., Any], *args: Any) -> Any: ...\n"
+            "    async def persist(self, frame: DataFrame):\n"
+            "        frozen = await self._blocking(frame.collect)\n"
+            "        count = frozen.count_rows()\n"
+            "        await self._blocking(frozen.write_iceberg, 'table')\n",
+            [
+                (7, "collect", "frozen = await self._blocking(frame.collect)"),
+                (8, "count_rows", "count = frozen.count_rows()"),
+                (9, "write_iceberg", "await self._blocking(frozen.write_iceberg, 'table')"),
+            ],
+        ),
+        (
+            "from collections.abc import Callable\n"
+            "from typing import Any\n"
+            "from daft import DataFrame\n"
+            "class Store:\n"
+            "    async def _blocking(self, call: Callable[..., Any]) -> Any: ...\n"
+            "    async def inspect(self, frame: DataFrame):\n"
+            "        return await self._blocking(frame.where(True).limit(1).count_rows)\n",
+            [
+                (
+                    7,
+                    "count_rows",
+                    "return await self._blocking(frame.where(True).limit(1).count_rows)",
+                )
+            ],
+        ),
+    ],
+)
+def test_storage_materialization_and_blocking_wrappers_preserve_dataframe_provenance(
+    tmp_path, source, expected
+):
+    py = _write_py(tmp_path, "storage_wrappers.py", source)
+
+    assert [
+        (site.line, site.method, site.snippet) for site in _scan_file(py, "storage_wrappers.py")
+    ] == expected
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "from typing import Protocol\n"
+            "from daft import DataFrame\n"
+            "class FrameSource(Protocol):\n"
+            "    def get_frame(self) -> DataFrame: ...\n"
+            "def inspect(source: FrameSource):\n"
+            "    frame = source.get_frame()\n"
+            "    frame.count_rows()\n"
+            "    frame.show()\n",
+            [(7, "count_rows", "frame.count_rows()"), (8, "show", "frame.show()")],
+        ),
+        (
+            "from typing import Protocol\n"
+            "from daft import DataFrame\n"
+            "class Processor(Protocol):\n"
+            "    async def process(self, frame: DataFrame) -> DataFrame: ...\n"
+            "async def execute(processor: Processor, frame: DataFrame):\n"
+            "    frame = await processor.process(frame)\n"
+            "    return frame.count_rows()\n",
+            [(7, "count_rows", "return frame.count_rows()")],
+        ),
+    ],
+)
+def test_typed_protocol_and_processor_results_preserve_dataframe_provenance(
+    tmp_path, source, expected
+):
+    py = _write_py(tmp_path, "typed_results.py", source)
+
+    assert [
+        (site.line, site.method, site.snippet) for site in _scan_file(py, "typed_results.py")
+    ] == expected
+
+
 def test_local_foreign_annotation_suppresses_legacy_spelling(tmp_path):
     py = _write_py(
         tmp_path,
@@ -684,9 +784,37 @@ def test_real_lancedb_store_only_audits_daft_to_arrow():
     relative = "src/archetype/core/aio/async_lancedb_store.py"
     path = Path(__file__).resolve().parent.parent.parent / relative
 
-    sites = [site for site in _scan_file(path, relative) if site.method == "to_arrow"]
+    sites = _scan_file(path, relative)
 
     assert [(site.line, site.method) for site in sites] == [(359, "to_arrow")]
+    assert not {201, 288, 333} & {site.line for site in sites}
+
+
+def test_real_repository_typed_dataframe_terminals_are_complete():
+    root = Path(__file__).resolve().parent.parent.parent
+    expected = {
+        ("src/archetype/app/artifacts/service.py", 103, "to_pydict"),
+        ("src/archetype/app/artifacts/service.py", 119, "to_pydict"),
+        ("src/archetype/app/evaluation/service.py", 404, "to_pydict"),
+        ("src/archetype/app/storage/service.py", 468, "count_rows"),
+        ("src/archetype/app/storage/service.py", 471, "write_iceberg"),
+        ("src/archetype/app/storage/service.py", 520, "count_rows"),
+        ("src/archetype/app/storage/service.py", 525, "count_rows"),
+        ("src/archetype/app/storage/service.py", 534, "count_rows"),
+        ("src/archetype/app/storage/service.py", 547, "count_rows"),
+        ("src/archetype/app/storage/service.py", 556, "write_iceberg"),
+        ("src/archetype/core/aio/async_system.py", 106, "count_rows"),
+        ("src/archetype/core/aio/async_world.py", 994, "count_rows"),
+        ("src/archetype/core/sync/querier.py", 79, "count_rows"),
+        ("src/archetype/core/sync/querier.py", 81, "show"),
+    }
+    scanned = {
+        (site.path, site.line, site.method)
+        for relative in sorted({path for path, _, _ in expected})
+        for site in _scan_file(root / relative, relative)
+    }
+
+    assert expected <= scanned, f"missing real Daft terminals: {sorted(expected - scanned)}"
 
 
 def test_batch_udf_series_to_pylist_remains_executor_owned(tmp_path):
