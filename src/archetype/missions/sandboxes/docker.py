@@ -121,8 +121,8 @@ class DockerSandboxSession:
         if unknown:
             raise ValueError(f"unsupported Docker secret(s): {', '.join(sorted(unknown))}")
         async with self._lock:
-            if self._status is SandboxStatus.CLOSED:
-                raise RuntimeError("Docker sandbox session is closed")
+            if self._status is not SandboxStatus.READY:
+                raise RuntimeError(f"Docker sandbox session is {self._status.value}")
             uses_oauth = _CODEX_SECRET in request.secret_names
             oauth_staged = False
             operation_error: BaseException | None = None
@@ -157,8 +157,8 @@ class DockerSandboxSession:
         """Commit the session-owned writable layer to an immutable Docker image ID."""
 
         async with self._lock:
-            if self._status is SandboxStatus.CLOSED:
-                raise RuntimeError("Docker sandbox session is closed")
+            if self._status is not SandboxStatus.READY:
+                raise RuntimeError(f"Docker sandbox session is {self._status.value}")
             credentials_absent = await self._exec_request(
                 ProcessRequest(("test", "!", "-e", _CODEX_AUTH_PATH), timeout_seconds=60)
             )

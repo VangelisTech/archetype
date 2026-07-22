@@ -121,8 +121,8 @@ class AppleContainerSandboxSession:
         if unknown:
             raise ValueError(f"unsupported Apple Container secret(s): {', '.join(sorted(unknown))}")
         async with self._lock:
-            if self._status is SandboxStatus.CLOSED:
-                raise RuntimeError("Apple Container sandbox session is closed")
+            if self._status is not SandboxStatus.READY:
+                raise RuntimeError(f"Apple Container sandbox session is {self._status.value}")
             uses_oauth = _CODEX_SECRET in request.secret_names
             oauth_staged = False
             operation_error: BaseException | None = None
@@ -157,8 +157,8 @@ class AppleContainerSandboxSession:
         """Export the session rootfs, excluding mounts, without leaving the VM stopped."""
 
         async with self._lock:
-            if self._status is SandboxStatus.CLOSED:
-                raise RuntimeError("Apple Container sandbox session is closed")
+            if self._status is not SandboxStatus.READY:
+                raise RuntimeError(f"Apple Container sandbox session is {self._status.value}")
             credentials_absent = await self._exec_request(
                 ProcessRequest(("test", "!", "-e", _CODEX_AUTH_PATH), timeout_seconds=60)
             )

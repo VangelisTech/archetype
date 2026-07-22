@@ -32,6 +32,7 @@ from archetype.missions.sandboxes import (
 class _Session:
     def __init__(self, identity: SandboxIdentity) -> None:
         self._identity = identity
+        self._status = SandboxStatus.READY
         self.closed = 0
         self.close_attempts = 0
         self.close_error = False
@@ -45,7 +46,7 @@ class _Session:
         return SandboxCapabilities(checkpoints=True)
 
     async def status(self) -> SandboxStatus:
-        return SandboxStatus.CLOSED if self.closed else SandboxStatus.READY
+        return self._status
 
     async def exec(self, request: ProcessRequest) -> ProcessResult:
         return ProcessResult(request.argv, 0, stdout="ok")
@@ -63,8 +64,10 @@ class _Session:
     async def close(self) -> None:
         self.close_attempts += 1
         if self.close_error:
+            self._status = SandboxStatus.ERRORED
             raise RuntimeError("provider close unavailable")
         self.closed += 1
+        self._status = SandboxStatus.CLOSED
 
 
 class _Backend:
@@ -236,6 +239,44 @@ async def test_acquire_is_single_flight_and_keyed_by_an_exact_spec() -> None:
     await service.close(key)
     assert one.closed == 1
     assert service.session(key) is None
+
+
+@pytest.mark.asyncio
+async def test_acquire_replaces_a_non_ready_session_after_teardown() -> None:
+    backend = _Backend()
+    backend.release.set()
+    service = SandboxService((backend,))
+    key = SandboxKey("mission:broken")
+    spec = _spec()
+    broken = await service.acquire(key, spec)
+    broken._status = SandboxStatus.ERRORED
+
+    replacement = await service.acquire(key, spec)
+
+    assert replacement is not broken
+    assert broken.closed == 1
+    assert backend.creates == 2
+    assert service.session(key) is replacement
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_acquire_forgets_an_already_closed_session_before_replacement() -> None:
+    backend = _Backend()
+    backend.release.set()
+    service = SandboxService((backend,))
+    key = SandboxKey("mission:closed")
+    spec = _spec()
+    closed = await service.acquire(key, spec)
+    closed._status = SandboxStatus.CLOSED
+
+    replacement = await service.acquire(key, spec)
+
+    assert replacement is not closed
+    assert closed.close_attempts == 0
+    assert backend.creates == 2
+    assert service.session(key) is replacement
+    await service.shutdown()
 
 
 @pytest.mark.asyncio

@@ -349,20 +349,29 @@ async def test_docker_oauth_round_trip_and_session_error_states(
     with pytest.raises(asyncio.CancelledError):
         await session.exec(ProcessRequest(("true",)))
     assert await session.status() is SandboxStatus.INTERRUPTED
+    with pytest.raises(RuntimeError, match="interrupted"):
+        await session.exec(ProcessRequest(("true",)))
+    with pytest.raises(RuntimeError, match="interrupted"):
+        await session.checkpoint()
 
     async def errored(_request: ProcessRequest) -> ProcessResult:
         raise RuntimeError("provider exec failed")
 
-    monkeypatch.setattr(session, "_exec_request", errored)
+    errored_session = _session(oauth=True)
+    monkeypatch.setattr(errored_session, "_exec_request", errored)
     with pytest.raises(RuntimeError, match="provider exec failed"):
-        await session.exec(ProcessRequest(("true",)))
-    assert await session.status() is SandboxStatus.ERRORED
+        await errored_session.exec(ProcessRequest(("true",)))
+    assert await errored_session.status() is SandboxStatus.ERRORED
+    with pytest.raises(RuntimeError, match="errored"):
+        await errored_session.exec(ProcessRequest(("true",)))
+    with pytest.raises(RuntimeError, match="errored"):
+        await errored_session.checkpoint()
 
-    session._status = SandboxStatus.CLOSED
+    errored_session._status = SandboxStatus.CLOSED
     with pytest.raises(RuntimeError, match="closed"):
-        await session.exec(ProcessRequest(("true",)))
+        await errored_session.exec(ProcessRequest(("true",)))
     with pytest.raises(RuntimeError, match="closed"):
-        await session.checkpoint()
+        await errored_session.checkpoint()
 
 
 @pytest.mark.asyncio

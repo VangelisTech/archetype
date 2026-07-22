@@ -155,8 +155,8 @@ class ModalSandboxSession:
         if unknown:
             raise ValueError(f"unsupported Modal sandbox secret(s): {', '.join(sorted(unknown))}")
         async with self._lock:
-            if self._status is SandboxStatus.CLOSED:
-                raise RuntimeError("Modal sandbox session is closed")
+            if self._status is not SandboxStatus.READY:
+                raise RuntimeError(f"Modal sandbox session is {self._status.value}")
             uses_oauth = _CODEX_SECRET in request.secret_names
             is_agent = request.close_stdin
             heartbeat: asyncio.Task[None] | None = None
@@ -228,8 +228,8 @@ class ModalSandboxSession:
         """Capture a provider-native filesystem image after credentials are absent."""
 
         async with self._lock:
-            if self._status is SandboxStatus.CLOSED:
-                raise RuntimeError("Modal sandbox session is closed")
+            if self._status is not SandboxStatus.READY:
+                raise RuntimeError(f"Modal sandbox session is {self._status.value}")
             absent = await self._exec_on(
                 self._sandbox,
                 ProcessRequest(

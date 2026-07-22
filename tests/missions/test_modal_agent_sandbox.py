@@ -597,6 +597,11 @@ async def test_modal_session_error_checkpoint_and_close_states(
         await session.exec(ProcessRequest(("true",), secret_names=("unknown",)))
     with pytest.raises(RuntimeError, match="no Codex credential"):
         await session.exec(ProcessRequest(("true",), secret_names=("codex_oauth",)))
+    assert await session.status() is SandboxStatus.ERRORED
+    with pytest.raises(RuntimeError, match="errored"):
+        await session.exec(ProcessRequest(("true",)))
+
+    session = _lifecycle_session(_LifecycleSandbox("sb-cancelled"))
 
     async def cancelled(*args, **kwargs):
         del args, kwargs
@@ -606,21 +611,30 @@ async def test_modal_session_error_checkpoint_and_close_states(
     with pytest.raises(asyncio.CancelledError):
         await session.exec(ProcessRequest(("true",)))
     assert await session.status() is SandboxStatus.INTERRUPTED
+    with pytest.raises(RuntimeError, match="interrupted"):
+        await session.exec(ProcessRequest(("true",)))
+    with pytest.raises(RuntimeError, match="interrupted"):
+        await session.checkpoint()
 
     async def errored(*args, **kwargs):
         del args, kwargs
         raise RuntimeError("remote failed")
 
-    monkeypatch.setattr(session, "_exec_on", errored)
+    errored_session = _lifecycle_session(_LifecycleSandbox("sb-errored"))
+    monkeypatch.setattr(errored_session, "_exec_on", errored)
     with pytest.raises(RuntimeError, match="remote failed"):
-        await session.exec(ProcessRequest(("true",)))
-    assert await session.status() is SandboxStatus.ERRORED
+        await errored_session.exec(ProcessRequest(("true",)))
+    assert await errored_session.status() is SandboxStatus.ERRORED
+    with pytest.raises(RuntimeError, match="errored"):
+        await errored_session.exec(ProcessRequest(("true",)))
+    with pytest.raises(RuntimeError, match="errored"):
+        await errored_session.checkpoint()
 
-    session._status = SandboxStatus.CLOSED
+    errored_session._status = SandboxStatus.CLOSED
     with pytest.raises(RuntimeError, match="closed"):
-        await session.exec(ProcessRequest(("true",)))
+        await errored_session.exec(ProcessRequest(("true",)))
     with pytest.raises(RuntimeError, match="closed"):
-        await session.checkpoint()
+        await errored_session.checkpoint()
 
 
 @pytest.mark.asyncio

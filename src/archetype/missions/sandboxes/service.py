@@ -14,6 +14,7 @@ from archetype.missions.sandboxes.contracts import (
     SandboxKey,
     SandboxSession,
     SandboxSpec,
+    SandboxStatus,
     SandboxTeardownError,
     validate_checkpoint_for_spec,
 )
@@ -118,16 +119,24 @@ class SandboxService:
                     )
             else:
                 retained = self._sessions.get(key)
+                replaced: SandboxSession | None = None
                 if retained is not None:
                     retained_spec, session = retained
                     if retained_spec != spec:
                         raise ValueError(
                             f"sandbox key {key.value!r} is already bound to another spec"
                         )
-                    return session
+                    status = await session.status()
+                    if status is SandboxStatus.READY:
+                        return session
+                    if status is SandboxStatus.CLOSED:
+                        self._sessions.pop(key, None)
+                        self._session_ids.pop(session.identity.sandbox_id, None)
+                    else:
+                        replaced = session
                 backend = self._backend(spec.provider)
                 pending = asyncio.create_task(
-                    self._create(key, spec, backend, checkpoint),
+                    self._create(key, spec, backend, checkpoint, replaced=replaced),
                     name=f"sandbox:{key.value}",
                 )
                 self._pending[key] = (spec, checkpoint, pending)
