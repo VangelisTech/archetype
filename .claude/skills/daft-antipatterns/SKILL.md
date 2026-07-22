@@ -34,8 +34,9 @@ Same priority as footgun-detector:
 1. `.footgun-review-scope.json` + `.footgun-review.diff` if present (CI scope)
 2. User-provided PR: `gh pr diff <number>`
 3. Feature branch: `git diff origin/main...HEAD` (or `main...HEAD`)
-4. Staged / unstaged `git diff`
-5. Clean tree on main → nothing to scan
+4. If there are staged changes: `git diff --cached`
+5. If there are unstaged changes: `git diff`
+6. Clean tree on main → nothing to scan
 
 ## Step 2: Scan categories
 

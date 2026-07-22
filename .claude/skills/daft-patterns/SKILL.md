@@ -73,7 +73,7 @@ df = df.with_columns({
     "agent__decision": prompt(
         col("agent__context"),
         model="gpt-5-mini",
-        response_format=Decision,
+        return_format=Decision,
     ),
 })
 # Access fields: col("agent__decision")["action"]
@@ -95,7 +95,7 @@ df = df.with_columns({
 })
 ```
 
-**Key parameters:** `model`, `messages` (list of expressions — text, image, file), `system_message`, `response_format` (Pydantic model), `tools`, `tool_choice`, `max_output_tokens`, `use_chat_completions` (set `True` for vLLM/OpenAI-compatible endpoints).
+**Key parameters:** `model`, `messages` (list of expressions — text, image, file), `system_message`, `return_format` (Pydantic model), plus provider options (`tools`, `tool_choice`, `max_output_tokens`, `use_chat_completions`, …).
 
 #### `embed_text()` / `embed_image()` — embeddings
 
@@ -568,8 +568,8 @@ EgoDex, DROID lesson): never decode video/HDF5 then filter episodes.
 2. **AI function vs hand-rolled client.** Use `prompt` / `embed_*` /
    `classify_*` + `daft.set_provider(...)` for provider calls. Hand-roll
    `@daft.cls` only for local/custom models or exotic batching.
-3. **Structured LLM output.** Pass a Pydantic `response_format` /
-   `return_format`; index struct fields. Do not regex free-text.
+3. **Structured LLM output.** Pass a Pydantic `return_format` to `prompt()`;
+   index struct fields. Do not regex free-text.
 4. **Dirty multimodal IO.** Pass `on_error="null"` on `download` /
    `decode_image`, then quarantine nulls.
 5. **Inflation points.** `into_batches(small_n)` and capped `max_connections`
