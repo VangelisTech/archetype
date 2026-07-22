@@ -222,6 +222,65 @@ Extend an entity with components. Requires operator or admin.
 
 ---
 
+## Missions
+
+### List Missions
+
+```text
+GET /worlds/{world_id}/missions
+```
+
+List mission entities with their current rollup state. Requires viewer or above.
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `world_id` | string |  |
+
+**Error codes:** `422`
+
+---
+
+### Get Mission Tasks
+
+```text
+GET /worlds/{world_id}/missions/{mission_id}/tasks
+```
+
+Project one mission's task DAG: task rows plus DependsOn edges. Requires viewer or above.
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `world_id` | string |  |
+| `mission_id` | integer |  |
+
+**Error codes:** `422`
+
+---
+
+### Get Task Card
+
+```text
+GET /worlds/{world_id}/tasks/{task_id}
+```
+
+Project one task card: task state, guarding validators, executions, and
+validation results. Requires viewer or above.
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `world_id` | string |  |
+| `task_id` | integer |  |
+
+**Error codes:** `422`
+
+---
+
 ## Other
 
 ### Root

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import socket
 import subprocess
@@ -43,8 +44,14 @@ class TmuxSessionSupervisor:
     The PTY lives in the tmux server, so it survives every client death —
     a crashed operator, a dropped spectator, or a dead harness process all
     leave the session (and its crash scene, via ``remain-on-exit``) intact.
-    Recording is always on: ``pipe-pane`` streams raw PTY bytes to disk and
-    tmux hooks append attach/detach/death events as JSONL.
+    Recording starts when ``pipe-pane`` attaches, immediately after session
+    creation: a very fast command may emit output before the pipe lands, so
+    the stream is near-complete rather than byte-exact from process start;
+    ``capture()`` with history covers that window. tmux hooks append
+    attach/detach/death events as JSONL.
+
+    Two supervisors must never share a ``socket_name``: ``shutdown()`` kills
+    the whole tmux server on its socket.
     """
 
     def __init__(
@@ -114,8 +121,8 @@ class TmuxSessionSupervisor:
     ) -> SessionRecording:
         """Spawn ``argv`` inside a detached, recorded tmux session."""
 
-        if not name.strip() or not argv:
-            raise ValueError("session start requires a name and a command")
+        if not argv:
+            raise ValueError("session start requires a command")
         recording = self.recording(name)
         self._tm(
             "new-session",
@@ -206,19 +213,22 @@ class TmuxSessionSupervisor:
         authorization decision recorded by the caller.
         """
 
+        _validate_session_name(name)
+        if writable and not credential:
+            raise ValueError("the writable lane requires a credential")
         if not shutil.which(self._ttyd):
             raise RuntimeError(f"ttyd binary {self._ttyd!r} not found on PATH")
         if not self.alive(name):
             raise RuntimeError(f"session {name!r} is not running")
-        if writable and not credential:
-            raise ValueError("the writable lane requires a credential")
         key = (name, writable)
         existing = self._ttyd_procs.get(key)
         if existing is not None and existing.poll() is None:
             raise RuntimeError(f"lane already served for session {name!r}")
         if port == 0:
             port = _free_port()
-        argv = [self._ttyd, "-p", str(port)]
+        # Loopback-only: ttyd binds all interfaces when -i is omitted, which
+        # would expose both lanes off-host while the URL claims localhost.
+        argv = [self._ttyd, "-p", str(port), "-i", "127.0.0.1"]
         if writable:
             argv += ["-W", "-c", credential or ""]
         argv += [
@@ -251,6 +261,7 @@ class TmuxSessionSupervisor:
     # -- records -----------------------------------------------------------
 
     def recording(self, name: str) -> SessionRecording:
+        _validate_session_name(name)
         return SessionRecording(
             stream_path=self._run_dir / f"{name}.stream.log",
             events_path=self._run_dir / f"{name}.events.jsonl",
@@ -267,6 +278,19 @@ class TmuxSessionSupervisor:
         if result.returncode != 0:
             raise RuntimeError(f"tmux {' '.join(args[:2])} failed: {result.stderr.strip()}")
         return result.stdout
+
+
+_SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _validate_session_name(name: str) -> None:
+    """Reject names that could escape run_dir or confuse tmux targets."""
+
+    if not _SESSION_NAME_RE.fullmatch(name):
+        raise ValueError(
+            f"session name {name!r} must match [A-Za-z0-9_-]+ — it becomes "
+            "a recording filename and a tmux target"
+        )
 
 
 def _free_port() -> int:

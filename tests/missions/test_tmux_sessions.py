@@ -65,6 +65,14 @@ class TestSupervisor:
         with pytest.raises(ValueError, match="credential"):
             supervisor.serve("gated", writable=True)
 
+    def test_path_escaping_session_names_are_rejected(self, supervisor, tmp_path):
+        # Session names become recording filenames; separators would let a
+        # caller write logs outside run_dir.
+        with pytest.raises(ValueError, match="session name"):
+            supervisor.start("../evil", ("sh", "-c", "sleep 1"), cwd=str(tmp_path))
+        with pytest.raises(ValueError, match="session name"):
+            supervisor.recording("a/b")
+
     @pytest.mark.skipif(not _HAS_TTYD, reason="ttyd is not installed")
     def test_spectate_lane_serves_http(self, supervisor, tmp_path):
         supervisor.start("watched", ("sh", "-c", "sleep 30"), cwd=str(tmp_path))

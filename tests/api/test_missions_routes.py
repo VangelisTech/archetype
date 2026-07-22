@@ -170,6 +170,31 @@ class TestMissionRoutes:
         resp = client.get(f"/worlds/{world_id}/tasks/999999")
         assert resp.status_code == 404
 
+    def test_sparse_world_reads_empty_not_404(self, client, tmp_path):
+        # A mission whose world has never spawned DependsOn/Guards/
+        # AgentExecution/ValidationResult tables is a normal early state.
+        resp = client.post(
+            "/worlds",
+            json={"name": "sparse", "storage_uri": str(tmp_path / "sparse")},
+        )
+        world_id = resp.json()["world_id"]
+        mission = _spawn(client, world_id, [Mission(name="m"), MissionState()])
+        task = _spawn(client, world_id, [Task(name="t"), TaskState(), TaskDispatch(), TaskPolicy()])
+        _spawn(client, world_id, [PartOfMission(source=task, target=mission)])
+        assert client.post(f"/worlds/{world_id}/step", json={}).status_code == 200
+
+        dag = client.get(f"/worlds/{world_id}/missions/{mission}/tasks")
+        assert dag.status_code == 200, dag.text
+        assert [row["entity_id"] for row in dag.json()["tasks"]] == [task]
+        assert dag.json()["depends_on"] == []
+
+        card = client.get(f"/worlds/{world_id}/tasks/{task}")
+        assert card.status_code == 200, card.text
+        body = card.json()
+        assert body["validators"] == []
+        assert body["executions"] == []
+        assert body["validations"] == []
+
     def test_unknown_world_reads_empty(self, client):
         # Query routes tolerate unknown world ids so persisted history stays
         # readable after a world instance is destroyed (see query.py _query_ids).

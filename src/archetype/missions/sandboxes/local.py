@@ -142,11 +142,20 @@ class LocalTmuxSession:
 
 
 class LocalTmuxBackend:
-    """Provider adapter for workdir-scoped, tmux-supervised local sandboxes."""
+    """Provider adapter for workdir-scoped, tmux-supervised local sandboxes.
+
+    Each backend owns a private tmux server by default: ``shutdown()`` kills
+    the whole server on its socket, so two backends (or two archetype
+    processes) sharing one ``socket_name`` would destroy each other's live
+    sessions. Pass an explicit ``socket_name`` only to adopt a supervisor
+    you own exclusively.
+    """
 
     name = "local"
 
-    def __init__(self, *, run_dir: Path | str, socket_name: str = "archetype-sessions") -> None:
+    def __init__(self, *, run_dir: Path | str, socket_name: str | None = None) -> None:
+        if socket_name is None:
+            socket_name = f"archetype-sessions-{os.getpid()}-{uuid.uuid4().hex[:6]}"
         self._supervisor = TmuxSessionSupervisor(socket_name=socket_name, run_dir=run_dir)
 
     @property

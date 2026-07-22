@@ -45,13 +45,18 @@ async def _components_frame(
         query_world_id, run_id = str(info.world_id), str(info.run_id or "")
     except KeyError:
         query_world_id, run_id = str(world_id), ""
-    return await cs.query_components(
-        ctx,
-        component_types,
-        query_world_id,
-        run_id,
-        entity_ids=entity_ids,
-    )
+    try:
+        return await cs.query_components(
+            ctx,
+            component_types,
+            query_world_id,
+            run_id,
+            entity_ids=entity_ids,
+        )
+    except KeyError:
+        # A world that has never spawned this component table is a normal
+        # state (no DependsOn edges yet, no executions yet): read as empty.
+        return None
 
 
 def _edge_rows(
