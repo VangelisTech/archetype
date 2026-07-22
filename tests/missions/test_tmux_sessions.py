@@ -162,3 +162,20 @@ class TestStartUnwind:
         with pytest.raises(RuntimeError, match="pipe-pane failed"):
             supervisor.start("orphan", ("sh", "-c", "sleep 30"), cwd=str(tmp_path))
         assert not supervisor.alive("orphan")
+
+    @pytest.mark.skipif(not _HAS_TTYD, reason="ttyd is not installed")
+    def test_lanes_unwinds_spectate_when_takeover_fails(self, supervisor, tmp_path):
+        # The spectate lane spawns, then takeover fails: the already-running
+        # spectate ttyd must not be left under a name the caller never got.
+        supervisor.start("half", ("sh", "-c", "sleep 30"), cwd=str(tmp_path))
+        real_serve = supervisor.serve
+
+        def flaky_serve(name, *, writable=False, **kw):
+            if writable:
+                raise RuntimeError("takeover boom")
+            return real_serve(name, writable=writable, **kw)
+
+        supervisor.serve = flaky_serve  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError, match="takeover boom"):
+            supervisor.lanes("half", takeover_credential="operator:x")
+        assert not supervisor._ttyd_procs

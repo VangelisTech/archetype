@@ -184,9 +184,7 @@ class TmuxSessionSupervisor:
 
     def kill(self, name: str) -> None:
         for writable in (False, True):
-            proc = self._ttyd_procs.pop((name, writable), None)
-            if proc is not None and proc.poll() is None:
-                proc.terminate()
+            self._stop_lane(name, writable=writable)
         subprocess.run(
             [self._tmux, "-L", self._socket, "kill-session", "-t", name],
             capture_output=True,
@@ -251,15 +249,26 @@ class TmuxSessionSupervisor:
 
     def lanes(self, name: str, *, takeover_credential: str) -> SessionLanes:
         spectate_url, spectate_port = self.serve(name)
-        takeover_url, takeover_port = self.serve(
-            name, writable=True, credential=takeover_credential
-        )
+        try:
+            takeover_url, takeover_port = self.serve(
+                name, writable=True, credential=takeover_credential
+            )
+        except Exception:
+            # Unwind the spectate lane already spawned so a partial failure
+            # leaves no ttyd running under a name the caller never learned.
+            self._stop_lane(name, writable=False)
+            raise
         return SessionLanes(
             spectate_url=spectate_url,
             takeover_url=takeover_url,
             spectate_port=spectate_port,
             takeover_port=takeover_port,
         )
+
+    def _stop_lane(self, name: str, *, writable: bool) -> None:
+        proc = self._ttyd_procs.pop((name, writable), None)
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
 
     # -- records -----------------------------------------------------------
 

@@ -132,9 +132,17 @@ class LocalTmuxSession:
         self._sessions.append(name)
         credential = f"operator:{secrets.token_urlsafe(9)}"
         if serve_lanes:
-            lanes = await asyncio.to_thread(
-                self._supervisor.lanes, name, takeover_credential=credential
-            )
+            try:
+                lanes = await asyncio.to_thread(
+                    self._supervisor.lanes, name, takeover_credential=credential
+                )
+            except Exception:
+                # Either you get a handle or nothing runs: kill the session
+                # so a lane-serving failure (e.g. ttyd missing) leaves no
+                # orphan the caller never learned the name of.
+                self._sessions.remove(name)
+                await asyncio.to_thread(self._supervisor.kill, name)
+                raise
         else:
             lanes = SessionLanes("", "", 0, 0)
         return InteractiveHandle(
