@@ -70,10 +70,20 @@ class LocalTmuxSession:
         return self._status
 
     async def exec(self, request: ProcessRequest) -> ProcessResult:
-        """Run one batch process in the sandbox workdir."""
+        """Run one batch process in the sandbox workdir.
+
+        The child inherits the host environment: the local backend isolates
+        by working directory only. Secret staging is not supported — a
+        request naming secrets is rejected rather than silently ignored.
+        """
 
         if self._status is not SandboxStatus.READY:
             raise RuntimeError(f"local sandbox is {self._status}")
+        if request.secret_names:
+            raise ValueError(
+                "local sandbox exposes no secret capabilities; requested: "
+                + ", ".join(request.secret_names)
+            )
         env = {**os.environ, **request.environment_dict()}
         proc = await asyncio.create_subprocess_exec(
             *request.argv,
@@ -88,6 +98,12 @@ class LocalTmuxSession:
                 proc.communicate(), timeout=request.timeout_seconds
             )
         except TimeoutError:
+            self._status = SandboxStatus.ERRORED
+            proc.kill()
+            await proc.wait()
+            raise
+        except asyncio.CancelledError:
+            self._status = SandboxStatus.INTERRUPTED
             proc.kill()
             await proc.wait()
             raise

@@ -154,6 +154,9 @@ class TmuxSessionSupervisor:
         # A command that exits before the pipe attaches leaves no stream,
         # but remain-on-exit still preserves its crash scene for capture().
         if pipe.returncode != 0 and "has exited" not in pipe.stderr:
+            # Unwind: without the pipe the session would run unrecorded and
+            # unknown to the caller — an orphan the supervisor cannot audit.
+            self.kill(name)
             raise RuntimeError(f"tmux pipe-pane failed: {pipe.stderr.strip()}")
         return recording
 

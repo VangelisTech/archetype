@@ -126,3 +126,39 @@ class TestLocalBackend:
         spec = SandboxSpec(provider="modal", environment="test", workdir=str(tmp_path / "wd"))
         with pytest.raises(ValueError, match="provider"):
             await backend.create(spec)
+
+    @pytest.mark.asyncio
+    async def test_secret_requests_are_rejected_not_ignored(self, backend, tmp_path):
+        spec = SandboxSpec(provider="local", environment="test", workdir=str(tmp_path / "wd"))
+        session = await backend.create(spec)
+        with pytest.raises(ValueError, match="secret"):
+            await session.exec(ProcessRequest(argv=("sh", "-c", "true"), secret_names=("github",)))
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_timeout_transitions_sandbox_to_errored(self, backend, tmp_path):
+        from archetype.missions.sandboxes.contracts import SandboxStatus
+
+        spec = SandboxSpec(provider="local", environment="test", workdir=str(tmp_path / "wd"))
+        session = await backend.create(spec)
+        with pytest.raises(TimeoutError):
+            await session.exec(ProcessRequest(argv=("sleep", "5"), timeout_seconds=1))
+        assert await session.status() is SandboxStatus.ERRORED
+        await session.close()
+
+
+class TestStartUnwind:
+    def test_pipe_failure_kills_the_orphan_session(self, supervisor, tmp_path, monkeypatch):
+        import subprocess as sp
+
+        real_run = sp.run
+
+        def failing_pipe(argv, **kwargs):
+            if "pipe-pane" in argv:
+                return sp.CompletedProcess(argv, 1, stdout="", stderr="boom")
+            return real_run(argv, **kwargs)
+
+        monkeypatch.setattr("archetype.missions.sessions.tmux.subprocess.run", failing_pipe)
+        with pytest.raises(RuntimeError, match="pipe-pane failed"):
+            supervisor.start("orphan", ("sh", "-c", "sleep 30"), cwd=str(tmp_path))
+        assert not supervisor.alive("orphan")
