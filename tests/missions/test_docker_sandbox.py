@@ -371,3 +371,32 @@ async def test_docker_runtime_broker_and_close_failures_are_explicit(
     await session.close()
     assert await session.status() is SandboxStatus.CLOSED
     assert close_calls == ["mission-container", "auth-container", "auth-container"]
+
+
+@pytest.mark.asyncio
+async def test_docker_broker_and_compensating_remove_failures_are_combined(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_run_host(argv, *, timeout_seconds: int, stdin: str | None = None):
+        del timeout_seconds, stdin
+        command = tuple(argv)
+        calls.append(command)
+        if "archetype.kind=codex-auth-broker" in command:
+            return ProcessResult(command, 7, stderr="broker launch failed")
+        if command[:3] == ("docker", "rm", "--force"):
+            return ProcessResult(command, 8, stderr="cleanup failed")
+        return ProcessResult(command, 0)
+
+    monkeypatch.setattr("archetype.missions.sandboxes.docker.run_host", fake_run_host)
+    config = DockerSandboxConfig(auth_volume_name="codex-auth")
+    backend = DockerSandboxBackend(config)
+
+    with pytest.raises(ExceptionGroup, match="may remain live") as raised:
+        await backend._launch(_spec(config), config.resolved_image_name)
+
+    assert "broker launch failed" in str(raised.value.exceptions[0])
+    assert "cleanup failed" in str(raised.value.exceptions[1])
+    launched_id = calls[0][calls[0].index("--name") + 1]
+    assert calls[-1] == ("docker", "rm", "--force", launched_id)

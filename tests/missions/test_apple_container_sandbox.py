@@ -439,3 +439,36 @@ async def test_apple_runtime_and_close_failures_are_explicit(
     await session.close()
     assert await session.status() is SandboxStatus.CLOSED
     assert close_calls == ["mission-vm", "auth-vm", "auth-vm"]
+
+
+@pytest.mark.asyncio
+async def test_apple_broker_and_compensating_delete_failures_are_combined(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_run_host(argv, *, timeout_seconds: int, stdin: str | None = None):
+        del timeout_seconds, stdin
+        command = tuple(argv)
+        calls.append(command)
+        if "archetype.kind=codex-auth-broker" in command:
+            return ProcessResult(command, 7, stderr="broker launch failed")
+        if command[:3] == ("container", "delete", "--force"):
+            return ProcessResult(command, 8, stderr="cleanup failed")
+        return ProcessResult(command, 0)
+
+    monkeypatch.setattr(
+        "archetype.missions.sandboxes.apple_container.run_host",
+        fake_run_host,
+    )
+    config = AppleContainerSandboxConfig(state_dir=str(tmp_path))
+    backend = AppleContainerSandboxBackend(config)
+
+    with pytest.raises(ExceptionGroup, match="may remain live") as raised:
+        await backend._launch(_spec(config), config.resolved_image_name)
+
+    assert "broker launch failed" in str(raised.value.exceptions[0])
+    assert "cleanup failed" in str(raised.value.exceptions[1])
+    launched_id = calls[0][calls[0].index("--name") + 1]
+    assert calls[-1] == ("container", "delete", "--force", launched_id)

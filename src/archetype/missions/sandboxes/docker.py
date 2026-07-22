@@ -524,11 +524,25 @@ class DockerSandboxBackend:
                 timeout_seconds=120,
             )
             if broker.returncode != 0:
-                await run_host(
-                    ("docker", "rm", "--force", sandbox_id),
-                    timeout_seconds=60,
-                )
-                DockerSandboxSession._raise(broker, "Docker Codex auth broker run")
+                try:
+                    DockerSandboxSession._raise(broker, "Docker Codex auth broker run")
+                except RuntimeError as broker_error:
+                    try:
+                        cleanup = await run_host(
+                            ("docker", "rm", "--force", sandbox_id),
+                            timeout_seconds=60,
+                        )
+                        DockerSandboxSession._raise(
+                            cleanup,
+                            f"remove mission container {sandbox_id} after broker failure",
+                        )
+                    except Exception as cleanup_error:
+                        raise ExceptionGroup(
+                            f"Docker Codex auth broker launch failed and mission container "
+                            f"{sandbox_id!r} may remain live",
+                            [broker_error, cleanup_error],
+                        ) from broker_error
+                    raise
         session = DockerSandboxSession(
             spec=spec,
             config=self.config,

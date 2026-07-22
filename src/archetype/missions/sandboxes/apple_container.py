@@ -556,11 +556,25 @@ class AppleContainerSandboxBackend:
             timeout_seconds=120,
         )
         if broker.returncode != 0:
-            await run_host(
-                ("container", "delete", "--force", sandbox_id),
-                timeout_seconds=60,
-            )
-            AppleContainerSandboxSession._raise(broker, "Codex auth broker run")
+            try:
+                AppleContainerSandboxSession._raise(broker, "Codex auth broker run")
+            except RuntimeError as broker_error:
+                try:
+                    cleanup = await run_host(
+                        ("container", "delete", "--force", sandbox_id),
+                        timeout_seconds=60,
+                    )
+                    AppleContainerSandboxSession._raise(
+                        cleanup,
+                        f"delete mission container {sandbox_id} after broker failure",
+                    )
+                except Exception as cleanup_error:
+                    raise ExceptionGroup(
+                        f"Codex auth broker launch failed and mission container "
+                        f"{sandbox_id!r} may remain live",
+                        [broker_error, cleanup_error],
+                    ) from broker_error
+                raise
         session = AppleContainerSandboxSession(
             spec=spec,
             config=self.config,
