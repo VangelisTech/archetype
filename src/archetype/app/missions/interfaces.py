@@ -14,6 +14,7 @@ from archetype.app.evaluation.interfaces import GraderOutput, TrajectoryGrader
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
 from archetype.missions.contracts import AgentTask, MissionResult, SubmittedMission
+from archetype.missions.sandboxes import CheckpointRef, SandboxIdentity
 from archetype.missions.trajectories import (
     ClaudeTranscriptSource,
     TrajectorySelection,
@@ -41,6 +42,12 @@ class iMissionService(Protocol):
         *,
         max_ticks: int | None = None,
     ) -> MissionResult: ...
+
+    async def restore_sandbox(
+        self,
+        mission: SubmittedMission,
+        checkpoint: CheckpointRef,
+    ) -> SandboxIdentity: ...
 
     async def close(self) -> None: ...
 

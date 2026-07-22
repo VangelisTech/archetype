@@ -142,6 +142,10 @@ class AgentExecution(Component):
     sandbox_id: str = ""
     agent_session_id: str = ""
     agent_returncode: int = -1
+    agent_stdout: str = ""
+    agent_stderr: str = ""
+    trace_uri: str = ""
+    redaction_policy_id: str = ""
     starting_revision: str = ""
     final_revision: str = ""
     error: str = ""
@@ -194,6 +198,12 @@ class Checkpoint(Component):
     checkpoint_id: str = ""
     uri: str = ""
     created_at_ms: int = 0
+    environment: str = ""
+    source_sandbox_id: str = ""
+    owner_id: str = ""
+    locality: str = ""
+    expires_at_ms: int = 0
+    integrity: str = ""
     restorable: bool = False
     error: str = ""
 

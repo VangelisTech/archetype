@@ -39,6 +39,7 @@ def test_inventory_contains_only_the_v1_execution_dependencies() -> None:
     assert inventory.digest == f"sha256:{hashlib.sha256(_INVENTORY_BYTES).hexdigest()}"
     assert {artifact.artifact_id for artifact in inventory.artifacts} == {
         "codex-cli",
+        "coding-agent-base-image",
         "modal-sdk",
     }
     codex = inventory.harness_pin("codex")
@@ -49,6 +50,10 @@ def test_inventory_contains_only_the_v1_execution_dependencies() -> None:
     assert (
         CodexDriver._session_id(json.dumps({"type": "thread.started", "thread_id": "session-1"}))
         == "session-1"
+    )
+    assert inventory.resolve("modal-sdk").version == "1.5.0"
+    assert inventory.resolve("coding-agent-base-image").immutable_ref.startswith(
+        "ghcr.io/astral-sh/uv@sha256:"
     )
 
 
@@ -69,7 +74,7 @@ def test_unknown_artifact_and_harness_fail_closed() -> None:
             'source = "https://registry.npmjs.org/@openai/codex/-/codex-0.144.6.tgz"',
             'source = "http://registry.npmjs.org/@openai/codex/codex.tgz"',
         ),
-        ('immutable_ref = "sha256:7508a44f', 'immutable_ref = "1.5.2-'),
+        ('immutable_ref = "sha256:9c5687ef', 'immutable_ref = "1.5.0-'),
         ('id = "modal-sdk"', 'id = "codex-cli"'),
         ("schema_version = 1", "schema_version = 2"),
     ],

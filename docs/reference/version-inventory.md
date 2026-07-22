@@ -9,14 +9,15 @@ is its operator review surface. The normative contract, including the
 fail-closed resolution rules and the upgrade/rollback procedure, is
 [Agent Missions, section 5](../guide/agent-missions.md#5-sandbox-and-validator-protocol).
 
-Inventory content digest: `sha256:6f8a587a67e31c0131243cd63212311da5fe8cb2e230acf7d63f4c25b2953ad4`
+Inventory content digest: `sha256:5121699f0691dddb9f5e290cba959f3e1e6ca83993d85db523e3bb89a1088a5f`
 
 ## Pinned artifacts
 
 | Artifact | Role | Kind | Name | Version | Immutable reference | Consumers |
 | --- | --- | --- | --- | --- | --- | --- |
 | `codex-cli` | agent-harness | npm-package | `@openai/codex` | `0.144.6` | `sha512-wk+2CWiBNXiJLBoN2D08N9RceWkSBnlgk5g2K1a4CXrP/C0gdlHyRUG7RFzm9y41DCK/7tvCct233JVxyFmznw==` | #563, #565, #567 |
-| `modal-sdk` | sandbox-sdk | python-package | `modal` | `1.5.2` | `sha256:7508a44f8742c6f26be4d28da71f46092ef3bcc07d0f27cbd0ea8c9d6d9fc873` | #563, #566 |
+| `modal-sdk` | sandbox-sdk | python-package | `modal` | `1.5.0` | `sha256:9c5687eff775d1372bd70b87e43499e40777a1de160f23786c00807bf342fcb6` | #563, #566 |
+| `coding-agent-base-image` | sandbox-runtime | container-image | `ghcr.io/astral-sh/uv` | `0.9.30` | `ghcr.io/astral-sh/uv@sha256:e5b65587bce7de595f299855d7385fe7fca39b8a74baa261ba1b7147afa78e58` | #563 |
 
 ## Planned artifacts
 

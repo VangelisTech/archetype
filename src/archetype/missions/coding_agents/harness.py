@@ -59,6 +59,7 @@ class CodexDriver:
         request: TaskDispatchRequest,
         prompt: str,
     ) -> AgentProcessObservation:
+        codex_home = f"{session.capabilities.home_directory.rstrip('/')}/.codex"
         common = [
             "--json",
             "--dangerously-bypass-approvals-and-sandbox",
@@ -89,7 +90,7 @@ class CodexDriver:
                 tuple(argv),
                 workdir=self.workspace,
                 timeout_seconds=self.timeout_seconds,
-                env=(("NO_COLOR", "1"), ("CODEX_HOME", "/root/.codex")),
+                env=(("NO_COLOR", "1"), ("CODEX_HOME", codex_home)),
                 secret_names=(self.secret_name,),
                 close_stdin=True,
             )
@@ -99,6 +100,7 @@ class CodexDriver:
             stdout=result.stdout,
             stderr=result.stderr,
             session_id=self._session_id(result.stdout) or request.previous_agent_session_id,
+            trace_uri=result.trace_uri,
         )
 
     @staticmethod
@@ -148,7 +150,7 @@ class CodingAgentHarness:
             starting_revision = starting_revision or final_revision
             agent = await self._driver.run(session, request, self._prompt(request))
             if agent.returncode != 0:
-                detail = self._tail(agent.stderr or agent.stdout, 600)
+                detail = agent.stderr or agent.stdout
                 friction.append(
                     FrictionObservation(
                         kind="agent_process",
@@ -177,8 +179,8 @@ class CodingAgentHarness:
                     expected_returncode=validator.spec.expected_returncode,
                     actual_returncode=result.returncode,
                     revision=final_revision,
-                    stdout=self._tail(result.stdout),
-                    stderr=self._tail(result.stderr),
+                    stdout=result.stdout,
+                    stderr=result.stderr,
                 )
                 for validator, result in raw_validation
             )
@@ -205,7 +207,7 @@ class CodingAgentHarness:
             else:
                 for result in validation:
                     if not result.passed:
-                        detail = self._tail(result.stderr or result.stdout, 600)
+                        detail = result.stderr or result.stdout
                         friction.append(
                             FrictionObservation(
                                 kind="validation",
@@ -227,6 +229,9 @@ class CodingAgentHarness:
                 agent_returncode=agent.returncode,
                 starting_revision=starting_revision,
                 final_revision=final_revision,
+                agent_stdout=agent.stdout,
+                agent_stderr=agent.stderr,
+                trace_uri=agent.trace_uri,
                 validation=validation,
                 commits=commits,
                 friction=tuple(friction),
@@ -246,6 +251,9 @@ class CodingAgentHarness:
                 agent_returncode=agent.returncode,
                 starting_revision=starting_revision,
                 final_revision=final_revision,
+                agent_stdout=agent.stdout,
+                agent_stderr=agent.stderr,
+                trace_uri=agent.trace_uri,
                 validation=validation,
                 commits=commits,
                 friction=tuple(friction),
@@ -431,14 +439,10 @@ class CodingAgentHarness:
     def _subject(value: str) -> str:
         return " ".join(value.strip().split())[:72] or "complete task"
 
-    @staticmethod
-    def _tail(value: str, limit: int = 4000) -> str:
-        return value[-limit:]
-
     @classmethod
     def _raise(cls, result: ProcessResult, label: str) -> None:
         if result.returncode != 0:
-            detail = cls._tail(result.stderr or result.stdout)
+            detail = result.stderr or result.stdout
             raise RuntimeError(f"{label} failed with exit code {result.returncode}: {detail}")
 
 

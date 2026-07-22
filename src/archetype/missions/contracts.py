@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from archetype.missions.coding_agents.contracts import CodingAgentDriver
-    from archetype.missions.sandboxes import SandboxBackend
+    from archetype.missions.sandboxes import SandboxBackend, SandboxEventObserver
 
 
 @dataclass(frozen=True)
@@ -48,6 +48,8 @@ class AgentMissionConfig:
     workspace: str = "/workspace/repo"
     model: str = ""
     max_ticks: int = 100
+    checkpoint_after_dispatch: bool = True
+    on_sandbox_event: SandboxEventObserver | None = None
 
     def __post_init__(self) -> None:
         if not self.sandbox_environment.strip():
@@ -150,6 +152,9 @@ class SubmittedMission:
 
     mission_id: int
     task_ids: tuple[tuple[str, int], ...]
+    repository: str = ""
+    branch: str = ""
+    base_ref: str = "main"
 
     def task_id(self, name: str) -> int:
         try:

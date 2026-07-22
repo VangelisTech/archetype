@@ -45,7 +45,7 @@ benchmark  = ["esper>=2.45"]
 sim        = ["mujoco>=3.2"]
 otlp       = ["opentelemetry-exporter-otlp-proto-http>=1.20"]
 logfire    = ["logfire[fastapi]>=4.32.0"]
-coding-agent = ["modal>=1.5,<2"]
+coding-agent = ["modal==1.5.0"]
 dev        = [
     "pytest>=8.3", "pytest-asyncio>=0.26", "pytest-cov>=5.0",
     "ruff>=0.15,<0.16",  # pinned: 0.15 introduced I001/B007 rule changes; keep local == CI

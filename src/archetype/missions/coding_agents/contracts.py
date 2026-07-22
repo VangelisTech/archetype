@@ -80,6 +80,7 @@ class AgentProcessObservation:
     stdout: str = ""
     stderr: str = ""
     session_id: str = ""
+    trace_uri: str = ""
 
 
 @dataclass(frozen=True)
@@ -131,6 +132,9 @@ class AgentExecutionResult:
     agent_returncode: int
     starting_revision: str
     final_revision: str
+    agent_stdout: str = ""
+    agent_stderr: str = ""
+    trace_uri: str = ""
     validation: tuple[ValidationObservation, ...] = ()
     commits: tuple[CommitObservation, ...] = ()
     friction: tuple[FrictionObservation, ...] = ()

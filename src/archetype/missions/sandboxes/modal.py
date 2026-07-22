@@ -6,21 +6,39 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import os
+import sys
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
+from uuid import uuid4
 
+from archetype.missions.sandboxes._image import (
+    BASE_IMAGE_REF,
+    codex_install_command,
+    codex_package,
+    verify_coding_agent_environment,
+)
 from archetype.missions.sandboxes.contracts import (
+    CheckpointLocality,
     CheckpointRef,
     ProcessRequest,
     ProcessResult,
     SandboxCapabilities,
+    SandboxEvent,
+    SandboxEventType,
     SandboxIdentity,
     SandboxSession,
     SandboxSpec,
     SandboxStatus,
+    live_observation_paths,
+    validate_checkpoint_for_spec,
 )
+from archetype.missions.sandboxes.versions import load_version_inventory
 
 _AUTH_MOUNT = "/auth"
 _AUTH_VOLUME_PATH = f"{_AUTH_MOUNT}/auth.json"
@@ -30,22 +48,56 @@ _CODEX_SECRET = "codex_oauth"
 _GITHUB_SECRET = "github"
 
 
+def _default_environment() -> str:
+    """Return the content identity attested by the default Modal image."""
+
+    pin = load_version_inventory().harness_pin("codex")
+    material = "\n".join(
+        (
+            BASE_IMAGE_REF,
+            "ca-certificates curl git nodejs npm openssh-client",
+            pin.name,
+            pin.version,
+            pin.source,
+            pin.immutable_ref,
+            "user=root",
+            "home=/root",
+            "workdir=/workspace",
+        )
+    )
+    return f"modal-agent://sha256:{hashlib.sha256(material.encode()).hexdigest()}"
+
+
 @dataclass(frozen=True)
 class ModalSandboxConfig:
     """Provider configuration; repository coordinates arrive in ``SandboxSpec``."""
 
     app_name: str = "archetype-agent-missions"
-    image_name: str = ""
+    image_id: str = ""
     auth_volume_name: str = "archetype-codex-auth"
     github_secret_name: str = "archetype-github"
+    checkpoint_timeout_seconds: int = 5 * 60
+    checkpoint_ttl_seconds: int | None = 30 * 24 * 60 * 60
+    heartbeat_seconds: int = 15
+    login_timeout_seconds: int = 15 * 60
 
     def __post_init__(self) -> None:
         if not self.app_name.strip():
             raise ValueError("Modal app_name must not be empty")
+        if self.image_id and not self.image_id.startswith("im-"):
+            raise ValueError("Modal image_id must be an immutable im-... identity")
         if not self.auth_volume_name.strip():
             raise ValueError("Modal Codex auth volume must not be empty")
         if not self.github_secret_name.strip():
             raise ValueError("commit-and-push requires a GitHub secret")
+        if self.checkpoint_timeout_seconds < 1:
+            raise ValueError("checkpoint timeout must be positive")
+        if self.checkpoint_ttl_seconds is not None and self.checkpoint_ttl_seconds < 1:
+            raise ValueError("checkpoint TTL must be positive when configured")
+        if self.heartbeat_seconds < 1:
+            raise ValueError("heartbeat interval must be positive")
+        if self.login_timeout_seconds < 1:
+            raise ValueError("login timeout must be positive")
 
 
 class ModalSandboxSession:
@@ -59,14 +111,26 @@ class ModalSandboxSession:
         auth_sandbox: Any,
         github_secret: Any,
         auth_volume_name: str,
+        checkpoint_timeout_seconds: int,
+        checkpoint_ttl_seconds: int | None,
+        heartbeat_seconds: int,
     ) -> None:
         self._spec = spec
         self._sandbox = sandbox
         self._auth_sandbox = auth_sandbox
         self._github_secret = github_secret
         self._auth_volume_name = auth_volume_name
+        self._checkpoint_timeout_seconds = checkpoint_timeout_seconds
+        self._checkpoint_ttl_seconds = checkpoint_ttl_seconds
+        self._heartbeat_seconds = heartbeat_seconds
         self._lock = asyncio.Lock()
+        self._event_lock = asyncio.Lock()
+        self._event_sequence = 0
         self._status = SandboxStatus.READY
+        self._close_resources = {
+            "mission": sandbox,
+            "OAuth broker": auth_sandbox,
+        }
 
     @property
     def identity(self) -> SandboxIdentity:
@@ -79,7 +143,8 @@ class ModalSandboxSession:
     @property
     def capabilities(self) -> SandboxCapabilities:
         return SandboxCapabilities(
-            checkpoints=False,
+            checkpoints=True,
+            live_output=True,
             secret_names=(_CODEX_SECRET, _GITHUB_SECRET),
         )
 
@@ -91,45 +156,158 @@ class ModalSandboxSession:
         if unknown:
             raise ValueError(f"unsupported Modal sandbox secret(s): {', '.join(sorted(unknown))}")
         async with self._lock:
-            if self._status is SandboxStatus.CLOSED:
-                raise RuntimeError("Modal sandbox session is closed")
+            if self._status is not SandboxStatus.READY:
+                raise RuntimeError(f"Modal sandbox session is {self._status.value}")
             uses_oauth = _CODEX_SECRET in request.secret_names
-            if uses_oauth:
-                await self._stage_oauth()
+            is_agent = request.close_stdin
+            heartbeat: asyncio.Task[None] | None = None
+            oauth_staged = False
+            operation_error: BaseException | None = None
+            trace_uri = ""
             try:
+                if uses_oauth:
+                    await self._stage_oauth()
+                    oauth_staged = True
+                actual_request = request
+                if is_agent:
+                    live_directory_ready = False
+                    try:
+                        await self._ensure_live_directory()
+                        await self._clear_live_output()
+                        live_directory_ready = True
+                    except Exception:
+                        pass
+                    await self._emit_event_best_effort(
+                        SandboxEventType.PROCESS_STARTED,
+                        operation=request.argv[0],
+                    )
+                    if live_directory_ready:
+                        actual_request = self._trace_request(request)
+                        heartbeat = asyncio.create_task(self._heartbeat())
                 result = await self._exec_on(
                     self._sandbox,
-                    request,
+                    actual_request,
                     secrets=(
                         [self._github_secret] if _GITHUB_SECRET in request.secret_names else []
                     ),
                 )
-            except asyncio.CancelledError:
+                if is_agent:
+                    await self._emit_event_best_effort(
+                        SandboxEventType.PROCESS_FINISHED,
+                        operation=request.argv[0],
+                        returncode=result.returncode,
+                    )
+                    if live_directory_ready:
+                        trace_uri = await self._capture_live_output_best_effort(uuid4().hex)
+            except asyncio.CancelledError as exc:
+                operation_error = exc
                 self._status = SandboxStatus.INTERRUPTED
                 raise
-            except BaseException:
+            except BaseException as exc:
+                operation_error = exc
                 self._status = SandboxStatus.ERRORED
                 raise
             finally:
+                if heartbeat is not None:
+                    heartbeat.cancel()
+                    await asyncio.gather(heartbeat, return_exceptions=True)
                 if uses_oauth:
-                    await self._persist_and_remove_oauth()
-            return result
+                    try:
+                        if oauth_staged:
+                            await self._persist_and_remove_oauth()
+                        else:
+                            await self._remove_oauth()
+                    except BaseException as exc:
+                        self._status = SandboxStatus.ERRORED
+                        if operation_error is not None:
+                            raise exc from operation_error
+                        raise
+            return ProcessResult(
+                argv=request.argv,
+                returncode=result.returncode,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                trace_uri=trace_uri,
+            )
 
     async def checkpoint(self) -> CheckpointRef:
-        raise NotImplementedError("Modal checkpoint capture is not configured for V1")
+        """Capture a provider-native filesystem image after credentials are absent."""
+
+        async with self._lock:
+            if self._status is not SandboxStatus.READY:
+                raise RuntimeError(f"Modal sandbox session is {self._status.value}")
+            absent = await self._exec_on(
+                self._sandbox,
+                ProcessRequest(
+                    ("test", "!", "-e", _MISSION_AUTH_PATH),
+                    timeout_seconds=60,
+                ),
+            )
+            self._raise(absent, "verify credential-free checkpoint")
+            try:
+                await self._ensure_live_directory()
+            except Exception:
+                pass
+            await self._emit_event_best_effort(SandboxEventType.CHECKPOINT_STARTED)
+            await self._scrub_live_output()
+            try:
+                image = await self._sandbox.snapshot_filesystem.aio(
+                    timeout=self._checkpoint_timeout_seconds,
+                    ttl=self._checkpoint_ttl_seconds,
+                )
+            except Exception as exc:
+                await self._emit_event_best_effort(
+                    SandboxEventType.CHECKPOINT_FAILED,
+                    message=type(exc).__name__,
+                )
+                raise
+            image_id = str(image.object_id)
+            if not image_id.startswith("im-"):
+                raise RuntimeError(f"Modal checkpoint returned invalid image ID: {image_id!r}")
+            created_at_ms = int(time.time() * 1000)
+            checkpoint = CheckpointRef(
+                provider="modal",
+                checkpoint_id=image_id,
+                uri=f"modal-image://{image_id}",
+                created_at_ms=created_at_ms,
+                environment=self._spec.environment,
+                source_sandbox_id=self.identity.sandbox_id,
+                owner_id=self._spec.metadata_dict().get("mission", ""),
+                locality=CheckpointLocality.PROVIDER,
+                expires_at_ms=(
+                    created_at_ms + self._checkpoint_ttl_seconds * 1000
+                    if self._checkpoint_ttl_seconds is not None
+                    else None
+                ),
+            )
+            await self._emit_event_best_effort(
+                SandboxEventType.CHECKPOINT_FINISHED,
+                checkpoint_uri=checkpoint.uri,
+            )
+            return checkpoint
 
     async def close(self) -> None:
-        if self._status is SandboxStatus.CLOSED:
-            return
-        self._status = SandboxStatus.CLOSED
-        results = await asyncio.gather(
-            self._terminate(self._sandbox),
-            self._terminate(self._auth_sandbox),
-            return_exceptions=True,
-        )
-        failures = [result for result in results if isinstance(result, BaseException)]
-        if failures:
-            raise BaseExceptionGroup(f"failed to close {len(failures)} Modal resource(s)", failures)
+        async with self._lock:
+            if self._status is SandboxStatus.CLOSED:
+                return
+            await self._emit_event_best_effort(SandboxEventType.CLOSING)
+            resources = tuple(self._close_resources.items())
+            results = await asyncio.gather(
+                *(self._terminate(resource) for _label, resource in resources),
+                return_exceptions=True,
+            )
+            failures: list[BaseException] = []
+            for (label, _resource), result in zip(resources, results, strict=True):
+                if isinstance(result, BaseException):
+                    failures.append(result)
+                else:
+                    self._close_resources.pop(label, None)
+            if failures:
+                self._status = SandboxStatus.ERRORED
+                raise BaseExceptionGroup(
+                    f"failed to close {len(failures)} Modal resource(s)", failures
+                )
+            self._status = SandboxStatus.CLOSED
 
     async def _stage_oauth(self) -> None:
         try:
@@ -139,7 +317,12 @@ class ModalSandboxSession:
                 f"Modal OAuth volume {self._auth_volume_name!r} has no Codex credential"
             ) from exc
         self._validate_oauth(payload)
-        await self._checked(ProcessRequest(("mkdir", "-p", _CODEX_HOME), timeout_seconds=60))
+        await self._checked(
+            ProcessRequest(
+                ("sh", "-c", f"rm -rf {_CODEX_HOME} && install -d -m 700 {_CODEX_HOME}"),
+                timeout_seconds=60,
+            )
+        )
         await self._sandbox.filesystem.write_text.aio(payload, _MISSION_AUTH_PATH)
         await self._checked(
             ProcessRequest(("chmod", "600", _MISSION_AUTH_PATH), timeout_seconds=60)
@@ -157,12 +340,270 @@ class ModalSandboxSession:
             await self._auth_checked("sync", _AUTH_MOUNT)
         except BaseException as exc:
             persistence_error = exc
-        finally:
-            await self._checked(
-                ProcessRequest(("rm", "-f", _MISSION_AUTH_PATH), timeout_seconds=60)
+        removal_error: BaseException | None = None
+        try:
+            await self._remove_oauth()
+        except BaseException as exc:
+            removal_error = exc
+        if persistence_error is not None and removal_error is not None:
+            raise BaseExceptionGroup(
+                "failed to persist and remove Modal OAuth credential",
+                [persistence_error, removal_error],
             )
         if persistence_error is not None:
             raise persistence_error
+        if removal_error is not None:
+            raise removal_error
+
+    async def _remove_oauth(self) -> None:
+        await self._checked(ProcessRequest(("rm", "-rf", _CODEX_HOME), timeout_seconds=60))
+
+    @classmethod
+    def live_observation_paths(cls, trace_id: str = "") -> dict[str, str]:
+        return live_observation_paths(trace_id=trace_id)
+
+    def _live_observation_paths(self, trace_id: str = "") -> dict[str, str]:
+        return live_observation_paths(self.capabilities.observation_directory, trace_id)
+
+    async def _ensure_live_directory(self) -> None:
+        paths = self._live_observation_paths()
+        result = await self._exec_on(
+            self._sandbox,
+            ProcessRequest(("mkdir", "-p", paths["directory"]), timeout_seconds=60),
+        )
+        self._raise(result, "create live observation directory")
+
+    async def _scrub_live_output(self) -> None:
+        paths = self._live_observation_paths()
+        result = await self._exec_on(
+            self._sandbox,
+            ProcessRequest(
+                (
+                    "rm",
+                    "-rf",
+                    paths["stdout"],
+                    paths["stderr"],
+                    f"{paths['directory']}/executions",
+                ),
+                timeout_seconds=60,
+            ),
+        )
+        self._raise(result, "remove raw live output before checkpoint")
+
+    async def _clear_live_output(self) -> None:
+        paths = self._live_observation_paths()
+        result = await self._exec_on(
+            self._sandbox,
+            ProcessRequest(("rm", "-f", paths["stdout"], paths["stderr"]), timeout_seconds=60),
+        )
+        self._raise(result, "clear stale live output before process")
+
+    async def _capture_live_output_best_effort(self, trace_id: str) -> str:
+        try:
+            current = self._live_observation_paths()
+            captured = self._live_observation_paths(trace_id)
+            mkdir = await self._exec_on(
+                self._sandbox,
+                ProcessRequest(("mkdir", "-p", captured["trace_directory"]), timeout_seconds=60),
+            )
+            self._raise(mkdir, "create execution trace directory")
+            for stream in ("stdout", "stderr"):
+                copied = await self._exec_on(
+                    self._sandbox,
+                    ProcessRequest(
+                        ("cp", "--", current[stream], captured[stream]),
+                        timeout_seconds=60,
+                    ),
+                )
+                self._raise(copied, f"capture execution {stream}")
+            return f"modal-sandbox://{self.identity.sandbox_id}{captured['stdout']}"
+        except Exception:
+            return ""
+
+    def _trace_request(self, request: ProcessRequest) -> ProcessRequest:
+        paths = self._live_observation_paths()
+        script = (
+            'stdout="$1"; stderr="$2"; shift 2; '
+            '"$@" > >(tee -a "$stdout") 2> >(tee -a "$stderr" >&2)'
+        )
+        return ProcessRequest(
+            (
+                "bash",
+                "-o",
+                "pipefail",
+                "-c",
+                script,
+                "archetype-agent-trace",
+                paths["stdout"],
+                paths["stderr"],
+                *request.argv,
+            ),
+            workdir=request.workdir,
+            timeout_seconds=request.timeout_seconds,
+            env=request.env,
+            close_stdin=True,
+        )
+
+    async def _heartbeat(self) -> None:
+        while True:
+            await asyncio.sleep(self._heartbeat_seconds)
+            await self._emit_event_best_effort(SandboxEventType.HEARTBEAT)
+
+    async def _emit_event_best_effort(
+        self,
+        event_type: SandboxEventType,
+        *,
+        operation: str = "",
+        returncode: int | None = None,
+        checkpoint_uri: str = "",
+        message: str = "",
+    ) -> None:
+        """Emit non-authoritative live observation without changing provider outcomes."""
+
+        try:
+            await self._emit_event(
+                event_type,
+                operation=operation,
+                returncode=returncode,
+                checkpoint_uri=checkpoint_uri,
+                message=message,
+            )
+        except Exception:
+            pass
+
+    async def _emit_event(
+        self,
+        event_type: SandboxEventType,
+        *,
+        operation: str = "",
+        returncode: int | None = None,
+        checkpoint_uri: str = "",
+        message: str = "",
+    ) -> None:
+        paths = self._live_observation_paths()
+        async with self._event_lock:
+            self._event_sequence += 1
+            event = SandboxEvent(
+                kind=event_type,
+                sandbox=self.identity,
+                timestamp_ms=int(time.time() * 1000),
+                sequence=self._event_sequence,
+                operation=operation,
+                returncode=returncode,
+                checkpoint_uri=checkpoint_uri,
+                message=message,
+            ).record()
+            line = json.dumps(event, sort_keys=True) + "\n"
+            try:
+                existing = str(await self._sandbox.filesystem.read_text.aio(paths["events"]))
+            except Exception as exc:
+                if not self._is_missing_path(exc):
+                    raise
+                existing = ""
+            await self._sandbox.filesystem.write_text.aio(existing + line, paths["events"])
+            await self._sandbox.filesystem.write_text.aio(line, paths["status"])
+
+    @classmethod
+    async def monitor(
+        cls,
+        sandbox_id: str,
+        *,
+        follow: bool = True,
+        poll_seconds: float = 1.0,
+        disconnect_grace_seconds: float = 180.0,
+        stdout_target: Any = None,
+        stderr_target: Any = None,
+        on_monitor_event: Callable[[dict[str, str]], None] | None = None,
+    ) -> dict[str, Any]:
+        """Attach to one Modal sandbox's durable live observation files."""
+
+        if not sandbox_id.startswith("sb-"):
+            raise ValueError("Modal sandbox IDs must start with 'sb-'")
+        if poll_seconds <= 0 or disconnect_grace_seconds <= 0:
+            raise ValueError("monitor timing values must be positive")
+        try:
+            import modal
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError(
+                "Modal support is optional; install it with `uv sync --extra coding-agent`"
+            ) from exc
+        sandbox = await modal.Sandbox.from_id.aio(sandbox_id)
+        paths = cls.live_observation_paths()
+        offsets: dict[str, int] = {}
+        status: dict[str, Any] = {}
+        disconnected_at: float | None = None
+
+        async def read(path: str) -> str:
+            try:
+                return str(await sandbox.filesystem.read_text.aio(path))
+            except Exception as exc:
+                if cls._is_missing_path(exc):
+                    return ""
+                raise
+
+        while True:
+            try:
+                status_text, events, stdout, stderr = await asyncio.gather(
+                    read(paths["status"]),
+                    read(paths["events"]),
+                    read(paths["stdout"]),
+                    read(paths["stderr"]),
+                )
+                if status_text:
+                    try:
+                        parsed = json.loads(status_text)
+                    except json.JSONDecodeError:
+                        parsed = {}
+                    if isinstance(parsed, dict):
+                        status = parsed
+                cls._write_delta(paths["events"], events, offsets, stdout_target)
+                cls._write_delta(paths["stdout"], stdout, offsets, stdout_target)
+                cls._write_delta(paths["stderr"], stderr, offsets, stderr_target)
+                provider_returncode = await sandbox.poll.aio()
+            except Exception as exc:
+                if not follow:
+                    raise
+                now = time.monotonic()
+                disconnected_at = disconnected_at or now
+                if now - disconnected_at >= disconnect_grace_seconds:
+                    if on_monitor_event is not None:
+                        on_monitor_event(
+                            {
+                                "type": "monitor_disconnected",
+                                "sandbox_id": sandbox_id,
+                                "error": str(exc)[-1000:],
+                            }
+                        )
+                    return status
+                await asyncio.sleep(poll_seconds)
+                continue
+            if disconnected_at is not None:
+                if on_monitor_event is not None:
+                    on_monitor_event({"type": "monitor_reconnected", "sandbox_id": sandbox_id})
+                disconnected_at = None
+            if provider_returncode is not None:
+                status = {**status, "provider_returncode": int(provider_returncode)}
+                return status
+            if not follow or status.get("type") == SandboxEventType.CLOSING.value:
+                return status
+            await asyncio.sleep(poll_seconds)
+
+    @staticmethod
+    def _write_delta(path: str, value: str, offsets: dict[str, int], target: Any) -> None:
+        previous = offsets.get(path, 0)
+        if previous > len(value):
+            previous = 0
+        delta = value[previous:]
+        offsets[path] = len(value)
+        if delta and target is not None:
+            target.write(delta)
+            target.flush()
+
+    @staticmethod
+    def _is_missing_path(exc: BaseException) -> bool:
+        return isinstance(exc, FileNotFoundError) or type(exc).__name__ == (
+            "SandboxFilesystemNotFoundError"
+        )
 
     async def _checked(self, request: ProcessRequest) -> ProcessResult:
         result = await self._exec_on(self._sandbox, request)
@@ -237,9 +678,21 @@ class ModalSandboxBackend:
     def __init__(self, config: ModalSandboxConfig | None = None) -> None:
         self.config = config or ModalSandboxConfig()
 
+    @property
+    def environment(self) -> str:
+        """Declared identity of the named image or complete default recipe."""
+
+        if self.config.image_id:
+            return f"modal-image://{self.config.image_id}"
+        return _default_environment()
+
     async def create(self, spec: SandboxSpec) -> SandboxSession:
         if spec.provider != self.name:
             raise ValueError("Modal backend received a non-Modal sandbox spec")
+        if spec.environment != self.environment:
+            raise ValueError(
+                f"Modal environment must be {self.environment!r}, got {spec.environment!r}"
+            )
         try:
             import modal
         except ImportError as exc:  # pragma: no cover - optional dependency
@@ -247,12 +700,149 @@ class ModalSandboxBackend:
                 "Modal support is optional; install it with `uv sync --extra coding-agent`"
             ) from exc
 
-        app = await modal.App.lookup.aio(self.config.app_name, create_if_missing=True)
         image = (
-            modal.Image.from_name(self.config.image_name)
-            if self.config.image_name
+            modal.Image.from_id(self.config.image_id)
+            if self.config.image_id
             else self._default_image(modal)
         )
+        return await self._start(modal, spec, image)
+
+    async def login_codex(self) -> None:
+        """Persist an interactive Codex subscription login in the broker volume."""
+
+        try:
+            import modal
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError(
+                "Modal support is optional; install it with `uv sync --extra coding-agent`"
+            ) from exc
+        app = await modal.App.lookup.aio(self.config.app_name, create_if_missing=True)
+        volume = modal.Volume.from_name(
+            self.config.auth_volume_name,
+            create_if_missing=True,
+            version=2,
+        )
+        await volume.hydrate.aio()
+        image = (
+            modal.Image.from_id(self.config.image_id)
+            if self.config.image_id
+            else self._default_image(modal)
+        )
+        sandbox = await modal.Sandbox.create.aio(
+            app=app,
+            image=image,
+            timeout=self.config.login_timeout_seconds,
+            idle_timeout=self.config.login_timeout_seconds,
+            workdir=_AUTH_MOUNT,
+            volumes={_AUTH_MOUNT: volume},
+            tags={"kind": "archetype-agent-oauth-login"},
+        )
+        try:
+            process = await sandbox.exec.aio(
+                "codex",
+                "login",
+                "--device-auth",
+                "-c",
+                'cli_auth_credentials_store="file"',
+                workdir=_AUTH_MOUNT,
+                timeout=self.config.login_timeout_seconds,
+                env={"CODEX_HOME": _AUTH_MOUNT, "NO_COLOR": "1"},
+                pty=True,
+            )
+            returncode = await self._passthrough_process(process)
+            if returncode != 0:
+                raise RuntimeError(f"Codex device login failed with exit code {returncode}")
+            result = await ModalSandboxSession._exec_on(
+                sandbox,
+                ProcessRequest(
+                    ("codex", "login", "status"),
+                    workdir=_AUTH_MOUNT,
+                    timeout_seconds=60,
+                    env=(("CODEX_HOME", _AUTH_MOUNT),),
+                ),
+            )
+            ModalSandboxSession._raise(result, "Codex device login verification")
+        finally:
+            cleanup = asyncio.create_task(self._cleanup_login(sandbox))
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                await cleanup
+                raise
+
+    @staticmethod
+    async def _cleanup_login(sandbox: Any) -> None:
+        try:
+            result = await ModalSandboxSession._exec_on(
+                sandbox,
+                ProcessRequest(
+                    (
+                        "sh",
+                        "-c",
+                        f"find {_AUTH_MOUNT} -mindepth 1 -maxdepth 1 "
+                        "! -name auth.json -exec rm -rf -- {} + "
+                        f"&& chmod 600 {_AUTH_VOLUME_PATH} && sync {_AUTH_MOUNT}",
+                    ),
+                    timeout_seconds=60,
+                ),
+            )
+            ModalSandboxSession._raise(result, "Codex OAuth volume cleanup")
+        finally:
+            await ModalSandboxSession._terminate(sandbox)
+
+    @staticmethod
+    async def _passthrough_process(process: Any) -> int:
+        """Bridge a remote device-login PTY without retaining its output."""
+
+        loop = asyncio.get_running_loop()
+        writes: set[asyncio.Task[Any]] = set()
+        stdin_fd: int | None = None
+
+        async def write_remote(data: bytes) -> None:
+            await process.stdin.write.aio(data)
+            await process.stdin.drain.aio()
+
+        def stdin_ready() -> None:
+            assert stdin_fd is not None
+            try:
+                data = os.read(stdin_fd, 4096)
+            except OSError:
+                data = b""
+            if not data:
+                loop.remove_reader(stdin_fd)
+                return
+            task = asyncio.create_task(write_remote(data))
+            writes.add(task)
+            task.add_done_callback(writes.discard)
+
+        async def pump(reader: Any, target: Any) -> None:
+            async for chunk in reader:
+                value = chunk.decode(errors="replace") if isinstance(chunk, bytes) else str(chunk)
+                target.write(value)
+                target.flush()
+
+        try:
+            try:
+                stdin_fd = sys.stdin.fileno()
+                loop.add_reader(stdin_fd, stdin_ready)
+            except (AttributeError, OSError, ValueError, NotImplementedError):
+                stdin_fd = None
+            stdout = asyncio.create_task(pump(process.stdout, sys.stdout))
+            stderr = asyncio.create_task(pump(process.stderr, sys.stderr))
+            returncode = int(await process.wait.aio())
+            await asyncio.gather(stdout, stderr)
+            return returncode
+        finally:
+            if stdin_fd is not None:
+                try:
+                    loop.remove_reader(stdin_fd)
+                except (OSError, ValueError):
+                    pass
+            if writes:
+                await asyncio.gather(*writes, return_exceptions=True)
+
+    async def _start(self, modal: Any, spec: SandboxSpec, image: Any) -> SandboxSession:
+        app = await modal.App.lookup.aio(self.config.app_name, create_if_missing=True)
         auth_volume = modal.Volume.from_name(
             self.config.auth_volume_name,
             create_if_missing=False,
@@ -285,31 +875,90 @@ class ModalSandboxBackend:
         except BaseException:
             await ModalSandboxSession._terminate(auth_sandbox)
             raise
-        return ModalSandboxSession(
+        session = ModalSandboxSession(
             spec=spec,
             sandbox=sandbox,
             auth_sandbox=auth_sandbox,
             github_secret=github_secret,
             auth_volume_name=self.config.auth_volume_name,
+            checkpoint_timeout_seconds=self.config.checkpoint_timeout_seconds,
+            checkpoint_ttl_seconds=self.config.checkpoint_ttl_seconds,
+            heartbeat_seconds=self.config.heartbeat_seconds,
         )
+        try:
+            await verify_coding_agent_environment(
+                session,
+                spec,
+                expected_user="root",
+                verify_environment=not self.config.image_id,
+            )
+        except BaseException:
+            await session.close()
+            raise
+        return session
 
     async def restore(
         self,
         spec: SandboxSpec,
         checkpoint: CheckpointRef,
     ) -> SandboxSession:
-        raise NotImplementedError("Modal checkpoint restore is not configured for V1")
+        if spec.provider != self.name:
+            raise ValueError("Modal backend received a non-Modal sandbox spec")
+        if spec.environment != self.environment:
+            raise ValueError(
+                f"Modal environment must be {self.environment!r}, got {spec.environment!r}"
+            )
+        validate_checkpoint_for_spec(checkpoint, spec)
+        image_id = self._checkpoint_image(checkpoint)
+        try:
+            import modal
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError(
+                "Modal support is optional; install it with `uv sync --extra coding-agent`"
+            ) from exc
+        image = modal.Image.from_id(image_id)
+        session = await self._start(modal, spec, image)
+        try:
+            result = await session.exec(
+                ProcessRequest(("test", "-d", spec.workdir), timeout_seconds=60)
+            )
+            ModalSandboxSession._raise(result, "verify restored workspace")
+        except BaseException:
+            await session.close()
+            raise
+        return session
+
+    @staticmethod
+    def _checkpoint_image(checkpoint: CheckpointRef) -> str:
+        if checkpoint.provider != "modal":
+            raise ValueError("Modal checkpoint provider does not match")
+        if checkpoint.locality is not CheckpointLocality.PROVIDER:
+            raise ValueError("Modal checkpoint locality does not match")
+        prefix = "modal-image://"
+        if not checkpoint.uri.startswith(prefix) or "#" in checkpoint.uri:
+            raise ValueError("invalid Modal image checkpoint")
+        image_id = checkpoint.uri.removeprefix(prefix)
+        if image_id != checkpoint.checkpoint_id or not image_id.startswith("im-"):
+            raise ValueError("invalid Modal image checkpoint")
+        return image_id
 
     @staticmethod
     def _default_image(modal: Any) -> Any:
         return (
-            modal.Image.debian_slim(python_version="3.12")
-            .apt_install("ca-certificates", "curl", "git", "openssh-client")
-            .run_commands(
-                "curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh",
-                "curl -fsSL https://chatgpt.com/codex/install.sh "
-                "| env CODEX_NON_INTERACTIVE=1 CODEX_INSTALL_DIR=/usr/local/bin sh",
+            modal.Image.from_registry(BASE_IMAGE_REF)
+            .apt_install(
+                "ca-certificates",
+                "curl",
+                "git",
+                "nodejs",
+                "npm",
+                "openssh-client",
             )
+            .run_commands(
+                "mkdir -p /workspace",
+                f"# {codex_package()}\n{codex_install_command()}",
+            )
+            .env({"ARCHETYPE_SANDBOX_ENVIRONMENT": _default_environment()})
         )
 
 

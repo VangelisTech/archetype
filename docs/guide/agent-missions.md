@@ -46,7 +46,7 @@ The repository harness owns acceptance.
 ```
 
 Daft evaluates state transforms and joins. It does not keep an agent process
-alive or schedule a Modal sandbox. External work begins only after the tick
+alive or schedule a provider sandbox. External work begins only after the tick
 containing its dispatch has committed.
 
 ## 2. Public authoring surface
@@ -59,17 +59,13 @@ import asyncio
 
 from archetype import ArchetypeRuntime
 from archetype.missions import AgentMissionConfig, AgentTask, CommandValidator
-from archetype.missions.sandboxes.modal import ModalSandboxBackend, ModalSandboxConfig
+from archetype.missions.sandboxes import AppleContainerSandboxBackend
 
 
+backend = AppleContainerSandboxBackend()
 MISSION_CONFIG = AgentMissionConfig(
-    sandbox_backend=ModalSandboxBackend(
-        ModalSandboxConfig(
-            auth_volume_name="archetype-codex-auth",
-            github_secret_name="archetype-github",
-        )
-    ),
-    sandbox_environment="modal-codex-v1@sha256:<reviewed-image-digest>",
+    sandbox_backend=backend,
+    sandbox_environment=backend.environment,
     max_ticks=40,
 )
 
@@ -125,6 +121,13 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+Initialize the selected backend's Codex subscription volume once before the
+first live run with `await backend.login_codex()`. This device login is not an
+OpenAI API key and cannot implicitly reuse the credential of the Codex process
+running on the host. The complete backend-selectable setup, including Modal
+attach monitoring, is executable in
+[`examples/11_coding_agent_mission.py`](https://github.com/VangelisTech/archetype/blob/main/examples/11_coding_agent_mission.py).
+
 `CommandValidator` and `AgentTask` are authoring values. Submission compiles
 them into Validator and Task entities plus relations. The convenient surface
 does not turn validator definitions or task dependencies back into JSON blobs.
@@ -165,7 +168,7 @@ flowchart LR
     World --> Behavior
     App --> Agents
     Agents --> Sandboxes
-    Sandboxes --> Provider[Modal / future providers]
+    Sandboxes --> Provider[Apple Container / Docker / Modal]
     App --> World
 ```
 
@@ -318,6 +321,9 @@ class SandboxSession(Protocol):
     @property
     def identity(self) -> SandboxIdentity: ...
 
+    @property
+    def capabilities(self) -> SandboxCapabilities: ...
+
     async def status(self) -> SandboxStatus: ...
     async def exec(self, request: ProcessRequest) -> ProcessResult: ...
     async def checkpoint(self) -> CheckpointRef: ...
@@ -326,6 +332,9 @@ class SandboxSession(Protocol):
 
 class SandboxService:
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> SandboxSession: ...
+    async def restore(
+        self, key: SandboxKey, spec: SandboxSpec, checkpoint: CheckpointRef
+    ) -> SandboxSession: ...
     async def close(self, key: SandboxKey) -> None: ...
     async def shutdown(self) -> None: ...
 ```
@@ -341,11 +350,70 @@ and translation into factual Components. Provider adapters do not know task
 state and do not return an acceptance verdict.
 
 Checkpointing is optional resumability. A checkpoint is a lightweight,
-provider-native reference to a sandbox snapshot; a filesystem manifest is a
-content-addressed, queryable observation of captured state. Neither is
-required to accept a task. V1 defines both Components and the Session
-checkpoint capability, but automatic capture and restore policy remain a
-later application seam.
+provider-native reference to the session-owned writable filesystem, excluding
+external and credential mounts. A filesystem manifest is a content-addressed,
+queryable observation of selected state. Neither is required to accept a task.
+After every dispatch, the application first persists execution, validation,
+and commit evidence and commits the task decision. Only then does it ask a
+checkpoint-capable session for a bounded, best-effort snapshot and record
+either its reference or a `FrictionLog`. A slow or failed snapshot cannot delay
+or change the valid task decision, and rejected work is still checkpointed.
+
+Restore is deliberately explicit in V1:
+
+```python
+identity = await missions.restore_sandbox(submitted, checkpoint_ref)
+result = await missions.run(submitted)
+```
+
+There is no background supervisor, fleet discovery, mission-attempt claim,
+lease, fence, settlement, or automatic retry daemon. Explicit restore closes
+and replaces any retained live session for that already-known mission; it never
+silently ignores the supplied checkpoint. The reference must match provider,
+environment, mission owner, locality, and expiry. The ordinary committed task
+graph remains workflow authority. This is sandbox replacement, not a promise
+of process-restart mission continuation.
+
+### Supported sandbox backends
+
+| Backend | Role | Checkpoint / restore | Authentication |
+|---|---|---|---|
+| Apple Container | Preferred macOS operational adapter by current operator policy; VM-grade isolation through the host `container` CLI. | Stops, exports the session root filesystem to an atomic content-addressed host-local archive, restarts in `finally`, verifies integrity, and rebuilds a restore image. | Dedicated Apple Container volume and broker VM. |
+| Docker | Linux and CI reference adapter; never selected implicitly on macOS. | `docker commit`, followed by immutable image-ID inspection and same-provider restore. | Optional dedicated Docker volume and broker container. |
+| Modal | Remote paid adapter. | Modal `snapshot_filesystem`, retained with recorded environment lineage and bounded TTL, and restore by exact `im-...` image ID. Expiration may also surface from Modal while resolving the image. | Dedicated Modal Volume and broker sandbox. |
+
+Apple Container and Docker share one digest-pinned Linux base recipe. The
+Codex tarball is fetched from the version inventory, verified against its
+SHA-512 integrity value, and then installed. Startup fails closed unless the
+running user, home, parent workdir, Codex version, and recipe digest match the
+declared environment. Modal's generated image performs the same package check
+and runtime attestation; a configured Modal image is selected only by its
+provider-issued immutable `im-...` ID. The local adapters do not share host
+directories with mission containers.
+OAuth credentials are staged only around the Codex process, persisted back to
+the broker, and removed before validators and checkpoints. GitHub credentials
+are symbolic process capabilities exposed only to the push command; secret
+values are never placed in provider command arguments.
+
+Modal additionally records heartbeat, event, stdout, and stderr files under
+the session-owned `/tmp/archetype-agent-missions/live/` spool, outside the
+target repository. `on_sandbox_event` receives bounded `SandboxEvent` values
+and exposes the provider identity as soon as acquisition completes, while
+`ModalSandboxSession.monitor("sb-...")` can attach from another process with
+byte-offset reads and bounded disconnect recovery. Each successfully captured
+agent invocation is also copied to an execution-scoped spool path; only that
+per-call success returns the `trace_uri` persisted on `AgentExecution`. A
+failed best-effort trace setup leaves `trace_uri` empty instead of advertising
+a missing or stale file. The authoritative ECS copy of execution and validator
+output is bounded and redacted before persistence.
+Provider-native snapshots are recovery objects, not portable or sanitized
+artifact bundles. The consolidated `ArtifactService` accepts explicit file
+sources, but V1 intentionally does not crawl or publish arbitrary sandbox
+outputs as hidden mission post-processing. A later provider-export handoff may
+select declared files, sanitize or copy them into a valid `ArtifactSource`,
+invoke `ArtifactService`, and only then stage `FilesystemManifest` or
+`AgentArtifact` provenance. Provider checkpoints and live spools remain
+operational recovery objects until that explicit handoff occurs.
 
 ### Repository validators are authority
 
@@ -416,9 +484,11 @@ relationships. HTN decomposition is useful, but is not a V1 correctness gate.
 - separate sandbox and agent-process lifecycle;
 - repository validators with expected nonzero support;
 - revision-bound validation and Git publication evidence;
-- first-class commits and friction plus reusable checkpoint, manifest, and
-  artifact-reference Components;
-- a Modal backend; and
+- first-class commits, friction, and post-decision checkpoint evidence plus
+  reusable manifest and artifact-reference schemas;
+- Apple Container, Docker, and Modal backends with checkpoint/restore parity;
+- immediate sandbox identity observation and direct Modal live monitoring;
+- best-effort post-dispatch checkpoint evidence plus explicit restore; and
 - terminal result projection and cleanup.
 
 ### Deliberately not included
@@ -441,11 +511,12 @@ a separate, explicit migration decision.
 
 | Gap | V1 treatment | Later seam |
 |---|---|---|
-| Cold process resume | A live dogfood may recover from an explicit checkpoint; no fleet claim is implied. | Reinstall registration bundles and reconcile committed dispatches through a reviewed outbox contract. |
+| Cold process resume | Authors may explicitly replace a sandbox from a recorded checkpoint inside an already-known mission; no process-restart reconciliation, fleet claim, or automatic supervisor is implied. | Specify interrupted-dispatch reconciliation before exposing cold mission continuation. |
 | Sandbox placement | Use a simple configured policy. | Add a scheduler only when multiple topologies require one. |
 | Task decomposition | Authors submit the graph. | Planner emits the same typed graph. |
 | Terminal interaction | `exec` is the required capability. | Add optional PTY/tmux/ttyd capabilities without widening workflow authority. |
-| Artifact ingestion | Record content-addressed refs. | Compose `archetype.app.artifacts` for typed ingestion. |
+| Trace/artifact ingestion | Keep bounded redacted tails in ECS. Use the consolidated `ArtifactService` explicitly for caller-selected file sources; do not auto-emit `AgentArtifact` or `FilesystemManifest` from sandbox contents. | Add a provider-export adapter that selects declared files, sanitizes them, ingests them, and stages provenance as one explicit application workflow. |
+| Snapshot sanitization | Credentials are removed before capture; provider snapshots remain trusted recovery objects rather than published artifacts. | Quarantine/scan before any cross-provider or R2 publication. |
 | Prefab mission libraries | Direct materialization remains authoritative. | Author reusable graphs after generic prefab registry contracts settle. |
 
 ## 8. File and responsibility map
@@ -464,7 +535,9 @@ The implementation follows this layout:
 | `archetype/missions/coding_agents/harness.py` | Repository preparation, agent invocation, validation, Git publication, and observation translation. |
 | `archetype/missions/sandboxes/contracts.py` | Sandbox Backend, Session, process, status, and snapshot value contracts. |
 | `archetype/missions/sandboxes/service.py` | Backend registry and live-session lifetime. |
-| `archetype/missions/sandboxes/modal.py` | Modal Backend and Session implementation only. |
+| `archetype/missions/sandboxes/apple_container.py` | Operational macOS backend and atomic root-filesystem archive restore. |
+| `archetype/missions/sandboxes/docker.py` | Linux/CI reference backend and immutable image restore. |
+| `archetype/missions/sandboxes/modal.py` | Remote backend, device login, snapshots, and direct live monitor. |
 | `archetype/app/missions/service.py` | Graph materialization, tick/I/O composition, cross-family workflows, and projections. |
 | `archetype/runtime/missions.py` | Mission-author runtime handle and lifecycle. |
 | `examples/11_coding_agent_mission.py` | Real typed dogfood script. |
@@ -524,14 +597,19 @@ The credential-free contract lane must prove:
 - stale-revision evidence rejection;
 - expected-nonzero validator derivation;
 - agent-authored and publisher-authored commit preservation;
+- validators running after a nonzero agent exit when repository evidence exists;
+- tracked, untracked, and `.context` filesystem state across checkpoint/restore;
 - sandbox/agent/task lifecycle separation;
 - terminal cleanup; and
 - example dry-run execution.
 
-The live Modal dogfood must additionally prove real repository preparation,
-agent execution, validation, commit/push publication, evidence-carrying repair,
-and sandbox teardown. It is paid and credentialed, so it remains an explicit
-operation rather than an ordinary CI test.
+The dedicated Docker parity lane builds the shared image and proves real
+session-filesystem checkpoint/restore only when the dogfood example changes or
+an operator dispatches it manually; it is not part of ordinary CI. The live
+Modal dogfood must additionally prove real
+repository preparation, agent execution, direct monitoring, validation,
+commit/push publication, checkpoint/restore, and teardown. Modal is paid and
+credentialed, so it remains an explicit operation rather than ordinary CI.
 
 ## Companion contracts
 
