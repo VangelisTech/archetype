@@ -1680,6 +1680,46 @@ owner = "tests/sync"
 rationale = "Assertion boundary in tests/sync/test_sync_stack_contracts.py: executes the Daft to_pylist terminal so the focused test can compare concrete results; this execution is owned by the repository test harness."
 
 [[entries]]
+path = "src/archetype/api/routes/query.py"
+line = 252
+method = "count_rows"
+boundary_kind = "transport-serialization"
+owner = "src/archetype/api/routes"
+rationale = "Owned transport serialization in src/archetype/api/routes/query.py: the Daft count_rows terminal produces the concrete value or durable effect required at this named boundary."
+
+[[entries]]
+path = "src/archetype/graph/cascade.py"
+line = 94
+method = "to_pylist"
+boundary_kind = "control-flow-extract"
+owner = "src/archetype/graph"
+rationale = "Mutation-planning boundary for cascade: despawn takes concrete ids, so _plan materializes the (edge id, source) pairs of the dangling edges; the liveness union, anti-join, and filters all run in the lazy plan and only ids cross into Python."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+line = 109
+method = "to_pylist"
+boundary_kind = "control-flow-extract"
+owner = "src/archetype/missions"
+rationale = "Post-commit external-I/O boundary: the lazy frame is restricted to committed DISPATCHED tasks and joined to mission identity before those bounded intents become Python requests for sandbox processes; an OS process invocation cannot remain a Daft expression."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+line = 135
+method = "to_pylist"
+boundary_kind = "control-flow-extract"
+owner = "src/archetype/missions"
+rationale = "Post-commit validator-command boundary: Guards and TaskValidator entities are joined lazily first, then the finite validators attached to dispatchable tasks become argv tuples consumed by the repository harness; process argv cannot remain a DataFrame value."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+line = 176
+method = "to_pylist"
+boundary_kind = "control-flow-extract"
+owner = "src/archetype/missions"
+rationale = "Repair-turn boundary: prior AgentExecution and ValidationResult entities are joined lazily by execution before the finite previous-dispatch observations become a coding-agent prompt and session-resume request; the external driver requires concrete typed observations."
+
+[[entries]]
 path = "tests/sync/test_sync_stack_contracts.py"
 line = 428
 method = "collect"

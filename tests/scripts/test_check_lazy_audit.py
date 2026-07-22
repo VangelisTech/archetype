@@ -602,6 +602,44 @@ def test_same_name_provenance_does_not_cross_function_boundaries(tmp_path):
     assert [(site.line, site.method) for site in sites] == [(5, "to_arrow")]
 
 
+@pytest.mark.parametrize(
+    ("source", "method"),
+    [
+        (
+            "import daft\ndef build() -> daft.DataFrame:\n"
+            '    return daft.from_pydict({"x": [1]})\nbuild().count_rows()\n',
+            "count_rows",
+        ),
+        (
+            "from daft import DataFrame\ndef emit(frame: DataFrame | None):\n"
+            "    if frame is not None:\n        return frame.to_arrow()\n",
+            "to_arrow",
+        ),
+        (
+            "import daft\nclass Holder:\n    frame: daft.DataFrame\n"
+            "def emit(holder: Holder):\n    return holder.frame.count_rows()\n",
+            "count_rows",
+        ),
+    ],
+)
+def test_declared_return_union_and_attribute_provenance(tmp_path, source, method):
+    py = _write_py(tmp_path, "declared.py", source)
+
+    assert [site.method for site in _scan_file(py, "declared.py")] == [method]
+
+
+def test_local_foreign_annotation_suppresses_legacy_spelling(tmp_path):
+    py = _write_py(
+        tmp_path,
+        "foreign_annotation.py",
+        "import daft\nclass Custom:\n    def collect(self): ...\n"
+        "def actual(frame: daft.DataFrame):\n    return frame.count_rows()\n"
+        "def foreign(frame: Custom):\n    return frame.collect()\n",
+    )
+
+    assert [site.method for site in _scan_file(py, "foreign_annotation.py")] == ["count_rows"]
+
+
 def test_imported_custom_collect_is_not_gated(tmp_path):
     py = _write_py(
         tmp_path,

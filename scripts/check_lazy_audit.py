@@ -377,11 +377,23 @@ class _FlowAnalyzer(ast.NodeVisitor):
         self.class_name: str | None = None
         self.class_attrs: dict[tuple[str, str], str] = {}
         self.local_types: set[str] = set()
+        self.return_types: dict[str, str] = {}
         self.sites: list[Site] = []
         self.seen: set[tuple[int, str]] = set()
 
     def _annotation(self, node: ast.expr | None) -> str | None:
-        return _qualified_name(node, self.imports) if node else None
+        if node is None:
+            return None
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            left = self._annotation(node.left)
+            right = self._annotation(node.right)
+            proven = _REGISTRY.dataframe_types | frozenset(_REGISTRY.typed_methods)
+            if left in proven:
+                return left
+            if right in proven:
+                return right
+            return left or right
+        return _qualified_name(node, self.imports)
 
     def _type(self, node: ast.expr) -> str | None:
         if isinstance(node, ast.Name):
@@ -393,9 +405,14 @@ class _FlowAnalyzer(ast.NodeVisitor):
                 and self.class_name
             ):
                 return self.class_attrs.get((self.class_name, node.attr))
-            return self._type(node.value)
+            owner = self._type(node.value)
+            if owner and owner.startswith("class:"):
+                return self.class_attrs.get((owner.removeprefix("class:"), node.attr))
+            return owner
         if isinstance(node, ast.Call):
             called = _qualified_name(node.func, self.imports)
+            if called in self.return_types:
+                return self.return_types[called]
             if called in _REGISTRY.dataframe_constructors:
                 return "daft.DataFrame"
             if called in _REGISTRY.typed_methods:
@@ -432,6 +449,28 @@ class _FlowAnalyzer(ast.NodeVisitor):
             return self._type(node.value)
         return None
 
+    def visit_Module(self, node: ast.Module) -> None:
+        for statement in node.body:
+            if isinstance(statement, ast.Import | ast.ImportFrom):
+                self.visit(statement)
+        self.local_types.update(
+            statement.name for statement in node.body if isinstance(statement, ast.ClassDef)
+        )
+        for statement in node.body:
+            if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
+                returned = self._annotation(statement.returns)
+                if returned in _REGISTRY.dataframe_types or returned in _REGISTRY.typed_methods:
+                    self.return_types[statement.name] = returned
+            elif isinstance(statement, ast.ClassDef):
+                for member in statement.body:
+                    if isinstance(member, ast.AnnAssign) and isinstance(member.target, ast.Name):
+                        field_type = self._annotation(member.annotation)
+                        if field_type:
+                            self.class_attrs[(statement.name, member.target.id)] = field_type
+        for statement in node.body:
+            if not isinstance(statement, ast.Import | ast.ImportFrom):
+                self.visit(statement)
+
     def _record(self, node: ast.AST, method: str, receiver: ast.expr | None) -> None:
         line = node.end_lineno or node.lineno
         key = (line, method)
@@ -450,7 +489,9 @@ class _FlowAnalyzer(ast.NodeVisitor):
         if receiver is None:
             return
         receiver_type = self._type(receiver)
-        if receiver_type == "foreign":
+        if receiver_type == "foreign" or (
+            receiver_type is not None and receiver_type.startswith("class:")
+        ):
             return
         if receiver_type in _REGISTRY.dataframe_types:
             terminal = method in _REGISTRY.dataframe_methods
@@ -485,6 +526,8 @@ class _FlowAnalyzer(ast.NodeVisitor):
             annotation = self._annotation(arg.annotation)
             if annotation in _REGISTRY.dataframe_types or annotation in _REGISTRY.typed_methods:
                 self.env[arg.arg] = annotation
+            elif annotation in self.local_types:
+                self.env[arg.arg] = f"class:{annotation}"
             elif annotation and annotation.split(".", 1)[0] in {"lancedb", "pyarrow"}:
                 self.env[arg.arg] = "foreign"
         for statement in node.body:
