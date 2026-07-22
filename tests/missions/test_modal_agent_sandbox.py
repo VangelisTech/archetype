@@ -5,17 +5,21 @@
 
 from __future__ import annotations
 
+import asyncio
+import io
 import json
 import sys
 
 import pytest
 
 from archetype.missions.sandboxes import (
+    CheckpointLocality,
     CheckpointRef,
     ProcessRequest,
     ProcessResult,
     SandboxBackend,
     SandboxSpec,
+    SandboxStatus,
 )
 from archetype.missions.sandboxes.modal import (
     ModalSandboxBackend,
@@ -336,3 +340,495 @@ async def test_modal_monitor_reads_durable_status_and_output_once(
     assert "process_started" in captured.out
     assert "agent output" in captured.out
     assert "agent warning" in captured.err
+
+
+def test_modal_config_validation_and_checkpoint_locality_fail_closed() -> None:
+    for kwargs, error in (
+        ({"app_name": ""}, "app_name"),
+        ({"auth_volume_name": ""}, "auth volume"),
+        ({"checkpoint_timeout_seconds": 0}, "checkpoint timeout"),
+        ({"checkpoint_ttl_seconds": 0}, "checkpoint TTL"),
+        ({"heartbeat_seconds": 0}, "heartbeat"),
+    ):
+        with pytest.raises(ValueError, match=error):
+            ModalSandboxConfig(**kwargs)
+
+    with pytest.raises(ValueError, match="locality"):
+        ModalSandboxBackend._checkpoint_image(
+            CheckpointRef(
+                "modal",
+                "im-checkpoint",
+                "modal-image://im-checkpoint",
+                1,
+                environment="modal-codex-test",
+                source_sandbox_id="sb-source",
+                locality=CheckpointLocality.HOST,
+            )
+        )
+
+
+class _MemoryRead:
+    def __init__(self, values: dict[str, str]) -> None:
+        self.values = values
+
+    async def aio(self, path: str) -> str:
+        if path not in self.values:
+            raise FileNotFoundError(path)
+        return self.values[path]
+
+
+class _MemoryWrite:
+    def __init__(self, values: dict[str, str]) -> None:
+        self.values = values
+
+    async def aio(self, value: str, path: str) -> None:
+        self.values[path] = value
+
+
+class _MemoryFilesystem:
+    def __init__(self, values: dict[str, str] | None = None) -> None:
+        self.values = values or {}
+        self.read_text = _MemoryRead(self.values)
+        self.write_text = _MemoryWrite(self.values)
+
+
+class _LifecycleSandbox:
+    def __init__(self, sandbox_id: str, *, snapshot_id: str = "im-checkpoint") -> None:
+        self.object_id = sandbox_id
+        self.filesystem = _MemoryFilesystem()
+        self.snapshot_filesystem = _AsyncMethod(type("Image", (), {"object_id": snapshot_id})())
+        self.terminate = _AsyncMethod()
+        self.detach = _AsyncMethod()
+        self.commands: list[tuple[str, ...]] = []
+
+    @property
+    def exec(self):
+        owner = self
+
+        class _Exec:
+            @staticmethod
+            async def aio(*argv, **kwargs):
+                del kwargs
+                owner.commands.append(tuple(argv))
+                if argv[:2] == ("rm", "-f"):
+                    owner.filesystem.values.pop(str(argv[2]), None)
+                elif argv[:2] == ("mv", "-f"):
+                    value = owner.filesystem.values.pop(str(argv[2]))
+                    owner.filesystem.values[str(argv[3])] = value
+                return _Process()
+
+        return _Exec()
+
+
+def _lifecycle_session(
+    sandbox: _LifecycleSandbox,
+    auth: _LifecycleSandbox | None = None,
+) -> ModalSandboxSession:
+    return ModalSandboxSession(
+        spec=SandboxSpec(
+            "modal",
+            "modal-codex-test",
+            "/workspace/repo",
+            metadata=(("mission", "mission-1"),),
+        ),
+        sandbox=sandbox,
+        auth_sandbox=auth or _LifecycleSandbox("sb-auth"),
+        github_secret=object(),
+        auth_volume_name="codex-auth",
+        checkpoint_timeout_seconds=120,
+        checkpoint_ttl_seconds=3600,
+        heartbeat_seconds=3600,
+    )
+
+
+@pytest.mark.asyncio
+async def test_modal_agent_exec_persists_oauth_and_durable_events() -> None:
+    payload = '{"access_token":"credential-canary"}'
+    sandbox = _LifecycleSandbox("sb-agent")
+    auth = _LifecycleSandbox("sb-auth")
+    auth.filesystem.values["/auth/auth.json"] = payload
+    session = _lifecycle_session(sandbox, auth)
+
+    result = await session.exec(
+        ProcessRequest(
+            ("codex", "exec", "fix it"),
+            workdir="/workspace/repo",
+            secret_names=("codex_oauth", "github"),
+            close_stdin=True,
+        )
+    )
+
+    assert result.returncode == 0
+    assert result.argv == ("codex", "exec", "fix it")
+    assert await session.status() is SandboxStatus.READY
+    events = sandbox.filesystem.values["/tmp/archetype-agent-missions/live/events.jsonl"]
+    assert "process_started" in events and "process_finished" in events
+    assert "/root/.codex/auth.json" not in sandbox.filesystem.values
+    assert auth.filesystem.values["/auth/auth.json"] == payload
+    assert any(command[0] == "bash" for command in sandbox.commands)
+
+
+@pytest.mark.asyncio
+async def test_modal_session_error_checkpoint_and_close_states(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox = _LifecycleSandbox("sb-agent")
+    auth = _LifecycleSandbox("sb-auth")
+    session = _lifecycle_session(sandbox, auth)
+
+    with pytest.raises(ValueError, match="unsupported"):
+        await session.exec(ProcessRequest(("true",), secret_names=("unknown",)))
+    with pytest.raises(RuntimeError, match="no Codex credential"):
+        await session.exec(ProcessRequest(("true",), secret_names=("codex_oauth",)))
+
+    async def cancelled(*args, **kwargs):
+        del args, kwargs
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(session, "_exec_on", cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        await session.exec(ProcessRequest(("true",)))
+    assert await session.status() is SandboxStatus.INTERRUPTED
+
+    async def errored(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("remote failed")
+
+    monkeypatch.setattr(session, "_exec_on", errored)
+    with pytest.raises(RuntimeError, match="remote failed"):
+        await session.exec(ProcessRequest(("true",)))
+    assert await session.status() is SandboxStatus.ERRORED
+
+    session._status = SandboxStatus.CLOSED
+    with pytest.raises(RuntimeError, match="closed"):
+        await session.exec(ProcessRequest(("true",)))
+    with pytest.raises(RuntimeError, match="closed"):
+        await session.checkpoint()
+
+
+@pytest.mark.asyncio
+async def test_modal_checkpoint_failure_invalid_identity_and_close_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _SnapshotFailure:
+        async def aio(self, **kwargs):
+            del kwargs
+            raise RuntimeError("snapshot unavailable")
+
+    sandbox = _LifecycleSandbox("sb-agent")
+    sandbox.snapshot_filesystem = _SnapshotFailure()
+    session = _lifecycle_session(sandbox)
+    events: list[str] = []
+
+    async def record(kind, **kwargs) -> None:
+        del kwargs
+        events.append(kind.value)
+
+    monkeypatch.setattr(session, "_emit_event", record)
+    with pytest.raises(RuntimeError, match="snapshot unavailable"):
+        await session.checkpoint()
+    assert events[-1] == "checkpoint_failed"
+
+    invalid = _lifecycle_session(_LifecycleSandbox("sb-agent", snapshot_id="floating"))
+    monkeypatch.setattr(invalid, "_emit_event", record)
+    with pytest.raises(RuntimeError, match="invalid image ID"):
+        await invalid.checkpoint()
+
+    async def event_failure(*args, **kwargs) -> None:
+        del args, kwargs
+        raise RuntimeError("event unavailable")
+
+    async def terminate_failure(*args, **kwargs) -> None:
+        del args, kwargs
+        raise RuntimeError("terminate failed")
+
+    closing = _lifecycle_session(_LifecycleSandbox("sb-agent"))
+    monkeypatch.setattr(closing, "_emit_event", event_failure)
+    monkeypatch.setattr(closing, "_terminate", terminate_failure)
+    with pytest.raises(BaseExceptionGroup, match="failed to close 2"):
+        await closing.close()
+    assert await closing.status() is SandboxStatus.CLOSED
+    await closing.close()
+
+
+@pytest.mark.asyncio
+async def test_modal_oauth_persistence_failure_still_removes_mission_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = '{"access_token":"credential-canary"}'
+    sandbox = _LifecycleSandbox("sb-agent")
+    sandbox.filesystem.values["/root/.codex/auth.json"] = payload
+    session = _lifecycle_session(sandbox)
+
+    async def auth_failure(*arguments: str) -> ProcessResult:
+        raise RuntimeError(f"cannot persist {arguments[0]}")
+
+    monkeypatch.setattr(session, "_auth_checked", auth_failure)
+    with pytest.raises(RuntimeError, match="cannot persist"):
+        await session._persist_and_remove_oauth()
+    assert any(command[:2] == ("rm", "-f") for command in sandbox.commands)
+
+    for value, error in (("not-json", "valid JSON"), ("[]", "non-empty"), ("{}", "non-empty")):
+        with pytest.raises(RuntimeError, match=error):
+            ModalSandboxSession._validate_oauth(value)
+
+
+@pytest.mark.asyncio
+async def test_modal_monitor_recovers_then_reports_provider_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = ModalSandboxSession.live_observation_paths()
+    calls = 0
+
+    class _Filesystem:
+        class read_text:
+            @staticmethod
+            async def aio(path: str) -> str:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise RuntimeError("temporary disconnect")
+                if path == paths["status"]:
+                    return "not-json"
+                if path == paths["stdout"]:
+                    return "agent output"
+                raise FileNotFoundError(path)
+
+    poll_values = iter((None, 17))
+
+    class _Poll:
+        @staticmethod
+        async def aio():
+            return next(poll_values)
+
+    sandbox = type("Sandbox", (), {"filesystem": _Filesystem(), "poll": _Poll()})()
+    fake_modal = type(
+        "Modal",
+        (),
+        {"Sandbox": type("Sandbox", (), {"from_id": _AsyncMethod(sandbox)})},
+    )
+    monkeypatch.setitem(sys.modules, "modal", fake_modal)
+    output = io.StringIO()
+    monitor_events: list[dict[str, str]] = []
+
+    status = await ModalSandboxSession.monitor(
+        "sb-reconnect",
+        poll_seconds=0.001,
+        disconnect_grace_seconds=1,
+        stdout_target=output,
+        on_monitor_event=monitor_events.append,
+    )
+
+    assert status == {"provider_returncode": 17}
+    assert output.getvalue() == "agent output"
+    assert monitor_events == [{"type": "monitor_reconnected", "sandbox_id": "sb-reconnect"}]
+
+    with pytest.raises(ValueError, match="must start"):
+        await ModalSandboxSession.monitor("invalid", follow=False)
+    with pytest.raises(ValueError, match="positive"):
+        await ModalSandboxSession.monitor("sb-valid", poll_seconds=0)
+
+
+def test_modal_delta_restarts_after_remote_log_truncation() -> None:
+    target = io.StringIO()
+    offsets = {"log": 100}
+
+    ModalSandboxSession._write_delta("log", "new", offsets, target)
+
+    assert target.getvalue() == "new"
+    assert offsets == {"log": 3}
+
+
+@pytest.mark.asyncio
+async def test_modal_passthrough_streams_remote_output_without_a_local_stdin(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class _Reader:
+        def __init__(self, values):
+            self.values = iter(values)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self.values)
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
+
+    process = type(
+        "Process",
+        (),
+        {
+            "stdin": object(),
+            "stdout": _Reader((b"device code\n",)),
+            "stderr": _Reader(("warning\n",)),
+            "wait": _AsyncMethod(0),
+        },
+    )()
+    monkeypatch.setattr(sys.stdin, "fileno", lambda: (_ for _ in ()).throw(OSError()))
+
+    assert await ModalSandboxBackend._passthrough_process(process) == 0
+    captured = capsys.readouterr()
+    assert "device code" in captured.out
+    assert "warning" in captured.err
+
+
+def _fake_modal(sandboxes: list[object]):
+    class _Create:
+        calls: list[dict[str, object]] = []
+
+        @classmethod
+        async def aio(cls, **kwargs):
+            cls.calls.append(kwargs)
+            candidate = sandboxes.pop(0)
+            if isinstance(candidate, BaseException):
+                raise candidate
+            return candidate
+
+    volume = type("Volume", (), {"hydrate": _AsyncMethod()})()
+    app = object()
+    image = object()
+    return type(
+        "Modal",
+        (),
+        {
+            "App": type("App", (), {"lookup": _AsyncMethod(app)}),
+            "Volume": type(
+                "Volume",
+                (),
+                {"from_name": staticmethod(lambda *args, **kwargs: volume)},
+            ),
+            "Secret": type(
+                "Secret",
+                (),
+                {"from_name": staticmethod(lambda *args, **kwargs: "github-secret")},
+            ),
+            "Image": type(
+                "Image",
+                (),
+                {"from_id": staticmethod(lambda image_id: (image, image_id))},
+            ),
+            "Sandbox": type("Sandbox", (), {"create": _Create()}),
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_modal_backend_create_restore_and_login_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resources = [_LifecycleSandbox(f"sb-{index}") for index in range(1, 6)]
+    fake_modal = _fake_modal(list(resources))
+    monkeypatch.setitem(sys.modules, "modal", fake_modal)
+
+    async def verified(*args, **kwargs) -> None:
+        del args, kwargs
+
+    async def passthrough(_process) -> int:
+        return 0
+
+    monkeypatch.setattr(
+        "archetype.missions.sandboxes.modal.verify_coding_agent_environment",
+        verified,
+    )
+    monkeypatch.setattr(
+        ModalSandboxBackend,
+        "_passthrough_process",
+        staticmethod(passthrough),
+    )
+    backend = ModalSandboxBackend(ModalSandboxConfig(image_id="im-reviewed"))
+    spec = SandboxSpec(
+        "modal",
+        backend.environment,
+        "/workspace/repo",
+        metadata=(("mission", "mission-1"),),
+    )
+
+    created = await backend.create(spec)
+    assert created.identity.sandbox_id == "sb-2"
+    await created.close()
+
+    checkpoint = CheckpointRef(
+        "modal",
+        "im-checkpoint",
+        "modal-image://im-checkpoint",
+        1,
+        environment=spec.environment,
+        source_sandbox_id="sb-source",
+        owner_id="mission-1",
+    )
+    restored = await backend.restore(spec, checkpoint)
+    assert restored.identity.sandbox_id == "sb-4"
+    assert any(command[:2] == ("test", "-d") for command in resources[3].commands)
+    await restored.close()
+
+    await backend.login_codex()
+    assert any(
+        command[:3] == ("codex", "login", "--device-auth") for command in resources[4].commands
+    )
+    assert resources[4].terminate.result is None
+
+    with pytest.raises(ValueError, match="non-Modal"):
+        await backend.create(SandboxSpec("docker", backend.environment, "/workspace/repo"))
+    with pytest.raises(ValueError, match="environment"):
+        await backend.restore(
+            SandboxSpec("modal", "wrong", "/workspace/repo"),
+            checkpoint,
+        )
+
+
+@pytest.mark.asyncio
+async def test_modal_start_cleans_resources_after_provider_and_attestation_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    auth = _LifecycleSandbox("sb-auth")
+    fake_modal = _fake_modal([auth, RuntimeError("mission create failed")])
+    backend = ModalSandboxBackend(ModalSandboxConfig(image_id="im-reviewed"))
+    spec = SandboxSpec("modal", backend.environment, "/workspace/repo")
+
+    with pytest.raises(RuntimeError, match="mission create failed"):
+        await backend._start(fake_modal, spec, object())
+    assert auth.detach.result is None
+
+    auth = _LifecycleSandbox("sb-auth-2")
+    mission = _LifecycleSandbox("sb-mission-2")
+    fake_modal = _fake_modal([auth, mission])
+
+    async def rejected(*args, **kwargs) -> None:
+        del args, kwargs
+        raise RuntimeError("attestation failed")
+
+    monkeypatch.setattr(
+        "archetype.missions.sandboxes.modal.verify_coding_agent_environment",
+        rejected,
+    )
+    with pytest.raises(RuntimeError, match="attestation failed"):
+        await backend._start(fake_modal, spec, object())
+    assert mission.detach.result is None
+    assert auth.detach.result is None
+
+
+@pytest.mark.asyncio
+async def test_modal_login_failure_still_sanitizes_and_closes_broker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broker = _LifecycleSandbox("sb-login")
+    fake_modal = _fake_modal([broker])
+    monkeypatch.setitem(sys.modules, "modal", fake_modal)
+
+    async def failed(_process) -> int:
+        return 7
+
+    monkeypatch.setattr(
+        ModalSandboxBackend,
+        "_passthrough_process",
+        staticmethod(failed),
+    )
+    backend = ModalSandboxBackend(ModalSandboxConfig(image_id="im-reviewed"))
+
+    with pytest.raises(RuntimeError, match="device login failed"):
+        await backend.login_codex()
+    assert broker.commands[-1][0] == "sh"
+    assert broker.detach.result is None

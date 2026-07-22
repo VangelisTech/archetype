@@ -15,6 +15,8 @@ from archetype.missions.sandboxes import (
     ProcessResult,
     SandboxBackend,
     SandboxCapabilities,
+    SandboxEvent,
+    SandboxEventType,
     SandboxIdentity,
     SandboxKey,
     SandboxService,
@@ -22,6 +24,8 @@ from archetype.missions.sandboxes import (
     SandboxSession,
     SandboxSpec,
     SandboxStatus,
+    live_observation_paths,
+    validate_checkpoint_for_spec,
 )
 
 
@@ -110,6 +114,86 @@ def test_process_request_requires_explicit_portable_inputs() -> None:
         ProcessRequest(("python",), env=(("A", "1"), ("A", "2")))
     with pytest.raises(ValueError, match="home_directory"):
         SandboxCapabilities(home_directory="/")
+
+
+def test_sandbox_value_contracts_reject_ambiguous_or_unrecoverable_inputs() -> None:
+    with pytest.raises(ValueError, match="key"):
+        SandboxKey(" ")
+    for args, kwargs, error in (
+        (("", "env", "/workspace"), {}, "provider"),
+        (("fake", "", "/workspace"), {}, "environment"),
+        (("fake", "env", "/"), {}, "workdir"),
+        (("fake", "env", "/workspace"), {"timeout_seconds": 0}, "timeouts"),
+        (
+            ("fake", "env", "/workspace"),
+            {"metadata": (("duplicate", "1"), ("duplicate", "2"))},
+            "metadata",
+        ),
+    ):
+        with pytest.raises(ValueError, match=error):
+            SandboxSpec(*args, **kwargs)
+    with pytest.raises(ValueError, match="provider"):
+        SandboxIdentity("", "sandbox", "environment")
+    with pytest.raises(ValueError, match="environment"):
+        SandboxIdentity("fake", "sandbox", "")
+    with pytest.raises(ValueError, match="negative"):
+        SandboxEvent(
+            SandboxEventType.READY,
+            SandboxIdentity("fake", "sandbox", "environment"),
+            -1,
+        )
+    with pytest.raises(ValueError, match="unique"):
+        SandboxCapabilities(secret_names=("oauth", "oauth"))
+    with pytest.raises(ValueError, match="observation_directory"):
+        SandboxCapabilities(observation_directory="relative")
+    for kwargs, error in (
+        ({"argv": ()}, "argv"),
+        ({"argv": ("true",), "timeout_seconds": 0}, "timeout"),
+        ({"argv": ("true",), "secret_names": ("",)}, "secret"),
+        ({"argv": ("true",), "secret_names": ("oauth", "oauth")}, "unique"),
+    ):
+        with pytest.raises(ValueError, match=error):
+            ProcessRequest(**kwargs)
+    for args, kwargs, error in (
+        (("", "id", "fake://id", 1), {}, "requires"),
+        (("fake", "id", "fake://id", -1), {}, "negative"),
+        (("fake", "id", "fake://id", 2), {"expires_at_ms": 2}, "expiry"),
+        (("fake", "id", "fake://id", 1), {"integrity": "sha256:bad"}, "sha256"),
+    ):
+        with pytest.raises(ValueError, match=error):
+            CheckpointRef(*args, **kwargs)
+    with pytest.raises(ValueError, match="artifact root"):
+        live_observation_paths("relative")
+
+
+def test_checkpoint_validation_requires_complete_same_provider_lineage() -> None:
+    spec = _spec()
+    cases = (
+        (CheckpointRef("other", "id", "other://id", 1), "provider"),
+        (
+            CheckpointRef(
+                "fake",
+                "id",
+                "fake://id",
+                1,
+                environment=spec.environment,
+                source_sandbox_id="source",
+                restorable=False,
+            ),
+            "non-restorable",
+        ),
+        (
+            CheckpointRef("fake", "id", "fake://id", 1, source_sandbox_id="source"),
+            "lineage",
+        ),
+        (
+            CheckpointRef("fake", "id", "fake://id", 1, environment=spec.environment),
+            "source",
+        ),
+    )
+    for checkpoint, error in cases:
+        with pytest.raises(ValueError, match=error):
+            validate_checkpoint_for_spec(checkpoint, spec)
 
 
 @pytest.mark.asyncio

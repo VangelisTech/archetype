@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from archetype.missions.sandboxes import (
@@ -17,6 +19,7 @@ from archetype.missions.sandboxes import (
     ProcessResult,
     SandboxBackend,
     SandboxSpec,
+    SandboxStatus,
 )
 from archetype.missions.sandboxes._image import coding_agent_environment
 
@@ -184,3 +187,166 @@ def test_restore_accepts_only_an_immutable_same_provider_image() -> None:
                 locality=CheckpointLocality.HOST,
             )
         )
+
+
+def test_docker_config_and_spec_validation_fail_closed() -> None:
+    for kwargs, error in (
+        ({"cpus": 0}, "positive"),
+        ({"image_name": "bad image"}, "image_name"),
+        ({"auth_volume_name": "bad volume"}, "auth_volume_name"),
+        ({"github_token_env": "lowercase"}, "environment variable"),
+    ):
+        with pytest.raises(ValueError, match=error):
+            DockerSandboxConfig(**kwargs)
+
+    backend = DockerSandboxBackend()
+    with pytest.raises(ValueError, match="different provider"):
+        backend._validate_spec(
+            SandboxSpec("apple-container", backend.environment, "/workspace/repo")
+        )
+    with pytest.raises(ValueError, match="environment"):
+        backend._validate_spec(SandboxSpec("docker", "wrong", "/workspace/repo"))
+
+
+@pytest.mark.asyncio
+async def test_docker_backend_create_restore_login_and_close_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    resolved_image_inspections = 0
+
+    async def fake_run_host(argv, *, timeout_seconds: int, stdin: str | None = None):
+        nonlocal resolved_image_inspections
+        del timeout_seconds, stdin
+        command = tuple(argv)
+        calls.append(command)
+        if command[:3] == ("docker", "image", "inspect"):
+            if command[-1].startswith("archetype-agent:codex-"):
+                resolved_image_inspections += 1
+                return ProcessResult(command, 1 if resolved_image_inspections == 1 else 0)
+            return ProcessResult(command, 0)
+        if command[:3] == ("docker", "volume", "inspect"):
+            volume_inspections = len([c for c in calls if c[:3] == command[:3]])
+            return ProcessResult(command, 1 if volume_inspections == 3 else 0)
+        return ProcessResult(command, 0)
+
+    async def fake_passthrough(argv) -> int:
+        calls.append(tuple(argv))
+        return 0
+
+    async def verified(*args, **kwargs) -> None:
+        del args, kwargs
+
+    monkeypatch.setattr("archetype.missions.sandboxes.docker.run_host", fake_run_host)
+    monkeypatch.setattr(
+        "archetype.missions.sandboxes.docker.run_host_passthrough",
+        fake_passthrough,
+    )
+    monkeypatch.setattr(
+        "archetype.missions.sandboxes.docker.shutil.which",
+        lambda name: f"/usr/bin/{name}",
+    )
+    monkeypatch.setattr(
+        "archetype.missions.sandboxes.docker.verify_coding_agent_environment",
+        verified,
+    )
+    config = DockerSandboxConfig(auth_volume_name="codex-auth")
+    backend = DockerSandboxBackend(config)
+    spec = _spec(config)
+
+    created = await backend.create(spec)
+    assert created.identity.provider == "docker"
+    await created.close()
+    await created.close()
+    assert await created.status() is SandboxStatus.CLOSED
+
+    digest = "c" * 64
+    checkpoint = CheckpointRef(
+        "docker",
+        digest,
+        f"docker-image://sha256:{digest}",
+        1,
+        environment=spec.environment,
+        source_sandbox_id="source",
+        locality=CheckpointLocality.HOST,
+        integrity=f"sha256:{digest}",
+    )
+    restored = await backend.restore(spec, checkpoint)
+    assert restored.identity.provider == "docker"
+    await restored.close()
+
+    await backend.login_codex()
+
+    assert any(command[:2] == ("docker", "build") for command in calls)
+    assert any(command[:3] == ("docker", "volume", "create") for command in calls)
+    assert any("--device-auth" in command for command in calls)
+
+
+@pytest.mark.asyncio
+async def test_docker_oauth_round_trip_and_session_error_states(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[tuple[str, ...], str | None]] = []
+
+    async def fake_run_host(argv, *, timeout_seconds: int, stdin: str | None = None):
+        del timeout_seconds
+        command = tuple(argv)
+        calls.append((command, stdin))
+        stdout = "oauth-archive" if any("tar -C" in value for value in command) else ""
+        return ProcessResult(command, 0, stdout=stdout)
+
+    monkeypatch.setattr("archetype.missions.sandboxes.docker.run_host", fake_run_host)
+    session = _session(oauth=True)
+
+    await session._stage_oauth()
+    await session._persist_and_remove_oauth()
+    assert any(stdin == "oauth-archive" for _command, stdin in calls)
+
+    with pytest.raises(ValueError, match="unsupported"):
+        await session.exec(ProcessRequest(("true",), secret_names=("unknown",)))
+
+    async def cancelled(_request: ProcessRequest) -> ProcessResult:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(session, "_exec_request", cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        await session.exec(ProcessRequest(("true",)))
+    assert await session.status() is SandboxStatus.INTERRUPTED
+
+    async def errored(_request: ProcessRequest) -> ProcessResult:
+        raise RuntimeError("provider exec failed")
+
+    monkeypatch.setattr(session, "_exec_request", errored)
+    with pytest.raises(RuntimeError, match="provider exec failed"):
+        await session.exec(ProcessRequest(("true",)))
+    assert await session.status() is SandboxStatus.ERRORED
+
+    session._status = SandboxStatus.CLOSED
+    with pytest.raises(RuntimeError, match="closed"):
+        await session.exec(ProcessRequest(("true",)))
+    with pytest.raises(RuntimeError, match="closed"):
+        await session.checkpoint()
+
+
+@pytest.mark.asyncio
+async def test_docker_runtime_broker_and_close_failures_are_explicit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(RuntimeError, match="not configured"):
+        await _session()._auth_exec("true", timeout=1)
+
+    monkeypatch.setattr(
+        "archetype.missions.sandboxes.docker.shutil.which",
+        lambda _name: None,
+    )
+    with pytest.raises(RuntimeError, match="Docker is required"):
+        await DockerSandboxBackend._require_runtime()
+
+    async def fake_run_host(argv, *, timeout_seconds: int, stdin: str | None = None):
+        del timeout_seconds, stdin
+        command = tuple(argv)
+        return ProcessResult(command, 7, stderr="delete failed")
+
+    monkeypatch.setattr("archetype.missions.sandboxes.docker.run_host", fake_run_host)
+    with pytest.raises(BaseExceptionGroup, match="failed to close"):
+        await _session(oauth=True).close()
