@@ -19,7 +19,8 @@ locally just moves the failure to review.
 
 | Skill | How it loads | What it enforces |
 |-------|--------------|------------------|
-| `daft-patterns` | `/daft-patterns`, or model-invoked for Daft/DataFrame/UDF code within its configured paths | Daft built-in functions to reach for first, UDF decision tree, lazy DAG rules |
+| `daft-patterns` | `/daft-patterns`, or model-invoked for Daft/DataFrame/UDF code within its configured paths | Mental model (lazy plan / streaming / AI-as-expression), builtins first, UDF decision tree, physical-AI boundary, lakehouse sinks |
+| `daft-antipatterns` | `/daft-antipatterns` | Diff review for wrong-shape Daft (UDF theater, premature materialization, multimodal/lakehouse/PAI antipatterns) — complementary to footgun |
 | `archetype-components` | `/archetype-components`, or model-invoked for Component/schema code within its configured paths | Component definitions, Arrow serialization, field conventions |
 | `archetype-processors` | `/archetype-processors`, or model-invoked for processor/pipeline code within its configured paths | AsyncProcessor patterns, priority ordering, resource access |
 | `footgun-detector` | `/footgun-detector` | Scans the current diff for archetype-specific runtime bugs across three perspectives: actor (code), observed (data), observer (review) |
@@ -31,6 +32,7 @@ Agents in `.claude/agents/` are invoked autonomously — by CI, by other agents,
 | Agent | When to use |
 |-------|-------------|
 | `footgun-detector` | Review a PR diff for runtime bugs. Use when the user asks to review a PR for footguns, or invoke from CI on pull requests. |
+| `daft-antipatterns` | Review a PR diff for wrong-shape Daft. Use when the user asks for a Daft antipatterns review, or on heavy DataFrame/multimodal/physical-AI PRs alongside footgun. |
 
 ## Layers
 
