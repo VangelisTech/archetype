@@ -27,6 +27,7 @@ _SCRIPTS_DIR = Path(__file__).resolve().parent.parent.parent / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
+import check_lazy_audit as mod  # noqa: E402
 from check_lazy_audit import (  # noqa: E402
     _collect_batch_udf_param_lines,
     _scan_file,
@@ -299,7 +300,6 @@ def test_full_scan_sanctioned_exempt(tmp_path):
     fake_root = _make_fake_src(tmp_path)
 
     # Patch _project_root inside check_lazy_audit so scan() looks in our fake tree.
-    import check_lazy_audit as mod
 
     orig_root = mod._project_root
 
@@ -317,6 +317,175 @@ def test_full_scan_sanctioned_exempt(tmp_path):
 
     assert sanctioned, "batch-UDF param access must be classified sanctioned"
     assert gated, "module-level to_pylist must be classified as needing allowlist"
+
+
+# ---------------------------------------------------------------------------
+# Regression matrix: issue #544 — complete, provenance-aware Daft terminals
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("method", "statement"),
+    [
+        ("count_rows", "df.count_rows()"),
+        ("show", "df.show()"),
+        ("to_arrow", "df.to_arrow()"),
+        ("to_pandas", "df.to_pandas()"),
+        ("to_pydict", "df.to_pydict()"),
+        ("to_arrow_iter", "df.to_arrow_iter()"),
+        ("iter_rows", "df.iter_rows()"),
+        ("iter_partitions", "df.iter_partitions()"),
+        ("to_torch_dataloader", "df.to_torch_dataloader()"),
+        ("to_torch_iter_dataset", "df.to_torch_iter_dataset()"),
+        ("to_torch_map_dataset", "df.to_torch_map_dataset()"),
+        ("__arrow_c_stream__", "df.__arrow_c_stream__()"),
+        ("__iter__", "iter(df)"),
+        ("__iter__", "[row for row in df]"),
+    ],
+)
+def test_unlisted_daft_execution_adapters_are_gated(tmp_path, method, statement):
+    py = _write_py(
+        tmp_path,
+        "terminal.py",
+        f"""\
+        import daft
+
+        df = daft.from_pydict({{"x": [1]}})
+        result = {statement}
+        """,
+    )
+
+    sites = _scan_file(py, "terminal.py")
+
+    assert [(site.method, site.sanctioned) for site in sites] == [(method, False)]
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "write_bigtable",
+        "write_clickhouse",
+        "write_csv",
+        "write_deltalake",
+        "write_huggingface",
+        "write_iceberg",
+        "write_json",
+        "write_lance",
+        "write_paimon",
+        "write_parquet",
+        "write_sink",
+        "write_sql",
+        "write_turbopuffer",
+    ],
+)
+def test_unlisted_daft_eager_writes_are_gated(tmp_path, method):
+    py = _write_py(
+        tmp_path,
+        "write.py",
+        f"""\
+        import daft
+
+        df = daft.from_pydict({{"x": [1]}})
+        df.{method}("destination")
+        """,
+    )
+
+    sites = _scan_file(py, "write.py")
+
+    assert [site.method for site in sites] == [method]
+
+
+@pytest.mark.parametrize("method", ["append", "write", "overwrite"])
+def test_unlisted_daft_catalog_table_writes_are_gated(tmp_path, method):
+    py = _write_py(
+        tmp_path,
+        "catalog_write.py",
+        f"""\
+        from daft import DataFrame
+        from daft.catalog import Table
+
+        def persist(table: Table, df: DataFrame):
+            table.{method}(df)
+        """,
+    )
+
+    sites = _scan_file(py, "catalog_write.py")
+
+    assert [site.method for site in sites] == [method]
+
+
+def test_unlisted_daft_module_write_table_is_gated(tmp_path):
+    py = _write_py(
+        tmp_path,
+        "module_write.py",
+        """\
+        import daft
+
+        df = daft.from_pydict({"x": [1]})
+        daft.write_table(df, "destination")
+        """,
+    )
+
+    sites = _scan_file(py, "module_write.py")
+
+    assert [site.method for site in sites] == ["write_table"]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import lancedb\nquery = lancedb.connect('db').open_table('t').search()\nquery.to_arrow()\n",
+        "import pyarrow as pa\ntable = pa.table({'x': [1]})\ntable.to_pydict()\n",
+        "items = []\nitems.append(1)\n",
+        "class Custom:\n    def collect(self): ...\n    def to_pylist(self): ...\nobj = Custom()\nobj.collect()\nobj.to_pylist()\n",
+        "class Writer:\n    def append(self, value): ...\n    def write(self, value): ...\n    def overwrite(self, value): ...\nwriter = Writer()\nwriter.append(1)\nwriter.write(1)\nwriter.overwrite(1)\n",
+    ],
+)
+def test_foreign_overlapping_method_names_are_not_gated(tmp_path, source):
+    py = _write_py(tmp_path, "foreign.py", source)
+
+    assert _scan_file(py, "foreign.py") == []
+
+
+def test_batch_udf_series_to_pylist_remains_executor_owned(tmp_path):
+    py = _write_py(
+        tmp_path,
+        "batch.py",
+        """\
+        import daft
+
+        @daft.func.batch(return_dtype=None)
+        def convert(values: daft.Series) -> daft.Series:
+            return daft.Series.from_pylist(values.to_pylist())
+        """,
+    )
+
+    sites = _scan_file(py, "batch.py")
+
+    assert [(site.method, site.sanctioned) for site in sites] == [("to_pylist", True)]
+
+
+def test_locked_daft_version_drift_fails_closed(tmp_path, monkeypatch, capsys):
+    (tmp_path / "src").mkdir()
+    _write_toml(tmp_path, [])
+    (tmp_path / "uv.lock").write_text(
+        'version = 1\nrevision = 3\n\n[[package]]\nname = "daft"\nversion = "0.8.0"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mod, "_project_root", lambda: tmp_path)
+    monkeypatch.setattr(sys, "argv", ["check_lazy_audit.py"])
+
+    assert mod.main() != 0
+    output = capsys.readouterr()
+    assert "version" in (output.out + output.err).lower()
+    assert "0.7.19" in output.out + output.err
+
+
+def test_failure_guidance_does_not_recommend_execution_for_diagnostics():
+    guidance = mod.STERN_BODY.lower()
+
+    assert "count_rows" not in guidance
+    assert "debug logging" not in guidance
 
 
 def test_full_scan_with_allowlist_passes(tmp_path):
