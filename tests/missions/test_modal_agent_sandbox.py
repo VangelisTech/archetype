@@ -538,17 +538,29 @@ async def test_modal_checkpoint_failure_invalid_identity_and_close_failures(
         del args, kwargs
         raise RuntimeError("event unavailable")
 
-    async def terminate_failure(*args, **kwargs) -> None:
-        del args, kwargs
-        raise RuntimeError("terminate failed")
+    close_calls: list[str] = []
+    closing_sandbox = _LifecycleSandbox("sb-agent")
+    closing_auth = _LifecycleSandbox("sb-auth")
 
-    closing = _lifecycle_session(_LifecycleSandbox("sb-agent"))
+    async def terminate_failure(resource) -> None:
+        close_calls.append(resource.object_id)
+        if resource is closing_auth:
+            raise RuntimeError("terminate failed")
+
+    closing = _lifecycle_session(closing_sandbox, closing_auth)
     monkeypatch.setattr(closing, "_emit_event", event_failure)
     monkeypatch.setattr(closing, "_terminate", terminate_failure)
-    with pytest.raises(BaseExceptionGroup, match="failed to close 2"):
+    with pytest.raises(BaseExceptionGroup, match="failed to close 1"):
         await closing.close()
-    assert await closing.status() is SandboxStatus.CLOSED
+    assert await closing.status() is SandboxStatus.ERRORED
+
+    async def terminate_success(resource) -> None:
+        close_calls.append(resource.object_id)
+
+    monkeypatch.setattr(closing, "_terminate", terminate_success)
     await closing.close()
+    assert await closing.status() is SandboxStatus.CLOSED
+    assert close_calls == ["sb-agent", "sb-auth", "sb-auth"]
 
 
 @pytest.mark.asyncio

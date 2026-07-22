@@ -101,6 +101,14 @@ class SandboxIdentity:
             raise ValueError("sandbox identity requires an environment")
 
 
+class SandboxTeardownError(RuntimeError):
+    """A retained session could not be closed before explicit replacement."""
+
+    def __init__(self, identity: SandboxIdentity, cause: BaseException) -> None:
+        self.identity = identity
+        super().__init__(f"failed to close sandbox {identity.sandbox_id!r}: {cause}")
+
+
 @dataclass(frozen=True)
 class SandboxEvent:
     """Bounded operational event safe for callbacks and provider spools."""
@@ -348,5 +356,6 @@ __all__ = [
     "SandboxServiceProtocol",
     "SandboxSpec",
     "SandboxStatus",
+    "SandboxTeardownError",
     "validate_checkpoint_for_spec",
 ]

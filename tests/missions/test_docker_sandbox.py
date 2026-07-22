@@ -332,6 +332,7 @@ async def test_docker_oauth_round_trip_and_session_error_states(
 async def test_docker_runtime_broker_and_close_failures_are_explicit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    close_calls: list[str] = []
     with pytest.raises(RuntimeError, match="not configured"):
         await _session()._auth_exec("true", timeout=1)
 
@@ -345,8 +346,28 @@ async def test_docker_runtime_broker_and_close_failures_are_explicit(
     async def fake_run_host(argv, *, timeout_seconds: int, stdin: str | None = None):
         del timeout_seconds, stdin
         command = tuple(argv)
-        return ProcessResult(command, 7, stderr="delete failed")
+        close_calls.append(command[-1])
+        return ProcessResult(
+            command,
+            0 if command[-1] == "mission-container" else 7,
+            stderr="delete failed",
+        )
 
     monkeypatch.setattr("archetype.missions.sandboxes.docker.run_host", fake_run_host)
+    session = _session(oauth=True)
     with pytest.raises(BaseExceptionGroup, match="failed to close"):
-        await _session(oauth=True).close()
+        await session.close()
+    assert await session.status() is SandboxStatus.ERRORED
+
+    async def successful_run_host(argv, *, timeout_seconds: int, stdin: str | None = None):
+        del timeout_seconds, stdin
+        close_calls.append(tuple(argv)[-1])
+        return ProcessResult(tuple(argv), 0)
+
+    monkeypatch.setattr(
+        "archetype.missions.sandboxes.docker.run_host",
+        successful_run_host,
+    )
+    await session.close()
+    assert await session.status() is SandboxStatus.CLOSED
+    assert close_calls == ["mission-container", "auth-container", "auth-container"]

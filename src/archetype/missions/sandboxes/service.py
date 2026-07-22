@@ -14,6 +14,7 @@ from archetype.missions.sandboxes.contracts import (
     SandboxKey,
     SandboxSession,
     SandboxSpec,
+    SandboxTeardownError,
     validate_checkpoint_for_spec,
 )
 
@@ -81,15 +82,13 @@ class SandboxService:
                         f"sandbox key {key.value!r} is already pending with another spec"
                     )
             else:
-                retained = self._sessions.pop(key, None)
+                retained = self._sessions.get(key)
                 if retained is not None:
                     retained_spec, replaced = retained
                     if retained_spec != spec:
-                        self._sessions[key] = retained
                         raise ValueError(
                             f"sandbox key {key.value!r} is already bound to another spec"
                         )
-                    self._session_ids.pop(replaced.identity.sandbox_id, None)
                 else:
                     replaced = None
                 backend = self._backend(spec.provider)
@@ -110,26 +109,28 @@ class SandboxService:
         async with self._lock:
             if not self._accepting:
                 raise RuntimeError("SandboxService is shutting down")
-            retained = self._sessions.get(key)
-            if retained is not None:
-                retained_spec, session = retained
-                if retained_spec != spec:
-                    raise ValueError(f"sandbox key {key.value!r} is already bound to another spec")
-                return session
             pending_entry = self._pending.get(key)
-            if pending_entry is None:
+            if pending_entry is not None:
+                pending_spec, pending_checkpoint, pending = pending_entry
+                if (pending_spec, pending_checkpoint) != (spec, checkpoint):
+                    raise ValueError(
+                        f"sandbox key {key.value!r} is already pending with another spec"
+                    )
+            else:
+                retained = self._sessions.get(key)
+                if retained is not None:
+                    retained_spec, session = retained
+                    if retained_spec != spec:
+                        raise ValueError(
+                            f"sandbox key {key.value!r} is already bound to another spec"
+                        )
+                    return session
                 backend = self._backend(spec.provider)
                 pending = asyncio.create_task(
                     self._create(key, spec, backend, checkpoint),
                     name=f"sandbox:{key.value}",
                 )
                 self._pending[key] = (spec, checkpoint, pending)
-            else:
-                pending_spec, pending_checkpoint, pending = pending_entry
-                if (pending_spec, pending_checkpoint) != (spec, checkpoint):
-                    raise ValueError(
-                        f"sandbox key {key.value!r} is already pending with another spec"
-                    )
         return await asyncio.shield(pending)
 
     async def _create(
@@ -144,7 +145,15 @@ class SandboxService:
         session: SandboxSession | None = None
         try:
             if replaced is not None:
-                await replaced.close()
+                try:
+                    await replaced.close()
+                except Exception as exc:
+                    raise SandboxTeardownError(replaced.identity, exc) from exc
+                async with self._lock:
+                    retained = self._sessions.get(key)
+                    if retained is not None and retained[1] is replaced:
+                        self._sessions.pop(key, None)
+                        self._session_ids.pop(replaced.identity.sandbox_id, None)
             session = (
                 await backend.create(spec)
                 if checkpoint is None

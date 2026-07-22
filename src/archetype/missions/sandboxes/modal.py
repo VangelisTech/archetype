@@ -126,6 +126,10 @@ class ModalSandboxSession:
         self._event_lock = asyncio.Lock()
         self._event_sequence = 0
         self._status = SandboxStatus.READY
+        self._close_resources = {
+            "mission": sandbox,
+            "OAuth broker": auth_sandbox,
+        }
 
     @property
     def identity(self) -> SandboxIdentity:
@@ -259,15 +263,21 @@ class ModalSandboxSession:
             await self._emit_event(SandboxEventType.CLOSING)
         except Exception:
             pass
-        self._status = SandboxStatus.CLOSED
+        resources = tuple(self._close_resources.items())
         results = await asyncio.gather(
-            self._terminate(self._sandbox),
-            self._terminate(self._auth_sandbox),
+            *(self._terminate(resource) for _label, resource in resources),
             return_exceptions=True,
         )
-        failures = [result for result in results if isinstance(result, BaseException)]
+        failures: list[BaseException] = []
+        for (label, _resource), result in zip(resources, results, strict=True):
+            if isinstance(result, BaseException):
+                failures.append(result)
+            else:
+                self._close_resources.pop(label, None)
         if failures:
+            self._status = SandboxStatus.ERRORED
             raise BaseExceptionGroup(f"failed to close {len(failures)} Modal resource(s)", failures)
+        self._status = SandboxStatus.CLOSED
 
     async def _stage_oauth(self) -> None:
         try:

@@ -33,6 +33,8 @@ class _Session:
     def __init__(self, identity: SandboxIdentity) -> None:
         self._identity = identity
         self.closed = 0
+        self.close_attempts = 0
+        self.close_error = False
 
     @property
     def identity(self) -> SandboxIdentity:
@@ -59,6 +61,9 @@ class _Session:
         )
 
     async def close(self) -> None:
+        self.close_attempts += 1
+        if self.close_error:
+            raise RuntimeError("provider close unavailable")
         self.closed += 1
 
 
@@ -270,6 +275,41 @@ async def test_restore_replaces_a_retained_live_session_instead_of_ignoring_chec
     await service.close(key)
     await service.close(key)
     assert restored.closed == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_replacement_close_retains_the_session_for_cleanup_retry() -> None:
+    backend = _Backend()
+    backend.release.set()
+    service = SandboxService((backend,))
+    key = SandboxKey("mission:close-retry")
+    spec = _spec()
+    original = await service.acquire(key, spec)
+    original.close_error = True
+    checkpoint = CheckpointRef(
+        "fake",
+        "replacement",
+        "fake://replacement",
+        1,
+        environment=spec.environment,
+        source_sandbox_id=original.identity.sandbox_id,
+    )
+
+    with pytest.raises(RuntimeError, match="provider close unavailable"):
+        await service.restore(key, spec, checkpoint)
+
+    assert service.session(key) is original
+    assert original.closed == 0
+    assert backend.restores == 0
+
+    original.close_error = False
+    restored = await service.restore(key, spec, checkpoint)
+
+    assert original.close_attempts == 2
+    assert original.closed == 1
+    assert backend.restores == 1
+    assert service.session(key) is restored
+    await service.shutdown()
 
 
 @pytest.mark.asyncio

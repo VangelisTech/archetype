@@ -96,6 +96,10 @@ class AppleContainerSandboxSession:
         self._auth_sandbox_id = auth_sandbox_id
         self._status = SandboxStatus.READY
         self._lock = asyncio.Lock()
+        self._close_resources = {
+            "mission": sandbox_id,
+            "OAuth broker": auth_sandbox_id,
+        }
 
     @property
     def identity(self) -> SandboxIdentity:
@@ -187,22 +191,28 @@ class AppleContainerSandboxSession:
     async def close(self) -> None:
         if self._status is SandboxStatus.CLOSED:
             return
-        self._status = SandboxStatus.CLOSED
+        resources = tuple(self._close_resources.items())
         results = await asyncio.gather(
-            self._host("delete", "--force", self._sandbox_id, timeout=60),
-            self._host("delete", "--force", self._auth_sandbox_id, timeout=60),
+            *(
+                self._host("delete", "--force", resource_id, timeout=60)
+                for _label, resource_id in resources
+            ),
             return_exceptions=True,
         )
         failures: list[BaseException] = []
-        for label, result in zip(("mission", "OAuth broker"), results, strict=True):
+        for (label, _resource_id), result in zip(resources, results, strict=True):
             if isinstance(result, BaseException):
                 failures.append(result)
             elif result.returncode != 0:
                 failures.append(RuntimeError(f"failed to delete {label}: {result.stderr}"))
+            else:
+                self._close_resources.pop(label, None)
         if failures:
+            self._status = SandboxStatus.ERRORED
             raise BaseExceptionGroup(
                 f"failed to close {len(failures)} Apple Container resource(s)", failures
             )
+        self._status = SandboxStatus.CLOSED
 
     async def _exec_request(self, request: ProcessRequest) -> ProcessResult:
         argv = ["container", "exec", "--user", AGENT_USER]

@@ -94,6 +94,9 @@ class DockerSandboxSession:
         self._auth_sandbox_id = auth_sandbox_id
         self._status = SandboxStatus.READY
         self._lock = asyncio.Lock()
+        self._close_resources = {"mission": sandbox_id}
+        if auth_sandbox_id:
+            self._close_resources["OAuth broker"] = auth_sandbox_id
 
     @property
     def identity(self) -> SandboxIdentity:
@@ -183,14 +186,16 @@ class DockerSandboxSession:
     async def close(self) -> None:
         if self._status is SandboxStatus.CLOSED:
             return
-        self._status = SandboxStatus.CLOSED
-        container_ids = tuple(filter(None, (self._sandbox_id, self._auth_sandbox_id)))
+        resources = tuple(self._close_resources.items())
         results = await asyncio.gather(
-            *(self._host("rm", "--force", value, timeout=60) for value in container_ids),
+            *(
+                self._host("rm", "--force", container_id, timeout=60)
+                for _label, container_id in resources
+            ),
             return_exceptions=True,
         )
         failures: list[BaseException] = []
-        for container_id, result in zip(container_ids, results, strict=True):
+        for (label, container_id), result in zip(resources, results, strict=True):
             if isinstance(result, BaseException):
                 failures.append(result)
             elif result.returncode != 0:
@@ -199,10 +204,14 @@ class DockerSandboxSession:
                         f"failed to delete Docker container {container_id}: {result.stderr}"
                     )
                 )
+            else:
+                self._close_resources.pop(label, None)
         if failures:
+            self._status = SandboxStatus.ERRORED
             raise BaseExceptionGroup(
                 f"failed to close {len(failures)} Docker resource(s)", failures
             )
+        self._status = SandboxStatus.CLOSED
 
     async def _exec_request(self, request: ProcessRequest) -> ProcessResult:
         argv = ["docker", "exec", "--user", AGENT_USER]

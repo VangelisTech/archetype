@@ -74,6 +74,7 @@ from archetype.missions.sandboxes import (
     SandboxSession,
     SandboxSpec,
     SandboxStatus,
+    SandboxTeardownError,
     live_observation_paths,
 )
 from archetype.missions.transitions import AgentExecutionStatus, MissionStatus
@@ -257,6 +258,19 @@ class MissionService:
         previous_sandbox_id = self._mission_sandboxes.get(mission.mission_id)
         try:
             session = await self._sandboxes.restore(key, spec, checkpoint)
+        except SandboxTeardownError as exc:
+            await self._mark_sandbox_errored(exc.identity.sandbox_id, exc)
+            await self._world.spawn(
+                FrictionLog(
+                    kind="sandbox_restore",
+                    message=self._redact(
+                        f"{type(exc).__name__}: {exc}",
+                        scope=f"mission:{mission.mission_id}:sandbox-restore",
+                    ),
+                )
+            )
+            await self._world.step()
+            raise
         except Exception:
             retained = self._sandboxes.session(key)
             replaced_is_gone = retained is None or (
@@ -637,7 +651,20 @@ class MissionService:
     ) -> int:
         retained = self._sandbox_entities.get(identity.sandbox_id)
         if retained is not None:
-            return retained[0]
+            entity_id, sandbox_state = retained
+            if sandbox_state.status != status.value or sandbox_state.error:
+                updated = sandbox_state.model_copy(
+                    update={
+                        "status": status.value,
+                        "error": self._redact(
+                            error,
+                            scope=f"mission:{mission_id}:sandbox-error",
+                        ),
+                    }
+                )
+                await self._world.update(entity_id, updated)
+                self._sandbox_entities[identity.sandbox_id] = (entity_id, updated)
+            return entity_id
         sandbox_state = Sandbox(
             provider=identity.provider,
             sandbox_id=identity.sandbox_id,
@@ -663,6 +690,20 @@ class MissionService:
         closed = sandbox_state.model_copy(update={"status": SandboxStatus.CLOSED.value})
         await self._world.update(entity_id, closed)
         self._sandbox_entities[sandbox_id] = (entity_id, closed)
+
+    async def _mark_sandbox_errored(self, sandbox_id: str, exc: BaseException) -> None:
+        entity_id, sandbox_state = self._sandbox_entities[sandbox_id]
+        errored = sandbox_state.model_copy(
+            update={
+                "status": SandboxStatus.ERRORED.value,
+                "error": self._redact(
+                    f"{type(exc).__name__}: {exc}",
+                    scope=f"sandbox:{sandbox_id}:close-error",
+                ),
+            }
+        )
+        await self._world.update(entity_id, errored)
+        self._sandbox_entities[sandbox_id] = (entity_id, errored)
 
     def _redact(self, value: str, *, scope: str) -> str:
         if not value:

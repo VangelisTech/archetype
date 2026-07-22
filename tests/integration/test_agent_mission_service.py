@@ -75,6 +75,8 @@ class _LocalSession:
     def __init__(self, spec: SandboxSpec) -> None:
         self.spec = spec
         self.closed = 0
+        self.close_attempts = 0
+        self.close_error = False
 
     @property
     def identity(self) -> SandboxIdentity:
@@ -112,6 +114,9 @@ class _LocalSession:
         raise NotImplementedError
 
     async def close(self) -> None:
+        self.close_attempts += 1
+        if self.close_error:
+            raise RuntimeError("provider close unavailable")
         self.closed += 1
 
 
@@ -692,3 +697,76 @@ async def test_failed_explicit_restore_closes_the_replaced_sandbox_evidence(
             assert sandbox_rows[0][f"{sandbox}sandbox_id"] == "sandbox-contract"
             assert sandbox_rows[0][f"{sandbox}status"] == SandboxStatus.CLOSED.value
             assert replaced.closed == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_restore_close_retains_live_evidence_and_allows_retry(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    backend = _CheckpointBackend(fail=False)
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "restore-close-retry-contract",
+            config=AgentMissionConfig(
+                sandbox_backend=backend,
+                sandbox_environment="local-checkpoint-test",
+                driver=_SecretOutputDriver(workspace),
+                workspace=str(workspace),
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "restore_close_retry_missions"),
+                namespace="restore_close_retry_contract",
+            ),
+        ) as missions:
+            submitted = await missions.submit(
+                repository=str(remote),
+                branch="agent/restore-close-retry",
+                tasks=(
+                    AgentTask(
+                        "implementation",
+                        "Create feature.txt.",
+                        (CommandValidator("focused", ("test", "-f", "feature.txt")),),
+                    ),
+                ),
+            )
+
+            def checkpoint(identifier: str) -> CheckpointRef:
+                return CheckpointRef(
+                    "local",
+                    identifier,
+                    f"local-checkpoint://{identifier}",
+                    1,
+                    environment="local-checkpoint-test",
+                    source_sandbox_id=f"source-{identifier}",
+                    owner_id=str(submitted.mission_id),
+                )
+
+            await missions.restore_sandbox(submitted, checkpoint("initial"))
+            assert backend.session is not None
+            replaced = backend.session
+            replaced.close_error = True
+
+            with pytest.raises(RuntimeError, match="provider close unavailable"):
+                await missions.restore_sandbox(submitted, checkpoint("replacement"))
+
+            sandbox_rows = latest(await missions.query(Sandbox)).to_pylist()
+            sandbox = Sandbox.get_prefix()
+            assert sandbox_rows[0][f"{sandbox}status"] == SandboxStatus.ERRORED.value
+            assert "provider close unavailable" in sandbox_rows[0][f"{sandbox}error"]
+            friction_rows = latest(await missions.query(FrictionLog)).to_pylist()
+            friction = FrictionLog.get_prefix()
+            assert friction_rows[0][f"{friction}kind"] == "sandbox_restore"
+            assert "provider close unavailable" in friction_rows[0][f"{friction}message"]
+
+            replaced.close_error = False
+            identity = await missions.restore_sandbox(submitted, checkpoint("replacement"))
+
+            assert identity.sandbox_id == "sandbox-contract"
+            assert replaced.close_attempts == 2
+            assert replaced.closed == 1
+            sandbox_rows = latest(await missions.query(Sandbox)).to_pylist()
+            assert sandbox_rows[0][f"{sandbox}status"] == SandboxStatus.READY.value
+            assert sandbox_rows[0][f"{sandbox}error"] == ""

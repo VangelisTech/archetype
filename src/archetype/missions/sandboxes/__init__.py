@@ -24,6 +24,7 @@ from archetype.missions.sandboxes.contracts import (
     SandboxSession,
     SandboxSpec,
     SandboxStatus,
+    SandboxTeardownError,
     live_observation_paths,
     validate_checkpoint_for_spec,
 )
@@ -65,6 +66,7 @@ __all__ = [
     "SandboxSession",
     "SandboxSpec",
     "SandboxStatus",
+    "SandboxTeardownError",
     "live_observation_paths",
     "validate_checkpoint_for_spec",
 ]
