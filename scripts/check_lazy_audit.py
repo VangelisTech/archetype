@@ -403,15 +403,46 @@ class _FlowAnalyzer(ast.NodeVisitor):
                 return right
             return left or right
         if isinstance(node, ast.Subscript):
-            element_type = self._annotation(node.slice)
-            if element_type in _REGISTRY.dataframe_types:
-                return f"container:{element_type}"
-            for child in ast.walk(node.slice):
-                if isinstance(child, ast.expr):
-                    element_type = self._annotation(child)
-                    if element_type in _REGISTRY.dataframe_types:
-                        return f"container:{element_type}"
+            generic = _qualified_name(node.value, self.imports)
+            arguments = list(node.slice.elts) if isinstance(node.slice, ast.Tuple) else [node.slice]
+            argument_types = [self._annotation(argument) or "foreign" for argument in arguments]
+            generic_name = generic.rsplit(".", 1)[-1] if generic else ""
+            if (
+                generic_name in {"dict", "Dict", "Mapping", "MutableMapping"}
+                and len(argument_types) == 2
+            ):
+                return f"mapping:{argument_types[0]}|{argument_types[1]}"
+            if (
+                generic_name
+                in {
+                    "list",
+                    "List",
+                    "set",
+                    "Set",
+                    "frozenset",
+                    "FrozenSet",
+                    "Sequence",
+                    "Iterable",
+                    "Iterator",
+                    "Collection",
+                }
+                and len(argument_types) == 1
+            ):
+                return f"sequence:{argument_types[0]}"
         return _qualified_name(node, self.imports)
+
+    def _iter_element_type(self, node: ast.expr) -> str | None:
+        """Return the declared element yielded by an iterable expression."""
+        iterable_type = self._type(node)
+        if iterable_type in _REGISTRY.dataframe_types:
+            # Iterating a DataFrame is a terminal, but its rows are not frames.
+            return "foreign"
+        if iterable_type and iterable_type.startswith("sequence:"):
+            return iterable_type.removeprefix("sequence:")
+        if iterable_type and iterable_type.startswith("mapping:"):
+            key_type, _, _ = iterable_type.removeprefix("mapping:").partition("|")
+            return key_type
+        return None
 
     def _type(self, node: ast.expr) -> str | None:
         if isinstance(node, ast.Name):
@@ -427,7 +458,7 @@ class _FlowAnalyzer(ast.NodeVisitor):
             if owner and owner.startswith("class:"):
                 qualified_attribute = f"{owner.removeprefix('class:')}.{node.attr}"
                 if qualified_attribute in _REGISTRY.dataframe_container_attributes:
-                    return "container:daft.DataFrame"
+                    return "mapping:foreign|daft.DataFrame"
                 return self.class_attrs.get((owner.removeprefix("class:"), node.attr))
             return owner
         if isinstance(node, ast.Call):
@@ -449,8 +480,14 @@ class _FlowAnalyzer(ast.NodeVisitor):
                     )
                     if returned:
                         return returned
-                if node.func.attr == "values" and owner and owner.startswith("container:"):
-                    return owner.removeprefix("container:")
+                if owner and owner.startswith("mapping:"):
+                    key_type, _, value_type = owner.removeprefix("mapping:").partition("|")
+                    if node.func.attr == "keys":
+                        return f"sequence:{key_type}"
+                    if node.func.attr == "values":
+                        return f"sequence:{value_type}"
+                    if node.func.attr == "items":
+                        return f"sequence:tuple:{key_type}|{value_type}"
                 # The blocking adapter returns the result of the bound method
                 # supplied as its first argument.  Preserve provenance only
                 # when that callable's receiver is already proven.
@@ -583,7 +620,11 @@ class _FlowAnalyzer(ast.NodeVisitor):
         self.env = {}
         for arg in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs):
             annotation = self._annotation(arg.annotation)
-            if annotation in _REGISTRY.dataframe_types or annotation in _REGISTRY.typed_methods:
+            if (
+                annotation in _REGISTRY.dataframe_types
+                or annotation in _REGISTRY.typed_methods
+                or (annotation and annotation.startswith(("mapping:", "sequence:")))
+            ):
                 self.env[arg.arg] = annotation
             elif annotation in self.local_types:
                 self.env[arg.arg] = f"class:{annotation}"
@@ -620,6 +661,14 @@ class _FlowAnalyzer(ast.NodeVisitor):
             self.class_attrs.pop(key, None)
             if value_type:
                 self.class_attrs[key] = value_type
+        elif isinstance(target, ast.Tuple | ast.List):
+            item_types: list[str | None]
+            if value_type and value_type.startswith("tuple:"):
+                item_types = value_type.removeprefix("tuple:").split("|")
+            else:
+                item_types = [None] * len(target.elts)
+            for index, item in enumerate(target.elts):
+                self._assign(item, item_types[index] if index < len(item_types) else None)
 
     def visit_Assign(self, node: ast.Assign) -> None:
         self.visit(node.value)
@@ -672,7 +721,7 @@ class _FlowAnalyzer(ast.NodeVisitor):
             self.visit(generator.iter)
             if not isinstance(generator.iter, ast.Call):
                 self._check(generator.iter, generator.iter, "__iter__")
-            self._assign(generator.target, self._type(generator.iter))
+            self._assign(generator.target, self._iter_element_type(generator.iter))
             for condition in generator.ifs:
                 self.visit(condition)
         self.visit(node.elt)
@@ -681,6 +730,19 @@ class _FlowAnalyzer(ast.NodeVisitor):
     visit_GeneratorExp = _visit_comp
     visit_ListComp = _visit_comp
     visit_SetComp = _visit_comp
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        outer = self.env.copy()
+        for generator in node.generators:
+            self.visit(generator.iter)
+            if not isinstance(generator.iter, ast.Call):
+                self._check(generator.iter, generator.iter, "__iter__")
+            self._assign(generator.target, self._iter_element_type(generator.iter))
+            for condition in generator.ifs:
+                self.visit(condition)
+        self.visit(node.key)
+        self.visit(node.value)
+        self.env = outer
 
 
 def _scan_file(path: Path, rel: str) -> list[Site]:
