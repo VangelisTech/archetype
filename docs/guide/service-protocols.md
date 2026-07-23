@@ -44,8 +44,8 @@ Arrows point from consumer to dependency:
 ArchetypeRuntime -> iRuntimeApplication <- iCommandGateway <- FastAPI
 
 iRuntimeApplication
-  -> iWorldService + iMutationService + iSimulationService
-  -> iQueryService
+  -> iWorldRegistry + iWorldLifecycle + iStorageService
+  -> world.mutation + world.simulation + world.query
   -> iArtifactService
   -> iTranscriptIngestionService
   -> iEvaluationService
@@ -56,21 +56,18 @@ iRuntimeApplication
   -> iPhysicalAIService
 
 iEvaluationService
-  -> iQueryService + iIngestionService + iStorageService + iWorldService
+  -> iIngestionService + iStorageService + iWorldRegistry
 iRedactionService -> no lower application family
-iIngestionService  -> iStorageService + iWorldService
-iArtifactService   -> iIngestionService + iStorageService + iWorldService
+iIngestionService  -> iStorageService + iWorldRegistry
+iArtifactService   -> iIngestionService + iStorageService + iWorldRegistry
 iTranscriptIngestionService
   -> iArtifactService + iIngestionService
-  -> iRedactionService + iStorageService + iWorldService
-iQueryService      -> iStorageService + iAuditLog
-iWorldService      -> iStorageService
-iMutationService   -> iWorldService
-iSimulationService -> iWorldService + iStorageService + injected callbacks
-iCommandScheduler  -> iWorldService + iMutationService
-iResearchService   -> iWorldService + iSimulationService + iStorageService
+  -> iRedactionService + iStorageService + iWorldRegistry
+iWorldLifecycle    -> iWorldRegistry + iStorageService
+iCommandScheduler  -> world.handlers lock-held materialization
+iResearchService   -> iWorldRegistry + iWorldLifecycle + iStorageService
 iPhysicalAIService
-  -> iWorldService + iMutationService + iSimulationService
+  -> iWorldRegistry + iWorldLifecycle
   -> iEvaluationService + iStorageService
 iAuditLog          -> iStorageService
 
@@ -92,18 +89,16 @@ application facade.
 |---|---|---|---|
 | `iRuntimeApplication` | `RuntimeApplication` | runtime, `CommandGateway` | Actor-free canonical product operations and per-world serialization |
 | `iCommandGateway` | `CommandGateway` | FastAPI and other untrusted adapters | RBAC/quota authorization, delegation, access audit |
-| `iStorageService` | `StorageService` | world, simulation, query, ingestion, artifacts, evaluation, transcripts, research, physical AI, audit | Store/session lifetime, control authority, physical visibility, world/run row envelope, terminal Daft execution, and app-table catalog/read/write/retry authority |
-| `iWorldService` | `WorldService` | mutation, simulation, commands, ingestion, artifacts, evaluation, transcripts, research, physical AI, application | Live-world lifecycle, durable discovery, coordinate lookup |
-| `iMutationService` | `MutationService` | application, commands, physical AI | Entity/component/processor mutation staging |
-| `iSimulationService` | `SimulationService` | application, research, physical AI | Step, run, episode and rollout execution |
-| `iQueryService` | `QueryService` | application, evaluation | Persisted ECS reads, signature/lineage discovery and compatibility history |
+| `iStorageService` | `StorageService` | world, ingestion, artifacts, evaluation, transcripts, research, physical AI, audit | Store/session lifetime, control authority, physical visibility, world/run row envelope, terminal Daft execution, and app-table catalog/read/write/retry authority |
+| `iWorldRegistry` | `WorldRegistry` | lifecycle, mutation, simulation, ingestion, artifacts, evaluation, transcripts, research, physical AI, application | Live identity, storage coordinates, exact-world synchronization, retryable close ownership, and committed-receipt retention |
+| `iWorldLifecycle` | `WorldLifecycle` | application, research, physical AI | Managed construction, durable discovery, readonly open, fenced mutable resume, fork, and close |
 | `iIngestionService` | `IngestionService` | artifacts, transcripts, evaluation | Select live storage configuration and delegate typed row publication |
 | `iArtifactService` | `ArtifactService` | application, transcript ingestion | Discover and scan files, persist content-addressed objects, publish typed media indexes, then expose the common file index |
 | `iTranscriptIngestionService` | `TranscriptIngestionService` | application | Snapshot and redact a coding-agent transcript, ingest the sanitized file, and append normalized mission rows |
 | `iRedactionService` | `RedactionService` | transcript ingestion; future telemetry/proxy adapters | Provider-neutral pre-durability scanning, deterministic text redaction, safe receipts, and quarantine |
 | `iEvaluationService` | `EvaluationService` | application, physical AI | Pin persisted world state, lease grader execution through the shared control authority, and append one typed evaluation result |
 | `iCommandScheduler` | `CommandScheduler` | application | Durable admission, leasing, dispatch, retry, settlement and outbox inspection |
-| `iAuditLog` | `AuditLog` | application, gateway, query | Append-only access rows and command-outbox projection |
+| `iAuditLog` | `AuditLog` | application, gateway | Append-only access rows, command-outbox projection, and application history |
 | `iResearchService` | `AutoResearchService` | application | Multi-run autoresearch workflow and research ledger |
 | `iMissionService` | `MissionService` | application, `RuntimeMissions` | Materialize task graphs, own the batteries-included world bundle, drain committed author and critic intents into external work, stage factual observations, and project terminal results |
 | `iPhysicalAIService` | `PhysicalAIService` | application | Create batched evaluation worlds, install physical processors, run episodes, and derive typed reports from persisted state |
@@ -128,14 +123,19 @@ Every `iCommandGateway` operation accepts `ActorCtx`, authorizes, delegates to
 `iRuntimeApplication`, and attempts an access event. It has no tick-drain
 method and owns no world, command ledger, grader, artifact ingestion, or storage.
 
-### World ports
+### World ports and operation surfaces
 
-Live-world returns from `iWorldService` are legal only below the application
-boundary. `iMutationService` and `iSimulationService` are siblings over that
-port. Simulation imports neither commands nor gateway; the container supplies
-its drain and quota-reset callables. Its bounded episode-termination reduction
-is admitted through `iStorageService` before the scalar enters Python control
-flow.
+Live-world returns from `iWorldLifecycle` and leases from `iWorldRegistry` are
+legal only below the application boundary. Stateful world authority is limited
+to those two family-owned ports. Mutation, simulation, durable query, and
+externally operable adapters are public module functions in
+`archetype.world.{mutation,simulation,query,handlers}` rather than
+single-implementation service protocols.
+
+Simulation imports neither commands nor gateway. Lifecycle receives the
+scheduler materializer as a construction callable and wires it into every
+managed world. Bounded episode termination reduces a lazy frame through
+`iStorageService` before the scalar enters Python control flow.
 
 ### Durable workflow ports
 

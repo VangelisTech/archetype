@@ -30,22 +30,21 @@ Arrows mean consumer to dependency:
 ```text
 ArchetypeRuntime -> RuntimeApplication <- CommandGateway <- REST API
                          |
-                         +-> MutationService -> WorldService -> StorageService
-                         +-> SimulationService -> WorldService + StorageService
-                         +-> QueryService -> StorageService
-                         +-> IngestionService -> StorageService + WorldService
-                         +-> ArtifactService -> IngestionService + StorageService + WorldService
-                         +-> EvaluationService -> QueryService + IngestionService + StorageService + WorldService
-                         +-> AutoResearchService -> WorldService + SimulationService + StorageService
-                         +-> PhysicalAIService -> WorldService + MutationService + SimulationService + EvaluationService + StorageService
-                         +-> CommandScheduler -> WorldService + MutationService
+                         +-> WorldRegistry + WorldLifecycle
+                         +-> world.mutation / world.simulation / world.query
+                         +-> IngestionService -> storage/world ports
+                         +-> ArtifactService -> ingestion/storage/world ports
+                         +-> EvaluationService -> ingestion/storage/world ports
+                         +-> AutoResearchService -> storage/world ports
+                         +-> PhysicalAIService -> evaluation/storage/world ports
+                         +-> CommandScheduler -> world.handlers.materialize_locked
                          +-> AuditLog -> StorageService
 ```
 
-The container injects `RuntimeApplication.drain_and_apply` and the quota-reset
-callable into `SimulationService`. These named callbacks avoid reverse static
-imports. It also connects `CommandScheduler`'s transactional outbox to
-`AuditLog`'s analytical projection.
+The container injects `CommandScheduler.materialize` when lifecycle constructs
+each managed `AsyncWorld`. Core owns only the callable shape; it never imports
+the commands family. The container also connects the scheduler's transactional
+outbox to `AuditLog`'s analytical projection.
 
 ## Storage family
 
@@ -66,25 +65,29 @@ See [Stores](stores.md).
 
 ## World family
 
-`WorldService` owns live-world lifecycle and registry access. Its world factory
-composes an `AsyncWorld` from a shared store, querier, updater, system,
-resources, and hooks. `MutationService` and `SimulationService` are siblings
-over that lifecycle port:
+`WorldRegistry` owns live identities, storage coordinates, exact-world locks,
+retryable cleanup leases, required-projector bindings, and retained committed
+receipts. `WorldLifecycle` composes an `AsyncWorld` from a shared store,
+querier, updater, system, resources, hooks, and the construction-injected
+command materializer.
 
-- mutation stages entity, component, processor, resource, and hook changes;
-- simulation owns step, run, episode, and rollout execution.
+Module-level family behavior is split by concern:
+
+- `archetype.world.mutation` stages entity, component, processor, resource,
+  and hook changes;
+- `archetype.world.simulation` owns step, required projection, run, episode,
+  and rollout execution;
+- `archetype.world.query` performs durable ECS reads without a live world; and
+- `archetype.world.handlers` adapts frozen operation models to exact family
+  functions, including the lock-held portable command path.
 
 Live worlds never escape the application boundary. See
 [World Lifecycle](world-lifecycle.md) and
 [Execution Hierarchy](execution-hierarchy.md).
 
-## Query family
-
-`QueryService` reads persisted component state and durable signature/lineage
-metadata without requiring a live world. Runtime/application callers receive
-Daft DataFrames or safe descriptors. Its current audit dependency serves the
-history compatibility read; command outcome authority remains the command
-ledger/outbox.
+Durable component, signature, and lineage reads belong to the world family.
+Audit history belongs to `AuditLog`; command outcome authority remains the
+command ledger/outbox.
 
 ## Ingestion and artifact families
 
@@ -103,17 +106,19 @@ does not add a claim, lease, receipt, or reconciliation state machine. See
 
 ## Evaluation and research families
 
-`EvaluationService` pins persisted world state through storage/query authority,
+`EvaluationService` pins persisted world state through storage and world-query authority,
 executes caller-provided graders, validates typed outcomes, and appends one
 durable evaluation result through `iIngestionService`.
 
 `AutoResearchService` owns the multi-iteration rollout workflow and its durable
-research ledger. It depends on world and simulation ports, and uses storage for
-bounded persisted-control reads; scoring remains an explicit callback contract.
+research ledger. It depends on world registry/lifecycle and storage ports and
+calls world simulation functions; scoring remains an explicit callback
+contract.
 
-`PhysicalAIService` composes world, mutation, simulation, and evaluation ports.
-It uses storage to materialize the bounded terminal projection from which it
-builds a typed report; the report is not a second state authority.
+`PhysicalAIService` composes world registry/lifecycle, evaluation, and storage
+ports and calls world mutation/simulation functions. It uses storage to
+materialize the bounded terminal projection from which it builds a typed
+report; the report is not a second state authority.
 
 ## Commands family
 
@@ -156,9 +161,8 @@ FastAPI consumes `iCommandGateway`; the CLI remains an HTTP client.
 - application facade: `src/archetype/app/application/`
 - gateway: `src/archetype/app/gateway/`
 - durable commands: `src/archetype/app/commands/`
-- world family: `src/archetype/app/world/`
+- world family: `src/archetype/world/`
 - physical storage family: `src/archetype/storage/`
-- query family: `src/archetype/app/query/`
 - typed-publication routing: `src/archetype/app/ingestion/`
 - reusable file-ingestion pipeline and scanners: `src/archetype/ingestion/`
 - file artifacts: `src/archetype/app/artifacts/`

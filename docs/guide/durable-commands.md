@@ -22,7 +22,7 @@ CommandGateway.submit(ActorCtx, ...)
 world construction-injected tick materializer
                   |
                   v
- iCommandScheduler.drain_and_apply
+    iCommandScheduler.materialize
                   |
        lock-held world mutations
                   |

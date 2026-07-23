@@ -54,7 +54,7 @@ plug-in point:
 2. Decide role permissions in `COMMANDS_BY_ROLE`.
 3. Add a gated method to `iCommandGateway` when the operation is user-visible and should be direct.
 4. For tick-deferred custom payloads, add versioned portable dispatch logic in
-   the commands-family path used by `drain_and_apply`.
+   the commands-family path used by `materialize`.
 5. Emit one audit row per gated call.
 
 Avoid bypassing the gate from runtime/API code. If the operation is external, route it through `iCommandGateway`.
@@ -78,9 +78,9 @@ RuntimeApplication.submit
     |
 CommandScheduler.admit (durable)
     |
-SimulationService tick callback
+AsyncWorld construction-injected tick materializer
     |
-CommandScheduler.drain_and_apply
+CommandScheduler.materialize
     |
 tick manifest + command settlement + outbox
 ```

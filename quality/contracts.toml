@@ -236,7 +236,7 @@ source = "docs/guide/application-architecture.md"
 section = "10. Supported durability profile"
 owner = "world"
 risk = "high"
-pytest = ["tests/app/test_atomic_visibility.py"]
+pytest = ["tests/world/test_atomic_visibility.py"]
 static = []
 evals = [
   "idempotency.atomic_publish_retry",
@@ -252,8 +252,8 @@ section = "6. `resume_world` (fenced mutable cold resume)"
 owner = "world"
 risk = "high"
 pytest = [
-  "tests/app/test_atomic_visibility.py",
-  "tests/app/test_world_resume.py",
+  "tests/world/test_atomic_visibility.py",
+  "tests/world/test_resume_contracts.py",
 ]
 static = []
 evals = [
@@ -304,7 +304,7 @@ section = "6. `resume_world` (fenced mutable cold resume)"
 owner = "world"
 risk = "high"
 pytest = [
-  "tests/app/test_world_resume.py",
+  "tests/world/test_resume_contracts.py",
   "tests/integration/test_core_example_receipts.py::test_time_travel_receipt_proves_cold_resume_continuity",
 ]
 static = []
@@ -350,11 +350,11 @@ profiles = ["pr", "main", "release"]
 [[contract]]
 id = "query.cold_reads.correct"
 source = "docs/guide/specification.md"
-section = "QueryService"
-owner = "query"
+section = "Durable world reads"
+owner = "world"
 risk = "high"
 pytest = [
-  "tests/app/test_services.py",
+  "tests/world/test_query_contracts.py",
   "tests/api/test_routes.py",
   "tests/integration/test_core_example_receipts.py::test_time_travel_receipt_proves_cold_resume_continuity",
 ]
@@ -364,7 +364,7 @@ evals = [
   "idempotency.fixed_reads",
   "idempotency.query_archetype_repeatable",
 ]
-benchmarks = ["app.query.latency"]
+benchmarks = ["world.query.latency"]
 profiles = ["pr", "main", "release"]
 
 [[contract]]

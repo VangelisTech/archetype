@@ -89,29 +89,31 @@ See [Execution Hierarchy](execution-hierarchy.md).
 
 ## Tick Lifecycle
 
-A tick has two service-level phases:
+A managed tick holds the exact world's registry operation lease. Durable
+commands are part of the tick itself:
 
 ```text
-SimulationService.step(world_id, run_config)
+archetype.world.simulation.step(registry, world_id, run_config)
   |
-  1. CommandDispatcher.lease_and_stage_due(world_id, tick)
-  |    CommandLedger leases in durable order
-  |    MutationService stages due commands
-  |
-  2. AsyncWorld.step(run_config)
-       |
-       a. Query previous state
-       b. Materialize pending structural mutations
-       c. Execute matching processors
-       d. Persist appended rows
-       e. Publish manifest + settle command outcomes
-       f. Refresh live state and hooks
+  a. Retry an unacknowledged required-projector receipt, if any
+  b. AsyncWorld materializes due portable commands
+  c. Fire advisory PreTick hooks
+  d. Discover active signatures
+  e. Compute every archetype without consuming mutation caches
+  f. Append and flush rows
+  g. Publish the manifest and settle staged command outcomes atomically
+  h. Consume mutation caches and advance the tick
+  i. Fire advisory PostTick hooks
+  j. Return a stable CommittedTickReceipt
+  k. Run and acknowledge the required projector, when configured
 ```
 
 Processors are trusted internal code once registered. External callers do not bypass the gate.
 
 A tick is a world execution and commit boundary. It does not necessarily imply
-a task, mission, or physical-workflow state transition.
+a task, mission, or physical-workflow state transition. Public hook failures
+are advisory. A required-projector failure is post-commit: the receipt remains
+retryable, and retry does not recompute or republish the committed tick.
 
 ## World Lifecycle
 

@@ -34,7 +34,7 @@ The gate's contract:
   outcomes.
 
 Nothing below the gateway knows about `ActorCtx`.
-`iWorldService.create_world(config, ...)` takes no ctx. Authorization is the
+`iWorldLifecycle.create_world(config, ...)` takes no ctx. Authorization is the
 gateway's job alone.
 
 ## 2. The four-role model

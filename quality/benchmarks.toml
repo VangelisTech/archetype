@@ -17,9 +17,9 @@ metrics = [
 ]
 
 [[benchmark]]
-id = "app.query.latency"
+id = "world.query.latency"
 suite = "query_latency"
-owner = "query"
+owner = "world"
 entrypoint = "bench/core/query_latency.py"
 correctness_oracles = ["tests/bench/test_query_latency.py"]
 report_schema = "bench.core.report/v1"

@@ -29,7 +29,7 @@ machine authority; this page is its review surface.
 | `world.run_identity.cold_resume` | `world` | high | [docs/guide/world-lifecycle.md](../guide/world-lifecycle.md) — 6. `resume_world` (fenced mutable cold resume) | pytest: 2; eval: 1 | `pr`, `main`, `release` |
 | `world.mutations.compose_deterministically` | `world` | high | [docs/guide/specification.md](../guide/specification.md) — Mutation materialization | pytest: 2; eval: 4 | `pr`, `main`, `release` |
 | `world.mutation.locking` | `world` | high | [docs/guide/specification.md](../guide/specification.md) — Mutation Contracts | pytest: 2 | `pr`, `main`, `release` |
-| `query.cold_reads.correct` | `query` | high | [docs/guide/specification.md](../guide/specification.md) — QueryService | pytest: 3; eval: 3; benchmark: 1 | `pr`, `main`, `release` |
+| `query.cold_reads.correct` | `world` | high | [docs/guide/specification.md](../guide/specification.md) — Durable world reads | pytest: 3; eval: 3; benchmark: 1 | `pr`, `main`, `release` |
 | `storage.cache.concurrent_no_loss` | `storage` | high | [docs/guide/stores.md](../guide/stores.md) — Write-Behind Cache | pytest: 1; eval: 2; benchmark: 1 | `pr`, `main`, `release` |
 | `ingestion.envelope.append_selection` | `ingestion` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 5. Catalog and index contract | pytest: 1; static: 2 | `pr`, `main`, `release` |
 | `ingestion.catalog.cold_roundtrip` | `ingestion` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 5. Catalog and index contract | pytest: 2 | `pr`, `main`, `release` |

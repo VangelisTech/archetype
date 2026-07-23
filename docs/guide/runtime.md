@@ -138,8 +138,8 @@ accepted at the scripting boundary. A string or path becomes
 
 `world.grade(...)` delegates to the application evaluation workflow. The
 workflow owns snapshot pinning, grader execution, outcome validation, and
-durable receipts where requested. The runtime does not compose QueryService and
-EvaluationService itself.
+durable receipts where requested. The runtime does not compose world query
+functions or `EvaluationService` itself.
 
 `world.autoresearch(...)` delegates to the research-family workflow. Callback
 execution must not hold a runtime handle lock that would deadlock reentrant

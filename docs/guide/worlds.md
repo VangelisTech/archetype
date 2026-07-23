@@ -282,7 +282,8 @@ See [Processors](processors.md) and [Systems](system-execution.md) for how proce
 
 ## Forking Internals
 
-`WorldService.fork_world()` creates a new world from a snapshot of an existing one.
+The world family's `fork_world()` lifecycle operation creates a new world from
+a snapshot of an existing one.
 
 The runtime surface is `await world.fork(name="branch-A")`, which calls the
 actor-free application facade and returns a new handle owned by the same

@@ -513,16 +513,17 @@ iRuntimeApplication` for actor-free application execution.
 - Service shutdown MUST shut down every managed backend exactly once per
   instance.
 
-### WorldFactory
+### Managed world construction
 
-- `WorldFactory` is the seam between app and core.
-- It MUST obtain the backend triplet from `StorageService` and assemble an
-  `AsyncWorld` with a system, querier, and updater.
-
-### WorldService
-
-- `WorldService` owns the in-memory catalog of active worlds.
-- `create_world()` MUST be idempotent by explicit `world_id`.
+- `build_world(...)` is the module-level seam between the world family and
+  core.
+- `WorldLifecycle` MUST obtain the backend triplet through `iStorageService`
+  and assemble an `AsyncWorld` with a system, querier, updater, commit
+  coordinator, and construction-injected command materializer.
+- `WorldRegistry` owns the in-memory catalog of active worlds, exact-world
+  locks, storage coordinates, cleanup leases, and required-projection receipt
+  retention.
+- `WorldLifecycle.create_world()` MUST be idempotent by explicit `world_id`.
 - Name lookup is a convenience index; names are unique, but they are not the
   idempotency key.
 - Duplicate-name validation MUST happen before a new world is inserted into the
@@ -531,7 +532,7 @@ iRuntimeApplication` for actor-free application execution.
 - If durable catalog registration or writer-fence acquisition fails after
   construction, `create_world()` MUST remove the new live world before
   propagating the failure.
-- Broker injection into world resources is an app-layer responsibility.
+- Live resource injection is an application-layer responsibility.
 - `destroy_world()` SHOULD be safe to call on a missing world.
 - `fork_world()` MUST create a new `world_id`, clone the source world's visible
   state, and let source and fork diverge independently.
@@ -584,22 +585,27 @@ iRuntimeApplication` for actor-free application execution.
 Leasing is non-destructive. Applied outcomes settle with tick visibility;
 retryable failures remain recoverable and exhausted failures become terminal.
 
-### SimulationService
+### Managed world execution
 
-- `step()` is the authoritative world execution boundary.
-- `step()` MUST rely on the world's construction-injected scheduler
+- `archetype.world.simulation.step()` is the authoritative managed-world
+  execution boundary.
+- Managed `step()` MUST rely on the world's construction-injected scheduler
   materializer, which applies due commands before `PreTick` and active-signature
   discovery while the exact world operation lock is already held.
-- `step()` MUST receive an explicit `RunConfig` from the caller; the service
+- Managed `step()` MUST receive an explicit `RunConfig` from the caller; it
   MUST NOT mint a fresh `RunConfig` per call. The world's active `run_id`, not
   reuse of a particular config object, provides continuity across calls.
 - `run()` MUST thread the caller's `RunConfig` into every `step()` call while
   preserving and reporting the world's active `run_id`.
+- After publication, a configured required projector MUST consume and
+  acknowledge the stable `CommittedTickReceipt`. Failure is post-commit: the
+  receipt remains retained and retryable, and the tick MUST NOT be replayed.
 - Episodes and rollouts follow [Execution Hierarchy](execution-hierarchy.md).
 
-### QueryService
+### Durable world reads
 
-- `QueryService` is the internal read facade below the gate.
+- `archetype.world.query` is the internal durable ECS read surface below the
+  application facade.
 - Trusted runtime reads go through `iRuntimeApplication`; untrusted reads go
   through `iCommandGateway` and then the same application operation.
 - Archetype and component reads MUST resolve storage per call and query durable
@@ -616,8 +622,8 @@ retryable failures remain recoverable and exhausted failures become terminal.
   discovery. Exact process-local class identities take precedence over catalog
   reconstruction. Catalog outages degrade discovery to the process-local
   subset; mutable resume and commit-visibility checks remain strict.
-- Audit history is served by the audit projection through the application or
-  authorized gateway boundary. `QueryService` has no audit dependency.
+- Audit and command history are served by `iAuditLog` through the application
+  or authorized gateway boundary. Durable world query has no audit dependency.
 
 ### ServiceContainer and runtime lifetime
 
@@ -973,8 +979,8 @@ the constraints that any acceptable design must satisfy.
 | Operation | Expected contract |
 |---|---|
 | `StorageService.get_or_create_store(key)` | Idempotent per `(uri, namespace, backend, Daft IOConfig fingerprint, cache config)` within one service instance |
-| `WorldService.create_world(world_id=X)` | Idempotent by explicit `world_id` |
-| `WorldService.destroy_world(missing)` | Safe no-op |
+| `WorldLifecycle.create_world(world_id=X)` | Idempotent by explicit `world_id` |
+| `WorldLifecycle.destroy_world(missing)` | Safe no-op |
 | `AsyncCachedStore.shutdown()` | Idempotent |
 | Command admission with the same `command_id` and content | Idempotent; returns the existing durable record |
 | Command admission with the same `command_id` and changed content | Conflicts |
@@ -994,7 +1000,7 @@ the constraints that any acceptable design must satisfy.
 | Store `append()` replay | Not idempotent; repeating an append persists duplicate rows |
 | Updater `update()` replay | Not idempotent; repeating an update appends another row version |
 | Store `get_archetype_df()` replay | Idempotent for the same persisted data |
-| `QueryService` fixed-state reads | Idempotent for fixed rows, history, and signature catalog |
+| Durable world fixed-state reads | Idempotent for fixed rows, lineage, and signature catalog |
 | Catalog re-registration | Same identity and content is an idempotent no-op; different content conflicts loudly |
 | Coordinated tick retry after failed publish | Unpublished attempts stay invisible; retry produces exactly one visible attempt |
 | Cold discovery and reads | Repeated cold discovery and reads return stable durable state |
@@ -1045,7 +1051,7 @@ behavior and an executable oracle.
 | 3 | Resolved | `CommandGateway.submit*` reject an unknown world with `WorldNotFoundError` before quota, enqueue, or audit side effects. | `tests/integration/test_command_flow.py::test_submit_to_unknown_world_rejected` |
 | 4 | Resolved | Duplicate-name and catalog-registration failures leave no hidden live world. | `tests/core/test_orchestrator_errors_and_instrumentation.py`; `tests/app/test_durable_discovery.py::test_failed_catalog_registration_leaves_no_live_world` |
 | 5 | Resolved | Spawn, despawn, and component migration hooks fire from their public mutation paths with the documented queue-time semantics. | `tests/core/test_resources_hooks_messaging.py`; `tests/core/test_batch_spawn_contract.py`; `tests/sync/test_sync_world.py` |
-| 6 | Resolved | `QueryService` performs durable archetype, component, lineage, signature, and audit-backed history reads. | `tests/app/test_atomic_visibility.py`; `tests/storage/test_runtime_fork_storage.py`; `tests/app/test_audit_contracts.py` |
+| 6 | Resolved | `archetype.world.query` performs durable archetype, component, lineage, and signature reads; application history comes from `iAuditLog`. | `tests/world/test_query_contracts.py`; `tests/world/test_atomic_visibility.py`; `tests/app/test_audit_contracts.py` |
 | 7 | Resolved | Gated destroy cancels only the target world's unsettled command state and preserves shared runtime and durable history. | `tests/integration/test_fork_destroy_contracts.py` |
 | 8 | Resolved | Same-entity, same-tick mutations compose in durable scheduler order. | `tests/core/test_same_tick_mutation_composition.py`; `evals/suites/idempotency/tasks.py::task_duplicate_same_tick_mutations_collapse`; Issue #193 |
 

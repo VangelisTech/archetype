@@ -171,8 +171,8 @@ class TestRuntimeAppBoundary:
     ("source_text", "expected"),
     [
         (
-            "import archetype.app.world.service\n",
-            [("archetype.app.world.service", False)],
+            "import archetype.app.research.service\n",
+            [("archetype.app.research.service", False)],
         ),
         (
             "from archetype.app.evaluation.interfaces import TrajectoryGrader\n",

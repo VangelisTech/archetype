@@ -45,10 +45,15 @@ def _policy_document() -> dict[str, object]:
 
 
 def test_policy_loads_surface_dependencies_and_owner_types_from_data():
-    assert _API_ROUTES_SURFACE.dependency_roots == {"archetype.app"}
+    assert _API_ROUTES_SURFACE.dependency_roots == {
+        "archetype.app",
+        "archetype.world",
+    }
     assert "archetype.app.gateway.interfaces" in _API_ROUTES_SURFACE.allowed_dependencies
-    assert "archetype.app.world.service" in _API_ROUTES_SURFACE.forbidden_dependencies
-    assert "WorldService" in _POLICY.public_api.forbidden_owner_types
+    assert "archetype.app.container" in _API_ROUTES_SURFACE.forbidden_dependencies
+    assert "archetype.world.models" in _API_ROUTES_SURFACE.allowed_dependencies
+    assert "archetype.world.simulation" in _API_ROUTES_SURFACE.forbidden_dependencies
+    assert "WorldLifecycle" in _POLICY.public_api.forbidden_owner_types
     assert "MissionService" in _POLICY.public_api.forbidden_owner_types
     assert "mission_service" in _POLICY.public_api.forbidden_parameter_names
 
@@ -65,20 +70,18 @@ def test_public_api_rule_fires_on_service_typed_param(tmp_path):
         tmp_path,
         "from archetype._api import public_api\n"
         "@public_api\n"
-        "async def bad(world_service, x: int = 0): ...\n",
+        "async def bad(world_lifecycle, x: int = 0): ...\n",
     )
     violations = checker._public_api_violations(path, _POLICY.public_api, root=tmp_path)
     assert len(violations) == 1
-    assert "world_service" in violations[0]
+    assert "world_lifecycle" in violations[0]
     assert "supported runtime or gateway boundary" in violations[0]
 
 
 def test_public_api_rule_fires_on_annotation(tmp_path):
     path = _write(
         tmp_path,
-        "from archetype._api import public_api\n"
-        "@public_api\n"
-        "def bad(svc: 'SimulationService'): ...\n",
+        "from archetype._api import public_api\n@public_api\ndef bad(svc: 'WorldLifecycle'): ...\n",
     )
     assert len(checker._public_api_violations(path, _POLICY.public_api, root=tmp_path)) == 1
 
@@ -86,7 +89,7 @@ def test_public_api_rule_fires_on_annotation(tmp_path):
 @pytest.mark.parametrize(
     ("signature", "parameter"),
     [
-        ("*world_service", "world_service"),
+        ("*world_lifecycle", "world_lifecycle"),
         ("**container", "container"),
     ],
 )
@@ -128,21 +131,21 @@ def test_bridge_allowlist_suppresses_with_deadline(tmp_path, monkeypatch):
         tmp_path,
         "from archetype._api import public_api\n"
         "@public_api\n"
-        "async def bridged(world_service=None): ...\n",
+        "async def bridged(world_lifecycle=None): ...\n",
     )
     monkeypatch.setitem(
         checker.PUBLIC_API_BRIDGE_PARAMS,
         "src/archetype/probes/sample.py::bridged",
-        {"world_service"},
+        {"world_lifecycle"},
     )
     assert checker._public_api_violations(path, _POLICY.public_api, root=tmp_path) == []
 
 
-def test_api_scope_blocks_service_imports(tmp_path):
-    path = _write(tmp_path, "from archetype.app.world.simulation import SimulationService\n")
+def test_api_scope_blocks_world_family_behavior_imports(tmp_path):
+    path = _write(tmp_path, "from archetype.world.simulation import step\n")
     violations = checker._import_violations(path, _API_ROUTES_SURFACE, root=tmp_path)
     assert len(violations) == 1
-    assert "never construct or consume concrete app services" in violations[0]
+    assert "imports forbidden archetype.world.simulation" in violations[0]
 
 
 def test_api_scope_rejects_unapproved_application_imports(tmp_path):
@@ -161,24 +164,26 @@ def test_only_api_composition_may_import_the_container(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "source",
+    ("source", "governed_roots"),
     [
-        "from ..app.world.service import WorldService\n",
-        "from archetype import app\n",
-        "from archetype import *\n",
+        ("from ..app.container import ServiceContainer\n", ("archetype.app",)),
+        ("from archetype import app\n", ("archetype.app",)),
+        ("from archetype import *\n", ("archetype.app", "archetype.world")),
     ],
     ids=["relative", "root-parent", "root-star"],
 )
 def test_governed_import_roots_cannot_be_bypassed_by_import_spelling(
     tmp_path: Path,
     source: str,
+    governed_roots: tuple[str, ...],
 ) -> None:
     path = _write(tmp_path, source)
 
     violations = checker._import_violations(path, _API_ROUTES_SURFACE, root=tmp_path)
 
-    assert len(violations) == 1
-    assert "archetype.app" in violations[0]
+    assert len(violations) == len(governed_roots)
+    for governed_root in governed_roots:
+        assert any(governed_root in violation for violation in violations)
 
 
 def test_import_policy_data_controls_allowed_dependency(tmp_path):
@@ -212,12 +217,12 @@ def test_symbol_import_from_allowed_leaf_stays_bound_to_the_leaf(tmp_path: Path)
 def test_forbidden_dependency_imported_from_parent_package_is_classified_exactly(
     tmp_path: Path,
 ) -> None:
-    path = _write(tmp_path, "from archetype.app.world import service\n")
+    path = _write(tmp_path, "from archetype.app import container\n")
 
     violations = checker._import_violations(path, _API_ROUTES_SURFACE, root=tmp_path)
 
     assert len(violations) == 1
-    assert "imports forbidden archetype.app.world.service" in violations[0]
+    assert "imports forbidden archetype.app.container" in violations[0]
 
 
 def test_owner_type_policy_data_controls_public_signature(tmp_path):
@@ -289,7 +294,7 @@ def test_policy_rejects_unknown_public_api_keys():
     document = _policy_document()
     public_api = document["public_api"]
     assert isinstance(public_api, dict)
-    public_api["forbidden_owner_types"] = ["WorldService"]
+    public_api["forbidden_owner_types"] = ["WorldLifecycle"]
 
     with pytest.raises(checker.BoundaryPolicyError, match="public_api contains unknown keys"):
         checker._parse_policy(document, repo_root=_ROOT)
@@ -305,9 +310,9 @@ def test_annotation_match_is_whole_token_not_substring(tmp_path):
         tmp_path,
         "from archetype._api import public_api\n"
         "@public_api\n"
-        "def fine(cfg: 'SimulationServiceConfig'): ...\n"
+        "def fine(cfg: 'WorldLifecycleConfig'): ...\n"
         "@public_api\n"
-        "def bad(svc: 'SimulationService'): ...\n",
+        "def bad(svc: 'WorldLifecycle'): ...\n",
     )
     violations = checker._public_api_violations(path, _POLICY.public_api, root=tmp_path)
     assert len(violations) == 1 and "bad" in violations[0]
@@ -319,7 +324,7 @@ def test_public_api_class_constructor_is_checked(tmp_path):
         "from archetype._api import public_api\n"
         "@public_api\n"
         "class Bad:\n"
-        "    def __init__(self, world_service): ...\n",
+        "    def __init__(self, world_lifecycle): ...\n",
     )
     violations = checker._public_api_violations(path, _POLICY.public_api, root=tmp_path)
     assert len(violations) == 1

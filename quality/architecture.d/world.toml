@@ -18,6 +18,7 @@ allowed_interfaces = [
   "archetype.core.interfaces.iAsyncStore",
   "archetype.core.interfaces.iAsyncSystem",
   "archetype.core.interfaces.iCommitCoordinator",
+  "archetype.world.interfaces.iWorldRegistry",
 ]
 allowed_app = []
 
@@ -31,10 +32,15 @@ module = "archetype.world.query"
 allowed_interfaces = [
   "archetype.core.interfaces.ArchetypeSignature",
   "archetype.core.interfaces.iAsyncStore",
+  "archetype.storage.interfaces.iStorageService",
 ]
 allowed_app = []
 
 [[module_rule]]
 module = "archetype.world.simulation"
-allowed_interfaces = ["archetype.core.interfaces.CommittedTickReceipt"]
+allowed_interfaces = [
+  "archetype.core.interfaces.CommittedTickReceipt",
+  "archetype.storage.interfaces.iStorageService",
+  "archetype.world.interfaces.iWorldRegistry",
+]
 allowed_app = []

@@ -125,10 +125,13 @@ Hooks should not be used for transactional invariants that must stop mutation or
 persistence on failure. Use processors, services, or explicit command handling
 for behavior that must participate in simulation correctness.
 
-## Service-Layer Usage
+## Managed-world usage
 
-`WorldService` attaches a `PostTick` hook when a `WorldRegistry` is configured.
-That hook updates the persisted registry tick after each completed step.
+Managed tick correctness does not depend on a public hook. Command
+materialization happens before `PreTick`; manifest publication and command
+settlement happen before `PostTick`; and required post-commit projection uses a
+separate construction-injected projector. A projector failure retains the
+exact committed receipt for retry and never replays the tick.
 
 Application code should register hooks through the public world API. It should
 not reach into `world._hooks` or private fire methods.

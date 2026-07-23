@@ -31,7 +31,7 @@ required_cadence = ["pr", "main", "release"]
 id = "example.01_world_mutations"
 kind = "example"
 owner = "world"
-owner_paths = ["src/archetype/runtime", "src/archetype/app/world"]
+owner_paths = ["src/archetype/runtime", "src/archetype/world"]
 source_path = "examples/01_world_mutations.py"
 source_command = ["python", "examples/01_world_mutations.py"]
 required_extras = []
@@ -53,7 +53,7 @@ required_cadence = ["pr", "main", "release"]
 id = "example.02_fork_counterfactual"
 kind = "example"
 owner = "world"
-owner_paths = ["src/archetype/runtime", "src/archetype/app/world"]
+owner_paths = ["src/archetype/runtime", "src/archetype/world"]
 source_path = "examples/02_fork_counterfactual.py"
 source_command = ["python", "examples/02_fork_counterfactual.py"]
 required_extras = []
@@ -75,7 +75,7 @@ kind = "example"
 owner = "world"
 owner_paths = [
   "src/archetype/runtime",
-  "src/archetype/app/world",
+  "src/archetype/world",
   "src/archetype/storage",
 ]
 source_path = "examples/03_time_travel.py"
@@ -97,7 +97,7 @@ required_cadence = ["pr", "main", "release"]
 id = "example.04_messaging"
 kind = "example"
 owner = "world"
-owner_paths = ["src/archetype/app/world", "src/archetype/core/hooks.py"]
+owner_paths = ["src/archetype/world", "src/archetype/core/hooks.py"]
 source_path = "examples/04_messaging.py"
 source_command = ["python", "examples/04_messaging.py"]
 required_extras = []
@@ -159,7 +159,7 @@ required_cadence = ["pr", "main", "release"]
 id = "example.07_hooks"
 kind = "example"
 owner = "core"
-owner_paths = ["src/archetype/core/hooks.py", "src/archetype/app/world"]
+owner_paths = ["src/archetype/core/hooks.py", "src/archetype/world"]
 source_path = "examples/07_hooks.py"
 source_command = ["python", "examples/07_hooks.py"]
 required_extras = []
@@ -388,7 +388,7 @@ owner_paths = [
   "src/archetype/app/missions",
   "src/archetype/runtime",
   "src/archetype/app/commands",
-  "src/archetype/app/world",
+  "src/archetype/world",
   "src/archetype/graph",
   "src/archetype/core/hooks.py",
   "src/archetype/app/container.py",
@@ -429,7 +429,6 @@ trigger_paths = [
   "src/archetype/commands/**",
   "src/archetype/app/commands/**",
   "src/archetype/world/**",
-  "src/archetype/app/world/**",
   "src/archetype/graph/**",
   "src/archetype/core/hooks.py",
   "src/archetype/wiring.py",

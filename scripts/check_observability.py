@@ -871,6 +871,53 @@ def _concrete_surface_operations(
     return {f"{relative_surface}.{member}" for member in public_members}
 
 
+def _module_surface_operations(
+    surface: str,
+    *,
+    owner: str,
+    units: list[SourceUnit],
+    registered_family_scopes: frozenset[str],
+    label: str,
+    errors: list[str],
+) -> set[str]:
+    """Resolve every public module-level function on one reviewed family surface."""
+
+    if re.fullmatch(r"archetype(?:\.[A-Za-z_][A-Za-z0-9_]*)+", surface) is None:
+        errors.append(f"{label} must be a fully qualified first-party module")
+        return set()
+
+    family_scope = f"archetype.{owner}"
+    if family_scope not in registered_family_scopes:
+        errors.append(f"{label} requires registered top-level family owner {family_scope!r}")
+        return set()
+    if surface != family_scope and not surface.startswith(family_scope + "."):
+        errors.append(f"{label} must belong to owner family {family_scope!r}: {surface}")
+        return set()
+
+    matching_units = [unit for unit in units if unit.module == surface]
+    if len(matching_units) != 1:
+        errors.append(f"{label} references unknown module operation surface: {surface}")
+        return set()
+
+    public_members = [
+        node.name
+        for node in matching_units[0].tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and not node.name.startswith("_")
+    ]
+    if len(public_members) != len(set(public_members)):
+        errors.append(f"{label} surface defines duplicate public operations: {surface}")
+        return set()
+    if not public_members:
+        errors.append(f"{label} surface has no public operations: {surface}")
+        return set()
+
+    relative_surface = surface.removeprefix(family_scope).removeprefix(".")
+    return {
+        ".".join(part for part in (relative_surface, member) if part) for member in public_members
+    }
+
+
 def _assignment(tree: ast.Module, name: str) -> ast.AST | None:
     for node in tree.body:
         if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
@@ -1129,6 +1176,46 @@ def _load_manifests(
         seen_owners.add(owner)
         if path.stem != owner:
             local_errors.append(f"{relative} filename must match owner {owner!r}")
+
+        module_surfaces = document.get("module_operation_surface", [])
+        if not isinstance(module_surfaces, list) or any(
+            not isinstance(row, dict) for row in module_surfaces
+        ):
+            local_errors.append(f"{relative}.module_operation_surface must be an array of tables")
+            module_surfaces = []
+        seen_module_surfaces: set[str] = set()
+        for index, row in enumerate(module_surfaces):
+            label = f"{relative}.module_operation_surface[{index}]"
+            surface = _nonblank(
+                row.get("qualified_scope"),
+                f"{label}.qualified_scope",
+                local_errors,
+            )
+            if surface in seen_module_surfaces:
+                local_errors.append(
+                    f"{relative}.module_operation_surface contains duplicate "
+                    f"qualified_scope {surface!r}"
+                )
+            seen_module_surfaces.add(surface)
+            operations = _module_surface_operations(
+                surface,
+                owner=owner,
+                units=units,
+                registered_family_scopes=registered_family_scopes,
+                label=f"{label}.qualified_scope",
+                errors=local_errors,
+            )
+            existing = expected_operations.get(owner, set())
+            overlap = sorted(existing & operations)
+            if overlap:
+                local_errors.append(
+                    f"{label}.qualified_scope duplicates discovered operations: "
+                    + ", ".join(overlap)
+                )
+            new_operations = operations - existing
+            if new_operations:
+                expected_operations.setdefault(owner, set()).update(new_operations)
+                result.operations_scanned += len(new_operations)
 
         concrete_surfaces = document.get("concrete_operation_surface", [])
         if not isinstance(concrete_surfaces, list) or any(

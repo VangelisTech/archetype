@@ -52,10 +52,11 @@ return result
 
 Examples:
 
-- `create_world` delegates to `iWorldService` and returns `WorldInfo`.
-- `create_entity` delegates to `iMutationService` and returns `entity_id`.
-- `run` delegates to `iSimulationService` and returns `RunResult`.
-- `query_archetype` delegates to `iQueryService` and returns a DataFrame.
+- `create_world` delegates to `iWorldLifecycle` and returns `WorldInfo`.
+- `create_entity` calls `archetype.world.mutation` through `iWorldRegistry`
+  and returns `entity_id`.
+- `run` calls `archetype.world.simulation` and returns `RunResult`.
+- `query_archetype` calls `archetype.world.query` and returns a DataFrame.
 
 Untrusted reads are gated. Trusted runtime and internal workflows use the same
 actor-free application/query semantics directly.
@@ -72,11 +73,11 @@ iCommandScheduler.admit(world_id, cmd, origin/principal)
     |
 iCommandLedger (durable PENDING)
     |
-SimulationService.step()
+AsyncWorld.step() construction-injected materializer
     |
-iCommandDispatcher.lease_and_stage_due(world_id, tick)
+iCommandScheduler.materialize(world, tick)
     |
-MutationService / WorldService
+archetype.world.handlers.materialize_locked
     |
 AsyncWorld internal mutation -> manifest publication + command settlement
 ```
@@ -127,8 +128,9 @@ See [Audit Log](audit-log.md).
 
 - Gateway: `src/archetype/app/gateway/service.py`
 - Durable command scheduler: `src/archetype/app/commands/service.py`
-- Simulation service: `src/archetype/app/world/simulation.py`
-- Query service: `src/archetype/app/query/service.py`
+- Managed simulation: `src/archetype/world/simulation.py`
+- Durable world reads: `src/archetype/world/query.py`
+- World mutation adapters: `src/archetype/world/mutation.py`
 - RBAC guard: `src/archetype/app/gateway/auth/guard.py`
 - Querier: `src/archetype/core/aio/async_querier.py`
 - Updater: `src/archetype/core/aio/async_updater.py`

@@ -108,8 +108,12 @@ See [Execution Hierarchy](execution-hierarchy.md).
 | `/worlds/{id}/components` | GET | Lazily filter, limit, or count component projections |
 | `/worlds/{id}/history` | GET | Audit history through `get_audit_history` |
 
-Reads are authorized at `iCommandGateway`; `iQueryService` remains the internal
-read implementation behind RuntimeApplication.
+Reads are authorized at `iCommandGateway`; `RuntimeApplication` delegates
+durable ECS reads to `archetype.world.query` and audit history to `iAuditLog`.
+Neither path requires a live world.
+Routes may import frozen supported values from `archetype.world.models`; they
+must not import world registry, lifecycle, mutation, simulation, query, or
+handler behavior directly.
 The component route accepts one inert comparison through `where`, then applies either the
 `show` row limit or the `count` terminal. Filtering happens before either terminal and before
 row serialization. All three options require at least one component type; `show` and `count` are

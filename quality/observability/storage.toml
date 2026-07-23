@@ -57,7 +57,7 @@ evidence = [
   "docs/guide/atomic-visibility.md",
   "docs/guide/artifacts.md",
   "docs/guide/service-protocols.md",
-  "tests/app/test_atomic_visibility.py",
+  "tests/app/test_application_atomic_visibility.py",
   "tests/storage/test_remote_catalog_parity.py",
   "tests/storage/test_storage_execution.py",
 ]

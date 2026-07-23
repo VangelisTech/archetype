@@ -250,7 +250,7 @@ Current implementation truth:
   shared reader conformance suite do not exist yet;
 - the durable submit/poll trial lifecycle remains issue #322;
 - allocation of zero-based dataset episode ids belongs to the future
-  reader/exporter boundary, not `SimulationService`.
+  reader/exporter boundary, not the world simulation family.
 
 These are **CURRENT GAP** items, not behavior the documentation pretends is
 already implemented. A first reader or exporter must add one shared

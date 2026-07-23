@@ -26,13 +26,13 @@
 
 [[entries]]
 path = "src/archetype/api/models.py"
-line = 33
+line = 34
 method = "collect"
 reason = "HTTP JSON response boundary: FastAPI must receive concrete row dictionaries for response encoding; a Daft lazy DataFrame cannot be represented as JSON without executing the query."
 
 [[entries]]
 path = "src/archetype/api/models.py"
-line = 33
+line = 34
 method = "to_pylist"
 reason = "HTTP JSON response boundary: convert the already-collected Daft result into row dictionaries for FastAPI's JSON encoder at the terminal REST boundary."
 
@@ -68,7 +68,7 @@ reason = "Storage write boundary: materialize the incoming frame once for the em
 
 [[entries]]
 path = "src/archetype/core/aio/async_world.py"
-line = 422
+line = 448
 method = "to_pylist"
 reason = "Cross-archetype entity migration: extract the latest tick row as a Python dict for component-overlay, which mutates field-by-field before re-insertion into the new archetype."
 
@@ -80,7 +80,7 @@ reason = "Debug-mode-only logging: materialise so count_rows and df.show emit di
 
 [[entries]]
 path = "src/archetype/core/sync/world.py"
-line = 305
+line = 317
 method = "to_pylist"
 reason = "Cross-archetype entity migration (sync mirror of async_world): extract the latest tick row for component overlay before re-insertion."
 
@@ -92,37 +92,37 @@ reason = "Lineage metadata extract: a fork's ancestor segments (bounded by fork 
 
 [[entries]]
 path = "src/archetype/app/research/service.py"
-line = 465
+line = 494
 method = "to_pylist"
 reason = "Single-row experiment-contract extract: StorageService has already admitted and materialized the query; the persisted identity and JSON configuration digest then enter Python control flow for exact collision rejection before resume."
 
 [[entries]]
 path = "src/archetype/app/research/service.py"
-line = 477
+line = 506
 method = "to_pylist"
 reason = "Single-row loop-state extract: StorageService has already admitted and materialized the query; the latest BranchHead then enters Python control flow for incumbent comparison and entity-id routing."
 
 [[entries]]
 path = "src/archetype/app/research/service.py"
-line = 494
+line = 523
 method = "to_pylist"
 reason = "Bounded control-plane history extract: StorageService has already admitted and materialized the query; deterministic Run ids and statuses then enter Python control flow to reject ambiguous resume state."
 
 [[entries]]
-path = "src/archetype/app/world/simulation.py"
-line = 228
+path = "src/archetype/world/simulation.py"
+line = 238
 method = "to_pylist"
 reason = "Episode-termination boundary: StorageService admits and materializes the one-row (n_done, n_total) reduction before its all/any values enter Python control flow to stop the episode loop."
 
 [[entries]]
-path = "src/archetype/app/query/service.py"
-line = 409
+path = "src/archetype/app/audit/service.py"
+line = 257
 method = "to_pylist"
-reason = "Bounded compatibility boundary: StorageService admits and materializes already filtered, limited audit rows before conversion into the legacy list[Command] return contract."
+reason = "Bounded audit projection boundary: StorageService admits and materializes already filtered, limited audit rows before conversion into the application-owned list[Command] history contract."
 
 [[entries]]
-path = "src/archetype/app/world/service.py"
-line = 766
+path = "src/archetype/world/resume.py"
+line = 125
 method = "to_pylist"
 reason = "Resume-time entity-directory extract (issue #273 A1-resume): StorageService admits and materializes the groupby-max result before bounded live-entity rows become the imperative entity2sig registry and next_entity_id counter."
 
@@ -134,7 +134,7 @@ reason = "series_to_rows helper: converts each Series parameter to a Python list
 
 [[entries]]
 path = "src/archetype/app/physical_ai/service.py"
-line = 108
+line = 105
 method = "to_pylist"
 reason = "Physical-evaluation grading boundary: StorageService admits and materializes latest-tick ledger rows before bounded success and episode-length values become typed task or sweep reports."
 

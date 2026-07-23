@@ -9,7 +9,7 @@ operations = [
   "interfaces.iCommandScheduler.admit",
   "interfaces.iCommandScheduler.admit_batch",
   "interfaces.iCommandScheduler.admit_spawn",
-  "interfaces.iCommandScheduler.drain_and_apply",
+  "interfaces.iCommandScheduler.materialize",
   "interfaces.iCommandScheduler.pending_count",
   "interfaces.iCommandScheduler.records",
   "interfaces.iCommandScheduler.history",

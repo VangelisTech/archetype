@@ -23,11 +23,11 @@ await world.run(config=config)
   mints a fresh identity for its new lineage.
 - `world.run_id` is immutable construction state. `RunResult.run_id` reports
   that same identity, which is the value stamped on durable rows.
-- `SimulationService.step()` and the lower-level `AsyncWorld.step()` require an
-  explicit `RunConfig`. `RuntimeWorld.step()` creates the ordinary one-step
-  config when the public caller omits it.
-- `SimulationService.run()` and the world implementations thread the caller's
-  `RunConfig` into every internal `step()` call.
+- The world family's managed `step()` and the lower-level `AsyncWorld.step()`
+  require an explicit `RunConfig`. `RuntimeWorld.step()` creates the ordinary
+  one-step config when the public caller omits it.
+- The world family's `run()` function threads the caller's `RunConfig` into
+  every internal step.
 - `EpisodeConfig` wraps `RunConfig` with termination semantics.
 - `RolloutConfig` wraps `EpisodeConfig` with fork-and-aggregate semantics.
 
@@ -71,7 +71,9 @@ config = RunConfig.benchmark(
 
 ## WorldConfig
 
-Identifies a world instance. Runtime/API callers create worlds through `iCommandGateway.create_world(...)`; lower-level internal callers use `WorldService.create_world()`.
+Identifies a world instance. Runtime/API callers create worlds through
+`iCommandGateway.create_world(...)`; internal composition calls the
+family-owned `iWorldLifecycle.create_world(...)` port.
 
 ```python
 from archetype.core.config import WorldConfig
@@ -86,7 +88,9 @@ config = WorldConfig(name="my-sim")
 
 ## StorageConfig
 
-Configures the persistence backend. Runtime/API callers pass it through the gate; lower-level services pass it to `WorldService.create_world()` and `StorageService.get_or_create_store()`.
+Configures the persistence backend. Runtime/API callers pass it through the
+gate; internal lifecycle code passes it to `StorageService` through the
+family-owned `iStorageService` port.
 
 ```python
 from archetype.core.config import StorageConfig, StorageBackend
