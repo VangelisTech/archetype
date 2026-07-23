@@ -28,19 +28,19 @@ from uuid_utils import UUID
 
 from archetype.app.audit.interfaces import iAuditLog
 from archetype.app.models import Command, CommandType
-from archetype.app.storage.catalog import (
-    CatalogSchemaMismatchError,
-    SignatureRecord,
-    schema_fingerprint,
-)
 from archetype.app.storage.interfaces import iStorageService
-from archetype.app.storage.signatures import match_signature_records
 from archetype.core.aio import AsyncQueryManager
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
 from archetype.core.interfaces import ArchetypeSignature
 from archetype.core.lineage import load_lineage
+from archetype.storage.catalog import (
+    CatalogSchemaMismatchError,
+    SignatureRecord,
+    schema_fingerprint,
+)
+from archetype.storage.signatures import match_signature_records
 
 logger = logging.getLogger(__name__)
 
@@ -271,7 +271,7 @@ class QueryService:
         import daft
         import pyarrow as pa
 
-        from archetype.app.storage.catalog import CatalogSchemaMismatchError, schema_fingerprint
+        from archetype.storage.catalog import CatalogSchemaMismatchError, schema_fingerprint
 
         output_sig = tuple(sorted(components, key=lambda t: t.__name__))
         proj_cols = Archetype.projection_columns(list(output_sig))

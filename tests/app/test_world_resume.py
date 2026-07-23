@@ -21,11 +21,11 @@ import pytest
 from uuid_utils import uuid7
 
 from archetype.app.container import ServiceContainer
-from archetype.app.storage.catalog import SqliteControlCatalog, WorldRecord
 from archetype.artifacts import ArtifactSource
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
 from archetype.core.interfaces import StaleWriterError
+from archetype.storage.catalog import SqliteControlCatalog, WorldRecord
 
 pytestmark = pytest.mark.asyncio
 

@@ -136,7 +136,35 @@ jobs:
           case "$R2_BUCKET" in
             */*) echo "R2_BUCKET must be a bucket name, not a path" >&2; exit 1 ;;
           esac
-      - run: make test-infra
+      - name: Verify physical retry visibility
+        run: >-
+          PYTHONPATH="${PYTHONPATH:-}:."
+          uv run pytest -q tests/infrastructure/test_r2_idempotency.py
+      - name: Run public-runtime R2 scenario
+        if: always()
+        run: |
+          PYTHONPATH="${PYTHONPATH:-}:." uv run python scripts/run_operational_scenarios.py \
+            --mode source \
+            --cadence pr \
+            --min-tier 5 \
+            --max-tier 5 \
+            --scenario dogfood.storage.r2 \
+            --require-run \
+            --expected-revision "$GITHUB_SHA" \
+            --require-clean \
+            --out r2-operational-results.json
+      - name: Require R2 operational receipt
+        if: always()
+        run: test -f r2-operational-results.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r2-operational-evidence
+          path: |
+            r2-operational-results.json
+            r2-operational-results.d/
+          if-no-files-found: error
+          retention-days: 14
 
   # Keep this job id stable for the required `evals` context. Repository
   # scenarios run once on 3.12, not once per compatibility interpreter.

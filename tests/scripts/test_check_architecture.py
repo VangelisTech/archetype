@@ -93,12 +93,43 @@ mediated_attributes = { to_pylist = "materialize", to_pydict = "materialize", to
     return policy
 
 
+def _write_external_storage_capability_policy(
+    root: Path,
+    *,
+    owner: str = "archetype.storage.service",
+) -> Path:
+    owner_path = root / "src" / Path(*owner.split(".")).with_suffix(".py")
+    owner_path.parent.mkdir(parents=True, exist_ok=True)
+    if not owner_path.exists():
+        owner_path.write_text(
+            "class StorageService:\n    def execute(self, df):\n        return df.collect()\n",
+            encoding="utf-8",
+        )
+    policy = _write_policy(root)
+    policy.write_text(
+        policy.read_text(encoding="utf-8")
+        + f"""
+
+[[capability_rule]]
+name = "storage-execution-authority"
+consumer = "archetype.app"
+owner = "{owner}"
+owned_attributes = ["collect"]
+owned_symbols = []
+mediated_attributes = {{}}
+""",
+        encoding="utf-8",
+    )
+    return policy
+
+
 def _write_family_policy(
     root: Path,
     *,
     rules: str,
     exception: str = "",
     reserved_infrastructure: tuple[str, ...] = DEFAULT_RESERVED_INFRASTRUCTURE,
+    common_family_imports: tuple[str, ...] = (),
 ) -> Path:
     (root / "pyproject.toml").write_text(
         '[project]\nname = "fixture"\nversion = "0.4.0"\n',
@@ -106,6 +137,7 @@ def _write_family_policy(
     )
     policy = root / "architecture.toml"
     reserved = "\n".join(f'  "{scope}",' for scope in reserved_infrastructure)
+    common = "\n".join(f'  "{scope}",' for scope in common_family_imports)
     policy.write_text(
         f"""
 version = 3
@@ -120,6 +152,9 @@ forbidden_outward = [
 ]
 reserved_infrastructure = [
 {reserved}
+]
+common_family_imports = [
+{common}
 ]
 """
         + rules
@@ -781,6 +816,183 @@ allowed_families = []
     assert result.ok
 
 
+def test_registered_family_may_import_exact_common_top_level_module(
+    tmp_path: Path,
+) -> None:
+    alpha = tmp_path / "src" / "archetype" / "alpha" / "contracts.py"
+    errors = tmp_path / "src" / "archetype" / "errors.py"
+    alpha.parent.mkdir(parents=True)
+    errors.parent.mkdir(parents=True, exist_ok=True)
+    alpha.write_text("from archetype.errors import ConflictError\n", encoding="utf-8")
+    errors.write_text("class ConflictError(RuntimeError):\n    pass\n", encoding="utf-8")
+    rules = """
+
+[[top_level_family_rule]]
+name = "alpha"
+consumer = "archetype.alpha"
+allowed_families = []
+"""
+
+    result = checker.audit_repository(
+        _write_family_policy(
+            tmp_path,
+            rules=rules,
+            common_family_imports=("archetype.errors",),
+        ),
+        repo_root=tmp_path,
+    )
+
+    assert result.ok
+
+
+def test_core_may_not_import_common_family_boundary(tmp_path: Path) -> None:
+    alpha = tmp_path / "src" / "archetype" / "alpha" / "contracts.py"
+    core = tmp_path / "src" / "archetype" / "core" / "probe.py"
+    errors = tmp_path / "src" / "archetype" / "errors.py"
+    alpha.parent.mkdir(parents=True)
+    core.parent.mkdir(parents=True)
+    errors.parent.mkdir(parents=True, exist_ok=True)
+    alpha.write_text("value = 1\n", encoding="utf-8")
+    core.write_text("from archetype.errors import ConflictError\n", encoding="utf-8")
+    errors.write_text("class ConflictError(RuntimeError):\n    pass\n", encoding="utf-8")
+    rules = """
+
+[[top_level_family_rule]]
+name = "alpha"
+consumer = "archetype.alpha"
+allowed_families = []
+
+[[package_rule]]
+name = "core-outward"
+consumer = "archetype.core"
+forbidden = [
+  "archetype.app",
+  "archetype.runtime",
+  "archetype.api",
+  "archetype.cli",
+]
+"""
+
+    result = checker.audit_repository(
+        _write_family_policy(
+            tmp_path,
+            rules=rules,
+            common_family_imports=("archetype.errors",),
+        ),
+        repo_root=tmp_path,
+    )
+
+    assert [(violation.rule, violation.target) for violation in result.violations] == [
+        ("package_dependency", "archetype.errors")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("common", "expected"),
+    [
+        (
+            ("archetype.errors", "archetype.errors"),
+            "common_family_imports contains empty or duplicate entries",
+        ),
+        (
+            ("archetype.missing",),
+            "common_family_imports references missing first-party top-level modules",
+        ),
+        (
+            ("archetype.errors.detail",),
+            "common_family_imports has non-top-level scopes",
+        ),
+    ],
+)
+def test_common_family_imports_fail_closed_on_malformed_or_missing_entries(
+    tmp_path: Path,
+    common: tuple[str, ...],
+    expected: str,
+) -> None:
+    alpha = tmp_path / "src" / "archetype" / "alpha" / "contracts.py"
+    errors = tmp_path / "src" / "archetype" / "errors.py"
+    alpha.parent.mkdir(parents=True)
+    errors.parent.mkdir(parents=True, exist_ok=True)
+    alpha.write_text("value = 1\n", encoding="utf-8")
+    errors.write_text("value = 1\n", encoding="utf-8")
+    rules = """
+
+[[top_level_family_rule]]
+name = "alpha"
+consumer = "archetype.alpha"
+allowed_families = []
+"""
+
+    result = checker.audit_repository(
+        _write_family_policy(
+            tmp_path,
+            rules=rules,
+            common_family_imports=common,
+        ),
+        repo_root=tmp_path,
+    )
+
+    assert any(expected in error for error in result.policy_errors)
+
+
+def test_common_family_import_cannot_also_be_a_registered_family(
+    tmp_path: Path,
+) -> None:
+    alpha = tmp_path / "src" / "archetype" / "alpha" / "contracts.py"
+    alpha.parent.mkdir(parents=True)
+    alpha.write_text("value = 1\n", encoding="utf-8")
+    rules = """
+
+[[top_level_family_rule]]
+name = "alpha"
+consumer = "archetype.alpha"
+allowed_families = []
+"""
+
+    result = checker.audit_repository(
+        _write_family_policy(
+            tmp_path,
+            rules=rules,
+            common_family_imports=("archetype.alpha",),
+        ),
+        repo_root=tmp_path,
+    )
+
+    assert (
+        "top-level scopes classified as both family and common import: archetype.alpha"
+        in result.policy_errors
+    )
+
+
+def test_common_family_import_cannot_be_reserved_or_outward(tmp_path: Path) -> None:
+    alpha = tmp_path / "src" / "archetype" / "alpha" / "contracts.py"
+    app = tmp_path / "src" / "archetype" / "app.py"
+    alpha.parent.mkdir(parents=True)
+    alpha.write_text("value = 1\n", encoding="utf-8")
+    app.write_text("value = 1\n", encoding="utf-8")
+    rules = """
+
+[[top_level_family_rule]]
+name = "alpha"
+consumer = "archetype.alpha"
+allowed_families = []
+"""
+
+    result = checker.audit_repository(
+        _write_family_policy(
+            tmp_path,
+            rules=rules,
+            common_family_imports=("archetype.app",),
+        ),
+        repo_root=tmp_path,
+    )
+
+    assert (
+        "top_level_family_policy.common_family_imports overlaps reserved or "
+        "outward scopes: archetype.app" in result.policy_errors
+    )
+
+
 def test_ratified_v0_5_family_dag_is_complete_acyclic_and_exact(tmp_path: Path) -> None:
     """PR-0 fixture: family moves may consume only the ratified final edges."""
 
@@ -799,11 +1011,7 @@ def test_ratified_v0_5_family_dag_is_complete_acyclic_and_exact(tmp_path: Path) 
         "views": ("storage", "world", "graph"),
     }
     package = tmp_path / "src" / "archetype"
-    target_reserved = (
-        *DEFAULT_RESERVED_INFRASTRUCTURE,
-        "archetype.errors",
-        "archetype.wiring",
-    )
+    target_reserved = (*DEFAULT_RESERVED_INFRASTRUCTURE, "archetype.wiring")
     package.mkdir(parents=True)
     (package / "errors.py").write_text(
         "class ArchetypeError(Exception):\n    pass\n",
@@ -845,6 +1053,7 @@ def test_ratified_v0_5_family_dag_is_complete_acyclic_and_exact(tmp_path: Path) 
             tmp_path,
             rules=rules_text,
             reserved_infrastructure=target_reserved,
+            common_family_imports=("archetype.errors",),
         ),
         repo_root=tmp_path,
     )
@@ -1262,6 +1471,51 @@ def test_storage_execution_owner_and_mediated_consumers_pass(tmp_path: Path) -> 
     assert result.ok
 
 
+def test_capability_owner_may_be_canonical_first_party_outside_consumer_scope(
+    tmp_path: Path,
+) -> None:
+    probe = tmp_path / "src" / "archetype" / "app" / "probe.py"
+    probe.parent.mkdir(parents=True, exist_ok=True)
+    probe.write_text("def run(df):\n    return df.collect()\n", encoding="utf-8")
+
+    result = checker.audit_repository(
+        _write_external_storage_capability_policy(tmp_path),
+        repo_root=tmp_path,
+    )
+
+    assert not result.policy_errors
+    assert [
+        (violation.rule, violation.consumer, violation.target) for violation in result.violations
+    ] == [
+        ("capability_ownership", "archetype.app.probe", "collect"),
+    ]
+
+
+def test_capability_owner_must_exist_as_a_first_party_module(tmp_path: Path) -> None:
+    probe = tmp_path / "src" / "archetype" / "app" / "probe.py"
+    probe.parent.mkdir(parents=True, exist_ok=True)
+    probe.write_text("value = 1\n", encoding="utf-8")
+    policy = _write_external_storage_capability_policy(tmp_path)
+    (tmp_path / "src" / "archetype" / "storage" / "service.py").unlink()
+
+    missing = checker.audit_repository(policy, repo_root=tmp_path)
+
+    assert any(
+        "references missing owner module: archetype.storage.service" in error
+        for error in missing.policy_errors
+    )
+
+    external_policy = _write_external_storage_capability_policy(
+        tmp_path,
+        owner="vendor.storage.service",
+    )
+    external = checker.audit_repository(external_policy, repo_root=tmp_path)
+    assert any(
+        "owner vendor.storage.service is not a first-party module" in error
+        for error in external.policy_errors
+    )
+
+
 def test_reassignment_revokes_materialization_proof(tmp_path: Path) -> None:
     probe = tmp_path / "src" / "archetype" / "app" / "probe.py"
     probe.parent.mkdir(parents=True, exist_ok=True)
@@ -1293,6 +1547,27 @@ def test_repository_architecture_policy_passes() -> None:
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "Architecture audit passed" in completed.stdout
+
+
+def test_repository_storage_capability_rule_keeps_canonical_owner() -> None:
+    policy = checker._load_policy(checker.DEFAULT_POLICY)
+    storage_rules = [
+        rule
+        for rule in policy["capability_rule"]
+        if rule.get("name") == "storage-execution-authority"
+    ]
+
+    assert len(storage_rules) == 1
+    assert storage_rules[0]["consumer"] == "archetype.app"
+    assert storage_rules[0]["owner"] == "archetype.storage.service"
+    assert set(storage_rules[0]["owned_attributes"]) == {
+        "collect",
+        "write_iceberg",
+        "current_catalog",
+        "create_table",
+        "create_table_if_not_exists",
+    }
+    assert storage_rules[0]["mediated_attributes"]["to_pylist"] == "materialize"
 
 
 def _write_fragment(policy: Path, name: str, body: str) -> Path:

@@ -29,7 +29,7 @@ def _count_pipeline_execution(value: int) -> int:
 
 
 def _build_session_and_config(tmp_path):
-    from archetype.app.storage.session import configure_session
+    from archetype.storage.session import configure_session
 
     cfg = StorageConfig(uri=str(tmp_path / "store_fail"), namespace="ns")
     session = configure_session(cfg)

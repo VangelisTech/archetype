@@ -14,12 +14,12 @@ archetype.ingestion
   FileIngestionPipeline + stream scanners
 
 archetype.app.ingestion
-  world/run envelope + plain/conditional append selection
+  live storage selection + typed-ingestion workflow bridge
 
 archetype.app.artifacts
   source policy + pipeline configuration + typed index publication
 
-archetype.app.storage
+archetype.storage
   Daft execution + Catalog table registration/read/write + Iceberg retry
 
 archetype.app.missions
@@ -33,9 +33,10 @@ algorithms live separately in `scanners.py`; they stream where the format
 permits it. Neither module can choose
 a catalog, namespace, world, or run.
 
-`IngestionService` adds the application-owned world/run envelope and selects a
-plain or key-conditional append. `StorageService` is the single authority that
-admits terminal Daft execution, registers and resolves tables in
+`IngestionService` selects the live storage configuration and delegates typed
+row publication. `StorageService` is the single substrate authority that owns
+the catalog-derived world/run envelope, extends conditional keys with that
+identity, admits terminal Daft execution, registers and resolves tables in
 `daft.Catalog`, compares schemas, reads and writes Iceberg, and retries
 optimistic commit conflicts.
 
@@ -286,8 +287,9 @@ before any object or catalog row becomes durable.
 
 The common rule is simple: specialized workflows own pre-durability safety;
 `ArtifactService` owns exact file persistence and indexing;
-`IngestionService` owns the world/run envelope and append choice; and
-`StorageService` owns Catalog and terminal Daft execution authority.
+`IngestionService` selects the live storage configuration; and
+`StorageService` owns the world/run envelope, append choice, Catalog, and
+terminal Daft execution authority.
 
 ## 11. Task-anchored artifact context
 

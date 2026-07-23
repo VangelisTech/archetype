@@ -358,29 +358,16 @@ class EvaluationService:
     ) -> _PinnedSnapshot:
         wid = str(world_id)
         effective = self._resolve_storage(wid, storage_config)
-        catalog = self._storage.get_control_catalog(effective)
-        record = await catalog.get_world(wid)
-        if record is None:
-            raise KeyError(f"world {wid} is not recorded in catalog for {effective.uri}")
-        if not record.run_id:
-            raise RuntimeError(f"world {wid} has no recorded run; nothing to evaluate")
-        manifests = await catalog.list_manifests(wid, str(record.run_id))
-        if not manifests:
+        visibility = await self._storage.pin_visibility(effective, wid)
+        if visibility.head_tick is None:
             raise RuntimeError(
                 f"world {wid} has no published visibility to evaluate (step it at least once first)"
             )
-        head = max(manifest.tick for manifest in manifests)
-        visible = await catalog.visible_tokens(wid, str(record.run_id))
-        visibility_tokens = {
-            token for tick, tokens in (visible or {}).items() if tick <= head for token in tokens
-        }
         return _PinnedSnapshot(
-            run_id=str(record.run_id),
-            tick=head,
-            head_tokens=tuple(
-                sorted(manifest.commit_token for manifest in manifests if manifest.tick == head)
-            ),
-            visibility_tokens=tuple(sorted(visibility_tokens)),
+            run_id=visibility.run_id,
+            tick=visibility.head_tick,
+            head_tokens=visibility.head_tokens,
+            visibility_tokens=visibility.visibility_tokens or (),
             storage_config=effective,
         )
 

@@ -20,8 +20,8 @@ from pyarrow.fs import S3FileSystem
 from pyiceberg.catalog.sql import SqlCatalog
 from uuid_utils import UUID, uuid7
 
+from archetype import ArchetypeRuntime, Component
 from archetype.app.container import ServiceContainer
-from archetype.app.storage.service import StorageService
 from archetype.artifacts import ArtifactSource, ArtifactStoreConfig
 from archetype.core.config import StorageBackend, StorageConfig, WorldConfig
 from archetype.ingestion import (
@@ -34,6 +34,7 @@ from archetype.ingestion import (
     ARTIFACT_VIDEO,
 )
 from archetype.missions.trajectories import CLAUDE_TRANSCRIPT_TABLE, ClaudeTranscriptSource
+from archetype.storage.service import StorageService
 
 ACCESS_KEY_ID = os.environ.get("R2_ACCESS_KEY_ID")
 SECRET_ACCESS_KEY = os.environ.get("R2_SECRET_ACCESS_KEY")
@@ -50,6 +51,13 @@ _PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+XfBvAAAAAElFTkSuQmCC"
 )
 
+
+class R2RuntimeProbe(Component):
+    """Small public-runtime payload used by the R2 lifecycle facet."""
+
+    value: int = 0
+
+
 pytestmark = [
     pytest.mark.contract("ingestion.catalog.cold_roundtrip"),
     pytest.mark.asyncio,
@@ -61,6 +69,44 @@ pytestmark = [
         reason="GitHub Actions supplies Cloudflare R2 credentials",
     ),
 ]
+
+
+def _configure_lancedb_r2(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Map the R2 credentials onto the S3 environment consumed by LanceDB."""
+
+    assert ACCESS_KEY_ID is not None
+    assert SECRET_ACCESS_KEY is not None
+    assert API_ENDPOINT is not None
+    for key, value in {
+        "AWS_ACCESS_KEY_ID": ACCESS_KEY_ID,
+        "AWS_SECRET_ACCESS_KEY": SECRET_ACCESS_KEY,
+        "AWS_ENDPOINT": API_ENDPOINT,
+        "AWS_ENDPOINT_URL": API_ENDPOINT,
+        "AWS_DEFAULT_REGION": "auto",
+        "AWS_REGION": "auto",
+    }.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv("AWS_SESSION_TOKEN", raising=False)
+
+
+def _delete_r2_prefix(prefix: str) -> None:
+    """Delete one test-owned R2 prefix after every success or failure."""
+
+    assert prefix.startswith("archetype-ci/")
+    assert API_ENDPOINT is not None
+    assert ACCESS_KEY_ID is not None
+    assert SECRET_ACCESS_KEY is not None
+    assert BUCKET is not None
+    endpoint = urlparse(API_ENDPOINT)
+    filesystem = S3FileSystem(
+        access_key=ACCESS_KEY_ID,
+        secret_key=SECRET_ACCESS_KEY,
+        region="auto",
+        scheme=endpoint.scheme,
+        endpoint_override=endpoint.netloc,
+        force_virtual_addressing=False,
+    )
+    filesystem.delete_dir(f"{BUCKET}/{prefix}")
 
 
 def _catalog(path: Path, warehouse: str) -> SqlCatalog:
@@ -102,6 +148,128 @@ def _io_config() -> IOConfig:
             force_virtual_addressing=False,
         )
     )
+
+
+async def test_public_runtime_round_trips_r2_lifecycle_and_artifact_objects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise every PR-1 R2 verb through the supported public runtime.
+
+    Lifecycle rows use LanceDB directly on R2. Artifact metadata uses the
+    supported local Iceberg factory while content-addressed bytes use R2.
+    The separate test below retains the remote-Iceberg catalog/data proof;
+    this test does not imply that one public world spans both configurations.
+    """
+
+    assert BUCKET is not None
+    identity = uuid7().hex
+    prefix = f"archetype-ci/public-runtime/{identity}"
+    object_root = f"s3://{BUCKET}/{prefix}/objects"
+    lifecycle_storage = StorageConfig(
+        uri=f"s3://{BUCKET}/{prefix}/worlds",
+        namespace=f"runtime_{identity}",
+        backend=StorageBackend.LANCEDB,
+    )
+    artifact_storage = StorageConfig(
+        uri=str(tmp_path / "artifact-index"),
+        namespace=f"artifacts_{identity}",
+        backend=StorageBackend.ICEBERG,
+    )
+    artifact_store = ArtifactStoreConfig(
+        object_uri=object_root,
+        io_config=_io_config(),
+    )
+    artifact_source = tmp_path / "public-runtime.txt"
+    artifact_source.write_text("public runtime persisted this artifact to R2\n", encoding="utf-8")
+    monkeypatch.setenv("ARCHETYPE_CATALOG_DIR", str(tmp_path / "control"))
+    _configure_lancedb_r2(monkeypatch)
+
+    try:
+        async with ArchetypeRuntime(artifact_store=artifact_store) as runtime:
+            source = runtime.world("r2-public-source", storage=lifecycle_storage)
+            entity_id = await source.spawn(R2RuntimeProbe(value=7))
+            await source.step()
+            source_info = await source.info()
+            source_id = str(source.world_id)
+            source_tick = source_info.tick
+            source_rows = (await source.query(R2RuntimeProbe)).to_pylist()
+
+            assert entity_id == 1
+            assert source_tick == 1
+            assert {(row["entity_id"], row["r2runtimeprobe__value"]) for row in source_rows} == {
+                (entity_id, 7)
+            }
+
+            fork = await source.fork("r2-public-fork")
+            fork_entity_id = await fork.spawn(R2RuntimeProbe(value=11))
+            await fork.step()
+            fork_id = str(fork.world_id)
+            fork_rows = (await fork.query(R2RuntimeProbe)).to_pylist()
+
+            assert fork_id != source_id
+            assert fork_entity_id != entity_id
+            assert {
+                (row["entity_id"], row["r2runtimeprobe__value"]) for row in fork_rows
+            }.issuperset({(entity_id, 7), (fork_entity_id, 11)})
+
+            artifact_world = runtime.world("r2-public-artifact", storage=artifact_storage)
+            (reference,) = await artifact_world.ingest_artifacts(
+                ArtifactSource(
+                    source_uri=str(artifact_source),
+                    logical_path="context/public-runtime.txt",
+                )
+            )
+            artifact_world_id = str(artifact_world.world_id)
+            artifact_rows = (await artifact_world.artifacts()).to_pylist()
+
+            assert reference.uri.startswith(f"{object_root}/")
+            assert {
+                (row["artifact_id"], row["logical_path"], row["object_uri"])
+                for row in artifact_rows
+            } == {
+                (
+                    reference.artifact_id,
+                    "context/public-runtime.txt",
+                    reference.uri,
+                )
+            }
+
+        # A new runtime owns no process-local world or LanceDB handles. It must
+        # discover both lifecycle worlds, resume the source, and cold-read the
+        # local artifact index through public handles alone.
+        async with ArchetypeRuntime(artifact_store=artifact_store) as cold_runtime:
+            discovered = await cold_runtime.discover(lifecycle_storage)
+            assert {source_id, fork_id}.issubset({str(info.world_id) for info in discovered})
+
+            resumed = await cold_runtime.resume(source_id, storage=lifecycle_storage)
+            resumed_rows = (await resumed.query(R2RuntimeProbe)).to_pylist()
+            assert {(row["entity_id"], row["r2runtimeprobe__value"]) for row in resumed_rows} == {
+                (entity_id, 7)
+            }
+            assert (await resumed.info()).tick == source_tick
+
+            await resumed.step()
+            assert (await resumed.info()).tick == source_tick + 1
+
+            cold_artifact = cold_runtime.attach(
+                artifact_world_id,
+                name="cold-r2-artifact",
+                storage=artifact_storage,
+            )
+            cold_artifact_rows = (await cold_artifact.artifacts()).to_pylist()
+            assert [
+                (row["artifact_id"], row["logical_path"], row["object_uri"])
+                for row in cold_artifact_rows
+            ] == [
+                (
+                    reference.artifact_id,
+                    "context/public-runtime.txt",
+                    reference.uri,
+                )
+            ]
+    finally:
+        _delete_r2_prefix(prefix)
 
 
 async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
@@ -425,13 +593,4 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
                 cleanup_catalog.drop_table(identifier)
             cleanup_catalog.drop_namespace(namespace)
 
-        endpoint = urlparse(API_ENDPOINT)
-        filesystem = S3FileSystem(
-            access_key=ACCESS_KEY_ID,
-            secret_key=SECRET_ACCESS_KEY,
-            region="auto",
-            scheme=endpoint.scheme,
-            endpoint_override=endpoint.netloc,
-            force_virtual_addressing=False,
-        )
-        filesystem.delete_dir(f"{BUCKET}/{prefix}")
+        _delete_r2_prefix(prefix)

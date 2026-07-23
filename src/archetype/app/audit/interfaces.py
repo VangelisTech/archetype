@@ -12,7 +12,7 @@ from daft import DataFrame
 from uuid_utils import UUID
 
 from archetype.app.models import AuditRow
-from archetype.app.storage.catalog import OutboxRecord
+from archetype.storage.catalog import OutboxRecord
 
 
 @runtime_checkable

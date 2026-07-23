@@ -13,11 +13,11 @@ Two checks that keep the command gate's claim-vs-effect surface honest:
    command admitted to durable scheduling must have an explicit disposition;
    every other command is a direct application operation.
 
-2. **API error taxonomy** — every exception class defined in the app layer's
-   error modules must be mapped by ``api.errors.raise_api_error`` to a
-   non-500 branch (issue #180: ``WorldNotFoundError`` extended
-   ``LookupError``, missed the ``KeyError`` branch, and fell through to the
-   500 fallback while tests stayed green).
+2. **API error taxonomy** — every exception class defined in the application
+   or canonical storage authority must be mapped by
+   ``api.errors.raise_api_error`` to a non-500 branch (issue #180:
+   ``WorldNotFoundError`` extended ``LookupError``, missed the ``KeyError``
+   branch, and fell through to the 500 fallback while tests stayed green).
 
 Run via ``make lint`` (PYTHONPATH=src). Exits non-zero with a specific
 message on any drift.
@@ -140,15 +140,18 @@ def check_command_dispositions() -> list[str]:
 
 
 # ── Check 2: error taxonomy ──────────────────────────────────────────────────
-# The whole archetype.app package is walked for Exception subclasses — a
-# hardcoded module list would fail open the moment errors are defined
-# elsewhere (footgun review on PR #407: app/_catalog.py's four exceptions).
+# The whole archetype.app package and the canonical storage authority are
+# walked for Exception subclasses. A hardcoded module list would fail open the
+# moment errors are defined elsewhere within either governed surface (footgun
+# review on PR #407: app/_catalog.py's four exceptions).
+
+ERROR_SURFACE_PACKAGES = ("archetype.app", "archetype.storage")
 
 # Exceptions that deliberately surface as HTTP 500 for now. Every entry needs
 # a rationale and an issue; a stale entry (class gone or now mapped) fails
 # the audit so the manifest cannot rot.
 INTENTIONAL_UNMAPPED = {
-    "archetype.app.storage.catalog.CatalogSchemaMismatchError": (
+    "archetype.storage.catalog.records.CatalogSchemaMismatchError": (
         "integrity violation intentionally surfaces as 500; decision recorded in #413"
     ),
 }
@@ -179,26 +182,27 @@ def _mapped_exception_bases() -> tuple[type[BaseException], ...]:
     return tuple(bases)
 
 
-def _app_exception_classes() -> dict[str, type[Exception]]:
-    """Every Exception subclass defined anywhere in the archetype.app package."""
+def _owned_exception_classes() -> dict[str, type[Exception]]:
+    """Every Exception subclass defined in a governed API-facing package."""
     import pkgutil
 
-    import archetype.app as app_pkg
-
-    # walk_packages yields children only, never the anchor package itself —
-    # include archetype/app/__init__.py explicitly so an exception defined
-    # there cannot escape the scan.
-    module_names = ["archetype.app"]
-    module_names += [
-        module_info.name
-        for module_info in pkgutil.walk_packages(app_pkg.__path__, "archetype.app.")
-    ]
     classes: dict[str, type[Exception]] = {}
-    for name in module_names:
-        module = importlib.import_module(name)
-        for obj in vars(module).values():
-            if isinstance(obj, type) and issubclass(obj, Exception) and obj.__module__ == name:
-                classes[f"{obj.__module__}.{obj.__name__}"] = obj
+    for package_name in ERROR_SURFACE_PACKAGES:
+        package = importlib.import_module(package_name)
+        # walk_packages yields children only, never the anchor package itself.
+        module_names = [package_name]
+        module_names.extend(
+            module_info.name
+            for module_info in pkgutil.walk_packages(
+                package.__path__,
+                package_name + ".",
+            )
+        )
+        for name in module_names:
+            module = importlib.import_module(name)
+            for obj in vars(module).values():
+                if isinstance(obj, type) and issubclass(obj, Exception) and obj.__module__ == name:
+                    classes[f"{obj.__module__}.{obj.__name__}"] = obj
     return classes
 
 
@@ -208,8 +212,9 @@ def check_error_taxonomy() -> list[str]:
     if not bases:
         return ["could not derive any mapped exception bases from raise_api_error"]
 
-    app_exceptions = _app_exception_classes()
-    for qualname, cls in sorted(app_exceptions.items()):
+    owned_exceptions = _owned_exception_classes()
+
+    for qualname, cls in sorted(owned_exceptions.items()):
         mapped = issubclass(cls, bases)
         declared = qualname in INTENTIONAL_UNMAPPED
         if not mapped and not declared:
@@ -226,7 +231,7 @@ def check_error_taxonomy() -> list[str]:
             )
 
     for qualname in INTENTIONAL_UNMAPPED:
-        if qualname not in app_exceptions:
+        if qualname not in owned_exceptions:
             problems.append(f"INTENTIONAL_UNMAPPED names a class that no longer exists: {qualname}")
     return problems
 

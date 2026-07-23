@@ -17,13 +17,13 @@ from dataclasses import dataclass
 from daft import col
 
 from archetype import ArchetypeRuntime
-from archetype.app.storage.service import StorageService
 from archetype.app.world.service import WorldService
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.core.errors import TickExecutionError
 from archetype.core.hooks import PostTick, PreTick
+from archetype.storage.service import StorageService
 from evals.graders import exact_match, state_check
 from evals.harness import EvalHarness
 from evals.types import GraderResult

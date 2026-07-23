@@ -5,12 +5,17 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from daft import DataFrame
 
-from archetype.app.storage.catalog import ControlCatalog
 from archetype.core.config import CacheConfig, StorageConfig
+from archetype.storage.catalog import ControlCatalog
+
+if TYPE_CHECKING:
+    from archetype.storage.catalog import WorldRecord
+    from archetype.storage.commit import CatalogCommitCoordinator
+    from archetype.storage.service import PinnedVisibility, VisibleWorldRows
 
 
 @runtime_checkable
@@ -34,6 +39,58 @@ class iStorageService(Protocol):
 
     def get_control_catalog(self, storage_config: StorageConfig) -> ControlCatalog:
         """Return the pooled SQLite or remote Durable Object control authority."""
+        ...
+
+    def bind_commit_coordinator(
+        self,
+        storage_config: StorageConfig,
+        *,
+        world_id: str,
+        run_id: str,
+        writer_epoch: int,
+    ) -> CatalogCommitCoordinator:
+        """Construct a coordinator bound to one durable writer identity."""
+        ...
+
+    async def pin_visibility(
+        self,
+        storage_config: StorageConfig,
+        world_id: str,
+        *,
+        run_id: str | None = None,
+        max_tick: int | None = None,
+    ) -> PinnedVisibility:
+        """Capture one immutable physical visibility allowlist."""
+        ...
+
+    async def scan_visible_world_rows(
+        self,
+        storage_config: StorageConfig,
+        world_record: WorldRecord,
+        visibility: PinnedVisibility,
+    ) -> VisibleWorldRows:
+        """Return raw physically visible frames without world interpretation."""
+        ...
+
+    async def append_world_rows(
+        self,
+        storage_config: StorageConfig,
+        world_id: str,
+        table_name: str,
+        rows: DataFrame,
+        *,
+        key_columns: tuple[str, ...] = (),
+    ) -> int:
+        """Stamp the durable world/run envelope and append typed rows."""
+        ...
+
+    async def read_world_rows(
+        self,
+        storage_config: StorageConfig,
+        world_id: str,
+        table_name: str,
+    ) -> DataFrame:
+        """Return a lazy world/run-scoped app-table read."""
         ...
 
     async def get_or_create_store(

@@ -1,0 +1,34 @@
+# Architecture policy fragment: storage.
+# Merged into quality/architecture.toml by scripts/check_architecture.py;
+# fragments may declare only rule/exception arrays, never scalar policy.
+
+[[top_level_family_rule]]
+name = "storage-domain-family"
+consumer = "archetype.storage"
+allowed_families = []
+
+[[capability_rule]]
+name = "storage-execution-authority"
+consumer = "archetype.app"
+owner = "archetype.storage.service"
+owned_attributes = [
+  "collect",
+  "write_iceberg",
+  "current_catalog",
+  "create_table",
+  "create_table_if_not_exists",
+]
+owned_symbols = [
+  "daft.read_iceberg",
+  "pyiceberg.exceptions.CommitFailedException",
+]
+mediated_attributes = { to_pylist = "materialize", to_pydict = "materialize", to_arrow = "materialize", count_rows = "materialize", show = "materialize", iter_rows = "materialize" }
+
+[[module_rule]]
+module = "archetype.storage.service"
+allowed_interfaces = [
+  "archetype.core.interfaces.AppendReceipt",
+  "archetype.core.interfaces.ArchetypeSignature",
+  "archetype.core.interfaces.iAsyncStore",
+]
+allowed_app = []

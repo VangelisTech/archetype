@@ -92,7 +92,8 @@ Repository package ownership is normative:
 | Components, processors, pure DataFrame transforms, transition graphs, and reusable projections | `archetype.<family>` |
 | Supported family value contracts | `archetype.<family>.contracts` or another specifically named family module |
 | Capability-scoped resources and provider adapters implementing a family-owned protocol | A named subpackage of `archetype.<family>` |
-| Durable authority, cross-family orchestration, internal service ports, and concrete application services | `archetype.app.<family>` |
+| Physical storage, control catalogs, commit coordination, and generic durable world/run envelopes | `archetype.storage` |
+| Application workflow authority, cross-family orchestration, internal service ports, and concrete application services | `archetype.app.<family>` |
 | Transport, authentication, application facade, and composition | `archetype.api`, `archetype.app.gateway`, `archetype.app.application`, and `archetype.app.container` |
 
 A top-level domain-family package owns reusable ECS state and pure domain
@@ -111,6 +112,12 @@ family graph must be acyclic. Imports through the `archetype` root facade are
 resolved to the module that owns the exported package or symbol before these
 rules are applied. If its static export map cannot be parsed exactly, the audit
 fails rather than degrading root-facade enforcement.
+
+`archetype.storage` is the reviewed physical-substrate family. It owns storage
+execution, control-catalog implementations and records, physical visibility,
+commit coordination, and the generic durable world/run envelope. Application
+families consume that substrate through the staged `iStorageService` port and
+retain workflow meaning and orchestration.
 
 A reviewed family may own a capability-scoped `Resource` implementation or
 provider adapter when the protocol and lifecycle vocabulary belong to that
@@ -150,26 +157,27 @@ coordination, observation staging, and result projection. Family-package
 exports are deliberate and do not promote a concrete application service to
 the `archetype` root.
 
-The application-authority layout is:
+The current authority layout is:
 
 ```text
-src/archetype/app/
-  application/       RuntimeApplication, its port, and boundary-safe models
-  world/             world lifecycle, mutation, and simulation
-  storage/           stores, control authority, Daft execution and app tables
-  query/             persisted ECS read paths
-  ingestion/         world/run envelopes and append-operation selection
-  artifacts/         file discovery, immutable object storage and media indexes
-  redaction/         pre-durability secret scanning, receipts and quarantine
-  evaluation/        grading orchestration, snapshot pinning and receipt writes
-  commands/          durable ledger, scheduling, dispatch, settlement
-  gateway/           authorization policy boundary
-  audit/             journals, outboxes, projections
-  research/          autoresearch and multi-run research workflows
-  missions/          mission graph and external-I/O composition
-  physical_ai/       batched evaluation and instruction-sweep workflow
-  errors.py          cross-family application error contracts
-  container.py       sole concrete cross-family wiring root
+src/archetype/
+  errors.py          stable shared boundary-error bases
+  storage/           physical rows, catalogs, commits, scans and app tables
+  app/
+    application/     RuntimeApplication, its port, and boundary-safe models
+    world/           world lifecycle, mutation, and simulation
+    query/           persisted ECS read paths
+    ingestion/       live storage selection and typed-ingestion bridge
+    artifacts/       file discovery, immutable object storage and media indexes
+    redaction/       pre-durability secret scanning, receipts and quarantine
+    evaluation/      grading orchestration, snapshot pinning and receipt writes
+    commands/        durable ledger, scheduling, dispatch, settlement
+    gateway/         authorization policy boundary
+    audit/           journals, outboxes, projections
+    research/        autoresearch and multi-run research workflows
+    missions/        mission graph and external-I/O composition
+    physical_ai/     batched evaluation and instruction-sweep workflow
+    container.py     sole concrete cross-family wiring root
 ```
 
 The mission-adjacent cleanup direction is recorded in
@@ -257,8 +265,8 @@ manifest and root/child policy.
 
 ## 5. Core world and application-family ownership
 
-`StorageService` resolves and pools an `iAsyncStore`. It is also the sole
-application authority for terminal Daft execution and app-owned table
+`StorageService` resolves and pools an `iAsyncStore`. It is the canonical
+physical authority for terminal Daft execution and app-owned table
 registration, schema alignment, reads, writes, and optimistic-commit retry.
 `WorldService` owns the world factory and live registry. A world composes one
 querier, updater, system, resource registry, and hook registry. The querier and
@@ -267,13 +275,13 @@ never crosses an application, gateway, runtime, API, or CLI boundary.
 
 | Consumer/family | Responsibility | Allowed app dependencies |
 |---|---|---|
-| Storage | Store and session lifetime; control authority; terminal Daft execution; app-table registration, schema, read/write, and retry | None |
+| Storage | Store and session lifetime; control authority; physical visibility; commit coordination; generic world/run envelope; terminal Daft execution; app-table registration, schema, read/write, and retry | None |
 | World lifecycle | Create, lookup, fork, resume, destroy, live registry | Storage port |
 | Mutation | Mutate a resolved live world | World port |
 | Simulation | Step, run, episode, rollout, and bounded terminal-condition reduction | World and storage ports plus named command-drain and quota-reset callables |
 | Query | Persisted ECS reads, durable discovery, and compatibility history reads | Storage and audit ports |
 | Redaction | Provider-neutral secret scanning, deterministic text redaction, safe receipts and quarantine | None |
-| Ingestion | Add world/run identity and select plain or logical-key-conditional append | Storage and world-coordinate ports |
+| Ingestion | Select live storage configuration and delegate typed publication | Storage and world-coordinate ports |
 | Artifacts | File discovery, metadata scans, immutable content-addressed objects, and common/media indexes | Ingestion, storage and world-coordinate ports |
 | Evaluation | Snapshot pinning, grader contracts, grading, evidence and durable results | Query, ingestion, storage and world-coordinate ports |
 | Commands | Durable admission, order, leasing, dispatch, retry, settlement and dead letters | Control catalog plus world and mutation ports |
@@ -325,7 +333,7 @@ Durability is family-specific rather than one service-level flag:
 | Deferred command outcome | Commit coordinator plus command ledger | Terminal applied outcomes settle atomically with the manifest that makes them visible |
 | Agent Mission dispatch | Mission world tick plus post-tick outbox | A `dispatched` task row is durably visible before any sandbox request leaves the world |
 | Agent Mission acceptance | Mission processors plus world tick | Revision-bound validation and exact-head publication first produce an immutable candidate; a separate critic sandbox stages a complete receipt bound to that candidate's base, head, diff, validator bundle, and policy; only a later task-decision tick accepts, repairs, or exhausts the task |
-| Typed ingestion | `IngestionService` policy plus `StorageService` and Iceberg | The world/run envelope is fixed, the registered schema accepts the rows, and one Iceberg append makes the selected rows visible |
+| Typed ingestion | `IngestionService` workflow plus `StorageService` and Iceberg | Storage resolves and stamps the durable world/run envelope, the registered schema accepts the rows, and one Iceberg append makes the selected rows visible |
 | Artifact ingestion | `ArtifactService` plus `IngestionService` | The immutable object and any media-specific rows are durable before the common `artifact_files` occurrence becomes visible |
 | Coding-agent transcript | Redaction, artifact, and typed-ingestion authorities | Raw narrative never becomes durable; the sanitized artifact is indexed before normalized rows keyed to its `artifact_id` are appended |
 | Evaluation | Evaluation workflow plus `IngestionService` | Subject and grader contract are pinned and the typed evaluation result is appended |
@@ -353,27 +361,39 @@ trusted runtime operations and authorized remote admission may use it. The
 gateway authorizes remote admission and delegates; simulation invokes a named
 commands-family drain callback at the tick boundary.
 
-`IngestionService` owns the world/run envelope and chooses between a plain
-append and a caller-keyed conditional append. `StorageService` owns
-`daft.Catalog` registration, schema comparison, execution, Iceberg writes, and
-conflict retry. `ArtifactService` specializes the ingestion path for files and
-media metadata. Mission-owned `TranscriptIngestionService` composes those
-ports with redaction and the pure missions parser; it creates no third storage
-authority.
+`StorageService` owns the catalog-derived world/run envelope, extends
+caller-keyed conditional keys with that identity, and owns `daft.Catalog`
+registration, schema comparison, execution, Iceberg writes, and conflict
+retry. `IngestionService` selects the live storage configuration and delegates
+that generic substrate work. `ArtifactService` specializes the ingestion path
+for files and media metadata. Mission-owned `TranscriptIngestionService`
+composes those ports with redaction and the pure missions parser; it creates no
+third storage authority.
 Durable external material is described as an artifact, evidence object, typed
 dataset row, or evaluation receipt—never as a universal fact.
 
 ### Storage execution authority
 
 Archetype-owned terminal Daft work in the application layer MUST enter through
-`iStorageService`. `materialize()` admits a lazy plan and returns its completed
-frame. `read_table()` returns a lazy app-table read; `append_table()` and
+the canonical `archetype.storage.StorageService` authority (temporarily
+consumed through the compatibility `iStorageService` port).
+`materialize()` admits a lazy plan and returns its completed frame.
+`read_table()` returns a lazy app-table read; `append_table()` and
 `append_missing()` own registration, schema alignment, materialization, and
-Iceberg commit retry. Other application families may build lazy DataFrame
-plans, but they MUST NOT call Daft collection, Iceberg read/write, or catalog
-table-creation primitives directly. A bounded conversion to Python control
-state may call `to_pylist()` only on a frame first returned by
+Iceberg commit retry. `append_world_rows()` and `read_world_rows()` own the
+generic durable world/run envelope. Other application families may build lazy
+DataFrame plans, but they MUST NOT call Daft collection, Iceberg read/write,
+or catalog table-creation primitives directly. A bounded conversion to Python
+control state may call `to_pylist()` only on a frame first returned by
 `iStorageService.materialize()`.
+
+`pin_visibility()` captures an immutable manifest-token allowlist.
+`scan_visible_world_rows()` applies only physical world/run, manifest-token,
+and optional maximum-tick filters. It MUST NOT resolve entity liveness,
+same-tick active/inactive ties, component ownership, lineage meaning, resume
+tick, or the next entity ID; those remain world-family interpretation.
+Coordinator construction binds the exact `(world_id, run_id, writer_epoch)`
+before tick publication.
 
 The execution gate is reentrant within one task so a cached append can flush
 through the same authority. It coordinates local Daft submissions; it is not a
@@ -387,8 +407,12 @@ The durable control plane is separate from that data plane. The local SQLite
 `ControlCatalog`, or its remote Durable Object implementation, owns world
 identity, writer fences, visibility manifests, deferred commands, and narrow
 workflow leases. Daft Catalog and Iceberg own table metadata, snapshots, and
-data files. Storage composes both authorities without treating either one as a
-replacement for the other.
+data files. Local SQLite may combine directory and per-world control records in
+one database. The remote deployment may separate directory discovery from
+each world's control Durable Object, and Iceberg always commits separately.
+Only the target world's control authority atomically publishes its manifest,
+command settlement, and durable control outbox after data flush; no global
+transaction spans the directory authority and Iceberg.
 
 ## 8. Protocol policy and wiring
 
@@ -510,18 +534,19 @@ resources within the mission family.
 `quality/architecture.toml` contains the scalar policy and application-family
 DAG. Per-family fragments under `quality/architecture.d/` register the
 top-level dispositions for `artifacts`, `evaluation`, `graph`, `missions`,
-`physical_ai`, `projections`, and `research`.
+`physical_ai`, `projections`, `research`, and `storage`.
 `scripts/check_architecture.py` enforces their package direction, protocol
 imports, concrete construction, concrete inheritance, and persistent
 Component placement.
 
 The ingestion/artifact split is complete. `archetype.ingestion` owns the
 reusable `FileIngestionPipeline` and its pure bounded scanners.
-`archetype.app.ingestion.IngestionService` owns world/run enrichment and
-append-operation selection; `StorageService` owns app-table catalog and
-execution authority. `archetype.artifacts` owns `ArtifactSource`, `ArtifactRef`,
-and `ArtifactStoreConfig`; `archetype.app.artifacts` retains the single
-file-ingestion workflow and object-storage authority.
+`archetype.app.ingestion.IngestionService` selects the live storage
+configuration and delegates generic world/run-enveloped rows;
+`archetype.storage.StorageService` owns that envelope plus app-table catalog
+and execution authority. `archetype.artifacts` owns `ArtifactSource`,
+`ArtifactRef`, and `ArtifactStoreConfig`; `archetype.app.artifacts` retains the
+single file-ingestion workflow and object-storage authority.
 
 The evaluation relocation (#557) is complete: `EvalReceipt` lives in
 `archetype.evaluation.components`, the grading value contracts and identity
@@ -572,8 +597,8 @@ implementations of family workflows.
 ### Target family dependency graph
 
 All arrows point from consumer to dependency. `core` has no top-level-family
-dependency. `errors`, `runtime`, `api`, `cli`, and `wiring` are reserved
-surfaces outside the family graph.
+dependency. `errors` is the exact common-family module; `runtime`, `api`,
+`cli`, and `wiring` are reserved surfaces outside the family graph.
 
 | Consumer | Allowed top-level family dependencies |
 |---|---|
@@ -599,10 +624,10 @@ model/handler pairs and is the sole concrete cross-family composition root.
 `runtime` and `api` consume commands plus the family models and views they
 expose; CLI remains an HTTP client except for server startup.
 
-The PR-0 target fixture classifies `errors` and `wiring` as reserved target
-surfaces without changing current-tree import behavior. The slice that creates
-`errors.py` MUST add the explicit common-family import policy in the same
-change, before any moved family imports it.
+PR-1 creates `errors.py`, classifies it through the exact
+`common_family_imports` policy, and retains `app.errors` only as an
+identity-preserving transition shim. `wiring` remains a reserved target
+surface until its owning slice.
 
 The target package ownership is:
 

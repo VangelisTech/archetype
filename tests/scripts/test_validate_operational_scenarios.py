@@ -194,7 +194,7 @@ def test_repository_baselines_are_not_generated_verification_outputs() -> None:
     assert "/operational*-results.d/" in ignore_rules
 
 
-def test_pr0_external_rows_do_not_claim_unenforced_pr_receipts() -> None:
+def test_external_rows_claim_only_the_cadences_and_contracts_their_jobs_enforce() -> None:
     rows = {row["id"]: row for row in load_scenarios()}
     generic_schema = "archetype.operational-results/v1"
 
@@ -203,14 +203,21 @@ def test_pr0_external_rows_do_not_claim_unenforced_pr_receipts() -> None:
     apple = rows["dogfood.sandbox.apple_container"]
 
     assert docker["required_cadence"] == ["release"]
-    assert r2["required_cadence"] == ["release"]
+    assert r2["required_cadence"] == ["pr", "main", "release"]
     assert apple["required_cadence"] == ["release"]
     assert {docker["artifact_schema"], r2["artifact_schema"], apple["artifact_schema"]} == {
         generic_schema
     }
     assert docker["contracts"] == ["missions.sandbox.checkpoint_restore"]
     assert apple["contracts"] == ["missions.sandbox.checkpoint_restore"]
-    assert r2["contracts"] == ["ingestion.catalog.cold_roundtrip"]
+    assert r2["contracts"] == [
+        "runtime.trust.actor_free",
+        "world.fork.lineage",
+        "world.run_identity.cold_resume",
+        "ingestion.catalog.cold_roundtrip",
+        "artifacts.ingestion.occurrence_identity",
+        "artifacts.ingestion.common_visibility",
+    ]
 
 
 def test_example_rows_claim_only_the_behavior_their_receipts_exercise() -> None:

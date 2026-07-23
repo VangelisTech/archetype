@@ -36,7 +36,6 @@ _RUNTIME_ALLOWED_APP = _RUNTIME_TYPE_ONLY_APP | frozenset(
         "archetype.app.container",
         "archetype.app.models",
         "archetype.app.gateway.auth.models",
-        "archetype.app.storage.session",
     }
 )
 
@@ -48,9 +47,6 @@ _API_ALLOWED_APP = frozenset(
         "archetype.app.models",
         "archetype.app.gateway.auth.models",
         "archetype.app.gateway.auth.errors",
-        # The gate's typed error contract; mapping it to HTTP status codes
-        # is the adapter's job (issue #180: WorldNotFoundError -> 404).
-        "archetype.app.errors",
     }
 )
 
@@ -227,7 +223,7 @@ class TestApiAppBoundary:
     ("module", "expected"),
     [
         ("archetype.app.gateway.interfaces", True),
-        ("archetype.app.errors", True),
+        ("archetype.app.errors", False),
         ("archetype.app.evaluation.service", False),
         ("archetype.app.research.service", False),
     ],

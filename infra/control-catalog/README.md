@@ -3,7 +3,7 @@
 The remote control catalog (issue #281): Cloudflare Durable Objects serving
 Archetype's discovery, fencing, manifests, durable commands, evaluation
 execution leases, and transactional outbox across hosts. The
-Python client is `archetype.app.storage.remote_catalog.RemoteControlCatalog`;
+Python client is `archetype.storage.catalog.remote.RemoteControlCatalog`;
 `SqliteControlCatalog` remains the reference implementation and the default.
 
 ## Layout
@@ -33,6 +33,6 @@ Every coordinated world in that process now fences, publishes manifests, and
 settles durable commands through the worker. The Worker returns a configuration error when
 `CATALOG_TOKEN` is absent, and the Python host fails during catalog setup
 when the URL is configured without the matching token. Parity with the
-SQLite reference is enforced by `tests/app/test_remote_catalog_parity.py`
+SQLite reference is enforced by `tests/storage/test_remote_catalog_parity.py`
 (runs the worker under `wrangler dev`); the owner-facing end-to-end proof
 is `scripts/validate_r2_substrate.py`.

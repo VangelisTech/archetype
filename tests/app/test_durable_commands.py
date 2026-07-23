@@ -14,9 +14,9 @@ from uuid_utils import uuid7
 from archetype.app.container import ServiceContainer
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.models import Command, CommandType
-from archetype.app.storage.catalog import CommandConflictError, catalog_path_for
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
+from archetype.storage.catalog import CommandConflictError, catalog_path_for
 
 pytestmark = [
     pytest.mark.contract("commands.identity.idempotent"),

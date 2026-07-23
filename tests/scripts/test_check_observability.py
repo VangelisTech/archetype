@@ -99,6 +99,22 @@ class Probe:
             return None
 """
 
+CONCRETE_SERVICE = """
+class ProbeService:
+    @property
+    def active(self) -> bool:
+        return True
+
+    async def execute(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+    def _internal(self) -> None:
+        return None
+"""
+
 MANIFEST = """
 version = 1
 owner = "probe"
@@ -206,6 +222,21 @@ def _register_top_level_family(root: Path, family: str) -> None:
     )
 
 
+def _review_concrete_service(root: Path, service_name: str) -> None:
+    policy = root / "quality" / "architecture.toml"
+    policy.write_text(
+        policy.read_text(encoding="utf-8")
+        + dedent(
+            f"""
+
+            [concrete_services]
+            types = ["{service_name}"]
+            """
+        ),
+        encoding="utf-8",
+    )
+
+
 def _audit(root: Path):
     return checker.audit_repository(
         manifest_root=root / "quality" / "observability",
@@ -221,6 +252,49 @@ def _assert_rejected(result) -> None:
 def _replace_once(value: str, old: str, new: str) -> str:
     assert value.count(old) == 1
     return value.replace(old, new)
+
+
+def _with_concrete_service_surface(
+    *,
+    surface: str = "archetype.probe.service.ProbeService",
+    replaces: tuple[str, ...] = (),
+    operations: tuple[str, ...] = (
+        "service.ProbeService.active",
+        "service.ProbeService.execute",
+        "service.ProbeService.close",
+    ),
+) -> str:
+    replacement_rows = (
+        "replaces = [\n" + "".join(f'  "{protocol}",\n' for protocol in replaces) + "]\n"
+        if replaces
+        else ""
+    )
+    manifest = _replace_once(
+        MANIFEST,
+        'family = "probe"\n',
+        (
+            'family = "probe"\n\n'
+            "[[concrete_operation_surface]]\n"
+            f'qualified_scope = "{surface}"\n'
+            f"{replacement_rows}"
+        ),
+    )
+    encoded = "".join(f'  "{operation}",\n' for operation in operations)
+    return _replace_once(manifest, "operations = [\n", "operations = [\n" + encoded)
+
+
+def _write_concrete_service_fixture(
+    root: Path,
+    manifest: str,
+    *,
+    reviewed_name: str | None = "ProbeService",
+    interfaces: str = INTERFACES,
+) -> None:
+    _write_fixture(root, manifest=manifest, interfaces=interfaces)
+    _register_top_level_family(root, "probe")
+    if reviewed_name is not None:
+        _review_concrete_service(root, reviewed_name)
+    _write_source_module(root, "probe/service.py", CONCRETE_SERVICE)
 
 
 def _with_metric_claims(manifest: str, metric_name: str, labels: tuple[str, ...]) -> str:
@@ -412,6 +486,163 @@ def test_unregistered_top_level_protocol_is_not_a_family_operation(
     assert result.ok, result.violations + result.policy_errors
     assert result.protocols_scanned == 2
     assert result.operations_scanned == 3
+
+
+def test_reviewed_concrete_service_can_own_an_exact_operation_surface(
+    tmp_path: Path,
+) -> None:
+    _write_concrete_service_fixture(tmp_path, _with_concrete_service_surface())
+
+    result = _audit(tmp_path)
+
+    assert result.ok, result.violations + result.policy_errors
+    assert result.protocols_scanned == 2
+    assert result.operations_scanned == 6
+
+
+def test_reviewed_concrete_service_can_explicitly_replace_a_matching_protocol(
+    tmp_path: Path,
+) -> None:
+    matching_protocol = """
+    from typing import Protocol
+
+    class iProbe(Protocol):
+        @property
+        def active(self) -> bool: ...
+
+        async def execute(self) -> None: ...
+
+        def close(self) -> None: ...
+    """
+    manifest = _with_concrete_service_surface(replaces=("interfaces.iProbe",))
+    manifest = manifest.replace('  "interfaces.iProbe.enabled",\n', "")
+    manifest = manifest.replace('  "interfaces.iProbe.run",\n', "")
+    _write_concrete_service_fixture(
+        tmp_path,
+        manifest,
+        interfaces=matching_protocol,
+    )
+
+    result = _audit(tmp_path)
+
+    assert result.ok, result.violations + result.policy_errors
+    assert result.protocols_scanned == 2
+    assert result.operations_scanned == 4
+
+
+def test_concrete_service_surface_rejects_a_protocol(tmp_path: Path) -> None:
+    protocol_service = """
+    from typing import Protocol
+
+    class ProbeService(Protocol):
+        def execute(self) -> None: ...
+    """
+    _write_fixture(tmp_path, manifest=_with_concrete_service_surface(operations=()))
+    _register_top_level_family(tmp_path, "probe")
+    _review_concrete_service(tmp_path, "ProbeService")
+    _write_source_module(tmp_path, "probe/service.py", protocol_service)
+
+    result = _audit(tmp_path)
+
+    _assert_rejected(result)
+    assert any(
+        "must select a concrete service, not a Protocol" in error for error in result.policy_errors
+    )
+
+
+@pytest.mark.parametrize(
+    ("replacement", "expected_error"),
+    [
+        ("interfaces.MissingPort", "references unknown Protocol surface"),
+        ("interfaces.iProbe", "does not exactly match concrete service operations"),
+    ],
+    ids=["unknown-protocol", "operation-mismatch"],
+)
+def test_concrete_service_protocol_replacement_is_fail_closed(
+    tmp_path: Path,
+    replacement: str,
+    expected_error: str,
+) -> None:
+    _write_concrete_service_fixture(
+        tmp_path,
+        _with_concrete_service_surface(replaces=(replacement,)),
+    )
+
+    result = _audit(tmp_path)
+
+    _assert_rejected(result)
+    assert any(expected_error in error for error in result.policy_errors)
+
+
+@pytest.mark.parametrize(
+    ("manifest", "reviewed_name", "expected_error"),
+    [
+        (
+            _with_concrete_service_surface(
+                surface="archetype.probe.service.MissingService",
+                operations=("service.MissingService.execute",),
+            ),
+            "MissingService",
+            "unknown concrete operation surface",
+        ),
+        (
+            _with_concrete_service_surface(),
+            None,
+            "is not a reviewed concrete service",
+        ),
+        (
+            _with_concrete_service_surface(
+                operations=(
+                    "service.ProbeService.active",
+                    "service.ProbeService.execute",
+                    "service.ProbeService.close",
+                    "service.ProbeService.missing",
+                )
+            ),
+            "ProbeService",
+            "phantom disposition for probe:service.ProbeService.missing",
+        ),
+        (
+            _with_concrete_service_surface(
+                operations=(
+                    "service.ProbeService.active",
+                    "service.ProbeService.execute",
+                    "service.ProbeService.close",
+                    "service.ProbeService.close",
+                )
+            ),
+            "ProbeService",
+            "must not contain duplicates",
+        ),
+        (
+            _with_concrete_service_surface(
+                operations=(
+                    "service.ProbeService.active",
+                    "service.ProbeService.execute",
+                )
+            ),
+            "ProbeService",
+            "missing disposition for probe:service.ProbeService.close",
+        ),
+    ],
+    ids=["unknown", "non-service", "phantom", "duplicate", "missing"],
+)
+def test_concrete_service_operation_surfaces_fail_closed(
+    tmp_path: Path,
+    manifest: str,
+    reviewed_name: str | None,
+    expected_error: str,
+) -> None:
+    _write_concrete_service_fixture(
+        tmp_path,
+        manifest,
+        reviewed_name=reviewed_name,
+    )
+
+    result = _audit(tmp_path)
+
+    _assert_rejected(result)
+    assert any(expected_error in error for error in result.policy_errors)
 
 
 @pytest.mark.parametrize(

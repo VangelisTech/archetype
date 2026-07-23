@@ -34,7 +34,6 @@ from archetype.app.query.service import QueryService
 from archetype.app.redaction.interfaces import iRedactionService
 from archetype.app.redaction.service import RedactionService
 from archetype.app.research.service import AutoResearchService
-from archetype.app.storage.service import StorageService
 from archetype.app.world.mutation import MutationService
 from archetype.app.world.service import WorldService
 from archetype.app.world.simulation import SimulationService
@@ -42,6 +41,8 @@ from archetype.artifacts.contracts import ArtifactStoreConfig
 from archetype.core.config import StorageConfig
 from archetype.missions.contracts import AgentMissionConfig
 from archetype.missions.sandboxes.service import SandboxService
+from archetype.storage.config import ControlCatalogConfig
+from archetype.storage.service import StorageService
 
 
 class ServiceContainer:
@@ -70,7 +71,13 @@ class ServiceContainer:
 
         # Leaf services
         self._owns_storage_service = storage_service is None
-        self.storage_service = storage_service if storage_service is not None else StorageService()
+        self.storage_service = (
+            storage_service
+            if storage_service is not None
+            else StorageService(
+                control_catalog_config=ControlCatalogConfig.from_env(),
+            )
+        )
         self.redaction_service = (
             redaction_service if redaction_service is not None else RedactionService()
         )

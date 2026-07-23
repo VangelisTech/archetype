@@ -21,7 +21,7 @@ factory: a local Iceberg warehouse with SQLite-backed PyIceberg metadata.
 
 ```python
 from archetype.core.config import StorageConfig, StorageBackend
-from archetype.app.storage.service import StorageService
+from archetype.storage import StorageService
 
 storage = StorageConfig(
     uri="./my_data",
@@ -62,6 +62,34 @@ separate PyIceberg metadata database. A managed deployment can independently
 replace the first with the Durable Object control catalog and the second with a
 caller-configured catalog attached to Daft.
 
+The local implementation can place world discovery, per-world control state,
+commands, manifests, evaluations, and outbox rows in one SQLite database. That
+layout is not a distributed transaction promise. In the remote topology,
+directory discovery may use a directory Durable Object, each world's manifest,
+command settlement, and control-outbox append share that world's control
+authority, and Iceberg commits data separately. The atomic control transaction
+runs only after the data flush has completed.
+
+### Control-catalog bootstrap
+
+`ControlCatalogConfig` is an immutable configuration snapshot. Ordinary
+storage operations never reread environment variables. The application
+composition root captures `ARCHETYPE_CATALOG_DIR`,
+`ARCHETYPE_CONTROL_CATALOG_URL`, and
+`ARCHETYPE_CONTROL_CATALOG_TOKEN` once when it constructs its owned
+`StorageService`:
+
+```python
+from archetype.storage import ControlCatalogConfig, StorageService
+
+catalog_config = ControlCatalogConfig.from_env()
+storage_service = StorageService(control_catalog_config=catalog_config)
+```
+
+A remote URL without a token fails during bootstrap. Passing an explicit
+`ControlCatalogConfig` is the deterministic choice for tests and embedded
+hosts; later environment changes do not alter the already-constructed service.
+
 ### Managed and remote Iceberg
 
 Archetype does not infer a remote catalog from environment variables and does
@@ -72,7 +100,7 @@ that session at the composition root:
 ```python
 from daft.session import Session
 from archetype.app.container import ServiceContainer
-from archetype.app.storage.service import StorageService
+from archetype.storage import StorageService
 
 session = Session()
 session.attach_catalog(configured_catalog)
@@ -248,7 +276,7 @@ storage = StorageConfig(
 ## Application Daft execution authority
 
 `StorageService` is the sole terminal Daft execution authority for application
-families. It exposes four narrow operations:
+families. Its narrow substrate operations include:
 
 | Operation | Contract |
 |---|---|
@@ -256,6 +284,16 @@ families. It exposes four narrow operations:
 | `read_table(config, name)` | Resolve an existing registered app table and return a lazy Iceberg read |
 | `append_table(config, name, rows)` | Register or schema-check the table, materialize the producer once, and append all rows |
 | `append_missing(config, name, rows, key_columns=...)` | Register or schema-check the table, anti-join visible keys, and append only missing rows |
+| `pin_visibility(config, world_id, ...)` | Capture an immutable manifest-token allowlist for one world/run segment |
+| `scan_visible_world_rows(config, record, visibility)` | Return raw physical signature-table frames admitted by that pin |
+| `append_world_rows(config, world_id, name, rows, ...)` | Resolve and stamp the catalog-owned world/run envelope before append |
+| `read_world_rows(config, world_id, name)` | Return a lazy application-table read scoped to the durable world/run |
+| `bind_commit_coordinator(config, world_id=..., run_id=..., writer_epoch=...)` | Construct a coordinator bound to one exact durable writer identity |
+
+The physical scan deliberately does not decide entity liveness, resolve
+same-tick active/inactive ties, load component classes, interpret lineage,
+choose a resumed tick, or allocate the next entity ID. Those are world-family
+semantics layered over the raw visible frames.
 
 The service uses one reentrant execution gate for terminal plans and for
 appends made by its pooled ECS stores. Reentrancy lets a cached-store append
@@ -393,6 +431,7 @@ Pass `CacheConfig` through runtime/world creation or `StorageService.get_or_crea
 
 - Store (Iceberg): `src/archetype/core/aio/async_store.py`
 - Store (LanceDB): `src/archetype/core/storage/lancedb.py`
-- Storage service/builders: `src/archetype/app/storage/service.py`
+- Storage service/builders: `src/archetype/storage/service.py`
+- Durable catalog contract and implementations: `src/archetype/storage/catalog/`
+- Storage bootstrap configuration: `src/archetype/storage/config.py`
 - Cached store: `src/archetype/core/aio/async_cached_store.py`
-- Storage service: `src/archetype/app/storage/service.py`

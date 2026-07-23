@@ -21,11 +21,11 @@ from uuid_utils import uuid7
 
 from archetype.app.container import ServiceContainer
 from archetype.app.gateway.auth.models import ActorCtx
-from archetype.app.storage.catalog import SqliteControlCatalog
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
 from archetype.core.interfaces import StaleWriterError
 from archetype.evaluation.contracts import GraderContract, Outcome
+from archetype.storage.catalog import SqliteControlCatalog
 
 
 class ProcessReading(Component):

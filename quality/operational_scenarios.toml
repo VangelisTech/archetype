@@ -76,7 +76,7 @@ owner = "world"
 owner_paths = [
   "src/archetype/runtime",
   "src/archetype/app/world",
-  "src/archetype/app/storage",
+  "src/archetype/storage",
 ]
 source_path = "examples/03_time_travel.py"
 source_command = ["python", "examples/03_time_travel.py"]
@@ -199,7 +199,7 @@ required_cadence = ["pr", "main", "release"]
 id = "example.09_cloud_storage"
 kind = "example"
 owner = "storage"
-owner_paths = ["src/archetype/app/storage", "src/archetype/runtime"]
+owner_paths = ["src/archetype/storage", "src/archetype/runtime"]
 source_path = "examples/09_cloud_storage.py"
 source_command = ["python", "examples/09_cloud_storage.py", "--smoke-local"]
 required_extras = []
@@ -449,13 +449,13 @@ id = "dogfood.storage.r2"
 kind = "dogfood"
 owner = "storage"
 owner_paths = [
-  "src/archetype/app/storage",
+  "src/archetype/storage",
   "src/archetype/app/artifacts",
   "src/archetype/runtime",
   "tests/infrastructure",
 ]
 source_path = "tests/infrastructure/test_r2_artifact_context.py"
-source_command = ["make", "test-infra"]
+source_command = ["pytest", "-q", "tests/infrastructure/test_r2_artifact_context.py"]
 required_extras = []
 tier = 5
 applicability = ["source"]
@@ -469,14 +469,19 @@ prerequisites = [
 missing_prerequisite = "not_run"
 semantic_oracle = { kind = "pytest", ref = "tests/infrastructure/test_r2_artifact_context.py" }
 contracts = [
+  "runtime.trust.actor_free",
+  "world.fork.lineage",
+  "world.run_identity.cold_resume",
   "ingestion.catalog.cold_roundtrip",
+  "artifacts.ingestion.occurrence_identity",
+  "artifacts.ingestion.common_visibility",
 ]
 cleanup_policy = "remote_prefix"
 artifact_policy = "redacted_receipt"
 artifact_schema = "archetype.operational-results/v1"
-# PR-0 retains the existing R2 substrate job. The full public-runtime scenario
-# and its retained receipt become blocking in the storage slice.
-required_cadence = ["release"]
+# The PR job retains the independent physical retry/visibility test once, then
+# runs this public-runtime scenario once through the receipt-owning runner.
+required_cadence = ["pr", "main", "release"]
 
 [scenario.workflow]
 path = ".github/workflows/python-tests.yml"

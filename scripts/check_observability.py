@@ -765,6 +765,112 @@ def _registered_top_level_family_scopes(
     return frozenset(scopes)
 
 
+def _reviewed_concrete_service_types(
+    repo_root: Path,
+    result: AuditResult,
+) -> frozenset[str]:
+    """Read the architecture-reviewed concrete service type registry."""
+
+    policy_path = repo_root / "quality" / "architecture.toml"
+    if not policy_path.is_file():
+        return frozenset()
+    try:
+        document = tomllib.loads(policy_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        # The family-registry loader reports the canonical parse failure.
+        return frozenset()
+
+    table = document.get("concrete_services", {})
+    if not isinstance(table, dict):
+        result.policy_errors.append("quality/architecture.toml.concrete_services must be a table")
+        return frozenset()
+    values = table.get("types", [])
+    if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+        result.policy_errors.append(
+            "quality/architecture.toml.concrete_services.types must be an array of strings"
+        )
+        return frozenset()
+    if len(values) != len(set(values)):
+        result.policy_errors.append(
+            "quality/architecture.toml.concrete_services.types must not contain duplicates"
+        )
+    invalid = sorted(
+        value for value in values if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value) is None
+    )
+    if invalid:
+        result.policy_errors.append(
+            "quality/architecture.toml.concrete_services.types contains invalid class names: "
+            + ", ".join(invalid)
+        )
+    return frozenset(values) - set(invalid)
+
+
+def _concrete_surface_operations(
+    surface: str,
+    *,
+    owner: str,
+    units: list[SourceUnit],
+    registered_family_scopes: frozenset[str],
+    reviewed_concrete_services: frozenset[str],
+    label: str,
+    errors: list[str],
+) -> set[str]:
+    """Resolve one explicitly selected, architecture-reviewed service class."""
+
+    module, separator, class_name = surface.rpartition(".")
+    if (
+        not separator
+        or re.fullmatch(r"archetype(?:\.[A-Za-z_][A-Za-z0-9_]*)+", module) is None
+        or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", class_name) is None
+    ):
+        errors.append(f"{label} must be a fully qualified first-party class")
+        return set()
+
+    family_scope = f"archetype.{owner}"
+    if family_scope not in registered_family_scopes:
+        errors.append(f"{label} requires registered top-level family owner {family_scope!r}")
+        return set()
+    if module != family_scope and not module.startswith(family_scope + "."):
+        errors.append(f"{label} must belong to owner family {family_scope!r}: {surface}")
+        return set()
+    if class_name not in reviewed_concrete_services:
+        errors.append(f"{label} is not a reviewed concrete service: {surface}")
+        return set()
+
+    matching_units = [unit for unit in units if unit.module == module]
+    matching_classes = [
+        node
+        for unit in matching_units
+        for node in unit.tree.body
+        if isinstance(node, ast.ClassDef) and node.name == class_name
+    ]
+    if len(matching_classes) != 1:
+        errors.append(f"{label} references unknown concrete operation surface: {surface}")
+        return set()
+
+    service_class = matching_classes[0]
+    unit = matching_units[0]
+    if _is_protocol(service_class, unit.bindings):
+        errors.append(f"{label} must select a concrete service, not a Protocol: {surface}")
+        return set()
+
+    public_members = [
+        member.name
+        for member in service_class.body
+        if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and not member.name.startswith("_")
+    ]
+    if len(public_members) != len(set(public_members)):
+        errors.append(f"{label} surface defines duplicate public operations: {surface}")
+        return set()
+    if not public_members:
+        errors.append(f"{label} surface has no public operations: {surface}")
+        return set()
+
+    relative_surface = surface.removeprefix(family_scope + ".")
+    return {f"{relative_surface}.{member}" for member in public_members}
+
+
 def _assignment(tree: ast.Module, name: str) -> ast.AST | None:
     for node in tree.body:
         if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
@@ -991,9 +1097,14 @@ def _load_manifests(
     vocabulary: Vocabulary,
     protocols: dict[str, set[str]],
     callable_paths: dict[str, str],
+    units: list[SourceUnit],
+    registered_family_scopes: frozenset[str],
+    reviewed_concrete_services: frozenset[str],
     result: AuditResult,
 ) -> ManifestState:
     state = ManifestState()
+    expected_operations = {family: set(operations) for family, operations in protocols.items()}
+    replaced_protocol_operations: dict[str, set[str]] = defaultdict(set)
     paths = sorted(manifest_root.glob("*.toml")) if manifest_root.is_dir() else []
     if not paths:
         result.policy_errors.append(f"no observability manifests found under {manifest_root}")
@@ -1019,8 +1130,114 @@ def _load_manifests(
         if path.stem != owner:
             local_errors.append(f"{relative} filename must match owner {owner!r}")
 
+        concrete_surfaces = document.get("concrete_operation_surface", [])
+        if not isinstance(concrete_surfaces, list) or any(
+            not isinstance(row, dict) for row in concrete_surfaces
+        ):
+            local_errors.append(f"{relative}.concrete_operation_surface must be an array of tables")
+            concrete_surfaces = []
+        seen_concrete_surfaces: set[str] = set()
+        for index, row in enumerate(concrete_surfaces):
+            label = f"{relative}.concrete_operation_surface[{index}]"
+            surface = _nonblank(
+                row.get("qualified_scope"),
+                f"{label}.qualified_scope",
+                local_errors,
+            )
+            replacements = _string_array(
+                row.get("replaces", []),
+                f"{label}.replaces",
+                local_errors,
+                required=False,
+            )
+            if surface in seen_concrete_surfaces:
+                local_errors.append(
+                    f"{relative}.concrete_operation_surface contains duplicate "
+                    f"qualified_scope {surface!r}"
+                )
+            seen_concrete_surfaces.add(surface)
+            operations = _concrete_surface_operations(
+                surface,
+                owner=owner,
+                units=units,
+                registered_family_scopes=registered_family_scopes,
+                reviewed_concrete_services=reviewed_concrete_services,
+                label=f"{label}.qualified_scope",
+                errors=local_errors,
+            )
+
+            concrete_member_names = {operation.rsplit(".", 1)[-1] for operation in operations}
+            replacement_operations: set[str] = set()
+            replacements_valid = bool(operations)
+            for replacement in replacements:
+                if (
+                    re.fullmatch(
+                        r"(?:[A-Za-z_][A-Za-z0-9_]*\.)+[A-Za-z_][A-Za-z0-9_]*",
+                        replacement,
+                    )
+                    is None
+                ):
+                    local_errors.append(
+                        f"{label}.replaces must identify relative Protocol classes: {replacement!r}"
+                    )
+                    replacements_valid = False
+                    continue
+                matched = {
+                    operation
+                    for operation in protocols.get(owner, set())
+                    if operation.startswith(replacement + ".")
+                }
+                if not matched or any(
+                    "." in operation.removeprefix(replacement + ".") for operation in matched
+                ):
+                    local_errors.append(
+                        f"{label}.replaces references unknown Protocol surface: {replacement}"
+                    )
+                    replacements_valid = False
+                    continue
+                already_replaced = matched & replaced_protocol_operations[owner]
+                if already_replaced:
+                    local_errors.append(
+                        f"{label}.replaces duplicates an earlier Protocol replacement: "
+                        + ", ".join(sorted(already_replaced))
+                    )
+                    replacements_valid = False
+                    continue
+                protocol_member_names = {
+                    operation.removeprefix(replacement + ".") for operation in matched
+                }
+                if protocol_member_names != concrete_member_names:
+                    local_errors.append(
+                        f"{label}.replaces {replacement!r} does not exactly match "
+                        "concrete service operations: "
+                        f"protocol_only={sorted(protocol_member_names - concrete_member_names)!r}, "
+                        f"concrete_only={sorted(concrete_member_names - protocol_member_names)!r}"
+                    )
+                    replacements_valid = False
+                    continue
+                replacement_operations.update(matched)
+
+            if replacements and replacements_valid:
+                expected_operations.setdefault(owner, set()).difference_update(
+                    replacement_operations
+                )
+                replaced_protocol_operations[owner].update(replacement_operations)
+                result.operations_scanned -= len(replacement_operations)
+
+            existing = expected_operations.get(owner, set())
+            overlap = sorted(existing & operations)
+            if overlap:
+                local_errors.append(
+                    f"{label}.qualified_scope duplicates discovered operations: "
+                    + ", ".join(overlap)
+                )
+            new_operations = operations - existing
+            if new_operations:
+                expected_operations.setdefault(owner, set()).update(new_operations)
+                result.operations_scanned += len(new_operations)
+
         family_value = document.get("family")
-        if owner in protocols:
+        if owner in expected_operations:
             if family_value != owner:
                 local_errors.append(f"{relative}.family must equal {owner!r}")
         elif family_value is not None:
@@ -1032,9 +1249,9 @@ def _load_manifests(
         ):
             local_errors.append(f"{relative}.disposition must be an array of tables")
             dispositions = []
-        if dispositions and owner not in protocols:
+        if dispositions and owner not in expected_operations:
             local_errors.append(
-                f"{relative}.disposition is allowed only for a discovered protocol family"
+                f"{relative}.disposition is allowed only for a discovered operation family"
             )
         for index, row in enumerate(dispositions):
             label = f"{relative}.disposition[{index}]"
@@ -1165,13 +1382,13 @@ def _load_manifests(
                 local_errors.append(f"duplicate legacy exception key: {key!r}")
             state.legacy[key] = {**row, "_label": label}
 
-        if owner not in protocols and not workflows and not hosts and not legacy_rows:
+        if owner not in expected_operations and not workflows and not hosts and not legacy_rows:
             local_errors.append(
                 f"{relative} must own a real workflow, host callable, or legacy exception"
             )
         result.policy_errors.extend(local_errors)
 
-    for family, expected in sorted(protocols.items()):
+    for family, expected in sorted(expected_operations.items()):
         declared = state.operations.get(family, {})
         if family not in seen_owners:
             result.policy_errors.append(f"missing observability manifest for family {family!r}")
@@ -2277,6 +2494,7 @@ def audit_repository(
     source_root, units = _parse_sources(root, result)
     vocabulary = _load_vocabulary(root, result)
     registered_family_scopes = _registered_top_level_family_scopes(root, result)
+    reviewed_concrete_services = _reviewed_concrete_service_types(root, result)
     protocols = _protocol_operations(
         units,
         source_root,
@@ -2290,6 +2508,9 @@ def audit_repository(
         vocabulary,
         protocols,
         callable_paths,
+        units,
+        registered_family_scopes,
+        reviewed_concrete_services,
         result,
     )
     findings, emissions = _analyze_sources(units, vocabulary, state.hosts)

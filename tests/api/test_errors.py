@@ -12,15 +12,28 @@ import pytest
 from fastapi import HTTPException
 
 from archetype.api.errors import raise_api_error
+from archetype.app import errors as compatibility_errors
 from archetype.app.audit.service import AuditBackpressureError
-from archetype.app.errors import AvailabilityError, ConflictError, PayloadRejectedError
 from archetype.app.redaction import SecretQuarantineError
-from archetype.app.storage.catalog import (
+from archetype.core.errors import TickExecutionError, TickFailure
+from archetype.errors import (
+    AvailabilityError,
+    ConflictError,
+    PayloadRejectedError,
+    WorldNotFoundError,
+)
+from archetype.storage.catalog import (
     CatalogConflictError,
     CatalogSchemaMismatchError,
     SqliteControlCatalog,
 )
-from archetype.core.errors import TickExecutionError, TickFailure
+
+
+def test_app_error_shim_preserves_canonical_class_identity() -> None:
+    assert compatibility_errors.AvailabilityError is AvailabilityError
+    assert compatibility_errors.ConflictError is ConflictError
+    assert compatibility_errors.PayloadRejectedError is PayloadRejectedError
+    assert compatibility_errors.WorldNotFoundError is WorldNotFoundError
 
 
 @pytest.mark.parametrize(

@@ -30,23 +30,6 @@ composition_roots = [
   "archetype.runtime.runtime",
 ]
 
-[[capability_rule]]
-name = "storage-execution-authority"
-consumer = "archetype.app"
-owner = "archetype.app.storage.service"
-owned_attributes = [
-  "collect",
-  "write_iceberg",
-  "current_catalog",
-  "create_table",
-  "create_table_if_not_exists",
-]
-owned_symbols = [
-  "daft.read_iceberg",
-  "pyiceberg.exceptions.CommitFailedException",
-]
-mediated_attributes = { to_pylist = "materialize", to_pydict = "materialize", to_arrow = "materialize", count_rows = "materialize", show = "materialize", iter_rows = "materialize" }
-
 [top_level_family_policy]
 forbidden_outward = [
   "archetype.app",
@@ -65,14 +48,15 @@ reserved_infrastructure = [
   "archetype.core",
   "archetype.runtime",
 ]
+common_family_imports = ["archetype.errors"]
 
 # Every first-party top-level package or module is classified above or
 # registered as a domain family in quality/architecture.d/<family>.toml.
-# Domain families may import core and themselves implicitly. Every reviewed
-# family-to-family edge must name the exact lower family in that family's
-# fragment, and the complete merged graph must remain acyclic. Fragments hold
-# each family's [[top_level_family_rule]] and [[exception]] blocks so two
-# family changes never edit the same file; scalar policy stays here.
+# Domain families may import core, exact common-family modules, and themselves
+# implicitly. Every reviewed family-to-family edge must name the exact lower
+# family in that family's fragment, and the complete merged graph must remain
+# acyclic. Fragments hold each family's rule and exception arrays so two family
+# changes never edit the same file; scalar policy stays here.
 
 [[package_rule]]
 name = "core-does-not-import-outward"
@@ -99,20 +83,11 @@ forbidden = [
 # This is the executable dependency DAG represented by the container wiring.
 
 [[family_rule]]
-name = "storage-family"
-consumer = "archetype.app.storage"
-allowed_app = [
-  "archetype.app.storage",
-  "archetype.app.errors",
-  "archetype.app.limits",
-]
-
-[[family_rule]]
 name = "world-family"
 consumer = "archetype.app.world"
 allowed_app = [
   "archetype.app.world",
-  "archetype.app.storage",
+  "archetype.app.storage.interfaces",
   "archetype.app.models",
 ]
 
@@ -121,9 +96,8 @@ name = "audit-family"
 consumer = "archetype.app.audit"
 allowed_app = [
   "archetype.app.audit",
-  "archetype.app.storage",
+  "archetype.app.storage.interfaces",
   "archetype.app.models",
-  "archetype.app.errors",
 ]
 
 [[family_rule]]
@@ -131,7 +105,7 @@ name = "query-family"
 consumer = "archetype.app.query"
 allowed_app = [
   "archetype.app.query",
-  "archetype.app.storage",
+  "archetype.app.storage.interfaces",
   "archetype.app.audit.interfaces",
   "archetype.app.models",
 ]
@@ -151,7 +125,7 @@ name = "ingestion-family"
 consumer = "archetype.app.ingestion"
 allowed_app = [
   "archetype.app.ingestion",
-  "archetype.app.storage",
+  "archetype.app.storage.interfaces",
   "archetype.app.world.interfaces",
 ]
 
@@ -160,7 +134,6 @@ name = "redaction-family"
 consumer = "archetype.app.redaction"
 allowed_app = [
   "archetype.app.redaction",
-  "archetype.app.errors",
 ]
 
 [[family_rule]]
@@ -217,9 +190,7 @@ consumer = "archetype.app.commands"
 allowed_app = [
   "archetype.app.commands",
   "archetype.app.world.interfaces",
-  "archetype.app.storage.catalog",
   "archetype.app.models",
-  "archetype.app.errors",
 ]
 
 [[family_rule]]
@@ -248,20 +219,6 @@ allowed_app = [
   "archetype.app.audit.interfaces",
   "archetype.app.audit.models",
   "archetype.app.models",
-  "archetype.app.errors",
-]
-
-[[module_rule]]
-module = "archetype.app.storage.service"
-allowed_interfaces = [
-  "archetype.core.interfaces.AppendReceipt",
-  "archetype.core.interfaces.ArchetypeSignature",
-  "archetype.core.interfaces.iAsyncStore",
-]
-allowed_app = [
-  "archetype.app.storage.catalog",
-  "archetype.app.storage.remote_catalog",
-  "archetype.app.storage.session",
 ]
 
 [[module_rule]]
@@ -272,9 +229,6 @@ allowed_interfaces = [
   "archetype.core.interfaces.iAsyncSystem",
 ]
 allowed_app = [
-  "archetype.app.storage.catalog",
-  "archetype.app.storage.commit",
-  "archetype.app.storage.signatures",
   "archetype.app.models",
 ]
 
@@ -299,8 +253,6 @@ allowed_interfaces = [
   "archetype.core.interfaces.ArchetypeSignature",
 ]
 allowed_app = [
-  "archetype.app.storage.catalog",
-  "archetype.app.storage.signatures",
   "archetype.app.models",
 ]
 
@@ -401,9 +353,7 @@ allowed_app = [
 module = "archetype.app.audit.service"
 allowed_interfaces = ["archetype.app.storage.interfaces.iStorageService"]
 allowed_app = [
-  "archetype.app.errors",
   "archetype.app.models",
-  "archetype.app.storage.catalog",
 ]
 
 [[module_rule]]
@@ -413,9 +363,7 @@ allowed_interfaces = [
   "archetype.app.world.interfaces.iWorldService",
 ]
 allowed_app = [
-  "archetype.app.errors",
   "archetype.app.models",
-  "archetype.app.storage.catalog",
 ]
 
 [[module_rule]]

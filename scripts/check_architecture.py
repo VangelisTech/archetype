@@ -610,6 +610,42 @@ def audit_repository(
             "top_level_family_policy.reserved_infrastructure has non-top-level scopes: "
             + ", ".join(invalid_infrastructure)
         )
+
+    configured_common = top_level_family_config.get("common_family_imports", [])
+    if not isinstance(configured_common, list):
+        result.policy_errors.append("top_level_family_policy.common_family_imports must be a list")
+        configured_common = []
+    common_values = [str(value).strip() for value in configured_common]
+    common_family_imports = frozenset(value for value in common_values if value)
+    if len(common_values) != len(common_family_imports):
+        result.policy_errors.append(
+            "top_level_family_policy.common_family_imports contains empty or duplicate entries"
+        )
+    invalid_common = sorted(
+        value
+        for value in common_family_imports
+        if re.fullmatch(r"archetype\.[A-Za-z_][A-Za-z0-9_]*", value) is None
+    )
+    if invalid_common:
+        result.policy_errors.append(
+            "top_level_family_policy.common_family_imports has non-top-level scopes: "
+            + ", ".join(invalid_common)
+        )
+    missing_common = sorted(
+        value for value in common_family_imports if value not in parsed or parsed[value][2]
+    )
+    if missing_common:
+        result.policy_errors.append(
+            "top_level_family_policy.common_family_imports references missing "
+            "first-party top-level modules: " + ", ".join(missing_common)
+        )
+    common_reserved = sorted(common_family_imports & (reserved_infrastructure | outward_packages))
+    if common_reserved:
+        result.policy_errors.append(
+            "top_level_family_policy.common_family_imports overlaps reserved or "
+            "outward scopes: " + ", ".join(common_reserved)
+        )
+
     if policy_version >= 3:
         missing_outward = sorted(TOP_LEVEL_FAMILY_OUTWARD_PACKAGES - outward_packages)
         if missing_outward:
@@ -737,6 +773,12 @@ def audit_repository(
         top_level_family_scopes[consumer_scope] = allowed
 
     if policy_version >= 3:
+        common_family_overlap = sorted(registered_family_scopes & common_family_imports)
+        if common_family_overlap:
+            result.policy_errors.append(
+                "top-level scopes classified as both family and common import: "
+                + ", ".join(common_family_overlap)
+            )
         overlapping_scopes = sorted(registered_family_scopes & reserved_infrastructure)
         if overlapping_scopes:
             result.policy_errors.append(
@@ -744,7 +786,10 @@ def audit_repository(
                 + ", ".join(overlapping_scopes)
             )
         unclassified_scopes = sorted(
-            actual_top_level_scopes - registered_family_scopes - reserved_infrastructure
+            actual_top_level_scopes
+            - registered_family_scopes
+            - reserved_infrastructure
+            - common_family_imports
         )
         if unclassified_scopes:
             result.policy_errors.append(
@@ -768,6 +813,7 @@ def audit_repository(
         | registered_family_scopes
         | reserved_infrastructure
         | outward_packages
+        | common_family_imports
     )
 
     for rule in package_rules:
@@ -853,9 +899,9 @@ def audit_repository(
             result.policy_errors.append(
                 f"capability rule {label} references missing owner module: {owner}"
             )
-        elif consumer_scope and not _matches_prefix(owner, consumer_scope):
+        elif not _matches_prefix(owner, "archetype"):
             result.policy_errors.append(
-                f"capability rule {label} owner {owner} is outside {consumer_scope}"
+                f"capability rule {label} owner {owner} is not a first-party module"
             )
         if not isinstance(raw_mediated, dict):
             result.policy_errors.append(
@@ -935,6 +981,8 @@ def audit_repository(
                     dependency, consumer_family_scope
                 ):
                     continue
+                if any(_matches_prefix(dependency, common) for common in common_family_imports):
+                    continue
 
                 dependency_family_scope = next(
                     (
@@ -976,8 +1024,9 @@ def audit_repository(
             if policy_version >= 3 and str(rule["consumer"]) == "archetype.core":
                 # The domain-family registry is the source of truth for the
                 # foundation's reverse-dependency ban. A newly registered
-                # family must be forbidden without a second manifest edit.
-                forbidden.update(registered_family_scopes)
+                # family or common family-facing boundary must be forbidden
+                # without a second manifest edit.
+                forbidden.update(registered_family_scopes | common_family_imports)
             for dependency, line in imports:
                 if any(_matches_prefix(dependency, prefix) for prefix in forbidden):
                     _add_once(

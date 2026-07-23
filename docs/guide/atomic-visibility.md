@@ -53,11 +53,14 @@ tick in this order:
    reference such as a Lance version — never the visibility mechanism).
 4. **Flush** the store. A caching store drains its memtables; a manifest
    must never claim RAM-only rows are durable.
-5. **Publish** the manifest — one catalog transaction that (a) verifies the
-   writer still holds the fence, (b) put-if-absent inserts the manifest row
+5. **Publish** the manifest — after durable data flush, one transaction in the
+   target world's control authority (a) verifies the writer still holds the
+   fence, (b) put-if-absent inserts the manifest row
    `(world, run, tick, commit_token, writer_epoch, table_ids)`, and (c)
-   advances the world's durable tick head. Stale epoch →
-   `StaleWriterError`; a different already-published attempt →
+   advances the world's durable tick head. It may also atomically settle the
+   target world's commands and append its durable control outbox. It does not
+   span a directory Durable Object or the separate Iceberg data commit. Stale
+   epoch → `StaleWriterError`; a different already-published attempt →
    `CatalogConflictError`; the identical attempt → idempotent no-op.
 6. **Consume** spawn/despawn caches — only now. Failure at any earlier
    point leaves mutations intact for the retried tick.
@@ -128,7 +131,8 @@ is what makes maintenance safe:
   mid-physics.
 - Cross-host fencing requires the remote control catalog
   (``ARCHETYPE_CONTROL_CATALOG_URL`` plus
-  ``ARCHETYPE_CONTROL_CATALOG_TOKEN``, issue #281): with it configured,
+  ``ARCHETYPE_CONTROL_CATALOG_TOKEN``, captured once by the application
+  composition root; issue #281): with it configured,
   discovery, fencing, and visibility hold across hosts; the default local
   SQLite catalog remains single-host authority.
 - Mutable cold resume is delivered on top of this contract — see

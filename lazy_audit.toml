@@ -37,26 +37,26 @@ method = "to_pylist"
 reason = "HTTP JSON response boundary: convert the already-collected Daft result into row dictionaries for FastAPI's JSON encoder at the terminal REST boundary."
 
 [[entries]]
-path = "src/archetype/app/storage/service.py"
-line = 429
+path = "src/archetype/storage/service.py"
+line = 680
 method = "collect"
 reason = "Central application execution boundary: StorageService admits the caller's lazy Daft plan through its shared execution gate, materializes it off the event loop, and returns the completed frame."
 
 [[entries]]
-path = "src/archetype/app/storage/service.py"
-line = 465
+path = "src/archetype/storage/service.py"
+line = 716
 method = "collect"
 reason = "Conflict-safe append boundary: StorageService materializes producer rows exactly once so optimistic Iceberg retries can reuse the same payload instead of re-running external or nondeterministic expressions."
 
 [[entries]]
-path = "src/archetype/app/storage/service.py"
-line = 517
+path = "src/archetype/storage/service.py"
+line = 768
 method = "collect"
 reason = "Conditional producer boundary: StorageService freezes the aligned candidate plan once so duplicate-key validation and optimistic Iceberg retries cannot re-run external or nondeterministic expressions."
 
 [[entries]]
-path = "src/archetype/app/storage/service.py"
-line = 544
+path = "src/archetype/storage/service.py"
+line = 795
 method = "collect"
 reason = "Conditional append boundary: StorageService materializes the anti-join after each refreshed Iceberg snapshot so a conflicting writer cannot cause a stale retry to duplicate an existing logical key."
 
@@ -122,7 +122,7 @@ reason = "Bounded compatibility boundary: StorageService admits and materializes
 
 [[entries]]
 path = "src/archetype/app/world/service.py"
-line = 742
+line = 766
 method = "to_pylist"
 reason = "Resume-time entity-directory extract (issue #273 A1-resume): StorageService admits and materializes the groupby-max result before bounded live-entity rows become the imperative entity2sig registry and next_entity_id counter."
 

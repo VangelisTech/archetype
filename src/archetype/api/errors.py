@@ -21,13 +21,13 @@ from typing import NoReturn
 
 from fastapi import HTTPException
 
-from archetype.app.errors import (
+from archetype.app.gateway.auth.errors import GuardrailError
+from archetype.errors import (
     AvailabilityError,
     ConflictError,
     PayloadRejectedError,
     WorldNotFoundError,
 )
-from archetype.app.gateway.auth.errors import GuardrailError
 
 logger = logging.getLogger(__name__)
 

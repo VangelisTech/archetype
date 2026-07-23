@@ -9,11 +9,10 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from archetype.app.storage import remote_catalog as _remote_catalog
-from archetype.app.storage.catalog import CommandAdmission
-from archetype.app.storage.remote_catalog import RemoteControlCatalog
-from archetype.app.storage.service import StorageService
-from archetype.core.config import StorageConfig
+from archetype.storage.catalog import CommandAdmission, RemoteControlCatalog
+from archetype.storage.catalog import remote as _remote_catalog
+from archetype.storage.config import ControlCatalogConfig
+from archetype.storage.service import StorageService
 
 pytestmark = pytest.mark.asyncio
 
@@ -37,9 +36,8 @@ async def test_remote_catalog_configuration_requires_token(monkeypatch):
     monkeypatch.setenv("ARCHETYPE_CONTROL_CATALOG_URL", "https://catalog.invalid")
     monkeypatch.delenv("ARCHETYPE_CONTROL_CATALOG_TOKEN", raising=False)
 
-    service = StorageService()
     with pytest.raises(RuntimeError, match="ARCHETYPE_CONTROL_CATALOG_TOKEN is required"):
-        service.get_control_catalog(StorageConfig())
+        StorageService(control_catalog_config=ControlCatalogConfig.from_env())
 
 
 async def test_get_world_retries_transient_server_errors(monkeypatch):

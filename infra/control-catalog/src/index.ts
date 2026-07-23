@@ -15,7 +15,7 @@
 //   gymnastics.
 //
 // Auth: a single bearer token (CATALOG_TOKEN secret). The Python client is
-// archetype.app.storage.remote_catalog.RemoteControlCatalog; semantics must match
+// archetype.storage.catalog.remote.RemoteControlCatalog; semantics must match
 // SqliteControlCatalog exactly (it is the reference implementation).
 
 export interface Env {

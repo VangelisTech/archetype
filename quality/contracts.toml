@@ -103,7 +103,7 @@ section = "Storage execution authority"
 owner = "storage"
 risk = "high"
 pytest = [
-  "tests/app/test_storage_execution.py",
+  "tests/storage/test_storage_execution.py",
   "tests/scripts/test_check_architecture.py",
   "tests/scripts/test_check_lazy_audit.py",
 ]
@@ -683,7 +683,7 @@ source = "docs/guide/application-architecture.md"
 section = "10. Supported durability profile"
 owner = "storage"
 risk = "high"
-pytest = ["tests/app/test_remote_catalog_parity.py", "tests/infrastructure/test_r2_idempotency.py"]
+pytest = ["tests/storage/test_remote_catalog_parity.py", "tests/infrastructure/test_r2_idempotency.py"]
 static = ["scripts/validate_r2_substrate.py"]
 evals = []
 benchmarks = []
