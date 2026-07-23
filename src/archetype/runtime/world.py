@@ -256,7 +256,6 @@ class _RuntimeWorldState:
         async with self.op_lock:
             if self.closed:
                 return
-            self.closed = True
 
             if (
                 not from_runtime
@@ -268,6 +267,7 @@ class _RuntimeWorldState:
 
             for alias in list(self.aliases):
                 self.runtime._unregister_handle(alias)
+            self.closed = True
 
 
 # ─────────────────────────────────────────────────────────────────────────────

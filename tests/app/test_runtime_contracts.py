@@ -254,6 +254,40 @@ class TestShutdownIdempotency:
             await world.spawn(Pos())
 
     @pytest.mark.asyncio
+    async def test_failed_world_destroy_remains_retryable(self, tmp_path, monkeypatch):
+        runtime = ArchetypeRuntime()
+        world = runtime.world(
+            "retry-destroy",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
+        )
+        await world.spawn(Pos())
+        application = runtime._application
+        original_destroy = application.destroy_world
+        attempts = 0
+
+        async def fail_once(world_id):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("destroy failed")
+            await original_destroy(world_id)
+
+        monkeypatch.setattr(application, "destroy_world", fail_once)
+
+        with pytest.raises(RuntimeError, match="destroy failed"):
+            await world.shutdown()
+
+        assert not world._state.closed
+        assert world in runtime._handles
+
+        await world.shutdown()
+
+        assert attempts == 2
+        assert world._state.closed
+        assert world not in runtime._handles
+        await runtime.shutdown()
+
+    @pytest.mark.asyncio
     async def test_container_cancellation_group_uses_retryable_runtime_error_contract(
         self, monkeypatch
     ):
