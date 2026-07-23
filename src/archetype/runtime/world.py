@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 from weakref import WeakSet
@@ -68,6 +68,20 @@ _FireMode = Any  # Literal["blocking", "spawn"] — kept loose for forward compa
 _ADMITTED_STATE: ContextVar[_RuntimeWorldState | None] = ContextVar(
     "archetype_runtime_admitted_state", default=None
 )
+_RUNTIME_CLEANUP_OWNER: ContextVar[object | None] = ContextVar(
+    "archetype_runtime_cleanup_owner", default=None
+)
+
+
+@contextmanager
+def _runtime_cleanup_scope(runtime: object):
+    """Authorize runtime-owned cleanup without reopening public admission."""
+
+    token = _RUNTIME_CLEANUP_OWNER.set(runtime)
+    try:
+        yield
+    finally:
+        _RUNTIME_CLEANUP_OWNER.reset(token)
 
 
 def _clone_components(components: tuple[Component, ...]) -> list[Component]:
@@ -158,7 +172,13 @@ class _RuntimeWorldState:
             return
 
         async with self.admission_lock:
-            if self.closing or self.closed or self.runtime._closed:
+            runtime_rejects_public_work = self.runtime._shutdown_started or self.runtime._closed
+            runtime_owns_cleanup = _RUNTIME_CLEANUP_OWNER.get() is self.runtime
+            if (
+                self.closing
+                or self.closed
+                or (runtime_rejects_public_work and not runtime_owns_cleanup)
+            ):
                 raise RuntimeError("World handle is closed")
             self.active_operations += 1
             self.drained.clear()
@@ -265,7 +285,10 @@ class RuntimeWorld:
         return self._state.runtime._application
 
     async def _ensure_id(self) -> str | UUID:
-        if _ADMITTED_STATE.get() is not self._state:
+        if (
+            _ADMITTED_STATE.get() is not self._state
+            and _RUNTIME_CLEANUP_OWNER.get() is not self._state.runtime
+        ):
             self._state.runtime._ensure_open()
         if self._state.closed:
             raise RuntimeError("World handle is closed")

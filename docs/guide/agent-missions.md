@@ -353,7 +353,16 @@ possibly live provider resource. Close is single-flight per sandbox key and
 continues if its caller is cancelled; concurrent acquisition waits for that
 teardown and never receives the closing handle. A provider session returned
 while shutdown is winning the race remains cleanup-owned until close succeeds,
-and failed shutdown cleanup is reported and retryable.
+and failed shutdown cleanup is reported and retryable. The runtime mission
+handle becomes closed only after that cleanup and durable reconciliation
+succeed, so a failed public `close()` can be retried while its mission world is
+still available. If runtime-owned cleanup fails, public runtime admission stays
+closed and a later serialized `runtime.shutdown()` retries the retained mission
+before world handles or shared services are finalized. The runtime keeps a
+strong ownership reference to that handle until cleanup succeeds, so dropping
+the caller's reference cannot discard a still-live provider resource. Public
+and runtime-owned close calls are single-flight on the handle; a public close
+already in progress retains cleanup authority while runtime shutdown waits.
 
 Durable lifecycle evidence follows physical ownership. A failed terminal close
 projects the retained session's non-ready status and a `sandbox_teardown`

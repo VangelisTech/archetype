@@ -11,6 +11,8 @@ shutdown idempotency, fork handles, and pre-activation hook rejection.
 from __future__ import annotations
 
 import asyncio
+import gc
+import weakref
 
 import pytest
 
@@ -251,14 +253,20 @@ class TestShutdownIdempotency:
             await world.spawn(Pos())
 
     @pytest.mark.asyncio
-    async def test_container_cancellation_group_uses_runtime_error_contract(self, monkeypatch):
+    async def test_container_cancellation_group_uses_retryable_runtime_error_contract(
+        self, monkeypatch
+    ):
         runtime = ArchetypeRuntime()
+        attempts = 0
 
         async def fail_container_shutdown():
-            raise BaseExceptionGroup(
-                "container shutdown failed",
-                [asyncio.CancelledError("sandbox close cancelled")],
-            )
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise BaseExceptionGroup(
+                    "container shutdown failed",
+                    [asyncio.CancelledError("sandbox close cancelled")],
+                )
 
         monkeypatch.setattr(runtime._container, "shutdown", fail_container_shutdown)
 
@@ -268,16 +276,28 @@ class TestShutdownIdempotency:
         assert isinstance(captured.value.__cause__, BaseExceptionGroup)
         assert isinstance(captured.value.__cause__.exceptions[0], asyncio.CancelledError)
 
+        with pytest.raises(RuntimeError, match="closed"):
+            runtime.world("rejected-after-container-failure")
+
+        await runtime.shutdown()
+
+        assert attempts == 2
+
     @pytest.mark.asyncio
-    async def test_runtime_shutdown_closes_mission_handles_before_container(self, monkeypatch):
+    async def test_runtime_shutdown_retries_mission_handles_before_container(self, monkeypatch):
         runtime = ArchetypeRuntime()
         calls: list[str] = []
 
         class FailingMissionHandle:
+            attempts = 0
+
             async def _shutdown_internal(self, *, from_runtime: bool) -> None:
                 assert from_runtime
                 calls.append("mission")
-                raise RuntimeError("mission close failed")
+                self.attempts += 1
+                if self.attempts == 1:
+                    raise RuntimeError("mission close failed")
+                runtime._mission_handles.discard(self)  # type: ignore[arg-type]
 
         mission = FailingMissionHandle()
         runtime._mission_handles.add(mission)  # type: ignore[arg-type]
@@ -290,9 +310,146 @@ class TestShutdownIdempotency:
         with pytest.raises(RuntimeError, match="encountered 1 error") as captured:
             await runtime.shutdown()
 
-        assert calls == ["mission", "container"]
+        assert calls == ["mission"]
         assert isinstance(captured.value.__cause__, RuntimeError)
         assert "mission close failed" in str(captured.value.__cause__)
+
+        mission_ref = weakref.ref(mission)
+        del mission
+        gc.collect()
+        assert mission_ref() is not None
+        with pytest.raises(RuntimeError, match="closed"):
+            runtime.world("rejected-after-failed-shutdown")
+
+        await runtime.shutdown()
+        await runtime.shutdown()
+
+        assert calls == ["mission", "mission", "container"]
+        assert not runtime._mission_handles
+
+    @pytest.mark.asyncio
+    async def test_concurrent_runtime_shutdown_is_single_flight(self, monkeypatch):
+        runtime = ArchetypeRuntime()
+        close_started = asyncio.Event()
+        close_release = asyncio.Event()
+        second_started = asyncio.Event()
+        calls: list[str] = []
+
+        class BlockingMissionHandle:
+            async def _shutdown_internal(self, *, from_runtime: bool) -> None:
+                assert from_runtime
+                calls.append("mission")
+                close_started.set()
+                await close_release.wait()
+                runtime._mission_handles.discard(self)  # type: ignore[arg-type]
+
+        mission = BlockingMissionHandle()
+        runtime._mission_handles.add(mission)  # type: ignore[arg-type]
+
+        async def shutdown_container() -> None:
+            calls.append("container")
+
+        async def second_shutdown() -> None:
+            second_started.set()
+            await runtime.shutdown()
+
+        monkeypatch.setattr(runtime._container, "shutdown", shutdown_container)
+        first = asyncio.create_task(runtime.shutdown())
+        await close_started.wait()
+        second = asyncio.create_task(second_shutdown())
+        await second_started.wait()
+        assert not second.done()
+
+        close_release.set()
+        await asyncio.gather(first, second)
+
+        assert calls == ["mission", "container"]
+
+    @pytest.mark.asyncio
+    async def test_cancelled_runtime_shutdown_retains_cleanup_for_retry(self, monkeypatch):
+        runtime = ArchetypeRuntime()
+        close_started = asyncio.Event()
+        never_release = asyncio.Event()
+        calls: list[str] = []
+
+        class CancelledOnceMissionHandle:
+            attempts = 0
+
+            async def _shutdown_internal(self, *, from_runtime: bool) -> None:
+                assert from_runtime
+                calls.append("mission")
+                self.attempts += 1
+                if self.attempts == 1:
+                    close_started.set()
+                    await never_release.wait()
+                runtime._mission_handles.discard(self)  # type: ignore[arg-type]
+
+        mission = CancelledOnceMissionHandle()
+        runtime._mission_handles.add(mission)  # type: ignore[arg-type]
+
+        async def shutdown_container() -> None:
+            calls.append("container")
+
+        monkeypatch.setattr(runtime._container, "shutdown", shutdown_container)
+        interrupted = asyncio.create_task(runtime.shutdown())
+        await close_started.wait()
+        interrupted.cancel()
+        with pytest.raises(RuntimeError, match="encountered 1 error") as captured:
+            await interrupted
+
+        assert isinstance(captured.value.__cause__, asyncio.CancelledError)
+        assert calls == ["mission"]
+        with pytest.raises(RuntimeError, match="closed"):
+            runtime.world("rejected-after-cancelled-shutdown")
+
+        await runtime.shutdown()
+
+        assert calls == ["mission", "mission", "container"]
+
+    @pytest.mark.asyncio
+    async def test_world_shutdown_cancellation_does_not_skip_sibling_cleanup(self, monkeypatch):
+        runtime = ArchetypeRuntime()
+        calls: list[str] = []
+
+        class CancelledOnceWorldHandle:
+            attempts = 0
+
+            async def _shutdown_internal(self, *, from_runtime: bool) -> None:
+                assert from_runtime
+                calls.append("cancelled-world")
+                self.attempts += 1
+                if self.attempts == 1:
+                    raise asyncio.CancelledError("world close cancelled")
+
+        class SiblingWorldHandle:
+            async def _shutdown_internal(self, *, from_runtime: bool) -> None:
+                assert from_runtime
+                calls.append("sibling-world")
+
+        first = CancelledOnceWorldHandle()
+        second = SiblingWorldHandle()
+        runtime._handles = (first, second)  # type: ignore[assignment]
+
+        async def shutdown_container() -> None:
+            calls.append("container")
+
+        monkeypatch.setattr(runtime._container, "shutdown", shutdown_container)
+
+        with pytest.raises(RuntimeError, match="encountered 1 error") as captured:
+            await runtime.shutdown()
+
+        assert isinstance(captured.value.__cause__, asyncio.CancelledError)
+        assert calls == ["cancelled-world", "sibling-world"]
+
+        await runtime.shutdown()
+
+        assert calls == [
+            "cancelled-world",
+            "sibling-world",
+            "cancelled-world",
+            "sibling-world",
+            "container",
+        ]
 
 
 class TestStructuredStepFailures:

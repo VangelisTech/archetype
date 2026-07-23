@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import os
 import subprocess
+import weakref
 from pathlib import Path
 
 import pytest
@@ -40,6 +42,7 @@ from archetype.missions.sandboxes import (
     SandboxEvent,
     SandboxEventType,
     SandboxIdentity,
+    SandboxKey,
     SandboxSpec,
     SandboxStatus,
 )
@@ -251,10 +254,12 @@ class _AutoReplacementBackend:
         *,
         fail_first_checkpoint: bool = False,
         fail_first_close: bool = False,
+        first_close_failures: int = 0,
         fail_create_sequences: tuple[int, ...] = (),
     ) -> None:
         self.fail_first_checkpoint = fail_first_checkpoint
         self.fail_first_close = fail_first_close
+        self.first_close_failures = first_close_failures
         self.fail_create_sequences = fail_create_sequences
         self.create_attempts = 0
         self.sessions: list[_AutoReplacementSession] = []
@@ -268,7 +273,9 @@ class _AutoReplacementBackend:
             spec,
             f"sandbox-replacement-{sequence}",
             fail_checkpoint=self.fail_first_checkpoint and sequence == 1,
-            close_failures=1 if self.fail_first_close and sequence == 1 else 0,
+            close_failures=(
+                max(self.first_close_failures, int(self.fail_first_close)) if sequence == 1 else 0
+            ),
         )
         self.sessions.append(session)
         return session
@@ -938,6 +945,309 @@ async def test_terminal_close_failure_is_durable_and_retryable(
             rows = latest(await missions.query(Sandbox)).to_pylist()
             assert rows[0][f"{sandbox}status"] == SandboxStatus.CLOSED.value
             assert "provider close unavailable" in str(rows[0][f"{sandbox}error"])
+
+
+@pytest.mark.asyncio
+async def test_public_mission_close_remains_retryable_after_cleanup_failure(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    backend = _AutoReplacementBackend(first_close_failures=2)
+    runtime = ArchetypeRuntime()
+    missions = runtime.missions(
+        "public-terminal-close-retry",
+        config=AgentMissionConfig(
+            sandbox_backend=backend,
+            sandbox_environment="local-replacement-test",
+            driver=_MissionDriver(workspace),
+            workspace=str(workspace),
+            checkpoint_after_dispatch=False,
+        ),
+        storage=StorageConfig(
+            uri=str(tmp_path / "public_terminal_close_retry_missions"),
+            namespace="public_terminal_close_retry_contract",
+        ),
+    )
+    try:
+        submitted = await missions.submit(
+            repository=str(remote),
+            branch="agent/public-terminal-close-retry",
+            tasks=(
+                AgentTask(
+                    "implementation",
+                    "Create implementation.txt containing fixed.",
+                    (
+                        CommandValidator(
+                            "focused",
+                            (
+                                "sh",
+                                "-lc",
+                                'test "$(cat implementation.txt)" = fixed',
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        with pytest.raises(RuntimeError, match="provider close unavailable"):
+            await missions.run(submitted)
+        with pytest.raises(BaseExceptionGroup, match="Agent Missions shutdown failed"):
+            await missions.close()
+
+        assert len(backend.sessions) == 1
+        session = backend.sessions[0]
+        assert session.close_attempts == 2
+        assert await session.status() is SandboxStatus.ERRORED
+        sandbox = Sandbox.get_prefix()
+        rows = latest(await missions.query(Sandbox)).to_pylist()
+        assert rows[0][f"{sandbox}status"] == SandboxStatus.ERRORED.value
+
+        await missions.close()
+
+        assert session.close_attempts == 3
+        assert await session.status() is SandboxStatus.CLOSED
+        retained = missions._service._sandbox_entities[  # noqa: SLF001 - durable retry oracle
+            session.identity.sandbox_id
+        ][1]
+        assert retained.status == SandboxStatus.CLOSED.value
+        assert "provider close unavailable" in retained.error
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_public_and_runtime_mission_close_are_single_flight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _LocalBackend()
+    runtime = ArchetypeRuntime()
+    missions = runtime.missions(
+        "single-flight-mission-close",
+        config=AgentMissionConfig(
+            sandbox_backend=backend,
+            sandbox_environment="local-test",
+            driver=_MissionDriver(tmp_path / "sandbox" / "repo"),
+            workspace=str(tmp_path / "sandbox" / "repo"),
+            checkpoint_after_dispatch=False,
+        ),
+        storage=StorageConfig(
+            uri=str(tmp_path / "single_flight_mission_close"),
+            namespace="single_flight_mission_close_contract",
+        ),
+    )
+    close_started = asyncio.Event()
+    close_release = asyncio.Event()
+    runtime_shutdown_started = asyncio.Event()
+    close_calls = 0
+    concurrent_closes = 0
+    max_concurrent_closes = 0
+    await missions._service._world.info()  # noqa: SLF001 - activate cleanup authority oracle
+
+    async def blocking_service_close() -> None:
+        nonlocal close_calls, concurrent_closes, max_concurrent_closes
+        close_calls += 1
+        concurrent_closes += 1
+        max_concurrent_closes = max(max_concurrent_closes, concurrent_closes)
+        close_started.set()
+        try:
+            await close_release.wait()
+            await missions._service._world.info()  # noqa: SLF001 - admitted cleanup oracle
+        finally:
+            concurrent_closes -= 1
+
+    async def runtime_shutdown() -> None:
+        runtime_shutdown_started.set()
+        await runtime.shutdown()
+
+    monkeypatch.setattr(missions._service, "close", blocking_service_close)  # noqa: SLF001
+    public_close = asyncio.create_task(missions.close())
+    await close_started.wait()
+    runtime_close = asyncio.create_task(runtime_shutdown())
+    await runtime_shutdown_started.wait()
+
+    assert close_calls == 1
+    assert max_concurrent_closes == 1
+    assert runtime._shutdown_started  # noqa: SLF001 - deterministic race position
+
+    close_release.set()
+    await asyncio.gather(public_close, runtime_close)
+
+    assert close_calls == 1
+    assert max_concurrent_closes == 1
+    assert missions._closed  # noqa: SLF001 - handle lifecycle oracle
+
+
+@pytest.mark.asyncio
+async def test_runtime_shutdown_reconciles_a_retained_ready_mission_sandbox(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    storage = StorageConfig(
+        uri=str(tmp_path / "runtime_shutdown_reconciliation"),
+        namespace="runtime_shutdown_reconciliation_contract",
+    )
+    backend = _AutoReplacementBackend()
+    runtime = ArchetypeRuntime()
+    missions = runtime.missions(
+        "runtime-shutdown-reconciliation",
+        config=AgentMissionConfig(
+            sandbox_backend=backend,
+            sandbox_environment="local-replacement-test",
+            driver=_MissionDriver(workspace),
+            workspace=str(workspace),
+            checkpoint_after_dispatch=False,
+        ),
+        storage=storage,
+    )
+    submitted = await missions.submit(
+        repository=str(remote),
+        branch="agent/runtime-shutdown-reconciliation",
+        tasks=(
+            AgentTask(
+                "implementation",
+                "Create implementation.txt containing fixed.",
+                (
+                    CommandValidator(
+                        "focused",
+                        (
+                            "sh",
+                            "-lc",
+                            'test "$(cat implementation.txt)" = fixed',
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    service = missions._service  # noqa: SLF001 - runtime cleanup integration seam
+    key = SandboxKey(f"mission:{submitted.mission_id}")
+    session = await service._sandboxes.acquire(  # noqa: SLF001
+        key,
+        service._sandbox_spec(submitted.mission_id, submitted.branch),  # noqa: SLF001
+    )
+    await service._ensure_sandbox_entity(  # noqa: SLF001
+        submitted.mission_id,
+        session.identity,
+        status=SandboxStatus.READY,
+    )
+    await service._world.step()  # noqa: SLF001 - commit the READY counterfactual
+    world_id = missions.world_id
+
+    close_started = asyncio.Event()
+    close_release = asyncio.Event()
+    provider_close = session.close
+
+    async def blocking_close() -> None:
+        close_started.set()
+        await close_release.wait()
+        await provider_close()
+
+    monkeypatch.setattr(session, "close", blocking_close)
+    shutting_down = asyncio.create_task(runtime.shutdown())
+    await close_started.wait()
+    try:
+        with pytest.raises(RuntimeError, match="closed"):
+            runtime.world("rejected-during-runtime-shutdown")
+        with pytest.raises(RuntimeError, match="closed"):
+            await missions.query(Sandbox)
+    finally:
+        close_release.set()
+
+    await shutting_down
+
+    assert await session.status() is SandboxStatus.CLOSED
+    assert missions._closed  # noqa: SLF001 - runtime-owned handle lifecycle oracle
+    async with ArchetypeRuntime() as reader:
+        attached = reader.attach(world_id, storage=storage)
+        sandbox = Sandbox.get_prefix()
+        rows = latest(await attached.query(Sandbox)).to_pylist()
+        assert rows[-1][f"{sandbox}sandbox_id"] == session.identity.sandbox_id
+        assert rows[-1][f"{sandbox}status"] == SandboxStatus.CLOSED.value
+
+
+@pytest.mark.asyncio
+async def test_runtime_shutdown_retries_failed_mission_cleanup_before_finalization(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    storage = StorageConfig(
+        uri=str(tmp_path / "runtime_shutdown_cleanup_retry"),
+        namespace="runtime_shutdown_cleanup_retry_contract",
+    )
+    backend = _AutoReplacementBackend(first_close_failures=2)
+    runtime = ArchetypeRuntime()
+    missions = runtime.missions(
+        "runtime-shutdown-cleanup-retry",
+        config=AgentMissionConfig(
+            sandbox_backend=backend,
+            sandbox_environment="local-replacement-test",
+            driver=_MissionDriver(workspace),
+            workspace=str(workspace),
+            checkpoint_after_dispatch=False,
+        ),
+        storage=storage,
+    )
+    submitted = await missions.submit(
+        repository=str(remote),
+        branch="agent/runtime-shutdown-cleanup-retry",
+        tasks=(
+            AgentTask(
+                "implementation",
+                "Create implementation.txt containing fixed.",
+                (
+                    CommandValidator(
+                        "focused",
+                        (
+                            "sh",
+                            "-lc",
+                            'test "$(cat implementation.txt)" = fixed',
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="provider close unavailable"):
+        await missions.run(submitted)
+    with pytest.raises(RuntimeError, match="Agent Missions shutdown failed"):
+        await runtime.shutdown()
+
+    session = backend.sessions[0]
+    assert session.close_attempts == 2
+    assert await session.status() is SandboxStatus.ERRORED
+    assert not missions._closed  # noqa: SLF001 - retry ownership oracle
+    with pytest.raises(RuntimeError, match="closed"):
+        runtime.world("rejected-while-cleanup-is-retryable")
+    with pytest.raises(RuntimeError, match="closed"):
+        await missions.query(Sandbox)
+
+    world_id = missions.world_id
+    mission_ref = weakref.ref(missions)
+    del missions
+    gc.collect()
+    assert mission_ref() is not None
+
+    await runtime.shutdown()
+    await runtime.shutdown()
+
+    assert session.close_attempts == 3
+    assert await session.status() is SandboxStatus.CLOSED
+    assert not runtime._mission_handles  # noqa: SLF001 - cleanup ownership oracle
+    gc.collect()
+    assert mission_ref() is None
+    async with ArchetypeRuntime() as reader:
+        attached = reader.attach(world_id, storage=storage)
+        sandbox = Sandbox.get_prefix()
+        rows = latest(await attached.query(Sandbox)).to_pylist()
+        assert rows[-1][f"{sandbox}sandbox_id"] == session.identity.sandbox_id
+        assert rows[-1][f"{sandbox}status"] == SandboxStatus.CLOSED.value
 
 
 @pytest.mark.asyncio

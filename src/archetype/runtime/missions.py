@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -18,6 +19,7 @@ from archetype.missions.contracts import (
     SubmittedMission,
 )
 from archetype.missions.sandboxes import CheckpointRef, SandboxIdentity
+from archetype.runtime.world import _runtime_cleanup_scope
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -44,6 +46,7 @@ class RuntimeMissions:
             config=config,
             storage=storage,
         )
+        self._shutdown_lock = asyncio.Lock()
         self._closed = False
 
     async def __aenter__(self) -> RuntimeMissions:
@@ -92,12 +95,17 @@ class RuntimeMissions:
         await self._shutdown_internal(from_runtime=False)
 
     async def _shutdown_internal(self, *, from_runtime: bool) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        try:
-            await self._service.close()
-        finally:
+        async with self._shutdown_lock:
+            if self._closed:
+                return
+            if from_runtime:
+                await self._service.close()
+            else:
+                # A public close admitted before runtime shutdown must retain
+                # cleanup authority while a concurrent runtime close waits.
+                with _runtime_cleanup_scope(self._runtime):
+                    await self._service.close()
+            self._closed = True
             self._runtime._unregister_mission_handle(self)
 
     async def query(self, *components: type[Component]) -> DataFrame:
