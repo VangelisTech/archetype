@@ -36,14 +36,19 @@ from archetype.app.redaction.interfaces import iRedactionService
 from archetype.app.redaction.service import RedactionService
 from archetype.app.research.interfaces import iResearchService
 from archetype.app.research.service import AutoResearchService
-from archetype.app.storage.interfaces import iStorageService
+from archetype.storage.interfaces import iStorageService
 from archetype.storage.service import StorageService
+from archetype.world.interfaces import iWorldLifecycle, iWorldRegistry
+from archetype.world.lifecycle import WorldLifecycle
+from archetype.world.registry import WorldRegistry
 
 pytestmark = pytest.mark.contract("architecture.protocols.complete")
 
 
 SERVICE_PROTOCOLS = (
     (StorageService, iStorageService),
+    (WorldRegistry, iWorldRegistry),
+    (WorldLifecycle, iWorldLifecycle),
     (IngestionService, iIngestionService),
     (ArtifactService, iArtifactService),
     (MissionService, iMissionService),
@@ -79,6 +84,8 @@ async def test_container_wiring_conforms_to_every_family_protocol() -> None:
     try:
         bindings = (
             (container.storage_service, iStorageService),
+            (container.world_registry, iWorldRegistry),
+            (container.world_lifecycle, iWorldLifecycle),
             (container.ingestion_service, iIngestionService),
             (container.artifact_service, iArtifactService),
             (container.transcript_ingestion_service, iTranscriptIngestionService),
