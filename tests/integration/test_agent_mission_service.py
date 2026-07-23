@@ -25,6 +25,7 @@ from archetype.missions import (
     CommandValidator,
     Commit,
     CriticExecution,
+    CriticExecutionStatus,
     CriticFinding,
     CriticPolicy,
     CriticReceipt,
@@ -172,6 +173,18 @@ class _CriticCloseRetryBackend(_LocalBackend):
             self.critic_sessions.append(session)
             return session
         return await super().create(spec)
+
+
+class _CriticCreateFailureBackend(_LocalBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.critic_create_attempts = 0
+
+    async def create(self, spec: SandboxSpec) -> _LocalSession:
+        if spec.metadata_dict().get("role") != "critic":
+            return await super().create(spec)
+        self.critic_create_attempts += 1
+        raise RuntimeError("critic provision unavailable")
 
 
 class _LiveOutputSession(_LocalSession):
@@ -1938,6 +1951,78 @@ async def test_critic_close_failure_is_durable_and_retryable(
         ]
         assert len(critic_rows) == 1
         assert critic_rows[0][f"{sandbox}status"] == SandboxStatus.CLOSED.value
+
+
+@pytest.mark.asyncio
+async def test_critic_acquisition_failure_records_errored_synthetic_sandbox(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    backend = _CriticCreateFailureBackend()
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "critic-acquisition-failure",
+            config=AgentMissionConfig(
+                sandbox_backend=backend,
+                sandbox_environment="local-critic-create-failure-test",
+                driver=_MissionDriver(workspace),
+                critic_driver=_ApprovingCriticDriver(),
+                workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
+                checkpoint_after_dispatch=False,
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "critic_acquisition_failure"),
+                namespace="critic_acquisition_failure_contract",
+            ),
+        ) as missions:
+            submitted = await missions.submit(
+                repository=str(remote),
+                branch="agent/critic-acquisition-failure",
+                tasks=(
+                    AgentTask(
+                        "implementation",
+                        "Create implementation.txt containing fixed.",
+                        (
+                            CommandValidator(
+                                "focused",
+                                (
+                                    "sh",
+                                    "-lc",
+                                    'test "$(cat implementation.txt)" = fixed',
+                                ),
+                            ),
+                        ),
+                        critic_policy=CriticPolicy(max_reviews=1),
+                    ),
+                ),
+            )
+
+            with pytest.raises(RuntimeError, match="critic review budget exhausted"):
+                await missions.run(submitted)
+
+            assert backend.critic_create_attempts == 1
+            sandbox = Sandbox.get_prefix()
+            rows = latest(await missions.query(Sandbox)).to_pylist()
+            unavailable = [
+                row
+                for row in rows
+                if str(row[f"{sandbox}sandbox_id"]).startswith("critic-unavailable-")
+            ]
+            assert len(unavailable) == 1
+            assert unavailable[0][f"{sandbox}status"] == SandboxStatus.ERRORED.value
+            assert "critic provision unavailable" in str(unavailable[0][f"{sandbox}error"])
+
+            execution = CriticExecution.get_prefix()
+            execution_rows = latest(await missions.query(CriticExecution)).to_pylist()
+            assert len(execution_rows) == 1
+            assert execution_rows[0][f"{execution}status"] == (CriticExecutionStatus.ERRORED.value)
+            assert (
+                execution_rows[0][f"{execution}sandbox_id"]
+                == (unavailable[0][f"{sandbox}sandbox_id"])
+            )
 
 
 @pytest.mark.asyncio

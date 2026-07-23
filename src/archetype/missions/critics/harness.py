@@ -23,7 +23,12 @@ from archetype.missions.critics.contracts import (
     CriticReceiptValue,
     canonical_digest,
 )
-from archetype.missions.sandboxes import ProcessRequest, ProcessResult, SandboxSession
+from archetype.missions.sandboxes import (
+    ProcessRequest,
+    ProcessResult,
+    SandboxSession,
+    SandboxStatus,
+)
 from archetype.missions.transitions import CriticConclusion, CriticExecutionStatus
 
 
@@ -280,6 +285,8 @@ class CriticHarness:
                 request=request,
                 status=CriticExecutionStatus.EXITED,
                 sandbox=session.identity,
+                sandbox_status=SandboxStatus.READY,
+                sandbox_acquired=True,
                 started_at_ms=started_at_ms,
                 ended_at_ms=ended_at_ms,
                 provision_started_at_ms=provision_started_at_ms,
@@ -506,6 +513,8 @@ class CriticHarness:
             request=request,
             status=status,
             sandbox=session.identity,
+            sandbox_status=SandboxStatus.READY,
+            sandbox_acquired=True,
             started_at_ms=started_at_ms,
             ended_at_ms=cls._now_ms(),
             provision_started_at_ms=provision_started_at_ms,

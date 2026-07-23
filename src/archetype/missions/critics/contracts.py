@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from archetype.missions.contracts import CriticPolicy
-from archetype.missions.sandboxes import SandboxIdentity, SandboxSession
+from archetype.missions.sandboxes import SandboxIdentity, SandboxSession, SandboxStatus
 from archetype.missions.transitions import (
     CriticConclusion,
     CriticExecutionStatus,
@@ -236,6 +236,8 @@ class CriticExecutionResult:
     request: CandidateReviewRequest
     status: CriticExecutionStatus
     sandbox: SandboxIdentity
+    sandbox_status: SandboxStatus
+    sandbox_acquired: bool
     started_at_ms: int
     ended_at_ms: int
     provision_started_at_ms: int = 0

@@ -212,7 +212,9 @@ bounded findings and a receipt. Critic sandboxes receive no publication secret,
 the configured driver's declared identity must match the task policy, they are
 never checkpointed, and they close after their evidence is durable. Close
 failure is surfaced and retryable across `run()` calls; cancellation propagates
-without discarding cleanup ownership.
+without discarding cleanup ownership. Critic execution facts carry the observed
+sandbox status and whether acquisition succeeded, so unavailable synthetic
+identities remain durable failures rather than fabricated healthy lifecycles.
 
 The sandbox identity is staged immediately after acquisition; bounded
 `SandboxEvent` callbacks expose it synchronously for live,

@@ -415,7 +415,10 @@ friction before the error returns. The service retains pending critic cleanup
 across `run()` calls, so cancellation propagates without becoming failure
 evidence and a later run joins or retries the same single-flight close. Once
 replacement or cleanup has closed a sandbox, staging an earlier same-tick
-execution cannot move its durable status backward from `closed`.
+execution cannot move its durable status backward from `closed`. A critic
+acquisition failure records its synthetic unavailable identity as `errored`;
+because no provider resource was acquired, later no-op cleanup cannot promote
+that evidence to `closed`.
 
 The coding-agent harness works through `SandboxSession`. It owns clone and
 branch preparation, agent invocation, validator execution, Git publication,

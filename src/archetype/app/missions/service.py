@@ -135,6 +135,7 @@ class _CriticWarmSession:
 class _PendingCriticClosure:
     request: TaskDispatchRequest | CandidateReviewRequest
     sandbox_id: str = ""
+    sandbox_acquired: bool = True
     friction_kind: str = "critic_sandbox_teardown"
 
 
@@ -457,7 +458,9 @@ class MissionService:
             for review in self._critic_outbox.drain():
                 result = await self._execute_review(review)
                 self._pending_critic_closures[review.dispatch_id] = _PendingCriticClosure(
-                    review, result.sandbox.sandbox_id
+                    review,
+                    result.sandbox.sandbox_id,
+                    result.sandbox_acquired,
                 )
                 await self._stage_critic_result(result)
             exhausted_reviews = self._critic_outbox.drain_exhausted()
@@ -946,6 +949,15 @@ class MissionService:
             base_hydrated_at_ms=int(time.time() * 1000),
         )
 
+    @staticmethod
+    async def _observe_sandbox_status(session: SandboxSession) -> SandboxStatus:
+        try:
+            return await session.status()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return SandboxStatus.ERRORED
+
     async def _execute_review(
         self,
         request: CandidateReviewRequest,
@@ -958,6 +970,7 @@ class MissionService:
             raise
         except Exception as exc:
             retained = self._sandboxes.session(self._critic_sandbox_key(request.dispatch_id))
+            sandbox_acquired = retained is not None
             identity = (
                 retained.identity
                 if retained is not None
@@ -967,11 +980,18 @@ class MissionService:
                     self._sandbox_environment,
                 )
             )
+            sandbox_status = (
+                await self._observe_sandbox_status(retained)
+                if retained is not None
+                else SandboxStatus.ERRORED
+            )
             now_ms = int(time.time() * 1000)
             return CriticExecutionResult(
                 request=request,
                 status=CriticExecutionStatus.ERRORED,
                 sandbox=identity,
+                sandbox_status=sandbox_status,
+                sandbox_acquired=sandbox_acquired,
                 started_at_ms=now_ms,
                 ended_at_ms=now_ms,
                 error=f"{type(exc).__name__}: {exc}",
@@ -982,6 +1002,8 @@ class MissionService:
                 request=request,
                 status=CriticExecutionStatus.UNVERIFIABLE,
                 sandbox=warm.session.identity,
+                sandbox_status=await self._observe_sandbox_status(warm.session),
+                sandbox_acquired=True,
                 started_at_ms=now_ms,
                 ended_at_ms=now_ms,
                 provision_started_at_ms=warm.provision_started_at_ms,
@@ -1007,6 +1029,10 @@ class MissionService:
             provision_started_at_ms=warm.provision_started_at_ms,
             sandbox_ready_at_ms=warm.sandbox_ready_at_ms,
             base_hydrated_at_ms=warm.base_hydrated_at_ms,
+        )
+        result = replace(
+            result,
+            sandbox_status=await self._observe_sandbox_status(warm.session),
         )
         self._emit_sandbox_event(
             SandboxEventType.PROCESS_FINISHED,
@@ -1038,16 +1064,18 @@ class MissionService:
 
     async def _stage_critic_result(self, result: CriticExecutionResult) -> int:
         request = result.request
-        self._critic_sandbox_context[result.sandbox.sandbox_id] = (
-            self._critic_sandbox_key(request.dispatch_id),
-            request.mission_id,
-            request.task_id,
-            request.dispatch_id,
-        )
+        if result.sandbox_acquired:
+            self._critic_sandbox_context[result.sandbox.sandbox_id] = (
+                self._critic_sandbox_key(request.dispatch_id),
+                request.mission_id,
+                request.task_id,
+                request.dispatch_id,
+            )
         sandbox_entity = await self._ensure_sandbox_entity(
             request.mission_id,
             result.sandbox,
-            status=SandboxStatus.READY,
+            status=result.sandbox_status,
+            error=result.error if result.sandbox_status is SandboxStatus.ERRORED else "",
             bind_mission=False,
         )
         receipt_staged_at_ms = int(time.time() * 1000) if result.receipt else 0
@@ -1219,7 +1247,7 @@ class MissionService:
             await self._world.step()
             raise
         else:
-            if sandbox_id in self._sandbox_entities:
+            if pending.sandbox_acquired and sandbox_id in self._sandbox_entities:
                 await self._mark_sandbox_closed(sandbox_id)
             self._critic_prewarms.pop(dispatch_id, None)
             self._pending_critic_closures.pop(dispatch_id, None)
