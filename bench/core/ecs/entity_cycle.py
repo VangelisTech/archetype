@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from archetype.app.world.service import WorldService
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
 from archetype.core.config import CacheConfig, StorageConfig
 
-from .common import BenchResult, RunConfig, Timer, make_world
+from .common import BenchResult, BenchWorldHarness, RunConfig, Timer, make_world
 
 
 class A(Component):
@@ -53,15 +52,15 @@ async def run(
     entities: int = 1000,
     steps: int = 1,
     *,
-    orchestrator: WorldService | None = None,
+    harness: BenchWorldHarness | None = None,
     storage: StorageConfig | None = None,
     cache_config: CacheConfig | None = None,
 ) -> tuple[BenchResult, tuple]:
-    world, orch = await make_world(
+    world, worlds = await make_world(
         "entity-cycle",
         storage=storage,
         cache_config=cache_config,
-        orchestrator=orchestrator,
+        harness=harness,
     )
     try:
         for i in range(entities):
@@ -81,6 +80,6 @@ async def run(
             elapsed_s=t.elapsed,
             extras={},
         )
-        return result, (world.world_id, rc.run_id)
+        return result, (world.world_id, world.run_id)
     finally:
-        await orch.shutdown()
+        await worlds.shutdown()

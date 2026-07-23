@@ -21,6 +21,7 @@ from uuid_utils import uuid7
 from archetype.app.container import ServiceContainer
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.artifacts import ArtifactSource
+from archetype.core.aio import AsyncWorld
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
 from archetype.core.interfaces import StaleWriterError
@@ -39,9 +40,19 @@ def _actor(role: str = "operator") -> ActorCtx:
 
 
 async def _seed_world(container: ServiceContainer, storage: StorageConfig, *, name: str):
-    world = await container.world_service.create_world(WorldConfig(name=name), storage)
-    await container.mutation_service.create_entity(world.world_id, [DurableReading(value=1.0)])
-    await container.simulation_service.step(world.world_id, RunConfig())
+    info = await container.application.create_world(WorldConfig(name=name), storage)
+    await container.application.create_entity(
+        info.world_id,
+        [DurableReading(value=1.0)],
+    )
+    await container.application.step(info.world_id, RunConfig())
+    return await _live_world(container, info.world_id)
+
+
+async def _live_world(container: ServiceContainer, world_id: object) -> AsyncWorld:
+    world = await container.world_registry.live_world(str(world_id))
+    if not isinstance(world, AsyncWorld):
+        raise RuntimeError(f"world {world_id} was not activated")
     return world
 
 
@@ -54,7 +65,7 @@ async def _visible_rows(
     *,
     ticks: list[int] | None = None,
 ) -> list[dict]:
-    frame = await container.query_service.query_components(
+    frame = await container.application.query_components(
         [component], world_id, run_id, storage, ticks=ticks
     )
     return frame.to_pylist()
@@ -73,12 +84,14 @@ async def _task_atomic_publish_retry() -> list[GraderResult]:
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=f"{tmp}/store", namespace="atomic-retry")
-            world = await container.world_service.create_world(
+            info = await container.application.create_world(
                 WorldConfig(name="atomic-retry"), storage
             )
-            await container.mutation_service.create_entity(
-                world.world_id, [DurableReading(value=7.0)]
+            await container.application.create_entity(
+                info.world_id,
+                [DurableReading(value=7.0)],
             )
+            world = await _live_world(container, info.world_id)
             wid, rid = str(world.world_id), str(world.run_id)
 
             async def crash_publish(self, *args, **kwargs):
@@ -87,7 +100,7 @@ async def _task_atomic_publish_retry() -> list[GraderResult]:
             failed = False
             with patch.object(SqliteControlCatalog, "publish_manifest", crash_publish):
                 try:
-                    await container.simulation_service.step(wid, RunConfig())
+                    await container.application.step(wid, RunConfig())
                 except RuntimeError as exc:
                     failed = "injected crash" in str(exc)
 
@@ -97,7 +110,7 @@ async def _task_atomic_publish_retry() -> list[GraderResult]:
             tick_after_failure = world.tick
             caches_after_failure = sum(len(rows) for rows in world.spawn_cache.values())
 
-            await container.simulation_service.step(wid, RunConfig())
+            await container.application.step(wid, RunConfig())
             visible_after_retry = await _visible_rows(
                 container, DurableReading, wid, rid, storage, ticks=[0]
             )
@@ -148,15 +161,17 @@ async def _task_durable_discovery() -> list[GraderResult]:
 
         reader = ServiceContainer()
         try:
-            discovered_a = await reader.world_service.discover_worlds(storage)
-            discovered_b = await reader.world_service.discover_worlds(storage)
-            info_a = await reader.world_service.open_world_readonly(storage, wid)
-            info_b = await reader.world_service.open_world_readonly(storage, wid)
+            discovered_a = await reader.application.discover_worlds(storage)
+            discovered_b = await reader.application.discover_worlds(storage)
+            info_a = await reader.application.open_world_readonly(storage, wid)
+            info_b = await reader.application.open_world_readonly(storage, wid)
             rows_a = await _visible_rows(reader, DurableReading, wid, rid, storage)
             rows_b = await _visible_rows(reader, DurableReading, wid, rid, storage)
 
             catalog = reader.storage_service.get_control_catalog(storage)
             record = await catalog.get_world(wid)
+            if record is None:
+                raise RuntimeError(f"world {wid} disappeared from its control catalog")
             await catalog.register_world(record)
             conflict_loud = False
             try:
@@ -187,8 +202,8 @@ async def _task_durable_discovery() -> list[GraderResult]:
                         "world_was_discovered": [str(info.world_id) for info in discovered_a]
                         == [wid],
                         "readonly_open_is_repeatable": info_a == info_b,
-                        "readonly_open_created_no_live_world": not reader.world_service.has_world(
-                            wid
+                        "readonly_open_created_no_live_world": (
+                            not await reader.world_registry.contains(wid)
                         ),
                         "cold_query_returned_durable_row": len(rows_a) == 1,
                         "identical_catalog_registration_is_noop": (await catalog.get_world(wid))
@@ -215,12 +230,13 @@ async def _task_resume_and_writer_fencing() -> list[GraderResult]:
         try:
             old_world = await _seed_world(old, storage, name="resumable")
             wid, rid = str(old_world.world_id), str(old_world.run_id)
-            new_world = await resumed.world_service.open_world_mutable(storage, wid)
+            await resumed.application.resume_world(storage, wid)
+            new_world = await _live_world(resumed, wid)
             resume_tick = new_world.tick
 
             stale_failed = False
             try:
-                await old.simulation_service.step(wid, RunConfig())
+                await old.application.step(wid, RunConfig())
             except StaleWriterError:
                 stale_failed = True
             except RuntimeError as exc:
@@ -229,13 +245,14 @@ async def _task_resume_and_writer_fencing() -> list[GraderResult]:
             before_new_publish = await _visible_rows(
                 resumed, DurableReading, wid, rid, storage, ticks=[1]
             )
-            await resumed.simulation_service.step(wid, RunConfig())
+            await resumed.application.step(wid, RunConfig())
             after_new_publish = await _visible_rows(
                 resumed, DurableReading, wid, rid, storage, ticks=[1]
             )
             manifests = await resumed.storage_service.get_control_catalog(storage).list_manifests(
                 wid
             )
+            writer_epoch = getattr(new_world.commit_coordinator, "epoch", None)
 
             return [
                 state_check(
@@ -243,7 +260,7 @@ async def _task_resume_and_writer_fencing() -> list[GraderResult]:
                         "resume_started_at_next_visible_tick": resume_tick == 1,
                         "new_writer_advanced_once": new_world.tick == 2,
                         "resume_kept_run_identity": str(new_world.run_id) == rid,
-                        "resume_incremented_writer_epoch": new_world.commit_coordinator.epoch == 2,
+                        "resume_incremented_writer_epoch": writer_epoch == 2,
                         "old_writer_failed_closed": stale_failed,
                         "old_writer_did_not_advance": old_world.tick == 1,
                         "stale_attempt_stayed_invisible": before_new_publish == [],
@@ -273,7 +290,7 @@ async def _task_artifact_occurrence_identity() -> list[GraderResult]:
                 namespace="artifact-occurrences",
                 backend=StorageBackend.ICEBERG,
             )
-            world = await container.world_service.create_world(
+            world = await container.application.create_world(
                 WorldConfig(name="artifact-occurrences"), storage
             )
             first = root / "first.txt"

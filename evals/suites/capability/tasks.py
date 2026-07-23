@@ -17,18 +17,36 @@ from dataclasses import dataclass
 from daft import col
 
 from archetype import ArchetypeRuntime
-from archetype.app.world.service import WorldService
+from archetype.app.container import ServiceContainer
+from archetype.core.aio import AsyncWorld
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.core.errors import TickExecutionError
 from archetype.core.hooks import PostTick, PreTick
-from archetype.storage.service import StorageService
 from evals.graders import exact_match, state_check
 from evals.harness import EvalHarness
 from evals.types import GraderResult
 
 SUITE = "capability"
+
+
+async def _create_live_world(
+    container: ServiceContainer,
+    config: WorldConfig,
+    storage: StorageConfig,
+) -> AsyncWorld:
+    info = await container.application.create_world(config, storage)
+    world = await container.world_registry.live_world(str(info.world_id))
+    if not isinstance(world, AsyncWorld):
+        raise RuntimeError(f"world {info.world_id} was not activated")
+    return world
+
+
+async def _shutdown_container(container: ServiceContainer) -> None:
+    for world in await container.world_registry.list_worlds():
+        await container.application.destroy_world(world.world_id)
+    await container.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -164,14 +182,18 @@ def task_storage_roundtrip() -> list[GraderResult]:
 async def _task_storage_roundtrip() -> list[GraderResult]:
     with tempfile.TemporaryDirectory() as tmp:
         storage_cfg = StorageConfig(uri=f"{tmp}/store", namespace="eval_cap")
-        orch = WorldService(StorageService())
+        container = ServiceContainer()
 
         try:
-            world = await orch.create_world(WorldConfig(name="roundtrip"), storage_cfg)
+            world = await _create_live_world(
+                container,
+                WorldConfig(name="roundtrip"),
+                storage_cfg,
+            )
 
             expected = []
             for i in range(20):
-                comps = [
+                comps: list[Component] = [
                     Stats(hp=100 + i, name=f"entity_{i}"),
                     Flags(active=i % 2 == 0, level=i),
                 ]
@@ -213,7 +235,7 @@ async def _task_storage_roundtrip() -> list[GraderResult]:
                 state_check(field_checks, name="field_integrity"),
             ]
         finally:
-            await orch.shutdown()
+            await _shutdown_container(container)
 
 
 # ---------------------------------------------------------------------------
@@ -232,10 +254,14 @@ def task_simulation_correctness() -> list[GraderResult]:
 async def _task_simulation_correctness() -> list[GraderResult]:
     with tempfile.TemporaryDirectory() as tmp:
         storage_cfg = StorageConfig(uri=f"{tmp}/store", namespace="eval_sim")
-        orch = WorldService(StorageService())
+        container = ServiceContainer()
 
         try:
-            world = await orch.create_world(WorldConfig(name="sim-eval"), storage_cfg)
+            world = await _create_live_world(
+                container,
+                WorldConfig(name="sim-eval"),
+                storage_cfg,
+            )
 
             spawned_ids = []
             init_positions = {}
@@ -279,7 +305,7 @@ async def _task_simulation_correctness() -> list[GraderResult]:
             for idx in range(entity_count):
                 eid = entity_ids[idx]
                 x_init, y_init = init_positions.get(eid, (None, None))
-                if x_init is None:
+                if x_init is None or y_init is None:
                     position_checks[f"eid_{eid}_found"] = False
                     continue
                 position_checks[f"eid_{eid}_x"] = rows["position__x"][idx] == x_init + applied_ticks
@@ -316,7 +342,7 @@ async def _task_simulation_correctness() -> list[GraderResult]:
                 state_check(col_checks, name="query_completeness"),
             ]
         finally:
-            await orch.shutdown()
+            await _shutdown_container(container)
 
 
 # ---------------------------------------------------------------------------

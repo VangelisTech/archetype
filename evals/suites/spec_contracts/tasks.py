@@ -14,8 +14,10 @@ from __future__ import annotations
 import ast
 import asyncio
 import os
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 os.environ.setdefault("LOGFIRE_IGNORE_NO_CONFIG", "1")
@@ -23,7 +25,7 @@ os.environ.setdefault("LOGFIRE_IGNORE_NO_CONFIG", "1")
 from uuid_utils import uuid7
 
 from archetype.app.application.service import RuntimeApplication
-from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.gateway.auth.permissions import COMMANDS_BY_ROLE
 from archetype.app.gateway.service import CommandGateway
@@ -254,6 +256,7 @@ _DYNAMIC_GATE_METHODS = {
 
 _OUTBOX_AUDITED_METHODS = {"submit", "submit_batch", "submit_spawn"}
 _SYNCHRONOUS_GATE_METHODS = {"reserve_entity_ids"}
+_GATE_HELPERS = frozenset({"_gate", "_gate_world", "_gate_application"})
 
 
 def _python_files(path: Path) -> list[Path]:
@@ -308,8 +311,8 @@ def _called_attr_name(call: ast.Call) -> str | None:
 
 
 def _command_type_from_gate_call(call: ast.Call) -> str | None:
-    """Extract ``CommandType.NAME`` from ``self._gate(Command(type=...))``."""
-    if _called_attr_name(call) != "_gate" or not call.args:
+    """Extract ``CommandType.NAME`` from a gateway helper call."""
+    if _called_attr_name(call) not in _GATE_HELPERS or not call.args:
         return None
     command_call = call.args[0]
     if not isinstance(command_call, ast.Call):
@@ -459,7 +462,7 @@ def task_command_gateway_gate_map() -> list[GraderResult]:
             continue
 
         calls = [call for call in ast.walk(node) if isinstance(call, ast.Call)]
-        gate_calls = [call for call in calls if _called_attr_name(call) == "_gate"]
+        gate_calls = [call for call in calls if _called_attr_name(call) in _GATE_HELPERS]
         emit_calls = [call for call in calls if _called_attr_name(call) == "_emit"]
         assigned_types = _assigned_command_type_names(node)
         gate_type_names: list[str] = []
@@ -518,18 +521,18 @@ def task_info_class_downgrades() -> list[GraderResult]:
 
 
 async def _task_info_class_downgrades() -> list[GraderResult]:
-    reset_tick_counters()
     reset_daily_tokens()
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    graph: Any = _FakeWorldGraph()
+    unused: Any = _UnusedService()
     application = RuntimeApplication(
-        mutations=_UnusedService(),
-        worlds=_FakeWorldService(),
-        simulation=_UnusedService(),
-        queries=_UnusedService(),
-        commands=_UnusedService(),
+        registry=graph,
+        lifecycle=graph,
+        storage=unused,
+        commands=unused,
         audit=None,
     )
-    service = CommandGateway(application, audit=None)
+    service = CommandGateway(application, audit=None, target_tick_for_world=graph.target_tick)
 
     try:
         created = await service.create_world(ctx, WorldConfig(name="spec-info"))
@@ -540,7 +543,6 @@ async def _task_info_class_downgrades() -> list[GraderResult]:
         hooks = await service.list_hooks(ctx, created.world_id)
         resources = await service.list_resources(ctx, created.world_id)
     finally:
-        reset_tick_counters()
         reset_daily_tokens()
 
     info_values = [created, forked, fetched, *worlds, *processors, *hooks, *resources]
@@ -576,6 +578,9 @@ class _FakeWorld:
         self.name = name
         self.tick = 7
         self.run_id = uuid7()
+        self.system = SimpleNamespace(processors=[_FakeProcessor()])
+        self.hooks = _FakeHooks()
+        self.resources = _FakeResources()
 
 
 class _FakeProcessor:
@@ -609,7 +614,17 @@ def _fake_handler() -> None:
     pass
 
 
-class _FakeWorldService:
+class _FakeHooks:
+    def items(self):
+        return [(_FakeEvent, _FakeHookHandle(), _fake_handler, "blocking")]
+
+
+class _FakeResources:
+    def items(self):
+        return [(_FakeResource, _FakeResource())]
+
+
+class _FakeWorldGraph:
     def __init__(self) -> None:
         self.created = _FakeWorld("spec-info")
         self.forked = _FakeWorld("spec-fork")
@@ -619,24 +634,20 @@ class _FakeWorldService:
         return self.created
 
     async def fork_world(self, source_world_id, name=None, storage_config=None, cache_config=None):
-        self.forked.name = name
+        self.forked.name = name or "spec-fork"
         return self.forked
 
-    def get_world(self, world_id):
-        return self.created
+    @asynccontextmanager
+    async def operation(self, world_id):
+        worlds = {str(world.world_id): world for world in (self.created, self.forked)}
+        yield worlds[str(world_id)]
 
-    def list_worlds(self):
+    async def list_worlds(self):
         return [self.created, self.forked]
 
-    def list_processors(self, world_id):
-        return [_FakeProcessor()]
-
-    def list_hooks(self, world_id):
-        # Hook-bus items() rows: (event_type, handle, fn, mode)
-        return [(_FakeEvent, _FakeHookHandle(), _fake_handler, "blocking")]
-
-    def list_resources(self, world_id):
-        return [(_FakeResource, _FakeResource())]
+    def target_tick(self, world_id):
+        worlds = {str(world.world_id): world for world in (self.created, self.forked)}
+        return worlds[str(world_id)].tick
 
 
 class _UnusedService:

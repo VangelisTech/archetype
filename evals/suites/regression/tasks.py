@@ -21,7 +21,6 @@ from archetype.app.gateway.auth.guard import (
     estimate_token_cost,
     guardrail_allow,
     reset_daily_tokens,
-    reset_tick_counters,
 )
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.gateway.service import CommandGateway
@@ -167,7 +166,6 @@ def task_archetype_signatures() -> list[GraderResult]:
 
 def task_rbac_enforcement() -> list[GraderResult]:
     """RBAC correctly allows/denies commands per role."""
-    reset_tick_counters()
     reset_daily_tokens()
 
     admin = ActorCtx(id=uuid7(), roles={"admin"})
@@ -205,7 +203,6 @@ def task_rbac_enforcement() -> list[GraderResult]:
         ),
     ]
 
-    reset_tick_counters()
     reset_daily_tokens()
 
     results.append(
@@ -216,7 +213,6 @@ def task_rbac_enforcement() -> list[GraderResult]:
         ),
     )
 
-    reset_tick_counters()
     reset_daily_tokens()
 
     # Token costs are all positive
@@ -228,16 +224,14 @@ def task_rbac_enforcement() -> list[GraderResult]:
         exact_match(ActorCtx(id=uuid7()).roles, {"viewer"}, name="default_role_viewer"),
     )
 
-    reset_tick_counters()
     reset_daily_tokens()
     return results
 
 
 def _is_allowed(cmd: Command, ctx: ActorCtx) -> bool:
-    reset_tick_counters()
     reset_daily_tokens()
     try:
-        guardrail_allow(cmd, ctx)
+        guardrail_allow(cmd, ctx, world_id="eval-permission", target_tick=0)
         return True
     except PermissionError:
         return False
@@ -280,14 +274,13 @@ def task_command_pipeline() -> list[GraderResult]:
 
 
 async def _task_command_pipeline() -> list[GraderResult]:
-    reset_tick_counters()
     reset_daily_tokens()
 
     with tempfile.TemporaryDirectory() as tmp:
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=f"{tmp}/store", namespace="eval_reg")
-            world = await container.world_service.create_world(
+            world = await container.application.create_world(
                 WorldConfig(name="reg-pipeline"),
                 storage,
             )
@@ -302,7 +295,7 @@ async def _task_command_pipeline() -> list[GraderResult]:
 
             # Step → drains
             rc = RunConfig()
-            applied = await container.simulation_service.step(world.world_id, rc)
+            applied = await container.application.step(world.world_id, rc)
             pending_after = await container.command_scheduler.pending_count(wid)
 
             # History
@@ -329,7 +322,6 @@ async def _task_command_pipeline() -> list[GraderResult]:
             ]
         finally:
             await container.shutdown()
-            reset_tick_counters()
             reset_daily_tokens()
 
 
@@ -339,12 +331,11 @@ async def _task_command_pipeline() -> list[GraderResult]:
 
 
 def task_query_correctness() -> list[GraderResult]:
-    """Gated durable reads remain correct without a live AsyncWorld."""
+    """Trusted durable reads remain correct without a live AsyncWorld."""
     return asyncio.run(_task_query_correctness())
 
 
 async def _task_query_correctness() -> list[GraderResult]:
-    reset_tick_counters()
     reset_daily_tokens()
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -389,19 +380,16 @@ async def _task_query_correctness() -> list[GraderResult]:
             try:
                 await writer.shutdown()
             finally:
-                reset_tick_counters()
                 reset_daily_tokens()
 
-        # A new composition root has no live world object. Reads must cross
-        # the public gate and resolve the durable QueryService path instead.
+        # A new composition root has no live world object. Trusted reads use
+        # RuntimeApplication and resolve the durable storage path instead.
         reader = ServiceContainer()
-        viewer = ActorCtx(id=uuid7(), roles={"viewer"})
         try:
-            cold_reader = not reader.world_service.has_world(world_id)
-            signatures = await reader.command_gateway.list_signatures(viewer, storage)
+            cold_reader = not await reader.world_registry.contains(world_id)
+            signatures = await reader.application.list_signatures(storage)
             tick_zero = (
-                await reader.command_gateway.query_components(
-                    viewer,
+                await reader.application.query_components(
                     [Health],
                     world_id,
                     run_id,
@@ -410,8 +398,7 @@ async def _task_query_correctness() -> list[GraderResult]:
                 )
             ).to_pylist()
             selected = (
-                await reader.command_gateway.query_components(
-                    viewer,
+                await reader.application.query_components(
                     [Health],
                     world_id,
                     run_id,
@@ -421,8 +408,7 @@ async def _task_query_correctness() -> list[GraderResult]:
                 )
             ).to_pylist()
             projected = (
-                await reader.command_gateway.query_archetype(
-                    viewer,
+                await reader.application.query_archetype(
                     (Health, Tag),
                     world_id,
                     run_id,
@@ -474,7 +460,6 @@ async def _task_query_correctness() -> list[GraderResult]:
             try:
                 await reader.shutdown()
             finally:
-                reset_tick_counters()
                 reset_daily_tokens()
 
 
@@ -489,7 +474,6 @@ def task_tick_quota_resets() -> list[GraderResult]:
 
 
 async def _task_tick_quota_resets() -> list[GraderResult]:
-    reset_tick_counters()
     reset_daily_tokens()
 
     saved = guard.MAX_CMDS_PER_TICK
@@ -516,7 +500,6 @@ async def _task_tick_quota_resets() -> list[GraderResult]:
         finally:
             guard.MAX_CMDS_PER_TICK = saved
             await container.shutdown()
-            reset_tick_counters()
             reset_daily_tokens()
 
     return [exact_match(blocked, False, name="quota_resets_across_ticks")]
@@ -554,14 +537,19 @@ async def _submit_allowed(
 
 def _guard_allowed(ctx: ActorCtx, now: datetime) -> bool:
     try:
-        guardrail_allow(Command(type=CommandType.CUSTOM), ctx, now=now)
+        guardrail_allow(
+            Command(type=CommandType.CUSTOM),
+            ctx,
+            world_id="eval-daily-budget",
+            target_tick=0,
+            now=now,
+        )
     except GuardrailError:
         return False
     return True
 
 
 async def _task_quota_boundaries() -> list[GraderResult]:
-    reset_tick_counters()
     reset_daily_tokens()
     saved_daily_limit = guard.MAX_TOKENS_PER_DAY
 
@@ -569,7 +557,7 @@ async def _task_quota_boundaries() -> list[GraderResult]:
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=f"{tmp}/store", namespace="eval_quota_boundaries")
-            world = await container.world_service.create_world(
+            world = await container.application.create_world(
                 WorldConfig(name="quota-boundaries"),
                 storage,
             )
@@ -612,7 +600,6 @@ async def _task_quota_boundaries() -> list[GraderResult]:
             )
             pending_after_501 = await container.command_scheduler.pending_count(world.world_id)
 
-            reset_tick_counters()
             reset_daily_tokens()
             guard.MAX_TOKENS_PER_DAY = 20
             before_midnight = datetime(2030, 1, 1, 23, 59, 59, tzinfo=UTC)
@@ -675,7 +662,6 @@ async def _task_quota_boundaries() -> list[GraderResult]:
         finally:
             guard.MAX_TOKENS_PER_DAY = saved_daily_limit
             await container.shutdown()
-            reset_tick_counters()
             reset_daily_tokens()
 
 
@@ -686,7 +672,6 @@ async def _task_quota_boundaries() -> list[GraderResult]:
 
 def task_runtime_contracts() -> list[GraderResult]:
     """Compose the public runtime's activation and lifecycle boundaries."""
-    reset_tick_counters()
     reset_daily_tokens()
     try:
         activation, shutdown = asyncio.run(_task_runtime_contracts())
@@ -700,7 +685,6 @@ def task_runtime_contracts() -> list[GraderResult]:
             ),
         ]
     finally:
-        reset_tick_counters()
         reset_daily_tokens()
 
 
@@ -797,18 +781,17 @@ def task_episode_value_termination() -> list[GraderResult]:
 
 
 async def _task_episode_value_termination() -> list[GraderResult]:
-    reset_tick_counters()
     reset_daily_tokens()
 
     with tempfile.TemporaryDirectory() as tmp:
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=f"{tmp}/store", namespace="eval_term")
-            world = await container.world_service.create_world(WorldConfig(name="term"), storage)
-            await world.add_processor(CountToGoal())
-            await world.create_entity([Countdown(goal=3)])
+            world = await container.application.create_world(WorldConfig(name="term"), storage)
+            await container.application.add_processor(world.world_id, CountToGoal())
+            await container.application.create_entity(world.world_id, [Countdown(goal=3)])
 
-            result = await container.simulation_service.run_episode(
+            result = await container.application.run_episode(
                 world.world_id,
                 EpisodeConfig(
                     max_steps=50,
@@ -829,7 +812,6 @@ async def _task_episode_value_termination() -> list[GraderResult]:
             ]
         finally:
             await container.shutdown()
-            reset_tick_counters()
             reset_daily_tokens()
 
 
@@ -874,7 +856,7 @@ def register(harness: EvalHarness) -> None:
         "query_correctness",
         suite=SUITE,
         fn=task_query_correctness,
-        desc="Cold gated component/archetype reads, filters, projection, and discovery",
+        desc="Cold trusted component/archetype reads, filters, projection, and discovery",
     )
     harness.add(
         "tick_quota_resets",

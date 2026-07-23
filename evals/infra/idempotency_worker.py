@@ -21,6 +21,7 @@ from uuid_utils import uuid7
 
 from archetype.app.container import ServiceContainer
 from archetype.app.gateway.auth.models import ActorCtx
+from archetype.core.aio import AsyncWorld
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
 from archetype.core.interfaces import StaleWriterError
@@ -64,15 +65,24 @@ def _ready(path: str | None, payload: dict | None = None) -> None:
     Path(path).write_text(json.dumps(payload or {"ready": True}, sort_keys=True))
 
 
+async def _live_world(container: ServiceContainer, world_id: object) -> AsyncWorld:
+    world = await container.world_registry.live_world(str(world_id))
+    if not isinstance(world, AsyncWorld):
+        raise RuntimeError(f"world {world_id} was not activated")
+    return world
+
+
 async def seed(args: argparse.Namespace) -> None:
     container = ServiceContainer()
     try:
         storage = _storage(args)
-        world = await container.world_service.create_world(WorldConfig(name=args.name), storage)
-        await container.mutation_service.create_entity(
-            world.world_id, [ProcessReading(value=args.value)]
+        info = await container.application.create_world(WorldConfig(name=args.name), storage)
+        await container.application.create_entity(
+            info.world_id,
+            [ProcessReading(value=args.value)],
         )
-        await container.simulation_service.step(world.world_id, RunConfig())
+        await container.application.step(info.world_id, RunConfig())
+        world = await _live_world(container, info.world_id)
         _emit(
             {
                 "world_id": str(world.world_id),
@@ -88,13 +98,13 @@ async def crash_publish(args: argparse.Namespace) -> None:
     """Hard-exit after durable appends but before manifest publication."""
     container = ServiceContainer()
     storage = _storage(args)
-    await container.world_service.open_world_mutable(storage, args.world_id)
+    await container.application.resume_world(storage, args.world_id)
 
     async def die_before_publish(self, *publish_args, **publish_kwargs):
         os._exit(args.exit_code)
 
-    SqliteControlCatalog.publish_manifest = die_before_publish
-    await container.simulation_service.step(args.world_id, RunConfig())
+    SqliteControlCatalog.publish_manifest = die_before_publish  # ty: ignore[invalid-assignment]
+    await container.application.step(args.world_id, RunConfig())
     raise AssertionError("publish crash hook did not terminate the process")
 
 
@@ -102,22 +112,24 @@ async def resume_verify(args: argparse.Namespace) -> None:
     container = ServiceContainer()
     try:
         storage = _storage(args)
-        world = await container.world_service.open_world_mutable(storage, args.world_id)
+        await container.application.resume_world(storage, args.world_id)
+        world = await _live_world(container, args.world_id)
         resume_tick = world.tick
-        await container.simulation_service.step(args.world_id, RunConfig())
-        frame = await container.query_service.query_components(
+        await container.application.step(args.world_id, RunConfig())
+        frame = await container.application.query_components(
             [ProcessReading], args.world_id, str(world.run_id), storage, ticks=[resume_tick]
         )
         manifests = await container.storage_service.get_control_catalog(storage).list_manifests(
             args.world_id
         )
+        writer_epoch = getattr(world.commit_coordinator, "epoch", None)
         _emit(
             {
                 "resume_tick": resume_tick,
                 "final_tick": world.tick,
                 "visible_rows": len(frame.to_pylist()),
                 "manifest_ticks": [record.tick for record in manifests],
-                "epoch": world.commit_coordinator.epoch,
+                "epoch": writer_epoch,
             }
         )
     finally:
@@ -128,11 +140,13 @@ async def resume_race(args: argparse.Namespace) -> None:
     container = ServiceContainer()
     try:
         storage = _storage(args)
-        world = await container.world_service.open_world_mutable(storage, args.world_id)
-        _ready(args.ready, {"epoch": world.commit_coordinator.epoch})
+        await container.application.resume_world(storage, args.world_id)
+        world = await _live_world(container, args.world_id)
+        writer_epoch = getattr(world.commit_coordinator, "epoch", None)
+        _ready(args.ready, {"epoch": writer_epoch})
         _wait_for(args.go)
         try:
-            await container.simulation_service.step(args.world_id, RunConfig())
+            await container.application.step(args.world_id, RunConfig())
             status = "published"
         except StaleWriterError:
             status = "stale"
@@ -140,7 +154,7 @@ async def resume_race(args: argparse.Namespace) -> None:
             if "StaleWriter" not in type(exc).__name__ and "not the" not in str(exc):
                 raise
             status = "stale"
-        _emit({"status": status, "epoch": world.commit_coordinator.epoch, "tick": world.tick})
+        _emit({"status": status, "epoch": writer_epoch, "tick": world.tick})
     finally:
         await container.shutdown()
 
@@ -149,9 +163,9 @@ async def query_world(args: argparse.Namespace) -> None:
     container = ServiceContainer()
     try:
         storage = _storage(args)
-        info = await container.world_service.open_world_readonly(storage, args.world_id)
+        info = await container.application.open_world_readonly(storage, args.world_id)
         rows = (
-            await container.query_service.query_components(
+            await container.application.query_components(
                 [ProcessReading], args.world_id, str(info.run_id), storage
             )
         ).to_pylist()
@@ -217,8 +231,9 @@ async def advance(args: argparse.Namespace) -> None:
     container = ServiceContainer()
     try:
         storage = _storage(args)
-        world = await container.world_service.open_world_mutable(storage, args.world_id)
-        await container.simulation_service.step(world.world_id, RunConfig())
+        await container.application.resume_world(storage, args.world_id)
+        world = await _live_world(container, args.world_id)
+        await container.application.step(world.world_id, RunConfig())
         _emit({"tick": world.tick})
     finally:
         await container.shutdown()
