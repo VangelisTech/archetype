@@ -91,6 +91,13 @@ receives fresh UUIDv7 world and run identities and a fresh writer fence,
 command-materializer binding, commit coordinator, lock, and required-projector
 binding.
 
+Before selecting that snapshot, the source retries any retained required
+projection and reconciles any prepared publication under its exact identity.
+The resulting receipt is projected before the fork boundary is selected. If
+publication remains ambiguous, fork fails without registering a child; it
+never branches from stale live tick/caches while a newer manifest may already
+be durable.
+
 It snapshots:
 
 - the current tick and next entity ID;
@@ -118,18 +125,23 @@ and pending mutations into that storage authority.
 
 Application destroy starts by obtaining a sticky `WorldCleanupLease`. New
 public operations reject once close has begun. Under that exact lease,
-`RuntimeApplication` cancels the target world's unsettled commands, then
-`WorldLifecycle.destroy_world(...)`:
+`RuntimeApplication`:
 
-1. fires advisory `OnDestroy`;
-2. marks the durable world record destroyed; and
-3. releases registry ownership only after cleanup succeeds.
+1. retries any already-retained required-projector receipt;
+2. reconciles any prepared tick publication under its exact commit identity
+   and retains/projects the resulting receipt;
+3. cancels only the remaining unsettled commands; and
+4. delegates to `WorldLifecycle.destroy_world(...)`, which fires advisory
+   `OnDestroy`, marks the durable world record destroyed, and releases registry
+   ownership only after cleanup succeeds.
 
 If any cleanup step fails, the entry stays strongly reachable and closing. The
 same lease authorizes a later retry against that exact entry; it cannot
 authorize a sibling or replacement world. Aliases and locks disappear only
-after `finish_close`. A pending required-projector receipt also prevents final
-release until it is acknowledged.
+after `finish_close`. Required projection or prepared-commit reconciliation
+failure produces no command cancellation, `OnDestroy`, or durable destroyed
+status. A pending required-projector receipt also prevents final release until
+it is acknowledged.
 
 Destroy never removes persisted rows, lineage, command history, audit history,
 or storage files. Destroyed worlds remain durably queryable but are not

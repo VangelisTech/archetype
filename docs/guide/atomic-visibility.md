@@ -65,17 +65,39 @@ tick in this order:
    span a directory Durable Object or the separate Iceberg data commit. Stale
    epoch → `StaleWriterError`; a different already-published attempt →
    `CatalogConflictError`; the identical attempt → idempotent no-op.
-7. **Consume** spawn/despawn caches — only now. Failure at any earlier
-   point leaves mutations intact for the retried tick.
-8. **Advance** the in-memory tick, fire advisory `PostTick` hooks, and return a
-   `CommittedTickReceipt` whose identity is
+7. **Reconcile** an uncertain publish response before admitting any other
+   world operation. After append and flush, the world retains one prepared
+   commit containing the exact context and computed frames. An authoritative
+   read that returns that exact token proves the commit and permits only an
+   in-process acknowledgment that releases coordinator-local staging; it MUST
+   NOT issue a second fenced catalog write merely to finish local cleanup.
+   Command materialization, processor execution, and append MUST NOT replay.
+   This remains true if another writer acquired the fence after the proven
+   commit; the old writer may finalize that receipt but cannot publish new
+   work. An explicit empty result for that tick from the fenced authority
+   proves the publish had no effect and permits a later fresh-token
+   recomputation. An unreadable result, a pre-coordination `None`, or a
+   different token is not proof of absence: the prepared identity remains
+   retained and all entity, processor, hook, and resource mutation stays
+   frozen until exact reconciliation succeeds or explicit absence is proved.
+8. **Consume** spawn/despawn caches — only after publication is confirmed.
+   Failure at any earlier point leaves mutations intact for the retried tick.
+9. **Advance** the in-memory tick and record a `CommittedTickReceipt` whose
+   identity is
    `(world_id, run_id, committed_tick, visibility_token)`.
+10. **Fire** advisory `PostTick` hooks and return that already-recorded
+    receipt. Cancellation after publication cannot erase the durable receipt;
+    managed execution retains it for required projection before propagating
+    caller cancellation.
 
 The managed world layer then retains that exact receipt for its required
 projector. A projector failure is post-commit: the manifest remains visible,
 processors and command materialization are not replayed, and the same retained
 receipt is retried before another tick. Required projection is not a public
-hook and does not hold the world lock across provider I/O.
+hook. It runs under exact-world authority and is limited to idempotently
+persisting deterministic intent keyed by its consumer and receipt identity; it
+MUST NOT perform provider or sandbox I/O. A downstream resource consumer may
+claim that intent and perform external effects outside the world lock.
 
 Worlds constructed without a coordinator (bare core usage, the sync stack)
 run uncoordinated: rows stamp the implicit epoch-0 identity (`""`/`0`), no

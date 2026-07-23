@@ -123,6 +123,14 @@ The common index can therefore contain several occurrence rows pointing at
 one object URI. Analysis can group by `sha256` for content identity or by
 `artifact_id` for workflow history without conflating the two.
 
+For a live world, artifact ingestion captures the occurrence tick under that
+world's exact operation lock after retrying any retained required projection
+and reconciling any prepared publication. If recovery remains ambiguous,
+ingestion fails before copying content or publishing an index row. The
+potentially slow file/object/index pipeline runs after releasing the world
+lock. A cold world uses its durable catalog head instead of process-local
+state.
+
 ## 5. Catalog and index contract
 
 `IngestionService.append()` accepts a stable table name, a typed Daft

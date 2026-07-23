@@ -329,15 +329,25 @@ One tick MUST follow this order:
    - concat staged spawn rows, raw
 5. append every computed frame, flush durable storage, then publish the tick
    manifest and command settlement
-6. consume staged mutations and replace the live snapshot with active rows
-7. increment the world tick
-8. fire advisory `PostTick` hooks
-9. return the manifest-bound `CommittedTickReceipt`
+6. if the publish response is uncertain, retain the exact prepared commit and
+   reconcile it before admitting any mutation or later tick; exact-token
+   recovery releases only coordinator-local staging and MUST NOT replay
+   materialization, processing, append, or a second fenced catalog write
+7. consume staged mutations and replace the live snapshot with active rows
+8. increment the world tick and record the manifest-bound
+   `CommittedTickReceipt`
+9. fire advisory `PostTick` hooks
+10. return the already-recorded receipt
 
 Managed simulation retains that receipt until its one required projector
 acknowledges the exact receipt identity. Projection occurs after commit and
 outside advisory hooks. A projection failure does not roll back or replay the
 tick, and its retained receipt MUST be retried before another managed tick.
+Caller cancellation after publication cannot discard the recorded receipt:
+the managed boundary retains it before propagating cancellation. The required
+projector executes under exact-world authority and may only persist
+deterministic, idempotent intent; provider and sandbox I/O belong to a
+downstream resource consumer outside the world lock.
 
 ### Initial conditions
 
@@ -433,7 +443,9 @@ tick, and its retained receipt MUST be retried before another managed tick.
   mutation path that queues the corresponding mutation.
 - A required post-commit projector is a separate managed-world port. It is
   idempotent by `(consumer_name, receipt.identity)`, is never registered in the
-  hook bus, and its failure is reported as committed-but-unprojected work.
+  hook bus, persists only deterministic intent under exact-world authority,
+  and reports failure as committed-but-unprojected work. Provider or sandbox
+  I/O MUST NOT execute through this port.
 
 ## Application Layer Contracts
 
@@ -536,6 +548,9 @@ iRuntimeApplication` for actor-free application execution.
 - `destroy_world()` SHOULD be safe to call on a missing world.
 - `fork_world()` MUST create a new `world_id`, clone the source world's visible
   state, and let source and fork diverge independently.
+- Before selecting a live fork snapshot, managed execution MUST retry retained
+  projection and reconcile any prepared source publication under its exact
+  identity. An unresolved outcome fails without registering a child.
 - Forking MUST transfer pending spawn/despawn caches so spawn-then-fork before
   the next tick materializes in both worlds.
 
@@ -600,6 +615,23 @@ retryable failures remain recoverable and exhausted failures become terminal.
 - After publication, a configured required projector MUST consume and
   acknowledge the stable `CommittedTickReceipt`. Failure is post-commit: the
   receipt remains retained and retryable, and the tick MUST NOT be replayed.
+- After durable rows are flushed, an uncertain manifest response MUST retain
+  the exact prepared context and frames. Exact-token visibility permits only
+  local staging acknowledgment and receipt completion, even after fence
+  handoff; it does not authorize a second catalog write or later work from the
+  stale writer. An explicit missing tick from the fenced authority permits a
+  fresh attempt. An unreadable result, a legacy `None`, or a different token
+  fails closed. Until resolved, entity, processor, hook, and resource mutation
+  MUST reject without changing live state.
+- The core records the committed receipt before advisory `PostTick`. Managed
+  cancellation after publication MUST retain that receipt and retry required
+  projection before any later tick.
+- A live boundary that branches, counts new work, reports a tick, or persists
+  tick attribution MUST reconcile retained projection and prepared publication
+  before selecting that boundary. This includes fork, run/episode start,
+  live world-info snapshots, and artifact occurrence context. Multi-world
+  reporting MUST NOT hold sibling world locks while recovery fires advisory
+  hooks or a required projector.
 - Episodes and rollouts follow [Execution Hierarchy](execution-hierarchy.md).
 
 ### Durable world reads
