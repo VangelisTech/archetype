@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from importlib import import_module
@@ -259,6 +260,69 @@ async def test_create_failure_after_registration_is_not_activated(
     assert registry.world is None
     assert ("status", world_id, "destroyed") in events
     assert not any(event[0] == "insert" for event in events)
+
+
+async def test_concurrent_same_name_create_never_leaves_an_orphan_active_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lifecycle_module = import_module("archetype.world.lifecycle")
+    registry_module = import_module("archetype.world.registry")
+    first_registered = asyncio.Event()
+    release_first = asyncio.Event()
+
+    class _RacingCatalog(_Catalog):
+        async def register_world(self, record: Any) -> None:
+            self.events.append(("register", record.world_id, record.name))
+            self.records[record.world_id] = record
+            if len(self.records) == 1:
+                first_registered.set()
+                await release_first.wait()
+
+        async def set_world_status(self, world_id: str, status: str) -> None:
+            del world_id, status
+            raise RuntimeError("cleanup authority unavailable")
+
+    def fake_build(
+        store: object,
+        config: WorldConfig,
+        *,
+        restored_run_id: UUID | None,
+        commit_coordinator: object,
+        materialize_commands: object | None,
+        system: object | None = None,
+    ) -> _World:
+        del store, commit_coordinator, materialize_commands, system
+        assert restored_run_id is not None
+        return _World(
+            world_id=str(config.world_id),
+            run_id=restored_run_id,
+            name=config.name,
+        )
+
+    monkeypatch.setattr(lifecycle_module, "build_world", fake_build)
+    events: list[tuple[Any, ...]] = []
+    catalog = _RacingCatalog(events)
+    lifecycle = lifecycle_module.WorldLifecycle(
+        _Storage(catalog, events),
+        registry_module.WorldRegistry(),
+    )
+    configs = (
+        WorldConfig(world_id=str(uuid7()), name="shared-name"),
+        WorldConfig(world_id=str(uuid7()), name="shared-name"),
+    )
+
+    first = asyncio.create_task(lifecycle.create_world(configs[0], StorageConfig()))
+    await first_registered.wait()
+    second = asyncio.create_task(lifecycle.create_world(configs[1], StorageConfig()))
+    for _ in range(10):
+        await asyncio.sleep(0)
+    release_first.set()
+    results = await asyncio.gather(first, second, return_exceptions=True)
+
+    assert sum(isinstance(result, _World) for result in results) == 1
+    assert sum(isinstance(result, ValueError) for result in results) == 1
+    assert len(catalog.records) == 1
+    assert all(record.status == "active" for record in catalog.records.values())
 
 
 async def test_fork_mints_identity_and_wires_fresh_projector_binding() -> None:

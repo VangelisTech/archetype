@@ -435,6 +435,12 @@ class ListSignatures(WorldOperation):
     storage_config: StorageConfig | None = None
 
 
+class ListWorldSignatures(WorldOperation):
+    operation: Literal["list_world_signatures"] = "list_world_signatures"
+    world_id: str | JsonUUID
+    storage_config: StorageConfig | None = None
+
+
 class AddResource(WorldOperation):
     operation: Literal["add_resource"] = "add_resource"
     world_id: str | JsonUUID
@@ -516,6 +522,7 @@ WORLD_OPERATION_TYPES = (
     QueryComponents,
     QueryArchetype,
     ListSignatures,
+    ListWorldSignatures,
     AddResource,
     AddHook,
     RemoveHook,

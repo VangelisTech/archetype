@@ -24,6 +24,8 @@ from archetype.world.models import (
     EpisodeConfig,
     EpisodeResult,
     HookInfo,
+    ListSignatures,
+    ListWorldSignatures,
     ProcessorInfo,
     ResourceInfo,
     RolloutConfig,
@@ -120,7 +122,24 @@ def test_portable_admission_and_handler_inventories_are_exact() -> None:
 
     assert require_portable_tick_operation(spawn) is spawn
     assert type(spawn) in PORTABLE_TICK_OPERATION_TYPES
+    assert len(PORTABLE_TICK_OPERATION_TYPES) == 6
+    assert len(WORLD_OPERATION_TYPES) == 32
     assert frozenset(WORLD_OPERATION_HANDLERS) == frozenset(WORLD_OPERATION_TYPES)
+
+
+def test_storage_and_world_signature_discovery_are_distinct_frozen_operations() -> None:
+    storage_wide = ListSignatures()
+    world_scoped = ListWorldSignatures(world_id="world-7")
+
+    assert storage_wide.operation == "list_signatures"
+    assert "world_id" not in type(storage_wide).model_fields
+    assert world_scoped.operation == "list_world_signatures"
+    assert world_scoped.world_id == "world-7"
+    assert type(storage_wide) in WORLD_OPERATION_TYPES
+    assert type(world_scoped) in WORLD_OPERATION_TYPES
+
+    with pytest.raises(ValidationError):
+        world_scoped.world_id = "other"
 
 
 def test_results_are_frozen_and_use_tuple_aggregation() -> None:

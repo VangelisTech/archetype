@@ -38,6 +38,7 @@ from archetype.world.models import (
     ListResources,
     ListSignatures,
     ListWorlds,
+    ListWorldSignatures,
     OpenWorldReadonly,
     PortableTickOperation,
     ProcessorInfo,
@@ -60,12 +61,11 @@ from archetype.world.models import (
 )
 
 if TYPE_CHECKING:
+    from archetype.core.config import StorageConfig
     from archetype.storage.interfaces import iStorageService
     from archetype.world.interfaces import iWorldRegistry
 
 LifecycleCallable = Callable[..., Awaitable[Any]]
-WorldResolver = Callable[[object], Any]
-WorldLister = Callable[[], list[Any]]
 
 
 def _components(values: tuple[ComponentValue, ...]) -> list[Component]:
@@ -312,18 +312,39 @@ async def destroy_world(
 
 
 async def get_world_info(
-    resolve: WorldResolver,
+    registry: iWorldRegistry,
     operation: GetWorldInfo,
 ) -> WorldInfo:
-    return _world_info(resolve(operation.world_id))
+    world_id = str(operation.world_id)
+    async with registry.operation(world_id) as world:
+        await simulation.reconcile_committed_work_locked(
+            registry,
+            world_id,
+            world,
+        )
+        return _world_info(world)
 
 
 async def list_worlds(
-    list_live: WorldLister,
+    registry: iWorldRegistry,
     operation: ListWorlds,
 ) -> list[WorldInfo]:
     del operation
-    return [_world_info(world) for world in list_live()]
+    snapshot = await registry.list_worlds()
+    world_ids = [str(world.world_id) for world in snapshot]
+    infos: list[WorldInfo] = []
+    # Recovery may invoke user hooks or required projectors that target a
+    # sibling. Acquire only one exact-world lock at a time and fail closed if
+    # a snapshotted world begins closing before its turn.
+    for world_id in world_ids:
+        async with registry.operation(world_id) as world:
+            await simulation.reconcile_committed_work_locked(
+                registry,
+                world_id,
+                world,
+            )
+            infos.append(_world_info(world))
+    return infos
 
 
 async def discover_worlds(
@@ -399,18 +420,33 @@ async def run_rollout(
 
 
 async def query_components(
+    registry: iWorldRegistry,
     storage: iStorageService,
     operation: QueryComponents,
 ):
+    storage_config = await _resolve_storage(
+        registry,
+        operation.world_id,
+        operation.storage_config,
+    )
+    lineage = list(operation.lineage) if operation.lineage is not None else None
+    if operation.lineage is None and operation.visibility_tokens is None:
+        lineage = await _resolve_lineage(
+            registry,
+            storage,
+            operation.world_id,
+            operation.run_id,
+            storage_config,
+        )
     return await query.query_components(
         storage,
         _component_types(operation.components),
         str(operation.world_id),
         str(operation.run_id),
-        operation.storage_config,
+        storage_config,
         ticks=list(operation.ticks) if operation.ticks is not None else None,
         entity_ids=(list(operation.entity_ids) if operation.entity_ids is not None else None),
-        lineage=list(operation.lineage) if operation.lineage is not None else None,
+        lineage=lineage,
         visibility_tokens=(
             list(operation.visibility_tokens) if operation.visibility_tokens is not None else None
         ),
@@ -418,22 +454,72 @@ async def query_components(
 
 
 async def query_archetype(
+    registry: iWorldRegistry,
     storage: iStorageService,
     operation: QueryArchetype,
 ):
+    storage_config = await _resolve_storage(
+        registry,
+        operation.world_id,
+        operation.storage_config,
+    )
+    lineage = (
+        list(operation.lineage)
+        if operation.lineage is not None
+        else await _resolve_lineage(
+            registry,
+            storage,
+            operation.world_id,
+            operation.run_id,
+            storage_config,
+        )
+    )
     return await query.query_archetype(
         storage,
         tuple(_component_types(operation.signature)),
         str(operation.world_id),
         str(operation.run_id),
-        operation.storage_config,
+        storage_config,
         ticks=list(operation.ticks) if operation.ticks is not None else None,
         entity_ids=(list(operation.entity_ids) if operation.entity_ids is not None else None),
         components=(
             _component_types(operation.components) if operation.components is not None else None
         ),
-        lineage=list(operation.lineage) if operation.lineage is not None else None,
+        lineage=lineage,
     )
+
+
+async def _resolve_storage(
+    registry: iWorldRegistry,
+    world_id: object,
+    storage_config: StorageConfig | None,
+) -> StorageConfig | None:
+    if storage_config is not None:
+        return storage_config
+    record = await registry.storage_record(str(world_id))
+    return record[0] if record is not None else None
+
+
+async def _resolve_lineage(
+    registry: iWorldRegistry,
+    storage: iStorageService,
+    world_id: object,
+    run_id: object,
+    storage_config: StorageConfig | None,
+) -> list[tuple[str, str, int]] | None:
+    # A live-but-closing world raises RuntimeError and must not be silently
+    # reclassified as a cold durable read.
+    try:
+        async with registry.operation(str(world_id)) as world:
+            lineage = getattr(world, "lineage", None)
+            return list(lineage) if lineage else None
+    except KeyError:
+        return await query.get_lineage(
+            storage,
+            str(world_id),
+            str(run_id),
+            storage_config,
+        )
 
 
 async def list_signatures(
@@ -441,6 +527,19 @@ async def list_signatures(
     operation: ListSignatures,
 ):
     return await query.list_signatures(storage, operation.storage_config)
+
+
+async def list_world_signatures(
+    registry: iWorldRegistry,
+    storage: iStorageService,
+    operation: ListWorldSignatures,
+):
+    storage_config = await _resolve_storage(
+        registry,
+        operation.world_id,
+        operation.storage_config,
+    )
+    return await query.list_signatures(storage, storage_config)
 
 
 async def list_processors(
@@ -514,6 +613,7 @@ WORLD_OPERATION_HANDLERS = {
     QueryComponents: query_components,
     QueryArchetype: query_archetype,
     ListSignatures: list_signatures,
+    ListWorldSignatures: list_world_signatures,
     AddResource: add_resource,
     AddHook: add_hook,
     RemoveHook: remove_hook,

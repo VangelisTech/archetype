@@ -125,6 +125,14 @@ class identity takes precedence over an ambiguous catalog reconstruction. If
 the catalog itself is unavailable, discovery returns the process-local subset
 and logs the degradation; commit-visibility checks remain fail-closed.
 
+The frozen operation inventory keeps the two authority scopes explicit.
+`ListSignatures` is application-scoped discovery for an explicit or default
+storage identity. `ListWorldSignatures` is durable-world-scoped discovery: its
+`world_id` selects the retained world-to-storage coordinates before running
+the same storage-wide union. The API all-state read uses the world-scoped
+operation, so authorization and storage selection share one exact world key;
+neither operation changes the returned signature set for the selected store.
+
 ## 5. Fail-closed schema check
 
 Before reading a catalog-discovered table, the physical table schema is

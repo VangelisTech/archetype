@@ -152,6 +152,10 @@ class WorldLifecycle:
         self._registry = registry
         self._materialize_commands = materialize_commands
         self._required_projector_factory = required_projector_factory
+        # Creation previously relied on RuntimeApplication's process-wide
+        # lock. The lifecycle is the canonical direct operation dependency, so
+        # it must serialize the pre-registration name check itself.
+        self._create_lock = asyncio.Lock()
 
     def _required_projector(self, world_id: str) -> Any | None:
         factory = self._required_projector_factory
@@ -184,59 +188,60 @@ class WorldLifecycle:
         world_id = str(config.world_id)
         storage_config = storage_config or StorageConfig()
 
-        async with self._registry.activation(world_id):
-            existing = await self._registry.live_world(world_id)
-            if existing is not None:
-                return existing
-            if config.name and await self._registry.contains_name(config.name):
-                raise ValueError(f"World with name '{config.name}' already exists.")
+        async with self._create_lock:
+            async with self._registry.activation(world_id):
+                existing = await self._registry.live_world(world_id)
+                if existing is not None:
+                    return existing
+                if config.name and await self._registry.contains_name(config.name):
+                    raise ValueError(f"World with name '{config.name}' already exists.")
 
-            store = await self._storage.get_or_create_store(
-                storage_config,
-                cache_config,
-            )
-            catalog = self._storage.get_control_catalog(storage_config)
-            run_id = uuid7()
-            registered = False
-            try:
-                await catalog.register_world(
-                    WorldRecord(
-                        world_id=world_id,
-                        name=config.name,
-                        run_id=str(run_id),
-                        parent_world_id=None,
-                        status="active",
-                        tick_head=config.tick,
-                    )
-                )
-                registered = True
-                epoch = await catalog.acquire_fence(world_id, _writer_holder())
-                coordinator = self._storage.bind_commit_coordinator(
+                store = await self._storage.get_or_create_store(
                     storage_config,
-                    world_id=world_id,
-                    run_id=str(run_id),
-                    writer_epoch=epoch,
+                    cache_config,
                 )
-                world = build_world(
-                    store,
-                    config,
-                    restored_run_id=run_id,
-                    commit_coordinator=coordinator,
-                    materialize_commands=self._materialize_commands,
-                    system=system,
-                )
-                projector = self._required_projector(world_id)
-                await self._registry.insert(
-                    world,
-                    storage_config=storage_config,
-                    cache_config=cache_config,
-                    required_projector=projector,
-                )
-            except BaseException:
-                if registered:
-                    await self._mark_failed_activation(catalog, world_id)
-                raise
-            return world
+                catalog = self._storage.get_control_catalog(storage_config)
+                run_id = uuid7()
+                registered = False
+                try:
+                    await catalog.register_world(
+                        WorldRecord(
+                            world_id=world_id,
+                            name=config.name,
+                            run_id=str(run_id),
+                            parent_world_id=None,
+                            status="active",
+                            tick_head=config.tick,
+                        )
+                    )
+                    registered = True
+                    epoch = await catalog.acquire_fence(world_id, _writer_holder())
+                    coordinator = self._storage.bind_commit_coordinator(
+                        storage_config,
+                        world_id=world_id,
+                        run_id=str(run_id),
+                        writer_epoch=epoch,
+                    )
+                    world = build_world(
+                        store,
+                        config,
+                        restored_run_id=run_id,
+                        commit_coordinator=coordinator,
+                        materialize_commands=self._materialize_commands,
+                        system=system,
+                    )
+                    projector = self._required_projector(world_id)
+                    await self._registry.insert(
+                        world,
+                        storage_config=storage_config,
+                        cache_config=cache_config,
+                        required_projector=projector,
+                    )
+                except BaseException:
+                    if registered:
+                        await self._mark_failed_activation(catalog, world_id)
+                    raise
+                return world
 
     async def fork_world(
         self,

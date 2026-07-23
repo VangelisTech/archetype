@@ -173,6 +173,7 @@ rationale = "No direct signal is approved for lifecycle, registry, mutation, com
 [[disposition]]
 operations = [
   "handlers.list_signatures",
+  "handlers.list_world_signatures",
   "handlers.query_archetype",
   "handlers.query_components",
   "query.get_lineage",
