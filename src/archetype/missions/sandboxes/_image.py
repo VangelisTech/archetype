@@ -132,7 +132,7 @@ async def verify_coding_agent_environment(
     for name, request in requests.items():
         result = await session.exec(request)
         if result.returncode != 0:
-            detail = (result.stderr or result.stdout)[-1000:]
+            detail = result.stderr or result.stdout
             raise RuntimeError(
                 f"sandbox environment probe {name} failed with "
                 f"exit code {result.returncode}: {detail}"

@@ -249,8 +249,8 @@ class ModalSandboxSession:
             except Exception:
                 pass
             await self._emit_event_best_effort(SandboxEventType.CHECKPOINT_STARTED)
-            await self._scrub_live_output()
             try:
+                await self._scrub_live_output()
                 image = await self._sandbox.snapshot_filesystem.aio(
                     timeout=self._checkpoint_timeout_seconds,
                     ttl=self._checkpoint_ttl_seconds,
@@ -659,7 +659,7 @@ class ModalSandboxSession:
     @staticmethod
     def _raise(result: ProcessResult, label: str) -> None:
         if result.returncode != 0:
-            detail = (result.stderr or result.stdout)[-4000:]
+            detail = result.stderr or result.stdout
             raise RuntimeError(f"{label} failed with exit code {result.returncode}: {detail}")
 
     @staticmethod

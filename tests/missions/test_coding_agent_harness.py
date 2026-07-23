@@ -19,6 +19,7 @@ from archetype.missions import (
 )
 from archetype.missions.coding_agents import (
     AgentProcessObservation,
+    CodexDriver,
     CodingAgentHarness,
     CodingAgentHarnessConfig,
     DispatchedValidator,
@@ -138,6 +139,43 @@ class _EditingDriver:
         )
 
 
+class _TraceSession:
+    def __init__(self) -> None:
+        self.requests: list[ProcessRequest] = []
+
+    @property
+    def identity(self) -> SandboxIdentity:
+        return SandboxIdentity("modal", "sb-trace", "test-environment")
+
+    @property
+    def capabilities(self) -> SandboxCapabilities:
+        return SandboxCapabilities(
+            live_output=True,
+            secret_names=("codex_oauth",),
+        )
+
+    async def status(self) -> SandboxStatus:
+        return SandboxStatus.READY
+
+    async def exec(self, request: ProcessRequest) -> ProcessResult:
+        self.requests.append(request)
+        return ProcessResult(
+            request.argv,
+            0,
+            stdout='{"type":"thread.started","thread_id":"thread-1"}\n',
+            trace_uri=(
+                "modal-sandbox://sb-trace/tmp/archetype-agent-missions/live/"
+                "executions/process-1/agent.stdout.log"
+            ),
+        )
+
+    async def checkpoint(self) -> CheckpointRef:
+        raise NotImplementedError
+
+    async def close(self) -> None:
+        return None
+
+
 def _request(remote: Path, *, validator_command: tuple[str, ...]) -> TaskDispatchRequest:
     return TaskDispatchRequest(
         mission_id=1,
@@ -156,6 +194,21 @@ def _request(remote: Path, *, validator_command: tuple[str, ...]) -> TaskDispatc
             ),
         ),
         publication_policy=RepositoryPublicationPolicy.COMMIT_AND_PUSH,
+    )
+
+
+@pytest.mark.asyncio
+async def test_codex_driver_forwards_provider_trace() -> None:
+    session = _TraceSession()
+    request = _request(Path("/tmp/remote.git"), validator_command=("true",))
+
+    observed = await CodexDriver().run(session, request, "Fix it.")
+
+    assert len(session.requests) == 1
+    assert observed.session_id == "thread-1"
+    assert observed.trace_uri == (
+        "modal-sandbox://sb-trace/tmp/archetype-agent-missions/live/"
+        "executions/process-1/agent.stdout.log"
     )
 
 

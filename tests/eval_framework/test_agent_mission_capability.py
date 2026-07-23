@@ -138,6 +138,8 @@ def test_agent_mission_capability_fails_on_stale_validation_revision(
         self: MissionService,
         result: object,
         sandbox_status: object,
+        *,
+        bind_mission: bool,
     ) -> int:
         stale = replace(
             result,
@@ -145,7 +147,12 @@ def test_agent_mission_capability_fails_on_stale_validation_revision(
                 replace(observation, revision="stale-revision") for observation in result.validation
             ),
         )
-        return await stage_result(self, stale, sandbox_status)
+        return await stage_result(
+            self,
+            stale,
+            sandbox_status,
+            bind_mission=bind_mission,
+        )
 
     monkeypatch.setattr(MissionService, "_stage_result", stage_stale_validation)
 
