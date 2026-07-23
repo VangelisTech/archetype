@@ -9,7 +9,7 @@ Define state with components, transform populations with processors, and keep
 each tick as queryable history. Use a fork to continue from an earlier state
 without overwriting the original run.
 
-It is built on [Daft](https://www.daft.ai/) and LanceDB. The default Python
+It is built on [Daft](https://www.daft.ai/) and Iceberg/LanceDB. The default Python
 entry point is `ArchetypeRuntime`; HTTP services and the CLI use the same
 command layer when you need a multi-user host.
 
