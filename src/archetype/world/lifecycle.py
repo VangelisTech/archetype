@@ -35,6 +35,7 @@ from archetype.world.resume import (
     reconstruct_resume_snapshot,
     resolve_live_signatures,
 )
+from archetype.world.simulation import retry_required_projection
 
 logger = logging.getLogger(__name__)
 
@@ -552,6 +553,13 @@ class WorldLifecycle:
                 return
         else:
             self._registry.validate_cleanup_lease(lease, world_id=key)
+
+        # Close is sticky, so the retained cleanup lease is the only authority
+        # that may reconcile an unacknowledged post-commit receipt.  Projection
+        # must finish before durable destruction: on failure the catalog stays
+        # active and the exact world, projector, receipt, and lease remain
+        # strongly owned for the next public destroy retry.
+        await retry_required_projection(self._registry, key, lease=lease)
 
         async with self._registry.cleanup_operation(lease) as world:
             if isinstance(world, AsyncWorld):

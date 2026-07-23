@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from archetype.core.config import RunConfig
+from archetype.core.config import RunConfig, StorageConfig
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -49,6 +49,24 @@ class _ReceiptWorld:
 
 class _CleanupFailed(RuntimeError):
     pass
+
+
+class _DestroyCatalog:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.statuses: list[tuple[str, str]] = []
+
+    async def set_world_status(self, world_id: str, status: str) -> None:
+        self.events.append(f"status:{status}")
+        self.statuses.append((world_id, status))
+
+
+class _DestroyStorage:
+    def __init__(self, catalog: _DestroyCatalog) -> None:
+        self.catalog = catalog
+
+    def get_control_catalog(self, _storage_config: StorageConfig) -> _DestroyCatalog:
+        return self.catalog
 
 
 def _managed_api() -> tuple[Any, Any]:
@@ -143,6 +161,65 @@ async def test_failed_cleanup_retains_exact_binding_and_retry_finishes_close() -
             pytest.fail("finished close must remove the world")
     async with registry.operation(sibling.world_id) as live_sibling:
         assert live_sibling is sibling, "one world's failed close cannot poison its sibling"
+
+
+async def test_public_destroy_retries_pending_projection_before_durable_close() -> None:
+    lifecycle_module = import_module("archetype.world.lifecycle")
+    registry_module, simulation_module = _managed_api()
+    from archetype.core.interfaces import CommittedTickReceipt
+
+    events: list[str] = []
+    attempts: list[CommittedTickReceipt] = []
+
+    async def fail_twice(receipt: CommittedTickReceipt) -> None:
+        attempts.append(receipt)
+        events.append(f"project:{receipt.committed_tick}")
+        if len(attempts) < 3:
+            raise RuntimeError("projection unavailable")
+
+    world = _ReceiptWorld(
+        world_id="00000000-0000-7000-8000-000000000045",
+        name="public-destroy",
+        receipt_type=CommittedTickReceipt,
+    )
+    projector = simulation_module.RequiredProjector(
+        consumer_name="test.public-destroy",
+        project=fail_twice,
+    )
+    storage_config = StorageConfig()
+    registry = registry_module.WorldRegistry()
+    await registry.insert(
+        world,
+        storage_config=storage_config,
+        required_projector=projector,
+    )
+    catalog = _DestroyCatalog(events)
+    lifecycle = lifecycle_module.WorldLifecycle(_DestroyStorage(catalog), registry)
+
+    with pytest.raises(simulation_module.PostCommitProjectionError) as committed:
+        await simulation_module.step(registry, world.world_id, RunConfig())
+    receipt = committed.value.receipt
+
+    with pytest.raises(simulation_module.PostCommitProjectionError) as closing:
+        await lifecycle.destroy_world(world.world_id)
+
+    assert closing.value.receipt is receipt
+    assert attempts == [receipt, receipt]
+    assert registry.pending_receipt(world.world_id) is receipt
+    assert await registry.contains(world.world_id)
+    assert catalog.statuses == []
+    assert events == ["project:0", "project:0"]
+    with pytest.raises(RuntimeError, match="closing"):
+        async with registry.operation(world.world_id):
+            pytest.fail("a failed destroy retry must keep public admission closed")
+
+    await lifecycle.destroy_world(world.world_id)
+
+    assert attempts == [receipt, receipt, receipt]
+    assert events == ["project:0", "project:0", "project:0", "status:destroyed"]
+    assert catalog.statuses == [(world.world_id, "destroyed")]
+    assert registry.pending_receipt(world.world_id) is None
+    assert not await registry.contains(world.world_id)
 
 
 async def test_cleanup_lease_cannot_authorize_a_sibling_world() -> None:
