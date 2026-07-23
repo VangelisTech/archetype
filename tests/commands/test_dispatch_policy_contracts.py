@@ -10,7 +10,7 @@ import json
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, is_dataclass
 from importlib import import_module
-from typing import Any, ClassVar, Literal, NamedTuple
+from typing import Any, ClassVar, Literal, NamedTuple, cast
 
 import pytest
 from pydantic import BaseModel, ConfigDict, Field
@@ -87,6 +87,10 @@ class _DurableOptions(BaseModel):
     priority: int = 0
 
 
+def _world_key(operation: BaseModel) -> object:
+    return cast("Any", operation).world_id
+
+
 @dataclass(frozen=True, slots=True)
 class _Spec:
     name: str
@@ -94,6 +98,8 @@ class _Spec:
     handler: Callable[[Any], Any]
     permission: str
     summarize: Callable[[Any], Mapping[str, Any]]
+    quota_scope: Literal["application", "live_world", "durable_world"] = "live_world"
+    world_key: Callable[[BaseModel], object] | None = _world_key
     durable: object | None = None
     trusted: bool = True
     untrusted: bool = True
@@ -242,12 +248,20 @@ async def test_trusted_and_actor_aware_entry_share_the_exact_handler() -> None:
         events.append("summarize")
         return {"label": operation.label}
 
+    world_key_calls: list[_Operation] = []
+
+    def world_key(operation: BaseModel) -> str:
+        exact_operation = cast("_Operation", operation)
+        world_key_calls.append(exact_operation)
+        return exact_operation.world_id
+
     spec = _Spec(
         name="synthetic",
         model=_Operation,
         handler=handler,
         permission="spawn",
         summarize=summarize,
+        world_key=world_key,
     )
     registry = _Registry((spec,), events)
     policy = _PolicyPort(events)
@@ -278,6 +292,7 @@ async def test_trusted_and_actor_aware_entry_share_the_exact_handler() -> None:
     assert trusted == actor_aware == ("synthetic", "same-command")
     assert handled == [operation, operation]
     assert registry.resolved == [operation, operation]
+    assert world_key_calls == [operation]
     assert target_ticks.calls == ["world-parity"]
     assert policy.calls == [
         {

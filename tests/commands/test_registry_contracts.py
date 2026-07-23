@@ -6,10 +6,11 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from functools import partial
 from importlib import import_module
 from inspect import signature
-from typing import Any, ClassVar, Literal, NamedTuple
+from typing import Any, ClassVar, Literal, NamedTuple, cast
 
 import pytest
 from pydantic import BaseModel, ConfigDict
@@ -123,6 +124,10 @@ def _bind_world_handler(handler: Any) -> partial[Any]:
     return partial(handler, *(object() for _ in range(dependency_count)))
 
 
+def _model_world_key(operation: BaseModel) -> object:
+    return cast("Any", operation).world_id
+
+
 def _spec(
     api: _RegistryApi,
     *,
@@ -131,6 +136,10 @@ def _spec(
     handler: Any,
     summarize: Any,
     durable: Any = None,
+    quota_scope: Literal["application", "live_world", "durable_world"] = "live_world",
+    world_key: Callable[[BaseModel], object] | None = _model_world_key,
+    trusted: bool = True,
+    untrusted: bool = True,
 ) -> Any:
     return api.OperationSpec(
         name=name,
@@ -138,6 +147,10 @@ def _spec(
         handler=handler,
         permission=name,
         summarize=summarize,
+        quota_scope=quota_scope,
+        world_key=world_key,
+        trusted=trusted,
+        untrusted=untrusted,
         durable=durable,
     )
 
@@ -243,6 +256,10 @@ async def test_handler_and_summarizer_receive_the_registered_model_directly() ->
     assert resolved.model is _AlphaOperation
     assert resolved.handler is _alpha_handler
     assert resolved.summarize is _alpha_summary
+    assert resolved.quota_scope == "live_world"
+    assert resolved.world_key(operation) == "world-7"
+    assert resolved.trusted is True
+    assert resolved.untrusted is True
     assert await resolved.handler(operation) == ("alpha", "world-7")
     assert resolved.summarize(operation) == {
         "operation": "alpha",
@@ -370,6 +387,37 @@ _EXPECTED_WORLD_OPERATIONS = {
     "list_resources": "archetype.world.models.ListResources",
 }
 
+_APPLICATION_SCOPED_OPERATIONS = {
+    "create_world",
+    "list_worlds",
+    "discover_worlds",
+    "list_signatures",
+}
+_DURABLE_WORLD_SCOPED_OPERATIONS = {
+    "destroy_world",
+    "open_world_readonly",
+    "resume_world",
+    "query_components",
+    "query_archetype",
+}
+
+
+def _world_quota_scope(
+    operation_name: str,
+) -> Literal["application", "live_world", "durable_world"]:
+    if operation_name in _APPLICATION_SCOPED_OPERATIONS:
+        return "application"
+    if operation_name in _DURABLE_WORLD_SCOPED_OPERATIONS:
+        return "durable_world"
+    return "live_world"
+
+
+def _world_key(operation: BaseModel) -> object:
+    dynamic_operation = cast("Any", operation)
+    if hasattr(operation, "world_id"):
+        return dynamic_operation.world_id
+    return dynamic_operation.source_world_id
+
 
 def test_world_operation_registration_inventory_is_exact_and_complete() -> None:
     api = _registry_api()
@@ -394,6 +442,10 @@ def test_world_operation_registration_inventory_is_exact_and_complete() -> None:
                 handler=_bind_world_handler(WORLD_OPERATION_HANDLERS[model]),
                 summarize=summarize,
                 durable=durable,
+                quota_scope=_world_quota_scope(operation_name),
+                world_key=(
+                    None if operation_name in _APPLICATION_SCOPED_OPERATIONS else _world_key
+                ),
             )
         )
 
@@ -426,6 +478,8 @@ def test_world_operation_registration_inventory_is_exact_and_complete() -> None:
         assert isinstance(spec.handler, partial)
         assert spec.handler.func is WORLD_OPERATION_HANDLERS[spec.model]
         assert tuple(signature(spec.handler).parameters) == ("operation",)
+        assert spec.quota_scope == _world_quota_scope(spec.name)
+        assert (spec.world_key is None) == (spec.name in _APPLICATION_SCOPED_OPERATIONS)
 
     durable_models = frozenset(spec.model for spec in registry.specs if spec.durable is not None)
     missing_durable = sorted(
