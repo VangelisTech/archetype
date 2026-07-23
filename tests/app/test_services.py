@@ -13,11 +13,11 @@ from archetype.app.container import ServiceContainer
 from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.app.gateway.service import CommandGateway
 from archetype.app.query.service import QueryService
-from archetype.app.storage.service import StorageService
 from archetype.app.world.service import WorldService
 from archetype.app.world.simulation import SimulationService
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.storage.service import StorageService
 from tests.conftest import make_world_service
 
 

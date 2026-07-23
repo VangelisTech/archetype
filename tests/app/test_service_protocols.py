@@ -39,11 +39,11 @@ from archetype.app.redaction.service import RedactionService
 from archetype.app.research.interfaces import iResearchService
 from archetype.app.research.service import AutoResearchService
 from archetype.app.storage.interfaces import iStorageService
-from archetype.app.storage.service import StorageService
 from archetype.app.world.interfaces import iMutationService, iSimulationService, iWorldService
 from archetype.app.world.mutation import MutationService
 from archetype.app.world.service import WorldService
 from archetype.app.world.simulation import SimulationService
+from archetype.storage.service import StorageService
 
 pytestmark = pytest.mark.contract("architecture.protocols.complete")
 

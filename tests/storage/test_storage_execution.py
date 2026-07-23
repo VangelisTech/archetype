@@ -10,11 +10,11 @@ import time
 import daft
 import pytest
 
-from archetype.app.storage.service import StorageService
-from archetype.app.storage.session import configure_session
 from archetype.app.world.service import WorldService
 from archetype.core.component import Component
 from archetype.core.config import CacheConfig, RunConfig, StorageBackend, StorageConfig, WorldConfig
+from archetype.storage.service import StorageService
+from archetype.storage.session import configure_session
 
 
 class Position(Component):

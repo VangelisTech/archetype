@@ -135,3 +135,19 @@ async def test_registered_table_rejects_schema_drift(tmp_path):
             )
     finally:
         await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_read_preserves_missing_world_error(tmp_path):
+    container = ServiceContainer()
+    try:
+        storage = _storage(tmp_path)
+
+        with pytest.raises(KeyError, match="world missing-world is not recorded"):
+            await container.ingestion_service.read(
+                "missing-world",
+                READINGS,
+                storage_config=storage,
+            )
+    finally:
+        await container.shutdown()

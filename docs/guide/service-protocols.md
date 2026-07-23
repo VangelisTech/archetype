@@ -92,12 +92,12 @@ application facade.
 |---|---|---|---|
 | `iRuntimeApplication` | `RuntimeApplication` | runtime, `CommandGateway` | Actor-free canonical product operations and per-world serialization |
 | `iCommandGateway` | `CommandGateway` | FastAPI and other untrusted adapters | RBAC/quota authorization, delegation, access audit |
-| `iStorageService` | `StorageService` | world, simulation, query, ingestion, artifacts, evaluation, transcripts, research, physical AI, audit | Store/session lifetime, control authority, terminal Daft execution, and app-table catalog/read/write/retry authority |
+| `iStorageService` | `StorageService` | world, simulation, query, ingestion, artifacts, evaluation, transcripts, research, physical AI, audit | Store/session lifetime, control authority, physical visibility, world/run row envelope, terminal Daft execution, and app-table catalog/read/write/retry authority |
 | `iWorldService` | `WorldService` | mutation, simulation, commands, ingestion, artifacts, evaluation, transcripts, research, physical AI, application | Live-world lifecycle, durable discovery, coordinate lookup |
 | `iMutationService` | `MutationService` | application, commands, physical AI | Entity/component/processor mutation staging |
 | `iSimulationService` | `SimulationService` | application, research, physical AI | Step, run, episode and rollout execution |
 | `iQueryService` | `QueryService` | application, evaluation | Persisted ECS reads, signature/lineage discovery and compatibility history |
-| `iIngestionService` | `IngestionService` | artifacts, transcripts, evaluation | Add world/run identity and select plain or caller-keyed conditional append through storage |
+| `iIngestionService` | `IngestionService` | artifacts, transcripts, evaluation | Select live storage configuration and delegate typed row publication |
 | `iArtifactService` | `ArtifactService` | application, transcript ingestion | Discover and scan files, persist content-addressed objects, publish typed media indexes, then expose the common file index |
 | `iTranscriptIngestionService` | `TranscriptIngestionService` | application | Snapshot and redact a coding-agent transcript, ingest the sanitized file, and append normalized mission rows |
 | `iRedactionService` | `RedactionService` | transcript ingestion; future telemetry/proxy adapters | Provider-neutral pre-durability scanning, deterministic text redaction, safe receipts, and quarantine |
@@ -142,11 +142,12 @@ flow.
 `iCommandScheduler` exposes the current combined scheduling/dispatch port over
 the control catalog. Tick publication performs terminal applied settlement.
 `iIngestionService` owns the general typed-ingestion policy boundary: it
-supplies the world/run envelope and selects either a plain append or a
-caller-keyed conditional append. It has no knowledge of files, media,
-transcripts, or graders. `iStorageService` owns the corresponding physical
-boundary: terminal Daft admission, `daft.Catalog` table registration, schema
-alignment, lazy table reads, Iceberg writes, and optimistic-conflict retry.
+selects the live storage configuration and delegates typed publication. It has
+no knowledge of files, media, transcripts, or graders. `iStorageService` owns
+the corresponding physical boundary: the catalog-derived world/run envelope,
+plain or caller-keyed conditional append, terminal Daft admission,
+`daft.Catalog` table registration, schema alignment, lazy table reads, Iceberg
+writes, and optimistic-conflict retry.
 
 `iArtifactService` specializes that primitive for files. It discovers and
 scans sources, persists immutable content-addressed objects, writes optional
@@ -261,8 +262,12 @@ Python modeling technology does not decide their layer. Persistent ECS schema
 is a `Component` and belongs in `archetype.<family>.components`. Supported
 reusable Pydantic/dataclass values belong in the top-level family's
 `contracts.py` or another specifically named family module. Application
-commands, authority records, backend state, authorization values, and service
-ports remain under `archetype.app.<family>`.
+commands, application-workflow authority records, backend workflow state,
+authorization values, and service ports remain under
+`archetype.app.<family>`. The reviewed physical-storage exception is
+`archetype.storage`: control-catalog records and implementations, physical
+visibility, commit coordination, and the generic durable world/run envelope
+live there while application families retain workflow meaning.
 
 An internal app protocol may therefore accept or return a top-level family
 value. The protocol still lives in `archetype.app.<family>.interfaces`, its
@@ -274,8 +279,10 @@ The artifacts family owns the supported `ArtifactSource`, `ArtifactRef`, and
 `ArtifactStoreConfig` file contracts. `archetype.ingestion` owns one reusable
 `FileIngestionPipeline` and its pure bounded scanners; application policy and
 authority remain under `archetype.app.ingestion`, `archetype.app.artifacts`,
-and `archetype.app.storage`. The evaluation family completed its split under
-issue #557: `EvalReceipt` lives in
+and the canonical `archetype.storage` family. Storage owns the generic durable
+world/run envelope; ingestion selects the live storage configuration rather
+than duplicating persistence mechanics. The evaluation family completed its
+split under issue #557: `EvalReceipt` lives in
 `archetype.evaluation.components`, and the grading value contracts and
 identity digests live in `archetype.evaluation.contracts`. Current paths
 that predate this rule are migration state, not alternate ownership. The

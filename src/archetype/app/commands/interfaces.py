@@ -10,7 +10,7 @@ from typing import Any, Protocol, runtime_checkable
 from uuid_utils import UUID
 
 from archetype.app.models import Command
-from archetype.app.storage.catalog import CommandRecord, OutboxRecord
+from archetype.storage.catalog import CommandRecord, OutboxRecord
 
 
 @runtime_checkable

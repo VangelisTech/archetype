@@ -30,7 +30,7 @@ The current contract set is split across design docs and executable tests.
 | [Audit Log](audit-log.md) | Audit rows | Append-only audit history and query contract. |
 | [Repository Harness](repository-harness.md) | Executable evidence | Focused tests, contract matrices, repository scenarios, benchmarks, static audits, and mutation probes. |
 | [`tests/app/test_runtime_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_contracts.py) | Executable runtime contracts | Enforces activation single-flight, runtime-vs-world lifetime, fork isolation, spawn visibility, the actor-free trust boundary, and smoke paths. |
-| [`tests/app/test_runtime_fork_storage.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_fork_storage.py) | Runtime fork storage contracts | Enforces fork storage inheritance through the runtime layer, lineage reads on fork handles, fork run_id minting, and gate-side storage resolution. |
+| [`tests/storage/test_runtime_fork_storage.py`](https://github.com/VangelisTech/archetype/blob/main/tests/storage/test_runtime_fork_storage.py) | Runtime fork storage contracts | Enforces fork storage inheritance through the runtime layer, lineage reads on fork handles, fork run_id minting, and gate-side storage resolution. |
 | [`tests/sync/test_sync_stack_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/sync/test_sync_stack_contracts.py) | Executable sync engine contracts | Enforces store/querier/updater/world behavior, mutation materialization, component migration, and despawn semantics. |
 | [`tests/integration/test_command_flow.py`](https://github.com/VangelisTech/archetype/blob/main/tests/integration/test_command_flow.py) | Reserved spawn chain | Verifies reserved `entity_id` survives submit -> drain -> apply -> materialize. |
 | [`tests/app/test_services.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_services.py) | Service-layer execution contracts | Covers simulation service boundaries, processor metadata, and read-service expectations. |
@@ -433,9 +433,11 @@ iRuntimeApplication` for actor-free application execution.
 
 ### Service error taxonomy
 
-- Public cross-service error contracts MUST live in `archetype.app.errors`.
-  Private service implementations subclass those contracts; transport adapters
-  MUST NOT import private implementation modules to classify failures.
+- Public cross-family error contracts MUST live in `archetype.errors`.
+  `archetype.app.errors` is an identity-preserving compatibility re-export
+  until the application-facade teardown. Private implementations subclass the
+  canonical contracts; transport adapters MUST NOT import private
+  implementation modules to classify failures.
 - The REST adapter maps `WorldNotFoundError` to HTTP 404, `ConflictError` to
   HTTP 409, and `AvailabilityError` to HTTP 503. Conflict and availability
   responses expose only the contract's client-safe `public_detail`; internal
@@ -448,6 +450,9 @@ iRuntimeApplication` for actor-free application execution.
 
 ### StorageService
 
+- Physical storage authority lives in the top-level `archetype.storage`
+  family. Temporary `archetype.app.storage` imports MUST preserve object
+  identity and MUST NOT contain a second implementation.
 - `StorageService` is the multiton owner for backend triplets:
   `(store, querier, updater)`.
 - Worlds sharing the same effective storage pool key `(uri, namespace, backend,
@@ -471,6 +476,25 @@ iRuntimeApplication` for actor-free application execution.
   read/write operations.
 - Per-store credentials MUST NOT rely solely on process-global Daft planning
   config.
+- Control-catalog bootstrap MUST be captured once in an immutable
+  `ControlCatalogConfig`. `ServiceContainer` may call `from_env()` while
+  composing its owned service; ordinary storage/catalog operations MUST NOT
+  reread ambient application configuration.
+- `pin_visibility()` MUST return an immutable world/run manifest-token
+  snapshot. `scan_visible_world_rows()` MUST apply only physical world/run,
+  manifest-token, and optional maximum-tick filtering; entity liveness,
+  same-tick active/inactive resolution, component ownership, lineage meaning,
+  resumed tick, and next entity ID remain world-family rules.
+- `append_world_rows()` and `read_world_rows()` MUST resolve the durable
+  world/run from the control catalog. Callers cannot supply those envelope
+  columns, and conditional keys MUST be extended with both coordinates.
+- A bound commit coordinator MUST reject a mismatched world, run, or writer
+  epoch before registration or publication.
+- Local SQLite MAY colocate directory and per-world control records. The remote
+  topology MUST NOT imply a global transaction: only the target world's
+  control authority atomically combines manifest publication, command
+  settlement, and durable control-outbox append after data flush; directory
+  discovery and Iceberg commits remain separate authorities.
 - The LanceDB path MUST NOT construct a Daft `Session` or Daft `Catalog`.
 - Service shutdown MUST shut down every managed backend exactly once per
   instance.
@@ -536,7 +560,7 @@ iRuntimeApplication` for actor-free application execution.
   before enqueue so `spawn()` can honestly return `entity_id`.
 - Reservation MUST be serialized per world.
 - `submit()`, `submit_batch()`, and `submit_spawn()` MUST reject submissions to
-  an unknown `world_id` by raising `archetype.app.errors.WorldNotFoundError`
+  an unknown `world_id` by raising `archetype.errors.WorldNotFoundError`
   before any quota debit, durable admission, or audit emit.
 - Command-family dispatch is the application boundary at tick time; the
   gateway has no drain method.
@@ -1005,7 +1029,7 @@ behavior and an executable oracle.
 | 3 | Resolved | `CommandGateway.submit*` reject an unknown world with `WorldNotFoundError` before quota, enqueue, or audit side effects. | `tests/integration/test_command_flow.py::test_submit_to_unknown_world_rejected` |
 | 4 | Resolved | Duplicate-name and catalog-registration failures leave no hidden live world. | `tests/core/test_orchestrator_errors_and_instrumentation.py`; `tests/app/test_durable_discovery.py::test_failed_catalog_registration_leaves_no_live_world` |
 | 5 | Resolved | Spawn, despawn, and component migration hooks fire from their public mutation paths with the documented queue-time semantics. | `tests/core/test_resources_hooks_messaging.py`; `tests/core/test_batch_spawn_contract.py`; `tests/sync/test_sync_world.py` |
-| 6 | Resolved | `QueryService` performs durable archetype, component, lineage, signature, and audit-backed history reads. | `tests/app/test_atomic_visibility.py`; `tests/app/test_runtime_fork_storage.py`; `tests/app/test_audit_contracts.py` |
+| 6 | Resolved | `QueryService` performs durable archetype, component, lineage, signature, and audit-backed history reads. | `tests/app/test_atomic_visibility.py`; `tests/storage/test_runtime_fork_storage.py`; `tests/app/test_audit_contracts.py` |
 | 7 | Resolved | Gated destroy cancels only the target world's unsettled command state and preserves shared runtime and durable history. | `tests/integration/test_fork_destroy_contracts.py` |
 | 8 | Resolved | Same-entity, same-tick mutations compose in durable scheduler order. | `tests/core/test_same_tick_mutation_composition.py`; `evals/suites/idempotency/tasks.py::task_duplicate_same_tick_mutations_collapse`; Issue #193 |
 

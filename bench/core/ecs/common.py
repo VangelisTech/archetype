@@ -6,10 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from archetype.app.storage.service import StorageService
 from archetype.app.world.service import WorldService
 from archetype.core.aio import AsyncSystem
 from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
+from archetype.storage.service import StorageService
 
 __all__ = [
     "BenchResult",

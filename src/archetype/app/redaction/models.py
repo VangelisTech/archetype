@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, JsonValue, field_validator, model_validator
 
-from archetype.app.errors import PayloadRejectedError
+from archetype.errors import PayloadRejectedError
 
 RedactionStatus = Literal["clean", "redacted"]
 

@@ -27,8 +27,6 @@ from archetype.app.container import ServiceContainer
 from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.models import Command, CommandType
-from archetype.app.storage.service import StorageService
-from archetype.app.storage.session import configure_session
 from archetype.app.world.service import WorldService
 from archetype.core.component import Component
 from archetype.core.config import (
@@ -40,6 +38,8 @@ from archetype.core.config import (
 )
 from archetype.core.hooks import OnComponentAdded, OnComponentRemoved
 from archetype.core.sync import QueryManager, SyncStore, UpdateManager
+from archetype.storage.service import StorageService
+from archetype.storage.session import configure_session
 from evals.graders import exact_match, state_check
 from evals.harness import EvalHarness
 from evals.suites.idempotency.durable import (

@@ -118,7 +118,7 @@ SPEC_CASES: tuple[SpecCase, ...] = (
         spec_id="dataset-eval-ontology.3",
         source="dataset-eval-ontology.md",
         anchors=(
-            "IngestionService envelope is application ownership",
+            "StorageService envelope is durable ownership",
             "does not prove where an imported episode",
         ),
         task_id="spec.dataset_eval_ontology",
@@ -138,7 +138,6 @@ _RUNTIME_ALLOWED_APP_IMPORTS = _RUNTIME_TYPE_ONLY_APP_IMPORTS | frozenset(
         "archetype.app.application.interfaces",
         "archetype.app.container",
         "archetype.app.models",
-        "archetype.app.storage.session",
     }
 )
 

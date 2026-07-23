@@ -24,11 +24,11 @@ import pyarrow as pa
 from daft import Expression
 from uuid_utils import UUID
 
-from archetype.app.errors import AvailabilityError
 from archetype.app.models import AuditRow
-from archetype.app.storage.catalog import OutboxRecord
 from archetype.app.storage.interfaces import iStorageService
 from archetype.core.config import StorageBackend, StorageConfig
+from archetype.errors import AvailabilityError
+from archetype.storage.catalog import OutboxRecord
 
 _AUDIT_TABLE = "audit_rows"
 DEFAULT_AUDIT_FLUSH_ROWS = 128

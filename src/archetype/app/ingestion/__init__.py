@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""World/run ingestion envelope and plain or conditional append selection."""
+"""Live-storage selection and typed-publication delegation."""
 
 from archetype.app.ingestion.service import IngestionService
 

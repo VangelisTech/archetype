@@ -19,7 +19,8 @@ Package location states architectural ownership before any symbol is exported:
 | Components, processors, pure DataFrame transforms, transition graphs, and reusable projections | `archetype.<family>` |
 | Supported family value contracts | `archetype.<family>.contracts` or another specifically named family module |
 | Capability-scoped resources and provider adapters implementing a family-owned protocol | A named subpackage of `archetype.<family>` |
-| Durable authority, cross-family orchestration, internal service ports, and concrete application services | `archetype.app.<family>` |
+| Physical storage, control catalogs, commit coordination, and generic durable world/run envelopes | `archetype.storage` |
+| Application workflow authority, cross-family orchestration, internal service ports, and concrete application services | `archetype.app.<family>` |
 | Transport, authentication, application facade, and composition | `archetype.api`, `archetype.app.gateway`, `archetype.app.application`, and `archetype.app.container` |
 
 A top-level family may depend on `archetype.core`, itself, third-party
@@ -32,6 +33,12 @@ Every first-party top-level package or module must be classified as reserved
 infrastructure or registered as a family with one exact dependency
 disposition. The complete family graph is acyclic, and root-facade imports are
 checked against the module that owns the exported name.
+
+`archetype.storage` is the reviewed physical-substrate family. It owns storage
+execution, control-catalog implementations and records, physical visibility,
+commit coordination, and the generic durable world/run envelope. Application
+families retain workflow meaning and orchestration while consuming that
+substrate through the staged `iStorageService` port.
 
 Use semantic module names: `components.py` for persistent ECS schema,
 `processors.py` for processors, `contracts.py` for supported value contracts,
@@ -173,7 +180,7 @@ reviewable view; edit the registry, never the generated table.
 Some of the most important contracts are enforced directly in tests:
 
 - [`tests/app/test_runtime_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_contracts.py)
-- [`tests/app/test_runtime_fork_storage.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_fork_storage.py)
+- [`tests/storage/test_runtime_fork_storage.py`](https://github.com/VangelisTech/archetype/blob/main/tests/storage/test_runtime_fork_storage.py)
 - [`tests/sync/test_sync_stack_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/sync/test_sync_stack_contracts.py)
 - [`tests/integration/test_command_flow.py`](https://github.com/VangelisTech/archetype/blob/main/tests/integration/test_command_flow.py)
 - [`tests/app/test_services.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_services.py)

@@ -197,8 +197,8 @@ async def test_submit_to_unknown_world_rejected():
     command, debited quota, and emitted an audit row, with no way for the
     caller to learn the command would never run.
     """
-    from archetype.app.errors import WorldNotFoundError
     from archetype.app.models import Command, CommandType
+    from archetype.errors import WorldNotFoundError
 
     c = ServiceContainer()
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
@@ -345,8 +345,8 @@ async def test_run_result_run_id_round_trips_to_query(tmp_path):
 @pytest.mark.asyncio
 async def test_submit_to_destroyed_world_rejected(tmp_path):
     """A destroyed world_id is no longer a valid submit target."""
-    from archetype.app.errors import WorldNotFoundError
     from archetype.app.models import Command, CommandType
+    from archetype.errors import WorldNotFoundError
 
     c = ServiceContainer()
     ctx = ActorCtx(id=uuid7(), roles={"admin"})

@@ -15,10 +15,10 @@ from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_coun
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.models import CommandType
 from archetype.app.query.service import QueryService
-from archetype.app.storage.service import StorageService
-from archetype.app.storage.session import configure_session
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
+from archetype.storage.service import StorageService
+from archetype.storage.session import configure_session
 
 
 class APos(Component):

@@ -26,7 +26,8 @@ from pathlib import Path
 
 import pytest
 
-from archetype.app.storage.catalog import (
+from archetype.core.interfaces import StaleWriterError
+from archetype.storage.catalog import (
     CatalogConflictError,
     CommandAdmission,
     CommandConflictError,
@@ -34,7 +35,6 @@ from archetype.app.storage.catalog import (
     SqliteControlCatalog,
     WorldRecord,
 )
-from archetype.core.interfaces import StaleWriterError
 
 pytestmark = pytest.mark.asyncio
 
@@ -120,7 +120,7 @@ def worker_url(tmp_path_factory):
 
 
 def _remote(worker_url: str):
-    from archetype.app.storage.remote_catalog import RemoteControlCatalog
+    from archetype.storage.catalog.remote import RemoteControlCatalog
 
     # Fresh namespace per catalog instance: parity runs are independent.
     return RemoteControlCatalog(

@@ -4,12 +4,12 @@ import daft
 import pytest
 import pytest_asyncio
 
-from archetype.app.storage.session import configure_session
 from archetype.core.aio.async_cached_store import AsyncCachedStore
 from archetype.core.aio.async_store import AsyncStore
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.interfaces import AppendReceipt
+from archetype.storage.session import configure_session
 
 pytestmark = [
     pytest.mark.contract("storage.cache.concurrent_no_loss"),

@@ -5,10 +5,10 @@
 
 import pytest
 
-from archetype.app.storage.service import StorageService, _resolve_uri
 from archetype.app.world.service import WorldService
 from archetype.core.aio import AsyncSystem, AsyncWorld
 from archetype.core.config import CacheConfig, StorageConfig, WorldConfig
+from archetype.storage.service import StorageService, _resolve_uri
 
 
 def _make_orchestrator(tmp_path):

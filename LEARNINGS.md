@@ -284,7 +284,7 @@ There are two distinct concepts, unfortunately both historically called "resourc
 | Concept | Module | Purpose |
 |---------|--------|---------|
 | **Resources** | `core/resources.py` | Type-safe DI container for processors |
-| **StorageService** | `app/storage/service.py` | Admits terminal Daft execution; owns app tables, store pools, and control catalogs |
+| **StorageService** | `storage/service.py` | Admits terminal Daft execution; owns app tables, store pools, and control catalogs |
 
 **StorageService** is internal application authority. `ServiceContainer` owns
 one and application services share it. It is the materialization point for
@@ -294,10 +294,12 @@ Archetype-owned Daft plans: app code delegates terminal execution through
 and optimistic conflict retry remain beside that execution gate. It is never
 placed in a world's resource container.
 
-`IngestionService` does not duplicate those mechanics. It resolves the durable
-world/run envelope and chooses plain append or key-conditional append. File
-policy belongs to the one `ArtifactService`, which configures the reusable
-`FileIngestionPipeline` and publishes its tables through ingestion.
+`StorageService` also owns the generic durable world/run envelope and extends
+conditional-append keys with that identity. `IngestionService` selects the
+live storage configuration and delegates those mechanics; it does not create a
+second storage authority. File policy belongs to the one `ArtifactService`,
+which configures the reusable `FileIngestionPipeline` and publishes its tables
+through ingestion.
 
 **Resources** is the runtime DI container that passes services to processors. Each world has one.
 

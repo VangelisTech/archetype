@@ -20,7 +20,6 @@ The recommended script boundary. Owns process-level services and provides
 ergonomic world handles.
 """
 
-from archetype.app.storage.session import configure_session
 from archetype.runtime.missions import RuntimeMissions
 from archetype.runtime.runtime import (
     ArchetypeRuntime,
@@ -28,6 +27,7 @@ from archetype.runtime.runtime import (
     run_sync,
 )
 from archetype.runtime.world import RuntimeWorld, SyncRuntimeWorld
+from archetype.storage.session import configure_session
 
 __all__ = [
     "ArchetypeRuntime",

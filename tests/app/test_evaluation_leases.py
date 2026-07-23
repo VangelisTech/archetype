@@ -7,7 +7,7 @@ import asyncio
 
 import pytest
 
-from archetype.app.storage.catalog import CatalogConflictError, SqliteControlCatalog
+from archetype.storage.catalog import CatalogConflictError, SqliteControlCatalog
 
 pytestmark = pytest.mark.asyncio
 

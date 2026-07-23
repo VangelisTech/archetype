@@ -66,6 +66,60 @@ def test_quality_workflow_keeps_fail_loud_coverage_and_infrastructure() -> None:
     )
 
 
+def test_r2_job_runs_each_oracle_once_and_retains_the_redacted_receipt() -> None:
+    workflow = QUALITY_WORKFLOW.read_text(encoding="utf-8")
+    infrastructure = _job(workflow, "infrastructure-idempotency")
+    with OPERATIONAL_SCENARIOS.open("rb") as stream:
+        scenarios = tomllib.load(stream)["scenario"]
+    scenario = next(row for row in scenarios if row["id"] == "dogfood.storage.r2")
+
+    assert scenario["source_command"] == [
+        "pytest",
+        "-q",
+        "tests/infrastructure/test_r2_artifact_context.py",
+    ]
+    assert scenario["semantic_oracle"] == {
+        "kind": "pytest",
+        "ref": "tests/infrastructure/test_r2_artifact_context.py",
+    }
+    assert scenario["required_cadence"] == ["pr", "main", "release"]
+    assert scenario["artifact_policy"] == "redacted_receipt"
+    assert scenario["contracts"] == [
+        "runtime.trust.actor_free",
+        "world.fork.lineage",
+        "world.run_identity.cold_resume",
+        "ingestion.catalog.cold_roundtrip",
+        "artifacts.ingestion.occurrence_identity",
+        "artifacts.ingestion.common_visibility",
+    ]
+
+    assert "make test-infra" not in infrastructure
+    assert infrastructure.count("tests/infrastructure/test_r2_idempotency.py") == 1
+    assert infrastructure.count("--scenario dogfood.storage.r2") == 1
+    assert "--cadence pr" in infrastructure
+    assert "--require-run" in infrastructure
+    assert '--expected-revision "$GITHUB_SHA"' in infrastructure
+    assert "--require-clean" in infrastructure
+    assert re.search(
+        r"- name: Run public-runtime R2 scenario\n\s+if: always\(\)",
+        infrastructure,
+    )
+    assert re.search(
+        r"- name: Require R2 operational receipt\n"
+        r"\s+if: always\(\)\n"
+        r"\s+run: test -f r2-operational-results\.json",
+        infrastructure,
+    )
+    assert re.search(
+        r"name: r2-operational-evidence\n"
+        r"\s+path: \|\n"
+        r"\s+r2-operational-results\.json\n"
+        r"\s+r2-operational-results\.d/\n"
+        r"\s+if-no-files-found: error",
+        infrastructure,
+    )
+
+
 def test_observability_audit_uses_the_existing_required_format_context() -> None:
     workflow = QUALITY_WORKFLOW.read_text(encoding="utf-8")
     makefile = MAKEFILE.read_text(encoding="utf-8")

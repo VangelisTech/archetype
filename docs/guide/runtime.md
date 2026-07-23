@@ -165,9 +165,10 @@ UUIDv7 occurrence that may point to the same content object.
 
 `world.artifacts()` returns the current world's current-run common file index
 as a Daft DataFrame. Table registration, world/run envelope columns, schema
-checking, and Iceberg append semantics remain internal to the app-layer
-ingestion authority. The runtime neither inspects `daft.Catalog` nor exposes
-the concrete ingestion or artifact services.
+checking, and Iceberg append semantics remain internal to the storage
+substrate reached through typed ingestion. The runtime neither inspects
+`daft.Catalog` nor exposes the concrete storage, ingestion, or artifact
+services.
 
 `world.ingest_claude_transcript(source)` is the recommended coding-agent
 transcript boundary. `ClaudeTranscriptSource` carries local input configuration

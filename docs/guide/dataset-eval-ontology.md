@@ -174,12 +174,12 @@ responsibility is strict:
 
 | Owner | Columns / concern |
 |---|---|
-| `IngestionService` | Owning `world_id` / `run_id` envelope and plain-versus-key-conditional append selection |
-| `StorageService` | Daft execution admission, Catalog table registration and reads, typed schema checks, Iceberg append, conflict refresh and retry |
+| `IngestionService` | Live storage selection and typed-ingestion workflow delegation |
+| `StorageService` | Owning `world_id` / `run_id` envelope; plain/keyed append; Daft execution admission; Catalog table registration and reads; typed schema checks; Iceberg append, conflict refresh and retry |
 | Dataset adapter | Stable table name and optional logical key; `benchmark`, `suite`, `task_key`, `episode_id`, stream/timing fields, domain payload |
 | Live-trial exporter | Optional source `RuntimeSlice` provenance in addition to dataset coordinates |
 
-**The IngestionService envelope is application ownership, not dataset identity.**
+**The StorageService envelope is durable ownership, not dataset identity.**
 Its `world_id` and `run_id` scope the table view. The dataset adapter still
 passes its natural logical key as `key_columns` when duplicate suppression is
 required; an empty key requests a plain append. That envelope **does not

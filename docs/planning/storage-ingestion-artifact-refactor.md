@@ -1,18 +1,21 @@
 # Storage, ingestion, and artifact execution refactor
 
-**Status:** Implemented and dogfooded; PR verification awaits the concurrent documentation rewrite
+**Status:** Implemented and dogfooded; ownership updated for the v0.5 storage-family relocation
 **Date:** 2026-07-21  
 **Tracking pull request:** #619
+**v0.5 follow-up:** #640
 
 ## Objective
 
 Finish the Agent Missions cleanup by making the data path as coherent as the
 mission state machine:
 
-- `StorageService` is the single application authority for Archetype-owned
-  Daft execution, catalog access, table persistence, ordering, and retry.
-- `IngestionService` adds application identity and selects a storage
-  operation; it does not execute Daft or implement storage mechanics.
+- `archetype.storage.StorageService` is the canonical physical authority for
+  Archetype-owned Daft execution, catalog access, table persistence,
+  visibility, world/run envelopes, commit coordination, ordering, and retry.
+- `IngestionService` selects the live storage configuration and delegates
+  typed publication; it does not own the envelope, execute Daft, or implement
+  storage mechanics.
 - `ArtifactService` is the one file-occurrence workflow, composed over general
   ingestion rather than a second durability kernel.
 - `archetype.ingestion` contains reusable lazy file and media transforms, not
@@ -30,8 +33,11 @@ The implementation now matches the target dependency flow:
 
 - `StorageService` owns the reentrant application Daft lane, app-table Catalog
   operations, schema alignment, plain and conditional append, and optimistic
-  conflict retry.
-- `IngestionService` owns only the world/run envelope and append selection.
+  conflict retry. The v0.5 storage-family relocation also gives it physical
+  visibility, exact commit-coordinator binding, and the generic durable
+  world/run envelope.
+- `IngestionService` owns only live-storage selection and typed-publication
+  delegation.
 - one `FileIngestionPipeline` owns the visible file graph; `scanners.py` owns
   only pure bounded stream parsing; one `ArtifactService` composes the workflow.
 - architecture enforcement rejects app-layer Daft collection, direct Iceberg
@@ -58,8 +64,9 @@ lazy plans above it. Durable rights come from the existing control catalog;
 Iceberg commits data. No artifact claim, finalizer, publication receipt, or
 reconciler is reintroduced.
 
-**Owning layer:** `archetype.app.storage`, with semantic plan construction in
-`archetype.app.ingestion`, `archetype.app.artifacts`, and
+**Owning layer:** `archetype.storage` owns the physical substrate, with
+application workflow composition in `archetype.app.ingestion` and
+`archetype.app.artifacts`, and reusable semantic plan construction in
 `archetype.ingestion`.
 
 **Normative sources:** application architecture, service protocols, atomic
@@ -127,6 +134,9 @@ how that work is parallelized. Iceberg decides whether a data commit is atomic.
 - direct `read_iceberg` and `write_iceberg` calls;
 - table registration, discovery, schema comparison, and snapshot lookup;
 - plain append and conditional append;
+- durable world/run lookup, envelope stamping, and scoped reads;
+- immutable visibility pinning and raw physical signature-table scans;
+- exact `(world_id, run_id, writer_epoch)` commit-coordinator binding;
 - retry of optimistic commit conflicts; and
 - access to durable coordination implemented by SQLite or the Durable Object.
 
@@ -142,16 +152,16 @@ not wrapped in a proxy merely to hide Daft.
 
 `IngestionService` owns:
 
-- resolving the durable world and current run;
-- adding the `world_id` and `run_id` envelope;
-- selecting plain or conditional append; and
-- supplying semantic identity columns for a conditional append.
+- selecting the live world's storage configuration;
+- delegating typed append and read operations to `StorageService`; and
+- forwarding caller-supplied semantic identity columns for conditional append.
 
 It owns no execution lock, catalog facade, Iceberg call, retry loop, or
-materialization. `IngestionTable` and `TableVersion` are not reusable family
-contracts and will be removed. Table names remain next to their application
-producer. Daft's catalog validates identifiers; Archetype does not duplicate
-that validation with a regular expression.
+materialization, and it does not derive or stamp the durable world/run
+envelope. `IngestionTable` and `TableVersion` are not reusable family contracts
+and will be removed. Table names remain next to their application producer.
+Daft's catalog validates identifiers; Archetype does not duplicate that
+validation with a regular expression.
 
 ### FileIngestionPipeline
 
@@ -204,6 +214,13 @@ remain supported Pydantic contracts under `archetype.artifacts`.
 
 ```text
 src/archetype/
+  storage/
+    service.py      # execution, visibility, envelopes, table I/O, ordering, retry
+    config.py       # immutable control-catalog bootstrap snapshot
+    catalog/        # protocol, records, SQLite and remote implementations
+    commit.py       # exact-identity world fence and manifest coordinator
+    session.py
+    signatures.py
   ingestion/
     __init__.py
     pipeline.py       # FileIngestionPipeline and the visible Daft graph
@@ -214,15 +231,10 @@ src/archetype/
     context.py        # task-anchored lazy analysis transforms
   app/
     storage/
-      service.py      # execution, catalog, table I/O, ordering, retry
-      interfaces.py
-      session.py
-      catalog.py      # SQLite control authority
-      remote_catalog.py
-      commit.py       # existing world fence and manifest coordinator
-      signatures.py
+      interfaces.py   # staged internal application port
+      *.py            # temporary identity-preserving compatibility re-exports
     ingestion/
-      service.py      # world/run envelope and append selection
+      service.py      # live-storage selection and typed-publication delegation
       interfaces.py
     artifacts/
       service.py      # complete file-occurrence workflow
@@ -298,8 +310,8 @@ submit ArtifactSource values
   -> StorageService materializes durable objects
   -> reopen the immutable object for specialized metadata
   -> build typed index frames
-  -> IngestionService adds world/run identity
-  -> StorageService appends typed indexes
+  -> IngestionService selects live storage and delegates publication
+  -> StorageService stamps world/run identity and appends typed indexes
   -> StorageService appends artifact_files last
   -> return ArtifactRef values
 ```
@@ -314,9 +326,11 @@ reuses verified content bytes.
 1. Add executable storage contracts for admission, direct table I/O, and real
    optimistic-conflict behavior.
 2. Move application table reads, appends, schema comparison, snapshot lookup,
-   and retry into `StorageService`; delete `IcebergCatalogContext`.
+   retry, and generic world/run envelope handling into `StorageService`; delete
+   `IcebergCatalogContext`.
 3. Move the ingestion anti-join sequence into storage and reduce
-   `IngestionService` to world/run enrichment and operation selection.
+   `IngestionService` to live-storage selection and typed-publication
+   delegation.
 4. Consolidate file and media transforms into `FileIngestionPipeline`; remove
    Python MIME fallback and fake ingestion contracts.
 5. Simplify `ArtifactService` around the pipeline and storage materialization.

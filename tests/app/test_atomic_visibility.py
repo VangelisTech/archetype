@@ -14,13 +14,13 @@ import asyncio
 import pytest
 
 from archetype.app.container import ServiceContainer
-from archetype.app.storage.catalog import SqliteControlCatalog
-from archetype.app.storage.commit import CatalogCommitCoordinator
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.core.errors import TickExecutionError
 from archetype.core.interfaces import StaleWriterError
+from archetype.storage.catalog import SqliteControlCatalog
+from archetype.storage.commit import CatalogCommitCoordinator
 
 pytestmark = [
     pytest.mark.asyncio,

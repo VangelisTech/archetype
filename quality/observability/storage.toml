@@ -2,61 +2,72 @@ version = 1
 owner = "storage"
 family = "storage"
 
+[[concrete_operation_surface]]
+qualified_scope = "archetype.storage.service.StorageService"
+replaces = ["interfaces.iStorageService"]
+
 [[disposition]]
 operations = [
-  "catalog.ControlCatalog.register_world",
-  "catalog.ControlCatalog.set_world_status",
-  "catalog.ControlCatalog.set_world_run",
-  "catalog.ControlCatalog.get_world",
-  "catalog.ControlCatalog.list_worlds",
-  "catalog.ControlCatalog.register_signature",
-  "catalog.ControlCatalog.list_signatures",
-  "catalog.ControlCatalog.acquire_fence",
-  "catalog.ControlCatalog.current_fence_epoch",
-  "catalog.ControlCatalog.max_manifest_tick",
-  "catalog.ControlCatalog.publish_manifest",
-  "catalog.ControlCatalog.visible_tokens",
-  "catalog.ControlCatalog.list_manifests",
-  "catalog.ControlCatalog.admit_commands",
-  "catalog.ControlCatalog.lease_commands",
-  "catalog.ControlCatalog.fail_command",
-  "catalog.ControlCatalog.release_commands",
-  "catalog.ControlCatalog.list_commands",
-  "catalog.ControlCatalog.pending_command_count",
-  "catalog.ControlCatalog.max_reserved_entity_id",
-  "catalog.ControlCatalog.lease_evaluation",
-  "catalog.ControlCatalog.complete_evaluation",
-  "catalog.ControlCatalog.release_evaluation",
-  "catalog.ControlCatalog.read_outbox",
-  "catalog.ControlCatalog.mark_outbox_projected",
-  "catalog.ControlCatalog.close",
-  "interfaces.iStorageService.has_injected_session",
-  "interfaces.iStorageService.require_iceberg_identity",
-  "interfaces.iStorageService.get_control_catalog",
-  "interfaces.iStorageService.get_or_create_store",
-  "interfaces.iStorageService.materialize",
-  "interfaces.iStorageService.read_table",
-  "interfaces.iStorageService.append_table",
-  "interfaces.iStorageService.append_missing",
-  "interfaces.iStorageService.shutdown",
+  "catalog.interface.ControlCatalog.register_world",
+  "catalog.interface.ControlCatalog.set_world_status",
+  "catalog.interface.ControlCatalog.set_world_run",
+  "catalog.interface.ControlCatalog.get_world",
+  "catalog.interface.ControlCatalog.list_worlds",
+  "catalog.interface.ControlCatalog.register_signature",
+  "catalog.interface.ControlCatalog.list_signatures",
+  "catalog.interface.ControlCatalog.acquire_fence",
+  "catalog.interface.ControlCatalog.current_fence_epoch",
+  "catalog.interface.ControlCatalog.max_manifest_tick",
+  "catalog.interface.ControlCatalog.publish_manifest",
+  "catalog.interface.ControlCatalog.visible_tokens",
+  "catalog.interface.ControlCatalog.list_manifests",
+  "catalog.interface.ControlCatalog.admit_commands",
+  "catalog.interface.ControlCatalog.lease_commands",
+  "catalog.interface.ControlCatalog.fail_command",
+  "catalog.interface.ControlCatalog.release_commands",
+  "catalog.interface.ControlCatalog.list_commands",
+  "catalog.interface.ControlCatalog.pending_command_count",
+  "catalog.interface.ControlCatalog.max_reserved_entity_id",
+  "catalog.interface.ControlCatalog.lease_evaluation",
+  "catalog.interface.ControlCatalog.complete_evaluation",
+  "catalog.interface.ControlCatalog.release_evaluation",
+  "catalog.interface.ControlCatalog.cancel_commands",
+  "catalog.interface.ControlCatalog.read_outbox",
+  "catalog.interface.ControlCatalog.mark_outbox_projected",
+  "catalog.interface.ControlCatalog.outbox_progress",
+  "catalog.interface.ControlCatalog.close",
+  "service.StorageService.has_injected_session",
+  "service.StorageService.require_iceberg_identity",
+  "service.StorageService.get_control_catalog",
+  "service.StorageService.bind_commit_coordinator",
+  "service.StorageService.pin_visibility",
+  "service.StorageService.scan_visible_world_rows",
+  "service.StorageService.append_world_rows",
+  "service.StorageService.read_world_rows",
+  "service.StorageService.get_or_create_store",
+  "service.StorageService.materialize",
+  "service.StorageService.read_table",
+  "service.StorageService.append_table",
+  "service.StorageService.append_missing",
+  "service.StorageService.shutdown",
 ]
 signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
-authority = "The SQLite or remote Durable Object control state, Catalog-resolved Iceberg snapshots, fencing epochs, command and evaluation leases, transactional rows, and tick manifests remain authoritative."
+authority = "Iceberg snapshots are the durable data authority. The local SQLite catalog or the target world's remote control authority owns fencing, manifests, commands, evaluation leases, and control-outbox rows within its own transaction domain; after durable data flush, per-world manifest publication, command settlement, and control-outbox append are atomic together. Remote directory discovery is a separate authority, and no transaction spans directory, per-world control, and Iceberg."
 evidence = [
   "docs/guide/atomic-visibility.md",
   "docs/guide/artifacts.md",
   "docs/guide/service-protocols.md",
   "tests/app/test_atomic_visibility.py",
-  "tests/app/test_remote_catalog_parity.py",
-  "tests/app/test_storage_execution.py",
+  "tests/storage/test_remote_catalog_parity.py",
+  "tests/storage/test_storage_execution.py",
 ]
-rationale = "StorageService centralizes terminal Daft admission, table registration, schema checks, and conflict retry; durable control transactions and Iceberg snapshots expose the result without a parallel signal."
+rationale = "StorageService centralizes terminal Daft admission, table registration, schema checks, and conflict retry. Only the target world's control authority atomically publishes its manifest, command settlement, and control-outbox rows after durable data flush; Iceberg and remote directory discovery remain separate durable boundaries."
 
 [[legacy]]
 rule = "raw_exception_logging"
-path = "src/archetype/app/storage/service.py"
-qualified_scope = "archetype.app.storage.service.StorageService.shutdown"
+path = "src/archetype/storage/service.py"
+qualified_scope = "archetype.storage.service.StorageService.shutdown"
 target = "log:exception:'Failed to shut down store %r':exception"
 owner = "storage"
 issue = 517
@@ -65,8 +76,8 @@ expiry_condition = "Remove when #517 records a bounded store-shutdown failure wi
 
 [[legacy]]
 rule = "raw_exception_logging"
-path = "src/archetype/app/storage/service.py"
-qualified_scope = "archetype.app.storage.service.StorageService.shutdown"
+path = "src/archetype/storage/service.py"
+qualified_scope = "archetype.storage.service.StorageService.shutdown"
 target = "log:exception:'Failed to close control catalog %r':exception"
 owner = "storage"
 issue = 517
@@ -75,8 +86,8 @@ expiry_condition = "Remove when #517 records a bounded catalog-shutdown failure 
 
 [[legacy]]
 rule = "unsafe_log_value"
-path = "src/archetype/app/storage/catalog.py"
-qualified_scope = "archetype.app.storage.catalog.SqliteControlCatalog._connect_sync"
+path = "src/archetype/storage/catalog/sqlite.py"
+qualified_scope = "archetype.storage.catalog.sqlite.SqliteControlCatalog._connect_sync"
 target = "log:warning:'catalog %s: journal_mode=%s (WAL unavailable)':sensitive-value"
 owner = "storage"
 issue = 517

@@ -33,10 +33,7 @@ from typing import TYPE_CHECKING
 from uuid_utils import UUID, uuid7
 
 from archetype.app.models import WorldInfo
-from archetype.app.storage.catalog import SignatureRecord, WorldRecord
-from archetype.app.storage.commit import CatalogCommitCoordinator
 from archetype.app.storage.interfaces import iStorageService
-from archetype.app.storage.signatures import resolve_signature_records
 from archetype.core.aio import (
     AsyncQueryManager,
     AsyncSystem,
@@ -48,6 +45,9 @@ from archetype.core.hooks import HookRegistry
 from archetype.core.interfaces import iAsyncStore, iAsyncSystem
 from archetype.core.lineage import load_lineage, persist_lineage
 from archetype.core.resources import Resources
+from archetype.storage.catalog import SignatureRecord, WorldRecord
+from archetype.storage.service import PinnedVisibility
+from archetype.storage.signatures import resolve_signature_records
 
 if TYPE_CHECKING:
     pass
@@ -363,7 +363,12 @@ class WorldService:
             except Exception:
                 self._registry.remove(world.world_id)
                 raise
-            world.commit_coordinator = CatalogCommitCoordinator(catalog, epoch=epoch)
+            world.commit_coordinator = self._storage_service.bind_commit_coordinator(
+                storage_config,
+                world_id=str(world.world_id),
+                run_id=str(world.run_id),
+                writer_epoch=epoch,
+            )
             self._storage_configs[str(world.world_id)] = (storage_config, cache_config)
             return world
 
@@ -467,7 +472,12 @@ class WorldService:
         except Exception:
             self._registry.remove(fork.world_id)
             raise
-        fork.commit_coordinator = CatalogCommitCoordinator(catalog, epoch=epoch)
+        fork.commit_coordinator = self._storage_service.bind_commit_coordinator(
+            storage_config,
+            world_id=str(fork.world_id),
+            run_id=str(fork.run_id),
+            writer_epoch=epoch,
+        )
         self._storage_configs[str(fork.world_id)] = (storage_config, cache_config)
         # Persist the fork's ancestor chain (append-only): provenance must
         # survive the fork being destroyed or the process restarting.
@@ -576,7 +586,13 @@ class WorldService:
 
         # Preflight stable reconstruction failures before fencing. The world
         # may still advance before the authoritative post-fence snapshot.
-        snapshot = await self._resume_snapshot(catalog, store, wid, str(run_id), lineage)
+        snapshot = await self._resume_snapshot(
+            catalog,
+            storage_config,
+            record,
+            str(run_id),
+            lineage,
+        )
         self._resolve_live_signatures(snapshot.directory)
 
         # Fence, THEN take the authoritative snapshot. Post-fence the old
@@ -585,7 +601,13 @@ class WorldService:
         # snapshot and the fence.
         epoch = await catalog.acquire_fence(wid, _writer_holder())
         try:
-            snapshot = await self._resume_snapshot(catalog, store, wid, str(run_id), lineage)
+            snapshot = await self._resume_snapshot(
+                catalog,
+                storage_config,
+                record,
+                str(run_id),
+                lineage,
+            )
             entity2sig, _live_tables = self._resolve_live_signatures(snapshot.directory)
             reserved_entity_id = await catalog.max_reserved_entity_id(wid)
             next_entity_id = max(
@@ -605,7 +627,12 @@ class WorldService:
                     lineage=lineage or [],
                 ),
             )
-            world.commit_coordinator = CatalogCommitCoordinator(catalog, epoch=epoch)
+            world.commit_coordinator = self._storage_service.bind_commit_coordinator(
+                storage_config,
+                world_id=wid,
+                run_id=str(run_id),
+                writer_epoch=epoch,
+            )
             self._registry.insert(world)
         except Exception:
             logger.exception(
@@ -628,8 +655,8 @@ class WorldService:
     async def _resume_snapshot(
         self,
         catalog,
-        store: iAsyncStore,
-        world_id: str,
+        storage_config: StorageConfig,
+        world_record: WorldRecord,
         run_id: str,
         lineage: list[tuple[str, str, int]] | None,
     ) -> _ResumeSnapshot:
@@ -644,47 +671,52 @@ class WorldService:
         so a fork resumed before its first own step inherits its snapshot
         state; the fork's own rows override by tick.
         """
-        visible = await catalog.visible_tokens(world_id, run_id)
-        manifest_tick = await catalog.max_manifest_tick(world_id, run_id)
-        if visible is not None:
-            tokens: list[str] | None = sorted(
-                {token for token_list in visible.values() for token in token_list}
-            )
+        world_id = str(world_record.world_id)
+        visibility = await self._storage_service.pin_visibility(
+            storage_config,
+            world_id,
+            run_id=run_id,
+        )
+        if visibility.visibility_tokens is not None:
             resume_tick: int | None = (
-                manifest_tick + 1
-                if manifest_tick is not None
+                visibility.head_tick + 1
+                if visibility.head_tick is not None
                 else ((lineage[-1][2] + 1) if lineage else 0)
             )
         else:
             # Never-fenced legacy world: rows are implicitly visible and the
             # own-row head is the true head (resolved after the scan).
-            resume_tick, tokens = None, None
+            resume_tick = None
 
         directory: dict[int, SignatureRecord] = {}
         latest_seen: dict[int, int] = {}
         max_entity_id = 0
 
         for ancestor_world, ancestor_run, up_to_tick in lineage or []:
-            ancestor_visible = await catalog.visible_tokens(str(ancestor_world), str(ancestor_run))
-            ancestor_tokens = (
-                sorted({t for ts in ancestor_visible.values() for t in ts})
-                if ancestor_visible
-                else ([] if ancestor_visible is not None else None)
+            ancestor_record = await catalog.get_world(str(ancestor_world))
+            if ancestor_record is None:
+                raise RuntimeError(f"lineage references missing ancestor world {ancestor_world}")
+            ancestor_visibility = await self._storage_service.pin_visibility(
+                storage_config,
+                str(ancestor_world),
+                run_id=str(ancestor_run),
+                max_tick=int(up_to_tick),
             )
             seg_max_eid, _ = await self._scan_world_rows(
-                catalog,
-                store,
-                str(ancestor_world),
-                str(ancestor_run),
-                ancestor_tokens,
+                storage_config,
+                ancestor_record,
+                ancestor_visibility,
                 directory,
                 latest_seen,
-                max_tick=int(up_to_tick),
             )
             max_entity_id = max(max_entity_id, seg_max_eid)
 
         own_max_eid, own_head = await self._scan_world_rows(
-            catalog, store, world_id, run_id, tokens, directory, latest_seen
+            storage_config,
+            world_record,
+            visibility,
+            directory,
+            latest_seen,
         )
         max_entity_id = max(max_entity_id, own_max_eid)
         if resume_tick is None:
@@ -699,15 +731,11 @@ class WorldService:
 
     async def _scan_world_rows(
         self,
-        catalog,
-        store: iAsyncStore,
-        world_id: str,
-        run_id: str,
-        tokens: list[str] | None,
+        storage_config: StorageConfig,
+        world_record: WorldRecord,
+        visibility: PinnedVisibility,
         directory: dict[int, SignatureRecord],
         latest_seen: dict[int, int],
-        *,
-        max_tick: int | None = None,
     ) -> tuple[int, int | None]:
         """Merge one (world, run) segment's latest visible rows into the
         directory accumulator. Returns (max entity id seen, max row tick).
@@ -717,21 +745,17 @@ class WorldService:
         demanded later, and only for archetypes that still have LIVE
         entities (dead history should not hold a resume hostage).
         """
-        from daft import col, lit
+        from daft import col
 
         max_entity_id = 0
-        row_head: int | None = None
-        for rec in await catalog.list_signatures():
-            try:
-                df = await store.get_existing_table_df(rec.table_id, world_id, run_id)
-            except KeyError:
-                continue  # recorded elsewhere, never materialized here
-            if tokens is not None and "commit_token" in df.column_names:
-                visible = df["commit_token"].is_in(tokens) if tokens else lit(False)
-                df = df.where(visible)
-            if max_tick is not None:
-                # (Daft stubs Expression.__le__ as bool; this is an Expression.)
-                df = df.where(df["tick"] <= max_tick)  # ty: ignore[unsupported-operator]
+        scanned = await self._storage_service.scan_visible_world_rows(
+            storage_config,
+            world_record,
+            visibility,
+        )
+        for table in scanned.tables:
+            rec = table.signature
+            df = table.frame
             latest = df.groupby("entity_id").agg(col("tick").max().alias("latest_tick"))
             current = df.join(
                 latest,
@@ -742,8 +766,6 @@ class WorldService:
             rows = materialized.to_pylist()
             for row in rows:
                 eid, tick = int(row["entity_id"]), int(row["tick"])
-                if row_head is None or tick > row_head:
-                    row_head = tick
                 if eid < 0:
                     continue  # lineage/metadata rows, never live entities
                 max_entity_id = max(max_entity_id, eid)
@@ -764,7 +786,7 @@ class WorldService:
                     directory[eid] = rec
                 else:
                     directory.pop(eid, None)
-        return max_entity_id, row_head
+        return max_entity_id, scanned.latest_physical_tick
 
     def _resolve_live_signatures(
         self, directory: dict[int, SignatureRecord]

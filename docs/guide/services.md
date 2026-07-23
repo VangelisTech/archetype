@@ -50,8 +50,9 @@ imports. It also connects `CommandScheduler`'s transactional outbox to
 ## Storage family
 
 `StorageService` pools async stores and resolves local SQLite or remote control
-catalogs for a storage identity. It is also the sole application authority for
-terminal Daft execution and for app-table registration, schema alignment,
+catalogs for a storage identity. It is the canonical physical authority for
+terminal Daft execution, visibility pinning and scans, generic world/run
+envelopes, commit coordination, app-table registration, schema alignment,
 reads, writes, and optimistic conflict retry. It owns those physical and
 execution concerns, not the meaning of a tick, command, artifact, or evaluation
 commit.
@@ -87,8 +88,9 @@ ledger/outbox.
 
 ## Ingestion and artifact families
 
-`IngestionService` supplies the world/run envelope and selects either a plain
-append or a caller-keyed conditional append. `StorageService` then owns table
+`IngestionService` selects the live storage configuration and delegates typed
+publication. `StorageService` resolves and stamps the durable world/run
+envelope, selects plain or caller-keyed conditional append, and owns table
 registration, schema comparison, Daft execution, and the Iceberg commit. The
 ingestion service does not know whether its rows describe files, transcripts,
 evaluations, or a future tabular source.
@@ -155,9 +157,9 @@ FastAPI consumes `iCommandGateway`; the CLI remains an HTTP client.
 - gateway: `src/archetype/app/gateway/`
 - durable commands: `src/archetype/app/commands/`
 - world family: `src/archetype/app/world/`
-- storage family: `src/archetype/app/storage/`
+- physical storage family: `src/archetype/storage/`
 - query family: `src/archetype/app/query/`
-- ingestion envelope and append selection: `src/archetype/app/ingestion/`
+- typed-publication routing: `src/archetype/app/ingestion/`
 - reusable file-ingestion pipeline and scanners: `src/archetype/ingestion/`
 - file artifacts: `src/archetype/app/artifacts/`
 - artifact file contracts: `src/archetype/artifacts/`

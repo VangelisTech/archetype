@@ -14,11 +14,11 @@ from archetype.core.config import StorageConfig
 
 @runtime_checkable
 class iIngestionService(Protocol):
-    """Envelope typed rows and select a StorageService-owned append.
+    """Select live storage and delegate typed world-row publication.
 
-    This port knows world/run identity and caller-declared logical keys. Table
-    registration, schema checks, terminal Daft execution, and Iceberg retry
-    remain storage responsibilities.
+    This port knows the target world and caller-declared logical keys. Durable
+    world/run lookup and envelope stamping, table registration, schema checks,
+    terminal Daft execution, and Iceberg retry remain storage responsibilities.
     """
 
     async def append(
@@ -30,7 +30,7 @@ class iIngestionService(Protocol):
         key_columns: tuple[str, ...] = (),
         storage_config: StorageConfig | None = None,
     ) -> int:
-        """Add the world/run envelope and append all rows or only absent keys."""
+        """Delegate a plain or logical-key-conditional append to storage."""
         ...
 
     async def read(

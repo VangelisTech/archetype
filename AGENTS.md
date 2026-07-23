@@ -11,7 +11,8 @@ Choose the owning package before adding a type or behavior:
 | Components, processors, pure DataFrame transforms, transition graphs, and reusable projections | `archetype.<family>` |
 | Supported family value contracts | `archetype.<family>.contracts` or another specifically named family module |
 | Capability-scoped resources and provider adapters implementing a family-owned protocol | A named subpackage of `archetype.<family>` |
-| Durable authority, cross-family orchestration, internal service ports, and concrete application services | `archetype.app.<family>` |
+| Physical storage, control catalogs, commit coordination, and generic durable world/run envelopes | `archetype.storage` |
+| Application workflow authority, cross-family orchestration, internal service ports, and concrete application services | `archetype.app.<family>` |
 | Transport, authentication, application facade, and composition | `archetype.api`, `archetype.app.gateway`, `archetype.app.application`, and `archetype.app.container` |
 
 Top-level families may import `archetype.core`, themselves, third-party
@@ -26,6 +27,12 @@ reserved infrastructure or a registered family, and the family graph must
 remain acyclic. Root-facade imports receive the disposition of their owning module.
 Package placement never makes a symbol public by itself.
 
+`archetype.storage` is the reviewed physical-substrate family: it owns storage
+execution, control-catalog implementations and records, physical visibility,
+commit coordination, and the generic durable world/run envelope. Application
+families consume that substrate through the staged `iStorageService` port and
+retain the meaning and orchestration of their workflows.
+
 A reviewed family may own a capability-scoped resource adapter without gaining
 application authority. Agent Missions is the concrete example: coding-agent
 state, processors, relations, and sandbox resources live under
@@ -37,15 +44,15 @@ state, processors, relations, and sandbox resources live under
 archetype/
 ├── src/archetype/
 │   ├── core/           # ECS engine (Daft + Arrow + LanceDB)
+│   ├── storage/        # Physical rows, Catalogs, commits + control authority
 │   ├── <family>/       # Reusable ECS/domain state and pure behavior
 │   ├── app/            # Internal application families
 │   │   ├── application/ #   Actor-free RuntimeApplication facade
 │   │   ├── gateway/     #   CommandGateway + RBAC/auth
 │   │   ├── commands/    #   Durable scheduler/dispatcher
 │   │   ├── world/       #   Lifecycle, mutation, simulation
-│   │   ├── storage/     #   Daft execution, Catalog, stores + control authority
 │   │   ├── query/       #   Persisted read path
-│   │   ├── ingestion/   #   World/run envelope + append selection
+│   │   ├── ingestion/   #   Live-storage selection + typed publication
 │   │   ├── artifacts/   #   File source policy + typed index publication
 │   │   ├── evaluation/  #   Grading + receipts
 │   │   ├── research/    #   Autoresearch workflows
@@ -236,9 +243,10 @@ Roles (flat, not hierarchical):
 - Keep storage planes distinct. SQLite or the remote Durable Object is the
   transactional control authority for world records, fences, commands, and
   manifests. Iceberg is the data authority for atomic table snapshots and
-  optimistic multi-writer commits. `IngestionService` adds the world/run
-  envelope and selects plain versus key-conditional append; it does not
-  duplicate storage execution.
+  optimistic multi-writer commits. `StorageService` resolves and stamps the
+  durable world/run envelope and selects plain versus key-conditional append;
+  `IngestionService` selects the live storage configuration and delegates typed
+  publication.
 - A tick is a commit boundary: compute all archetypes before persistence, and
   do not consume staged mutations or advance the tick until durable visibility
   is published. Failed ticks must remain retryable.
@@ -301,7 +309,7 @@ change, and report the exact validation that ran. See
 | `src/archetype/app/container.py` | Service wiring |
 | `src/archetype/app/gateway/service.py` | Authorized ingress gateway |
 | `src/archetype/app/commands/service.py` | Durable scheduler and dispatcher |
-| `src/archetype/app/storage/service.py` | Daft execution and durable storage authority |
+| `src/archetype/storage/service.py` | Daft execution and durable storage authority |
 | `src/archetype/ingestion/pipeline.py` | Cohesive reusable file-ingestion graph |
 | `src/archetype/core/aio/async_world.py` | World runtime |
 | `tests/app/test_runtime_contracts.py` | Executable runtime contracts |

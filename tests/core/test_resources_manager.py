@@ -1,9 +1,9 @@
 import daft
 import pytest
 
-from archetype.app.storage.service import AsyncLancedbStore, StorageService, create_async_store
 from archetype.core.aio import AsyncQueryManager, AsyncStore, AsyncUpdateManager
 from archetype.core.config import CacheConfig, StorageBackend, StorageConfig
+from archetype.storage.service import AsyncLancedbStore, StorageService, create_async_store
 from tests.conftest import make_storage_service
 
 
@@ -126,7 +126,7 @@ async def test_lancedb_backend_does_not_construct_daft_iceberg_session(tmp_path,
         raise AssertionError("LanceDB backend should not construct Daft/Iceberg storage")
 
     monkeypatch.setattr(
-        "archetype.app.storage.session.configure_session",
+        "archetype.storage.session.configure_session",
         fail_if_called,
     )
 
@@ -147,7 +147,7 @@ async def test_lancedb_backend_does_not_construct_daft_iceberg_session(tmp_path,
 def test_iceberg_backend_passes_io_config_to_async_store(tmp_path, monkeypatch):
     from daft.io import IOConfig
 
-    from archetype.app.storage.session import configure_session
+    from archetype.storage.session import configure_session
 
     io_config = IOConfig()
     cfg = StorageConfig(
@@ -164,7 +164,7 @@ def test_iceberg_backend_passes_io_config_to_async_store(tmp_path, monkeypatch):
             seen["session"] = session_arg
             seen["io_config"] = io_config
 
-    monkeypatch.setattr("archetype.app.storage.service.AsyncStore", FakeStore)
+    monkeypatch.setattr("archetype.storage.service.AsyncStore", FakeStore)
 
     store = create_async_store(cfg, session=session, cache_config=None)
 
@@ -177,7 +177,7 @@ def test_iceberg_backend_passes_io_config_to_async_store(tmp_path, monkeypatch):
 async def test_app_table_operations_use_pooled_store_session_and_io_config(tmp_path):
     from daft.io import IOConfig
 
-    from archetype.app.storage.session import configure_session
+    from archetype.storage.session import configure_session
 
     io_config = IOConfig()
     config = StorageConfig(
@@ -237,7 +237,7 @@ async def test_iceberg_pool_uses_daft_io_config_fingerprint(tmp_path):
 
 @pytest.mark.asyncio
 async def test_injected_session_rejects_second_storage_identity(tmp_path):
-    from archetype.app.storage.session import configure_session
+    from archetype.storage.session import configure_session
 
     first = StorageConfig(
         uri=str(tmp_path / "store"),
@@ -260,7 +260,7 @@ async def test_injected_session_rejects_second_storage_identity(tmp_path):
 
 @pytest.mark.asyncio
 async def test_injected_session_rejects_external_namespace_drift(tmp_path):
-    from archetype.app.storage.session import configure_session
+    from archetype.storage.session import configure_session
 
     config = StorageConfig(
         uri=str(tmp_path / "store"),
@@ -282,9 +282,9 @@ async def test_injected_session_rejects_external_namespace_drift(tmp_path):
 
 @pytest.mark.asyncio
 async def test_failed_store_creation_does_not_bind_injected_session(tmp_path, monkeypatch):
-    from archetype.app.storage import service as storage_service
-    from archetype.app.storage.service import StorageService
-    from archetype.app.storage.session import configure_session
+    from archetype.storage import service as storage_service
+    from archetype.storage.service import StorageService
+    from archetype.storage.session import configure_session
 
     first = StorageConfig(
         uri=str(tmp_path / "first"),
