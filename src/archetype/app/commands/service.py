@@ -21,6 +21,7 @@ from uuid_utils import UUID, uuid7
 from archetype.app.models import Command, CommandType
 from archetype.core.aio import AsyncWorld
 from archetype.core.component import Component
+from archetype.errors import WorldNotFoundError
 from archetype.storage.catalog import (
     CommandAdmission,
     CommandRecord,
@@ -241,7 +242,10 @@ class CommandScheduler:
 
     async def require_world(self, world_id) -> None:
         """Require an exact live admission target through the injected authority."""
-        await self._require_live_world(world_id)
+        try:
+            await self._require_live_world(world_id)
+        except KeyError:
+            raise WorldNotFoundError(world_id) from None
 
     async def _catalog(self, world_id) -> ControlCatalog:
         key = str(world_id)

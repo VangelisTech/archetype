@@ -22,6 +22,7 @@ from archetype.app.audit.interfaces import iAuditLog
 from archetype.app.audit.models import make_audit_row
 from archetype.app.gateway.auth.guard import guardrail_allow, guardrail_check, guardrail_commit
 from archetype.app.models import Command, CommandType
+from archetype.errors import WorldNotFoundError
 
 if TYPE_CHECKING:
     from archetype.app.gateway.auth.models import ActorCtx
@@ -30,14 +31,17 @@ logger = logging.getLogger(__name__)
 
 _APPLICATION_QUOTA_SCOPE = "__application__"
 _APPLICATION_TARGET_TICK = 0
+_DURABLE_TARGET_TICK = 0
 
 
 class CommandGateway:
     """Authenticate/authorize one untrusted call, then delegate it.
 
-    Direct world calls resolve their quota coordinate through the explicitly
-    injected ``target_tick_for_world`` snapshot. Deferred calls instead use the
-    durable command's scheduled tick and never consult that resolver.
+    Live world calls resolve their quota coordinate through the explicitly
+    injected ``target_tick_for_world`` snapshot. Durable reads and idempotent
+    deletion remain valid without a live world and use the explicit
+    ``(world_id, 0)`` coordinate when no live target exists. Deferred calls use
+    the durable command's scheduled tick and never consult the resolver.
     """
 
     def __init__(
@@ -104,6 +108,24 @@ class CommandGateway:
             ctx,
             world_id=world_id,
             target_tick=self._world_target_tick(world_id),
+        )
+
+    def _gate_durable_world(self, command: Command, ctx: ActorCtx, world_id: object) -> None:
+        """Gate a world-scoped operation that remains valid without a live target.
+
+        Tick zero is the deterministic cold-world quota coordinate. Sharing it
+        with a live world's initial tick is intentionally conservative and
+        avoids an ambient quota reset or an unscoped application-wide bucket.
+        """
+        try:
+            target_tick = self._world_target_tick(world_id)
+        except (KeyError, WorldNotFoundError):
+            target_tick = _DURABLE_TARGET_TICK
+        self._gate(
+            command,
+            ctx,
+            world_id=world_id,
+            target_tick=target_tick,
         )
 
     def _gate_application(self, command: Command, ctx: ActorCtx) -> None:
@@ -233,7 +255,7 @@ class CommandGateway:
         return info
 
     async def destroy_world(self, ctx, world_id):
-        self._gate_world(Command(type=CommandType.DESTROY_WORLD), ctx, world_id)
+        self._gate_durable_world(Command(type=CommandType.DESTROY_WORLD), ctx, world_id)
         await self._application.destroy_world(world_id)
         await self._emit(ctx, "destroy_world", world_id)
 
@@ -383,7 +405,7 @@ class CommandGateway:
         ticks=None,
         entity_ids=None,
     ):
-        self._gate_world(Command(type=CommandType.QUERY_WORLD), ctx, world_id)
+        self._gate_durable_world(Command(type=CommandType.QUERY_WORLD), ctx, world_id)
         result = await self._application.query_components(
             components,
             world_id,
@@ -407,7 +429,7 @@ class CommandGateway:
         entity_ids=None,
         components=None,
     ):
-        self._gate_world(Command(type=CommandType.QUERY_WORLD), ctx, world_id)
+        self._gate_durable_world(Command(type=CommandType.QUERY_WORLD), ctx, world_id)
         result = await self._application.query_archetype(
             sig,
             world_id,
@@ -424,7 +446,7 @@ class CommandGateway:
         if world_id is None:
             self._gate_application(Command(type=CommandType.LIST_SIGNATURES), ctx)
         else:
-            self._gate_world(Command(type=CommandType.LIST_SIGNATURES), ctx, world_id)
+            self._gate_durable_world(Command(type=CommandType.LIST_SIGNATURES), ctx, world_id)
         result = await self._application.list_signatures(storage_config, world_id=world_id)
         await self._emit(ctx, "list_signatures", world_id)
         return result

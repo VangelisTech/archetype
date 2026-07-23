@@ -60,6 +60,7 @@ async def get_world(
 ):
     """Get world metadata. Requires viewer, player, operator, or admin."""
     try:
+        UUID(world_id)
         return await cs.get_world_info(ctx, world_id)
     except Exception as exc:
         raise_api_error(exc)
