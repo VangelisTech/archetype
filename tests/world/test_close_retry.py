@@ -222,6 +222,41 @@ async def test_public_destroy_retries_pending_projection_before_durable_close() 
     assert not await registry.contains(world.world_id)
 
 
+async def test_public_destroy_preserves_an_ambiguous_prepared_tick() -> None:
+    lifecycle_module = import_module("archetype.world.lifecycle")
+    registry_module, _simulation_module = _managed_api()
+    from archetype.core.interfaces import CommittedTickReceipt
+
+    events: list[str] = []
+    world = _ReceiptWorld(
+        world_id="00000000-0000-7000-8000-000000000047",
+        name="response-loss",
+        receipt_type=CommittedTickReceipt,
+    )
+    world.has_prepared_tick_commit = True
+    storage_config = StorageConfig()
+    registry = registry_module.WorldRegistry()
+    await registry.insert(world, storage_config=storage_config)
+    catalog = _DestroyCatalog(events)
+    lifecycle = lifecycle_module.WorldLifecycle(_DestroyStorage(catalog), registry)
+
+    with pytest.raises(RuntimeError, match="prepared tick commit awaiting exact publication"):
+        await lifecycle.destroy_world(world.world_id)
+
+    assert await registry.live_world(world.world_id) is world
+    assert world.has_prepared_tick_commit
+    assert catalog.statuses == []
+    assert events == []
+    with pytest.raises(RuntimeError, match="closing"):
+        async with registry.operation(world.world_id):
+            pytest.fail("ambiguous prepared state must remain strongly owned and closed")
+
+    with pytest.raises(RuntimeError, match="prepared tick commit awaiting exact publication"):
+        await lifecycle.destroy_world(world.world_id)
+    assert await registry.live_world(world.world_id) is world
+    assert catalog.statuses == []
+
+
 async def test_cleanup_lease_cannot_authorize_a_sibling_world() -> None:
     registry_module, simulation_module = _managed_api()
     from archetype.core.interfaces import CommittedTickReceipt

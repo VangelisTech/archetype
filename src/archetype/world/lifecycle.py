@@ -562,6 +562,11 @@ class WorldLifecycle:
         await retry_required_projection(self._registry, key, lease=lease)
 
         async with self._registry.cleanup_operation(lease) as world:
+            if bool(getattr(world, "has_prepared_tick_commit", False)):
+                raise RuntimeError(
+                    f"world {key} has a prepared tick commit awaiting exact publication; "
+                    "refusing durable destruction"
+                )
             if isinstance(world, AsyncWorld):
                 await world.hooks.fire(OnDestroy(world_id=world.world_id))
             storage_record = await self._registry.storage_record(key)
