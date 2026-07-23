@@ -347,6 +347,7 @@ def _resolve_import_from(node: ast.ImportFrom, consumer: str, is_package: bool) 
 def _imported_modules(
     node: ast.AST,
     dependency_roots: frozenset[str],
+    declared_dependencies: frozenset[str],
     *,
     consumer: str,
     is_package: bool,
@@ -357,18 +358,33 @@ def _imported_modules(
         module = _resolve_import_from(node, consumer, is_package)
         if not module:
             return []
-        if any(_matches_root(root, module) for root in dependency_roots):
-            expanded = [
-                module if alias.name == "*" else f"{module}.{alias.name}" for alias in node.names
-            ]
-            return [
+        # A leaf policy module commonly imports symbols
+        # (``from ...interfaces import iCommandGateway``); keep that leaf
+        # intact. A parent-package import instead names the dependency in its
+        # alias (``from ...gateway import interfaces``), so expand aliases
+        # whenever either side is an ancestor of a governed root.
+        if module in declared_dependencies:
+            return [module]
+        if any(
+            _matches_root(module, root) or _matches_root(root, module) for root in dependency_roots
+        ):
+            expanded: set[str] = set()
+            for alias in node.names:
+                if alias.name == "*":
+                    governed_descendants = {
+                        root for root in dependency_roots if _matches_root(root, module)
+                    }
+                    expanded.update(governed_descendants or {module})
+                else:
+                    expanded.add(f"{module}.{alias.name}")
+            return sorted(
                 candidate
                 for candidate in expanded
                 if any(
                     _matches_root(candidate, root) or _matches_root(root, candidate)
                     for root in dependency_roots
                 )
-            ]
+            )
         return [module]
     return []
 
@@ -381,6 +397,7 @@ def _import_violations(path: Path, surface: ImportSurface, *, root: Path = ROOT)
         for module in _imported_modules(
             node,
             surface.dependency_roots,
+            surface.allowed_dependencies | surface.forbidden_dependencies,
             consumer=consumer,
             is_package=is_package,
         ):

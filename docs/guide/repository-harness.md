@@ -163,16 +163,23 @@ the scenario and retains the resulting receipt.
 lane optional at the current cadence; release-required external evidence must
 name the exact release-candidate commit and installed package. An exit code
 without the declared semantic oracle is not a passing operational scenario.
+Only executable `pytest` and `eval` references are supported semantic oracles.
+A captured JSON receipt is oracle input and retained evidence; its mere
+presence or syntactic validity never proves scenario semantics.
 
 Every deterministic example exposes
 `async run_demo(storage_uri: str, ...) -> dict[str, object]`. The returned
 value is portable bounded JSON and must not contain its temporary storage
 location or a live capability. Human-readable `main()` remains the teaching
-surface; the runner and focused test consume `run_demo`. Operational JSON is
-limited to 1 MiB and 32 nested collection levels. The runner executes
-`run_demo` once and gives that exact captured value to the semantic oracle;
-an oracle that independently reruns the example is not evidence for the
-captured execution.
+surface, so the runner first executes the row's declared `source_command` in
+its own isolated working and storage directory. It then executes `run_demo`
+once in a separate receipt-capture process and gives that exact captured value
+to the focused semantic oracle. Operational JSON is limited to 1 MiB and 32
+nested collection levels. An oracle that independently reruns the example is
+not evidence for the captured execution. Credentialed examples therefore run
+the declared teaching entry point and receipt capture separately; a future
+standardized CLI receipt mode may collapse them only if it preserves both
+entry-point coverage and exact semantic binding.
 
 The generic `archetype.operational-results/v1` envelope records harness and
 tested-subject provenance, Python/package identity, duration, normalized

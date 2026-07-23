@@ -26,6 +26,7 @@ from scripts.run_example_receipt import (
 )
 from scripts.run_operational_scenarios import (
     RESULT_SCHEMA,
+    _adapt_example_command,
     _base_environment,
     _package_probe,
     _parse_eval_receipt,
@@ -98,13 +99,63 @@ def test_source_quickstart_records_semantics_provenance_and_cleanup(tmp_path: Pa
         "checkout_relationship": "same_as_harness",
     }
     assert result["tested_subject"] == envelope["tested_subject"]
+    assert result["source"]["command"] == [
+        sys.executable,
+        str((ROOT / "examples" / "00_quickstart.py").resolve()),
+    ]
+    assert result["source"]["returncode"] == 0
+    assert result["receipt_capture"]["returncode"] == 0
     stdout_log = Path(result["source"]["stdout"]["path"])
     assert not stdout_log.is_absolute()
     assert stdout_log.parts[0] == f"{output.stem}.d"
     assert (output.parent / stdout_log).is_file()
     assert "archetype-operational-" not in json.dumps(envelope)
-    assert "<isolated-run>" in json.dumps(result["source"]["command"])
+    assert "<isolated-run>" in json.dumps(result["receipt_capture"]["command"])
     assert output.is_file()
+
+
+def test_example_declared_source_command_failure_cannot_be_hidden_by_valid_run_demo(
+    tmp_path: Path,
+) -> None:
+    registry_text = REGISTRY.read_text(encoding="utf-8")
+    declared_command = 'source_command = ["python", "examples/00_quickstart.py"]'
+    assert registry_text.count(declared_command) == 1
+    registry = tmp_path / "operational_scenarios.toml"
+    registry.write_text(
+        registry_text.replace(
+            declared_command,
+            'source_command = ["python", "-c", "raise SystemExit(17)"]',
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "entrypoint-failed.json"
+
+    envelope, passed = run_scenarios(
+        root=ROOT,
+        registry=registry,
+        output=output,
+        mode="source",
+        wheel=None,
+        cadence="pr",
+        scenario_ids={"example.00_quickstart"},
+        kind="example",
+        min_tier=1,
+        max_tier=1,
+        expected_revision=None,
+        require_clean=False,
+        require_run=True,
+    )
+
+    assert passed is False
+    assert envelope["outcome"] == "failed"
+    (result,) = cast(list[dict[str, Any]], envelope["results"])
+    assert result["status"] == "failed"
+    assert result["source"]["returncode"] == 17
+    assert result["receipt_capture"] == {
+        "status": "not_run",
+        "reason": "declared source command failed",
+        "process_group_leaked": False,
+    }
 
 
 def test_isolated_filesystem_cleanup_failure_fails_the_receipt(
@@ -526,6 +577,45 @@ def test_semantic_receipt_rejects_duplicates_and_non_standard_json() -> None:
         )
     with pytest.raises(ValueError, match="strict JSON"):
         _semantic_receipt('ARCHETYPE_OPERATIONAL_RECEIPT={"value": NaN}\n')
+
+
+def test_relocated_example_command_uses_copied_source_and_preserves_flags(
+    tmp_path: Path,
+) -> None:
+    source_path = ROOT / "examples" / "09_cloud_storage.py"
+    execution_source_path = tmp_path / source_path.name
+    execution_source_path.write_text("# isolated copy\n", encoding="utf-8")
+
+    command = _adapt_example_command(
+        ["python", "examples/09_cloud_storage.py", "--smoke-local"],
+        python=Path(sys.executable),
+        root=ROOT,
+        source_path=source_path,
+        execution_source_path=execution_source_path,
+    )
+
+    assert command == [
+        sys.executable,
+        str(execution_source_path.resolve()),
+        "--smoke-local",
+    ]
+    assert str(source_path.resolve()) not in command
+
+
+def test_relocated_example_command_fails_closed_without_declared_source(
+    tmp_path: Path,
+) -> None:
+    execution_source_path = tmp_path / "00_quickstart.py"
+    execution_source_path.write_text("# isolated copy\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must contain source_path exactly once"):
+        _adapt_example_command(
+            ["python", "-c", "raise SystemExit(0)"],
+            python=Path(sys.executable),
+            root=ROOT,
+            source_path=ROOT / "examples" / "00_quickstart.py",
+            execution_source_path=execution_source_path,
+        )
 
 
 def test_example_receipt_cannot_leak_isolated_storage_path(tmp_path: Path) -> None:

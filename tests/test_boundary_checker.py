@@ -165,8 +165,9 @@ def test_only_api_composition_may_import_the_container(tmp_path: Path) -> None:
     [
         "from ..app.world.service import WorldService\n",
         "from archetype import app\n",
+        "from archetype import *\n",
     ],
-    ids=["relative", "root-parent"],
+    ids=["relative", "root-parent", "root-star"],
 )
 def test_governed_import_roots_cannot_be_bypassed_by_import_spelling(
     tmp_path: Path,
@@ -191,6 +192,32 @@ def test_import_policy_data_controls_allowed_dependency(tmp_path):
         ),
     )
     assert checker._import_violations(path, updated, root=tmp_path) == []
+
+
+def test_allowed_dependency_imported_from_parent_package_is_accepted(tmp_path: Path) -> None:
+    path = _write(tmp_path, "from archetype.app.gateway import interfaces\n")
+
+    assert checker._import_violations(path, _API_ROUTES_SURFACE, root=tmp_path) == []
+
+
+def test_symbol_import_from_allowed_leaf_stays_bound_to_the_leaf(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path,
+        "from archetype.app.gateway.interfaces import iCommandGateway\n",
+    )
+
+    assert checker._import_violations(path, _API_ROUTES_SURFACE, root=tmp_path) == []
+
+
+def test_forbidden_dependency_imported_from_parent_package_is_classified_exactly(
+    tmp_path: Path,
+) -> None:
+    path = _write(tmp_path, "from archetype.app.world import service\n")
+
+    violations = checker._import_violations(path, _API_ROUTES_SURFACE, root=tmp_path)
+
+    assert len(violations) == 1
+    assert "imports forbidden archetype.app.world.service" in violations[0]
 
 
 def test_owner_type_policy_data_controls_public_signature(tmp_path):

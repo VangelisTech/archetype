@@ -522,6 +522,31 @@ def _adapt_command(
     return adapted
 
 
+def _adapt_example_command(
+    command: list[str],
+    *,
+    python: Path,
+    root: Path,
+    source_path: Path,
+    execution_source_path: Path,
+) -> list[str]:
+    """Adapt an example command and relocate its source in isolated wheel runs."""
+
+    adapted = _adapt_command(command, python=python, root=root)
+    declared_source = str(source_path.resolve())
+    execution_source = str(execution_source_path.resolve())
+    if declared_source == execution_source:
+        return adapted
+    source_indexes = [index for index, value in enumerate(adapted) if value == declared_source]
+    if len(source_indexes) != 1:
+        raise ValueError(
+            "a relocated example source_command must contain source_path exactly once: "
+            f"{source_path.relative_to(root)}"
+        )
+    adapted[source_indexes[0]] = execution_source
+    return adapted
+
+
 def _pytest_command(
     python: Path,
     reference: str,
@@ -732,7 +757,6 @@ def _run_oracle(
     scenario_root: Path,
     env: dict[str, str],
     logs: Path,
-    source_result: dict[str, object],
     source_semantic: dict[str, object] | None,
     source_eval_output: Path | None,
     source_pytest_output: Path | None,
@@ -743,19 +767,16 @@ def _run_oracle(
     oracle = row["semantic_oracle"]
     kind = oracle["kind"]
     reference = oracle["ref"]
-    if kind == "receipt":
-        receipt = _semantic_receipt(str(source_result["stdout_text"]))
-        if receipt is None:
-            return (
-                {
-                    "kind": kind,
-                    "ref": reference,
-                    "passed": False,
-                    "error": "source emitted no structured receipt",
-                },
-                None,
-            )
-        return ({"kind": kind, "ref": reference, "passed": True}, receipt)
+    if kind not in {"eval", "pytest"}:
+        return (
+            {
+                "kind": kind,
+                "ref": reference,
+                "passed": False,
+                "error": f"unsupported semantic oracle kind: {kind}",
+            },
+            None,
+        )
 
     if kind == "eval":
         eval_output = source_eval_output or scenario_root / "eval-results.json"
@@ -918,28 +939,43 @@ def _run_one(
 
     scenario_root = run_root / scenario_id.replace("/", "_")
     scenario_root.mkdir(parents=True)
-    storage = scenario_root / "storage"
     logs = logs_root / scenario_id.replace("/", "_")
     env = _scenario_environment(base_env, row)
     env["TMPDIR"] = str(scenario_root / "tmp")
-    env["ARCHETYPE_OPERATIONAL_STORAGE_URI"] = str(storage)
+    env["ARCHETYPE_OPERATIONAL_STORAGE_URI"] = str(scenario_root / "storage")
     Path(env["TMPDIR"]).mkdir()
 
     source_path = root / row["source_path"]
     source_eval_output: Path | None = None
     source_pytest_output: Path | None = None
-    if row["kind"] == "example" and _has_run_demo(source_path):
+    captures_example_receipt = row["kind"] == "example" and _has_run_demo(source_path)
+    source_cwd = scenario_root if row["kind"] == "example" else root
+    receipt_root: Path | None = None
+    receipt_storage: Path | None = None
+    receipt_env: dict[str, str] | None = None
+    if captures_example_receipt:
         execution_source_path = (
             _copy_example_source(source_path, scenario_root) if mode == "wheel" else source_path
         )
-        command = [
-            str(python),
-            str((root / "scripts" / "run_example_receipt.py").resolve()),
-            "--source",
-            str(execution_source_path.resolve()),
-            "--storage-uri",
-            str(storage),
-        ]
+        source_cwd = scenario_root / "entrypoint"
+        source_cwd.mkdir()
+        env["TMPDIR"] = str(source_cwd / "tmp")
+        env["ARCHETYPE_OPERATIONAL_STORAGE_URI"] = str(source_cwd / "storage")
+        Path(env["TMPDIR"]).mkdir()
+        receipt_root = scenario_root / "receipt"
+        receipt_root.mkdir()
+        receipt_storage = receipt_root / "storage"
+        receipt_env = env.copy()
+        receipt_env["TMPDIR"] = str(receipt_root / "tmp")
+        receipt_env["ARCHETYPE_OPERATIONAL_STORAGE_URI"] = str(receipt_storage)
+        Path(receipt_env["TMPDIR"]).mkdir()
+        command = _adapt_example_command(
+            row["source_command"],
+            python=python,
+            root=root,
+            source_path=source_path,
+            execution_source_path=execution_source_path,
+        )
     elif _source_is_pytest_oracle(row):
         source_pytest_output = scenario_root / "source-junit.xml"
         command = _pytest_command(
@@ -955,7 +991,7 @@ def _run_one(
             command = _force_cli_option(command, "--out", str(source_eval_output))
     source_result = _run_process(
         command,
-        cwd=scenario_root if row["kind"] == "example" else root,
+        cwd=source_cwd,
         env=env,
         timeout_seconds=row["timeout_seconds"],
         log_prefix=logs / "source",
@@ -966,13 +1002,61 @@ def _run_one(
         and not source_result["timed_out"]
         and not source_result["process_group_leaked"]
     )
-    semantic = _semantic_receipt(str(source_result["stdout_text"])) if source_passed else None
+    semantic: dict[str, object] | None = None
+    receipt_result: dict[str, object] | None = None
+    receipt_passed = not captures_example_receipt
+    if captures_example_receipt:
+        if source_passed:
+            assert receipt_root is not None
+            assert receipt_storage is not None
+            assert receipt_env is not None
+            receipt_command = [
+                str(python),
+                str((root / "scripts" / "run_example_receipt.py").resolve()),
+                "--source",
+                str(execution_source_path.resolve()),
+                "--storage-uri",
+                str(receipt_storage),
+            ]
+            receipt_result = _run_process(
+                receipt_command,
+                cwd=receipt_root,
+                env=receipt_env,
+                timeout_seconds=row["timeout_seconds"],
+                log_prefix=logs / "receipt",
+                redacted=row["artifact_policy"] == "redacted_receipt",
+            )
+            receipt_process_passed = (
+                receipt_result["returncode"] == 0
+                and not receipt_result["timed_out"]
+                and not receipt_result["process_group_leaked"]
+            )
+            if receipt_process_passed:
+                try:
+                    semantic = _semantic_receipt(str(receipt_result["stdout_text"]))
+                except (TypeError, ValueError) as exc:
+                    receipt_result["error"] = f"{type(exc).__name__}: {exc}"
+                if semantic is None and "error" not in receipt_result:
+                    receipt_result["error"] = "receipt capture emitted no structured receipt"
+            receipt_passed = receipt_process_passed and semantic is not None
+            receipt_result.pop("stdout_text", None)
+        else:
+            receipt_result = {
+                "status": "not_run",
+                "reason": "declared source command failed",
+                "process_group_leaked": False,
+            }
     oracle_result: dict[str, object]
     oracle_semantic: dict[str, object] | None
     reusable_oracle_evidence = (
         source_eval_output is not None and source_eval_output.is_file()
     ) or (source_pytest_output is not None and source_pytest_output.is_file())
-    if source_passed or reusable_oracle_evidence:
+    oracle_ready = (
+        source_passed and receipt_passed
+        if captures_example_receipt
+        else source_passed or reusable_oracle_evidence
+    )
+    if oracle_ready:
         oracle_result, oracle_semantic = _run_oracle(
             row,
             python=python,
@@ -980,7 +1064,6 @@ def _run_one(
             scenario_root=scenario_root,
             env=env,
             logs=logs,
-            source_result=source_result,
             source_semantic=semantic,
             source_eval_output=source_eval_output,
             source_pytest_output=source_pytest_output,
@@ -993,18 +1076,29 @@ def _run_one(
             "kind": row["semantic_oracle"]["kind"],
             "ref": row["semantic_oracle"]["ref"],
             "passed": False,
-            "error": "source command failed",
+            "error": (
+                "declared source command failed"
+                if not source_passed
+                else "structured receipt capture failed"
+            ),
         }
         oracle_semantic = None
     source_result.pop("stdout_text", None)
-    cleanup_ok = not source_result["process_group_leaked"] and not oracle_result.get(
-        "process_group_leaked", False
+    receipt_leaked = bool(
+        receipt_result is not None and receipt_result.get("process_group_leaked", False)
     )
-    passed = source_passed and bool(oracle_result["passed"]) and cleanup_ok
+    cleanup_ok = (
+        not source_result["process_group_leaked"]
+        and not receipt_leaked
+        and not oracle_result.get("process_group_leaked", False)
+    )
+    passed = source_passed and receipt_passed and bool(oracle_result["passed"]) and cleanup_ok
     result.update(
         {
             "status": "passed" if passed else "failed",
-            "reason": "" if passed else "source, oracle, or cleanup contract failed",
+            "reason": (
+                "" if passed else "source, receipt capture, oracle, or cleanup contract failed"
+            ),
             "source": source_result,
             "oracle": oracle_result,
             "semantic": semantic or oracle_semantic or {},
@@ -1016,6 +1110,8 @@ def _run_one(
             "duration_seconds": round(time.perf_counter() - started, 6),
         }
     )
+    if receipt_result is not None:
+        result["receipt_capture"] = receipt_result
     return result
 
 

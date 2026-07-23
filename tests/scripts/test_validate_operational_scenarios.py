@@ -453,6 +453,17 @@ def test_required_scenario_needs_a_semantic_oracle(tmp_path: Path) -> None:
     assert any("semantic_oracle must be a table" in error for error in errors)
 
 
+def test_receipt_presence_is_not_an_executable_semantic_oracle(tmp_path: Path) -> None:
+    registry = _VALID_REGISTRY.replace(
+        'semantic_oracle = { kind = "pytest", ref = "tests/test_example.py::test_demo" }',
+        'semantic_oracle = { kind = "receipt", ref = "archetype.example/v1" }',
+    )
+
+    errors = _audit(tmp_path, registry)
+
+    assert any("semantic_oracle.kind" in error for error in errors)
+
+
 def test_scenario_contracts_must_reference_registered_contract_ids(tmp_path: Path) -> None:
     registry = _VALID_REGISTRY.replace(
         'contracts = ["runtime.lifecycle"]',

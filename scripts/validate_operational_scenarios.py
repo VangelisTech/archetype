@@ -23,7 +23,7 @@ _NUMBERED_EXAMPLE_RE = re.compile(r"^[0-9]{2}_.+\.py$")
 _TIERS = set(range(7))
 _KINDS = {"example", "dogfood"}
 _APPLICABILITY = {"source", "wheel"}
-_ORACLE_KINDS = {"pytest", "eval", "receipt"}
+_ORACLE_KINDS = {"pytest", "eval"}
 _CLEANUP_POLICIES = {"isolated", "provider", "remote_prefix"}
 _ARTIFACT_POLICIES = {"receipt", "redacted_receipt"}
 _CADENCES = {"pr", "main", "release"}
@@ -675,8 +675,6 @@ def validate_operational_scenarios(
                     errors=errors,
                     file_only=True,
                 )
-            elif oracle_kind == "receipt" and not _REFERENCE_RE.fullmatch(oracle_ref):
-                errors.append(f"{label}: receipt oracle ref must be a versioned stable identifier")
 
         contracts = _string_list(
             row,
