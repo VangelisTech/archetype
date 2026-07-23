@@ -22,6 +22,7 @@ pytestmark = [
 class _World:
     world_id: str
     name: str
+    tick: int = 0
 
 
 def _registry_type() -> type[Any]:
@@ -138,6 +139,20 @@ async def test_cancellation_releases_exact_world_lock() -> None:
     async with asyncio.timeout(0.5):
         async with registry.operation(first.world_id) as resolved:
             assert resolved is first
+
+
+async def test_target_tick_snapshot_rejects_sticky_close() -> None:
+    registry, first, _second = await _insert_two_worlds()
+    first.tick = 4
+
+    assert registry.target_tick(first.world_id) == 4
+    lease = await registry.begin_close(first.world_id)
+    with pytest.raises(RuntimeError, match="closing"):
+        registry.target_tick(first.world_id)
+
+    await registry.finish_close(lease)
+    with pytest.raises(KeyError):
+        registry.target_tick(first.world_id)
 
 
 async def test_multiworld_operations_sort_before_acquiring_locks() -> None:
