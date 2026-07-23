@@ -11,6 +11,8 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
+from uuid_utils import UUID
+
 from archetype.core.config import CacheConfig, StorageConfig
 
 
@@ -134,7 +136,7 @@ class WorldRegistry:
                 raise
 
     @asynccontextmanager
-    async def activation(self, world_id: str) -> AsyncIterator[None]:
+    async def activation(self, world_id: str | UUID) -> AsyncIterator[None]:
         """Serialize first-use construction for one not-yet-live world ID."""
 
         key = str(world_id)
@@ -161,7 +163,7 @@ class WorldRegistry:
 
     async def remember_storage_identity(
         self,
-        world_id: str,
+        world_id: str | UUID,
         storage_config: StorageConfig,
         cache_config: CacheConfig | None = None,
     ) -> None:
@@ -190,7 +192,7 @@ class WorldRegistry:
 
     async def storage_record(
         self,
-        world_id: str,
+        world_id: str | UUID,
     ) -> tuple[StorageConfig, CacheConfig | None] | None:
         """Return the durable coordinates known for ``world_id``."""
 
@@ -203,13 +205,13 @@ class WorldRegistry:
         async with self._registry_lock:
             return sorted(self._storage_records)
 
-    async def contains(self, world_id: str) -> bool:
+    async def contains(self, world_id: str | UUID) -> bool:
         """Whether an exact live world is currently strongly owned."""
 
         async with self._registry_lock:
             return str(world_id) in self._worlds
 
-    async def live_world(self, world_id: str) -> Any | None:
+    async def live_world(self, world_id: str | UUID) -> Any | None:
         """Return an existing live binding for idempotent activation."""
 
         async with self._registry_lock:
@@ -237,7 +239,7 @@ class WorldRegistry:
         async with self._registry_lock:
             return [self._worlds[world_id].world for world_id in sorted(self._worlds)]
 
-    def target_tick(self, world_id: str) -> int:
+    def target_tick(self, world_id: str | UUID) -> int:
         """Return a point-in-time target-tick key for synchronous quota scope.
 
         PR-3 Policy owns counters; this exposes neither the world nor ambient
@@ -250,7 +252,7 @@ class WorldRegistry:
         return int(entry.world.tick)
 
     @asynccontextmanager
-    async def operation(self, world_id: str) -> AsyncIterator[Any]:
+    async def operation(self, world_id: str | UUID) -> AsyncIterator[Any]:
         """Admit public work for one live, non-closing world."""
 
         key = str(world_id)
@@ -272,7 +274,7 @@ class WorldRegistry:
     @asynccontextmanager
     async def operations(
         self,
-        world_ids: Iterable[str],
+        world_ids: Iterable[str | UUID],
     ) -> AsyncIterator[dict[str, Any]]:
         """Admit multiple worlds after acquiring their locks in sorted order."""
 
@@ -299,7 +301,7 @@ class WorldRegistry:
             for entry in reversed(acquired):
                 entry.lock.release()
 
-    async def begin_close(self, world_id: str) -> WorldCleanupLease:
+    async def begin_close(self, world_id: str | UUID) -> WorldCleanupLease:
         """Make close sticky and return its retained exact-world authority."""
 
         key = str(world_id)
@@ -352,13 +354,13 @@ class WorldRegistry:
         finally:
             entry.lock.release()
 
-    def required_projector(self, world_id: str) -> Any | None:
+    def required_projector(self, world_id: str | UUID) -> Any | None:
         """Return the strongly retained required-projector binding, if any."""
 
         entry = self._worlds.get(str(world_id))
         return entry.required_projector if entry is not None else None
 
-    def retain_receipt(self, world_id: str, receipt: Any) -> None:
+    def retain_receipt(self, world_id: str | UUID, receipt: Any) -> None:
         """Retain one exact manifest-bound receipt until acknowledgment."""
 
         entry = self._entry_unlocked(str(world_id))
@@ -381,7 +383,7 @@ class WorldRegistry:
                 f"world {entry.world_id} already retains a different pending receipt"
             )
 
-    def pending_receipt(self, world_id: str) -> Any | None:
+    def pending_receipt(self, world_id: str | UUID) -> Any | None:
         """Return the exact retained receipt, including while closing."""
 
         entry = self._worlds.get(str(world_id))
@@ -389,7 +391,7 @@ class WorldRegistry:
 
     def acknowledge_receipt(
         self,
-        world_id: str,
+        world_id: str | UUID,
         *,
         consumer_name: str,
         receipt_identity: object,
@@ -413,7 +415,7 @@ class WorldRegistry:
         self,
         lease: WorldCleanupLease,
         *,
-        world_id: str,
+        world_id: str | UUID,
     ) -> None:
         """Fail unless ``lease`` authorizes the current exact world entry."""
 
