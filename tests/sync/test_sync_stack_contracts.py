@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import FrozenInstanceError
 from unittest.mock import Mock
 
 import daft
 import pyarrow as pa
 import pytest
 from daft import DataFrame, col
+from uuid_utils import UUID, uuid7
 
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
@@ -281,6 +283,7 @@ def test_sync_query_manager_get_archetype_delegates_to_store():
 def test_sync_query_manager_filters_active_ticks_and_entities():
     sig = Archetype.sig_from_components([Position(x=0, y=0), Velocity(vx=0, vy=0)])
     rc = RunConfig(num_steps=1)
+    run_id = "run-query"
     rows = _df_from_rows(
         sig,
         [
@@ -290,7 +293,7 @@ def test_sync_query_manager_filters_active_ticks_and_entities():
                     0,
                     [Position(x=1, y=1), Velocity(vx=10, vy=10)],
                     "w",
-                    str(rc.run_id),
+                    run_id,
                 ),
                 "is_active": True,
             },
@@ -300,7 +303,7 @@ def test_sync_query_manager_filters_active_ticks_and_entities():
                     1,
                     [Position(x=2, y=2), Velocity(vx=20, vy=20)],
                     "w",
-                    str(rc.run_id),
+                    run_id,
                 ),
                 "is_active": True,
             },
@@ -310,7 +313,7 @@ def test_sync_query_manager_filters_active_ticks_and_entities():
                     1,
                     [Position(x=3, y=3), Velocity(vx=30, vy=30)],
                     "w",
-                    str(rc.run_id),
+                    run_id,
                 ),
                 "is_active": False,
             },
@@ -328,13 +331,14 @@ def test_sync_query_manager_filters_active_ticks_and_entities():
         ticks=[1],
         entity_ids=[2],
         run_config=rc,
+        run_id=run_id,
     )
     filtered = df.collect().to_pylist()
 
     assert filtered == [
         {
             "world_id": "w",
-            "run_id": str(rc.run_id),
+            "run_id": run_id,
             "entity_id": 2,
             "tick": 1,
             "is_active": True,
@@ -351,6 +355,7 @@ def test_sync_query_manager_filters_active_ticks_and_entities():
 def test_sync_query_manager_projects_requested_components():
     sig = Archetype.sig_from_components([Position(x=0, y=0), Velocity(vx=0, vy=0)])
     rc = RunConfig(num_steps=1)
+    run_id = "run-query"
     rows = _df_from_rows(
         sig,
         [
@@ -359,7 +364,7 @@ def test_sync_query_manager_projects_requested_components():
                 1,
                 [Position(x=2, y=2), Velocity(vx=20, vy=20)],
                 "w",
-                str(rc.run_id),
+                run_id,
             )
         ],
     )
@@ -377,6 +382,7 @@ def test_sync_query_manager_projects_requested_components():
             entity_ids=[2],
             components=[Position(x=0, y=0)],
             run_config=rc,
+            run_id=run_id,
         )
         .collect()
         .to_pylist()
@@ -385,7 +391,7 @@ def test_sync_query_manager_projects_requested_components():
     assert projected == [
         {
             "world_id": "w",
-            "run_id": str(rc.run_id),
+            "run_id": run_id,
             "entity_id": 2,
             "tick": 1,
             "is_active": True,
@@ -399,9 +405,10 @@ def test_sync_query_manager_debug_path_preserves_results(caplog):
     caplog.set_level(logging.INFO)
     sig = Archetype.sig_from_components([Position(x=0, y=0)])
     rc = RunConfig(num_steps=1, debug=True)
+    run_id = "run-debug"
     rows_df = _df_from_rows(
         sig,
-        [Archetype.to_row_dict(1, 0, [Position(x=8, y=9)], "w", str(rc.run_id))],
+        [Archetype.to_row_dict(1, 0, [Position(x=8, y=9)], "w", run_id)],
     )
 
     class _Store:
@@ -409,7 +416,16 @@ def test_sync_query_manager_debug_path_preserves_results(caplog):
             return rows_df
 
     querier = QueryManager(store=_Store())
-    rows = querier.query_archetype(sig=sig, world_id="w", run_config=rc).collect().to_pylist()
+    rows = (
+        querier.query_archetype(
+            sig=sig,
+            world_id="w",
+            run_config=rc,
+            run_id=run_id,
+        )
+        .collect()
+        .to_pylist()
+    )
 
     assert len(rows) == 1
     assert rows[0]["position__x"] == 8
@@ -479,19 +495,44 @@ def test_sync_world_materialize_mutations_marks_despawned_entities_inactive(tmp_
     ]
 
 
-def test_sync_world_run_materializes_spawns_and_sets_run_id(tmp_path):
+def test_sync_world_run_materializes_spawns_and_preserves_run_id(tmp_path):
     _store, _querier, _updater, _system, world = _make_sync_stack(tmp_path, "world_run")
     sig = Archetype.sig_from_components([Position(x=0, y=0)])
     entity_id = world.create_entity([Position(x=1, y=2)])
     rc = RunConfig(num_steps=2)
 
+    original_run_id = world.run_id
     world.run(rc)
 
     assert world.tick == 2
-    assert world.run_id is not None  # auto-generated at construction
+    assert isinstance(world.run_id, UUID)
+    assert world.run_id.version == 7
+    assert world.run_id == original_run_id
+    with pytest.raises(AttributeError):
+        world.run_id = uuid7()
     rows = _committed_rows(world, sig)
     assert rows[0]["entity_id"] == entity_id
     assert rows[0]["position__x"] == 1
+
+
+def test_sync_world_step_returns_frozen_manifestless_receipt(tmp_path):
+    _store, _querier, _updater, _system, world = _make_sync_stack(
+        tmp_path,
+        "world_receipt",
+    )
+    world.create_entity([Position(x=1, y=2)])
+
+    receipt = world.step(RunConfig())
+
+    assert receipt.identity == (
+        str(world.world_id),
+        str(world.run_id),
+        0,
+        None,
+    )
+    assert receipt.commands_applied == 0
+    with pytest.raises(FrozenInstanceError):
+        receipt.committed_tick = 99
 
 
 def test_sync_world_reads_previous_tick_from_store(tmp_path):
@@ -722,7 +763,7 @@ def test_sync_world_query_archetype_uses_world_tick_and_world_id():
         entity_ids=None,
         components=None,
         run_config=rc,
-        run_id=world.run_id,
+        run_id=str(world.run_id),
     )
 
 
@@ -744,6 +785,7 @@ def test_sync_world_update_uses_world_tick_by_default():
     querier = Mock()
     updater = Mock(return_value=df)
     system = SyncSystem()
+    restored_run_id = uuid7()
     world = SyncWorld(
         world_id="test",
         name="update-forward",
@@ -752,15 +794,21 @@ def test_sync_world_update_uses_world_tick_by_default():
         system=system,
         resources=Resources(),
         hooks=SyncHookRegistry(),
+        run_id=restored_run_id,
     )
     world.tick = 11
-    world.run_id = "pinned-run-id"
     rc = RunConfig(num_steps=1)
 
     result = world.update(df, sig, rc)
 
     assert result is updater.update.return_value
-    updater.update.assert_called_once_with(df, sig, 11, str(world.world_id), "pinned-run-id")
+    updater.update.assert_called_once_with(
+        df,
+        sig,
+        11,
+        str(world.world_id),
+        str(restored_run_id),
+    )
 
 
 def test_sync_world_add_processor_and_remove_processor_delegate(tmp_path):

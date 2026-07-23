@@ -320,6 +320,7 @@ class TestSyncWorld:
             entity_ids=[eid],
             components=None,
             world_id=str(world.world_id),
+            run_id=str(world.run_id),
         )
         rows = df.to_pylist()
         assert all(not r["is_active"] for r in rows), (
@@ -331,7 +332,7 @@ class TestSyncWorld:
                 sig=s,
                 world_id=str(world.world_id),
                 ticks=[world.tick - 1],
-                run_id=world.run_id,
+                run_id=str(world.run_id),
             )
             active_eids = [r["entity_id"] for r in sig_df.collect().to_pylist()]
             assert eid not in active_eids, f"sig {s} kept cancelled entity {eid}"
@@ -351,7 +352,7 @@ class TestSyncWorld:
 
         df = world.querier.query_archetype(
             sig=sig,
-            run_id=world.run_id,
+            run_id=str(world.run_id),
             ticks=None,
             entity_ids=None,
             components=None,

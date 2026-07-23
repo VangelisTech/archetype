@@ -15,6 +15,7 @@
 import asyncio
 import inspect
 import json
+from collections.abc import Awaitable, Callable
 from logging import getLogger
 from typing import Any, TypeVar, cast
 
@@ -22,7 +23,7 @@ import daft
 import pyarrow as pa
 from daft import DataFrame, col
 from daft.functions import when
-from uuid_utils import UUID, uuid7  # noqa: F401 imported for type hints
+from uuid_utils import UUID, uuid7
 
 from archetype import _obs
 from archetype.core.aio.async_querier import _canonicalize, _unknown_signature_error
@@ -45,6 +46,7 @@ from archetype.core.hooks import (
 from archetype.core.interfaces import (
     ArchetypeSignature,
     CommitContext,
+    CommittedTickReceipt,
     iAsyncHookBus,
     iAsyncProcessor,
     iAsyncQueryManager,
@@ -58,6 +60,18 @@ from archetype.core.interfaces import (
 logger = getLogger(__name__)
 
 _HookEventT = TypeVar("_HookEventT", bound=HookEvent)
+CommandMaterializer = Callable[["AsyncWorld", int], Awaitable[int]]
+
+
+def _validated_run_id(run_id: UUID | str | None) -> UUID:
+    candidate = uuid7() if run_id is None else UUID(str(run_id))
+    if candidate.version != 7:
+        raise ValueError(f"run_id must be a UUIDv7 value, got version {candidate.version}")
+    return candidate
+
+
+async def _no_commands(_world: "AsyncWorld", _target_tick: int) -> int:
+    return 0
 
 
 class AsyncWorld(iAsyncWorld):
@@ -71,7 +85,7 @@ class AsyncWorld(iAsyncWorld):
         system: iAsyncSystem,
         resources: iResourceContainer,
         hooks: iAsyncHookBus,
-        run_id: str | None = None,
+        run_id: UUID | str | None = None,
         tick: int = 0,
         next_entity_id: int = 1,
         entity2sig: dict[int, ArchetypeSignature] | None = None,
@@ -79,6 +93,7 @@ class AsyncWorld(iAsyncWorld):
         despawn_cache: dict[ArchetypeSignature, list[int]] | None = None,
         lineage: list[tuple[str, str, int]] | None = None,
         commit_coordinator: iCommitCoordinator | None = None,
+        materialize_commands: CommandMaterializer | None = None,
     ):
         """
         Initialize the fully parallel async world.
@@ -95,7 +110,7 @@ class AsyncWorld(iAsyncWorld):
         self.hooks = hooks  # Hooks: typed lifecycle callbacks
 
         # State
-        self.run_id = run_id or str(uuid7())
+        self._run_id = _validated_run_id(run_id)
         self.tick = tick
         self.next_entity_id = next_entity_id
         self.entity2sig = entity2sig if entity2sig is not None else {}
@@ -111,7 +126,8 @@ class AsyncWorld(iAsyncWorld):
         # readers admit only manifest-matched rows. Uncoordinated worlds
         # (coordinator=None) keep implicit epoch-0 semantics: rows stamp
         # token ""/epoch 0 and nothing is filtered.
-        self.commit_coordinator = commit_coordinator
+        self._commit_coordinator = commit_coordinator
+        self._materialize_commands = materialize_commands or _no_commands
         self._commit_ctx: CommitContext | None = None
         self._updater_takes_commit: bool | None = None
         self._querier_caps: dict[str, dict[str, bool]] | None = None
@@ -122,18 +138,24 @@ class AsyncWorld(iAsyncWorld):
         """Compatibility alias for pre-refactor evals and diagnostics."""
         return self.entity2sig
 
+    @property
+    def run_id(self) -> UUID:
+        """Immutable UUIDv7 identity of this world's durable run."""
+        return self._run_id
+
+    @property
+    def commit_coordinator(self) -> iCommitCoordinator | None:
+        """Construction-bound coordinator for this world's write identity."""
+        return self._commit_coordinator
+
     async def run(self, run_config: RunConfig, **input_kwargs) -> None:
         """
         Runs the world for the given run configuration.
         """
-        # Pin run_id on first invocation; subsequent calls keep the existing
-        # run_id so cross-step reads/writes remain continuous.
-        if self.run_id is None:
-            self.run_id = str(run_config.run_id)
         for _ in range(run_config.num_steps):
             await self.step(run_config, **input_kwargs)
 
-    async def step(self, run_config: RunConfig, **input_kwargs) -> None:
+    async def step(self, run_config: RunConfig, **input_kwargs) -> CommittedTickReceipt:
         """
         Executes one full, parallel simulation tick.
 
@@ -149,13 +171,12 @@ class AsyncWorld(iAsyncWorld):
 
         Note: Messages enqueued in tick N are dequeued in tick N+1.
         """
-        # Pin run_id on first step so cross-step reads/writes share the same run.
-        # run() pre-pins this; calling step() directly initializes it here.
-        if self.run_id is None:
-            self.run_id = str(run_config.run_id)
-
         debug_handles = self._install_step_debug_hooks() if run_config.debug else ()
         try:
+            # Durable commands are a tick phase, not an outer application
+            # phase. A due spawn must exist before hooks and signature capture.
+            commands_applied = await self._materialize_commands(self, self.tick)
+
             # Fire pre-tick hooks
             await self.hooks.fire(PreTick(world_id=self.world_id, tick=self.tick))
 
@@ -196,10 +217,9 @@ class AsyncWorld(iAsyncWorld):
             # published LAST, after a forced flush — a crash or stale-writer
             # failure anywhere before publish leaves this tick's rows
             # unmanifested and therefore invisible to every reader.
+            visibility_token: str | None = None
             if self.commit_coordinator is not None:
-                self._commit_ctx = await self.commit_coordinator.begin_tick(
-                    str(self.world_id), str(self.run_id), self.tick
-                )
+                self._commit_ctx = await self.commit_coordinator.begin_tick(self.tick)
             frames = cast("list[DataFrame]", results)
             commits = [
                 self._commit_archetype(sig, df, run_config)
@@ -237,12 +257,11 @@ class AsyncWorld(iAsyncWorld):
                 if store is not None:
                     await store.flush()
                 await self.commit_coordinator.publish_tick(
-                    str(self.world_id),
-                    str(self.run_id),
                     self.tick,
                     self._commit_ctx,
                     sigs,
                 )
+                visibility_token = self._commit_ctx.commit_token
                 # Mutations are consumed only now, after the manifest exists.
                 # A crash or stale-writer failure at ANY earlier point leaves
                 # the caches intact, so the retried tick recomputes and
@@ -260,6 +279,13 @@ class AsyncWorld(iAsyncWorld):
             await self.hooks.fire(
                 PostTick(world_id=self.world_id, tick=self.tick, results=result_frames)
             )
+            return CommittedTickReceipt(
+                world_id=str(self.world_id),
+                run_id=str(self.run_id),
+                committed_tick=self.tick - 1,
+                visibility_token=visibility_token,
+                commands_applied=commands_applied,
+            )
         finally:
             for handle in debug_handles:
                 self.remove_hook(handle)
@@ -274,7 +300,7 @@ class AsyncWorld(iAsyncWorld):
         with _obs.span("world.query", sig=sig_name, tick=self.tick):
             df = await self.query_archetype(
                 sig=sig,
-                run_id=self.run_id,
+                run_id=str(self.run_id),
                 ticks=[self.tick - 1],
                 entity_ids=None,
                 components=None,
@@ -413,7 +439,7 @@ class AsyncWorld(iAsyncWorld):
             # Fetch *only* the single entity from the old archetype's previous tick
             df = await self.query_archetype(
                 sig=old_sig,
-                run_id=self.run_id,
+                run_id=str(self.run_id),
                 ticks=[self.tick - 1],
                 entity_ids=[entity_id],
                 components=None,
@@ -443,7 +469,7 @@ class AsyncWorld(iAsyncWorld):
                 "entity_id": entity_id,
                 "tick": self.tick,
                 "world_id": str(self.world_id),
-                "run_id": self.run_id,
+                "run_id": str(self.run_id),
                 "is_active": True,
             }
         )
@@ -571,7 +597,7 @@ class AsyncWorld(iAsyncWorld):
         sig = self._intern_sig(Archetype.sig_from_components(components))
         self.entity2sig[entity_id] = sig
         row_dict = Archetype.to_row_dict(
-            entity_id, self.tick, components, self.world_id, run_id=self.run_id
+            entity_id, self.tick, components, self.world_id, run_id=str(self.run_id)
         )
         self.spawn_cache.setdefault(sig, []).append(row_dict)
         await self.hooks.fire(
@@ -737,14 +763,7 @@ class AsyncWorld(iAsyncWorld):
         elif isinstance(run_config_or_ticks, list) and ticks is None:
             ticks = run_config_or_ticks
 
-        if run_id:
-            effective_run_id = run_id
-        elif self.run_id:
-            effective_run_id = str(self.run_id)
-        elif run_config is not None:
-            effective_run_id = str(run_config.run_id)
-        else:
-            effective_run_id = ""
+        effective_run_id = str(run_id) if run_id is not None else str(self.run_id)
 
         # Exact-signature existence is the union of accepted writes and live state.
         signature_source = getattr(self.querier, "list_committed_signatures", None)
@@ -820,7 +839,7 @@ class AsyncWorld(iAsyncWorld):
         for ancestor_world, ancestor_run, up_to_tick in self.lineage:
             if tick <= up_to_tick:
                 return str(ancestor_world), str(ancestor_run)
-        return str(self.world_id), str(own_run_id or self.run_id or "")
+        return str(self.world_id), str(own_run_id or self.run_id)
 
     def _querier_caps_for(self, method: str) -> dict[str, bool]:
         """Which optional kwargs a querier method accepts (memoized per method).
@@ -923,10 +942,16 @@ class AsyncWorld(iAsyncWorld):
                 sig,
                 tick or self.tick,
                 self.world_id,
-                self.run_id,
+                str(self.run_id),
                 commit=self._commit_ctx,
             )
-        return await self.updater.update(df, sig, tick or self.tick, self.world_id, self.run_id)
+        return await self.updater.update(
+            df,
+            sig,
+            tick or self.tick,
+            self.world_id,
+            str(self.run_id),
+        )
 
     # -------------------------------------------------------------------------
     # Hooks: Typed lifecycle callbacks for observability

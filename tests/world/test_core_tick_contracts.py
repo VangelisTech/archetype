@@ -1,14 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Red contracts for the managed command phase and committed tick receipt.
-
-These tests deliberately install the planned constructor state through a test
-subclass while the production constructor seam is still absent.  That lets the
-red oracle reach tick ordering instead of stopping at an unrelated fixture
-``TypeError``.  The public constructor signature is asserted independently
-after the behavioral order has been proved.
-"""
+"""Contracts for the managed command phase and committed tick receipt."""
 
 from __future__ import annotations
 
@@ -20,6 +13,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
+from uuid_utils import UUID, uuid7
 
 from archetype.core.aio import (
     AsyncLancedbStore,
@@ -30,7 +25,7 @@ from archetype.core.aio import (
 )
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
-from archetype.core.config import RunConfig
+from archetype.core.config import RunConfig, WorldConfig
 from archetype.core.hooks import HookRegistry, PreTick
 from archetype.core.interfaces import CommitContext
 from archetype.core.resources import Resources
@@ -58,12 +53,7 @@ class _PublishedManifest:
 
 
 class _RecordingCoordinator:
-    """A protocol-compatible bound coordinator with observable settlement.
-
-    ``*args`` accepts both the current identity-resupplying protocol and PR-2's
-    frozen bound protocol.  The assertions below concern world behavior, not
-    which side of the coordinator migration happens to land first.
-    """
+    """A protocol-compatible bound coordinator with observable settlement."""
 
     def __init__(self) -> None:
         self.world_id = ""
@@ -84,8 +74,7 @@ class _RecordingCoordinator:
             writer_epoch=self.writer_epoch,
         )
 
-    async def begin_tick(self, *args: object) -> CommitContext:
-        tick = int(args[-1])
+    async def begin_tick(self, tick: int) -> CommitContext:
         self.begin_ticks.append(tick)
         return CommitContext(
             commit_token=f"visibility-{tick}-{len(self.begin_ticks)}",
@@ -103,32 +92,27 @@ class _RecordingCoordinator:
         staged = self._staged.get(tick)
         return staged is not None and command_id in staged[1]
 
-    async def publish_tick(self, *args: object) -> str:
-        if len(args) == 5:
-            world_id, run_id, tick, ctx, signatures = args
-        elif len(args) == 3:
-            tick, ctx, signatures = args
-            world_id, run_id = self.world_id, self.run_id
-        else:  # pragma: no cover - a protocol mismatch must be loud
-            raise AssertionError(f"unexpected publish_tick call: {args!r}")
-
-        assert isinstance(ctx, CommitContext)
-        signature_list = list(signatures)  # type: ignore[arg-type]
-        staged = self._staged.pop(int(tick), ("", []))
+    async def publish_tick(
+        self,
+        tick: int,
+        ctx: CommitContext,
+        sigs: list[tuple[type[Component], ...]],
+    ) -> None:
+        signature_list = list(sigs)
+        staged = self._staged.pop(tick, ("", []))
         command_ids = tuple(staged[1])
         self.settled_command_ids.extend(command_ids)
         self.manifests.append(
             _PublishedManifest(
-                world_id=str(world_id),
-                run_id=str(run_id),
-                tick=int(tick),
+                world_id=self.world_id,
+                run_id=self.run_id,
+                tick=tick,
                 commit_token=ctx.commit_token,
                 writer_epoch=ctx.writer_epoch,
                 table_ids=tuple(Archetype.get_name(sig) for sig in signature_list),
                 command_ids=command_ids,
             )
         )
-        return ctx.commit_token
 
     async def visible_tokens(
         self,
@@ -143,16 +127,9 @@ class _RecordingCoordinator:
 Materializer = Callable[[AsyncWorld, int], Awaitable[int]]
 
 
-class _MaterializerInjectedWorld(AsyncWorld):
-    """Reach the missing step behavior without hiding it behind constructor red."""
-
-    def install_materializer(self, materializer: Materializer) -> None:
-        self._materialize_commands = materializer
-
-
 @dataclass(slots=True)
 class _WorldHarness:
-    world: _MaterializerInjectedWorld
+    world: AsyncWorld
     store: AsyncLancedbStore
     coordinator: _RecordingCoordinator
 
@@ -164,7 +141,7 @@ async def _tick_world(
 ) -> AsyncIterator[_WorldHarness]:
     store = AsyncLancedbStore(str(tmp_path / "store"), namespace="tick-contract")
     coordinator = _RecordingCoordinator()
-    world = _MaterializerInjectedWorld(
+    world = AsyncWorld(
         world_id="00000000-0000-7000-8000-000000000001",
         name="tick-contract",
         querier=AsyncQueryManager(store=store),
@@ -173,8 +150,8 @@ async def _tick_world(
         resources=Resources(),
         hooks=HookRegistry(),
         commit_coordinator=coordinator,
+        materialize_commands=materializer,
     )
-    world.install_materializer(materializer)
     coordinator.bind(world)
     try:
         yield _WorldHarness(world=world, store=store, coordinator=coordinator)
@@ -316,3 +293,51 @@ async def test_committed_receipt_is_frozen_and_manifest_bound(tmp_path) -> None:
         assert same_commit_different_diagnostic != receipt
         with pytest.raises(FrozenInstanceError):
             receipt.committed_tick = 99
+
+
+async def test_run_identity_is_immutable_uuid7_construction_state(tmp_path) -> None:
+    async def no_commands(_world: AsyncWorld, _target_tick: int) -> int:
+        return 0
+
+    assert "run_id" not in RunConfig.model_fields
+    assert "run_id" not in WorldConfig.model_fields
+    with pytest.raises(ValidationError):
+        RunConfig.model_validate({"run_id": str(uuid7())})
+    with pytest.raises(ValidationError):
+        WorldConfig.model_validate({"run_id": str(uuid7())})
+
+    async with _tick_world(tmp_path, no_commands) as harness:
+        run_id = harness.world.run_id
+        assert isinstance(run_id, UUID)
+        assert run_id.version == 7
+
+        with pytest.raises(AttributeError):
+            harness.world.run_id = uuid7()
+        with pytest.raises(AttributeError):
+            harness.world.commit_coordinator = None
+
+        restored_run_id = uuid7()
+        restored = AsyncWorld(
+            world_id="00000000-0000-7000-8000-000000000002",
+            name="restored",
+            querier=harness.world.querier,
+            updater=harness.world.updater,
+            system=AsyncSystem(),
+            resources=Resources(),
+            hooks=HookRegistry(),
+            run_id=restored_run_id,
+        )
+        assert restored.run_id == restored_run_id
+        assert restored.run_id.version == 7
+
+        with pytest.raises(ValueError, match="UUIDv7"):
+            AsyncWorld(
+                world_id="00000000-0000-7000-8000-000000000003",
+                name="invalid-restored",
+                querier=harness.world.querier,
+                updater=harness.world.updater,
+                system=AsyncSystem(),
+                resources=Resources(),
+                hooks=HookRegistry(),
+                run_id="00000000-0000-4000-8000-000000000003",
+            )

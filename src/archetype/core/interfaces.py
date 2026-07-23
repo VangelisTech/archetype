@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 import pyarrow as pa
 from daft import DataFrame  # type: ignore[import-not-found]
+from uuid_utils import UUID
 
 from .component import Component
 from .config import RunConfig
@@ -222,7 +223,10 @@ class iWorld(Protocol):
     # ── State ownership (spec §229–§237) ────────────────────────────────────
     world_id: str
     name: str | None
-    run_id: str
+
+    @property
+    def run_id(self) -> UUID: ...
+
     tick: int
     next_entity_id: int
     entity2sig: dict[int, ArchetypeSignature]
@@ -239,7 +243,7 @@ class iWorld(Protocol):
         """Run multiple steps according to config, preserving run_id (spec §269)."""
         ...
 
-    def step(self, run_config: RunConfig, **input_kwargs) -> None:
+    def step(self, run_config: RunConfig, **input_kwargs) -> CommittedTickReceipt:
         """Execute one complete simulation tick (spec §239)."""
         ...
 
@@ -349,6 +353,31 @@ class CommitContext:
     writer_epoch: int
 
 
+@dataclass(frozen=True, slots=True)
+class CommittedTickReceipt:
+    """Stable identity of one successfully published world tick.
+
+    ``commands_applied`` is diagnostic and intentionally excluded from
+    ``identity``. A bare, uncoordinated world has no manifest visibility token
+    and therefore reports ``None``.
+    """
+
+    world_id: str
+    run_id: str
+    committed_tick: int
+    visibility_token: str | None
+    commands_applied: int
+
+    @property
+    def identity(self) -> tuple[str, str, int, str | None]:
+        return (
+            self.world_id,
+            self.run_id,
+            self.committed_tick,
+            self.visibility_token,
+        )
+
+
 @dataclass(frozen=True)
 class AppendReceipt:
     """Durable batch receipt for one append (spec: append returns receipts).
@@ -378,11 +407,9 @@ class iCommitCoordinator(Protocol):
     allowlist (None: no manifests recorded — legacy world, nothing filtered).
     """
 
-    async def begin_tick(self, world_id: str, run_id: str, tick: int) -> CommitContext: ...
+    async def begin_tick(self, tick: int) -> CommitContext: ...
     async def publish_tick(
         self,
-        world_id: str,
-        run_id: str,
         tick: int,
         ctx: CommitContext,
         sigs: list[ArchetypeSignature],
@@ -543,7 +570,10 @@ class iAsyncWorld(Protocol):
     # ── State ownership (spec §229–§237) ────────────────────────────────────
     world_id: str
     name: str | None
-    run_id: str
+
+    @property
+    def run_id(self) -> UUID: ...
+
     tick: int
     next_entity_id: int
     entity2sig: dict[int, ArchetypeSignature]
@@ -559,7 +589,7 @@ class iAsyncWorld(Protocol):
     hooks: iAsyncHookBus
 
     async def run(self, run_config: RunConfig, **input_kwargs) -> None: ...
-    async def step(self, run_config: RunConfig, **input_kwargs) -> None: ...
+    async def step(self, run_config: RunConfig, **input_kwargs) -> CommittedTickReceipt: ...
     async def _compute_archetype(
         self, sig: ArchetypeSignature, run_config: RunConfig, **input_kwargs
     ) -> DataFrame: ...
