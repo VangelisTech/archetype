@@ -15,8 +15,9 @@ from archetype.app.container import ServiceContainer
 from archetype.app.gateway.auth import guard
 from archetype.app.gateway.auth.errors import GuardrailError
 from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
-from archetype.app.models import Command, CommandType, EpisodeConfig, RolloutConfig
+from archetype.app.models import Command, CommandType
 from archetype.core.config import RunConfig
+from archetype.world.models import EpisodeConfig, RolloutConfig
 
 pytest.importorskip("httpx", reason="httpx required for API tests")
 

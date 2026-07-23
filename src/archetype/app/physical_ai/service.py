@@ -19,7 +19,6 @@ from daft import DataFrame, col
 from uuid_utils import uuid7
 
 from archetype.app.evaluation.interfaces import iEvaluationService
-from archetype.app.models import EpisodeConfig
 from archetype.app.storage.interfaces import iStorageService
 from archetype.app.world.interfaces import (
     iMutationService,
@@ -48,6 +47,7 @@ from archetype.physical_ai.manipulation import (
     ManipTask,
 )
 from archetype.physical_ai.policy import PolicyActionProcessor, PolicyClient
+from archetype.world.models import EpisodeConfig
 
 
 def _instruction_for(env_client: EnvClient, fallback: str) -> str:

@@ -22,7 +22,7 @@ from archetype.api.errors import raise_api_error
 from archetype.api.models import CreateWorldRequest, ForkWorldRequest
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.gateway.interfaces import iCommandGateway
-from archetype.app.models import WorldInfo
+from archetype.world.models import WorldInfo
 
 router = APIRouter(prefix="/worlds", tags=["worlds"])
 

@@ -27,14 +27,14 @@ from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_coun
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.gateway.auth.permissions import COMMANDS_BY_ROLE
 from archetype.app.gateway.service import CommandGateway
-from archetype.app.models import (
-    CommandType,
+from archetype.app.models import CommandType
+from archetype.core.config import WorldConfig
+from archetype.world.models import (
     HookInfo,
     ProcessorInfo,
     ResourceInfo,
     WorldInfo,
 )
-from archetype.core.config import WorldConfig
 from evals.graders import exact_match, state_check
 from evals.harness import EvalHarness
 from evals.types import GraderResult

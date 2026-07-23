@@ -13,7 +13,7 @@ from typing import Any
 
 from uuid_utils import UUID
 
-from archetype.app.models import EpisodeConfig, RolloutResult
+from archetype.world.models import EpisodeConfig, RolloutResult
 
 
 @dataclass(frozen=True)

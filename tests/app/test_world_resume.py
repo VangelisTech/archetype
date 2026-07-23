@@ -311,7 +311,7 @@ async def test_autoresearch_continues_across_processes(tmp_path):
         from daft import col
 
         from archetype import ArchetypeRuntime, AutoResearchConfig, EvaluationResult
-        from archetype.app.models import EpisodeConfig
+        from archetype.world.models import EpisodeConfig
         from archetype.core.component import Component
         from archetype.core.config import StorageConfig
 
@@ -389,7 +389,7 @@ async def test_autoresearch_continues_across_processes(tmp_path):
     from daft import col
 
     from archetype import ArchetypeRuntime, AutoResearchConfig, EvaluationResult
-    from archetype.app.models import EpisodeConfig
+    from archetype.world.models import EpisodeConfig
 
     class Knob(Component):
         x: float = 0.0

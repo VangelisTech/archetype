@@ -25,11 +25,12 @@ from archetype.app.gateway.auth.guard import (
 )
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.gateway.service import CommandGateway
-from archetype.app.models import Command, CommandType, EpisodeConfig
+from archetype.app.models import Command, CommandType
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.world.models import EpisodeConfig
 from evals.graders import exact_match, state_check
 from evals.harness import EvalHarness
 from evals.types import GraderResult

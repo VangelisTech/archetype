@@ -37,7 +37,6 @@ from typing import TYPE_CHECKING, Any, cast
 from pydantic_core import to_jsonable_python
 from uuid_utils import UUID
 
-from archetype.app.models import RolloutConfig, RolloutResult
 from archetype.app.research.contracts import (
     AutoResearchConfig,
     AutoResearchResult,
@@ -50,6 +49,7 @@ from archetype.app.research.contracts import (
 )
 from archetype.core.config import RunConfig, WorldConfig
 from archetype.research import BranchHead, Experiment, Result, Run, RunStatus
+from archetype.world.models import RolloutConfig, RolloutResult
 
 if TYPE_CHECKING:
     from archetype.app.storage.interfaces import iStorageService

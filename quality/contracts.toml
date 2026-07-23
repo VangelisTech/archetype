@@ -333,6 +333,21 @@ benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
+id = "world.mutation.locking"
+source = "docs/guide/specification.md"
+section = "Mutation Contracts"
+owner = "world"
+risk = "high"
+pytest = [
+  "tests/world/test_mutation_contracts.py",
+  "tests/world/test_registry_locking.py",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
 id = "query.cold_reads.correct"
 source = "docs/guide/specification.md"
 section = "QueryService"

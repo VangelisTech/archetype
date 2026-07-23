@@ -21,9 +21,10 @@ from typing import Any, cast
 from daft import DataFrame
 from pydantic import BaseModel, Field
 
-from archetype.app.models import Command, EpisodeConfig, RolloutConfig
+from archetype.app.models import Command
 from archetype.core.component import Component
 from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
+from archetype.world.models import EpisodeConfig, RolloutConfig
 
 
 def dataframe_to_rows(df: DataFrame | list[dict[str, Any]]) -> list[dict[str, Any]]:

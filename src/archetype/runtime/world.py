@@ -25,7 +25,12 @@ from weakref import WeakSet
 
 from uuid_utils import UUID
 
-from archetype.app.models import (
+from archetype.artifacts.contracts import ArtifactRef, ArtifactSource
+from archetype.core.component import Component
+from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
+from archetype.core.hooks import HookEvent
+from archetype.missions.trajectories import TrajectorySelection
+from archetype.world.models import (
     EpisodeConfig,
     EpisodeResult,
     HookInfo,
@@ -36,11 +41,6 @@ from archetype.app.models import (
     RunResult,
     WorldInfo,
 )
-from archetype.artifacts.contracts import ArtifactRef, ArtifactSource
-from archetype.core.component import Component
-from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
-from archetype.core.hooks import HookEvent
-from archetype.missions.trajectories import TrajectorySelection
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence

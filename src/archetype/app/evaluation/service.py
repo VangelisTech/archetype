@@ -40,7 +40,6 @@ from uuid_utils import UUID, uuid7
 
 from archetype.app.evaluation.interfaces import GraderOutput, TrajectoryGrader
 from archetype.app.ingestion.interfaces import iIngestionService
-from archetype.app.models import EpisodeResult
 from archetype.app.query.interfaces import iQueryService
 from archetype.app.storage.interfaces import iStorageService
 from archetype.app.world.interfaces import iWorldService
@@ -52,6 +51,7 @@ from archetype.evaluation.contracts import (
     Outcome,
     subject_digest,
 )
+from archetype.world.models import EpisodeResult
 
 logger = logging.getLogger(__name__)
 

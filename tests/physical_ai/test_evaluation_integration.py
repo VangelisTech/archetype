@@ -30,7 +30,6 @@ from daft import DataFrame
 
 from archetype.app.container import ServiceContainer
 from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
-from archetype.app.models import EpisodeConfig
 from archetype.core.config import StorageConfig, WorldConfig
 from archetype.physical_ai.manipulation import (
     ACTION_DIM,
@@ -41,6 +40,7 @@ from archetype.physical_ai.manipulation import (
     ManipTask,
     ScriptedReachEnv,
 )
+from archetype.world.models import EpisodeConfig
 from evals.graders import exact_match, state_check
 from evals.types import GraderResult
 

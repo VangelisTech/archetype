@@ -12,10 +12,10 @@ import pytest
 from daft import DataFrame, col
 
 from archetype.app.container import ServiceContainer
-from archetype.app.models import EpisodeConfig, RolloutConfig
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig, WorldConfig
+from archetype.world.models import EpisodeConfig, RolloutConfig
 
 # ---------------------------------------------------------------------------
 # Test components

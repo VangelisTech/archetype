@@ -16,6 +16,7 @@ from typing import Any, ClassVar, Literal, cast
 
 import uuid_utils as uuid
 from pydantic import BaseModel, Field, field_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from archetype.core.component import Component
 from archetype.core.config import (
@@ -150,10 +151,10 @@ class EpisodeConfig(_FrozenModel):
     episode_id: str | JsonUUID = Field(default_factory=uuid.uuid7)
     run_config: RunConfig = Field(default_factory=RunConfig)
     max_steps: int = Field(default=1000, ge=0)
-    terminal_component: type[Component] | None = None
+    terminal_component: SkipJsonSchema[type[Component] | None] = None
     terminal_field: str | None = None
     terminal_all: bool = True
-    termination: Callable[[Any], bool] | None = None
+    termination: SkipJsonSchema[Callable[[Any], bool] | None] = None
 
 
 class RolloutConfig(_FrozenModel):

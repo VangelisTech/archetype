@@ -11,10 +11,10 @@ from daft import DataFrame, col
 
 from archetype.app.container import ServiceContainer
 from archetype.app.evaluation.service import EvaluationService
-from archetype.app.models import EpisodeConfig
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.world.models import EpisodeConfig
 
 
 class Score(Component):

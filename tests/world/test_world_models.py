@@ -19,6 +19,7 @@ from archetype.world.models import (
     ComponentTypeRef,
     ComponentValue,
     Despawn,
+    EpisodeConfig,
     RunResult,
     Spawn,
     Step,
@@ -103,3 +104,11 @@ def test_results_are_frozen_and_use_tuple_aggregation() -> None:
 
     with pytest.raises(ValidationError):
         result.final_tick = 2
+
+
+def test_episode_wire_schema_excludes_live_capabilities() -> None:
+    schema = EpisodeConfig.model_json_schema()
+
+    assert "max_steps" in schema["properties"]
+    assert "terminal_component" not in schema["properties"]
+    assert "termination" not in schema["properties"]

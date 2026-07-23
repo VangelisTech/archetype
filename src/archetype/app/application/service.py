@@ -19,8 +19,8 @@ from typing import TYPE_CHECKING
 
 from uuid_utils import UUID
 
-from archetype.app.models import (
-    Command,
+from archetype.app.models import Command
+from archetype.world.models import (
     HookInfo,
     ProcessorInfo,
     ResourceInfo,

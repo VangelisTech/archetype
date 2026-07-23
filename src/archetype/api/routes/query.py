@@ -25,8 +25,8 @@ from archetype.api.models import QueryCountResponse, dataframe_to_rows, hydrate_
 from archetype.api.query_filter import parse_where
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.gateway.interfaces import iCommandGateway
-from archetype.app.models import HookInfo, ProcessorInfo, ResourceInfo
 from archetype.core.config import StorageConfig
+from archetype.world.models import HookInfo, ProcessorInfo, ResourceInfo
 
 router = APIRouter(tags=["query"])
 

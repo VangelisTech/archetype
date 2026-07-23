@@ -18,11 +18,11 @@ import pytest
 from uuid_utils import UUID
 
 from archetype.app.container import ServiceContainer
-from archetype.app.models import EpisodeConfig
 from archetype.app.research.contracts import AutoResearchConfig, EvaluationResult
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.research import BranchHead, Experiment, Result, Run, RunStatus
+from archetype.world.models import EpisodeConfig
 
 
 class Tag(Component):
