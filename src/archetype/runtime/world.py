@@ -68,20 +68,20 @@ _FireMode = Any  # Literal["blocking", "spawn"] — kept loose for forward compa
 _ADMITTED_STATE: ContextVar[_RuntimeWorldState | None] = ContextVar(
     "archetype_runtime_admitted_state", default=None
 )
-_RUNTIME_CLEANUP_OWNER: ContextVar[object | None] = ContextVar(
-    "archetype_runtime_cleanup_owner", default=None
+_RUNTIME_CLEANUP_STATE: ContextVar[_RuntimeWorldState | None] = ContextVar(
+    "archetype_runtime_cleanup_state", default=None
 )
 
 
 @contextmanager
-def _runtime_cleanup_scope(runtime: object):
-    """Authorize runtime-owned cleanup without reopening public admission."""
+def _runtime_cleanup_scope(state: _RuntimeWorldState):
+    """Authorize cleanup only for one exact mission-world state."""
 
-    token = _RUNTIME_CLEANUP_OWNER.set(runtime)
+    token = _RUNTIME_CLEANUP_STATE.set(state)
     try:
         yield
     finally:
-        _RUNTIME_CLEANUP_OWNER.reset(token)
+        _RUNTIME_CLEANUP_STATE.reset(token)
 
 
 def _clone_components(components: tuple[Component, ...]) -> list[Component]:
@@ -173,7 +173,7 @@ class _RuntimeWorldState:
 
         async with self.admission_lock:
             runtime_rejects_public_work = self.runtime._shutdown_started or self.runtime._closed
-            runtime_owns_cleanup = _RUNTIME_CLEANUP_OWNER.get() is self.runtime
+            runtime_owns_cleanup = _RUNTIME_CLEANUP_STATE.get() is self
             if (
                 self.closing
                 or self.closed
@@ -192,6 +192,13 @@ class _RuntimeWorldState:
                 self.active_operations -= 1
                 if self.active_operations == 0:
                     self.drained.set()
+
+    async def drain_admitted_operations(self) -> None:
+        """Wait for tracked workflows and the current serialized operation."""
+
+        await self.drained.wait()
+        async with self.op_lock:
+            pass
 
     async def ensure_init(self) -> str | UUID:
         """Single-flight activation. Returns world_id."""
@@ -287,7 +294,7 @@ class RuntimeWorld:
     async def _ensure_id(self) -> str | UUID:
         if (
             _ADMITTED_STATE.get() is not self._state
-            and _RUNTIME_CLEANUP_OWNER.get() is not self._state.runtime
+            and _RUNTIME_CLEANUP_STATE.get() is not self._state
         ):
             self._state.runtime._ensure_open()
         if self._state.closed:
@@ -637,6 +644,9 @@ class RuntimeWorld:
 
     async def _shutdown_internal(self, *, from_runtime: bool) -> None:
         await self._state.shutdown(from_runtime=from_runtime)
+
+    async def _drain_admitted_operations(self) -> None:
+        await self._state.drain_admitted_operations()
 
     # ── Queries ───────────────────────────────────────────────────────────
 

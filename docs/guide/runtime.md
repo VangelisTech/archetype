@@ -72,11 +72,12 @@ Shutdown must:
 
 Shutdown phases preserve cleanup dependencies. Runtime-owned mission handles
 are attempted first. If any mission cleanup fails, the runtime rejects public
-work but retains its internal cleanup authority and does not close world
-handles or finalize the shared container. A later, serialized `shutdown()` call
-retries every retained mission cleanup. World-handle and container finalization
-begin only after that phase succeeds; calls after successful finalization are
-no-ops.
+work, drains every operation admitted before shutdown, and retains cleanup
+authority only for the exact mission world being reconciled. It does not close
+world handles or finalize the shared container. A later, serialized
+`shutdown()` call retries every retained mission cleanup. World-handle and
+container finalization begin only after that phase succeeds; calls after
+successful finalization are no-ops.
 
 ### R5 — Sync parity
 

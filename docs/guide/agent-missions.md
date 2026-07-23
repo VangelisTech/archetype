@@ -362,7 +362,9 @@ before world handles or shared services are finalized. The runtime keeps a
 strong ownership reference to that handle until cleanup succeeds, so dropping
 the caller's reference cannot discard a still-live provider resource. Public
 and runtime-owned close calls are single-flight on the handle; a public close
-already in progress retains cleanup authority while runtime shutdown waits.
+already in progress retains cleanup authority for its exact mission world while
+runtime shutdown waits. That authority cannot admit operations against a
+sibling world on the same runtime.
 
 Durable lifecycle evidence follows physical ownership. A failed terminal close
 projects the retained session's non-ready status and a `sandbox_teardown`

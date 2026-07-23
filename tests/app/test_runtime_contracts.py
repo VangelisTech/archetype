@@ -22,6 +22,7 @@ from archetype.core.aio import AsyncProcessor
 from archetype.core.config import StorageConfig
 from archetype.core.errors import TickExecutionError
 from archetype.core.hooks import PreTick
+from archetype.runtime.world import _runtime_cleanup_scope
 
 
 class Pos(Component):
@@ -326,6 +327,81 @@ class TestShutdownIdempotency:
 
         assert calls == ["mission", "mission", "container"]
         assert not runtime._mission_handles
+
+    @pytest.mark.asyncio
+    async def test_failed_mission_cleanup_still_drains_admitted_world_work(
+        self, tmp_path, monkeypatch
+    ):
+        runtime = ArchetypeRuntime()
+        world = runtime.world(
+            "drain-before-mission-failure",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
+        )
+        await world.spawn(Pos())
+
+        run_started = asyncio.Event()
+        run_release = asyncio.Event()
+        mission_attempted = asyncio.Event()
+
+        async def blocking_run(*args, **kwargs):
+            run_started.set()
+            await run_release.wait()
+            return object()
+
+        monkeypatch.setattr(runtime._application, "run", blocking_run)
+
+        class FailingOnceMissionHandle:
+            attempts = 0
+
+            async def _shutdown_internal(self, *, from_runtime: bool) -> None:
+                assert from_runtime
+                self.attempts += 1
+                mission_attempted.set()
+                if self.attempts == 1:
+                    raise RuntimeError("mission close failed")
+                runtime._mission_handles.discard(self)  # type: ignore[arg-type]
+
+        mission = FailingOnceMissionHandle()
+        runtime._mission_handles.add(mission)  # type: ignore[arg-type]
+
+        admitted_run = asyncio.create_task(world.run())
+        await run_started.wait()
+        shutdown = asyncio.create_task(runtime.shutdown())
+        await mission_attempted.wait()
+        await asyncio.sleep(0)
+
+        assert not shutdown.done()
+
+        run_release.set()
+        await admitted_run
+        with pytest.raises(RuntimeError, match="mission close failed"):
+            await shutdown
+
+        assert not world._state.closed
+        with pytest.raises(RuntimeError, match="closed"):
+            await world.spawn(Pos())
+
+        await runtime.shutdown()
+        assert world._state.closed
+
+    @pytest.mark.asyncio
+    async def test_cleanup_capability_does_not_admit_a_sibling_world(self, tmp_path):
+        runtime = ArchetypeRuntime()
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        mission_world = runtime.world("mission", storage=storage)
+        sibling_world = runtime.world("sibling", storage=storage)
+        await mission_world.spawn(Pos())
+        await sibling_world.spawn(Pos())
+
+        runtime._shutdown_started = True
+        try:
+            with _runtime_cleanup_scope(mission_world._state):
+                await mission_world.spawn(Pos())
+                with pytest.raises(RuntimeError, match="closed"):
+                    await sibling_world.spawn(Pos())
+        finally:
+            runtime._shutdown_started = False
+            await runtime.shutdown()
 
     @pytest.mark.asyncio
     async def test_concurrent_runtime_shutdown_is_single_flight(self, monkeypatch):

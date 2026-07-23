@@ -34,7 +34,6 @@ from archetype.runtime._config import coerce_cache, coerce_storage
 from archetype.runtime.world import (
     RuntimeWorld,
     SyncRuntimeWorld,
-    _runtime_cleanup_scope,
     _RuntimeWorldState,
 )
 
@@ -125,11 +124,20 @@ class ArchetypeRuntime:
             errors: list[BaseException] = []
             for handle in list(self._mission_handles):
                 try:
-                    with _runtime_cleanup_scope(self):
-                        await handle._shutdown_internal(from_runtime=True)
+                    await handle._shutdown_internal(from_runtime=True)
                 except BaseException as e:
                     errors.append(e)
-            self._raise_shutdown_failures(errors)
+            if errors:
+                # A mission cleanup failure must preserve its world for retry,
+                # but shutdown still owes every already-admitted world call a
+                # drain before returning the retryable failure.
+                states = {handle._state for handle in list(self._handles)}
+                for state in states:
+                    try:
+                        await state.drain_admitted_operations()
+                    except BaseException as e:
+                        errors.append(e)
+                self._raise_shutdown_failures(errors)
 
             for handle in list(self._handles):
                 try:
