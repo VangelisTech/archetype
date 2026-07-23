@@ -19,7 +19,6 @@ from archetype.app.artifacts.interfaces import iArtifactService
 from archetype.app.ingestion.interfaces import iIngestionService
 from archetype.app.redaction.interfaces import iRedactionService
 from archetype.app.redaction.models import RedactionReceipt
-from archetype.app.storage.interfaces import iStorageService
 from archetype.artifacts.contracts import ArtifactSource
 from archetype.core.config import StorageBackend, StorageConfig
 from archetype.missions.trajectories import (
@@ -29,7 +28,8 @@ from archetype.missions.trajectories import (
     TranscriptIngestionResult,
     parse_claude_transcript,
 )
-from archetype.world.registry import WorldRegistry
+from archetype.storage.interfaces import iStorageService
+from archetype.world.interfaces import iWorldRegistry
 
 _TRANSCRIPT_ROWS = CLAUDE_TRANSCRIPT_TABLE
 
@@ -204,7 +204,7 @@ class TranscriptIngestionService:
         ingestion_service: iIngestionService,
         redaction_service: iRedactionService,
         storage_service: iStorageService,
-        world_registry: WorldRegistry,
+        world_registry: iWorldRegistry,
     ) -> None:
         self._artifacts = artifact_service
         self._ingestion = ingestion_service

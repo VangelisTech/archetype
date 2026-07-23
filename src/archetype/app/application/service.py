@@ -43,9 +43,8 @@ if TYPE_CHECKING:
     )
     from archetype.physical_ai.manipulation import EnvClient
     from archetype.physical_ai.policy import PolicyClient
-    from archetype.storage.service import StorageService
-    from archetype.world.lifecycle import WorldLifecycle
-    from archetype.world.registry import WorldRegistry
+    from archetype.storage.interfaces import iStorageService
+    from archetype.world.interfaces import iWorldLifecycle, iWorldRegistry
 
 
 _ACTIVE_APPLICATION: ContextVar[RuntimeApplication | None] = ContextVar(
@@ -68,9 +67,9 @@ class RuntimeApplication:
     def __init__(
         self,
         *,
-        registry: WorldRegistry,
-        lifecycle: WorldLifecycle,
-        storage: StorageService,
+        registry: iWorldRegistry,
+        lifecycle: iWorldLifecycle,
+        storage: iStorageService,
         commands: iCommandScheduler,
         audit: iAuditLog | None = None,
         research: iResearchService | None = None,

@@ -48,10 +48,10 @@ from archetype.evaluation.contracts import (
     Outcome,
     subject_digest,
 )
-from archetype.storage.service import StorageService
+from archetype.storage.interfaces import iStorageService
 from archetype.world import query
+from archetype.world.interfaces import iWorldRegistry
 from archetype.world.models import EpisodeResult
-from archetype.world.registry import WorldRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -107,8 +107,8 @@ class EvaluationService:
     def __init__(
         self,
         ingestion_service: iIngestionService,
-        storage_service: StorageService,
-        world_registry: WorldRegistry,
+        storage_service: iStorageService,
+        world_registry: iWorldRegistry,
     ) -> None:
         self._ingestion = ingestion_service
         self._storage = storage_service

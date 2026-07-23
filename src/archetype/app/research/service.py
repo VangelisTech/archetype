@@ -49,11 +49,10 @@ from archetype.app.research.contracts import (
 )
 from archetype.core.config import RunConfig, WorldConfig
 from archetype.research import BranchHead, Experiment, Result, Run, RunStatus
-from archetype.storage.service import StorageService
+from archetype.storage.interfaces import iStorageService
 from archetype.world import mutation, simulation
-from archetype.world.lifecycle import WorldLifecycle
+from archetype.world.interfaces import iWorldLifecycle, iWorldRegistry
 from archetype.world.models import RolloutConfig, RolloutResult
-from archetype.world.registry import WorldRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -169,9 +168,9 @@ class AutoResearchService:
 
     def __init__(
         self,
-        world_registry: WorldRegistry,
-        world_lifecycle: WorldLifecycle,
-        storage_service: StorageService,
+        world_registry: iWorldRegistry,
+        world_lifecycle: iWorldLifecycle,
+        storage_service: iStorageService,
     ) -> None:
         self._world_registry = world_registry
         self._world_lifecycle = world_lifecycle

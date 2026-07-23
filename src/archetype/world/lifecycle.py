@@ -28,7 +28,8 @@ from archetype.core.lineage import load_lineage, persist_lineage
 from archetype.core.resources import Resources
 from archetype.storage.catalog import ControlCatalog, WorldRecord
 from archetype.storage.service import PinnedVisibility
-from archetype.world.registry import WorldCleanupLease, WorldRegistry
+from archetype.world.interfaces import iWorldRegistry
+from archetype.world.registry import WorldCleanupLease
 from archetype.world.resume import (
     ResumeStorage,
     reconstruct_resume_snapshot,
@@ -141,7 +142,7 @@ class WorldLifecycle:
     def __init__(
         self,
         storage: LifecycleStorage,
-        registry: WorldRegistry,
+        registry: iWorldRegistry,
         *,
         materialize_commands: CommandMaterializer | None = None,
         required_projector_factory: RequiredProjectorFactory | None = None,

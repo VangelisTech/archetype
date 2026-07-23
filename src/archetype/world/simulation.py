@@ -17,7 +17,7 @@ from archetype.core.aio import AsyncWorld
 from archetype.core.component import Component
 from archetype.core.config import RunConfig
 from archetype.core.interfaces import CommittedTickReceipt
-from archetype.storage.service import StorageService
+from archetype.storage.interfaces import iStorageService
 from archetype.world.models import (
     EpisodeConfig,
     EpisodeResult,
@@ -27,7 +27,8 @@ from archetype.world.models import (
 )
 
 if TYPE_CHECKING:
-    from archetype.world.registry import WorldCleanupLease, WorldRegistry
+    from archetype.world.interfaces import iWorldRegistry
+    from archetype.world.registry import WorldCleanupLease
 
 ProjectionCallable = Callable[[CommittedTickReceipt], Awaitable[None]]
 ForkWorldCallable = Callable[..., Awaitable[Any]]
@@ -84,7 +85,7 @@ def _validate_receipt(world: AsyncWorld, receipt: CommittedTickReceipt) -> None:
 
 
 async def _project_required_locked(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     world_id: str | UUID,
     receipt: CommittedTickReceipt,
 ) -> None:
@@ -114,7 +115,7 @@ async def _project_required_locked(
 
 
 async def _retry_required_projection_locked(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     world_id: str | UUID,
 ) -> bool:
     """Retry the exact retained receipt; return whether one existed."""
@@ -126,7 +127,7 @@ async def _retry_required_projection_locked(
 
 
 async def retry_required_projection(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     world_id: str | UUID,
     *,
     lease: WorldCleanupLease | None = None,
@@ -141,7 +142,7 @@ async def retry_required_projection(
 
 
 async def _step_locked(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     world_id: str | UUID,
     world: AsyncWorld,
     run_config: RunConfig,
@@ -176,7 +177,7 @@ async def _step_locked(
 
 
 async def step(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     world_id: str | UUID,
     run_config: RunConfig,
     **input_kwargs: Any,
@@ -193,7 +194,7 @@ async def step(
 
 
 async def run(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     world_id: str | UUID,
     run_config: RunConfig,
     **input_kwargs: Any,
@@ -219,7 +220,7 @@ async def run(
 
 
 async def _entities_terminal(
-    storage: StorageService,
+    storage: iStorageService,
     world: AsyncWorld,
     component: type[Component],
     field: str,
@@ -245,8 +246,8 @@ async def _entities_terminal(
 
 
 async def _run_episode_locked(
-    registry: WorldRegistry,
-    storage: StorageService,
+    registry: iWorldRegistry,
+    storage: iStorageService,
     world_id: str | UUID,
     world: AsyncWorld,
     config: EpisodeConfig,
@@ -308,8 +309,8 @@ async def _run_episode_locked(
 
 
 async def run_episode(
-    registry: WorldRegistry,
-    storage: StorageService,
+    registry: iWorldRegistry,
+    storage: iStorageService,
     world_id: str | UUID,
     config: EpisodeConfig,
     **input_kwargs: Any,
@@ -327,8 +328,8 @@ async def run_episode(
 
 
 async def run_rollout(
-    registry: WorldRegistry,
-    storage: StorageService,
+    registry: iWorldRegistry,
+    storage: iStorageService,
     fork_world: ForkWorldCallable,
     destroy_world: DestroyWorldCallable,
     world_id: str | UUID,

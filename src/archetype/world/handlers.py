@@ -60,9 +60,8 @@ from archetype.world.models import (
 )
 
 if TYPE_CHECKING:
-    from archetype.world.registry import WorldRegistry
-
-    from archetype.storage.service import StorageService
+    from archetype.storage.interfaces import iStorageService
+    from archetype.world.interfaces import iWorldRegistry
 
 LifecycleCallable = Callable[..., Awaitable[Any]]
 WorldResolver = Callable[[object], Any]
@@ -95,7 +94,7 @@ def _world_info(world: Any) -> WorldInfo:
     )
 
 
-async def spawn(registry: WorldRegistry, operation: Spawn) -> int:
+async def spawn(registry: iWorldRegistry, operation: Spawn) -> int:
     return await mutation.create_entity(
         registry,
         operation.world_id,
@@ -104,7 +103,7 @@ async def spawn(registry: WorldRegistry, operation: Spawn) -> int:
 
 
 async def create_entities(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     operation: CreateEntities,
 ) -> list[int]:
     entities = [_components(values) for values in operation.entities]
@@ -112,7 +111,7 @@ async def create_entities(
 
 
 async def reserve_entity_ids(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     operation: ReserveEntityIds,
 ) -> list[int]:
     return await mutation.reserve_entity_ids(
@@ -123,7 +122,7 @@ async def reserve_entity_ids(
 
 
 async def spawn_reserved(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     operation: SpawnReserved,
 ) -> None:
     await mutation.spawn_with_reserved_id(
@@ -134,11 +133,11 @@ async def spawn_reserved(
     )
 
 
-async def despawn(registry: WorldRegistry, operation: Despawn) -> None:
+async def despawn(registry: iWorldRegistry, operation: Despawn) -> None:
     await mutation.remove_entity(registry, operation.world_id, operation.entity_id)
 
 
-async def update(registry: WorldRegistry, operation: Update) -> None:
+async def update(registry: iWorldRegistry, operation: Update) -> None:
     await mutation.update_entity(
         registry,
         operation.world_id,
@@ -148,7 +147,7 @@ async def update(registry: WorldRegistry, operation: Update) -> None:
 
 
 async def add_components(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     operation: AddComponents,
 ) -> None:
     await mutation.add_components(
@@ -160,7 +159,7 @@ async def add_components(
 
 
 async def remove_components(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     operation: RemoveComponents,
 ) -> None:
     await mutation.remove_components(
@@ -172,14 +171,14 @@ async def remove_components(
 
 
 async def add_processor(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     operation: AddProcessor,
 ) -> None:
     await mutation.add_processor(registry, operation.world_id, operation.processor)
 
 
 async def remove_processor(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     operation: RemoveProcessor,
 ) -> None:
     await mutation.remove_processor(
@@ -189,11 +188,11 @@ async def remove_processor(
     )
 
 
-async def add_resource(registry: WorldRegistry, operation: AddResource) -> None:
+async def add_resource(registry: iWorldRegistry, operation: AddResource) -> None:
     await mutation.add_resource(registry, operation.world_id, operation.resource)
 
 
-async def add_hook(registry: WorldRegistry, operation: AddHook) -> Any:
+async def add_hook(registry: iWorldRegistry, operation: AddHook) -> Any:
     return await mutation.add_hook(
         registry,
         operation.world_id,
@@ -203,7 +202,7 @@ async def add_hook(registry: WorldRegistry, operation: AddHook) -> Any:
     )
 
 
-async def remove_hook(registry: WorldRegistry, operation: RemoveHook) -> None:
+async def remove_hook(registry: iWorldRegistry, operation: RemoveHook) -> None:
     await mutation.remove_hook(registry, operation.world_id, operation.handle)
 
 
@@ -349,7 +348,7 @@ async def resume_world(
     return _world_info(world)
 
 
-async def step(registry: WorldRegistry, operation: Step) -> int:
+async def step(registry: iWorldRegistry, operation: Step) -> int:
     return await simulation.step(
         registry,
         operation.world_id,
@@ -358,7 +357,7 @@ async def step(registry: WorldRegistry, operation: Step) -> int:
     )
 
 
-async def run(registry: WorldRegistry, operation: Run):
+async def run(registry: iWorldRegistry, operation: Run):
     return await simulation.run(
         registry,
         operation.world_id,
@@ -368,8 +367,8 @@ async def run(registry: WorldRegistry, operation: Run):
 
 
 async def run_episode(
-    registry: WorldRegistry,
-    storage: StorageService,
+    registry: iWorldRegistry,
+    storage: iStorageService,
     operation: RunEpisode,
 ):
     return await simulation.run_episode(
@@ -382,8 +381,8 @@ async def run_episode(
 
 
 async def run_rollout(
-    registry: WorldRegistry,
-    storage: StorageService,
+    registry: iWorldRegistry,
+    storage: iStorageService,
     fork: simulation.ForkWorldCallable,
     destroy: simulation.DestroyWorldCallable,
     operation: RunRollout,
@@ -400,7 +399,7 @@ async def run_rollout(
 
 
 async def query_components(
-    storage: StorageService,
+    storage: iStorageService,
     operation: QueryComponents,
 ):
     return await query.query_components(
@@ -419,7 +418,7 @@ async def query_components(
 
 
 async def query_archetype(
-    storage: StorageService,
+    storage: iStorageService,
     operation: QueryArchetype,
 ):
     return await query.query_archetype(
@@ -438,14 +437,14 @@ async def query_archetype(
 
 
 async def list_signatures(
-    storage: StorageService,
+    storage: iStorageService,
     operation: ListSignatures,
 ):
     return await query.list_signatures(storage, operation.storage_config)
 
 
 async def list_processors(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     operation: ListProcessors,
 ) -> list[ProcessorInfo]:
     async with registry.operation(operation.world_id) as world:
@@ -463,7 +462,7 @@ async def list_processors(
 
 
 async def list_hooks(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     operation: ListHooks,
 ) -> list[HookInfo]:
     async with registry.operation(operation.world_id) as world:
@@ -479,7 +478,7 @@ async def list_hooks(
 
 
 async def list_resources(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     operation: ListResources,
 ) -> list[ResourceInfo]:
     async with registry.operation(operation.world_id) as world:

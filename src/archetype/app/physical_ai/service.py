@@ -41,11 +41,10 @@ from archetype.physical_ai.manipulation import (
     ManipTask,
 )
 from archetype.physical_ai.policy import PolicyActionProcessor, PolicyClient
-from archetype.storage.service import StorageService
+from archetype.storage.interfaces import iStorageService
 from archetype.world import mutation, simulation
-from archetype.world.lifecycle import WorldLifecycle
+from archetype.world.interfaces import iWorldLifecycle, iWorldRegistry
 from archetype.world.models import EpisodeConfig
-from archetype.world.registry import WorldRegistry
 
 
 def _instruction_for(env_client: EnvClient, fallback: str) -> str:
@@ -92,7 +91,7 @@ def _trial_components(
 
 async def _latest_rows(
     frame: DataFrame,
-    storage_service: StorageService,
+    storage_service: iStorageService,
 ) -> dict[int, dict[str, Any]]:
     """Materialize terminal rows at the report-producing analysis boundary."""
 
@@ -117,10 +116,10 @@ class PhysicalAIService:
 
     def __init__(
         self,
-        world_registry: WorldRegistry,
-        world_lifecycle: WorldLifecycle,
+        world_registry: iWorldRegistry,
+        world_lifecycle: iWorldLifecycle,
         evaluation_service: iEvaluationService,
-        storage_service: StorageService,
+        storage_service: iStorageService,
     ) -> None:
         self._world_registry = world_registry
         self._world_lifecycle = world_lifecycle

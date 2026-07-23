@@ -4,7 +4,7 @@
 """Durable world reads.
 
 This module intentionally has no application or audit dependency.  Every
-physical read resolves through ``StorageService`` and captures a manifest
+physical read resolves through ``iStorageService`` and captures a manifest
 visibility snapshot before constructing the lazy result.
 """
 
@@ -26,14 +26,14 @@ from archetype.storage.catalog import (
     SignatureRecord,
     schema_fingerprint,
 )
-from archetype.storage.service import StorageService
+from archetype.storage.interfaces import iStorageService
 from archetype.storage.signatures import match_signature_records
 
 logger = logging.getLogger(__name__)
 
 
 async def _querier_for(
-    storage: StorageService,
+    storage: iStorageService,
     storage_config: StorageConfig | None,
 ) -> tuple[StorageConfig, iAsyncStore, AsyncQueryManager]:
     effective = storage_config or StorageConfig()
@@ -42,7 +42,7 @@ async def _querier_for(
 
 
 async def query_archetype(
-    storage: StorageService,
+    storage: iStorageService,
     sig: ArchetypeSignature,
     world_id: str,
     run_id: str,
@@ -115,7 +115,7 @@ async def query_archetype(
 
 
 async def query_components(
-    storage: StorageService,
+    storage: iStorageService,
     components: list[type[Component]],
     world_id: str,
     run_id: str,
@@ -166,7 +166,7 @@ async def query_components(
 
 
 async def _signature_records(
-    storage: StorageService,
+    storage: iStorageService,
     storage_config: StorageConfig,
 ) -> list[SignatureRecord]:
     """Return durable discovery records, degrading only discovery on failure."""
@@ -179,7 +179,7 @@ async def _signature_records(
 
 
 async def _catalog_candidates(
-    storage: StorageService,
+    storage: iStorageService,
     storage_config: StorageConfig,
     components: list[type[Component]],
 ) -> list[SignatureRecord]:
@@ -189,7 +189,7 @@ async def _catalog_candidates(
 
 
 async def _visible_tokens(
-    storage: StorageService,
+    storage: iStorageService,
     storage_config: StorageConfig,
     world_id: str,
     run_id: str,
@@ -300,7 +300,7 @@ async def _union_lineage(
 
 
 async def get_lineage(
-    storage: StorageService,
+    storage: iStorageService,
     world_id: str,
     run_id: str,
     storage_config: StorageConfig | None = None,
@@ -311,7 +311,7 @@ async def get_lineage(
 
 
 async def list_signatures(
-    storage: StorageService,
+    storage: iStorageService,
     storage_config: StorageConfig | None = None,
 ) -> list[ArchetypeSignature]:
     """Resolve process-local and durably cataloged signatures."""

@@ -26,11 +26,11 @@ from archetype.core.hooks import (
 )
 
 if TYPE_CHECKING:
-    from archetype.world.registry import WorldRegistry
+    from archetype.world.interfaces import iWorldRegistry
 
 
 async def create_entity(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     world_id: str | UUID,
     components: list[Component],
 ) -> int:
@@ -45,7 +45,7 @@ async def _create_entity_locked(world: AsyncWorld, components: list[Component]) 
 
 
 async def create_entities(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     world_id: str | UUID,
     entities: list[list[Component]],
 ) -> list[int]:
@@ -63,7 +63,7 @@ async def _create_entities_locked(
 
 
 async def reserve_entity_ids(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     world_id: str | UUID,
     n: int,
 ) -> list[int]:
@@ -78,7 +78,7 @@ def _reserve_entity_ids_locked(world: AsyncWorld, n: int) -> list[int]:
 
 
 async def spawn_with_reserved_id(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     world_id: str | UUID,
     entity_id: int,
     components: list[Component],
@@ -98,7 +98,7 @@ async def _spawn_with_reserved_id_locked(
 
 
 async def remove_entity(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     world_id: str | UUID,
     entity_id: int,
 ) -> None:
@@ -113,7 +113,7 @@ async def _remove_entity_locked(world: AsyncWorld, entity_id: int) -> None:
 
 
 async def update_entity(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     world_id: str | UUID,
     entity_id: int,
     components: list[Component],
@@ -133,7 +133,7 @@ async def _update_entity_locked(
 
 
 async def add_components(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     world_id: str | UUID,
     entity_id: int,
     components: list[Component],
@@ -153,7 +153,7 @@ async def _add_components_locked(
 
 
 async def remove_components(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     world_id: str | UUID,
     entity_id: int,
     component_types: list[type[Component]],
@@ -173,7 +173,7 @@ async def _remove_components_locked(
 
 
 async def add_processor(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     world_id: str | UUID,
     processor: Any,
 ) -> None:
@@ -188,7 +188,7 @@ async def _add_processor_locked(world: AsyncWorld, processor: Any) -> None:
 
 
 async def remove_processor(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     world_id: str | UUID,
     proc_type: type[Any],
 ) -> None:
@@ -203,7 +203,7 @@ async def _remove_processor_locked(world: AsyncWorld, proc_type: type[Any]) -> N
 
 
 async def add_resource(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     world_id: str | UUID,
     resource: object,
 ) -> None:
@@ -218,7 +218,7 @@ def _add_resource_locked(world: AsyncWorld, resource: object) -> None:
 
 
 async def add_hook(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     world_id: str | UUID,
     event_type: type[HookEvent],
     fn: AsyncHookHandler[Any],
@@ -242,7 +242,7 @@ def _add_hook_locked(
 
 
 async def remove_hook(
-    registry: WorldRegistry,
+    registry: iWorldRegistry,
     world_id: str | UUID,
     handle: HookHandle,
 ) -> None:

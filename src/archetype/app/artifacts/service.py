@@ -15,14 +15,14 @@ from daft import DataFrame, lit
 
 from archetype._storage_uri import local_storage_path
 from archetype.app.ingestion.interfaces import iIngestionService
-from archetype.app.storage.interfaces import iStorageService
 from archetype.artifacts.contracts import ArtifactRef, ArtifactSource, ArtifactStoreConfig
 from archetype.core.config import StorageBackend, StorageConfig
 from archetype.ingestion.pipeline import (
     ARTIFACT_FILES,
     FileIngestionPipeline,
 )
-from archetype.world.registry import WorldRegistry
+from archetype.storage.interfaces import iStorageService
+from archetype.world.interfaces import iWorldRegistry
 
 
 def _is_pattern(source_uri: str) -> bool:
@@ -65,7 +65,7 @@ class ArtifactService:
     def __init__(
         self,
         storage_service: iStorageService,
-        world_registry: WorldRegistry,
+        world_registry: iWorldRegistry,
         ingestion_service: iIngestionService,
         store_config: ArtifactStoreConfig | None = None,
     ) -> None:

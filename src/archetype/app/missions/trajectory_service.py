@@ -17,7 +17,7 @@ from archetype.app.evaluation.interfaces import (
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
 from archetype.missions.trajectories import TrajectorySelection, filter_trajectory_rows
-from archetype.storage.service import StorageService
+from archetype.storage.interfaces import iStorageService
 from archetype.world import query
 
 
@@ -26,7 +26,7 @@ class TrajectoryService:
 
     def __init__(
         self,
-        storage_service: StorageService,
+        storage_service: iStorageService,
         evaluation_service: iEvaluationService,
     ) -> None:
         self._storage = storage_service

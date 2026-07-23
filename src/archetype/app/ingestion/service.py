@@ -7,9 +7,9 @@ from __future__ import annotations
 
 from daft import DataFrame
 
-from archetype.app.storage.interfaces import iStorageService
 from archetype.core.config import StorageConfig
-from archetype.world.registry import WorldRegistry
+from archetype.storage.interfaces import iStorageService
+from archetype.world.interfaces import iWorldRegistry
 
 
 class IngestionService:
@@ -24,7 +24,7 @@ class IngestionService:
     def __init__(
         self,
         storage_service: iStorageService,
-        world_registry: WorldRegistry,
+        world_registry: iWorldRegistry,
     ) -> None:
         self._storage_service = storage_service
         self._world_registry = world_registry
