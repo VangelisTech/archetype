@@ -10,6 +10,8 @@ from typing import Literal, get_args, get_origin
 import pytest
 from pydantic import Field, ValidationError
 
+import archetype
+from archetype.app import models as app_models
 from archetype.core.component import Component
 from archetype.world.handlers import WORLD_OPERATION_HANDLERS
 from archetype.world.models import (
@@ -20,9 +22,16 @@ from archetype.world.models import (
     ComponentValue,
     Despawn,
     EpisodeConfig,
+    EpisodeResult,
+    HookInfo,
+    ProcessorInfo,
+    ResourceInfo,
+    RolloutConfig,
+    RolloutResult,
     RunResult,
     Spawn,
     Step,
+    WorldInfo,
     WorldOperation,
     require_portable_tick_operation,
 )
@@ -31,6 +40,26 @@ from archetype.world.models import (
 class MutableMarker(Component):
     value: int = 0
     labels: list[str] = Field(default_factory=list)
+
+
+def test_world_values_have_one_canonical_owner() -> None:
+    world_values = (
+        WorldInfo,
+        RunResult,
+        EpisodeConfig,
+        RolloutConfig,
+        EpisodeResult,
+        RolloutResult,
+        ProcessorInfo,
+        HookInfo,
+        ResourceInfo,
+    )
+
+    assert {value.__module__ for value in world_values} == {"archetype.world.models"}
+    assert all(not hasattr(app_models, value.__name__) for value in world_values)
+
+    for value in world_values[:6]:
+        assert getattr(archetype, value.__name__) is value
 
 
 def test_portable_component_value_is_an_immutable_snapshot() -> None:
