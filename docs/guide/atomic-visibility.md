@@ -45,15 +45,18 @@ else.
 Coordinated worlds (every world created through the service layer) commit a
 tick in this order:
 
-1. **Compute** every archetype's frame. No writes, no cache consumption.
-2. **Mint** one `CommitContext` (fresh `commit_token`, the writer's epoch)
+1. **Materialize** due durable commands against the exact locked world, then
+   fire advisory `PreTick` hooks and capture active signatures. A materializer
+   infrastructure failure leaves the tick, caches, and settlement retryable.
+2. **Compute** every archetype's frame. No writes, no cache consumption.
+3. **Mint** one `CommitContext` (fresh `commit_token`, the writer's epoch)
    for the whole tick.
-3. **Append** every frame, stamped with the tick's commit identity. Appends
+4. **Append** every frame, stamped with the tick's commit identity. Appends
    return `AppendReceipt`s (row counts, staged/durable, an auxiliary backend
    reference such as a Lance version — never the visibility mechanism).
-4. **Flush** the store. A caching store drains its memtables; a manifest
+5. **Flush** the store. A caching store drains its memtables; a manifest
    must never claim RAM-only rows are durable.
-5. **Publish** the manifest — after durable data flush, one transaction in the
+6. **Publish** the manifest — after durable data flush, one transaction in the
    target world's control authority (a) verifies the writer still holds the
    fence, (b) put-if-absent inserts the manifest row
    `(world, run, tick, commit_token, writer_epoch, table_ids)`, and (c)
@@ -62,8 +65,17 @@ tick in this order:
    span a directory Durable Object or the separate Iceberg data commit. Stale
    epoch → `StaleWriterError`; a different already-published attempt →
    `CatalogConflictError`; the identical attempt → idempotent no-op.
-6. **Consume** spawn/despawn caches — only now. Failure at any earlier
+7. **Consume** spawn/despawn caches — only now. Failure at any earlier
    point leaves mutations intact for the retried tick.
+8. **Advance** the in-memory tick, fire advisory `PostTick` hooks, and return a
+   `CommittedTickReceipt` whose identity is
+   `(world_id, run_id, committed_tick, visibility_token)`.
+
+The managed world layer then retains that exact receipt for its required
+projector. A projector failure is post-commit: the manifest remains visible,
+processors and command materialization are not replayed, and the same retained
+receipt is retried before another tick. Required projection is not a public
+hook and does not hold the world lock across provider I/O.
 
 Worlds constructed without a coordinator (bare core usage, the sync stack)
 run uncoordinated: rows stamp the implicit epoch-0 identity (`""`/`0`), no

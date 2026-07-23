@@ -19,12 +19,12 @@ CommandGateway.submit(ActorCtx, ...)
         durable command ledger
                   |
                   v
-SimulationService tick-boundary callback
+world construction-injected tick materializer
                   |
                   v
  iCommandScheduler.drain_and_apply
                   |
-           MutationService
+       lock-held world mutations
                   |
                   v
  tick manifest + command settlement + outbox
@@ -67,18 +67,26 @@ leasing fail closed unless the catalog records the world as active.
 ## Dispatch and settlement
 
 The dispatcher has an explicit arm for every admitted deferred `CommandType`.
-Entity/component mutations stage through `MutationService`. Processor changes
-are direct gated operations and the generic deferred submission surface rejects
-them before admission; a future portable processor registry may add a versioned
-deferred dispatcher without serializing live Python. Message, custom, and query
-envelopes currently have explicit no-op dispositions; application extensions
-must replace that disposition with a versioned portable handler rather than
-deserialize live code.
+Core invokes it with the actual world and target tick while the managed world
+lock is already held; it MUST NOT reacquire the registry or route through a
+public mutation facade. Entity/component mutations use the world family's
+lock-held functions. Processor changes are direct gated operations and the
+generic deferred submission surface rejects them before admission; a future
+portable processor registry may add a versioned deferred dispatcher without
+serializing live Python. Message, custom, and query envelopes currently have
+explicit no-op dispositions; application extensions must replace that
+disposition with a versioned portable handler rather than deserialize live
+code.
 
 A successfully dispatched command is staged on the world's commit coordinator.
 It becomes `APPLIED` only in the transaction that publishes the tick manifest
 making its rows visible. A crash before that transaction leaves the command
 lease recoverable and the failed tick retryable.
+
+Materialization occurs before `PreTick` and active-signature discovery. A due
+spawn can therefore introduce a new signature in its scheduled tick. The
+committed receipt reports the number applied; exact command IDs remain catalog
+settlement authority.
 
 ## Failure policy
 

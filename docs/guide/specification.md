@@ -307,6 +307,7 @@ Idempotency:
 A world owns:
 
 - the `world_id` and human-readable name
+- one immutable UUIDv7 `run_id`
 - entity-to-signature bookkeeping
 - the next world-local entity ID counter
 - staged spawn/despawn caches
@@ -318,17 +319,25 @@ A world owns:
 
 One tick MUST follow this order:
 
-1. fire `PreTick` hooks
-2. determine active signatures from live state plus staged mutations
-3. for each signature:
+1. materialize due durable commands against the exact already-locked world
+2. fire `PreTick` hooks
+3. determine active signatures from live state plus staged mutations
+4. compute every signature without writing:
    - load previous state
    - apply staged despawns to the existing population
    - execute processors over the existing population
    - concat staged spawn rows, raw
-   - persist through the updater
-4. replace the live snapshot with active rows only
-5. increment the world tick
-6. fire `PostTick` hooks
+5. append every computed frame, flush durable storage, then publish the tick
+   manifest and command settlement
+6. consume staged mutations and replace the live snapshot with active rows
+7. increment the world tick
+8. fire advisory `PostTick` hooks
+9. return the manifest-bound `CommittedTickReceipt`
+
+Managed simulation retains that receipt until its one required projector
+acknowledges the exact receipt identity. Projection occurs after commit and
+outside advisory hooks. A projection failure does not roll back or replay the
+tick, and its retained receipt MUST be retried before another managed tick.
 
 ### Initial conditions
 
@@ -353,11 +362,11 @@ One tick MUST follow this order:
 ### Run contract
 
 - A world owns one active `run_id`. A new world mints it at construction,
-  mutable resume restores it, and a fork mints a fresh identity for its new
-  lineage.
-- `RunConfig.run_id` is a call-level candidate retained for lower-level
-  compatibility. Execution MUST NOT replace an active world's `run_id` with
-  it.
+  mutable resume restores it, and a fork mints a fresh UUIDv7 identity for its
+  new lineage. Managed lifecycle registers the final identity before it binds
+  the writer coordinator and constructs the world.
+- `RunConfig` contains execution policy only. It cannot supply or replace a
+  world's identity, and `world.run_id` is read-only.
 - `world.run(run_config)` MUST stamp the world's active `run_id` across every
   tick in the call and across repeated calls on that world.
 - Query defaults that rely on the current run SHOULD use the world's active
@@ -422,6 +431,9 @@ One tick MUST follow this order:
 - Hook removal SHOULD be idempotent.
 - Spawn, despawn, and component migration hooks SHOULD fire from every public
   mutation path that queues the corresponding mutation.
+- A required post-commit projector is a separate managed-world port. It is
+  idempotent by `(consumer_name, receipt.identity)`, is never registered in the
+  hook bus, and its failure is reported as committed-but-unprojected work.
 
 ## Application Layer Contracts
 
@@ -488,8 +500,10 @@ iRuntimeApplication` for actor-free application execution.
 - `append_world_rows()` and `read_world_rows()` MUST resolve the durable
   world/run from the control catalog. Callers cannot supply those envelope
   columns, and conditional keys MUST be extended with both coordinates.
-- A bound commit coordinator MUST reject a mismatched world, run, or writer
-  epoch before registration or publication.
+- A commit coordinator is construction-bound to one world, run, and writer
+  epoch. Its write methods do not accept caller-supplied world/run identity,
+  and publication MUST reject a context from another writer epoch before any
+  catalog write. Cross-segment `visible_tokens` reads remain explicit.
 - Local SQLite MAY colocate directory and per-world control records. The remote
   topology MUST NOT imply a global transaction: only the target world's
   control authority atomically combines manifest publication, command
@@ -573,7 +587,9 @@ retryable failures remain recoverable and exhausted failures become terminal.
 ### SimulationService
 
 - `step()` is the authoritative world execution boundary.
-- `step()` MUST apply due commands before world execution.
+- `step()` MUST rely on the world's construction-injected scheduler
+  materializer, which applies due commands before `PreTick` and active-signature
+  discovery while the exact world operation lock is already held.
 - `step()` MUST receive an explicit `RunConfig` from the caller; the service
   MUST NOT mint a fresh `RunConfig` per call. The world's active `run_id`, not
   reuse of a particular config object, provides continuity across calls.
