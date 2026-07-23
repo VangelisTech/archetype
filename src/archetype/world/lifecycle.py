@@ -26,7 +26,7 @@ from archetype.core.hooks import HookRegistry, OnDestroy
 from archetype.core.interfaces import iAsyncStore, iAsyncSystem, iCommitCoordinator
 from archetype.core.lineage import load_lineage, persist_lineage
 from archetype.core.resources import Resources
-from archetype.storage.catalog import ControlCatalog, WorldRecord
+from archetype.storage.catalog import ControlCatalog, WorldRecord, storage_fingerprint
 from archetype.storage.service import PinnedVisibility
 from archetype.world.interfaces import iWorldRegistry
 from archetype.world.registry import WorldCleanupLease
@@ -254,6 +254,9 @@ class WorldLifecycle:
                 raise ValueError(f"World with name '{name}' already exists.")
 
             source_storage = await self._registry.storage_record(str(source_world_id))
+            source_storage_config = (
+                source_storage[0] if source_storage is not None else StorageConfig()
+            )
             if storage_config is None:
                 if source_storage is not None:
                     storage_config, source_cache = source_storage
@@ -262,18 +265,44 @@ class WorldLifecycle:
                 else:
                     storage_config = StorageConfig()
 
+            retains_lineage = storage_fingerprint(storage_config) == storage_fingerprint(
+                source_storage_config
+            )
+            spawn_cache = {signature: list(rows) for signature, rows in source.spawn_cache.items()}
+            despawn_cache = {
+                signature: list(entity_ids)
+                for signature, entity_ids in source.despawn_cache.items()
+            }
+            pending_entity_ids = {
+                int(row["entity_id"]) for rows in spawn_cache.values() for row in rows
+            }
+            entity2sig = {
+                entity_id: signature
+                for entity_id, signature in source.entity2sig.items()
+                if retains_lineage or entity_id in pending_entity_ids
+            }
             store = await self._storage.get_or_create_store(
                 storage_config,
                 cache_config,
             )
-            lineage = list(source.lineage)
-            if source.tick > 0:
-                lineage.append(
-                    (
-                        str(source.world_id),
-                        str(source.run_id),
-                        source.tick - 1,
+            lineage: list[tuple[str, str, int]] = []
+            if retains_lineage:
+                lineage = list(source.lineage)
+                if source.tick > 0:
+                    lineage.append(
+                        (
+                            str(source.world_id),
+                            str(source.run_id),
+                            source.tick - 1,
+                        )
                     )
+            elif source.tick > 0:
+                logger.warning(
+                    "fork_world: destination storage differs from source's; "
+                    "the fork will not see the source's persisted history "
+                    "(world %s, tick %d)",
+                    source_world_id,
+                    source.tick,
                 )
             run_id = uuid7()
             fork_config = WorldConfig(
@@ -281,14 +310,9 @@ class WorldLifecycle:
                 name=name,
                 tick=source.tick,
                 next_entity_id=source.next_entity_id,
-                entity2sig=dict(source.entity2sig),
-                spawn_cache={
-                    signature: list(rows) for signature, rows in source.spawn_cache.items()
-                },
-                despawn_cache={
-                    signature: list(entity_ids)
-                    for signature, entity_ids in source.despawn_cache.items()
-                },
+                entity2sig=entity2sig,
+                spawn_cache=spawn_cache,
+                despawn_cache=despawn_cache,
                 lineage=lineage,
             )
             catalog = self._storage.get_control_catalog(storage_config)
