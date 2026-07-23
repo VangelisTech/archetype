@@ -222,7 +222,7 @@ After `_move_entity` returns the new row:
 
 - The old entity is marked for despawn in the old archetype
 - The new row is added to the spawn cache for the new archetype
-- `_entity2sig` is updated atomically
+- `entity2sig` is updated atomically
 
 ## Lifecycle Hooks
 
@@ -299,7 +299,7 @@ bookkeeping:
 | `world_id` | Fresh | New `uuid7()` |
 | `run_id` | Fresh | Fork starts a new run lineage |
 | `tick` | Yes | Fork continues from the same tick |
-| `_entity2sig` | Yes | Deep copy of entity-to-signature mapping |
+| `entity2sig` | Yes | Deep copy of entity-to-signature mapping |
 | `_next_entity_id` | Yes | Entity ID counter |
 | Spawn/despawn caches | Yes | Pending mutations transfer to the fork |
 | Lifecycle hooks | Yes | Registrations at fork time copy; later registrations do not propagate |

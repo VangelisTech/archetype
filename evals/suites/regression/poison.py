@@ -113,8 +113,8 @@ async def _task_poison_in_batch() -> list[GraderResult]:
 
             await container.application.step(world.world_id, rc)
 
-            entity_count = len(world._entity2sig)
-            signatures = {frozenset(sig) for sig in set(world._entity2sig.values())}
+            entity_count = len(world.entity2sig)
+            signatures = {frozenset(sig) for sig in set(world.entity2sig.values())}
 
             return [
                 exact_match(entity_count, 2, name="valid_commands_applied"),
@@ -182,8 +182,8 @@ async def _task_missing_payload_keys() -> list[GraderResult]:
             return [
                 state_check(
                     {
-                        "no_entities_created": len(world._entity2sig) == 0,
-                        "no_archetypes": len(world._entity2sig) == 0,
+                        "no_entities_created": len(world.entity2sig) == 0,
+                        "no_archetypes": len(world.entity2sig) == 0,
                     },
                     name="world_unchanged",
                 ),
@@ -231,8 +231,8 @@ async def _task_unknown_component_type() -> list[GraderResult]:
             )
             await container.application.step(world.world_id, rc)
 
-            entity_id = next(iter(world._entity2sig))
-            original_sig = frozenset(world._entity2sig[entity_id])
+            entity_id = next(iter(world.entity2sig))
+            original_sig = frozenset(world.entity2sig[entity_id])
 
             # Try to remove a nonexistent component type
             reset_daily_tokens()
@@ -250,13 +250,13 @@ async def _task_unknown_component_type() -> list[GraderResult]:
             )
             await container.application.step(world.world_id, rc)
 
-            current_sig = frozenset(world._entity2sig[entity_id])
+            current_sig = frozenset(world.entity2sig[entity_id])
 
             return [
                 state_check(
                     {
                         "signature_preserved": current_sig == original_sig,
-                        "entity_still_exists": entity_id in world._entity2sig,
+                        "entity_still_exists": entity_id in world.entity2sig,
                     },
                     name="entity_intact",
                 ),
@@ -301,7 +301,7 @@ async def _task_despawn_nonexistent_entity() -> list[GraderResult]:
             )
             await container.application.step(world.world_id, rc)
 
-            entity_count_before = len(world._entity2sig)
+            entity_count_before = len(world.entity2sig)
 
             # Despawn a nonexistent entity
             reset_daily_tokens()
@@ -319,9 +319,9 @@ async def _task_despawn_nonexistent_entity() -> list[GraderResult]:
             return [
                 state_check(
                     {
-                        "entity_count_unchanged": len(world._entity2sig) == entity_count_before,
+                        "entity_count_unchanged": len(world.entity2sig) == entity_count_before,
                         "real_entity_intact": any(
-                            eid in world._entity2sig for eid in world._entity2sig
+                            eid in world.entity2sig for eid in world.entity2sig
                         ),
                     },
                     name="world_intact",
@@ -368,8 +368,8 @@ async def _task_unhandled_command_noop() -> list[GraderResult]:
                 state_check(
                     {
                         "all_dequeued": pending == 0,
-                        "no_entities_created": len(world._entity2sig) == 0,
-                        "no_archetypes": len(world._entity2sig) == 0,
+                        "no_entities_created": len(world.entity2sig) == 0,
+                        "no_archetypes": len(world.entity2sig) == 0,
                     },
                     name="clean_noop",
                 ),
