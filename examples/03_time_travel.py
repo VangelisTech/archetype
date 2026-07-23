@@ -17,13 +17,11 @@ Usage:
 """
 
 import asyncio
+from typing import cast
 
 from daft import DataFrame, col
 
-from archetype import ArchetypeRuntime
-from archetype.core.aio.async_processor import AsyncProcessor
-from archetype.core.component import Component
-from archetype.core.config import StorageConfig
+from archetype import ArchetypeRuntime, AsyncProcessor, Component, StorageConfig
 
 
 class Position(Component):
@@ -44,13 +42,13 @@ class MovementProcessor(AsyncProcessor):
 
 def positions_at(df: DataFrame, tick: int) -> dict[int, float]:
     """Extract {entity_id: x} for one tick from the append-only history."""
-    rows = df.where(col("tick") == tick).select("entity_id", "position__x").to_pylist()
+    rows = df.where(col("tick").is_in([tick])).select("entity_id", "position__x").to_pylist()
     return {row["entity_id"]: row["position__x"] for row in rows}
 
 
-async def main():
-    storage = StorageConfig(uri="./archetype_data", namespace="time_travel")
-
+async def run_demo(storage_uri: str) -> dict[str, object]:
+    """Prove history, fork divergence, cold discovery, and writable resume."""
+    storage = StorageConfig(uri=storage_uri, namespace="time_travel")
     async with ArchetypeRuntime() as runtime:
         world = runtime.world("time-travel-demo", storage=storage, processors=[MovementProcessor()])
 
@@ -62,27 +60,23 @@ async def main():
 
         info = await world.info()
         latest = info.tick - 1  # rows exist for ticks 0..tick-1
-        print(f"Ran {info.tick} ticks: walker={walker}, runner={runner}, sprinter={sprinter}\n")
 
         # ── 1. TIME TRAVEL ────────────────────────────────────────────────────
         # query() returns the FULL history. Rewind by filtering the tick column.
 
-        print("1. TIME TRAVEL")
         history = await world.query(Position)
-        for t in (0, 2, latest):
-            state = positions_at(history, t)
-            label = "latest" if t == latest else f"tick {t}"
-            print(
-                f"   {label:>7}: walker.x={state[walker]:5.1f}  "
-                f"runner.x={state[runner]:5.1f}  sprinter.x={state[sprinter]:5.1f}"
-            )
+        snapshots = {
+            tick: [
+                positions_at(history, tick)[entity_id] for entity_id in (walker, runner, sprinter)
+            ]
+            for tick in (0, 2, latest)
+        }
 
         # ── 2. FORK AND DIFF ──────────────────────────────────────────────────
         # The fork inherits the source's store, continues from its state, and
         # reads pre-fork ticks through lineage. Diverge it: what if the walker
         # had sped up at the fork point?
 
-        print("\n2. FORK AND DIFF")
         fork = await world.fork("counterfactual")
         await fork.update(walker, Velocity(vx=10.0))
 
@@ -94,14 +88,55 @@ async def main():
         fork_history = await fork.query(Position)
         fork_state = positions_at(fork_history, cmp_tick)
 
-        print(f"   walker.x at tick {cmp_tick}:")
-        print(f"     source (vx=1.0):  {source_state[walker]:5.1f}")
-        print(f"     fork   (vx=10.0): {fork_state[walker]:5.1f}")
-        print(f"     diff:             {fork_state[walker] - source_state[walker]:+5.1f}")
-
         # The fork still sees its pre-fork history through lineage
         pre_fork = positions_at(fork_history, 0)
-        print(f"   fork at pre-fork tick 0: walker.x={pre_fork[walker]:.1f} (inherited history)")
+        world_id = str((await world.info()).world_id)
+        fork_world_id = str((await fork.info()).world_id)
+        resume_tick = (await world.info()).tick
+
+    # A fresh runtime proves this is durable discovery/resume, not a live alias.
+    async with ArchetypeRuntime() as runtime:
+        discovered = {str(item.world_id) for item in await runtime.discover(storage)}
+        resumed = await runtime.resume(world_id, storage=storage)
+        resumed_info = await resumed.info()
+        await resumed.add_processor(MovementProcessor())
+        resumed_result = await resumed.run(steps=1)
+        continued = positions_at(await resumed.query(Position), resume_tick)
+
+    return {
+        "world_ids": {"source": world_id, "fork": fork_world_id},
+        "history": {str(tick): values for tick, values in snapshots.items()},
+        "comparison": {
+            "tick": cmp_tick,
+            "source_walker": source_state[walker],
+            "fork_walker": fork_state[walker],
+            "difference": fork_state[walker] - source_state[walker],
+        },
+        "inherited_tick_zero": pre_fork[walker],
+        "cold_resume": {
+            "discovered": world_id in discovered,
+            "resume_tick": resumed_info.tick,
+            "continued_tick": resumed_result.final_tick,
+            "continued_walker": continued[walker],
+        },
+    }
+
+
+async def main() -> None:
+    result = await run_demo("./archetype_data")
+    print("1. TIME TRAVEL")
+    history = cast(dict[str, list[float]], result["history"])
+    for tick, positions in history.items():
+        print(
+            f"   tick {tick}: walker={positions[0]:.1f}, runner={positions[1]:.1f}, sprinter={positions[2]:.1f}"
+        )
+    comparison = cast(dict[str, float | int], result["comparison"])
+    print("\n2. FORK AND DIFF")
+    print(
+        f"   walker.x at tick {comparison['tick']}: source={comparison['source_walker']:.1f}, "
+        f"fork={comparison['fork_walker']:.1f}, diff={comparison['difference']:+.1f}"
+    )
+    print(f"   cold resume: {result['cold_resume']}")
 
 
 if __name__ == "__main__":

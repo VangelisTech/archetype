@@ -17,7 +17,7 @@ The current contract set is split across design docs and executable tests.
 | `docs/guide/specification.md` | Umbrella contract overview | This page. Broad contracts plus links to focused specifications. |
 | [Runtime](runtime.md) | Trusted script boundary | `ArchetypeRuntime`, `RuntimeWorld`, sync parity, lifecycle, and actor-free application access. |
 | [Observability](observability.md) | Safe advisory signals | Vendor-neutral trace/metric vocabulary, bounded failure semantics, context, and process-host provider ownership. |
-| [Application Architecture](application-architecture.md) | Supported boundaries and dependency policy | Normative ownership, composition, encapsulation, and lint inputs. |
+| [Application Architecture](application-architecture.md) | Supported boundaries and dependency policy | Normative current ownership plus the accepted v0.5 target family DAG, composition, encapsulation, and lint inputs. |
 | [Service Protocols](service-protocols.md) | Internal application ports | Active family interfaces behind `iRuntimeApplication` and `iCommandGateway`. |
 | [Command Gate](command-gate.md) | Authorization and roles | Four-role model, permissions matrix, audit emission shape. |
 | [Execution Hierarchy](execution-hierarchy.md) | Step/run/episode/rollout | Simulation levels and rollout fork semantics. |
@@ -73,6 +73,9 @@ Normative language:
 - `SHOULD` means strongly preferred unless a documented exception exists.
 - `CURRENT GAP` marks behavior that is inconsistent, incomplete, or not yet
   aligned with the intended contract.
+- `ACCEPTED TARGET` marks ratified migration behavior that is normative for its
+  owning slice but is not a claim about the current implementation. The slice
+  must land its executable oracle with the behavior.
 
 ## Scope
 

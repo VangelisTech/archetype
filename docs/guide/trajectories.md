@@ -3,6 +3,17 @@ title: Mission Trajectories
 description: Persist, select, and grade lightweight mission evidence
 ---
 
+**Document type:** Contract and user guide.
+
+**Migration status:** The persistent `trajectory_id` Component schema and
+runtime methods documented here are the implemented current, pre-PR-9
+contract. The [accepted v0.5 target](application-architecture.md#target-lifetime-and-workflow-ownership)
+replaces persistent trajectory identity with authoritative episode evidence:
+`episode_id` persists, while a trajectory becomes a derived learning-facing
+DataFrame. Until that owning migration lands, the current API below remains
+the executable contract; the target is not a compatibility alias or a second
+simultaneous persistence model.
+
 A trajectory is a lightweight, typed index over what happened during a mission
 or rollout. It is evidence: it can be queried and graded, but it never decides
 whether a task advances.
@@ -33,7 +44,7 @@ The app service owns no trajectory truth. Query storage remains authoritative
 for rows, evaluation remains authoritative for grader execution and receipts,
 and mission processors remain authoritative for task transitions.
 
-## Persistent rows
+## Current pre-PR-9 persistent rows
 
 | Component | One row represents |
 |---|---|
@@ -45,9 +56,10 @@ and mission processors remain authoritative for task transitions.
 | `TrajectoryAction` | One action aligned to the trajectory sequence. |
 | `TrajectoryReward` | One reward observation. |
 
-Every child row carries `trajectory_id` and `seq`. This normalization keeps the
-tables independently queryable and avoids rewriting a large payload whenever
-one observation changes.
+Under the current pre-PR-9 schema, every child row carries `trajectory_id` and
+`seq`. This normalization keeps the tables independently queryable and avoids
+rewriting a large payload whenever one observation changes. It describes the
+preservation baseline, not the accepted v0.5 episode-owned replacement.
 
 `Trajectory.episode_id` is retained as string-valued runtime metadata for
 historical rows. It is not the integer dataset-episode identity in the

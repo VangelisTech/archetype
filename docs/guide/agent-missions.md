@@ -666,6 +666,82 @@ a separate, explicit migration decision.
 | Snapshot sanitization | Credentials are removed before capture; provider snapshots remain trusted recovery objects rather than published artifacts. | Quarantine/scan before any cross-provider or R2 publication. |
 | Prefab mission libraries | Direct materialization remains authoritative. | Author reusable graphs after generic prefab registry contracts settle. |
 
+### Accepted v0.5 control-plane contract
+
+This subsection is normative for the v0.5 migration and deliberately describes
+the accepted target, not the current `archetype.app.missions` implementation.
+The current implementation and its exact-head critic remain the preservation
+baseline until the owning family move.
+
+Agent Missions has two cooperating planes with distinct authority:
+
+- live sandboxes, provider processes, repository workspaces, checkpoints,
+  artifact publication, supervision, and cleanup belong to explicit resource
+  owners; live handles never become Components;
+- mission, task, policy, dependency, dispatch, execution, validation,
+  candidate, critic, finding, receipt, checkpoint, and artifact-reference
+  Components form the durable workflow record; processors alone decide
+  readiness, priority, repair, acceptance, exhaustion, and mission rollup.
+
+The bridge is a required committed-tick projector outside the public hook bus.
+After manifest publication it reads the exact pinned visibility snapshot and
+writes one durable author-dispatch or critic-review intent keyed by the
+processor-created identity. A retry or cold reconstruction produces that same
+identity, preserves the original task base, and selects repair input from the
+newest superseded candidate's durable blocking findings. Projection failure is
+workflow failure; it is never swallowed as an advisory `PostTick` failure and
+never reruns the committed tick.
+
+Only after durable intent exists may the resource consumer start provider work.
+It uses the same dispatch/review identity for provider idempotency or
+reconciliation. Failure after provider start but before observation must
+reconcile that identity or fail closed; a durable claim or process-local seen
+set is not proof of exactly-once provider effects. Provider results are bounded
+factual observations staged for a later tick. Neither a callback nor a resource
+status directly advances task state.
+
+The review subject has an explicit byte budget bound into critic policy. The
+binary diff digest always identifies the complete subject, but large content is
+transported through a sandbox-local file or standard input rather than an
+unbounded command-line argument. An over-budget subject fails closed with
+bounded digest and size evidence; truncation can never become approval.
+
+Every review intent materializes a candidate-scoped clean workspace. A critic
+workspace is not reused as ambient state for a later candidate, and logical
+sandbox identity alone is insufficient proof of isolation. The workflow
+verifies the expected base/head in the clean workspace before inference; files
+left by a prior critic cannot be observed by the next review.
+
+A planner is a provider-neutral proposal capability. It may return a typed task
+graph with dependencies, priorities, validators, critic policy, and artifact
+policy. Submission validates and commits that proposal through the normal
+mission boundary. The planner receives no sandbox/session handle and has no
+direct world mutation, publication, or acceptance capability.
+
+Checkpoints, artifacts, transcripts, episodes, and other outputs are
+first-class durable evidence and recovery references. Their existence alone
+does not approve work or override the validator/candidate/critic chain. An
+explicit typed task or mission policy may require successful publication before
+a transition; otherwise these evidence extensions remain optional.
+
+Runtime ownership is reserved before any mission handle, provider session, or
+supervised task can become active. Shutdown retains author and critic resources
+until cleanup succeeds, keeps their world and shared dependencies alive after
+a failed phase, rejects new admission, and retries the retained phase before
+finalization. This replaces ambient cleanup authority without weakening the
+landed create/replace/close race guarantees.
+
+That reservation covers the entire supported `RuntimeMissions.run()` call, not
+only individual world steps or provider subprocesses. The run enters through
+the registered dispatcher operation before it may construct or schedule work
+and remains counted as admitted until its resource ownership is either
+registered or released. Shutdown waits for a run admitted before closure; a run
+arriving afterward is rejected before task, sandbox, critic prewarm, or
+provider side effects. Retryable cleanup receives only a narrow exact-world
+capability and cannot use inherited task context to admit another mission or
+touch a sibling world. This whole-operation barrier is the v0.5 resolution of
+the admission race tracked in issue #627.
+
 ## 8. File and responsibility map
 
 The implementation follows this layout:

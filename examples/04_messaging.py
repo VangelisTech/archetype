@@ -17,16 +17,13 @@ Run: uv run python examples/04_messaging.py
 import asyncio
 import json
 from dataclasses import dataclass, field
+from typing import cast
 
 import daft
 from daft import DataFrame, col
 
-from archetype import ArchetypeRuntime
-from archetype.core.aio.async_processor import AsyncProcessor
-from archetype.core.component import Component
-from archetype.core.config import StorageConfig
+from archetype import ArchetypeRuntime, AsyncProcessor, Component, Resources, StorageConfig
 from archetype.core.hooks import PostTick, PreTick
-from archetype.core.resources import Resources
 
 # =============================================================================
 # Components
@@ -228,25 +225,27 @@ class MoodProcessor(AsyncProcessor):
 # =============================================================================
 
 
-async def main():
-    print("=" * 60)
-    print("Archetype Messaging Demo: Resources + Shared Mailbox + Hooks")
-    print("=" * 60)
-
+async def run_demo(storage_uri: str, *, verbose: bool = False) -> dict[str, object]:
+    """Run the mailbox protocol and return exact, normalized semantics."""
     mailbox = Mailbox()
+    hook_order: list[str] = []
 
     async def on_pre_tick(event: PreTick) -> None:
-        print(f"\n-> Pre-tick {event.tick}: Starting processing...")
+        hook_order.append(f"pre:{event.tick}")
+        if verbose:
+            print(f"\n-> Pre-tick {event.tick}: Starting processing...")
 
     async def on_post_tick(event: PostTick) -> None:
-        print(f"<- Post-tick {event.tick}: Completed!")
-        print(f"   Messages delivered so far: {mailbox.delivered}")
-        print(f"   Messages pending in mailbox: {len(mailbox.pending)}")
+        hook_order.append(f"post:{event.tick - 1}")
+        if verbose:
+            print(f"<- Post-tick {event.tick - 1}: Completed!")
+            print(f"   Messages delivered so far: {mailbox.delivered}")
+            print(f"   Messages pending in mailbox: {len(mailbox.pending)}")
 
     async with ArchetypeRuntime() as runtime:
         world = runtime.world(
             "demo",
-            storage=StorageConfig(uri="./archetype_data", namespace="messaging_demo"),
+            storage=StorageConfig(uri=storage_uri, namespace="messaging_demo"),
             processors=[
                 MessageRealizationProcessor(),
                 GreetingProcessor(),
@@ -262,45 +261,54 @@ async def main():
             ],
         )
 
-        print("\n[ok] Runtime world staged with resources, hooks, and processors")
-
         for name in ("Alice", "Bob", "Charlie"):
             await world.spawn(AgentState(name=name), Inbox(), Outbox())
 
-        print("[ok] Created 3 agents: Alice, Bob, Charlie")
-
-        print("\n" + "-" * 60)
-        print("Running 3 ticks...")
-        print("-" * 60)
-        await world.run(steps=3)
-
-        print("\n" + "=" * 60)
-        print("Final State")
-        print("=" * 60)
+        result = await world.run(steps=3)
 
         final_df = await world.query(AgentState, Inbox)
-        final_df.select(
-            "entity_id",
-            "agentstate__name",
-            "agentstate__mood",
-            "agentstate__energy",
-        ).show()
-
         rows = (
-            final_df.select(
-                "entity_id",
+            final_df.where(col("tick") == result.final_tick - 1)
+            .select(
                 "agentstate__name",
+                "agentstate__mood",
+                "agentstate__energy",
                 "inbox__messages",
             )
             .collect()
             .to_pylist()
         )
-        print("\nMessage counts:")
-        for row in rows:
-            msgs = row.get("inbox__messages") or []
-            print(f"  {row['agentstate__name']}: {len(msgs)} messages received")
+        agents = [
+            {
+                "name": row["agentstate__name"],
+                "mood": row["agentstate__mood"],
+                "energy": row["agentstate__energy"],
+                "messages": len(row.get("inbox__messages") or []),
+            }
+            for row in sorted(rows, key=lambda item: item["agentstate__name"])
+        ]
+        return {
+            "ticks_completed": result.ticks_completed,
+            "agents": agents,
+            "messages_delivered": mailbox.delivered,
+            "messages_pending": len(mailbox.pending),
+            "hook_order": hook_order,
+        }
 
-        print(f"\nTotal messages delivered: {mailbox.delivered}")
+
+async def main() -> None:
+    print("=" * 60)
+    print("Archetype Messaging Demo: Resources + Shared Mailbox + Hooks")
+    print("=" * 60)
+    result = await run_demo("./archetype_data", verbose=True)
+    print("\nFinal State")
+    agents = cast(list[dict[str, object]], result["agents"])
+    for agent in agents:
+        print(
+            f"  {agent['name']}: mood={agent['mood']}, energy={agent['energy']}, "
+            f"messages={agent['messages']}"
+        )
+    print(f"\nTotal messages delivered: {result['messages_delivered']}")
 
 
 if __name__ == "__main__":

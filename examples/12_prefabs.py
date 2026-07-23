@@ -37,8 +37,9 @@ class Turret(Component):
     caliber: int = 30
 
 
-async def main():
-    storage = StorageConfig(uri="./archetype_data", namespace="prefabs")
+async def run_demo(storage_uri: str = "./archetype_data") -> dict[str, object]:
+    """Instantiate two generations and return stable lineage/copy evidence."""
+    storage = StorageConfig(uri=storage_uri, namespace="prefabs")
     view = GraphView()
 
     async with ArchetypeRuntime() as runtime:
@@ -54,14 +55,12 @@ async def main():
         gun = await world.spawn(Prefab(name="gun"), Turret(caliber=88))
         await link(world, ChildOf(source=gun, target=tank))
         await world.step()
-        print(f"1. prefab authored: tank={tank} with gun={gun}")
 
         # ── 2. INSTANTIATE, WITH AN OVERRIDE ──────────────────────────────────
         red = await instantiate(world, view, tank, overrides=[Chassis(armor=42, color="red")])
         await world.step()
         latest = (await world.info()).tick - 1
         lineage = (await edges(world, IsA, at=latest)).to_pylist()
-        print(f"2. instantiated {red} (red): {len(lineage)} IsA lineage edges recorded")
 
         # ── 3. EDIT THE PREFAB; INSTANCES DO NOT MOVE ─────────────────────────
         await world.update(tank, Chassis(armor=99))
@@ -72,10 +71,29 @@ async def main():
         latest = (await world.info()).tick - 1
         rows = (await world.query(Chassis)).where(col("tick") == latest).to_pylist()
         armor = {row["entity_id"]: row["chassis__armor"] for row in rows}
-        print(
-            f"3. after the edit: first instance armor={armor[red]}, new instance armor={armor[mk2]}"
-        )
-        print("   copy-on-instantiate: the old generation is history, not collateral")
+        all_lineage = (await edges(world, IsA, at=latest)).to_pylist()
+        return {
+            "first_generation_lineage_count": len(lineage),
+            "total_lineage_count": len(all_lineage),
+            "first_instance_armor": armor[red],
+            "new_instance_armor": armor[mk2],
+            "copy_on_instantiate": armor[red] == 42 and armor[mk2] == 99,
+        }
+
+
+async def main() -> None:
+    result = await run_demo()
+    print("1. prefab authored: tank with nested gun")
+    print(
+        "2. first generation: "
+        f"{result['first_generation_lineage_count']} IsA lineage edges recorded"
+    )
+    print(
+        "3. after the edit: "
+        f"first instance armor={result['first_instance_armor']}, "
+        f"new instance armor={result['new_instance_armor']}"
+    )
+    print(f"   copy-on-instantiate={result['copy_on_instantiate']}")
 
 
 if __name__ == "__main__":

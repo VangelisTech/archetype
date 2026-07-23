@@ -24,6 +24,7 @@ help:
 	@echo "  make static         All version-independent blocking validation"
 	@echo "  make contract-audit Validate normative sources and executable oracles"
 	@echo "  make benchmark-audit Validate benchmark ownership and policies"
+	@echo "  make operational-audit Validate operational scenario ownership and policies"
 	@echo "  make architecture-audit  Enforce dependency and encapsulation policy"
 	@echo "  make observability-audit Enforce signal safety and family dispositions"
 	@echo "  make version-inventory-audit  Validate pinned execution-environment inventory"
@@ -58,6 +59,10 @@ help:
 	@echo "  make eval-conformance  Blocking public-boundary conformance profile"
 	@echo "  make eval-reliability  Blocking retry/crash/recovery profile"
 	@echo "  make eval-capability  Blocking architectural capability profile"
+	@echo "  make examples-local  Run Tier-1 semantic examples in isolated storage"
+	@echo "  make operational-wheel  Run representative scenarios against the built wheel"
+	@echo "  make operational-mission  Run the credential-free exact-head mission scenario"
+	@echo "  make operational-external  Require selected Tier-5/6 provider evidence"
 	@echo "  make test-infra     Run external-infrastructure tests (requires configured service)"
 	@echo ""
 	@echo "Build & Release:"
@@ -101,7 +106,7 @@ format:
 	@uv run ruff format $(RUFF_PATHS)
 
 .PHONY: lint
-lint: lazy-audit architecture-audit observability-audit version-inventory-audit python-api-audit api-boundary-audit idempotency-audit gate-coverage-audit
+lint: lazy-audit architecture-audit observability-audit version-inventory-audit python-api-audit api-boundary-audit idempotency-audit gate-coverage-audit operational-audit
 	@uv run ruff check $(RUFF_PATHS)
 
 .PHONY: lint-fix
@@ -127,6 +132,10 @@ contract-audit:
 .PHONY: benchmark-audit
 benchmark-audit:
 	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/validate_benchmarks.py
+
+.PHONY: operational-audit
+operational-audit:
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/validate_operational_scenarios.py
 
 .PHONY: static
 static: format-check lint typecheck lock-check contract-audit benchmark-audit
@@ -355,19 +364,62 @@ build: clean
 package-smoke: build
 	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/package_smoke.py dist
 
+.PHONY: examples-local
+examples-local:
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
+		--mode source --cadence pr --kind example --max-tier 1 \
+		--out operational-source-results.json
+
 .PHONY: examples-smoke
-examples-smoke:
-	@set -e; for f in examples/[0-9][0-9]_*.py; do \
-		echo "Running $$f"; \
-		if [ "$$f" = "examples/11_coding_agent_mission.py" ]; then \
-			PYTHONPATH=$(PYTHONPATH) uv run python "$$f" --dry-run; \
-		else \
-			PYTHONPATH=$(PYTHONPATH) uv run python "$$f"; \
+examples-smoke: examples-local
+	@echo "Semantic example scenarios passed"
+
+OPERATIONAL_BUILD_COMMAND ?= $(MAKE) --no-print-directory build
+OPERATIONAL_DIST_DIR ?= dist
+OPERATIONAL_WHEEL_RESULTS ?= operational-results.json
+
+.PHONY: operational-wheel
+operational-wheel:
+	@build_status=0; \
+		$(OPERATIONAL_BUILD_COMMAND) || build_status=$$?; \
+		wheel=""; \
+		if [ "$$build_status" -eq 0 ]; then \
+			wheel=$$(find "$(OPERATIONAL_DIST_DIR)" -maxdepth 1 -name '*.whl' -print -quit 2>/dev/null); \
 		fi; \
-	done
+		if [ -z "$$wheel" ]; then \
+			wheel="$(OPERATIONAL_DIST_DIR)/.missing-operational-wheel.whl"; \
+		fi; \
+		runner_status=0; \
+		PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
+			--mode wheel --cadence pr --max-tier 1 --require-run \
+			--scenario example.00_quickstart \
+			--scenario example.01_world_mutations \
+			--scenario example.03_time_travel \
+			--scenario example.06_trajectory_analysis \
+			--scenario example.10_autoresearch \
+			--scenario example.14_physical_ai \
+			--scenario dogfood.agent_mission.scripted \
+			--wheel "$$wheel" --out "$(OPERATIONAL_WHEEL_RESULTS)" || runner_status=$$?; \
+		if [ "$$build_status" -ne 0 ]; then \
+			exit "$$build_status"; \
+		fi; \
+		exit "$$runner_status"
+
+.PHONY: operational-mission
+operational-mission:
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
+		--mode source --cadence pr --max-tier 1 --require-run \
+		--scenario dogfood.agent_mission.scripted \
+		--out operational-mission-results.json
+
+.PHONY: operational-external
+operational-external:
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
+		--mode source --cadence release --min-tier 5 --max-tier 6 --require-run \
+		--out operational-external-results.json
 
 .PHONY: verify-pr
-verify-pr: static test-cov eval-conformance eval-capability package-smoke examples-smoke docs
+verify-pr: static test-cov eval-conformance eval-capability package-smoke examples-smoke operational-wheel docs
 	@echo "PR verification profile passed"
 
 .PHONY: verify-full

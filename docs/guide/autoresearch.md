@@ -1,5 +1,7 @@
 # AutoResearch
 
+**Document type:** Contract and user guide.
+
 AutoResearch is a pattern for autonomous software optimization: track a single branch head, evaluate candidate commits against it, and advance the head only when a run improves a user-defined metric. The shape — experiment, run, result, keep / discard / crash — follows Andrej Karpathy's framing of autonomous software optimization as a research direction.
 
 **Status: attempts run on the ledger.** `AutoResearchService` records a `RUNNING` row before candidate preparation or rollout, then records `STOPPED` with an evaluation or `CRASHED` with failure metadata. The loop is itself an archetype simulation.

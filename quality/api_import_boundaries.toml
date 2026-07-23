@@ -1,0 +1,44 @@
+version = 1
+
+[[import_surface]]
+name = "api-composition"
+targets = ["src/archetype/api/deps.py"]
+dependency_roots = ["archetype.app"]
+allowed_dependencies = [
+  "archetype.app.container",
+  "archetype.app.gateway.auth.models",
+  "archetype.app.gateway.interfaces",
+]
+forbidden_dependencies = [
+  "archetype.app.query.service",
+  "archetype.app.world.mutation",
+  "archetype.app.world.service",
+  "archetype.app.world.simulation",
+]
+rationale = "API dependency composition may construct the container but may not consume concrete family services"
+
+[[import_surface]]
+name = "api-routes"
+targets = ["src/archetype/api/routes/*.py"]
+dependency_roots = ["archetype.app"]
+allowed_dependencies = [
+  "archetype.app.gateway.auth.models",
+  "archetype.app.gateway.interfaces",
+  "archetype.app.models",
+]
+forbidden_dependencies = [
+  "archetype.app.container",
+  "archetype.app.query.service",
+  "archetype.app.world.mutation",
+  "archetype.app.world.service",
+  "archetype.app.world.simulation",
+]
+rationale = "API routes translate transport through the gateway and never construct or consume concrete app services"
+
+[public_api]
+targets = ["src/archetype/**/*.py"]
+forbidden_owner_types_from = "quality/architecture.toml"
+forbidden_parameter_names = [
+  "broker",
+  "container",
+]

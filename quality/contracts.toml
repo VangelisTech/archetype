@@ -71,6 +71,20 @@ benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
+id = "architecture.v0_5.target_dag"
+source = "docs/guide/application-architecture.md"
+section = "13. Accepted v0.5 target architecture"
+owner = "architecture"
+risk = "high"
+pytest = [
+  "tests/scripts/test_check_architecture.py::test_ratified_v0_5_family_dag_is_complete_acyclic_and_exact",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
 id = "architecture.protocols.complete"
 source = "docs/guide/application-architecture.md"
 section = "8. Protocol policy and wiring"
@@ -119,9 +133,32 @@ source = "docs/guide/specification.md"
 section = "Concurrency Contract"
 owner = "runtime"
 risk = "high"
-pytest = ["tests/app/test_runtime_contracts.py", "tests/app/test_application_contracts.py"]
+pytest = [
+  "tests/app/test_runtime_contracts.py",
+  "tests/app/test_application_contracts.py",
+  "tests/app/test_lifecycle_parity.py",
+]
 static = []
 evals = ["runtime_contracts", "idempotency.runtime_handles_and_history"]
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "runtime.lifecycle.retryable_teardown"
+source = "docs/guide/runtime.md"
+section = "R4 — Async context manager is canonical"
+owner = "runtime"
+risk = "high"
+pytest = [
+  "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_runtime_shutdown_retries_mission_handles_before_container",
+  "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_failed_mission_cleanup_still_drains_admitted_world_work",
+  "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_cleanup_capability_does_not_admit_a_sibling_world",
+  "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_concurrent_runtime_shutdown_is_single_flight",
+  "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_cancelled_runtime_shutdown_retains_cleanup_for_retry",
+  "tests/integration/test_agent_mission_service.py::test_runtime_shutdown_retries_failed_mission_cleanup_before_finalization",
+]
+static = []
+evals = []
 benchmarks = []
 profiles = ["pr", "main", "release"]
 
@@ -166,7 +203,11 @@ source = "docs/guide/application-architecture.md"
 section = "7. Commands, commits, artifacts, and audit"
 owner = "commands"
 risk = "high"
-pytest = ["tests/app/test_durable_commands.py"]
+pytest = [
+  "tests/app/test_durable_commands.py",
+  "tests/integration/test_command_flow.py::test_submit_spawn_reserved_id_survives_drain",
+  "tests/integration/test_command_flow.py::test_command_materializer_infrastructure_failure_fails_tick_before_settlement",
+]
 static = []
 evals = ["command_pipeline", "unhandled_command_noop"]
 benchmarks = []
@@ -210,7 +251,10 @@ source = "docs/guide/world-lifecycle.md"
 section = "6. `resume_world` (fenced mutable cold resume)"
 owner = "world"
 risk = "high"
-pytest = ["tests/app/test_atomic_visibility.py", "tests/app/test_world_resume.py"]
+pytest = [
+  "tests/app/test_atomic_visibility.py",
+  "tests/app/test_world_resume.py",
+]
 static = []
 evals = [
   "idempotency.durable_discovery",
@@ -226,14 +270,45 @@ source = "docs/guide/world-lifecycle.md"
 section = "2. World lifecycle operations"
 owner = "world"
 risk = "high"
-pytest = ["tests/app/test_durable_discovery.py", "tests/api/test_routes.py"]
+pytest = [
+  "tests/app/test_durable_discovery.py",
+  "tests/api/test_routes.py",
+]
 static = []
 evals = [
   "idempotency.world_lifecycle",
   "idempotency.async_world_entity_ids_and_missing_remove",
-  "fork_divergence",
-  "time_travel_and_run_id",
 ]
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "world.fork.lineage"
+source = "docs/guide/world-lifecycle.md"
+section = "4. `fork_world`"
+owner = "world"
+risk = "high"
+pytest = [
+  "tests/integration/test_fork_destroy_contracts.py",
+  "tests/integration/test_core_example_receipts.py::test_counterfactual_receipt_proves_identity_lineage_and_divergence",
+]
+static = []
+evals = ["fork_divergence"]
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "world.run_identity.cold_resume"
+source = "docs/guide/world-lifecycle.md"
+section = "6. `resume_world` (fenced mutable cold resume)"
+owner = "world"
+risk = "high"
+pytest = [
+  "tests/app/test_world_resume.py",
+  "tests/integration/test_core_example_receipts.py::test_time_travel_receipt_proves_cold_resume_continuity",
+]
+static = []
+evals = ["time_travel_and_run_id"]
 benchmarks = []
 profiles = ["pr", "main", "release"]
 
@@ -243,7 +318,10 @@ source = "docs/guide/specification.md"
 section = "Mutation materialization"
 owner = "world"
 risk = "high"
-pytest = ["tests/core/test_same_tick_mutation_composition.py"]
+pytest = [
+  "tests/core/test_same_tick_mutation_composition.py",
+  "tests/integration/test_core_example_receipts.py::test_world_mutation_receipt_proves_each_public_mutation",
+]
 static = []
 evals = [
   "idempotency.staged_spawn_last_write_wins",
@@ -260,7 +338,11 @@ source = "docs/guide/specification.md"
 section = "QueryService"
 owner = "query"
 risk = "high"
-pytest = ["tests/app/test_services.py", "tests/api/test_routes.py"]
+pytest = [
+  "tests/app/test_services.py",
+  "tests/api/test_routes.py",
+  "tests/integration/test_core_example_receipts.py::test_time_travel_receipt_proves_cold_resume_continuity",
+]
 static = []
 evals = [
   "query_correctness",
@@ -426,7 +508,9 @@ source = "docs/guide/specification.md"
 section = "Run contract"
 owner = "world"
 risk = "medium"
-pytest = ["tests/integration/test_episode_rollout.py"]
+pytest = [
+  "tests/integration/test_episode_rollout.py",
+]
 static = []
 evals = [
   "episode_value_termination",
@@ -437,15 +521,148 @@ benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
+id = "physical_ai.workflow.evidence"
+source = "docs/guide/physical-ai.md"
+section = "Evidence invariants"
+owner = "physical_ai"
+risk = "high"
+pytest = [
+  "tests/app/physical_ai/test_task_evaluation.py",
+  "tests/app/physical_ai/test_instruction_sweep.py",
+  "tests/physical_ai/test_frame_ref_carriage.py",
+  "tests/integration/test_physical_ai_example_receipt.py::test_physical_ai_receipt_proves_eval_sweep_optimizer_and_telemetry",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
 id = "core.ecs.data_model"
 source = "docs/guide/specification.md"
 section = "Data Model Contracts"
 owner = "core"
 risk = "high"
-pytest = ["tests/core/test_component_core.py", "tests/core/test_archetype_core_signatures.py"]
+pytest = [
+  "tests/core/test_component_core.py",
+  "tests/core/test_archetype_core_signatures.py",
+]
 static = []
 evals = ["component_serde", "archetype_signatures"]
 benchmarks = ["core.ecs.micro"]
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "core.processors.execution"
+source = "docs/guide/specification.md"
+section = "System and Processor Contracts"
+owner = "core"
+risk = "high"
+pytest = [
+  "tests/aio/test_async_processor.py",
+  "tests/aio/test_async_world_execution.py",
+  "tests/integration/test_core_example_receipts.py::test_messaging_receipt_proves_messages_and_public_hook_order",
+]
+static = []
+evals = ["processor_adversarial"]
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "core.hooks.lifecycle"
+source = "docs/guide/specification.md"
+section = "Lifecycle Hook Contracts"
+owner = "core"
+risk = "medium"
+pytest = [
+  "tests/core/test_resources_hooks_messaging.py",
+  "tests/integration/test_core_example_receipts.py::test_messaging_receipt_proves_messages_and_public_hook_order",
+  "tests/integration/test_core_example_receipts.py::test_hook_receipt_proves_order_isolation_removal_and_state",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "missions.trajectory.runtime_service"
+source = "docs/guide/trajectories.md"
+section = "Select one trajectory table"
+owner = "missions"
+risk = "medium"
+pytest = [
+  "tests/app/test_trajectory_service.py",
+  "tests/integration/test_trajectory_analysis.py",
+  "tests/integration/test_domain_example_receipts.py::test_trajectory_receipt_is_semantic_and_stable",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "research.autoresearch.ledger"
+source = "docs/guide/autoresearch.md"
+section = "The Loop"
+owner = "research"
+risk = "high"
+pytest = [
+  "tests/app/test_autoresearch_ledger.py",
+  "tests/app/test_runtime_autoresearch.py",
+  "tests/integration/test_domain_example_receipts.py::test_autoresearch_receipt_pins_improvement_and_ledger_order",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "graph.relations.temporal"
+source = "docs/guide/prefab-libraries.md"
+section = "Current relation and temporal-view contract"
+owner = "graph"
+risk = "medium"
+pytest = [
+  "tests/graph/test_edge_contract.py",
+  "tests/graph/test_cascade_contract.py",
+  "tests/integration/test_domain_example_receipts.py::test_graph_receipt_pins_temporal_edges_and_cascade",
+  "tests/integration/test_domain_example_receipts.py::test_biome_receipt_pins_composed_scene_outcome",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "graph.prefabs.copy_on_instantiate"
+source = "docs/guide/prefab-libraries.md"
+section = "Instantiation is a ledger operation"
+owner = "graph"
+risk = "medium"
+pytest = [
+  "tests/graph/test_prefab_contract.py",
+  "tests/integration/test_domain_example_receipts.py::test_prefab_receipt_pins_lineage_and_copy_semantics",
+  "tests/integration/test_domain_example_receipts.py::test_biome_receipt_pins_composed_scene_outcome",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "missions.sandbox.checkpoint_restore"
+source = "docs/guide/agent-missions.md"
+section = "Supported sandbox backends"
+owner = "missions"
+risk = "high"
+pytest = [
+  "tests/missions/test_sandbox_service.py",
+  "tests/integration/test_docker_sandbox_parity.py",
+  "tests/integration/test_apple_container_sandbox_parity.py",
+]
+static = []
+evals = []
+benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
@@ -473,6 +690,20 @@ benchmarks = []
 profiles = ["main", "release"]
 
 [[contract]]
+id = "missions.agent_v1.public_authoring"
+source = "docs/guide/agent-missions.md"
+section = "2. Public authoring surface"
+owner = "missions"
+risk = "medium"
+pytest = [
+  "tests/integration/test_domain_example_receipts.py::test_coding_agent_dry_run_receipt_is_typed_and_starts_no_work",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
 id = "missions.agent_v1.validator_gated"
 source = "docs/guide/agent-missions.md"
 section = "4. State and transition protocol"
@@ -485,11 +716,45 @@ pytest = [
   "tests/missions/test_sandbox_service.py",
   "tests/missions/test_modal_agent_sandbox.py",
   "tests/integration/test_agent_mission_service.py",
+  "tests/eval_framework/test_agent_mission_capability.py",
 ]
 static = [
   "scripts/check_architecture.py",
   "scripts/check_lazy_audit.py",
 ]
+evals = ["agent_mission_transition_authority"]
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "missions.agent_v1.exact_head_critic"
+source = "docs/guide/agent-missions.md"
+section = "Independent exact-head critic"
+owner = "missions"
+risk = "high"
+pytest = [
+  "tests/missions/test_critic_harness.py",
+  "tests/integration/test_agent_mission_service.py::test_blocking_critic_findings_drive_a_new_candidate_before_acceptance",
+  "tests/integration/test_agent_mission_service.py::test_critic_infrastructure_retry_never_repeats_author_work",
+  "tests/eval_framework/test_agent_mission_capability.py",
+]
+static = []
+evals = ["agent_mission_transition_authority"]
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "missions.sandbox.cleanup_ownership"
+source = "docs/guide/agent-missions.md"
+section = "5. Sandbox and validator protocol"
+owner = "missions"
+risk = "high"
+pytest = [
+  "tests/missions/test_sandbox_service.py",
+  "tests/integration/test_agent_mission_service.py::test_terminal_close_failure_is_durable_and_retryable",
+  "tests/integration/test_agent_mission_service.py::test_critic_close_failure_is_durable_and_retryable",
+]
+static = []
 evals = ["agent_mission_transition_authority"]
 benchmarks = []
 profiles = ["pr", "main", "release"]

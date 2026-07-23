@@ -27,8 +27,7 @@ import asyncio
 
 from daft import col
 
-from archetype import ArchetypeRuntime, AutoResearchConfig, EvaluationResult
-from archetype.app.models import EpisodeConfig
+from archetype import ArchetypeRuntime, AutoResearchConfig, EpisodeConfig, EvaluationResult
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
 from archetype.research import Run
@@ -40,14 +39,14 @@ class Knob(Component):
     x: float = 0.0
 
 
-async def main():
-    storage = StorageConfig(uri="./archetype_data", namespace="autoresearch_demo")
+async def run_demo(storage_uri: str = "./archetype_data") -> dict[str, object]:
+    """Tune the knob and return deterministic optimization and ledger evidence."""
+    storage = StorageConfig(uri=storage_uri, namespace="autoresearch_demo")
 
     async with ArchetypeRuntime() as runtime:
         base = runtime.world("knob-base", storage=storage)
         await base.spawn(Knob(x=0.0))
         await base.run(steps=1)
-        print(f"Base save state: {base.world_id}\n")
 
         async def prepare(ctx):
             """Fork the base save and try x = iteration index."""
@@ -90,22 +89,51 @@ async def main():
 
         result = await base.autoresearch(config, evaluate, prepare_candidate=prepare)
 
-        for it in result.iterations:
-            marker = "ADVANCE" if it.improved else "hold"
-            print(
-                f"iter {it.iteration}: x={float(it.iteration):.0f} "
-                f"score={it.score:+.1f} -> {marker} (best={it.incumbent_score:+.1f})"
-            )
-        print(f"\nBest score {result.final_score:+.1f} at x={TARGET:.0f}, ", end="")
-        print(f"improved={result.improved}")
-
         # The search itself is a simulation: load the ledger save and audit it.
         lab = runtime.attach(result.lab_world_id, name="lab")
         attempts = await lab.query(Run)
         info = await lab.info()
-        latest = attempts.where(col("tick") == info.tick - 1)
-        print(f"\nExperiment ledger ({result.lab_world_id}), attempts at final tick:")
-        latest.select("run__run_id", "run__status").show()
+        latest = attempts.where(col("tick") == info.tick - 1).to_pylist()
+        ledger = [
+            {
+                "run_id": row["run__run_id"],
+                "status": row["run__status"],
+            }
+            for row in sorted(latest, key=lambda item: item["run__run_id"])
+        ]
+        iterations = [
+            {
+                "iteration": item.iteration,
+                "score": item.score,
+                "incumbent_score": item.incumbent_score,
+                "improved": item.improved,
+            }
+            for item in result.iterations
+        ]
+        return {
+            "iterations": iterations,
+            "final_score": result.final_score,
+            "improved": result.improved,
+            "ledger": ledger,
+            "ledger_tick": info.tick - 1,
+        }
+
+
+async def main() -> None:
+    result = await run_demo()
+    print("AutoResearch knob tuning from one base save\n")
+    for iteration in result["iterations"]:
+        marker = "ADVANCE" if iteration["improved"] else "hold"
+        print(
+            f"iter {iteration['iteration']}: x={float(iteration['iteration']):.0f} "
+            f"score={iteration['score']:+.1f} -> {marker} "
+            f"(best={iteration['incumbent_score']:+.1f})"
+        )
+    print(f"\nBest score {result['final_score']:+.1f} at x={TARGET:.0f}, ", end="")
+    print(f"improved={result['improved']}")
+    print(f"\nExperiment ledger at tick {result['ledger_tick']}:")
+    for attempt in result["ledger"]:
+        print(f"  {attempt['run_id']}: {attempt['status']}")
 
 
 if __name__ == "__main__":

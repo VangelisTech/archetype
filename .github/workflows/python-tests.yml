@@ -149,11 +149,6 @@ jobs:
     env:
       LOGFIRE_TOKEN: ${{ secrets.LOGFIRE_TOKEN }}
     steps:
-      - name: Require applicable infrastructure evidence
-        env:
-          INFRASTRUCTURE: ${{ needs.infrastructure-idempotency.result }}
-        run: |
-          case "$INFRASTRUCTURE" in success|skipped) ;; *) exit 1 ;; esac
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
@@ -168,6 +163,26 @@ jobs:
       - run: make eval-reliability EVAL_TRIALS=1
       - run: make eval-capability
       - run: make package-smoke
+      - run: make operational-wheel
+        if: always()
+      - name: Require applicable infrastructure evidence
+        if: always()
+        env:
+          INFRASTRUCTURE: ${{ needs.infrastructure-idempotency.result }}
+        run: |
+          case "$INFRASTRUCTURE" in success|skipped) ;; *) exit 1 ;; esac
+      - name: Require installed-wheel operational receipt
+        if: always()
+        run: test -f operational-results.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: installed-wheel-operational-evidence
+          path: |
+            operational-results.json
+            operational-results.d/
+          if-no-files-found: error
+          retention-days: 14
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -197,6 +212,18 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - run: uv sync --group dev
       - run: make examples-smoke
+      - name: Require source operational receipt
+        if: always()
+        run: test -f operational-source-results.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: semantic-example-evidence
+          path: |
+            operational-source-results.json
+            operational-source-results.d/
+          if-no-files-found: error
+          retention-days: 14
 
   process-reliability:
     name: Main process evidence

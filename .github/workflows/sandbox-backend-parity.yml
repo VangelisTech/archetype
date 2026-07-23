@@ -4,10 +4,29 @@ on:
   workflow_dispatch:
   pull_request:
     branches: [main]
-    # This paid/slow proof is intentionally example-gated rather than part of
-    # normal backend CI. Unit contracts still run whenever backend code changes.
+    # This advisory PR substrate proof follows every package that can change
+    # mission sandbox behavior. The retained release scenario is separately
+    # owned by the operational manifest and runner.
     paths:
+      - "src/archetype/missions/**"
+      - "src/archetype/app/missions/**"
+      - "src/archetype/runtime/**"
+      - "src/archetype/commands/**"
+      - "src/archetype/app/commands/**"
+      - "src/archetype/world/**"
+      - "src/archetype/app/world/**"
+      - "src/archetype/graph/**"
+      - "src/archetype/core/hooks.py"
+      - "src/archetype/wiring.py"
+      - "src/archetype/app/container.py"
       - "examples/11_coding_agent_mission.py"
+      - "evals/suites/capability/agent_missions.py"
+      - "tests/missions/**"
+      - "tests/integration/test_agent_mission_service.py"
+      - "tests/integration/test_docker_sandbox_parity.py"
+      - "quality/operational_scenarios.toml"
+      - "uv.lock"
+      - ".github/workflows/sandbox-backend-parity.yml"
 
 permissions:
   contents: read
