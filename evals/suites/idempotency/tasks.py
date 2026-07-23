@@ -41,6 +41,7 @@ from archetype.core.sync import QueryManager, SyncStore, UpdateManager
 from archetype.storage.service import StorageService
 from archetype.storage.session import configure_session
 from archetype.world.lifecycle import WorldLifecycle
+from archetype.world.query import get_lineage
 from archetype.world.registry import WorldRegistry
 from evals.graders import exact_match, state_check
 from evals.harness import EvalHarness
@@ -199,7 +200,7 @@ IDEMPOTENCY_CASES: tuple[IdempotencyCase, ...] = (
     ),
     IdempotencyCase(
         operation="Durable world fixed-state reads",
-        expected_contract="Idempotent for fixed rows, history, and signature catalog",
+        expected_contract="Idempotent for fixed rows, lineage, and signature catalog",
         task_id="idempotency.fixed_reads",
     ),
     IdempotencyCase(
@@ -913,7 +914,7 @@ async def _task_component_signature_noops_are_idempotent() -> list[GraderResult]
 
 
 def task_fixed_reads_are_idempotent() -> list[GraderResult]:
-    """Repeated query/history reads over fixed persisted state are stable."""
+    """Repeated row, lineage, and signature reads over fixed state are stable."""
     return asyncio.run(_task_fixed_reads_are_idempotent())
 
 
@@ -934,36 +935,49 @@ async def _task_fixed_reads_are_idempotent() -> list[GraderResult]:
                 [IdemCounter(value=5)],
             )
             await container.application.step(world.world_id, RunConfig())
+            child = await container.application.fork_world(
+                world.world_id,
+                "fixed-reads-child",
+                storage_config=storage,
+            )
 
             rows_a = (
                 await container.application.query_components(
                     [IdemCounter],
-                    str(world.world_id),
-                    str(world.run_id),
+                    str(child.world_id),
+                    str(child.run_id),
                     storage,
                 )
             ).to_pylist()
             rows_b = (
                 await container.application.query_components(
                     [IdemCounter],
-                    str(world.world_id),
-                    str(world.run_id),
+                    str(child.world_id),
+                    str(child.run_id),
                     storage,
                 )
             ).to_pylist()
-            history_a = await container.audit_log.get_command_history(str(world.world_id))
-            history_b = await container.audit_log.get_command_history(str(world.world_id))
+            lineage_a = await get_lineage(
+                container.storage_service,
+                str(child.world_id),
+                str(child.run_id),
+                storage,
+            )
+            lineage_b = await get_lineage(
+                container.storage_service,
+                str(child.world_id),
+                str(child.run_id),
+                storage,
+            )
             signatures_a = await container.application.list_signatures(storage)
             signatures_b = await container.application.list_signatures(storage)
 
-            history_shape_a = [(cmd.id, cmd.type) for cmd in history_a]
-            history_shape_b = [(cmd.id, cmd.type) for cmd in history_b]
             signature_names_a = sorted(tuple(c.__name__ for c in sig) for sig in signatures_a)
             signature_names_b = sorted(tuple(c.__name__ for c in sig) for sig in signatures_b)
 
             return [
                 exact_match(rows_a, rows_b, name="query_components_repeatable"),
-                exact_match(history_shape_a, history_shape_b, name="history_repeatable"),
+                exact_match(lineage_a, lineage_b, name="lineage_repeatable"),
                 exact_match(signature_names_a, signature_names_b, name="signatures_repeatable"),
             ]
         finally:
