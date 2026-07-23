@@ -13,10 +13,9 @@ authority.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from archetype.app.models import Command
 from archetype.world import handlers, mutation, query, simulation
@@ -579,7 +578,7 @@ class RuntimeApplication:
 
     async def require_world(self, world_id) -> None:
         async with self._admit():
-            await cast(Awaitable[None], self._commands.require_world(world_id))
+            await self._commands.require_world(world_id)
 
     def validate_deferred_command(self, command: Command) -> None:
         self._commands.validate_deferred(command)

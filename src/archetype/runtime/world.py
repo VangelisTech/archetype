@@ -414,7 +414,7 @@ class RuntimeWorld:
         """
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            return self._app.reserve_entity_ids(wid, n)
+            return await self._app.reserve_entity_ids(wid, n)
 
     async def spawn_reserved(self, entity_id: int, *components: Component) -> None:
         """Create an entity with a previously reserved identifier.

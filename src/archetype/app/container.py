@@ -17,32 +17,31 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from functools import partial
 
 from archetype.app.application.service import RuntimeApplication
 from archetype.app.artifacts.service import ArtifactService
 from archetype.app.audit.service import AuditLog
 from archetype.app.commands.service import CommandScheduler
 from archetype.app.evaluation.service import EvaluationService
-from archetype.app.gateway.auth import reset_tick_counters
 from archetype.app.gateway.service import CommandGateway
 from archetype.app.ingestion.service import IngestionService
 from archetype.app.missions.service import MissionService
 from archetype.app.missions.trajectory_service import TrajectoryService
 from archetype.app.missions.transcript_service import TranscriptIngestionService
 from archetype.app.physical_ai.service import PhysicalAIService
-from archetype.app.query.service import QueryService
 from archetype.app.redaction.interfaces import iRedactionService
 from archetype.app.redaction.service import RedactionService
 from archetype.app.research.service import AutoResearchService
-from archetype.app.world.mutation import MutationService
-from archetype.app.world.service import WorldService
-from archetype.app.world.simulation import SimulationService
 from archetype.artifacts.contracts import ArtifactStoreConfig
 from archetype.core.config import StorageConfig
 from archetype.missions.contracts import AgentMissionConfig
 from archetype.missions.sandboxes.service import SandboxService
 from archetype.storage.config import ControlCatalogConfig
 from archetype.storage.service import StorageService
+from archetype.world import mutation
+from archetype.world.lifecycle import WorldLifecycle
+from archetype.world.registry import WorldRegistry
 
 
 class ServiceContainer:
@@ -82,14 +81,43 @@ class ServiceContainer:
             redaction_service if redaction_service is not None else RedactionService()
         )
 
-        # Storage-backed services
-        self.world_service = WorldService(self.storage_service)
+        # Canonical world ownership and exact tick materialization.
+        self.world_registry = WorldRegistry()
+
+        async def require_live_world(world_id) -> None:
+            async with self.world_registry.operation(str(world_id)):
+                pass
+
+        async def resolve_control_catalog(world_id):
+            record = await self.world_registry.storage_record(str(world_id))
+            if record is None:
+                raise KeyError(f"world {world_id} has no known storage identity")
+            return self.storage_service.get_control_catalog(record[0])
+
+        self.command_scheduler = CommandScheduler(
+            require_live_world=require_live_world,
+            resolve_control_catalog=resolve_control_catalog,
+            list_catalog_world_ids=self.world_registry.catalog_world_ids,
+            reserve_entity_ids=partial(
+                mutation.reserve_entity_ids,
+                self.world_registry,
+            ),
+        )
+        self.world_lifecycle = WorldLifecycle(
+            self.storage_service,
+            self.world_registry,
+            materialize_commands=self.command_scheduler.materialize,
+        )
+
+        # Storage-backed application workflows.
         self.audit_log = AuditLog(self.storage_service, audit_storage_config)
-        self.query_service = QueryService(self.storage_service)
-        self.ingestion_service = IngestionService(self.storage_service, self.world_service)
+        self.ingestion_service = IngestionService(
+            self.storage_service,
+            self.world_registry,
+        )
         self.artifact_service = ArtifactService(
             self.storage_service,
-            self.world_service,
+            self.world_registry,
             self.ingestion_service,
             artifact_store_config,
         )
@@ -98,47 +126,38 @@ class ServiceContainer:
             self.ingestion_service,
             self.redaction_service,
             self.storage_service,
-            self.world_service,
+            self.world_registry,
         )
         self.evaluation_service = EvaluationService(
-            self.query_service,
             self.ingestion_service,
             self.storage_service,
-            self.world_service,
+            self.world_registry,
         )
         self.trajectory_service = TrajectoryService(
-            self.query_service,
+            self.storage_service,
             self.evaluation_service,
         )
-
-        # Services that depend on WorldService
-        self.mutation_service = MutationService(self.world_service)
-        self.simulation_service = SimulationService(self.world_service, self.storage_service)
         self.physical_ai_service = PhysicalAIService(
-            self.world_service,
-            self.mutation_service,
-            self.simulation_service,
+            self.world_registry,
+            self.world_lifecycle,
             self.evaluation_service,
             self.storage_service,
         )
-        self.command_scheduler = CommandScheduler(self.world_service, self.mutation_service)
         self.audit_log.set_outbox_source(
             self.command_scheduler.read_outbox,
             self.command_scheduler.mark_outbox_projected,
         )
 
-        # AutoResearch — depends on WorldService + SimulationService
         self.autoresearch_service = AutoResearchService(
-            self.world_service,
-            self.simulation_service,
+            self.world_registry,
+            self.world_lifecycle,
             self.storage_service,
         )
 
         self.application = RuntimeApplication(
-            mutations=self.mutation_service,
-            worlds=self.world_service,
-            simulation=self.simulation_service,
-            queries=self.query_service,
+            registry=self.world_registry,
+            lifecycle=self.world_lifecycle,
+            storage=self.storage_service,
             commands=self.command_scheduler,
             audit=self.audit_log,
             artifacts=self.artifact_service,
@@ -149,10 +168,11 @@ class ServiceContainer:
             physical_ai=self.physical_ai_service,
             agent_missions=self._agent_mission_service,
         )
-        self.command_gateway = CommandGateway(self.application, self.audit_log)
-        self.simulation_service.set_command_drain(self.application.drain_and_apply)
-        # Per-tick RBAC quota resets at each tick boundary (bug B1).
-        self.simulation_service.set_quota_reset(reset_tick_counters)
+        self.command_gateway = CommandGateway(
+            self.application,
+            self.audit_log,
+            target_tick_for_world=lambda world_id: self.world_registry.target_tick(str(world_id)),
+        )
 
     def _agent_mission_service(self, *, config: AgentMissionConfig, **kwargs) -> MissionService:
         """Compose one mission-owned sandbox lifetime beneath the app workflow."""
@@ -171,7 +191,7 @@ class ServiceContainer:
             ("audit log", self.audit_log.shutdown),
         ]
         if self._owns_storage_service:
-            steps.append(("world and storage services", self.world_service.shutdown))
+            steps.append(("storage service", self.storage_service.shutdown))
 
         failures: list[BaseException] = []
         for label, shutdown in steps:

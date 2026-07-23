@@ -160,9 +160,9 @@ class CommandGateway:
         )
         return result
 
-    def reserve_entity_ids(self, ctx, world_id, n):
+    async def reserve_entity_ids(self, ctx, world_id, n):
         self._gate_world(Command(type=CommandType.SPAWN), ctx, world_id)
-        return self._application.reserve_entity_ids(world_id, n)
+        return await self._application.reserve_entity_ids(world_id, n)
 
     async def spawn_with_reserved_id(self, ctx, world_id, entity_id, components):
         self._gate_world(Command(type=CommandType.SPAWN), ctx, world_id)
@@ -511,7 +511,7 @@ class CommandGateway:
     # Deferred command acceptance ----------------------------------
 
     async def submit(self, ctx, world_id, command):
-        self._application.require_world(world_id)
+        await self._application.require_world(world_id)
         self._application.validate_deferred_command(command)
         self._gate(
             command,
@@ -528,7 +528,7 @@ class CommandGateway:
         return command_id
 
     async def submit_batch(self, ctx, world_id, commands):
-        self._application.require_world(world_id)
+        await self._application.require_world(world_id)
         for command in commands:
             self._application.validate_deferred_command(command)
         self._gate_batch(commands, ctx, world_id=world_id)
@@ -540,7 +540,7 @@ class CommandGateway:
         )
 
     async def submit_spawn(self, ctx, world_id, components, *, tick=0, priority=0):
-        self._application.require_world(world_id)
+        await self._application.require_world(world_id)
         self._gate(
             Command(type=CommandType.SPAWN),
             ctx,
