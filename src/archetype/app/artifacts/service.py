@@ -12,18 +12,17 @@ from urllib.parse import urlsplit
 
 import daft
 from daft import DataFrame, lit
-from uuid_utils import UUID
 
 from archetype._storage_uri import local_storage_path
 from archetype.app.ingestion.interfaces import iIngestionService
 from archetype.app.storage.interfaces import iStorageService
-from archetype.app.world.interfaces import iWorldService
 from archetype.artifacts.contracts import ArtifactRef, ArtifactSource, ArtifactStoreConfig
 from archetype.core.config import StorageBackend, StorageConfig
 from archetype.ingestion.pipeline import (
     ARTIFACT_FILES,
     FileIngestionPipeline,
 )
+from archetype.world.registry import WorldRegistry
 
 
 def _is_pattern(source_uri: str) -> bool:
@@ -66,12 +65,12 @@ class ArtifactService:
     def __init__(
         self,
         storage_service: iStorageService,
-        world_service: iWorldService,
+        world_registry: WorldRegistry,
         ingestion_service: iIngestionService,
         store_config: ArtifactStoreConfig | None = None,
     ) -> None:
         self._storage_service = storage_service
-        self._world_service = world_service
+        self._world_registry = world_registry
         self._ingestion = ingestion_service
         self._store_config = store_config or ArtifactStoreConfig()
 
@@ -162,7 +161,7 @@ class ArtifactService:
     ) -> tuple[str, StorageConfig, int]:
         """Get the world context for artifact ingestion."""
         wid = str(world_id)
-        live = self._world_service.storage_record(wid)
+        live = await self._world_registry.storage_record(wid)
         storage = storage_config or (live[0] if live is not None else StorageConfig())
         if storage.backend != StorageBackend.ICEBERG:
             raise ValueError("artifact ingestion requires StorageBackend.ICEBERG")
@@ -172,8 +171,9 @@ class ArtifactService:
             raise KeyError(f"world {wid} is not recorded in catalog for {storage.uri}")
         if not record.run_id:
             raise RuntimeError(f"world {wid} has no recorded run; artifacts need a run key")
-        if self._world_service.has_world(UUID(wid)):
-            tick = int(self._world_service.get_world(UUID(wid)).tick)
+        if await self._world_registry.live_world(wid) is not None:
+            async with self._world_registry.operation(wid) as world:
+                tick = int(world.tick)
         else:
             tick = int(record.tick_head)
         return wid, storage, tick

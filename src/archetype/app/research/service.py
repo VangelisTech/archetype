@@ -32,7 +32,7 @@ import json
 import logging
 import time
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 from pydantic_core import to_jsonable_python
 from uuid_utils import UUID
@@ -49,11 +49,11 @@ from archetype.app.research.contracts import (
 )
 from archetype.core.config import RunConfig, WorldConfig
 from archetype.research import BranchHead, Experiment, Result, Run, RunStatus
+from archetype.storage.service import StorageService
+from archetype.world import mutation, simulation
+from archetype.world.lifecycle import WorldLifecycle
 from archetype.world.models import RolloutConfig, RolloutResult
-
-if TYPE_CHECKING:
-    from archetype.app.storage.interfaces import iStorageService
-    from archetype.app.world.interfaces import iSimulationService, iWorldService
+from archetype.world.registry import WorldRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -162,19 +162,20 @@ class AutoResearchService:
     """Loop controller for autoresearch.
 
     Depends on:
-      - WorldService for world lifecycle (fork, destroy, get_world)
-      - SimulationService for run_rollout execution
+      - WorldRegistry for exact-world ownership and serialization
+      - WorldLifecycle for create, fork, and destroy
+      - world simulation for managed rollout and ledger ticks
     """
 
     def __init__(
         self,
-        world_service: iWorldService,
-        simulation_service: iSimulationService,
-        storage_service: iStorageService,
+        world_registry: WorldRegistry,
+        world_lifecycle: WorldLifecycle,
+        storage_service: StorageService,
     ) -> None:
-        self._world_service = world_service
-        self._simulation_service = simulation_service
-        self._storage_service = storage_service
+        self._world_registry = world_registry
+        self._world_lifecycle = world_lifecycle
+        self._storage = storage_service
 
     async def run(
         self,
@@ -213,16 +214,20 @@ class AutoResearchService:
         """
         # Validate the base world exists (raises if not); the loop forks
         # from world_id rather than mutating this instance.
-        self._world_service.get_world(UUID(str(world_id)))
+        async with self._world_registry.operation(str(world_id)):
+            pass
 
-        lab = None
+        lab_id: str | None = None
         head_entity_id: int | None = None
         incumbent_score = float("-inf")
         start_iteration = 0
         if config.record_to_ledger:
-            lab, head_entity_id, incumbent_score, start_iteration = await self._attach_ledger(
-                world_id, config, lab_world_id=lab_world_id
-            )
+            (
+                lab_id,
+                head_entity_id,
+                incumbent_score,
+                start_iteration,
+            ) = await self._attach_ledger(world_id, config, lab_world_id=lab_world_id)
 
         # The result baseline is the incumbent at invocation start, keeping
         # aggregate ``improved`` semantics correct for fresh and resumed
@@ -245,9 +250,9 @@ class AutoResearchService:
 
             started_at_ms = int(time.time() * 1000)
             run_entity_id: int | None = None
-            if lab is not None:
+            if lab_id is not None:
                 run_entity_id = await self._record_running(
-                    lab,
+                    lab_id,
                     config,
                     run_id=run_id,
                     started_at_ms=started_at_ms,
@@ -271,8 +276,13 @@ class AutoResearchService:
                     if prepared is not None:
                         candidate_world_id = prepared
 
-                rollout_result = await self._simulation_service.run_rollout(
-                    candidate_world_id, rollout_config
+                rollout_result = await simulation.run_rollout(
+                    self._world_registry,
+                    self._storage,
+                    self._world_lifecycle.fork_world,
+                    self._world_lifecycle.destroy_world,
+                    candidate_world_id,
+                    rollout_config,
                 )
 
                 evaluation_value = evaluator(rollout_result)
@@ -282,10 +292,10 @@ class AutoResearchService:
                     cast(Evaluation, evaluation_value), config.evaluator_id
                 )
             except BaseException as exc:
-                if lab is not None and run_entity_id is not None:
+                if lab_id is not None and run_entity_id is not None:
                     try:
                         await self._record_terminal(
-                            lab,
+                            lab_id,
                             run_entity_id,
                             head_entity_id,
                             config,
@@ -303,7 +313,7 @@ class AutoResearchService:
                 raise
 
             score = evaluation.score
-            if lab is None and i == start_iteration:
+            if lab_id is None and i == start_iteration:
                 initial_score = score
 
             # Compare to incumbent
@@ -311,10 +321,10 @@ class AutoResearchService:
             if improved:
                 incumbent_score = score
 
-            if lab is not None:
+            if lab_id is not None:
                 assert run_entity_id is not None
                 await self._record_terminal(
-                    lab,
+                    lab_id,
                     run_entity_id,
                     head_entity_id,
                     config,
@@ -359,7 +369,7 @@ class AutoResearchService:
             final_score=incumbent_score,
             initial_score=initial_score,
             iterations=iterations,
-            lab_world_id=str(lab.world_id) if lab is not None else "",
+            lab_world_id=lab_id or "",
         )
 
     # ── Ledger: the loop's own state as world rows ─────────────────────────
@@ -370,10 +380,10 @@ class AutoResearchService:
         config: AutoResearchConfig,
         *,
         lab_world_id: str | UUID | None = None,
-    ) -> tuple[Any, int, float, int]:
+    ) -> tuple[str, int, float, int]:
         """Create or resume the experiment's lab world.
 
-        Returns (lab_world, head_entity_id, incumbent_score, start_iteration).
+        Returns (lab_world_id, head_entity_id, incumbent_score, start_iteration).
 
         Genesis (new lab world): spawn Experiment + a seed BranchHead and
         step once, so tick 0 holds the experiment's initial conditions. The
@@ -397,61 +407,81 @@ class AutoResearchService:
 
         name = f"autoresearch:{config.experiment_id}"
         if lab_world_id is not None:
-            lab = self._world_service.get_world(UUID(str(lab_world_id)))
+            lab_id = str(lab_world_id)
         else:
             try:
-                lab = self._world_service.get_world_by_name(name)
+                lab_id = await self._world_registry.world_id_for_name(name)
             except KeyError:
-                lab = None
+                lab_id = None
 
-        if lab is None:
-            record = self._world_service.storage_record(base_world_id)
+        if lab_id is None:
+            record = await self._world_registry.storage_record(str(base_world_id))
             storage_config = record[0] if record is not None else None
             cache_config = record[1] if record is not None else None
-            lab = await self._world_service.create_world(
+            lab = await self._world_lifecycle.create_world(
                 WorldConfig(name=name), storage_config, cache_config
             )
+            lab_id = str(lab.world_id)
 
-        if lab.tick == 0:
-            await lab.create_entity(
-                [
-                    Experiment.make(
-                        config.experiment_name,
-                        "",
-                        metadata=expected_metadata,
-                    )
-                ]
-            )
-            head_entity_id = await lab.create_entity(
-                [BranchHead.make(config.experiment_name, "", descriptor={"score": None})]
-            )
-            await lab.step(RunConfig())  # genesis: initial conditions at tick 0
-            return lab, head_entity_id, float("-inf"), 0
+        async with self._world_registry.operation(lab_id) as lab:
+            if lab.tick == 0:
+                await mutation._create_entity_locked(
+                    lab,
+                    [
+                        Experiment.make(
+                            config.experiment_name,
+                            "",
+                            metadata=expected_metadata,
+                        )
+                    ],
+                )
+                head_entity_id = await mutation._create_entity_locked(
+                    lab,
+                    [
+                        BranchHead.make(
+                            config.experiment_name,
+                            "",
+                            descriptor={"score": None},
+                        )
+                    ],
+                )
+                await simulation._step_locked(
+                    self._world_registry,
+                    lab_id,
+                    lab,
+                    RunConfig(),
+                )
+                return lab_id, head_entity_id, float("-inf"), 0
 
-        experiment_row = await self._read_experiment(lab)
-        if experiment_row is None:
-            raise ValueError(
-                f"experiment identity collision: lab world {lab.world_id} has no Experiment row"
-            )
-        actual_metadata = json.loads(experiment_row["experiment__metadata_json"])
-        if (
-            experiment_row["experiment__name"] != config.experiment_name
-            or actual_metadata != expected_metadata
-        ):
-            raise ValueError(
-                "experiment identity collision: the requested experiment id, base world, or "
-                "semantic configuration does not match the attached lab"
-            )
+            experiment_row = await self._read_experiment(lab)
+            if experiment_row is None:
+                raise ValueError(
+                    f"experiment identity collision: lab world {lab.world_id} has no Experiment row"
+                )
+            actual_metadata = json.loads(experiment_row["experiment__metadata_json"])
+            if (
+                experiment_row["experiment__name"] != config.experiment_name
+                or actual_metadata != expected_metadata
+            ):
+                raise ValueError(
+                    "experiment identity collision: the requested experiment id, "
+                    "base world, or semantic configuration does not match the attached lab"
+                )
 
-        head_row = await self._read_head(lab)
-        if head_row is None:
-            raise ValueError(
-                f"experiment identity collision: lab world {lab.world_id} has no BranchHead row"
+            head_row = await self._read_head(lab)
+            if head_row is None:
+                raise ValueError(
+                    f"experiment identity collision: lab world {lab.world_id} has no BranchHead row"
+                )
+            descriptor = json.loads(head_row["branchhead__descriptor_json"])
+            score = descriptor.get("score")
+            incumbent = float(score) if score is not None else float("-inf")
+            return (
+                lab_id,
+                int(head_row["entity_id"]),
+                incumbent,
+                await self._next_iteration(lab, config),
             )
-        descriptor = json.loads(head_row["branchhead__descriptor_json"])
-        score = descriptor.get("score")
-        incumbent = float(score) if score is not None else float("-inf")
-        return lab, int(head_row["entity_id"]), incumbent, await self._next_iteration(lab, config)
 
     async def _read_experiment(self, lab) -> dict | None:
         """The active Experiment row, or None when the lab has no genesis."""
@@ -461,7 +491,7 @@ class AutoResearchService:
             "experiment__name",
             "experiment__metadata_json",
         )
-        materialized = await self._storage_service.materialize(df)
+        materialized = await self._storage.materialize(df)
         rows = materialized.to_pylist()
         return rows[0] if rows else None
 
@@ -473,7 +503,7 @@ class AutoResearchService:
             "entity_id",
             "branchhead__descriptor_json",
         )
-        materialized = await self._storage_service.materialize(df)
+        materialized = await self._storage.materialize(df)
         rows = materialized.to_pylist()
         return rows[0] if rows else None
 
@@ -490,7 +520,7 @@ class AutoResearchService:
             "run__run_id",
             "run__status",
         )
-        materialized = await self._storage_service.materialize(frame)
+        materialized = await self._storage.materialize(frame)
         rows = materialized.to_pylist()
         prefix = f"{config.experiment_id}:iter"
         indices: list[int] = []
@@ -524,30 +554,37 @@ class AutoResearchService:
 
     async def _record_running(
         self,
-        lab,
+        lab_world_id: str,
         config: AutoResearchConfig,
         *,
         run_id: str,
         started_at_ms: int,
     ) -> int:
         """Persist RUNNING before candidate preparation or rollout begins."""
-        run_entity_id = await lab.create_entity(
-            [
-                Run(
-                    run_id=run_id,
-                    experiment_name=config.experiment_name,
-                    status=RunStatus.RUNNING.value,
-                    task="rollout",
-                    started_at_ms=started_at_ms,
-                )
-            ]
-        )
-        await lab.step(RunConfig())
-        return run_entity_id
+        async with self._world_registry.operation(lab_world_id) as lab:
+            run_entity_id = await mutation._create_entity_locked(
+                lab,
+                [
+                    Run(
+                        run_id=run_id,
+                        experiment_name=config.experiment_name,
+                        status=RunStatus.RUNNING.value,
+                        task="rollout",
+                        started_at_ms=started_at_ms,
+                    )
+                ],
+            )
+            await simulation._step_locked(
+                self._world_registry,
+                lab_world_id,
+                lab,
+                RunConfig(),
+            )
+            return run_entity_id
 
     async def _record_terminal(
         self,
-        lab,
+        lab_world_id: str,
         run_entity_id: int,
         head_entity_id: int | None,
         config: AutoResearchConfig,
@@ -568,77 +605,89 @@ class AutoResearchService:
         if status is RunStatus.STOPPED and (rollout is None or evaluation is None):
             raise ValueError("STOPPED requires rollout and evaluation")
 
-        await lab.update_entity(
-            run_entity_id,
-            [
-                Run(
-                    run_id=run_id,
-                    experiment_name=config.experiment_name,
-                    status=status.value,
-                    task="rollout",
-                    started_at_ms=started_at_ms,
-                    finished_at_ms=int(time.time() * 1000),
-                )
-            ],
-        )
-
-        if status is RunStatus.STOPPED:
-            assert rollout is not None
-            assert evaluation is not None
-            await lab.create_entity(
+        async with self._world_registry.operation(lab_world_id) as lab:
+            await mutation._update_entity_locked(
+                lab,
+                run_entity_id,
                 [
-                    Result.make(
-                        run_id,
-                        outputs={
-                            "score": evaluation.score,
-                            "improved": improved,
-                            "iteration": iteration,
-                            "candidate_world_id": str(candidate_world_id),
-                            "num_episodes": rollout.num_episodes,
-                            "total_duration_steps": rollout.total_duration_steps,
-                            "episode_world_ids": [str(ep.world_id) for ep in rollout.episodes],
-                            "evidence": evaluation.evidence,
-                            "metadata": evaluation.metadata,
-                        },
-                        evaluator=evaluation.evaluator,
-                    )
-                ]
-            )
-        elif error is not None:
-            await lab.create_entity(
-                [
-                    Result.make(
-                        run_id,
-                        outputs={
-                            "iteration": iteration,
-                            "status": RunStatus.CRASHED.value,
-                            "candidate_world_id": str(candidate_world_id),
-                            "error_type": f"{type(error).__module__}.{type(error).__qualname__}",
-                        },
-                        evaluator="autoresearch:lifecycle",
-                    )
-                ]
-            )
-
-        if status is RunStatus.STOPPED and improved and head_entity_id is not None:
-            assert evaluation is not None
-            await lab.update_entity(
-                head_entity_id,
-                [
-                    BranchHead.make(
-                        config.experiment_name,
-                        "",
+                    Run(
                         run_id=run_id,
-                        descriptor={
-                            "score": evaluation.score,
-                            "iteration": iteration,
-                            "evaluator": evaluation.evaluator,
-                            "evidence": evaluation.evidence,
-                        },
+                        experiment_name=config.experiment_name,
+                        status=status.value,
+                        task="rollout",
+                        started_at_ms=started_at_ms,
+                        finished_at_ms=int(time.time() * 1000),
                     )
                 ],
             )
-        await lab.step(RunConfig())
+
+            if status is RunStatus.STOPPED:
+                assert rollout is not None
+                assert evaluation is not None
+                await mutation._create_entity_locked(
+                    lab,
+                    [
+                        Result.make(
+                            run_id,
+                            outputs={
+                                "score": evaluation.score,
+                                "improved": improved,
+                                "iteration": iteration,
+                                "candidate_world_id": str(candidate_world_id),
+                                "num_episodes": rollout.num_episodes,
+                                "total_duration_steps": rollout.total_duration_steps,
+                                "episode_world_ids": [str(ep.world_id) for ep in rollout.episodes],
+                                "evidence": evaluation.evidence,
+                                "metadata": evaluation.metadata,
+                            },
+                            evaluator=evaluation.evaluator,
+                        )
+                    ],
+                )
+            elif error is not None:
+                await mutation._create_entity_locked(
+                    lab,
+                    [
+                        Result.make(
+                            run_id,
+                            outputs={
+                                "iteration": iteration,
+                                "status": RunStatus.CRASHED.value,
+                                "candidate_world_id": str(candidate_world_id),
+                                "error_type": (
+                                    f"{type(error).__module__}.{type(error).__qualname__}"
+                                ),
+                            },
+                            evaluator="autoresearch:lifecycle",
+                        )
+                    ],
+                )
+
+            if status is RunStatus.STOPPED and improved and head_entity_id is not None:
+                assert evaluation is not None
+                await mutation._update_entity_locked(
+                    lab,
+                    head_entity_id,
+                    [
+                        BranchHead.make(
+                            config.experiment_name,
+                            "",
+                            run_id=run_id,
+                            descriptor={
+                                "score": evaluation.score,
+                                "iteration": iteration,
+                                "evaluator": evaluation.evaluator,
+                                "evidence": evaluation.evidence,
+                            },
+                        )
+                    ],
+                )
+            await simulation._step_locked(
+                self._world_registry,
+                lab_world_id,
+                lab,
+                RunConfig(),
+            )
 
     async def sweep(
         self,
@@ -669,7 +718,7 @@ class AutoResearchService:
             params = dict(zip(param_names, combo, strict=False))
 
             # Fork the base world for this parameter point
-            fork = await self._world_service.fork_world(
+            fork = await self._world_lifecycle.fork_world(
                 world_id,
                 name=f"{config.experiment_name}:sweep:{combo}",
             )

@@ -40,9 +40,6 @@ from uuid_utils import UUID, uuid7
 
 from archetype.app.evaluation.interfaces import GraderOutput, TrajectoryGrader
 from archetype.app.ingestion.interfaces import iIngestionService
-from archetype.app.query.interfaces import iQueryService
-from archetype.app.storage.interfaces import iStorageService
-from archetype.app.world.interfaces import iWorldService
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
 from archetype.evaluation.components import EvalReceipt
@@ -51,7 +48,10 @@ from archetype.evaluation.contracts import (
     Outcome,
     subject_digest,
 )
+from archetype.storage.service import StorageService
+from archetype.world import query
 from archetype.world.models import EpisodeResult
+from archetype.world.registry import WorldRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -106,15 +106,13 @@ class EvaluationService:
 
     def __init__(
         self,
-        query_service: iQueryService,
         ingestion_service: iIngestionService,
-        storage_service: iStorageService,
-        world_service: iWorldService,
+        storage_service: StorageService,
+        world_registry: WorldRegistry,
     ) -> None:
-        self._query_service = query_service
         self._ingestion = ingestion_service
         self._storage = storage_service
-        self._worlds = world_service
+        self._world_registry = world_registry
 
     async def evaluate(
         self,
@@ -212,7 +210,8 @@ class EvaluationService:
                 )
                 return existing
 
-            frame = await self._query_service.query_components(
+            frame = await query.query_components(
+                self._storage,
                 list(components),
                 world_id,
                 snapshot.run_id,
@@ -357,7 +356,7 @@ class EvaluationService:
         storage_config: StorageConfig | None,
     ) -> _PinnedSnapshot:
         wid = str(world_id)
-        effective = self._resolve_storage(wid, storage_config)
+        effective = await self._resolve_storage(wid, storage_config)
         visibility = await self._storage.pin_visibility(effective, wid)
         if visibility.head_tick is None:
             raise RuntimeError(
@@ -393,14 +392,14 @@ class EvaluationService:
             return None
         return EvalReceipt(**{name: values[name][0] for name in EvalReceipt.model_fields})
 
-    def _resolve_storage(
+    async def _resolve_storage(
         self,
         world_id: str,
         storage_config: StorageConfig | None,
     ) -> StorageConfig:
         if storage_config is not None:
             return storage_config
-        live = self._worlds.storage_record(world_id)
+        live = await self._world_registry.storage_record(world_id)
         return live[0] if live is not None else StorageConfig()
 
     async def query_components(
@@ -415,7 +414,8 @@ class EvaluationService:
         lineage: list[tuple[str, str, int]] | None = None,
     ) -> DataFrame:
         """Return persisted component rows as a Daft DataFrame."""
-        return await self._query_service.query_components(
+        return await query.query_components(
+            self._storage,
             list(components),
             world_id=str(world_id),
             run_id=str(run_id),
