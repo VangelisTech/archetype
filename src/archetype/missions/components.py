@@ -107,6 +107,10 @@ class TaskCriticPolicy(Component):
             raise ValueError("critic review budgets must be positive")
         if self.output_schema_version < 1 or self.max_output_chars < 1:
             raise ValueError("critic output schema and bound must be positive")
+        if self.information_view != "task-diff-validators":
+            raise ValueError("unsupported critic information_view")
+        if self.sampling != "provider-default":
+            raise ValueError("unsupported critic sampling policy")
         return self
 
 

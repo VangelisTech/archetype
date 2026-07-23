@@ -209,7 +209,8 @@ works, the service prewarms a fresh critic sandbox. `CriticReviewOutbox`
 projects committed candidates into exact base/head/diff review requests;
 `CriticHarness` verifies the remote subject, invokes `CriticDriver`, and returns
 bounded findings and a receipt. Critic sandboxes receive no publication secret,
-are never checkpointed, and close after their evidence is durable.
+the configured driver's declared identity must match the task policy, they are
+never checkpointed, and they close after their evidence is durable.
 
 The sandbox identity is staged immediately after acquisition; bounded
 `SandboxEvent` callbacks expose it synchronously for live,

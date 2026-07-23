@@ -206,6 +206,10 @@ class MissionService:
         critic_driver = config.critic_driver or CodexCriticDriver(
             workspace=config.critic_workspace,
         )
+        critic_driver_id = str(getattr(critic_driver, "driver_id", "")).strip()
+        if not critic_driver_id:
+            raise ValueError("configured critic driver must declare a non-empty driver_id")
+        self._critic_driver_id = critic_driver_id
         self._critic_harness = CriticHarness(
             critic_driver,
             CriticHarnessConfig(workspace=config.critic_workspace),
@@ -242,6 +246,18 @@ class MissionService:
             name=name,
             base_ref=base_ref,
         )
+        mismatched_drivers = sorted(
+            {
+                task.critic_policy.driver
+                for task in submission.tasks
+                if task.critic_policy.driver != self._critic_driver_id
+            }
+        )
+        if mismatched_drivers:
+            raise ValueError(
+                "task critic policy driver must match the configured critic driver "
+                f"{self._critic_driver_id!r}; got {', '.join(mismatched_drivers)}"
+            )
         identities = await self._world.reserve_ids(len(submission.tasks) + 1)
         mission_id, *task_entity_ids = identities
         task_ids = {
@@ -1059,7 +1075,7 @@ class MissionService:
                 attempt=request.attempt,
                 status=result.status.value,
                 sandbox_id=result.sandbox.sandbox_id,
-                driver=request.policy.driver,
+                driver=self._critic_driver_id,
                 model=request.policy.model,
                 started_at_ms=result.started_at_ms,
                 ended_at_ms=result.ended_at_ms,

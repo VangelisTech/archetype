@@ -254,6 +254,8 @@ class CriticExecutionResult:
 class CriticDriver(Protocol):
     """Invoke one independent critic process through a sandbox session."""
 
+    driver_id: str
+
     async def run(
         self,
         session: SandboxSession,

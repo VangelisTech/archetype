@@ -388,6 +388,8 @@ class _MissionDriver:
 class _ApprovingCriticDriver:
     """Deterministic independent critic used by credential-free contracts."""
 
+    driver_id = "codex"
+
     def __init__(self) -> None:
         self.requests = []
         self.sandbox_ids: list[str] = []
@@ -414,6 +416,27 @@ class _SequencedCriticDriver(_ApprovingCriticDriver):
         self.requests.append(request)
         self.sandbox_ids.append(session.identity.sandbox_id)
         return self.outputs.pop(0)
+
+
+class _CancelledOnceCriticDriver(_ApprovingCriticDriver):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+
+    async def run(self, session, request, prompt: str) -> CriticProcessObservation:
+        del prompt
+        self.requests.append(request)
+        self.sandbox_ids.append(session.identity.sandbox_id)
+        if len(self.requests) == 1:
+            self.started.set()
+            await asyncio.Event().wait()
+        return CriticProcessObservation(
+            returncode=0,
+            stdout=(
+                '{"schema_version":1,"conclusion":"approved",'
+                '"reviewed_scope":"exact task diff","findings":[]}'
+            ),
+        )
 
 
 class _CandidateRepairDriver:
@@ -949,6 +972,111 @@ async def test_critic_infrastructure_retry_never_repeats_author_work(
                 "errored",
                 "exited",
             ]
+            assert {row[f"{status}driver"] for row in executions} == {critic.driver_id}
+
+
+@pytest.mark.asyncio
+async def test_cancelled_critic_attempt_is_requeued_without_repeating_author_work(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "author" / "repo"
+    backend = _LocalBackend()
+    author = _CandidateRepairDriver(workspace)
+    critic = _CancelledOnceCriticDriver()
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "critic-cancellation",
+            config=AgentMissionConfig(
+                sandbox_backend=backend,
+                sandbox_environment="local-critic-contract",
+                driver=author,
+                critic_driver=critic,
+                workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
+                checkpoint_after_dispatch=False,
+                max_ticks=30,
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "critic_cancellation"),
+                namespace="contract",
+            ),
+        ) as missions:
+            submitted = await missions.submit(
+                repository=str(remote),
+                branch="agent/critic-cancellation",
+                tasks=(
+                    AgentTask(
+                        "review",
+                        "Write one candidate artifact.",
+                        (
+                            CommandValidator(
+                                "exists",
+                                ("sh", "-lc", "test -f artifact.txt"),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            interrupted = asyncio.create_task(missions.run(submitted))
+            await critic.started.wait()
+            interrupted.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await interrupted
+
+            result = await missions.run(submitted)
+
+            assert result.status == "succeeded"
+            assert result.tasks[0].dispatches == 1
+            assert len(author.requests) == 1
+            assert len(critic.requests) == 2
+            executions = latest(await missions.query(CriticExecution)).to_pylist()
+            assert len(executions) == 1
+
+
+@pytest.mark.asyncio
+async def test_task_critic_policy_must_match_the_configured_driver(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "author" / "repo"
+    critic = _ApprovingCriticDriver()
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "critic-driver-mismatch",
+            config=AgentMissionConfig(
+                sandbox_backend=_LocalBackend(),
+                sandbox_environment="local-critic-contract",
+                driver=_CandidateRepairDriver(workspace),
+                critic_driver=critic,
+                workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
+                checkpoint_after_dispatch=False,
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "critic_driver_mismatch"),
+                namespace="contract",
+            ),
+        ) as missions:
+            with pytest.raises(ValueError, match="must match the configured critic driver"):
+                await missions.submit(
+                    repository="owner/repository",
+                    branch="agent/critic-driver-mismatch",
+                    tasks=(
+                        AgentTask(
+                            "review",
+                            "Write one candidate artifact.",
+                            (
+                                CommandValidator(
+                                    "exists",
+                                    ("sh", "-lc", "test -f artifact.txt"),
+                                ),
+                            ),
+                            critic_policy=CriticPolicy(driver="another-driver"),
+                        ),
+                    ),
+                )
 
 
 @pytest.mark.asyncio

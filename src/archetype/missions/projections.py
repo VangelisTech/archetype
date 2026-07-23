@@ -327,7 +327,7 @@ class CriticReviewOutbox:
     def __init__(self) -> None:
         self._queued: list[CandidateReviewRequest] = []
         self._exhausted: list[CriticReviewBudgetExhausted] = []
-        self._seen_reviews: set[str] = set()
+        self._queued_review_ids: set[str] = set()
 
     async def on_post_tick(self, event: PostTick) -> None:
         tasks = _live_frame(event, Task, TaskCriticPolicy, TaskState)
@@ -482,14 +482,15 @@ class CriticReviewOutbox:
                 candidate_published_at_ms=int(row[f"{candidate}created_at_ms"]),
                 attempt=attempt,
             )
-            if request.review_id in self._seen_reviews:
+            if request.review_id in self._queued_review_ids:
                 continue
             self._queued.append(request)
-            self._seen_reviews.add(request.review_id)
+            self._queued_review_ids.add(request.review_id)
 
     def drain(self) -> tuple[CandidateReviewRequest, ...]:
         requests = tuple(self._queued)
         self._queued.clear()
+        self._queued_review_ids.clear()
         return requests
 
     def drain_exhausted(self) -> tuple[CriticReviewBudgetExhausted, ...]:

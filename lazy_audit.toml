@@ -224,18 +224,18 @@ reason = "Review-admission boundary: persisted CriticReceipt completeness is ins
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
-line = 511
+line = 512
 method = "to_pylist"
 reason = "Single-mission control-loop boundary: the frame is filtered to one submitted mission and only its persisted status enters Python to decide whether the application service should tick again or return; no mission payload rows are materialized."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
-line = 533
+line = 534
 method = "to_pylist"
 reason = "Terminal mission result boundary: the frame is filtered to one terminal mission whose scalar repository, branch, status, and reason must become the immutable MissionResult returned by the public runtime API."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
-line = 552
+line = 553
 method = "to_pylist"
 reason = "Terminal task result boundary: task state is filtered to the submitted ids and left-joined lazily to first-class commit entities before the finite scalar rows become immutable TaskResult values returned by the public runtime API."

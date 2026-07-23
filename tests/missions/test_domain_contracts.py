@@ -130,6 +130,20 @@ def test_components_have_one_family_owned_schema_identity() -> None:
         assert component.__name__ not in archetype.__all__
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    (
+        {"information_view": "trajectory-and-diff"},
+        {"sampling": "temperature=0.7"},
+    ),
+)
+def test_critic_policy_rejects_unimplemented_behavior_axes(
+    overrides: dict[str, str],
+) -> None:
+    with pytest.raises(ValueError, match="unsupported critic"):
+        CriticPolicy(**overrides)
+
+
 def test_transition_tables_are_small_complete_and_terminal() -> None:
     assert TASK_TRANSITIONS == {
         TaskStatus.PENDING: frozenset({TaskStatus.READY}),

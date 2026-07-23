@@ -10,7 +10,7 @@ import json
 import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, ClassVar
 from urllib.parse import urlsplit
 
 from archetype.missions.critics.contracts import (
@@ -46,6 +46,7 @@ class CriticHarnessConfig:
 class CodexCriticDriver:
     """Fresh Codex invocation with model credentials and no Git capability."""
 
+    driver_id: ClassVar[str] = "codex"
     secret_name: str = "codex_oauth"
     workspace: str = "/workspace/review"
 
@@ -418,6 +419,10 @@ class CriticHarness:
             "author trajectory. Review only the immutable exact-head subject below. Run useful "
             "read-only or disposable probes in this clone. Return exactly one JSON object "
             f"matching this schema:\n{json.dumps(schema, indent=2)}\n\n"
+            f"Policy perspective: {request.policy.perspective}\n"
+            f"Policy information view: {request.policy.information_view}\n"
+            f"Policy driver: {request.policy.driver}\n"
+            f"Policy sampling: {request.policy.sampling}\n\n"
             f"Task: {request.task_name}\nSpecification:\n{request.task_prompt}\n\n"
             f"Repository: {request.repository}\nBranch ref: {request.branch}\n"
             f"Base SHA: {request.base_revision}\nHead SHA: {request.head_revision}\n"

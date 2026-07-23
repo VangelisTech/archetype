@@ -112,10 +112,12 @@ class _Driver:
     def __init__(self, output: str) -> None:
         self.output = output
         self.calls = 0
+        self.prompts: list[str] = []
 
     async def run(self, session, request, prompt: str) -> CriticProcessObservation:
         del session
         self.calls += 1
+        self.prompts.append(prompt)
         assert request.diff in prompt
         return CriticProcessObservation(0, stdout=self.output)
 
@@ -224,6 +226,10 @@ async def test_exact_head_review_is_independent_secret_negative_and_immutable(
     assert result.receipt.candidate_digest == request.candidate_digest
     assert result.receipt.policy_digest == request.policy.digest
     assert result.head_ready_at_ms <= result.critic_started_at_ms <= result.ended_at_ms
+    assert "Policy perspective: repository-correctness" in driver.prompts[0]
+    assert "Policy information view: task-diff-validators" in driver.prompts[0]
+    assert "Policy driver: codex" in driver.prompts[0]
+    assert "Policy sampling: provider-default" in driver.prompts[0]
     assert all(not item.secret_names for item in session.requests)
     assert later_head != head
     assert _git("--git-dir", str(remote), "merge-base", "--is-ancestor", head, later_head) == ""

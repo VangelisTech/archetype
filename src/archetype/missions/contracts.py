@@ -76,6 +76,10 @@ class CriticPolicy:
             raise ValueError("critic output_schema_version must be positive")
         if self.max_output_chars < 1:
             raise ValueError("critic max_output_chars must be positive")
+        if self.information_view != "task-diff-validators":
+            raise ValueError("unsupported critic information_view")
+        if self.sampling != "provider-default":
+            raise ValueError("unsupported critic sampling policy")
 
     @property
     def digest(self) -> str:

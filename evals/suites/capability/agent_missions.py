@@ -249,6 +249,8 @@ class _DeterministicAgentDriver:
 class _DeterministicCriticDriver:
     """Reject the first authored-green gate candidate, then approve exact heads."""
 
+    driver_id = "codex"
+
     def __init__(self) -> None:
         self.requests: list[CandidateReviewRequest] = []
         self.sandbox_ids: list[str] = []

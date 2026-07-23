@@ -235,7 +235,8 @@ built-in Components, graph view, transition processors, post-tick outbox, and
 injected Sandbox Backend plus coding-agent and critic drivers. The family-owned
 Sandbox Service retains the author Session and owns fresh candidate-scoped
 critic Sessions. Authors submit typed tasks and critic policies; they never
-wire that bundle themselves.
+wire that bundle themselves. A custom critic driver declares `driver_id`, and
+every submitted task policy must name that configured identity.
 
 Passing validators and publishing the exact head moves a task to `candidate`.
 The runtime returns terminal success only after a separate critic sandbox has

@@ -167,9 +167,16 @@ def test_agent_mission_capability_fails_on_stale_validation_revision(
 def test_agent_mission_capability_fails_without_staged_critic_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def drop_critic_evidence(*args: object, **kwargs: object) -> int:
-        del args, kwargs
-        return 0
+    stage_result = MissionService._stage_critic_result
+
+    async def drop_critic_evidence(
+        self: MissionService,
+        result: CriticExecutionResult,
+    ) -> int:
+        return await stage_result(
+            self,
+            replace(result, findings=(), receipt=None),
+        )
 
     monkeypatch.setattr(MissionService, "_stage_critic_result", drop_critic_evidence)
 
@@ -177,7 +184,7 @@ def test_agent_mission_capability_fails_without_staged_critic_evidence(
 
     assert not result.all_passed
     assert result.trials[0].error is not None
-    assert "did not terminate" in result.trials[0].error
+    assert "critic review budget exhausted" in result.trials[0].error
 
 
 def test_agent_mission_capability_rejects_same_author_critic_evidence(

@@ -424,7 +424,13 @@ state and do not return an acceptance verdict.
 
 Every `AgentTask` carries one `CriticPolicy`. Its canonical digest fixes the
 policy identity/version, perspective, information view, driver/model,
-sampling description, review/time/output budgets, and schema version.
+sampling description, review/time/output budgets, and schema version. The
+perspective is included in the critic prompt. V1 supports only the
+`task-diff-validators` information view and `provider-default` sampling;
+unsupported values fail during policy construction instead of becoming inert
+digest metadata. A configured critic driver declares its own `driver_id`;
+every task policy must match that identity, and `CriticExecution.driver`
+records the configured identity rather than echoing an unchecked label.
 
 When an author dispatch commits, `MissionService` starts provisioning a critic
 sandbox and hydrates the public base repository while the author works. After
