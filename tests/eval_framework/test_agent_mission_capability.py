@@ -11,8 +11,9 @@ import pytest
 
 from archetype.app.missions.service import MissionService
 from archetype.missions.coding_agents.harness import CodingAgentHarness
+from archetype.missions.critics import CriticExecutionResult
 from archetype.missions.processors import TaskDecisionProcessor
-from archetype.missions.sandboxes import ProcessResult
+from archetype.missions.sandboxes import ProcessResult, SandboxIdentity
 from evals.harness import EvalHarness
 from evals.suites.capability import agent_missions
 from evals.types import TaskResult
@@ -34,6 +35,7 @@ def test_agent_mission_capability_executes_the_real_closed_loop() -> None:
     assert [grader.grader_name for grader in result.trials[0].grader_results] == [
         "mission_processors_own_transitions",
         "mission_retry_uses_repository_evidence",
+        "mission_exact_head_critic_gates_promotion",
         "mission_publication_and_cleanup_are_real",
     ]
 
@@ -74,6 +76,7 @@ def test_agent_mission_capability_fails_without_coding_agent_harness(
     } == {
         "mission_processors_own_transitions",
         "mission_retry_uses_repository_evidence",
+        "mission_exact_head_critic_gates_promotion",
         "mission_publication_and_cleanup_are_real",
     }
 
@@ -88,17 +91,8 @@ def test_agent_mission_capability_fails_when_validators_are_bypassed(
         *,
         task_base_revision: str = "",
     ) -> tuple[tuple[object, ProcessResult], ...]:
-        del task_base_revision
-        return tuple(
-            (
-                validator,
-                ProcessResult(
-                    validator.spec.command,
-                    validator.spec.expected_returncode,
-                ),
-            )
-            for validator in request.validators
-        )
+        del request, task_base_revision
+        return ()
 
     monkeypatch.setattr(CodingAgentHarness, "_run_validators", bypass_validators)
 
@@ -110,6 +104,8 @@ def test_agent_mission_capability_fails_when_validators_are_bypassed(
     } == {
         "mission_processors_own_transitions",
         "mission_retry_uses_repository_evidence",
+        "mission_exact_head_critic_gates_promotion",
+        "mission_publication_and_cleanup_are_real",
     }
 
 
@@ -124,9 +120,8 @@ def test_agent_mission_capability_fails_when_publication_is_skipped(
     result = _evaluate_transition_authority()
 
     assert not result.all_passed
-    assert {
-        grader.grader_name for grader in result.trials[0].grader_results if not grader.passed
-    } == {"mission_publication_and_cleanup_are_real"}
+    assert result.trials[0].error is not None
+    assert "critic review budget exhausted" in result.trials[0].error
 
 
 def test_agent_mission_capability_fails_on_stale_validation_revision(
@@ -164,5 +159,120 @@ def test_agent_mission_capability_fails_on_stale_validation_revision(
     } == {
         "mission_processors_own_transitions",
         "mission_retry_uses_repository_evidence",
+        "mission_exact_head_critic_gates_promotion",
         "mission_publication_and_cleanup_are_real",
     }
+
+
+def test_agent_mission_capability_fails_without_staged_critic_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stage_result = MissionService._stage_critic_result
+
+    async def drop_critic_evidence(
+        self: MissionService,
+        result: CriticExecutionResult,
+    ) -> int:
+        return await stage_result(
+            self,
+            replace(result, findings=(), receipt=None),
+        )
+
+    monkeypatch.setattr(MissionService, "_stage_critic_result", drop_critic_evidence)
+
+    result = _evaluate_transition_authority()
+
+    assert not result.all_passed
+    assert result.trials[0].error is not None
+    assert "critic review budget exhausted" in result.trials[0].error
+
+
+def test_agent_mission_capability_rejects_same_author_critic_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stage_result = MissionService._stage_critic_result
+
+    async def stage_same_author(
+        self: MissionService,
+        result: CriticExecutionResult,
+    ) -> int:
+        same_author = SandboxIdentity(
+            result.sandbox.provider,
+            result.request.author_sandbox_id,
+            result.sandbox.environment,
+        )
+        return await stage_result(self, replace(result, sandbox=same_author))
+
+    monkeypatch.setattr(MissionService, "_stage_critic_result", stage_same_author)
+
+    result = _evaluate_transition_authority()
+
+    assert not result.all_passed
+    assert result.trials[0].error is not None
+    assert "critic review budget exhausted" in result.trials[0].error
+
+
+def test_agent_mission_capability_rejects_wrong_candidate_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stage_result = MissionService._stage_critic_result
+
+    async def stage_wrong_candidate(
+        self: MissionService,
+        result: CriticExecutionResult,
+    ) -> int:
+        if result.receipt is None:
+            return await stage_result(self, result)
+        wrong_receipt = replace(result.receipt, candidate_digest="wrong-candidate")
+        return await stage_result(self, replace(result, receipt=wrong_receipt))
+
+    monkeypatch.setattr(MissionService, "_stage_critic_result", stage_wrong_candidate)
+
+    result = _evaluate_transition_authority()
+
+    assert not result.all_passed
+    assert result.trials[0].error is not None
+    assert "critic review budget exhausted" in result.trials[0].error
+
+
+def test_agent_mission_capability_rejects_wrong_head_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stage_result = MissionService._stage_critic_result
+
+    async def stage_wrong_head(
+        self: MissionService,
+        result: CriticExecutionResult,
+    ) -> int:
+        wrong_request = replace(result.request, head_revision="wrong-head")
+        return await stage_result(self, replace(result, request=wrong_request))
+
+    monkeypatch.setattr(MissionService, "_stage_critic_result", stage_wrong_head)
+
+    result = _evaluate_transition_authority()
+
+    assert not result.all_passed
+    assert result.trials[0].error is not None
+    assert "critic review budget exhausted" in result.trials[0].error
+
+
+def test_agent_mission_capability_fails_when_blocking_findings_are_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stage_result = MissionService._stage_critic_result
+
+    async def stage_without_findings(
+        self: MissionService,
+        result: CriticExecutionResult,
+    ) -> int:
+        return await stage_result(self, replace(result, findings=()))
+
+    monkeypatch.setattr(MissionService, "_stage_critic_result", stage_without_findings)
+
+    result = _evaluate_transition_authority()
+
+    assert not result.all_passed
+    assert result.trials[0].error is None
+    assert {
+        grader.grader_name for grader in result.trials[0].grader_results if not grader.passed
+    } == {"mission_exact_head_critic_gates_promotion"}

@@ -20,9 +20,15 @@ from archetype.missions import (
     AgentExecution,
     AgentMissionConfig,
     AgentTask,
+    Candidate,
     Checkpoint,
     CommandValidator,
     Commit,
+    CriticExecution,
+    CriticExecutionStatus,
+    CriticFinding,
+    CriticPolicy,
+    CriticReceipt,
     DependsOn,
     FrictionLog,
     RepositoryPublicationPolicy,
@@ -33,6 +39,7 @@ from archetype.missions import (
     ValidationResult,
 )
 from archetype.missions.coding_agents import AgentProcessObservation
+from archetype.missions.critics import CriticProcessObservation
 from archetype.missions.relations import Guards
 from archetype.missions.sandboxes import (
     CheckpointRef,
@@ -85,7 +92,9 @@ class _LocalSession:
 
     @property
     def identity(self) -> SandboxIdentity:
-        return SandboxIdentity("local", "sandbox-contract", self.spec.environment)
+        dispatch = self.spec.metadata_dict().get("dispatch")
+        sandbox_id = f"sandbox-critic-{dispatch[:12]}" if dispatch else "sandbox-contract"
+        return SandboxIdentity("local", sandbox_id, self.spec.environment)
 
     @property
     def capabilities(self) -> SandboxCapabilities:
@@ -132,14 +141,50 @@ class _LocalBackend:
     def __init__(self) -> None:
         self.creates = 0
         self.session: _LocalSession | None = None
+        self.sessions: list[_LocalSession] = []
+        self.critic_sessions: list[_LocalSession] = []
 
     async def create(self, spec: SandboxSpec) -> _LocalSession:
+        if spec.metadata_dict().get("role") == "critic":
+            session = _LocalSession(spec)
+            self.critic_sessions.append(session)
+            return session
         self.creates += 1
         self.session = _LocalSession(spec)
+        self.sessions.append(self.session)
         return self.session
 
     async def restore(self, spec: SandboxSpec, checkpoint: CheckpointRef) -> _LocalSession:
         raise NotImplementedError
+
+
+class _OneShotCloseFailureSession(_LocalSession):
+    async def close(self) -> None:
+        self.close_attempts += 1
+        if self.close_attempts == 1:
+            raise RuntimeError("provider close unavailable")
+        self.closed += 1
+
+
+class _CriticCloseRetryBackend(_LocalBackend):
+    async def create(self, spec: SandboxSpec) -> _LocalSession:
+        if spec.metadata_dict().get("role") == "critic":
+            session = _OneShotCloseFailureSession(spec)
+            self.critic_sessions.append(session)
+            return session
+        return await super().create(spec)
+
+
+class _CriticCreateFailureBackend(_LocalBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.critic_create_attempts = 0
+
+    async def create(self, spec: SandboxSpec) -> _LocalSession:
+        if spec.metadata_dict().get("role") != "critic":
+            return await super().create(spec)
+        self.critic_create_attempts += 1
+        raise RuntimeError("critic provision unavailable")
 
 
 class _LiveOutputSession(_LocalSession):
@@ -149,10 +194,13 @@ class _LiveOutputSession(_LocalSession):
 
 
 class _LiveOutputBackend(_LocalBackend):
-    async def create(self, spec: SandboxSpec) -> _LiveOutputSession:
+    async def create(self, spec: SandboxSpec) -> _LocalSession:
+        if spec.metadata_dict().get("role") == "critic":
+            return await super().create(spec)
         self.creates += 1
         session = _LiveOutputSession(spec)
         self.session = session
+        self.sessions.append(session)
         return session
 
 
@@ -176,11 +224,28 @@ class _BlockingCloseBackend(_LocalBackend):
         super().__init__()
         self.created = asyncio.Event()
 
-    async def create(self, spec: SandboxSpec) -> _BlockingCloseSession:
+    async def create(self, spec: SandboxSpec) -> _LocalSession:
+        if spec.metadata_dict().get("role") == "critic":
+            return await super().create(spec)
         self.creates += 1
         session = _BlockingCloseSession(spec)
         self.session = session
+        self.sessions.append(session)
         self.created.set()
+        return session
+
+
+class _BlockingCriticCloseBackend(_LocalBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.critic_created = asyncio.Event()
+
+    async def create(self, spec: SandboxSpec) -> _LocalSession:
+        if spec.metadata_dict().get("role") != "critic":
+            return await super().create(spec)
+        session = _BlockingCloseSession(spec)
+        self.critic_sessions.append(session)
+        self.critic_created.set()
         return session
 
 
@@ -263,8 +328,13 @@ class _AutoReplacementBackend:
         self.fail_create_sequences = fail_create_sequences
         self.create_attempts = 0
         self.sessions: list[_AutoReplacementSession] = []
+        self.critic_sessions: list[_LocalSession] = []
 
-    async def create(self, spec: SandboxSpec) -> _AutoReplacementSession:
+    async def create(self, spec: SandboxSpec) -> _LocalSession:
+        if spec.metadata_dict().get("role") == "critic":
+            session = _LocalSession(spec)
+            self.critic_sessions.append(session)
+            return session
         self.create_attempts += 1
         sequence = self.create_attempts
         if sequence in self.fail_create_sequences:
@@ -339,6 +409,83 @@ class _MissionDriver:
             result.stdout,
             result.stderr,
             session_id=f"session-{request.task_name}",
+        )
+
+
+class _ApprovingCriticDriver:
+    """Deterministic independent critic used by credential-free contracts."""
+
+    driver_id = "codex"
+
+    def __init__(self) -> None:
+        self.requests = []
+        self.sandbox_ids: list[str] = []
+
+    async def run(self, session, request, prompt: str) -> CriticProcessObservation:
+        del prompt
+        self.requests.append(request)
+        self.sandbox_ids.append(session.identity.sandbox_id)
+        return CriticProcessObservation(
+            returncode=0,
+            stdout=(
+                '{"schema_version":1,"conclusion":"approved",'
+                '"reviewed_scope":"exact task diff","findings":[]}'
+            ),
+        )
+
+
+class _SequencedCriticDriver(_ApprovingCriticDriver):
+    def __init__(self, outputs: list[CriticProcessObservation]) -> None:
+        super().__init__()
+        self.outputs = outputs
+
+    async def run(self, session, request, prompt: str) -> CriticProcessObservation:
+        self.requests.append(request)
+        self.sandbox_ids.append(session.identity.sandbox_id)
+        return self.outputs.pop(0)
+
+
+class _CancelledOnceCriticDriver(_ApprovingCriticDriver):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+
+    async def run(self, session, request, prompt: str) -> CriticProcessObservation:
+        del prompt
+        self.requests.append(request)
+        self.sandbox_ids.append(session.identity.sandbox_id)
+        if len(self.requests) == 1:
+            self.started.set()
+            await asyncio.Event().wait()
+        return CriticProcessObservation(
+            returncode=0,
+            stdout=(
+                '{"schema_version":1,"conclusion":"approved",'
+                '"reviewed_scope":"exact task diff","findings":[]}'
+            ),
+        )
+
+
+class _CandidateRepairDriver:
+    def __init__(self, workspace: Path) -> None:
+        self.workspace = workspace
+        self.requests = []
+
+    async def run(self, session, request, prompt: str) -> AgentProcessObservation:
+        del prompt
+        self.requests.append(request)
+        content = "candidate" if request.dispatch_sequence == 1 else "repaired"
+        result = await session.exec(
+            ProcessRequest(
+                ("sh", "-lc", f"printf '{content}\\n' > artifact.txt"),
+                workdir=str(self.workspace),
+            )
+        )
+        return AgentProcessObservation(
+            result.returncode,
+            result.stdout,
+            result.stderr,
+            session_id="author-session",
         )
 
 
@@ -440,10 +587,13 @@ class _CheckpointBackend(_LocalBackend):
         self.restore_fails = False
         self.restores = 0
 
-    async def create(self, spec: SandboxSpec) -> _CheckpointSession:
+    async def create(self, spec: SandboxSpec) -> _LocalSession:
+        if spec.metadata_dict().get("role") == "critic":
+            return await super().create(spec)
         self.creates += 1
         session = _CheckpointSession(spec, fail=self.fail)
         self.session = session
+        self.sessions.append(session)
         return session
 
     async def restore(
@@ -520,6 +670,7 @@ async def test_explicit_graph_drives_revision_bound_retry_and_downstream_readine
     workspace = tmp_path / "sandbox" / "repo"
     backend = _LocalBackend()
     driver = _MissionDriver(workspace)
+    critic = _ApprovingCriticDriver()
     storage = StorageConfig(uri=str(tmp_path / "agent_missions"), namespace="contract")
 
     async with ArchetypeRuntime() as runtime:
@@ -529,7 +680,9 @@ async def test_explicit_graph_drives_revision_bound_retry_and_downstream_readine
                 sandbox_backend=backend,
                 sandbox_environment="local-test@sha256:contract",
                 driver=driver,
+                critic_driver=critic,
                 workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
                 max_ticks=40,
             ),
             storage=storage,
@@ -573,7 +726,9 @@ async def test_explicit_graph_drives_revision_bound_retry_and_downstream_readine
         assert all(task.commit_shas for task in result.tasks)
         assert all(len(task.commit_shas) == len(set(task.commit_shas)) for task in result.tasks)
         assert backend.creates == 1
+        assert len(backend.critic_sessions) == 3
         assert backend.session is not None and backend.session.closed == 1
+        assert all(session.closed == 1 for session in backend.critic_sessions)
         assert [(request.task_name, request.dispatch_sequence) for request in driver.requests] == [
             ("regression", 1),
             ("regression", 2),
@@ -585,13 +740,27 @@ async def test_explicit_graph_drives_revision_bound_retry_and_downstream_readine
             request.publication_policy is RepositoryPublicationPolicy.COMMIT_AND_PUSH
             for request in driver.requests
         )
+        assert len(critic.requests) == 2
+        assert all(
+            request.author_sandbox_id != sandbox_id
+            for request, sandbox_id in zip(
+                critic.requests,
+                critic.sandbox_ids,
+                strict=True,
+            )
+        )
         validator_commands = {
             'test "$(cat regression.txt)" = good',
             "test -f implementation.txt",
         }
+        author_session = next(
+            session
+            for session in backend.sessions
+            if session.spec.metadata_dict().get("role") != "critic"
+        )
         validator_requests = [
             request
-            for request in backend.session.requests
+            for request in author_session.requests
             if len(request.argv) == 3
             and request.argv[:2] == ("sh", "-lc")
             and request.argv[2] in validator_commands
@@ -668,6 +837,335 @@ async def test_explicit_graph_drives_revision_bound_retry_and_downstream_readine
 
 
 @pytest.mark.asyncio
+async def test_blocking_critic_findings_drive_a_new_candidate_before_acceptance(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "author" / "repo"
+    backend = _LocalBackend()
+    author = _CandidateRepairDriver(workspace)
+    critic = _SequencedCriticDriver(
+        [
+            CriticProcessObservation(
+                0,
+                stdout=(
+                    '{"schema_version":1,"conclusion":"blocking",'
+                    '"reviewed_scope":"exact task diff","findings":[{'
+                    '"finding_id":"wrong-value","severity":"blocking",'
+                    '"category":"correctness","confidence":1.0,'
+                    '"title":"Wrong marker","detail":"artifact.txt is not repaired",'
+                    '"evidence_location":"artifact.txt:1",'
+                    '"reproduction":"test $(cat artifact.txt) = repaired"}]}'
+                ),
+            ),
+            CriticProcessObservation(
+                0,
+                stdout=(
+                    '{"schema_version":1,"conclusion":"approved",'
+                    '"reviewed_scope":"exact task diff","findings":[]}'
+                ),
+            ),
+        ]
+    )
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "critic-repair",
+            config=AgentMissionConfig(
+                sandbox_backend=backend,
+                sandbox_environment="local-critic-contract",
+                driver=author,
+                critic_driver=critic,
+                workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
+                checkpoint_after_dispatch=False,
+                max_ticks=30,
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "critic_repair"),
+                namespace="contract",
+            ),
+        ) as missions:
+            submitted = await missions.submit(
+                repository=str(remote),
+                branch="agent/critic-repair",
+                tasks=(
+                    AgentTask(
+                        "repair",
+                        "Write the correct artifact marker.",
+                        (
+                            CommandValidator(
+                                "exists",
+                                ("sh", "-lc", "test -f artifact.txt"),
+                            ),
+                        ),
+                        max_dispatches=2,
+                        critic_policy=CriticPolicy(max_reviews=2),
+                    ),
+                ),
+            )
+            result = await missions.run(submitted)
+
+            assert result.status == "succeeded"
+            assert result.tasks[0].dispatches == 2
+            assert len(author.requests) == 2
+            assert len(critic.requests) == 2
+            repair_findings = author.requests[1].previous_critic_findings
+            assert len(repair_findings) == 1
+            assert repair_findings[0].candidate_id == critic.requests[0].candidate_id
+            assert repair_findings[0].finding_id == "wrong-value"
+
+            candidates = latest(await missions.query(Candidate)).to_pylist()
+            receipts = latest(await missions.query(CriticReceipt)).to_pylist()
+            findings = latest(await missions.query(CriticFinding)).to_pylist()
+            critic_executions = latest(await missions.query(CriticExecution)).to_pylist()
+            assert len(candidates) == 2
+            assert len(receipts) == 2
+            assert len(findings) == 1
+            assert len(critic_executions) == 2
+            candidate = Candidate.get_prefix()
+            assert (
+                candidates[0][f"{candidate}head_revision"]
+                != candidates[1][f"{candidate}head_revision"]
+            )
+
+
+@pytest.mark.asyncio
+async def test_critic_infrastructure_retry_never_repeats_author_work(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "author" / "repo"
+    backend = _LocalBackend()
+    author = _CandidateRepairDriver(workspace)
+    critic = _SequencedCriticDriver(
+        [
+            CriticProcessObservation(9, stderr="review provider unavailable"),
+            CriticProcessObservation(
+                0,
+                stdout=(
+                    '{"schema_version":1,"conclusion":"approved",'
+                    '"reviewed_scope":"exact task diff","findings":[]}'
+                ),
+            ),
+        ]
+    )
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "critic-retry",
+            config=AgentMissionConfig(
+                sandbox_backend=backend,
+                sandbox_environment="local-critic-contract",
+                driver=author,
+                critic_driver=critic,
+                workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
+                checkpoint_after_dispatch=False,
+                max_ticks=30,
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "critic_retry"),
+                namespace="contract",
+            ),
+        ) as missions:
+            submitted = await missions.submit(
+                repository=str(remote),
+                branch="agent/critic-retry",
+                tasks=(
+                    AgentTask(
+                        "review",
+                        "Write one candidate artifact.",
+                        (
+                            CommandValidator(
+                                "exists",
+                                ("sh", "-lc", "test -f artifact.txt"),
+                            ),
+                        ),
+                        critic_policy=CriticPolicy(max_reviews=2),
+                    ),
+                ),
+            )
+            result = await missions.run(submitted)
+
+            assert result.status == "succeeded"
+            assert result.tasks[0].dispatches == 1
+            assert len(author.requests) == 1
+            assert len(critic.requests) == 2
+            assert len(latest(await missions.query(Candidate)).to_pylist()) == 1
+            executions = latest(await missions.query(CriticExecution)).to_pylist()
+            status = CriticExecution.get_prefix()
+            assert [row[f"{status}status"] for row in executions] == [
+                "errored",
+                "exited",
+            ]
+            assert {row[f"{status}driver"] for row in executions} == {critic.driver_id}
+
+
+@pytest.mark.asyncio
+async def test_cancelled_critic_attempt_is_requeued_without_repeating_author_work(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "author" / "repo"
+    backend = _LocalBackend()
+    author = _CandidateRepairDriver(workspace)
+    critic = _CancelledOnceCriticDriver()
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "critic-cancellation",
+            config=AgentMissionConfig(
+                sandbox_backend=backend,
+                sandbox_environment="local-critic-contract",
+                driver=author,
+                critic_driver=critic,
+                workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
+                checkpoint_after_dispatch=False,
+                max_ticks=30,
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "critic_cancellation"),
+                namespace="contract",
+            ),
+        ) as missions:
+            submitted = await missions.submit(
+                repository=str(remote),
+                branch="agent/critic-cancellation",
+                tasks=(
+                    AgentTask(
+                        "review",
+                        "Write one candidate artifact.",
+                        (
+                            CommandValidator(
+                                "exists",
+                                ("sh", "-lc", "test -f artifact.txt"),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            interrupted = asyncio.create_task(missions.run(submitted))
+            await critic.started.wait()
+            interrupted.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await interrupted
+
+            result = await missions.run(submitted)
+
+            assert result.status == "succeeded"
+            assert result.tasks[0].dispatches == 1
+            assert len(author.requests) == 1
+            assert len(critic.requests) == 2
+            executions = latest(await missions.query(CriticExecution)).to_pylist()
+            assert len(executions) == 1
+
+
+@pytest.mark.asyncio
+async def test_task_critic_policy_must_match_the_configured_driver(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "author" / "repo"
+    critic = _ApprovingCriticDriver()
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "critic-driver-mismatch",
+            config=AgentMissionConfig(
+                sandbox_backend=_LocalBackend(),
+                sandbox_environment="local-critic-contract",
+                driver=_CandidateRepairDriver(workspace),
+                critic_driver=critic,
+                workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
+                checkpoint_after_dispatch=False,
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "critic_driver_mismatch"),
+                namespace="contract",
+            ),
+        ) as missions:
+            with pytest.raises(ValueError, match="must match the configured critic driver"):
+                await missions.submit(
+                    repository="owner/repository",
+                    branch="agent/critic-driver-mismatch",
+                    tasks=(
+                        AgentTask(
+                            "review",
+                            "Write one candidate artifact.",
+                            (
+                                CommandValidator(
+                                    "exists",
+                                    ("sh", "-lc", "test -f artifact.txt"),
+                                ),
+                            ),
+                            critic_policy=CriticPolicy(driver="another-driver"),
+                        ),
+                    ),
+                )
+
+
+@pytest.mark.asyncio
+async def test_exhausted_critic_budget_fails_closed_without_repeating_author_work(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "author" / "repo"
+    backend = _LocalBackend()
+    author = _CandidateRepairDriver(workspace)
+    critic = _SequencedCriticDriver(
+        [CriticProcessObservation(9, stderr="review provider unavailable")]
+    )
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "critic-exhausted",
+            config=AgentMissionConfig(
+                sandbox_backend=backend,
+                sandbox_environment="local-critic-contract",
+                driver=author,
+                critic_driver=critic,
+                workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
+                checkpoint_after_dispatch=False,
+                max_ticks=30,
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "critic_exhausted"),
+                namespace="contract",
+            ),
+        ) as missions:
+            submitted = await missions.submit(
+                repository=str(remote),
+                branch="agent/critic-exhausted",
+                tasks=(
+                    AgentTask(
+                        "review",
+                        "Write one candidate artifact.",
+                        (
+                            CommandValidator(
+                                "exists",
+                                ("sh", "-lc", "test -f artifact.txt"),
+                            ),
+                        ),
+                        critic_policy=CriticPolicy(max_reviews=1),
+                    ),
+                ),
+            )
+
+            with pytest.raises(RuntimeError, match="critic review budget exhausted"):
+                await missions.run(submitted)
+
+            assert len(author.requests) == 1
+            assert len(critic.requests) == 1
+            assert len(latest(await missions.query(Candidate)).to_pylist()) == 1
+            state_rows = latest(await missions.query(TaskState)).to_pylist()
+            state = TaskState.get_prefix()
+            assert state_rows[0][f"{state}status"] == "candidate"
+
+
+@pytest.mark.asyncio
 async def test_automatic_replacement_closes_prior_sandbox_evidence(
     tmp_path: Path,
 ) -> None:
@@ -683,7 +1181,9 @@ async def test_automatic_replacement_closes_prior_sandbox_evidence(
                 sandbox_backend=backend,
                 sandbox_environment="local-replacement-test",
                 driver=driver,
+                critic_driver=_ApprovingCriticDriver(),
                 workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
                 checkpoint_after_dispatch=False,
             ),
             storage=StorageConfig(
@@ -723,16 +1223,32 @@ async def test_automatic_replacement_closes_prior_sandbox_evidence(
             sandbox = Sandbox.get_prefix()
             rows = latest(await missions.query(Sandbox)).to_pylist()
             by_id = {str(row[f"{sandbox}sandbox_id"]): row for row in rows}
+            author_by_id = {
+                sandbox_id: row
+                for sandbox_id, row in by_id.items()
+                if sandbox_id.startswith("sandbox-replacement-")
+            }
 
-            assert set(by_id) == {
+            assert set(author_by_id) == {
                 "sandbox-replacement-1",
                 "sandbox-replacement-2",
             }
-            assert by_id["sandbox-replacement-1"][f"{sandbox}status"] == SandboxStatus.CLOSED.value
-            assert "simulated provider transport loss" in str(
-                by_id["sandbox-replacement-1"][f"{sandbox}error"]
+            assert (
+                author_by_id["sandbox-replacement-1"][f"{sandbox}status"]
+                == SandboxStatus.CLOSED.value
             )
-            assert by_id["sandbox-replacement-2"][f"{sandbox}status"] == SandboxStatus.CLOSED.value
+            assert "simulated provider transport loss" in str(
+                author_by_id["sandbox-replacement-1"][f"{sandbox}error"]
+            )
+            assert (
+                author_by_id["sandbox-replacement-2"][f"{sandbox}status"]
+                == SandboxStatus.CLOSED.value
+            )
+            assert all(
+                row[f"{sandbox}status"] == SandboxStatus.CLOSED.value
+                for sandbox_id, row in by_id.items()
+                if sandbox_id.startswith("sandbox-critic-")
+            )
 
 
 @pytest.mark.asyncio
@@ -751,7 +1267,9 @@ async def test_same_tick_replacement_keeps_prior_sandbox_closed(
                 sandbox_backend=backend,
                 sandbox_environment="local-replacement-test",
                 driver=driver,
+                critic_driver=_ApprovingCriticDriver(),
                 workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
                 checkpoint_after_dispatch=True,
             ),
             storage=StorageConfig(
@@ -822,7 +1340,9 @@ async def test_cancelled_terminal_close_does_not_record_teardown_failure(
                 sandbox_backend=backend,
                 sandbox_environment="local-close-cancellation-test",
                 driver=_MissionDriver(workspace),
+                critic_driver=_ApprovingCriticDriver(),
                 workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
                 checkpoint_after_dispatch=False,
             ),
             storage=StorageConfig(
@@ -876,6 +1396,81 @@ async def test_cancelled_terminal_close_does_not_record_teardown_failure(
 
 
 @pytest.mark.asyncio
+async def test_cancelled_critic_close_propagates_and_retains_cleanup(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    backend = _BlockingCriticCloseBackend()
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "cancelled-critic-close",
+            config=AgentMissionConfig(
+                sandbox_backend=backend,
+                sandbox_environment="local-critic-close-cancellation-test",
+                driver=_MissionDriver(workspace),
+                critic_driver=_ApprovingCriticDriver(),
+                workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
+                checkpoint_after_dispatch=False,
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "cancelled_critic_close_missions"),
+                namespace="cancelled_critic_close_contract",
+            ),
+        ) as missions:
+            submitted = await missions.submit(
+                repository=str(remote),
+                branch="agent/cancelled-critic-close",
+                tasks=(
+                    AgentTask(
+                        "implementation",
+                        "Create implementation.txt containing fixed.",
+                        (
+                            CommandValidator(
+                                "focused",
+                                (
+                                    "sh",
+                                    "-lc",
+                                    'test "$(cat implementation.txt)" = fixed',
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+            running = asyncio.create_task(missions.run(submitted))
+            await backend.critic_created.wait()
+            critic_session = backend.critic_sessions[0]
+            assert isinstance(critic_session, _BlockingCloseSession)
+            await critic_session.close_started.wait()
+            running.cancel()
+
+            with pytest.raises(asyncio.CancelledError):
+                await running
+
+            critic_session.close_release.set()
+            await asyncio.wait_for(critic_session.close_finished.wait(), timeout=1)
+            result = await missions.run(submitted)
+
+            assert result.status == "succeeded"
+            assert critic_session.close_attempts == 1
+            sandbox = Sandbox.get_prefix()
+            rows = latest(await missions.query(Sandbox)).to_pylist()
+            critic_row = next(
+                row
+                for row in rows
+                if row[f"{sandbox}sandbox_id"] == critic_session.identity.sandbox_id
+            )
+            assert critic_row[f"{sandbox}status"] == SandboxStatus.CLOSED.value
+            assert critic_row[f"{sandbox}error"] == ""
+            with pytest.raises(KeyError, match="FrictionLog has never been spawned"):
+                await missions.query(FrictionLog)
+
+
+@pytest.mark.asyncio
 async def test_terminal_close_failure_is_durable_and_retryable(
     tmp_path: Path,
 ) -> None:
@@ -890,7 +1485,9 @@ async def test_terminal_close_failure_is_durable_and_retryable(
                 sandbox_backend=backend,
                 sandbox_environment="local-replacement-test",
                 driver=_MissionDriver(workspace),
+                critic_driver=_ApprovingCriticDriver(),
                 workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
                 checkpoint_after_dispatch=False,
             ),
             storage=StorageConfig(
@@ -927,8 +1524,11 @@ async def test_terminal_close_failure_is_durable_and_retryable(
             assert await session.status() is SandboxStatus.ERRORED
             sandbox = Sandbox.get_prefix()
             rows = latest(await missions.query(Sandbox)).to_pylist()
-            assert rows[0][f"{sandbox}status"] == SandboxStatus.ERRORED.value
-            assert "provider close unavailable" in str(rows[0][f"{sandbox}error"])
+            author_row = next(
+                row for row in rows if row[f"{sandbox}sandbox_id"] == session.identity.sandbox_id
+            )
+            assert author_row[f"{sandbox}status"] == SandboxStatus.ERRORED.value
+            assert "provider close unavailable" in str(author_row[f"{sandbox}error"])
             friction = FrictionLog.get_prefix()
             friction_rows = latest(await missions.query(FrictionLog)).to_pylist()
             assert any(
@@ -943,8 +1543,11 @@ async def test_terminal_close_failure_is_durable_and_retryable(
             assert session.close_attempts == 2
             assert await session.status() is SandboxStatus.CLOSED
             rows = latest(await missions.query(Sandbox)).to_pylist()
-            assert rows[0][f"{sandbox}status"] == SandboxStatus.CLOSED.value
-            assert "provider close unavailable" in str(rows[0][f"{sandbox}error"])
+            author_row = next(
+                row for row in rows if row[f"{sandbox}sandbox_id"] == session.identity.sandbox_id
+            )
+            assert author_row[f"{sandbox}status"] == SandboxStatus.CLOSED.value
+            assert "provider close unavailable" in str(author_row[f"{sandbox}error"])
 
 
 @pytest.mark.asyncio
@@ -961,7 +1564,9 @@ async def test_public_mission_close_remains_retryable_after_cleanup_failure(
             sandbox_backend=backend,
             sandbox_environment="local-replacement-test",
             driver=_MissionDriver(workspace),
+            critic_driver=_ApprovingCriticDriver(),
             workspace=str(workspace),
+            critic_workspace=str(tmp_path / "critic"),
             checkpoint_after_dispatch=False,
         ),
         storage=StorageConfig(
@@ -1002,7 +1607,10 @@ async def test_public_mission_close_remains_retryable_after_cleanup_failure(
         assert await session.status() is SandboxStatus.ERRORED
         sandbox = Sandbox.get_prefix()
         rows = latest(await missions.query(Sandbox)).to_pylist()
-        assert rows[0][f"{sandbox}status"] == SandboxStatus.ERRORED.value
+        author_row = next(
+            row for row in rows if row[f"{sandbox}sandbox_id"] == session.identity.sandbox_id
+        )
+        assert author_row[f"{sandbox}status"] == SandboxStatus.ERRORED.value
 
         await missions.close()
 
@@ -1030,7 +1638,9 @@ async def test_public_and_runtime_mission_close_are_single_flight(
             sandbox_backend=backend,
             sandbox_environment="local-test",
             driver=_MissionDriver(tmp_path / "sandbox" / "repo"),
+            critic_driver=_ApprovingCriticDriver(),
             workspace=str(tmp_path / "sandbox" / "repo"),
+            critic_workspace=str(tmp_path / "critic"),
             checkpoint_after_dispatch=False,
         ),
         storage=StorageConfig(
@@ -1099,7 +1709,9 @@ async def test_runtime_shutdown_reconciles_a_retained_ready_mission_sandbox(
             sandbox_backend=backend,
             sandbox_environment="local-replacement-test",
             driver=_MissionDriver(workspace),
+            critic_driver=_ApprovingCriticDriver(),
             workspace=str(workspace),
+            critic_workspace=str(tmp_path / "critic"),
             checkpoint_after_dispatch=False,
         ),
         storage=storage,
@@ -1188,7 +1800,9 @@ async def test_runtime_shutdown_retries_failed_mission_cleanup_before_finalizati
             sandbox_backend=backend,
             sandbox_environment="local-replacement-test",
             driver=_MissionDriver(workspace),
+            critic_driver=_ApprovingCriticDriver(),
             workspace=str(workspace),
+            critic_workspace=str(tmp_path / "critic"),
             checkpoint_after_dispatch=False,
         ),
         storage=storage,
@@ -1251,6 +1865,167 @@ async def test_runtime_shutdown_retries_failed_mission_cleanup_before_finalizati
 
 
 @pytest.mark.asyncio
+async def test_critic_close_failure_is_durable_and_retryable(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    storage = StorageConfig(
+        uri=str(tmp_path / "critic_close_cleanup_retry"),
+        namespace="critic_close_cleanup_retry_contract",
+    )
+    backend = _CriticCloseRetryBackend()
+    runtime = ArchetypeRuntime()
+    missions = runtime.missions(
+        "critic-close-cleanup-retry",
+        config=AgentMissionConfig(
+            sandbox_backend=backend,
+            sandbox_environment="local-critic-close-test",
+            driver=_MissionDriver(workspace),
+            critic_driver=_ApprovingCriticDriver(),
+            workspace=str(workspace),
+            critic_workspace=str(tmp_path / "critic"),
+            checkpoint_after_dispatch=False,
+        ),
+        storage=storage,
+    )
+    submitted = await missions.submit(
+        repository=str(remote),
+        branch="agent/critic-close-cleanup-retry",
+        tasks=(
+            AgentTask(
+                "implementation",
+                "Create implementation.txt containing fixed.",
+                (
+                    CommandValidator(
+                        "focused",
+                        (
+                            "sh",
+                            "-lc",
+                            'test "$(cat implementation.txt)" = fixed',
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="provider close unavailable"):
+        await missions.run(submitted)
+
+    assert len(backend.critic_sessions) == 1
+    critic_session = backend.critic_sessions[0]
+    assert critic_session.close_attempts == 1
+    assert critic_session.closed == 0
+    sandbox = Sandbox.get_prefix()
+    rows = latest(await missions.query(Sandbox)).to_pylist()
+    critic_row = next(
+        row for row in rows if row[f"{sandbox}sandbox_id"] == critic_session.identity.sandbox_id
+    )
+    assert critic_row[f"{sandbox}status"] == SandboxStatus.ERRORED.value
+    assert "provider close unavailable" in str(critic_row[f"{sandbox}error"])
+    friction = FrictionLog.get_prefix()
+    friction_rows = latest(await missions.query(FrictionLog)).to_pylist()
+    assert any(
+        row[f"{friction}kind"] == "critic_sandbox_teardown"
+        and "provider close unavailable" in str(row[f"{friction}message"])
+        for row in friction_rows
+    )
+
+    result = await missions.run(submitted)
+
+    assert result.status == "succeeded"
+    assert critic_session.close_attempts == 2
+    assert critic_session.closed == 1
+    world_id = missions.world_id
+
+    await runtime.shutdown()
+
+    assert critic_session.close_attempts == 2
+    assert critic_session.closed == 1
+    async with ArchetypeRuntime() as reader:
+        attached = reader.attach(world_id, storage=storage)
+        rows = latest(await attached.query(Sandbox)).to_pylist()
+        critic_rows = [
+            row for row in rows if row[f"{sandbox}sandbox_id"] == critic_session.identity.sandbox_id
+        ]
+        assert len(critic_rows) == 1
+        assert critic_rows[0][f"{sandbox}status"] == SandboxStatus.CLOSED.value
+
+
+@pytest.mark.asyncio
+async def test_critic_acquisition_failure_records_errored_synthetic_sandbox(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    backend = _CriticCreateFailureBackend()
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "critic-acquisition-failure",
+            config=AgentMissionConfig(
+                sandbox_backend=backend,
+                sandbox_environment="local-critic-create-failure-test",
+                driver=_MissionDriver(workspace),
+                critic_driver=_ApprovingCriticDriver(),
+                workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
+                checkpoint_after_dispatch=False,
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "critic_acquisition_failure"),
+                namespace="critic_acquisition_failure_contract",
+            ),
+        ) as missions:
+            submitted = await missions.submit(
+                repository=str(remote),
+                branch="agent/critic-acquisition-failure",
+                tasks=(
+                    AgentTask(
+                        "implementation",
+                        "Create implementation.txt containing fixed.",
+                        (
+                            CommandValidator(
+                                "focused",
+                                (
+                                    "sh",
+                                    "-lc",
+                                    'test "$(cat implementation.txt)" = fixed',
+                                ),
+                            ),
+                        ),
+                        critic_policy=CriticPolicy(max_reviews=1),
+                    ),
+                ),
+            )
+
+            with pytest.raises(RuntimeError, match="critic review budget exhausted"):
+                await missions.run(submitted)
+
+            assert backend.critic_create_attempts == 1
+            sandbox = Sandbox.get_prefix()
+            rows = latest(await missions.query(Sandbox)).to_pylist()
+            unavailable = [
+                row
+                for row in rows
+                if str(row[f"{sandbox}sandbox_id"]).startswith("critic-unavailable-")
+            ]
+            assert len(unavailable) == 1
+            assert unavailable[0][f"{sandbox}status"] == SandboxStatus.ERRORED.value
+            assert "critic provision unavailable" in str(unavailable[0][f"{sandbox}error"])
+
+            execution = CriticExecution.get_prefix()
+            execution_rows = latest(await missions.query(CriticExecution)).to_pylist()
+            assert len(execution_rows) == 1
+            assert execution_rows[0][f"{execution}status"] == (CriticExecutionStatus.ERRORED.value)
+            assert (
+                execution_rows[0][f"{execution}sandbox_id"]
+                == (unavailable[0][f"{sandbox}sandbox_id"])
+            )
+
+
+@pytest.mark.asyncio
 async def test_checkpoint_failure_replacement_closes_prior_sandbox_evidence(
     tmp_path: Path,
 ) -> None:
@@ -1266,7 +2041,9 @@ async def test_checkpoint_failure_replacement_closes_prior_sandbox_evidence(
                 sandbox_backend=backend,
                 sandbox_environment="local-replacement-test",
                 driver=driver,
+                critic_driver=_ApprovingCriticDriver(),
                 workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
                 checkpoint_after_dispatch=True,
             ),
             storage=StorageConfig(
@@ -1302,16 +2079,27 @@ async def test_checkpoint_failure_replacement_closes_prior_sandbox_evidence(
             sandbox = Sandbox.get_prefix()
             rows = latest(await missions.query(Sandbox)).to_pylist()
             by_id = {str(row[f"{sandbox}sandbox_id"]): row for row in rows}
+            author_by_id = {
+                sandbox_id: row
+                for sandbox_id, row in by_id.items()
+                if sandbox_id.startswith("sandbox-replacement-")
+            }
 
-            assert set(by_id) == {
+            assert set(author_by_id) == {
                 "sandbox-replacement-1",
                 "sandbox-replacement-2",
             }
-            assert by_id["sandbox-replacement-1"][f"{sandbox}status"] == SandboxStatus.CLOSED.value
-            assert "simulated checkpoint restart failure" in str(
-                by_id["sandbox-replacement-1"][f"{sandbox}error"]
+            assert (
+                author_by_id["sandbox-replacement-1"][f"{sandbox}status"]
+                == SandboxStatus.CLOSED.value
             )
-            assert by_id["sandbox-replacement-2"][f"{sandbox}status"] == SandboxStatus.CLOSED.value
+            assert "simulated checkpoint restart failure" in str(
+                author_by_id["sandbox-replacement-1"][f"{sandbox}error"]
+            )
+            assert (
+                author_by_id["sandbox-replacement-2"][f"{sandbox}status"]
+                == SandboxStatus.CLOSED.value
+            )
 
             friction = FrictionLog.get_prefix()
             friction_rows = latest(await missions.query(FrictionLog)).to_pylist()
@@ -1338,7 +2126,9 @@ async def test_failed_automatic_replacement_uses_retained_sandbox_identity(
                 sandbox_backend=backend,
                 sandbox_environment="local-replacement-test",
                 driver=driver,
+                critic_driver=_ApprovingCriticDriver(),
                 workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
                 checkpoint_after_dispatch=False,
             ),
             storage=StorageConfig(
@@ -1375,15 +2165,21 @@ async def test_failed_automatic_replacement_uses_retained_sandbox_identity(
             sandbox = Sandbox.get_prefix()
             rows = latest(await missions.query(Sandbox)).to_pylist()
             by_id = {str(row[f"{sandbox}sandbox_id"]): row for row in rows}
-            assert set(by_id) == {
+            author_by_id = {
+                sandbox_id: row
+                for sandbox_id, row in by_id.items()
+                if sandbox_id.startswith("sandbox-replacement-")
+            }
+            assert set(author_by_id) == {
                 "sandbox-replacement-1",
                 "sandbox-replacement-2",
             }
             assert all(
-                row[f"{sandbox}status"] == SandboxStatus.CLOSED.value for row in by_id.values()
+                row[f"{sandbox}status"] == SandboxStatus.CLOSED.value
+                for row in author_by_id.values()
             )
             assert "provider close unavailable" in str(
-                by_id["sandbox-replacement-1"][f"{sandbox}error"]
+                author_by_id["sandbox-replacement-1"][f"{sandbox}error"]
             )
 
             friction = FrictionLog.get_prefix()
@@ -1411,7 +2207,9 @@ async def test_failed_replacement_create_does_not_bind_unavailable_evidence(
                 sandbox_backend=backend,
                 sandbox_environment="local-replacement-test",
                 driver=driver,
+                critic_driver=_ApprovingCriticDriver(),
                 workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
                 checkpoint_after_dispatch=False,
             ),
             storage=StorageConfig(
@@ -1485,7 +2283,9 @@ async def test_execution_trace_requires_exact_per_call_provider_evidence(
                 sandbox_backend=backend,
                 sandbox_environment="local-live-output-test",
                 driver=_TraceOutputDriver(workspace, trace_uri),
+                critic_driver=_ApprovingCriticDriver(),
                 workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
                 checkpoint_after_dispatch=False,
             ),
             storage=StorageConfig(
@@ -1528,7 +2328,9 @@ async def test_provider_error_is_redacted_before_persistence_bound(tmp_path: Pat
                 sandbox_backend=_ProviderFailureBackend(),
                 sandbox_environment="local-test@sha256:contract",
                 driver=_MissionDriver(workspace),
+                critic_driver=_ApprovingCriticDriver(),
                 workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
                 max_ticks=20,
             ),
             storage=StorageConfig(
@@ -1577,7 +2379,9 @@ async def test_post_acquisition_failure_reuses_the_registered_sandbox_identity(
                 sandbox_backend=backend,
                 sandbox_environment="local-test@sha256:contract",
                 driver=_MissionDriver(workspace),
+                critic_driver=_ApprovingCriticDriver(),
                 workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
                 max_ticks=20,
             ),
             storage=StorageConfig(
@@ -1631,7 +2435,9 @@ async def test_checkpoint_is_queryable_but_never_gates_a_valid_task(
                 sandbox_backend=backend,
                 sandbox_environment="local-checkpoint-test",
                 driver=_SecretOutputDriver(workspace),
+                critic_driver=_ApprovingCriticDriver(),
                 workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
                 on_sandbox_event=observed.append,
             ),
             storage=StorageConfig(
@@ -1654,11 +2460,22 @@ async def test_checkpoint_is_queryable_but_never_gates_a_valid_task(
             result = await missions.run(submitted)
 
             assert result.status == "succeeded"
-            assert [
+            ready_sandbox_ids = [
                 event.sandbox.sandbox_id
                 for event in observed
                 if event.kind is SandboxEventType.READY
-            ] == ["sandbox-contract"]
+            ]
+            assert ready_sandbox_ids.count("sandbox-contract") == 1
+            assert (
+                len(
+                    [
+                        sandbox_id
+                        for sandbox_id in ready_sandbox_ids
+                        if sandbox_id.startswith("sandbox-critic-")
+                    ]
+                )
+                == 1
+            )
             assert SandboxEventType.PROCESS_STARTED in {event.kind for event in observed}
             assert SandboxEventType.PROCESS_FINISHED in {event.kind for event in observed}
             checkpoint_rows = latest(await missions.query(Checkpoint)).to_pylist()
@@ -1727,7 +2544,9 @@ async def test_terminal_mission_flushes_checkpoint_outside_the_tick_budget(
                 sandbox_backend=backend,
                 sandbox_environment="local-checkpoint-test",
                 driver=_SecretOutputDriver(workspace),
+                critic_driver=_ApprovingCriticDriver(),
                 workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
             ),
             storage=StorageConfig(
                 uri=str(tmp_path / "terminal_checkpoint_budget"),
@@ -1746,7 +2565,9 @@ async def test_terminal_mission_flushes_checkpoint_outside_the_tick_budget(
                 ),
             )
 
-            result = await missions.run(submitted, max_ticks=5)
+            # Exact-head critic evidence adds two committed state transitions
+            # between authored-green validation and terminal acceptance.
+            result = await missions.run(submitted, max_ticks=7)
 
             assert result.status == "succeeded"
             assert backend.session is not None
@@ -1770,7 +2591,9 @@ async def test_tick_budget_exhaustion_flushes_pending_checkpoint(
                 sandbox_backend=backend,
                 sandbox_environment="local-checkpoint-test",
                 driver=_SecretOutputDriver(workspace),
+                critic_driver=_ApprovingCriticDriver(),
                 workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
             ),
             storage=StorageConfig(
                 uri=str(tmp_path / "exhausted_checkpoint_budget"),
@@ -1815,7 +2638,9 @@ async def test_explicit_restore_rehydrates_before_work_without_automatic_supervi
                 sandbox_backend=backend,
                 sandbox_environment="local-checkpoint-test",
                 driver=_SecretOutputDriver(workspace),
+                critic_driver=_ApprovingCriticDriver(),
                 workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
                 on_sandbox_event=observed.append,
             ),
             storage=StorageConfig(
@@ -1851,11 +2676,22 @@ async def test_explicit_restore_rehydrates_before_work_without_automatic_supervi
             assert result.status == "succeeded"
             assert backend.creates == 0
             assert backend.restores == 1
-            assert [
+            ready_sandbox_ids = [
                 event.sandbox.sandbox_id
                 for event in observed
                 if event.kind is SandboxEventType.READY
-            ] == ["sandbox-contract"]
+            ]
+            assert ready_sandbox_ids.count("sandbox-contract") == 1
+            assert (
+                len(
+                    [
+                        sandbox_id
+                        for sandbox_id in ready_sandbox_ids
+                        if sandbox_id.startswith("sandbox-critic-")
+                    ]
+                )
+                == 1
+            )
 
 
 @pytest.mark.asyncio
@@ -1873,7 +2709,9 @@ async def test_failed_explicit_restore_closes_the_replaced_sandbox_evidence(
                 sandbox_backend=backend,
                 sandbox_environment="local-checkpoint-test",
                 driver=_SecretOutputDriver(workspace),
+                critic_driver=_ApprovingCriticDriver(),
                 workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
             ),
             storage=StorageConfig(
                 uri=str(tmp_path / "failed_restore_missions"),
@@ -1952,7 +2790,9 @@ async def test_failed_restore_close_retains_live_evidence_and_allows_retry(
                 sandbox_backend=backend,
                 sandbox_environment="local-checkpoint-test",
                 driver=_SecretOutputDriver(workspace),
+                critic_driver=_ApprovingCriticDriver(),
                 workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
             ),
             storage=StorageConfig(
                 uri=str(tmp_path / "restore_close_retry_missions"),

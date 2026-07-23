@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict, dataclass
 from pathlib import PurePosixPath
@@ -20,6 +21,7 @@ from archetype.missions.coding_agents.contracts import (
     ValidationObservation,
 )
 from archetype.missions.contracts import RepositoryPublicationPolicy
+from archetype.missions.critics.contracts import validator_bundle_digest
 from archetype.missions.sandboxes import ProcessRequest, ProcessResult, SandboxSession
 from archetype.missions.transitions import AgentExecutionStatus
 
@@ -144,6 +146,19 @@ class CodingAgentHarness:
         validation: tuple[ValidationObservation, ...] = ()
         commits: tuple[CommitObservation, ...] = ()
         friction: list[FrictionObservation] = []
+        bundle_digest = validator_bundle_digest(
+            tuple(
+                (
+                    validator.validator_id,
+                    validator.spec.name,
+                    validator.spec.command,
+                    validator.spec.expected_returncode,
+                    validator.spec.timeout_seconds,
+                )
+                for validator in request.validators
+            )
+        )
+        diff_digest = ""
         try:
             if request.publication_policy is not RepositoryPublicationPolicy.COMMIT_AND_PUSH:
                 raise ValueError("unsupported repository publication policy")
@@ -197,6 +212,17 @@ class CodingAgentHarness:
                 final_revision,
                 pushed=False,
             )
+            if starting_revision and final_revision:
+                diff = (
+                    await self._git(
+                        session,
+                        "diff",
+                        "--binary",
+                        starting_revision,
+                        final_revision,
+                    )
+                ).stdout
+                diff_digest = hashlib.sha256(diff.encode()).hexdigest()
             if validators_passed:
                 if final_revision == starting_revision:
                     raise RuntimeError(
@@ -235,6 +261,8 @@ class CodingAgentHarness:
                 agent_returncode=agent.returncode,
                 starting_revision=starting_revision,
                 final_revision=final_revision,
+                diff_digest=diff_digest,
+                validator_bundle_digest=bundle_digest,
                 agent_stdout=agent.stdout,
                 agent_stderr=agent.stderr,
                 trace_uri=agent.trace_uri,
@@ -257,6 +285,8 @@ class CodingAgentHarness:
                 agent_returncode=agent.returncode,
                 starting_revision=starting_revision,
                 final_revision=final_revision,
+                diff_digest=diff_digest,
+                validator_bundle_digest=bundle_digest,
                 agent_stdout=agent.stdout,
                 agent_stderr=agent.stderr,
                 trace_uri=agent.trace_uri,
@@ -421,22 +451,29 @@ class CodingAgentHarness:
 
     @staticmethod
     def _prompt(request: TaskDispatchRequest) -> str:
-        if request.previous_validation:
+        if request.previous_validation or request.previous_critic_findings:
             evidence = json.dumps(
-                [
-                    {
-                        **asdict(result),
-                        "passed": result.passed,
-                    }
-                    for result in request.previous_validation
-                ],
+                {
+                    "validator_results": [
+                        {
+                            **asdict(result),
+                            "passed": result.passed,
+                        }
+                        for result in request.previous_validation
+                    ],
+                    "critic_findings": [
+                        asdict(finding) for finding in request.previous_critic_findings
+                    ],
+                },
                 indent=2,
             )
             return (
-                "The repository gate failed after the previous turn.\n\n"
-                f"Original task:\n{request.prompt}\n\nValidator evidence:\n{evidence}\n\n"
-                "Repair the existing worktree and finish when the same validators are ready. "
-                "You may create useful commits. Do not push or open a pull request."
+                "The repository gate withheld the previous candidate.\n\n"
+                f"Original task:\n{request.prompt}\n\n"
+                f"Durable validator and critic evidence:\n{evidence}\n\n"
+                "Repair the existing worktree and finish when the validators and independent "
+                "review concerns are addressed. You may create useful commits. Do not push or "
+                "open a pull request."
             )
         return (
             f"Complete task {request.task_name!r}:\n\n{request.prompt}\n\n"

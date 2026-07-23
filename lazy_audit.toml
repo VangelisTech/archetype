@@ -158,36 +158,84 @@ reason = "Mutation-planning boundary for instantiation: spawning copies requires
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
-line = 109
+line = 122
 method = "to_pylist"
 reason = "Post-commit external-I/O boundary: the lazy frame is restricted to committed DISPATCHED tasks and joined to mission identity before those bounded intents become Python requests for sandbox processes; an OS process invocation cannot remain a Daft expression."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
-line = 135
+line = 148
 method = "to_pylist"
 reason = "Post-commit validator-command boundary: Guards and TaskValidator entities are joined lazily first, then the finite validators attached to dispatchable tasks become argv tuples consumed by the repository harness; process argv cannot remain a DataFrame value."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
-line = 176
+line = 189
 method = "to_pylist"
 reason = "Repair-turn boundary: prior AgentExecution and ValidationResult entities are joined lazily by execution before the finite previous-dispatch observations become a coding-agent prompt and session-resume request; the external driver requires concrete typed observations."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
-line = 259
+line = 196
+method = "to_pylist"
+reason = "Repair-dispatch external-I/O boundary: persisted candidate identities are materialized after the committed DISPATCHED-task projection so the application can select the immediately superseded candidate whose durable critic findings belong in the next coding-agent request."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+line = 197
+method = "to_pylist"
+reason = "Repair-dispatch external-I/O boundary: bounded redacted CriticFinding values must become concrete typed prompt input for the next author process; an external coding-agent request cannot consume a lazy Daft frame."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+line = 374
+method = "to_pylist"
+reason = "Post-commit critic-I/O boundary: the lazy frame is restricted to tasks in CANDIDATE state and joined to their immutable candidate subjects before those bounded rows become exact-head reviewer process requests."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+line = 387
+method = "to_pylist"
+reason = "Critic identity-binding boundary: persisted author execution identities and sandbox ids become scalar fields in the independent reviewer request and are later compared against the critic session before promotion."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+line = 388
+method = "to_pylist"
+reason = "Critic validator-evidence boundary: finite TaskValidator definitions become concrete command tuples embedded in the exact-head reviewer request; the external critic driver cannot consume a lazy frame."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+line = 389
+method = "to_pylist"
+reason = "Critic validator-evidence boundary: exact-revision ValidationResult observations become concrete immutable values sent to the external critic process after candidate state has committed."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+line = 393
+method = "to_pylist"
+reason = "Bounded review-retry boundary: terminal CriticExecution facts are counted in Python to assign the next finite reviewer-attempt identity consumed by application-owned external I/O."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+line = 395
+method = "to_pylist"
+reason = "Review-admission boundary: persisted CriticReceipt completeness is inspected before emitting another external reviewer request so a candidate with durable review evidence is never invoked twice."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+line = 523
 method = "to_pylist"
 reason = "Single-mission control-loop boundary: the frame is filtered to one submitted mission and only its persisted status enters Python to decide whether the application service should tick again or return; no mission payload rows are materialized."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
-line = 281
+line = 545
 method = "to_pylist"
 reason = "Terminal mission result boundary: the frame is filtered to one terminal mission whose scalar repository, branch, status, and reason must become the immutable MissionResult returned by the public runtime API."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
-line = 300
+line = 564
 method = "to_pylist"
 reason = "Terminal task result boundary: task state is filtered to the submitted ids and left-joined lazily to first-class commit entities before the finite scalar rows become immutable TaskResult values returned by the public runtime API."

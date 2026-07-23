@@ -9,10 +9,11 @@
 public/internal classification, wiring, and enforcement. This document owns the
 purpose and active mapping of each family port.
 
-Agent Missions V1 uses the family-owned `SandboxService`, `SandboxBackend`, and
-`SandboxSession` resource stack beneath the app-owned `iMissionService`
-workflow. Physical evaluation uses the same ownership pattern: family-owned
-environment/policy protocols beneath the app-owned `iPhysicalAIService`.
+Agent Missions V1 uses the family-owned `SandboxService`, `SandboxBackend`,
+`SandboxSession`, coding-agent harness, and exact-head critic harness beneath
+the app-owned `iMissionService` workflow. Physical evaluation uses the same
+ownership pattern: family-owned environment/policy protocols beneath the
+app-owned `iPhysicalAIService`.
 
 ## 1. Policy
 
@@ -77,6 +78,8 @@ RuntimeMissions -> iRuntimeApplication -> iMissionService
 iMissionService
   -> missions.SandboxService -> missions.SandboxBackend
   -> missions.CodingAgentHarness -> missions.SandboxSession
+  -> missions.CriticHarness -> missions.CriticDriver
+                            -> missions.SandboxSession
 ```
 
 `ServiceContainer` selects concrete implementations across families. Agent
@@ -102,11 +105,12 @@ application facade.
 | `iCommandScheduler` | `CommandScheduler` | application | Durable admission, leasing, dispatch, retry, settlement and outbox inspection |
 | `iAuditLog` | `AuditLog` | application, gateway, query | Append-only access rows and command-outbox projection |
 | `iResearchService` | `AutoResearchService` | application | Multi-run autoresearch workflow and research ledger |
-| `iMissionService` | `MissionService` | application, `RuntimeMissions` | Materialize task graphs, own the batteries-included world bundle, drain committed dispatches into external work, stage factual observations, and project terminal results |
+| `iMissionService` | `MissionService` | application, `RuntimeMissions` | Materialize task graphs, own the batteries-included world bundle, drain committed author and critic intents into external work, stage factual observations, and project terminal results |
 | `iPhysicalAIService` | `PhysicalAIService` | application | Create batched evaluation worlds, install physical processors, run episodes, and derive typed reports from persisted state |
 | Family resource service `missions.SandboxService` | `missions.SandboxService` | `MissionService` | Select a configured backend and acquire, reuse, close, and shut down mission-keyed sessions; no task-transition authority |
 | Family resource port `missions.SandboxBackend` | configured Apple Container, Docker, or Modal adapter | `missions.SandboxService` | Create or restore provider-owned isolated sessions |
-| Family resource port `missions.SandboxSession` | provider session adapter | `CodingAgentHarness`, `missions.SandboxService` | Expose capability, process, status, checkpoint, and close operations for one live sandbox |
+| Family resource port `missions.SandboxSession` | provider session adapter | `CodingAgentHarness`, `CriticHarness`, `missions.SandboxService` | Expose capability, process, status, checkpoint, and close operations for one live sandbox |
+| Family resource port `missions.CriticDriver` | `CodexCriticDriver` or configured adapter | `CriticHarness` | Invoke one independent structured review with model capability but no Git publication capability |
 
 ## 4. Boundary rules
 
@@ -168,12 +172,13 @@ to that source artifact.
 
 `archetype.missions` owns the complete reusable coding-agent capability:
 `SandboxService`, the `SandboxBackend` and `SandboxSession` protocols, sandbox
-value contracts, coding-harness values, Components, relations, and processors.
+value contracts, coding and critic harness values, Components, relations, and
+processors.
 The configured backend creates or restores a provider-owned session;
 `SandboxService` selects that backend and single-flights acquisition by a
-`SandboxKey`. For V1 the application service uses a mission-keyed value, so
-tasks in one mission can reuse the retained session without making that live
-handle durable authority.
+`SandboxKey`. The application service uses one mission-keyed author session and
+one dispatch-keyed critic session per candidate. They may share a backend and
+pinned image, but never a sandbox identity or Git publication capability.
 
 Apple Container is the macOS operational adapter, Docker is the Linux/CI
 protocol reference, and Modal is the paid remote adapter. Checkpoint-capable
@@ -186,8 +191,9 @@ fleet recovery or process-restart mission continuation.
 
 `iMissionService` is the app-internal workflow port implemented by
 `MissionService`. The service composes a structural mission world with the
-built-in Components, processors, relationships, graph view, committed-intent
-outbox, coding harness, and sandbox service. After a tick commits,
+built-in Components, processors, relationships, graph view, committed
+author/critic outboxes, both repository harnesses, and sandbox service. After a
+tick commits,
 `TaskDispatchOutbox` projects newly persisted `TaskDispatch` data into external
 work requests. The service acquires the mission-keyed session and invokes the
 harness only from that post-commit path, then stages the returned factual
@@ -197,12 +203,28 @@ Graph materialization records each authored `TaskValidator`. The harness then
 prepares the repository, runs the coding agent and those validator commands,
 performs Git publication, and returns facts that the service records as
 `AgentExecution`, `ValidationResult`, `Commit`, and `FrictionLog`
-Components and relations. The sandbox identity is staged immediately after
-acquisition; bounded `SandboxEvent` callbacks expose it synchronously for live,
+Components and relations. Complete passing exact-revision evidence plus one
+published final head becomes a `Candidate`, not acceptance. While the author
+works, the service prewarms a fresh critic sandbox. `CriticReviewOutbox`
+projects committed candidates into exact base/head/diff review requests;
+`CriticHarness` verifies the remote subject, invokes `CriticDriver`, and returns
+bounded findings and a receipt. Critic sandboxes receive no publication secret,
+the configured driver's declared identity must match the task policy, they are
+never checkpointed, and they close after their evidence is durable. Close
+failure is surfaced and retryable across `run()` calls; cancellation propagates
+without discarding cleanup ownership. Critic execution facts carry the observed
+sandbox status and whether acquisition succeeded, so unavailable synthetic
+identities remain durable failures rather than fabricated healthy lifecycles.
+
+The sandbox identity is staged immediately after acquisition; bounded
+`SandboxEvent` callbacks expose it synchronously for live,
 non-authoritative operator updates. Validator success is derived from expected
 and actual return codes; neither the harness, sandbox, nor service decides task
-state. Processors alone accept a task, retry it, exhaust its dispatch budget,
-unlock dependent tasks, and roll terminal task states up to the mission.
+state. Processors alone create candidate state, validate exact independent
+receipt bindings, accept or repair a task, exhaust its author budget, unlock
+dependent tasks, and roll terminal task states up to the mission. Reviewer
+infrastructure failure consumes only its bounded review budget and leaves the
+candidate pending.
 
 `ServiceContainer` takes the backend configured by `AgentMissionConfig`,
 constructs `SandboxService` around it, passes that service to

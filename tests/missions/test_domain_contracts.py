@@ -18,7 +18,12 @@ from archetype.missions import (
     MISSION_COMPONENTS,
     MISSION_TRANSITIONS,
     TASK_TRANSITIONS,
+    Candidate,
+    CriticFinding,
+    CriticPolicy,
+    CriticReceipt,
     MissionStatus,
+    TaskCriticPolicy,
     TaskStatus,
     TaskValidator,
     require_mission_transition,
@@ -31,6 +36,42 @@ pytestmark = pytest.mark.contract("missions.agent_v1.validator_gated")
 def _component_instance(component: type[Component]) -> Component:
     if component is TaskValidator:
         return TaskValidator(name="focused", command=["pytest", "-q"])
+    if component is TaskCriticPolicy:
+        policy = CriticPolicy()
+        return TaskCriticPolicy(
+            policy_id=policy.policy_id,
+            version=policy.version,
+            digest=policy.digest,
+            perspective=policy.perspective,
+            information_view=policy.information_view,
+            driver=policy.driver,
+            sampling=policy.sampling,
+        )
+    if component is Candidate:
+        return Candidate(
+            candidate_id="candidate",
+            dispatch_id="dispatch",
+            dispatch_sequence=1,
+            author_sandbox_id="author",
+            repository="owner/repository",
+            branch="agent/change",
+            base_ref="main",
+            base_revision="base",
+            head_revision="head",
+            diff_digest="diff",
+            validator_bundle_digest="validators",
+            policy_digest="policy",
+            candidate_digest="candidate-subject",
+        )
+    if component is CriticFinding:
+        return CriticFinding(
+            finding_id="finding",
+            severity="blocking",
+            category="correctness",
+            confidence=1.0,
+            title="Defect",
+            detail="Evidence",
+        )
     return component()
 
 
@@ -57,6 +98,7 @@ def test_components_have_one_family_owned_schema_identity() -> None:
         "Task",
         "TaskWorkspace",
         "TaskPolicy",
+        "TaskCriticPolicy",
         "TaskState",
         "TaskDispatch",
         "TaskValidator",
@@ -64,6 +106,10 @@ def test_components_have_one_family_owned_schema_identity() -> None:
         "AgentExecution",
         "ValidationResult",
         "Commit",
+        "Candidate",
+        "CriticExecution",
+        "CriticFinding",
+        "CriticReceipt",
         "Checkpoint",
         "FilesystemManifest",
         "FrictionLog",
@@ -85,13 +131,33 @@ def test_components_have_one_family_owned_schema_identity() -> None:
         assert component.__name__ not in archetype.__all__
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    (
+        {"information_view": "trajectory-and-diff"},
+        {"sampling": "temperature=0.7"},
+    ),
+)
+def test_critic_policy_rejects_unimplemented_behavior_axes(
+    overrides: dict[str, str],
+) -> None:
+    with pytest.raises(ValueError, match="unsupported critic"):
+        CriticPolicy(**overrides)
+
+
+def test_critic_receipt_schema_contains_only_varying_evidence() -> None:
+    assert "complete" not in CriticReceipt.model_fields
+    assert "verifiable" not in CriticReceipt.model_fields
+
+
 def test_transition_tables_are_small_complete_and_terminal() -> None:
     assert TASK_TRANSITIONS == {
         TaskStatus.PENDING: frozenset({TaskStatus.READY}),
         TaskStatus.READY: frozenset({TaskStatus.DISPATCHED}),
         TaskStatus.DISPATCHED: frozenset(
-            {TaskStatus.READY, TaskStatus.ACCEPTED, TaskStatus.FAILED}
+            {TaskStatus.READY, TaskStatus.CANDIDATE, TaskStatus.FAILED}
         ),
+        TaskStatus.CANDIDATE: frozenset({TaskStatus.READY, TaskStatus.ACCEPTED, TaskStatus.FAILED}),
         TaskStatus.ACCEPTED: frozenset(),
         TaskStatus.FAILED: frozenset(),
     }
