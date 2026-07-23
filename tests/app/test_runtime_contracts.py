@@ -279,6 +279,8 @@ class TestShutdownIdempotency:
 
         assert not world._state.closed
         assert world in runtime._handles
+        with pytest.raises(RuntimeError, match="closed"):
+            await world.spawn(Pos())
 
         await world.shutdown()
 
@@ -428,6 +430,7 @@ class TestShutdownIdempotency:
         await sibling_world.spawn(Pos())
 
         runtime._shutdown_started = True
+        mission_world._state.closing = True
         try:
             with _runtime_cleanup_scope(mission_world._state):
                 await mission_world.spawn(Pos())
@@ -435,6 +438,7 @@ class TestShutdownIdempotency:
                     await sibling_world.spawn(Pos())
         finally:
             runtime._shutdown_started = False
+            mission_world._state.closing = False
             await runtime.shutdown()
 
     @pytest.mark.asyncio

@@ -292,12 +292,13 @@ class RuntimeWorld:
         return self._state.runtime._application
 
     async def _ensure_id(self) -> str | UUID:
-        if (
-            _ADMITTED_STATE.get() is not self._state
-            and _RUNTIME_CLEANUP_STATE.get() is not self._state
-        ):
+        operation_is_admitted = _ADMITTED_STATE.get() is self._state
+        cleanup_owns_state = _RUNTIME_CLEANUP_STATE.get() is self._state
+        if not operation_is_admitted and not cleanup_owns_state:
             self._state.runtime._ensure_open()
-        if self._state.closed:
+        if self._state.closed or (
+            self._state.closing and not operation_is_admitted and not cleanup_owns_state
+        ):
             raise RuntimeError("World handle is closed")
         return await self._state.ensure_init()
 
