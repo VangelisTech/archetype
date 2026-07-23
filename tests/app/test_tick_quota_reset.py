@@ -10,6 +10,7 @@ clearing unrelated worlds or relying on a simulation callback.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -79,6 +80,45 @@ async def test_direct_world_call_without_target_tick_resolver_fails_closed():
     application.create_entity.assert_not_awaited()
     assert guard._tick_counters == {}
     assert guard._daily_tokens == {}
+
+
+async def test_cold_durable_operations_share_explicit_world_tick_zero():
+    application = _application()
+    application.evaluate.return_value = SimpleNamespace(outcome="pass")
+
+    def missing_live_world(_world_id):
+        raise KeyError("not live")
+
+    gateway = CommandGateway(
+        application,
+        target_tick_for_world=missing_live_world,
+    )
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    storage = object()
+    world_id = "cold-world"
+
+    await gateway.open_world_readonly(ctx, storage, world_id)
+    await gateway.resume_world(ctx, storage, world_id)
+    await gateway.get_audit_history(ctx, world_id)
+    await gateway.query_artifacts(ctx, world_id, storage_config=storage)
+    await gateway.evaluate(
+        ctx,
+        world_id,
+        [],
+        contract=SimpleNamespace(grader_id="grader"),
+    )
+    await gateway.destroy_world(ctx, world_id)
+
+    assert guard._tick_counters == {(ctx.id, world_id, 0): 6}
+    application.open_world_readonly.assert_awaited_once_with(storage, world_id)
+    application.resume_world.assert_awaited_once_with(storage, world_id)
+    application.get_audit_history.assert_awaited_once_with(world_id)
+    application.query_artifacts.assert_awaited_once_with(
+        world_id,
+        storage_config=storage,
+    )
+    application.evaluate.assert_awaited_once()
+    application.destroy_world.assert_awaited_once_with(world_id)
 
 
 async def test_deferred_commands_use_their_actual_scheduled_target_tick(monkeypatch):

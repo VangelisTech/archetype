@@ -279,13 +279,13 @@ class CommandGateway:
         return infos
 
     async def open_world_readonly(self, ctx, storage_config, world_id):
-        self._gate_world(Command(type=CommandType.GET_WORLD_INFO), ctx, world_id)
+        self._gate_durable_world(Command(type=CommandType.GET_WORLD_INFO), ctx, world_id)
         info = await self._application.open_world_readonly(storage_config, world_id)
         await self._emit(ctx, "open_world_readonly", world_id)
         return info
 
     async def resume_world(self, ctx, storage_config, world_id):
-        self._gate_world(Command(type=CommandType.CREATE_WORLD), ctx, world_id)
+        self._gate_durable_world(Command(type=CommandType.CREATE_WORLD), ctx, world_id)
         info = await self._application.resume_world(storage_config, world_id)
         await self._emit(ctx, "resume_world", world_id)
         return info
@@ -455,7 +455,7 @@ class CommandGateway:
         if world_id is None:
             self._gate_application(Command(type=CommandType.GET_AUDIT_HISTORY), ctx)
         else:
-            self._gate_world(Command(type=CommandType.GET_AUDIT_HISTORY), ctx, world_id)
+            self._gate_durable_world(Command(type=CommandType.GET_AUDIT_HISTORY), ctx, world_id)
         result = await self._application.get_audit_history(world_id, **filters)
         await self._emit(ctx, "get_audit_history", world_id)
         return result
@@ -508,13 +508,13 @@ class CommandGateway:
         return result
 
     async def query_artifacts(self, ctx, world_id, *, storage_config=None):
-        self._gate_world(Command(type=CommandType.QUERY_WORLD), ctx, world_id)
+        self._gate_durable_world(Command(type=CommandType.QUERY_WORLD), ctx, world_id)
         result = await self._application.query_artifacts(world_id, storage_config=storage_config)
         await self._emit(ctx, "query_artifacts", world_id)
         return result
 
     async def evaluate(self, ctx, world_id, components, **kwargs):
-        self._gate_world(Command(type=CommandType.EVALUATE), ctx, world_id)
+        self._gate_durable_world(Command(type=CommandType.EVALUATE), ctx, world_id)
         result = await self._application.evaluate(world_id, components, **kwargs)
         await self._emit(
             ctx,
