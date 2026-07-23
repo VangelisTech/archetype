@@ -226,9 +226,7 @@ class TaskDecisionProcessor(AsyncProcessor):
                 right_on="_candidate_entity_id",
             )
             reviews = reviews.where(
-                col(f"{receipt}complete")
-                & col(f"{receipt}verifiable")
-                & (col(f"{receipt}critic_sandbox_id") != col("_candidate_author_sandbox_id"))
+                (col(f"{receipt}critic_sandbox_id") != col("_candidate_author_sandbox_id"))
                 & (col(f"{receipt}candidate_digest") == col("_candidate_digest"))
                 & (col(f"{receipt}policy_digest") == col("_candidate_policy_digest"))
                 & (col(f"{receipt}reviewed_base_revision") == col("_candidate_base_revision"))

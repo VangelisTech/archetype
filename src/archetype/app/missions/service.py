@@ -131,6 +131,13 @@ class _CriticWarmSession:
     base_hydrated_at_ms: int
 
 
+@dataclass(frozen=True)
+class _PendingCriticClosure:
+    request: TaskDispatchRequest | CandidateReviewRequest
+    sandbox_id: str = ""
+    friction_kind: str = "critic_sandbox_teardown"
+
+
 class MissionWorld(Protocol):
     """Structural runtime-world surface required by the application service."""
 
@@ -221,6 +228,7 @@ class MissionService:
         self._on_sandbox_event = config.on_sandbox_event
         self._observed_sandbox_ids: set[str] = set()
         self._critic_prewarms: dict[str, asyncio.Task[_CriticWarmSession]] = {}
+        self._pending_critic_closures: dict[str, _PendingCriticClosure] = {}
         self._critic_sandbox_context: dict[
             str,
             tuple[SandboxKey, int, int, str],
@@ -394,17 +402,13 @@ class MissionService:
             raise ValueError("max_ticks must be positive")
 
         pending_checkpoints: list[tuple[int, _CheckpointCandidate]] = []
-        pending_critic_closures: list[tuple[CandidateReviewRequest, str]] = []
         checkpoint_commit_pending = False
         for _ in range(limit):
             await self._world.step()
             if checkpoint_commit_pending:
                 checkpoint_commit_pending = False
 
-            closing_reviews = pending_critic_closures
-            pending_critic_closures = []
-            for request, sandbox_id in closing_reviews:
-                await self._close_critic_sandbox(request, sandbox_id)
+            await self._close_pending_critic_sandboxes()
 
             waiting: list[tuple[int, _CheckpointCandidate]] = []
             for remaining_commits, candidate in pending_checkpoints:
@@ -452,8 +456,10 @@ class MissionService:
 
             for review in self._critic_outbox.drain():
                 result = await self._execute_review(review)
+                self._pending_critic_closures[review.dispatch_id] = _PendingCriticClosure(
+                    review, result.sandbox.sandbox_id
+                )
                 await self._stage_critic_result(result)
-                pending_critic_closures.append((review, result.sandbox.sandbox_id))
             exhausted_reviews = self._critic_outbox.drain_exhausted()
             if exhausted_reviews:
                 exhausted = exhausted_reviews[0]
@@ -492,10 +498,9 @@ class MissionService:
             checkpoint_commit_pending = True
         if checkpoint_commit_pending:
             await self._world.step()
-        if pending_critic_closures:
+        if self._pending_critic_closures:
             await self._world.step()
-            for request, sandbox_id in pending_critic_closures:
-                await self._close_critic_sandbox(request, sandbox_id)
+            await self._close_pending_critic_sandboxes()
             await self._world.step()
 
         status = current_mission_status(self._view, mission.mission_id)
@@ -949,7 +954,9 @@ class MissionService:
         task = self._critic_prewarms[request.dispatch_id]
         try:
             warm = await asyncio.shield(task)
-        except BaseException as exc:
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
             retained = self._sandboxes.session(self._critic_sandbox_key(request.dispatch_id))
             identity = (
                 retained.identity
@@ -1021,36 +1028,13 @@ class MissionService:
         return result
 
     async def _close_unused_critic(self, request: TaskDispatchRequest) -> None:
-        task = self._critic_prewarms.pop(request.dispatch_id, None)
-        if task is None:
+        if request.dispatch_id not in self._critic_prewarms:
             return
-        try:
-            warm = await asyncio.shield(task)
-        except BaseException:
-            retained = self._sandboxes.session(self._critic_sandbox_key(request.dispatch_id))
-            if retained is None:
-                return
-            sandbox_id = retained.identity.sandbox_id
-        else:
-            sandbox_id = warm.session.identity.sandbox_id
-        try:
-            await self._sandboxes.close(self._critic_sandbox_key(request.dispatch_id))
-        except BaseException as exc:
-            await self._world.spawn(
-                FrictionLog(
-                    task_id=request.task_id,
-                    dispatch_id=request.dispatch_id,
-                    kind="critic_prewarm_teardown",
-                    message=self._redact_and_tail(
-                        self._format_exception(exc),
-                        limit=4_000,
-                        scope=f"mission:{request.mission_id}:critic-prewarm-teardown",
-                    ),
-                )
-            )
-        else:
-            if sandbox_id in self._sandbox_entities:
-                await self._mark_sandbox_closed(sandbox_id)
+        self._pending_critic_closures[request.dispatch_id] = _PendingCriticClosure(
+            request,
+            friction_kind="critic_prewarm_teardown",
+        )
+        await self._close_pending_critic_sandbox(request.dispatch_id)
 
     async def _stage_critic_result(self, result: CriticExecutionResult) -> int:
         request = result.request
@@ -1154,8 +1138,6 @@ class MissionService:
                     critic_sandbox_id=result.sandbox.sandbox_id,
                     review_id=receipt.review_id,
                     conclusion=receipt.conclusion.value,
-                    complete=True,
-                    verifiable=True,
                     candidate_digest=receipt.candidate_digest,
                     policy_digest=receipt.policy_digest,
                     evidence_digest=receipt.evidence_digest,
@@ -1177,14 +1159,44 @@ class MissionService:
             await self._world.spawn(ProducedBy(source=receipt_id, target=execution_id))
         return execution_id
 
-    async def _close_critic_sandbox(
-        self,
-        request: CandidateReviewRequest,
-        sandbox_id: str,
-    ) -> None:
-        key = self._critic_sandbox_key(request.dispatch_id)
+    async def _close_pending_critic_sandboxes(self) -> None:
+        for dispatch_id in tuple(self._pending_critic_closures):
+            await self._close_pending_critic_sandbox(dispatch_id)
+
+    async def _close_pending_critic_sandbox(self, dispatch_id: str) -> None:
+        pending = self._pending_critic_closures.get(dispatch_id)
+        if pending is None:
+            return
+        request = pending.request
+        key = self._critic_sandbox_key(dispatch_id)
+        sandbox_id = pending.sandbox_id
+        if not sandbox_id:
+            task = self._critic_prewarms.get(dispatch_id)
+            if task is None:
+                self._pending_critic_closures.pop(dispatch_id, None)
+                return
+            try:
+                warm = await asyncio.shield(task)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                retained = self._sandboxes.session(key)
+                if retained is None:
+                    self._critic_prewarms.pop(dispatch_id, None)
+                    self._pending_critic_closures.pop(dispatch_id, None)
+                    return
+                sandbox_id = retained.identity.sandbox_id
+            else:
+                sandbox_id = warm.session.identity.sandbox_id
+            pending = replace(pending, sandbox_id=sandbox_id)
+            self._pending_critic_closures[dispatch_id] = pending
         try:
             await self._sandboxes.close(key)
+        except asyncio.CancelledError:
+            # SandboxService.close() shields provider teardown. Preserve this
+            # pending closure so a later run can join the same single-flight
+            # close without turning caller cancellation into error evidence.
+            raise
         except BaseException as exc:
             if sandbox_id in self._sandbox_entities:
                 await self._mark_sandbox_failed(
@@ -1196,7 +1208,7 @@ class MissionService:
                 FrictionLog(
                     task_id=request.task_id,
                     dispatch_id=request.dispatch_id,
-                    kind="critic_sandbox_teardown",
+                    kind=pending.friction_kind,
                     message=self._redact_and_tail(
                         self._format_exception(exc),
                         limit=4_000,
@@ -1204,11 +1216,13 @@ class MissionService:
                     ),
                 )
             )
+            await self._world.step()
+            raise
         else:
             if sandbox_id in self._sandbox_entities:
                 await self._mark_sandbox_closed(sandbox_id)
-        finally:
-            self._critic_prewarms.pop(request.dispatch_id, None)
+            self._critic_prewarms.pop(dispatch_id, None)
+            self._pending_critic_closures.pop(dispatch_id, None)
 
     async def _stage_checkpoint(self, candidate: _CheckpointCandidate) -> None:
         result = candidate.result

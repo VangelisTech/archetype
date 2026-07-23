@@ -209,7 +209,7 @@ def test_agent_mission_capability_rejects_same_author_critic_evidence(
 
     assert not result.all_passed
     assert result.trials[0].error is not None
-    assert "did not terminate" in result.trials[0].error
+    assert "critic review budget exhausted" in result.trials[0].error
 
 
 def test_agent_mission_capability_rejects_wrong_candidate_receipt(
@@ -232,7 +232,7 @@ def test_agent_mission_capability_rejects_wrong_candidate_receipt(
 
     assert not result.all_passed
     assert result.trials[0].error is not None
-    assert "did not terminate" in result.trials[0].error
+    assert "critic review budget exhausted" in result.trials[0].error
 
 
 def test_agent_mission_capability_rejects_wrong_head_receipt(
@@ -253,7 +253,7 @@ def test_agent_mission_capability_rejects_wrong_head_receipt(
 
     assert not result.all_passed
     assert result.trials[0].error is not None
-    assert "did not terminate" in result.trials[0].error
+    assert "critic review budget exhausted" in result.trials[0].error
 
 
 def test_agent_mission_capability_fails_when_blocking_findings_are_dropped(

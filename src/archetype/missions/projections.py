@@ -401,8 +401,19 @@ class CriticReviewOutbox:
             candidate_id = str(row[f"{candidate}candidate_id"])
             if any(
                 int(item[f"{receipt}candidate_entity_id"]) == candidate_entity_id
-                and bool(item[f"{receipt}complete"])
-                and bool(item[f"{receipt}verifiable"])
+                and str(item[f"{receipt}critic_sandbox_id"])
+                != str(row[f"{candidate}author_sandbox_id"])
+                and str(item[f"{receipt}candidate_digest"])
+                == str(row[f"{candidate}candidate_digest"])
+                and str(item[f"{receipt}policy_digest"]) == str(row[f"{candidate}policy_digest"])
+                and str(item[f"{receipt}reviewed_base_revision"])
+                == str(row[f"{candidate}base_revision"])
+                and str(item[f"{receipt}reviewed_head_revision"])
+                == str(row[f"{candidate}head_revision"])
+                and str(item[f"{receipt}reviewed_diff_digest"])
+                == str(row[f"{candidate}diff_digest"])
+                and str(item[f"{receipt}validator_bundle_digest"])
+                == str(row[f"{candidate}validator_bundle_digest"])
                 for item in receipt_rows
             ):
                 continue

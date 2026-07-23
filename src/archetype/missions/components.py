@@ -335,15 +335,13 @@ class CriticFinding(Component):
 
 
 class CriticReceipt(Component):
-    """Complete exact-subject receipt consumed by task transition processors."""
+    """Verified exact-subject receipt consumed by task transition processors."""
 
     candidate_entity_id: int = 0
     critic_execution_id: int = 0
     critic_sandbox_id: str = ""
     review_id: str = ""
     conclusion: str = CriticConclusion.APPROVED.value
-    complete: bool = False
-    verifiable: bool = False
     candidate_digest: str = ""
     policy_digest: str = ""
     evidence_digest: str = ""

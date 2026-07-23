@@ -222,6 +222,20 @@ class _BlockingCloseBackend(_LocalBackend):
         return session
 
 
+class _BlockingCriticCloseBackend(_LocalBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.critic_created = asyncio.Event()
+
+    async def create(self, spec: SandboxSpec) -> _LocalSession:
+        if spec.metadata_dict().get("role") != "critic":
+            return await super().create(spec)
+        session = _BlockingCloseSession(spec)
+        self.critic_sessions.append(session)
+        self.critic_created.set()
+        return session
+
+
 class _AutoReplacementSession(_LocalSession):
     def __init__(
         self,
@@ -1369,6 +1383,81 @@ async def test_cancelled_terminal_close_does_not_record_teardown_failure(
 
 
 @pytest.mark.asyncio
+async def test_cancelled_critic_close_propagates_and_retains_cleanup(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    backend = _BlockingCriticCloseBackend()
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "cancelled-critic-close",
+            config=AgentMissionConfig(
+                sandbox_backend=backend,
+                sandbox_environment="local-critic-close-cancellation-test",
+                driver=_MissionDriver(workspace),
+                critic_driver=_ApprovingCriticDriver(),
+                workspace=str(workspace),
+                critic_workspace=str(tmp_path / "critic"),
+                checkpoint_after_dispatch=False,
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "cancelled_critic_close_missions"),
+                namespace="cancelled_critic_close_contract",
+            ),
+        ) as missions:
+            submitted = await missions.submit(
+                repository=str(remote),
+                branch="agent/cancelled-critic-close",
+                tasks=(
+                    AgentTask(
+                        "implementation",
+                        "Create implementation.txt containing fixed.",
+                        (
+                            CommandValidator(
+                                "focused",
+                                (
+                                    "sh",
+                                    "-lc",
+                                    'test "$(cat implementation.txt)" = fixed',
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+            running = asyncio.create_task(missions.run(submitted))
+            await backend.critic_created.wait()
+            critic_session = backend.critic_sessions[0]
+            assert isinstance(critic_session, _BlockingCloseSession)
+            await critic_session.close_started.wait()
+            running.cancel()
+
+            with pytest.raises(asyncio.CancelledError):
+                await running
+
+            critic_session.close_release.set()
+            await asyncio.wait_for(critic_session.close_finished.wait(), timeout=1)
+            result = await missions.run(submitted)
+
+            assert result.status == "succeeded"
+            assert critic_session.close_attempts == 1
+            sandbox = Sandbox.get_prefix()
+            rows = latest(await missions.query(Sandbox)).to_pylist()
+            critic_row = next(
+                row
+                for row in rows
+                if row[f"{sandbox}sandbox_id"] == critic_session.identity.sandbox_id
+            )
+            assert critic_row[f"{sandbox}status"] == SandboxStatus.CLOSED.value
+            assert critic_row[f"{sandbox}error"] == ""
+            with pytest.raises(KeyError, match="FrictionLog has never been spawned"):
+                await missions.query(FrictionLog)
+
+
+@pytest.mark.asyncio
 async def test_terminal_close_failure_is_durable_and_retryable(
     tmp_path: Path,
 ) -> None:
@@ -1763,19 +1852,19 @@ async def test_runtime_shutdown_retries_failed_mission_cleanup_before_finalizati
 
 
 @pytest.mark.asyncio
-async def test_runtime_shutdown_reconciles_a_retried_critic_close(
+async def test_critic_close_failure_is_durable_and_retryable(
     tmp_path: Path,
 ) -> None:
     remote = _remote(tmp_path)
     workspace = tmp_path / "sandbox" / "repo"
     storage = StorageConfig(
-        uri=str(tmp_path / "critic_shutdown_cleanup_retry"),
-        namespace="critic_shutdown_cleanup_retry_contract",
+        uri=str(tmp_path / "critic_close_cleanup_retry"),
+        namespace="critic_close_cleanup_retry_contract",
     )
     backend = _CriticCloseRetryBackend()
     runtime = ArchetypeRuntime()
     missions = runtime.missions(
-        "critic-shutdown-cleanup-retry",
+        "critic-close-cleanup-retry",
         config=AgentMissionConfig(
             sandbox_backend=backend,
             sandbox_environment="local-critic-close-test",
@@ -1789,7 +1878,7 @@ async def test_runtime_shutdown_reconciles_a_retried_critic_close(
     )
     submitted = await missions.submit(
         repository=str(remote),
-        branch="agent/critic-shutdown-cleanup-retry",
+        branch="agent/critic-close-cleanup-retry",
         tasks=(
             AgentTask(
                 "implementation",
@@ -1808,13 +1897,33 @@ async def test_runtime_shutdown_reconciles_a_retried_critic_close(
         ),
     )
 
-    result = await missions.run(submitted)
+    with pytest.raises(RuntimeError, match="provider close unavailable"):
+        await missions.run(submitted)
 
-    assert result.status == "succeeded"
     assert len(backend.critic_sessions) == 1
     critic_session = backend.critic_sessions[0]
     assert critic_session.close_attempts == 1
     assert critic_session.closed == 0
+    sandbox = Sandbox.get_prefix()
+    rows = latest(await missions.query(Sandbox)).to_pylist()
+    critic_row = next(
+        row for row in rows if row[f"{sandbox}sandbox_id"] == critic_session.identity.sandbox_id
+    )
+    assert critic_row[f"{sandbox}status"] == SandboxStatus.ERRORED.value
+    assert "provider close unavailable" in str(critic_row[f"{sandbox}error"])
+    friction = FrictionLog.get_prefix()
+    friction_rows = latest(await missions.query(FrictionLog)).to_pylist()
+    assert any(
+        row[f"{friction}kind"] == "critic_sandbox_teardown"
+        and "provider close unavailable" in str(row[f"{friction}message"])
+        for row in friction_rows
+    )
+
+    result = await missions.run(submitted)
+
+    assert result.status == "succeeded"
+    assert critic_session.close_attempts == 2
+    assert critic_session.closed == 1
     world_id = missions.world_id
 
     await runtime.shutdown()
@@ -1823,7 +1932,6 @@ async def test_runtime_shutdown_reconciles_a_retried_critic_close(
     assert critic_session.closed == 1
     async with ArchetypeRuntime() as reader:
         attached = reader.attach(world_id, storage=storage)
-        sandbox = Sandbox.get_prefix()
         rows = latest(await attached.query(Sandbox)).to_pylist()
         critic_rows = [
             row for row in rows if row[f"{sandbox}sandbox_id"] == critic_session.identity.sandbox_id

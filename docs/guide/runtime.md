@@ -240,10 +240,10 @@ every submitted task policy must name that configured identity.
 
 Passing validators and publishing the exact head moves a task to `candidate`.
 The runtime returns terminal success only after a separate critic sandbox has
-verified the exact base/head/diff and a processor has accepted its complete
-receipt. Blocking findings become the next author dispatch's durable repair
-input. Reviewer outages do not consume author dispatches; exhausted review
-budget raises while leaving the task pending review.
+verified the exact base/head/diff and a processor has accepted its
+identity-bound receipt. Blocking findings become the next author dispatch's
+durable repair input. Reviewer outages do not consume author dispatches;
+exhausted review budget raises while leaving the task pending review.
 
 The handle owns the specialized mission-world lifetime. Closing it closes the
 sandbox resource and its world handle; closing it does not close the parent

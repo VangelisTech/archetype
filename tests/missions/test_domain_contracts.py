@@ -21,6 +21,7 @@ from archetype.missions import (
     Candidate,
     CriticFinding,
     CriticPolicy,
+    CriticReceipt,
     MissionStatus,
     TaskCriticPolicy,
     TaskStatus,
@@ -142,6 +143,11 @@ def test_critic_policy_rejects_unimplemented_behavior_axes(
 ) -> None:
     with pytest.raises(ValueError, match="unsupported critic"):
         CriticPolicy(**overrides)
+
+
+def test_critic_receipt_schema_contains_only_varying_evidence() -> None:
+    assert "complete" not in CriticReceipt.model_fields
+    assert "verifiable" not in CriticReceipt.model_fields
 
 
 def test_transition_tables_are_small_complete_and_terminal() -> None:

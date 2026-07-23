@@ -409,11 +409,13 @@ already in progress retains cleanup authority for its exact mission world while
 runtime shutdown waits. That authority cannot admit operations against a
 sibling world on the same runtime.
 
-Durable lifecycle evidence follows physical ownership. A failed terminal close
-projects the retained session's non-ready status and a `sandbox_teardown`
-friction before the error returns. Once replacement or cleanup has closed a
-sandbox, staging an earlier same-tick execution cannot move its durable status
-backward from `closed`.
+Durable lifecycle evidence follows physical ownership. A failed author or
+critic close projects the retained session's non-ready status and teardown
+friction before the error returns. The service retains pending critic cleanup
+across `run()` calls, so cancellation propagates without becoming failure
+evidence and a later run joins or retries the same single-flight close. Once
+replacement or cleanup has closed a sandbox, staging an earlier same-tick
+execution cannot move its durable status backward from `closed`.
 
 The coding-agent harness works through `SandboxSession`. It owns clone and
 branch preparation, agent invocation, validator execution, Git publication,
@@ -445,10 +447,11 @@ authored-green publication, the critic harness:
 6. normalizes bounded structured findings and a receipt; and
 7. stages that evidence before closing the never-checkpointed critic sandbox.
 
-The receipt is accepted as evidence only when it is complete, verifiable,
-policy- and candidate-digest bound, revision/diff/validator-bundle bound, and
-produced in a sandbox distinct from the author. Missing, malformed, timed-out,
-errored, stale, wrong-head, or same-author evidence cannot accept. Reviewer
+A `CriticReceipt` row exists only after the harness has completed and verified
+the exact subject. Promotion then requires that row to be policy- and
+candidate-digest bound, revision/diff/validator-bundle bound, and produced in a
+sandbox distinct from the author. Missing, malformed, timed-out, errored,
+stale, wrong-head, or same-author evidence cannot accept. Reviewer
 infrastructure failures consume only the critic review budget; they never
 consume an author dispatch. When that bounded budget is exhausted,
 `missions.run()` reports the candidate as still pending review instead of

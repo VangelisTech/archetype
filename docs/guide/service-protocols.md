@@ -210,7 +210,9 @@ projects committed candidates into exact base/head/diff review requests;
 `CriticHarness` verifies the remote subject, invokes `CriticDriver`, and returns
 bounded findings and a receipt. Critic sandboxes receive no publication secret,
 the configured driver's declared identity must match the task policy, they are
-never checkpointed, and they close after their evidence is durable.
+never checkpointed, and they close after their evidence is durable. Close
+failure is surfaced and retryable across `run()` calls; cancellation propagates
+without discarding cleanup ownership.
 
 The sandbox identity is staged immediately after acquisition; bounded
 `SandboxEvent` callbacks expose it synchronously for live,
