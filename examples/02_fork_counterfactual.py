@@ -24,6 +24,7 @@ Usage:
 """
 
 import asyncio
+from typing import cast
 
 from daft import DataFrame, col
 
@@ -50,15 +51,15 @@ class LogisticMap(AsyncProcessor):
         return df.with_column("node__x", col("node__r") * x * (1.0 - x))
 
 
-async def main():
-    storage = StorageConfig(uri="./archetype_data", namespace="counterfactuals")
-
+async def run_demo(storage_uri: str) -> dict[str, object]:
+    """Run both timelines and return identities, lineage, and exact deltas."""
+    storage = StorageConfig(uri=storage_uri, namespace="counterfactuals")
     async with ArchetypeRuntime() as runtime:
         # ── 1. PRIME TIMELINE ─────────────────────────────────────────────────
         prime = runtime.world("prime", storage=storage, processors=[LogisticMap()])
         eids = {name: await prime.spawn(Node(r=r)) for name, r in REGIMES.items()}
         await prime.step()  # persist tick 0: raw initial conditions
-        await prime.run(steps=PRE_TICKS)
+        prime_seed_run = await prime.run(steps=PRE_TICKS)
 
         fork_tick = (await prime.info()).tick  # the fork continues from here
         last = fork_tick - 1  # latest persisted tick
@@ -69,7 +70,6 @@ async def main():
             .select("entity_id", "node__x")
             .to_pylist()
         }
-        print(f"1. PRIME TIMELINE: {fork_tick} ticks persisted; forking at tick {last}")
 
         # ── 2. FORK AND NUDGE ─────────────────────────────────────────────────
         # An update overlays raw given-state at the fork's next persisted tick;
@@ -78,11 +78,10 @@ async def main():
         fork = await prime.fork("nudged")
         for name, r in REGIMES.items():
             await fork.update(eids[name], Node(r=r, x=at_fork[eids[name]] + NUDGE))
-        print(f"2. FORK AND NUDGE: every entity perturbed by {NUDGE:g} in the fork")
 
         # ── 3. RESUME BOTH BRANCHES ───────────────────────────────────────────
-        await prime.run(steps=POST_TICKS)
-        await fork.run(steps=POST_TICKS + 1)
+        prime_result = await prime.run(steps=POST_TICKS)
+        fork_result = await fork.run(steps=POST_TICKS + 1)
 
         # ── 4. DIFF THE HISTORIES ─────────────────────────────────────────────
         # Both branches are immutable rows keyed by tick — the counterfactual
@@ -112,19 +111,43 @@ async def main():
         for row in diverged.to_pylist():
             by_regime.setdefault(row["r"], {})[row["k"]] = row["delta"]
 
-        print("3. DIVERGENCE |x_prime - x_fork| by tick offset k from the fork point:")
-        print(f"{'regime':>14} {'r':>7} |" + "".join(f"{f'k={k}':>10}" for k in CHECKPOINTS))
-        for name, r in sorted(REGIMES.items(), key=lambda kv: kv[1]):
-            cells = "".join(f"{by_regime[r][k]:>10.1e}" for k in CHECKPOINTS)
-            print(f"{name:>14} {r:>7.4f} |{cells}")
-
-        amplified = by_regime[REGIMES["chaos"]][POST_TICKS] / NUDGE
         inherited = fork_hist.where(col("tick") < fork_tick).count_rows()
-        print(f"\nchaos amplified the nudge {amplified:.2g}x in {POST_TICKS} ticks;")
-        print(
-            f"the fork read {inherited} pre-fork rows through lineage — one shared "
-            "append-only past, never copied, never overwritten."
-        )
+        return {
+            "world_ids": {
+                "prime": str(prime_result.world_id),
+                "fork": str(fork_result.world_id),
+            },
+            "run_ids": {
+                "prime_seed": str(prime_seed_run.run_id),
+                "prime": str(prime_result.run_id),
+                "fork": str(fork_result.run_id),
+            },
+            "fork_tick": fork_tick,
+            "nudge": NUDGE,
+            "checkpoint_deltas": {
+                name: [by_regime[r][tick] for tick in CHECKPOINTS] for name, r in REGIMES.items()
+            },
+            "inherited_rows": inherited,
+        }
+
+
+async def main() -> None:
+    result = await run_demo("./archetype_data")
+    fork_tick = cast(int, result["fork_tick"])
+    print(f"1. PRIME TIMELINE: forked at tick {fork_tick - 1}")
+    print(f"2. FORK AND NUDGE: every entity perturbed by {result['nudge']:g}")
+    print("3. DIVERGENCE |x_prime - x_fork| by tick offset k from the fork point:")
+    print(f"{'regime':>14} |" + "".join(f"{f'k={k}':>10}" for k in CHECKPOINTS))
+    deltas = cast(dict[str, list[float]], result["checkpoint_deltas"])
+    for name in sorted(REGIMES, key=REGIMES.__getitem__):
+        cells = "".join(f"{delta:>10.1e}" for delta in deltas[name])
+        print(f"{name:>14} |{cells}")
+    chaos = deltas["chaos"]
+    print(f"\nchaos amplified the nudge {chaos[-1] / NUDGE:.2g}x in {POST_TICKS} ticks;")
+    print(
+        f"the fork read {result['inherited_rows']} pre-fork rows through lineage — "
+        "one shared append-only past, never copied, never overwritten."
+    )
 
 
 if __name__ == "__main__":

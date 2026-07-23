@@ -6,11 +6,11 @@
     "capability"
   ],
   "failure_policy": "every architectural capability task and every trial passes",
-  "started_at": "2026-07-23T07:41:37.543161Z",
-  "duration_s": 4.462254,
+  "started_at": "2026-07-23T17:29:50.443151Z",
+  "duration_s": 13.260339,
   "outcome": "passed",
   "revision": {
-    "commit": "650ccfe7b13e965eebf808e5bff7fe09c0d7a497",
+    "commit": "8d3700eb24bd295916ee9716dd6c85f11c964873",
     "dirty": false
   },
   "environment": {
@@ -29,11 +29,11 @@
     }
   },
   "invocation": [
-    "/Users/everettkleven/conductor/workspaces/archetype/bogota/evals/run.py",
+    "evals/run.py",
     "--profile",
     "capability",
     "--out",
-    "eval-capability-results.json"
+    "eval-results.json"
   ],
   "configuration": {
     "trials": 1,
@@ -62,7 +62,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0274,
+          "elapsed_s": 0.17,
           "error": null,
           "graders": [
             {
@@ -103,7 +103,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0335,
+          "elapsed_s": 0.0291,
           "error": null,
           "graders": [
             {
@@ -156,7 +156,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.1027,
+          "elapsed_s": 0.0954,
           "error": null,
           "graders": [
             {
@@ -221,7 +221,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0747,
+          "elapsed_s": 0.0863,
           "error": null,
           "graders": [
             {
@@ -280,7 +280,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.1036,
+          "elapsed_s": 0.1076,
           "error": null,
           "graders": [
             {
@@ -345,7 +345,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 4.1184,
+          "elapsed_s": 12.7696,
           "error": null,
           "graders": [
             {
@@ -356,6 +356,12 @@
             },
             {
               "name": "mission_retry_uses_repository_evidence",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "mission_exact_head_critic_gates_promotion",
               "passed": true,
               "score": 1.0,
               "details": ""

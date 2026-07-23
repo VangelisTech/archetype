@@ -145,6 +145,11 @@ version = 1
 owner = "hosts"
 """
 
+ARCHITECTURE_POLICY = """
+version = 3
+source_root = "src"
+"""
+
 
 def _write_fixture(
     root: Path,
@@ -165,6 +170,10 @@ def _write_fixture(
         '[project]\nname = "fixture"\nversion = "0.4.0"\n',
         encoding="utf-8",
     )
+    (root / "quality" / "architecture.toml").write_text(
+        dedent(ARCHITECTURE_POLICY).lstrip(),
+        encoding="utf-8",
+    )
     (root / "docs" / "evidence.md").write_text("# Fixture evidence\n", encoding="utf-8")
     (source / "_obs.py").write_text(dedent(obs).lstrip(), encoding="utf-8")
     (family / "interfaces.py").write_text(dedent(interfaces).lstrip(), encoding="utf-8")
@@ -179,6 +188,22 @@ def _write_source_module(root: Path, relative_path: str, source: str) -> None:
     path = root / "src" / "archetype" / relative_path
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(dedent(source).lstrip(), encoding="utf-8")
+
+
+def _register_top_level_family(root: Path, family: str) -> None:
+    fragment_root = root / "quality" / "architecture.d"
+    fragment_root.mkdir(parents=True, exist_ok=True)
+    (fragment_root / f"{family}.toml").write_text(
+        dedent(
+            f"""
+            [[top_level_family_rule]]
+            name = "{family}-domain-family"
+            consumer = "archetype.{family}"
+            allowed_families = []
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
 
 
 def _audit(root: Path):
@@ -250,6 +275,143 @@ def test_valid_fixture_covers_properties_and_protocols_outside_interfaces(tmp_pa
     assert result.ok, result.violations + result.policy_errors
     assert not result.violations
     assert not result.policy_errors
+    assert result.protocols_scanned == 2
+    assert result.operations_scanned == 3
+
+
+def test_registered_top_level_protocol_requires_an_exact_disposition(
+    tmp_path: Path,
+) -> None:
+    _write_fixture(tmp_path)
+    _register_top_level_family(tmp_path, "probe")
+    _write_source_module(
+        tmp_path,
+        "probe/contracts.py",
+        """
+        from typing import Protocol
+
+        class DomainPort(Protocol):
+            async def dispatch(self) -> None: ...
+        """,
+    )
+
+    result = _audit(tmp_path)
+
+    _assert_rejected(result)
+    assert result.protocols_scanned == 3
+    assert result.operations_scanned == 4
+    assert any(
+        "missing disposition for probe:contracts.DomainPort.dispatch" in error
+        for error in result.policy_errors
+    )
+
+
+def test_registered_generic_top_level_protocol_requires_an_exact_disposition(
+    tmp_path: Path,
+) -> None:
+    _write_fixture(tmp_path)
+    _register_top_level_family(tmp_path, "probe")
+    _write_source_module(
+        tmp_path,
+        "probe/contracts.py",
+        """
+        from typing import Protocol, TypeVar
+
+        T = TypeVar("T")
+
+        class GenericPort(Protocol[T]):
+            async def dispatch(self, value: T) -> T: ...
+        """,
+    )
+
+    result = _audit(tmp_path)
+
+    _assert_rejected(result)
+    assert result.protocols_scanned == 3
+    assert result.operations_scanned == 4
+    assert any(
+        "missing disposition for probe:contracts.GenericPort.dispatch" in error
+        for error in result.policy_errors
+    )
+
+
+def test_registered_top_level_protocols_join_temporary_app_compatibility(
+    tmp_path: Path,
+) -> None:
+    manifest = _replace_once(
+        MANIFEST,
+        '  "interfaces.iProbe.enabled",\n',
+        '  "contracts.DomainPort.dispatch",\n  "interfaces.iProbe.enabled",\n',
+    )
+    _write_fixture(tmp_path, manifest=manifest)
+    _register_top_level_family(tmp_path, "probe")
+    _write_source_module(
+        tmp_path,
+        "probe/contracts.py",
+        """
+        from typing import Protocol
+
+        class DomainPort(Protocol):
+            async def dispatch(self) -> None: ...
+        """,
+    )
+
+    result = _audit(tmp_path)
+
+    assert result.ok, result.violations + result.policy_errors
+    assert result.protocols_scanned == 3
+    assert result.operations_scanned == 4
+
+
+def test_app_and_top_level_protocol_definitions_cannot_collapse_to_one_operation(
+    tmp_path: Path,
+) -> None:
+    _write_fixture(tmp_path)
+    _register_top_level_family(tmp_path, "probe")
+    _write_source_module(
+        tmp_path,
+        "probe/interfaces.py",
+        """
+        from typing import Protocol
+
+        class iProbe(Protocol):
+            async def run(self) -> None: ...
+        """,
+    )
+
+    result = _audit(tmp_path)
+
+    _assert_rejected(result)
+    assert result.protocols_scanned == 3
+    assert result.operations_scanned == 3
+    assert any(
+        "duplicate discovered protocol operation probe:interfaces.iProbe.run" in error
+        and "archetype.app.probe.interfaces.iProbe.run" in error
+        and "archetype.probe.interfaces.iProbe.run" in error
+        for error in result.policy_errors
+    )
+
+
+def test_unregistered_top_level_protocol_is_not_a_family_operation(
+    tmp_path: Path,
+) -> None:
+    _write_fixture(tmp_path)
+    _write_source_module(
+        tmp_path,
+        "unregistered/contracts.py",
+        """
+        from typing import Protocol
+
+        class InternalPort(Protocol):
+            async def dispatch(self) -> None: ...
+        """,
+    )
+
+    result = _audit(tmp_path)
+
+    assert result.ok, result.violations + result.policy_errors
+    assert result.protocols_scanned == 2
+    assert result.operations_scanned == 3
 
 
 @pytest.mark.parametrize(

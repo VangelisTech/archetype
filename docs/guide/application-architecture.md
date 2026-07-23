@@ -324,7 +324,7 @@ Durability is family-specific rather than one service-level flag:
 | Tick | Store plus commit coordinator | All tick rows are durable and the visibility manifest is published |
 | Deferred command outcome | Commit coordinator plus command ledger | Terminal applied outcomes settle atomically with the manifest that makes them visible |
 | Agent Mission dispatch | Mission world tick plus post-tick outbox | A `dispatched` task row is durably visible before any sandbox request leaves the world |
-| Agent Mission acceptance | Mission processors plus world tick | Revision-bound validation, execution, and pushed-commit observations are staged as data; the next task-decision tick accepts, retries, or exhausts the task |
+| Agent Mission acceptance | Mission processors plus world tick | Revision-bound validation and exact-head publication first produce an immutable candidate; a separate critic sandbox stages a complete receipt bound to that candidate's base, head, diff, validator bundle, and policy; only a later task-decision tick accepts, repairs, or exhausts the task |
 | Typed ingestion | `IngestionService` policy plus `StorageService` and Iceberg | The world/run envelope is fixed, the registered schema accepts the rows, and one Iceberg append makes the selected rows visible |
 | Artifact ingestion | `ArtifactService` plus `IngestionService` | The immutable object and any media-specific rows are durable before the common `artifact_files` occurrence becomes visible |
 | Coding-agent transcript | Redaction, artifact, and typed-ingestion authorities | Raw narrative never becomes durable; the sanitized artifact is indexed before normalized rows keyed to its `artifact_id` are appended |
@@ -336,6 +336,17 @@ the application execution lane and the physical app-table operation. The
 owning workflow still defines the logical unit, and a coordinator publishes
 tick visibility only after physical durability. `StorageService` does not
 decide what a tick, artifact, evaluation, or command outcome means.
+
+The landed Agent Missions V1 preservation baseline already separates authored
+green work from acceptance: successful revision-bound validators plus
+publication create an immutable candidate, and an independent critic reviews
+that exact candidate in a distinct sandbox. Blocking findings become durable
+repair input; missing, stale, malformed, wrong-head, or same-author evidence
+cannot accept. The current mission service crosses its committed
+dispatch/review observation seams as described in
+[Agent Missions V1](agent-missions.md). The required committed-tick projector
+in section 13 is the accepted v0.5 target for those seams, not a claim about
+the current implementation.
 
 The durable scheduler/dispatcher belongs to the commands family, not to the gateway. Both
 trusted runtime operations and authorized remote admission may use it. The
@@ -542,7 +553,193 @@ hidden: `QueryService` uses `iAuditLog` for compatibility history reads, and
 the root `app/models.py` holds cross-family boundary models. Changing either is
 a separate contract/model-ownership decision, not undocumented drift.
 
-## 13. Change discipline
+## 13. Accepted v0.5 target architecture
+
+This section is the ratified migration contract for v0.5. It is normative
+before the moves begin, but it does not claim that the package tree described
+here is already implemented. Section 12 remains the description of the current
+tree. Each migration slice must move its policy, focused specification, and
+executable oracles atomically; an intermediate package location is not
+authority to invent a different dependency.
+
+The target removes the mirrored application-facade stack. Families own
+behavior, a substantive command dispatcher governs top-level entry, the
+durable scheduler owns queue and settlement machinery, worlds own ECS state and
+tick execution, and one explicit runtime resource owner owns process lifetime.
+Runtime, API, and CLI remain thin supported surfaces rather than alternate
+implementations of family workflows.
+
+### Target family dependency graph
+
+All arrows point from consumer to dependency. `core` has no top-level-family
+dependency. `errors`, `runtime`, `api`, `cli`, and `wiring` are reserved
+surfaces outside the family graph.
+
+| Consumer | Allowed top-level family dependencies |
+|---|---|
+| `storage` | none |
+| `world` | `storage` |
+| `commands` | `storage`, `world` |
+| `artifacts` | `storage` |
+| `redaction` | none |
+| `evaluation` | `storage`, `world` |
+| `research` | `storage`, `world` |
+| `physical_ai` | `storage`, `world`, `evaluation` |
+| `episodes` | `storage`, `world`, `artifacts`, `redaction`, `evaluation` |
+| `graph` | none |
+| `missions` | `storage`, `world`, `graph`, `artifacts`, `episodes`, `redaction` |
+| `views` | `storage`, `world`, `graph` |
+
+Every family may also import `archetype.core`, stable shared boundary-error
+bases from `archetype.errors`, itself, and third-party libraries. The `views`
+row freezes the initial generic read-model disposition; another domain-family
+edge requires the normal same-change documentation, policy, and cycle review.
+Family command models do not import `commands`. `wiring.py` registers
+model/handler pairs and is the sole concrete cross-family composition root.
+`runtime` and `api` consume commands plus the family models and views they
+expose; CLI remains an HTTP client except for server startup.
+
+The PR-0 target fixture classifies `errors` and `wiring` as reserved target
+surfaces without changing current-tree import behavior. The slice that creates
+`errors.py` MUST add the explicit common-family import policy in the same
+change, before any moved family imports it.
+
+The target package ownership is:
+
+```text
+src/archetype/
+  core/          kernel; only the approved tick/run-identity changes
+  errors.py      stable shared boundary-error bases
+  storage/       Daft execution, catalogs, commits, scans, signatures, session
+  world/         registry, lifecycle, simulation, mutation, query, handlers
+  commands/      operation registry, dispatch, policy, scheduler, access audit
+  graph/
+  evaluation/
+  research/
+  physical_ai/
+  artifacts/
+  episodes/
+  missions/
+  redaction/
+  views/
+  runtime/
+  api/
+  cli/
+  wiring.py      constructs and returns RuntimeResources
+```
+
+`archetype.app` is deleted after the owning-family moves. The
+single-implementation `RuntimeApplication`, `CommandGateway`, mutation and
+service mirrors, and their facade protocols do not survive as compatibility
+layers. Genuine resource/provider protocols and stateful owners do survive.
+Internal `archetype.app.*` paths have no v0.5 compatibility promise.
+
+### Target execution and durability boundaries
+
+`AsyncWorld.step()` receives a construction-supplied command materializer.
+Before `PreTick` and before discovering active signatures, it materializes
+commands due to the exact `(world, tick)` into that world's mutation caches.
+Infrastructure failure fails the tick. Per-command rejection, retry, and
+dead-letter policy remains scheduler-owned. Successfully staged command IDs
+settle only in the control-authority transaction that publishes the tick
+manifest. Public hooks remain advisory and failure-isolated.
+
+The world owns its identity, immutable UUIDv7 run identity, tick, entity and
+signature maps, live frames, mutation caches, and tick algorithm.
+`WorldRegistry` owns the collection of live worlds and uses a structural
+registry lock plus one state-change lock per world. No callback or inherited
+task context grants lock-bypass authority. Compound behavior acquires once and
+calls an explicitly lock-held helper; multi-world behavior acquires locks in
+sorted world-ID order.
+
+One frozen Pydantic command model represents each externally operable family
+behavior. `CommandDispatcher.apply()` is trusted actor-free entry;
+`apply_as()` adds policy/RBAC and bounded access-decision evidence.
+`CommandScheduler` adds durable options, canonical serialization, leases,
+attempts, and settlement without redefining the family command. Direct and
+deferred world mutations call the same module-level behavior.
+
+The generic post-commit seam is a manifest-bound committed-tick receipt plus a
+required projector/acknowledgment path outside `HookRegistry`. A receipt carries
+identity and a pinned visibility reference, never live frames. Required
+projection may be retried without rerunning the tick. Public `PostTick`
+observers cannot suppress or acknowledge it. Mission-specific dispatch and
+review intent are consumers of this seam, not special hook semantics.
+
+### Target lifetime and workflow ownership
+
+`wiring.py` returns `RuntimeResources`, the explicit owner of the dispatcher,
+scheduler, registry, storage, audit projection, shared policies, supervised
+tasks, and strongly registered workflow handles. Construction reserves
+ownership before a factory or task can become active. `aclose()` stops
+admission, drains admitted work, and closes dependency phases in order. It
+attempts every independent cleanup in the current phase, aggregates labelled
+errors, retains failed ownership and its dependencies, and retries that phase
+on a later serialized call. Only successful finalization is idempotent.
+
+The complete `RuntimeMissions.run()` operation is inside that admission and
+ownership boundary. Its dispatcher registration is direct-only unless the
+missions family explicitly supplies a portable durable encoding; calling the
+mission service directly is not a second entry path. Admission reserves the
+operation before task or provider construction can begin. Work admitted before
+shutdown may finish binding resources to that reservation, and shutdown waits
+for it; work arriving after admission closes cannot create a handle, task, or
+provider effect. Internal cleanup uses an exact-world, non-inheritable
+capability and cannot reopen public admission or operate on a sibling world.
+
+The target boundary reports an incomplete shutdown as
+`RuntimeShutdownError` from `archetype.errors`. It identifies the failed
+dependency phase and retains the non-empty ordered causes from every
+independent cleanup attempted in that phase. Cancellation during cleanup is
+retained as an `asyncio.CancelledError` cause of this retryable boundary error:
+it does not mark the runtime closed, release ownership, or skip peer cleanup.
+A later successful `aclose()` completes normally; only calls after successful
+finalization are no-ops.
+
+Agent Missions keeps live sandboxes, provider processes, checkpoints,
+publication, supervision, and cleanup in explicit resource owners. ECS
+Components and relations are the durable intent/evidence record, and
+processors alone decide readiness, priority, repair, acceptance, and terminal
+transitions. A required projector turns committed ECS intent into one durable
+dispatch/review intent; the resource consumer reconciles provider effects with
+that same identity and fails closed on an ambiguous started outcome. Bounded
+observations return through a later tick. Provider callbacks never decide task
+state.
+
+Planners emit typed, provider-neutral task-graph, dependency, priority,
+validator, critic, and artifact-policy proposals for validation and commit.
+They receive no live capability and cannot mutate a world, publish an
+artifact, or accept a task. Checkpoints, artifacts, transcripts, and episodes
+are first-class recovery/evidence references, but their existence has no
+implicit acceptance authority. Only an explicit typed policy may require
+their publication for a transition.
+
+Persistent behavioral evidence converges on `episode_id`. A trajectory is a
+derived learning-facing DataFrame selected from episode evidence and has no
+persistent identity. The run ID and episode-schema changes are intentional
+pre-1.0 v0.5 migrations rather than silent compatibility aliases.
+
+### Migration oracle ownership
+
+The accepted target is made executable slice by slice. PR-0 freezes the final
+family-DAG fixture and records the current baseline oracles. The owning slice
+must replace or extend those oracles before changing behavior:
+
+| Contract | Current baseline evidence | Target owner |
+|---|---|---|
+| command materialization and manifest-coupled settlement | command-flow and durable-command integration contracts | world/commands slices |
+| lock and shutdown admission | runtime lifecycle and admitted-work race contracts | world/runtime-resources slices |
+| UUIDv7 run identity and fork/resume continuity | command-flow, fork-storage, and world-resume contracts | world slice |
+| episode identity and trajectory derivation | episode-rollout and trajectory-domain contracts | episodes slice |
+| stable task base, immutable candidate, exact-head critic | coding-agent, critic, mission-service, and capability-eval contracts | missions slice |
+| sandbox cleanup and retryable phased teardown | sandbox-service, runtime-contract, and mission-service race contracts | runtime-resources and missions slices |
+| committed required projection and provider reconciliation | target contract in this section; new failpoint oracles land with the generic seam and mission consumer | world and missions slices |
+
+No row permits a target implementation to claim completion from an old
+baseline test alone. The final oracle must exercise the target owner and
+failure boundary.
+
+## 14. Change discipline
 
 Architecture changes update this normative document, the machine policy, its
 negative fixtures, affected family protocol tests, and contract registry in

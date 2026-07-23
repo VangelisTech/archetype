@@ -1,0 +1,523 @@
+version = 1
+
+# Operational inventory consumed by the static audit and execution runner.
+# Rows describe evidence enforced in the current slice, not future aspirations
+# or stdout-only smoke checks.
+
+[[scenario]]
+id = "example.00_quickstart"
+kind = "example"
+owner = "runtime"
+owner_paths = ["src/archetype/runtime"]
+source_path = "examples/00_quickstart.py"
+source_command = ["python", "examples/00_quickstart.py"]
+required_extras = []
+tier = 1
+applicability = ["source", "wheel"]
+timeout_seconds = 60
+prerequisites = []
+missing_prerequisite = "fail"
+semantic_oracle = { kind = "pytest", ref = "tests/integration/test_core_example_receipts.py::test_quickstart_receipt_proves_three_processor_ticks" }
+contracts = [
+  "core.processors.execution",
+  "runtime.trust.actor_free",
+]
+cleanup_policy = "isolated"
+artifact_policy = "receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["pr", "main", "release"]
+
+[[scenario]]
+id = "example.01_world_mutations"
+kind = "example"
+owner = "world"
+owner_paths = ["src/archetype/runtime", "src/archetype/app/world"]
+source_path = "examples/01_world_mutations.py"
+source_command = ["python", "examples/01_world_mutations.py"]
+required_extras = []
+tier = 1
+applicability = ["source", "wheel"]
+timeout_seconds = 120
+prerequisites = []
+missing_prerequisite = "fail"
+semantic_oracle = { kind = "pytest", ref = "tests/integration/test_core_example_receipts.py::test_world_mutation_receipt_proves_each_public_mutation" }
+contracts = [
+  "world.mutations.compose_deterministically",
+]
+cleanup_policy = "isolated"
+artifact_policy = "receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["pr", "main", "release"]
+
+[[scenario]]
+id = "example.02_fork_counterfactual"
+kind = "example"
+owner = "world"
+owner_paths = ["src/archetype/runtime", "src/archetype/app/world"]
+source_path = "examples/02_fork_counterfactual.py"
+source_command = ["python", "examples/02_fork_counterfactual.py"]
+required_extras = []
+tier = 1
+applicability = ["source", "wheel"]
+timeout_seconds = 120
+prerequisites = []
+missing_prerequisite = "fail"
+semantic_oracle = { kind = "pytest", ref = "tests/integration/test_core_example_receipts.py::test_counterfactual_receipt_proves_identity_lineage_and_divergence" }
+contracts = ["world.fork.lineage"]
+cleanup_policy = "isolated"
+artifact_policy = "receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["pr", "main", "release"]
+
+[[scenario]]
+id = "example.03_time_travel"
+kind = "example"
+owner = "world"
+owner_paths = [
+  "src/archetype/runtime",
+  "src/archetype/app/world",
+  "src/archetype/app/storage",
+]
+source_path = "examples/03_time_travel.py"
+source_command = ["python", "examples/03_time_travel.py"]
+required_extras = []
+tier = 1
+applicability = ["source", "wheel"]
+timeout_seconds = 180
+prerequisites = []
+missing_prerequisite = "fail"
+semantic_oracle = { kind = "pytest", ref = "tests/integration/test_core_example_receipts.py::test_time_travel_receipt_proves_cold_resume_continuity" }
+contracts = ["world.run_identity.cold_resume", "query.cold_reads.correct"]
+cleanup_policy = "isolated"
+artifact_policy = "receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["pr", "main", "release"]
+
+[[scenario]]
+id = "example.04_messaging"
+kind = "example"
+owner = "world"
+owner_paths = ["src/archetype/app/world", "src/archetype/core/hooks.py"]
+source_path = "examples/04_messaging.py"
+source_command = ["python", "examples/04_messaging.py"]
+required_extras = []
+tier = 1
+applicability = ["source"]
+timeout_seconds = 180
+prerequisites = []
+missing_prerequisite = "fail"
+semantic_oracle = { kind = "pytest", ref = "tests/integration/test_core_example_receipts.py::test_messaging_receipt_proves_messages_and_public_hook_order" }
+contracts = ["core.processors.execution", "core.hooks.lifecycle"]
+cleanup_policy = "isolated"
+artifact_policy = "receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["pr", "main", "release"]
+
+[[scenario]]
+id = "example.05_llm_agents"
+kind = "example"
+owner = "core"
+owner_paths = ["src/archetype/core/aio", "src/archetype/runtime"]
+source_path = "examples/05_llm_agents.py"
+source_command = ["python", "examples/05_llm_agents.py"]
+required_extras = []
+tier = 6
+applicability = ["source"]
+timeout_seconds = 900
+prerequisites = ["credential:OPENAI_API_KEY"]
+missing_prerequisite = "not_run"
+semantic_oracle = { kind = "pytest", ref = "tests/integration/test_llm_example_receipt.py::test_llm_agent_receipt_proves_per_tick_thought_coverage" }
+contracts = ["core.processors.execution"]
+cleanup_policy = "isolated"
+artifact_policy = "redacted_receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["release"]
+
+[[scenario]]
+id = "example.06_trajectory_analysis"
+kind = "example"
+owner = "missions"
+owner_paths = ["src/archetype/missions/trajectories", "src/archetype/app/missions"]
+source_path = "examples/06_trajectory_analysis.py"
+source_command = ["python", "examples/06_trajectory_analysis.py"]
+required_extras = []
+tier = 1
+applicability = ["source", "wheel"]
+timeout_seconds = 180
+prerequisites = []
+missing_prerequisite = "fail"
+semantic_oracle = { kind = "pytest", ref = "tests/integration/test_domain_example_receipts.py::test_trajectory_receipt_is_semantic_and_stable" }
+contracts = [
+  "missions.trajectory.runtime_service",
+]
+cleanup_policy = "isolated"
+artifact_policy = "receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["pr", "main", "release"]
+
+[[scenario]]
+id = "example.07_hooks"
+kind = "example"
+owner = "core"
+owner_paths = ["src/archetype/core/hooks.py", "src/archetype/app/world"]
+source_path = "examples/07_hooks.py"
+source_command = ["python", "examples/07_hooks.py"]
+required_extras = []
+tier = 1
+applicability = ["source"]
+timeout_seconds = 120
+prerequisites = []
+missing_prerequisite = "fail"
+semantic_oracle = { kind = "pytest", ref = "tests/integration/test_core_example_receipts.py::test_hook_receipt_proves_order_isolation_removal_and_state" }
+contracts = ["core.hooks.lifecycle"]
+cleanup_policy = "isolated"
+artifact_policy = "receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["pr", "main", "release"]
+
+[[scenario]]
+id = "example.08_htn_resolution"
+kind = "example"
+owner = "missions"
+owner_paths = ["src/archetype/missions/planning"]
+source_path = "examples/08_htn_resolution.py"
+source_command = ["python", "examples/08_htn_resolution.py"]
+required_extras = []
+tier = 1
+applicability = ["source"]
+timeout_seconds = 180
+prerequisites = []
+missing_prerequisite = "fail"
+semantic_oracle = { kind = "pytest", ref = "tests/integration/test_domain_example_receipts.py::test_htn_receipt_pins_fanout_and_persisted_solutions" }
+contracts = ["core.processors.execution"]
+cleanup_policy = "isolated"
+artifact_policy = "receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["pr", "main", "release"]
+
+[[scenario]]
+id = "example.09_cloud_storage"
+kind = "example"
+owner = "storage"
+owner_paths = ["src/archetype/app/storage", "src/archetype/runtime"]
+source_path = "examples/09_cloud_storage.py"
+source_command = ["python", "examples/09_cloud_storage.py", "--smoke-local"]
+required_extras = []
+tier = 1
+applicability = ["source"]
+timeout_seconds = 180
+prerequisites = []
+missing_prerequisite = "fail"
+semantic_oracle = { kind = "pytest", ref = "tests/integration/test_domain_example_receipts.py::test_local_cloud_storage_receipt_pins_runtime_roundtrip" }
+contracts = ["runtime.trust.actor_free"]
+cleanup_policy = "isolated"
+artifact_policy = "receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["pr", "main", "release"]
+
+[[scenario]]
+id = "example.10_autoresearch"
+kind = "example"
+owner = "research"
+owner_paths = ["src/archetype/research", "src/archetype/app/research"]
+source_path = "examples/10_autoresearch.py"
+source_command = ["python", "examples/10_autoresearch.py"]
+required_extras = []
+tier = 1
+applicability = ["source", "wheel"]
+timeout_seconds = 300
+prerequisites = []
+missing_prerequisite = "fail"
+semantic_oracle = { kind = "pytest", ref = "tests/integration/test_domain_example_receipts.py::test_autoresearch_receipt_pins_improvement_and_ledger_order" }
+contracts = ["research.autoresearch.ledger"]
+cleanup_policy = "isolated"
+artifact_policy = "receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["pr", "main", "release"]
+
+[[scenario]]
+id = "example.11_coding_agent_mission.dry_run"
+kind = "example"
+owner = "missions"
+owner_paths = ["src/archetype/missions", "src/archetype/app/missions"]
+source_path = "examples/11_coding_agent_mission.py"
+source_command = [
+  "python",
+  "examples/11_coding_agent_mission.py",
+  "--dry-run",
+  "--backend",
+  "docker",
+]
+required_extras = ["coding-agent"]
+tier = 1
+applicability = ["source"]
+timeout_seconds = 120
+prerequisites = []
+missing_prerequisite = "fail"
+semantic_oracle = { kind = "pytest", ref = "tests/integration/test_domain_example_receipts.py::test_coding_agent_dry_run_receipt_is_typed_and_starts_no_work" }
+contracts = ["missions.agent_v1.public_authoring"]
+cleanup_policy = "isolated"
+artifact_policy = "receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["pr", "main", "release"]
+
+[[scenario]]
+id = "example.11_graph_relationships"
+kind = "example"
+owner = "graph"
+owner_paths = ["src/archetype/graph"]
+source_path = "examples/11_graph_relationships.py"
+source_command = ["python", "examples/11_graph_relationships.py"]
+required_extras = []
+tier = 1
+applicability = ["source"]
+timeout_seconds = 120
+prerequisites = []
+missing_prerequisite = "fail"
+semantic_oracle = { kind = "pytest", ref = "tests/integration/test_domain_example_receipts.py::test_graph_receipt_pins_temporal_edges_and_cascade" }
+contracts = ["graph.relations.temporal"]
+cleanup_policy = "isolated"
+artifact_policy = "receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["pr", "main", "release"]
+
+[[scenario]]
+id = "example.12_prefabs"
+kind = "example"
+owner = "graph"
+owner_paths = ["src/archetype/graph"]
+source_path = "examples/12_prefabs.py"
+source_command = ["python", "examples/12_prefabs.py"]
+required_extras = []
+tier = 1
+applicability = ["source"]
+timeout_seconds = 180
+prerequisites = []
+missing_prerequisite = "fail"
+semantic_oracle = { kind = "pytest", ref = "tests/integration/test_domain_example_receipts.py::test_prefab_receipt_pins_lineage_and_copy_semantics" }
+contracts = ["graph.prefabs.copy_on_instantiate"]
+cleanup_policy = "isolated"
+artifact_policy = "receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["pr", "main", "release"]
+
+[[scenario]]
+id = "example.13_biome_rts"
+kind = "example"
+owner = "graph"
+owner_paths = ["src/archetype/graph", "examples/biome_rts"]
+source_path = "examples/13_biome_rts.py"
+source_command = ["python", "examples/13_biome_rts.py"]
+required_extras = []
+tier = 1
+applicability = ["source"]
+timeout_seconds = 300
+prerequisites = []
+missing_prerequisite = "fail"
+semantic_oracle = { kind = "pytest", ref = "tests/integration/test_domain_example_receipts.py::test_biome_receipt_pins_composed_scene_outcome" }
+contracts = [
+  "graph.relations.temporal",
+  "graph.prefabs.copy_on_instantiate",
+]
+cleanup_policy = "isolated"
+artifact_policy = "receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["pr", "main", "release"]
+
+[[scenario]]
+id = "example.14_physical_ai"
+kind = "example"
+owner = "physical_ai"
+owner_paths = [
+  "src/archetype/physical_ai",
+  "src/archetype/app/physical_ai",
+  "src/archetype/runtime",
+]
+source_path = "examples/14_physical_ai.py"
+source_command = ["python", "examples/14_physical_ai.py"]
+required_extras = []
+tier = 1
+applicability = ["source", "wheel"]
+timeout_seconds = 300
+prerequisites = []
+missing_prerequisite = "fail"
+semantic_oracle = { kind = "pytest", ref = "tests/integration/test_physical_ai_example_receipt.py::test_physical_ai_receipt_proves_eval_sweep_optimizer_and_telemetry" }
+contracts = [
+  "physical_ai.workflow.evidence",
+]
+cleanup_policy = "isolated"
+artifact_policy = "receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["pr", "main", "release"]
+
+[[scenario]]
+id = "dogfood.agent_mission.scripted"
+kind = "dogfood"
+owner = "missions"
+owner_paths = [
+  "src/archetype/missions",
+  "src/archetype/app/missions",
+  "src/archetype/runtime",
+  "evals/suites/capability/agent_missions.py",
+]
+source_path = "evals/suites/capability/agent_missions.py"
+source_command = ["python", "-m", "evals.run", "--profile", "capability"]
+required_extras = []
+tier = 1
+applicability = ["source", "wheel"]
+timeout_seconds = 900
+prerequisites = []
+missing_prerequisite = "fail"
+semantic_oracle = { kind = "eval", ref = "evals/suites/capability/agent_missions.py::task_agent_mission_transition_authority" }
+contracts = [
+  "missions.agent_v1.validator_gated",
+  "missions.agent_v1.exact_head_critic",
+  "missions.sandbox.cleanup_ownership",
+]
+cleanup_policy = "isolated"
+artifact_policy = "receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["pr", "main", "release"]
+
+[[scenario]]
+id = "dogfood.sandbox.docker"
+kind = "dogfood"
+owner = "missions"
+owner_paths = [
+  "src/archetype/missions",
+  "src/archetype/app/missions",
+  "src/archetype/runtime",
+  "src/archetype/app/commands",
+  "src/archetype/app/world",
+  "src/archetype/graph",
+  "src/archetype/core/hooks.py",
+  "src/archetype/app/container.py",
+  "examples/11_coding_agent_mission.py",
+  "evals/suites/capability/agent_missions.py",
+  "tests/missions",
+  "tests/integration/test_agent_mission_service.py",
+  "tests/integration/test_docker_sandbox_parity.py",
+  "quality/operational_scenarios.toml",
+  "uv.lock",
+  ".github/workflows/sandbox-backend-parity.yml",
+]
+source_path = "tests/integration/test_docker_sandbox_parity.py"
+source_command = ["pytest", "-q", "tests/integration/test_docker_sandbox_parity.py"]
+required_extras = ["coding-agent"]
+tier = 5
+applicability = ["source"]
+timeout_seconds = 1500
+prerequisites = ["binary:docker", "service:docker"]
+missing_prerequisite = "not_run"
+semantic_oracle = { kind = "pytest", ref = "tests/integration/test_docker_sandbox_parity.py" }
+contracts = [
+  "missions.sandbox.checkpoint_restore",
+]
+cleanup_policy = "provider"
+artifact_policy = "redacted_receipt"
+artifact_schema = "archetype.operational-results/v1"
+# The path-filtered Docker workflow is advisory PR substrate evidence. The
+# retained operational scenario becomes blocking only in the release profile.
+required_cadence = ["release"]
+
+[scenario.workflow]
+path = ".github/workflows/sandbox-backend-parity.yml"
+trigger_paths = [
+  "src/archetype/missions/**",
+  "src/archetype/app/missions/**",
+  "src/archetype/runtime/**",
+  "src/archetype/commands/**",
+  "src/archetype/app/commands/**",
+  "src/archetype/world/**",
+  "src/archetype/app/world/**",
+  "src/archetype/graph/**",
+  "src/archetype/core/hooks.py",
+  "src/archetype/wiring.py",
+  "src/archetype/app/container.py",
+  "examples/11_coding_agent_mission.py",
+  "evals/suites/capability/agent_missions.py",
+  "tests/missions/**",
+  "tests/integration/test_agent_mission_service.py",
+  "tests/integration/test_docker_sandbox_parity.py",
+  "quality/operational_scenarios.toml",
+  "uv.lock",
+  ".github/workflows/sandbox-backend-parity.yml",
+]
+
+[[scenario]]
+id = "dogfood.storage.r2"
+kind = "dogfood"
+owner = "storage"
+owner_paths = [
+  "src/archetype/app/storage",
+  "src/archetype/app/artifacts",
+  "src/archetype/runtime",
+  "tests/infrastructure",
+]
+source_path = "tests/infrastructure/test_r2_artifact_context.py"
+source_command = ["make", "test-infra"]
+required_extras = []
+tier = 5
+applicability = ["source"]
+timeout_seconds = 600
+prerequisites = [
+  "credential:R2_ACCESS_KEY_ID",
+  "credential:R2_SECRET_ACCESS_KEY",
+  "infrastructure:R2_API_ENDPOINT",
+  "infrastructure:R2_BUCKET",
+]
+missing_prerequisite = "not_run"
+semantic_oracle = { kind = "pytest", ref = "tests/infrastructure/test_r2_artifact_context.py" }
+contracts = [
+  "ingestion.catalog.cold_roundtrip",
+]
+cleanup_policy = "remote_prefix"
+artifact_policy = "redacted_receipt"
+artifact_schema = "archetype.operational-results/v1"
+# PR-0 retains the existing R2 substrate job. The full public-runtime scenario
+# and its retained receipt become blocking in the storage slice.
+required_cadence = ["release"]
+
+[scenario.workflow]
+path = ".github/workflows/python-tests.yml"
+trigger_paths = []
+
+[[scenario]]
+id = "dogfood.sandbox.apple_container"
+kind = "dogfood"
+owner = "missions"
+owner_paths = ["src/archetype/missions/sandboxes", "src/archetype/runtime"]
+source_path = "tests/integration/test_apple_container_sandbox_parity.py"
+source_command = ["pytest", "-q", "tests/integration/test_apple_container_sandbox_parity.py"]
+required_extras = ["coding-agent"]
+tier = 6
+applicability = ["source"]
+timeout_seconds = 1500
+prerequisites = ["binary:container", "platform:darwin", "service:apple-container"]
+missing_prerequisite = "not_run"
+semantic_oracle = { kind = "pytest", ref = "tests/integration/test_apple_container_sandbox_parity.py" }
+contracts = [
+  "missions.sandbox.checkpoint_restore",
+]
+cleanup_policy = "provider"
+artifact_policy = "redacted_receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["release"]
+
+[[tracked_receipt]]
+id = "agent-mission-capability-baseline"
+path = "quality/baselines/agent-mission-capability-8d3700eb.json"
+scenario_id = "dogfood.agent_mission.scripted"
+expected_revision = "8d3700eb24bd295916ee9716dd6c85f11c964873"
+require_clean = true
+expected_kind = "eval"
+expected_profile = "capability"
+expected_outcome = "passed"
+invocation_entrypoint = "evals/run.py"
+required_task_id = "agent_mission_transition_authority"
+required_graders = [
+  "mission_processors_own_transitions",
+  "mission_retry_uses_repository_evidence",
+  "mission_exact_head_critic_gates_promotion",
+  "mission_publication_and_cleanup_are_real",
+]

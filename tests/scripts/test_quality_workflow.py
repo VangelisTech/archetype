@@ -5,13 +5,17 @@
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 QUALITY_WORKFLOW = ROOT / ".github" / "workflows" / "python-tests.yml"
 AUTOMERGE_WORKFLOW = ROOT / ".github" / "workflows" / "automerge.yml"
 MAKEFILE = ROOT / "Makefile"
+OPERATIONAL_SCENARIOS = ROOT / "quality" / "operational_scenarios.toml"
 
 
 def _job(workflow: str, job_id: str) -> str:
@@ -50,6 +54,16 @@ def test_quality_workflow_keeps_fail_loud_coverage_and_infrastructure() -> None:
     assert "make eval-reliability" in evals
     assert "make eval-capability" in evals
     assert "make package-smoke" in evals
+    assert "make operational-wheel" in evals
+    assert "operational-results.json" in evals
+    assert re.search(r"- run: make operational-wheel\n\s+if: always\(\)", evals)
+    assert evals.index("make operational-wheel") < evals.index(
+        "Require applicable infrastructure evidence"
+    )
+    assert re.search(
+        r"- name: Require applicable infrastructure evidence\n\s+if: always\(\)",
+        evals,
+    )
 
 
 def test_observability_audit_uses_the_existing_required_format_context() -> None:
@@ -68,17 +82,101 @@ def test_observability_audit_uses_the_existing_required_format_context() -> None
     )
 
 
-def test_example_smoke_keeps_the_coding_agent_dogfood_credential_free() -> None:
+def test_example_smoke_keeps_the_coding_agent_authoring_check_credential_free() -> None:
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    assert re.search(r"^examples-smoke: examples-local$", makefile, re.MULTILINE)
+    assert "--mode source --cadence pr --kind example --max-tier 1" in makefile
+
+    with OPERATIONAL_SCENARIOS.open("rb") as stream:
+        scenarios = tomllib.load(stream)["scenario"]
+    mission = next(
+        row for row in scenarios if row["id"] == "example.11_coding_agent_mission.dry_run"
+    )
+
+    assert mission["source_command"][-3:] == ["--dry-run", "--backend", "docker"]
+    assert mission["prerequisites"] == []
+    assert mission["missing_prerequisite"] == "fail"
+    assert mission["tier"] == 1
+    assert "pr" in mission["required_cadence"]
+
+
+def test_operational_receipts_are_uploaded_even_when_a_scenario_fails() -> None:
+    workflow = QUALITY_WORKFLOW.read_text(encoding="utf-8")
+    evals = _job(workflow, "evals")
+    examples = _job(workflow, "examples")
+
+    assert re.search(
+        r"- name: Require installed-wheel operational receipt\n"
+        r"\s+if: always\(\)\n"
+        r"\s+run: test -f operational-results\.json",
+        evals,
+    )
+    assert re.search(
+        r"name: installed-wheel-operational-evidence\n"
+        r"\s+path: \|\n"
+        r"\s+operational-results\.json\n"
+        r"\s+operational-results\.d/\n"
+        r"\s+if-no-files-found: error",
+        evals,
+    )
+    pull_request_evidence = evals.split("name: pull-request-evidence", 1)[1]
+    assert "operational-results.json" not in pull_request_evidence
+
+    assert re.search(
+        r"- name: Require source operational receipt\n"
+        r"\s+if: always\(\)\n"
+        r"\s+run: test -f operational-source-results\.json",
+        examples,
+    )
+    assert re.search(
+        r"name: semantic-example-evidence\n"
+        r"\s+path: \|\n"
+        r"\s+operational-source-results\.json\n"
+        r"\s+operational-source-results\.d/\n"
+        r"\s+if-no-files-found: error",
+        examples,
+    )
+
+
+def test_operational_wheel_target_routes_build_and_wheel_setup_failures_through_runner(
+    tmp_path: Path,
+) -> None:
     makefile = MAKEFILE.read_text(encoding="utf-8")
     target = re.search(
-        r"^examples-smoke:\n(?P<body>(?:\t.*\n)+)",
+        r"^operational-wheel:(?P<dependencies>[^\n]*)\n"
+        r"(?P<body>(?:\t.*\n)+)",
         makefile,
         re.MULTILINE,
     )
-
     assert target is not None
-    assert '"examples/11_coding_agent_mission.py"' in target.group("body")
-    assert 'uv run python "$$f" --dry-run' in target.group("body")
+    assert target.group("dependencies").strip() == ""
+    body = target.group("body")
+    assert "$(OPERATIONAL_BUILD_COMMAND) || build_status=$$?" in body
+    assert 'wheel="$(OPERATIONAL_DIST_DIR)/.missing-operational-wheel.whl"' in body
+    assert "scripts/run_operational_scenarios.py" in body
+
+    for label, build_command in (("build-failed", "false"), ("wheel-missing", "true")):
+        output = tmp_path / f"{label}.json"
+        completed = subprocess.run(
+            [
+                "make",
+                "--no-print-directory",
+                "operational-wheel",
+                f"OPERATIONAL_BUILD_COMMAND={build_command}",
+                f"OPERATIONAL_DIST_DIR={tmp_path / label / 'dist'}",
+                f"OPERATIONAL_WHEEL_RESULTS={output}",
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert completed.returncode != 0
+        receipt = json.loads(output.read_text(encoding="utf-8"))
+        assert receipt["schema"] == "archetype.operational-results/v1"
+        assert receipt["outcome"] == "failed"
+        assert "--wheel must name one built wheel" in receipt["error"]
 
 
 def test_quality_gate_aggregates_every_applicable_job() -> None:

@@ -65,10 +65,57 @@ async def test_submit_spawn_reserved_id_survives_drain(tmp_path):
         # Tick-boundary dispatch and manifest settlement are one application path.
         applied = await c.simulation_service.step(world.world_id, RunConfig())
         assert applied == 1
-        # The entity should exist with the reserved ID
+        # The due command is staged before the world snapshots active
+        # signatures, so a brand-new signature is persisted in this same tick.
         assert reserved_id in world.entity2sig
+        rows = (await world.get_components([CommandFlowMarker])).to_pylist()
+        assert [(row["entity_id"], row["tick"]) for row in rows] == [(reserved_id, 0)]
         (record,) = await c.command_scheduler.records(world.world_id)
         assert record.status == "APPLIED"
+    finally:
+        await c.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_command_materializer_infrastructure_failure_fails_tick_before_settlement(
+    tmp_path, monkeypatch
+):
+    c = ServiceContainer()
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    try:
+        world = await c.world_service.create_world(
+            WorldConfig(name="materializer-failure"),
+            StorageConfig(uri=str(tmp_path / "store")),
+        )
+        await c.command_gateway.submit_spawn(
+            ctx,
+            world.world_id,
+            [CommandFlowMarker(tag="retry")],
+            tick=0,
+        )
+        real_drain = c.simulation_service._drain_commands
+
+        async def unavailable_materializer(world_id, tick):
+            raise RuntimeError("command materializer unavailable")
+
+        monkeypatch.setattr(
+            c.simulation_service,
+            "_drain_commands",
+            unavailable_materializer,
+        )
+        with pytest.raises(RuntimeError, match="command materializer unavailable"):
+            await c.simulation_service.step(world.world_id, RunConfig())
+
+        assert world.tick == 0
+        (pending,) = await c.command_scheduler.records(world.world_id)
+        assert pending.status == "PENDING"
+        assert world.entity2sig == {}
+
+        monkeypatch.setattr(c.simulation_service, "_drain_commands", real_drain)
+        assert await c.simulation_service.step(world.world_id, RunConfig()) == 1
+        (applied,) = await c.command_scheduler.records(world.world_id)
+        assert applied.status == "APPLIED"
+        assert applied.applied_tick == 0
     finally:
         await c.shutdown()
 

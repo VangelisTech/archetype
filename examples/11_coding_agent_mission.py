@@ -226,6 +226,39 @@ def _backend(name: str) -> tuple[SandboxBackend, str]:
     return backend, backend.environment
 
 
+async def run_demo(
+    storage_uri: str,
+    *,
+    backend_name: str = "docker",
+) -> dict[str, object]:
+    """Return the credential-free typed authoring receipt without external work."""
+    if not storage_uri:
+        raise ValueError("storage_uri must be non-empty")
+    backend, environment = _backend(backend_name)
+    return {
+        "mode": "dry_run",
+        "repository": REPOSITORY,
+        "backend": backend_name,
+        "backend_type": type(backend).__name__,
+        "environment_is_pinned": "sha256:" in environment,
+        "tasks": [
+            {
+                "name": task.name,
+                "depends_on": list(task.depends_on),
+                "validators": [
+                    {
+                        "name": validator.name,
+                        "expected_returncode": validator.expected_returncode,
+                    }
+                    for validator in task.validators
+                ],
+            }
+            for task in TASKS
+        ],
+        "external_work_started": False,
+    }
+
+
 async def main() -> None:
     arguments = _arguments()
     backend, environment = _backend(arguments.backend)

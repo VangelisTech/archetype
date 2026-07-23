@@ -781,6 +781,77 @@ allowed_families = []
     assert result.ok
 
 
+def test_ratified_v0_5_family_dag_is_complete_acyclic_and_exact(tmp_path: Path) -> None:
+    """PR-0 fixture: family moves may consume only the ratified final edges."""
+
+    allowed = {
+        "storage": (),
+        "world": ("storage",),
+        "commands": ("storage", "world"),
+        "artifacts": ("storage",),
+        "redaction": (),
+        "evaluation": ("storage", "world"),
+        "research": ("storage", "world"),
+        "physical_ai": ("storage", "world", "evaluation"),
+        "episodes": ("storage", "world", "artifacts", "redaction", "evaluation"),
+        "graph": (),
+        "missions": ("storage", "world", "graph", "artifacts", "episodes", "redaction"),
+        "views": ("storage", "world", "graph"),
+    }
+    package = tmp_path / "src" / "archetype"
+    target_reserved = (
+        *DEFAULT_RESERVED_INFRASTRUCTURE,
+        "archetype.errors",
+        "archetype.wiring",
+    )
+    package.mkdir(parents=True)
+    (package / "errors.py").write_text(
+        "class ArchetypeError(Exception):\n    pass\n",
+        encoding="utf-8",
+    )
+    (package / "wiring.py").write_text("value = 1\n", encoding="utf-8")
+    rules: list[str] = []
+    for family, dependencies in allowed.items():
+        module = package / family / "contracts.py"
+        module.parent.mkdir(parents=True)
+        imports = "".join(
+            f"from archetype.{dependency} import contracts as {dependency}_contracts\n"
+            for dependency in dependencies
+        )
+        module.write_text(imports or "value = 1\n", encoding="utf-8")
+        encoded = ", ".join(f'"archetype.{dependency}"' for dependency in dependencies)
+        rules.append(
+            "\n".join(
+                (
+                    "[[top_level_family_rule]]",
+                    f'name = "{family}"',
+                    f'consumer = "archetype.{family}"',
+                    f"allowed_families = [{encoded}]",
+                )
+            )
+        )
+
+    rules_text = "\n\n" + "\n\n".join(rules) + "\n"
+    unclassified = checker.audit_repository(
+        _write_family_policy(tmp_path, rules=rules_text),
+        repo_root=tmp_path,
+    )
+    assert unclassified.policy_errors == [
+        "unclassified first-party top-level scopes: archetype.errors, archetype.wiring"
+    ]
+
+    result = checker.audit_repository(
+        _write_family_policy(
+            tmp_path,
+            rules=rules_text,
+            reserved_infrastructure=target_reserved,
+        ),
+        repo_root=tmp_path,
+    )
+
+    assert result.ok
+
+
 def test_declared_family_edge_and_app_contract_import_pass(tmp_path: Path) -> None:
     alpha = tmp_path / "src" / "archetype" / "alpha" / "contracts.py"
     beta = tmp_path / "src" / "archetype" / "beta" / "contracts.py"

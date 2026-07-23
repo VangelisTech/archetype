@@ -635,42 +635,134 @@ def _host_scope_allowed(scope: str, capability: str) -> bool:
     return False
 
 
+def _protocol_base(node: ast.AST) -> ast.AST:
+    """Return the unsubscripted base used to declare a protocol.
+
+    Generic protocols appear as ``Protocol[T]`` in the AST. Treating only a
+    bare ``Protocol`` name as a protocol would silently remove their callable
+    members from the manifest universe.
+    """
+
+    while isinstance(node, ast.Subscript):
+        node = node.value
+    return node
+
+
 def _is_protocol(node: ast.ClassDef, bindings: dict[str, str]) -> bool:
     return any(
-        _resolved_name(base, bindings) in {"Protocol", "typing.Protocol"} for base in node.bases
+        _resolved_name(_protocol_base(base), bindings)
+        in {"Protocol", "typing.Protocol", "typing_extensions.Protocol"}
+        for base in node.bases
     )
 
 
 def _protocol_operations(
-    units: list[SourceUnit], source_root: Path, result: AuditResult
+    units: list[SourceUnit],
+    source_root: Path,
+    registered_family_scopes: frozenset[str],
+    result: AuditResult,
 ) -> dict[str, set[str]]:
     operations: dict[str, set[str]] = defaultdict(set)
+    definitions: dict[tuple[str, str], list[str]] = defaultdict(list)
     protocols = 0
     app_root = source_root / "archetype" / "app"
     for unit in units:
+        family_roots: list[tuple[str, str]] = []
+        for scope in registered_family_scopes:
+            if unit.module == scope or unit.module.startswith(scope + "."):
+                family_roots.append((scope.rsplit(".", 1)[-1], scope))
+
+        # Compatibility for the application-family layout that remains in use
+        # during the package migration. PR-11 removes this path after all
+        # protocol owners live in registered top-level families.
         try:
             relative = unit.path.relative_to(app_root)
         except ValueError:
-            continue
-        if len(relative.parts) < 2:
-            continue
-        family = relative.parts[0]
-        module_parts = list(relative.with_suffix("").parts[1:])
-        if module_parts and module_parts[-1] == "__init__":
-            module_parts.pop()
-        module_prefix = ".".join(module_parts)
-        for node in unit.tree.body:
-            if not isinstance(node, ast.ClassDef) or not _is_protocol(node, unit.bindings):
-                continue
-            protocols += 1
-            for member in node.body:
-                if not isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            pass
+        else:
+            if len(relative.parts) >= 2:
+                family_roots.append(
+                    (
+                        relative.parts[0],
+                        f"archetype.app.{relative.parts[0]}",
+                    )
+                )
+
+        for family, scope in family_roots:
+            module_prefix = unit.module.removeprefix(scope).removeprefix(".")
+            for node in unit.tree.body:
+                if not isinstance(node, ast.ClassDef) or not _is_protocol(node, unit.bindings):
                     continue
-                prefix = ".".join(part for part in (module_prefix, node.name) if part)
-                operations[family].add(f"{prefix}.{member.name}")
+                protocols += 1
+                for member in node.body:
+                    if not isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        continue
+                    prefix = ".".join(part for part in (module_prefix, node.name) if part)
+                    operation = f"{prefix}.{member.name}"
+                    operations[family].add(operation)
+                    definitions[(family, operation)].append(
+                        f"{unit.module}.{node.name}.{member.name} "
+                        f"({unit.relative_path}:{member.lineno})"
+                    )
+    for (family, operation), sources in sorted(definitions.items()):
+        if len(sources) > 1:
+            result.policy_errors.append(
+                f"duplicate discovered protocol operation {family}:{operation}: "
+                + ", ".join(sources)
+            )
     result.protocols_scanned = protocols
     result.operations_scanned = sum(len(values) for values in operations.values())
     return operations
+
+
+def _registered_top_level_family_scopes(
+    repo_root: Path,
+    result: AuditResult,
+) -> frozenset[str]:
+    """Read the top-level family registry without importing architecture tooling."""
+
+    policy_path = repo_root / "quality" / "architecture.toml"
+    if not policy_path.is_file():
+        result.policy_errors.append("missing architecture policy: quality/architecture.toml")
+        return frozenset()
+
+    fragment_root = policy_path.parent / f"{policy_path.stem}.d"
+    paths = [policy_path]
+    if fragment_root.is_dir():
+        paths.extend(sorted(fragment_root.glob("*.toml")))
+
+    scopes: set[str] = set()
+    for path in paths:
+        relative = path.relative_to(repo_root).as_posix()
+        try:
+            document = tomllib.loads(path.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError) as error:
+            result.policy_errors.append(
+                f"cannot parse architecture family registry {relative}: {error}"
+            )
+            continue
+        rows = document.get("top_level_family_rule", [])
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            result.policy_errors.append(
+                f"{relative}.top_level_family_rule must be an array of tables"
+            )
+            continue
+        for index, row in enumerate(rows):
+            scope = row.get("consumer")
+            if (
+                not isinstance(scope, str)
+                or re.fullmatch(r"archetype\.[A-Za-z_][A-Za-z0-9_]*", scope) is None
+            ):
+                result.policy_errors.append(
+                    f"{relative}.top_level_family_rule[{index}].consumer "
+                    "must be a top-level archetype family scope"
+                )
+                continue
+            if scope in scopes:
+                result.policy_errors.append(f"duplicate registered top-level family scope: {scope}")
+                continue
+            scopes.add(scope)
+    return frozenset(scopes)
 
 
 def _assignment(tree: ast.Module, name: str) -> ast.AST | None:
@@ -932,7 +1024,7 @@ def _load_manifests(
             if family_value != owner:
                 local_errors.append(f"{relative}.family must equal {owner!r}")
         elif family_value is not None:
-            local_errors.append(f"{relative} is not an application-family manifest")
+            local_errors.append(f"{relative} is not a discovered protocol-family manifest")
 
         dispositions = document.get("disposition", [])
         if not isinstance(dispositions, list) or any(
@@ -941,7 +1033,9 @@ def _load_manifests(
             local_errors.append(f"{relative}.disposition must be an array of tables")
             dispositions = []
         if dispositions and owner not in protocols:
-            local_errors.append(f"{relative}.disposition is allowed only for a real app family")
+            local_errors.append(
+                f"{relative}.disposition is allowed only for a discovered protocol family"
+            )
         for index, row in enumerate(dispositions):
             label = f"{relative}.disposition[{index}]"
             operations = _string_array(row.get("operations"), f"{label}.operations", local_errors)
@@ -2182,7 +2276,13 @@ def audit_repository(
     result = AuditResult()
     source_root, units = _parse_sources(root, result)
     vocabulary = _load_vocabulary(root, result)
-    protocols = _protocol_operations(units, source_root, result)
+    registered_family_scopes = _registered_top_level_family_scopes(root, result)
+    protocols = _protocol_operations(
+        units,
+        source_root,
+        registered_family_scopes,
+        result,
+    )
     callable_paths = _callable_scope_paths(units)
     state = _load_manifests(
         manifests,

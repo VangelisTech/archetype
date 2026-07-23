@@ -202,17 +202,21 @@ signal boundary.
 | Evaluation and research | No direct signal yet | Snapshot-pinned evaluation/research receipts |
 | Audit | Logging only; no direct signal yet | Journal/outbox and projection watermark |
 | Missions and sandboxes | No direct signal yet | Typed transition rows, attempt state, checkpoints, and artifacts |
+| Physical-AI workflow, providers, and pure search | No direct signal yet | Persisted evaluation rows and report for the workflow; provider state and returned values at provider boundaries; returned proposals for pure search |
 
 The machine authority is one independently owned manifest per family under
 `quality/observability/<family>.toml`. The required universe is every callable
 member — method, async method, or property — of every `Protocol` declared
-anywhere under `src/archetype/app/<family>/`, not only protocols co-located in
-`interfaces.py`. Every such member has exactly one disposition row in its
-owning family manifest. Rows use exact qualified names; wildcards, method
-ranges, and inherited blanket dispositions are forbidden. A family may add an
-exact workflow row for an instrumented internal operation that is not a
-protocol member; there is no reverse requirement that every safe internal
-emitter have a workflow row.
+under either a registered `src/archetype/<family>/` package or the temporary
+`src/archetype/app/<family>/` compatibility layout, not only protocols
+co-located in `interfaces.py`. During migration, two definitions may not
+collapse to the same family-relative operation name; compatibility modules
+re-export the owning definition instead. Every callable member has exactly one
+disposition row in its owning family manifest. Rows use exact qualified names;
+wildcards, method ranges, and inherited blanket dispositions are forbidden. A
+family may add an exact workflow row for an instrumented internal operation
+that is not a protocol member; there is no reverse requirement that every safe
+internal emitter have a workflow row.
 
 Each row declares plural signals and outcomes, its authoritative durable or
 typed evidence when one exists, and only the fixed names, fields, and bounded

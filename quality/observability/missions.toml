@@ -4,6 +4,8 @@ family = "missions"
 
 [[disposition]]
 operations = [
+  "coding_agents.contracts.CodingAgentDriver.run",
+  "critics.contracts.CriticDriver.run",
   "interfaces.iMissionService.submit",
   "interfaces.iMissionService.run",
   "interfaces.iMissionService.restore_sandbox",
@@ -23,13 +25,26 @@ operations = [
   "service.MissionWorld.shutdown",
   "service.MissionWorld.update",
   "service.MissionWorld.world_id",
+  "sandboxes.contracts.SandboxBackend.create",
+  "sandboxes.contracts.SandboxBackend.restore",
+  "sandboxes.contracts.SandboxServiceProtocol.acquire",
+  "sandboxes.contracts.SandboxServiceProtocol.close",
+  "sandboxes.contracts.SandboxServiceProtocol.restore",
+  "sandboxes.contracts.SandboxServiceProtocol.session",
+  "sandboxes.contracts.SandboxServiceProtocol.shutdown",
+  "sandboxes.contracts.SandboxSession.capabilities",
+  "sandboxes.contracts.SandboxSession.checkpoint",
+  "sandboxes.contracts.SandboxSession.close",
+  "sandboxes.contracts.SandboxSession.exec",
+  "sandboxes.contracts.SandboxSession.identity",
+  "sandboxes.contracts.SandboxSession.status",
 ]
 signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
-authority = "Persisted mission/task state, dispatch intent, execution observations, validator results, and repository commits remain authoritative."
+authority = "Persisted mission/task state, stable author-base and dispatch intent, execution and validator observations, repository commits, immutable candidates, critic executions, findings, receipts, checkpoints, and sandbox lifecycle state remain authoritative."
 evidence = [
   "docs/guide/agent-missions.md",
   "tests/integration/test_agent_mission_service.py",
   "tests/app/test_trajectory_service.py",
 ]
-rationale = "Mission orchestration emits no second authority signal; world history records every decision and observation."
+rationale = "Mission orchestration and family-owned sandbox or agent adapters emit no second authority signal; world history and bound evidence record every durable decision and observation."

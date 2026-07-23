@@ -1,11 +1,49 @@
 # Prefab Libraries
 
+**Document type:** Normative current contract and user guide.
+
 Archetype prefab libraries are entity-backed asset graphs.  A library can be
 queried, versioned by tick, forked, graded, and composed with the same
 relationship tools as a runtime scene.  The RTS capstone in
 `examples/biome_rts/` demonstrates the pattern with harvesters, turrets,
 nested tools, command hierarchies, supply lines, visibility, and targeting.
 It is a reference package, not a shipped `archetype` family.
+
+## Current relation and temporal-view contract
+
+This section defines the implemented `archetype.graph` contract.  The design
+records linked later explain its origin and possible extensions; their
+`Proposed` status does not override this current contract.
+
+A concrete relation is a `Relation` Component subclass with `source` and
+`target` entity ids.  Each edge is an ordinary entity carrying one relation
+Component, so it inherits the ledger's ticks, liveness, persistence, history,
+and fork lineage.  Relationship targets do not enter an archetype signature.
+`link()` stages an edge for the next commit, `edges()` returns its append-only
+table, `edges(..., at=tick)` is an ordinary temporal filter, and `unlink()`
+idempotently stages every matching live edge for despawn.  The sync helpers
+provide the same contract for sync world handles.
+
+An exclusive relation has at most one persisted live edge per source after a
+replacement commit.  Replacement reads the latest persisted state and stages
+the new edge plus prior-edge despawns together.  Two exclusive links staged
+before an intervening step are therefore outside that guarantee: the tick
+boundary is the consistency unit.
+
+`GraphView` is a world-local, read-only resource populated from committed
+`PostTick.results`.  Before the first committed tick it is empty.  Afterward,
+processors evaluating tick N see lazy frames captured from tick N−1; inactive
+rows are filtered from component views.  A `GraphSnapshot` freezes one capture
+for multi-read operations such as prefab instantiation.  Neither view performs
+query-service reentrancy or creates an additional durability boundary.
+
+Cleanup remains explicit driver policy.  `cascade()` compares a relation's
+captured live edges with the captured population and applies
+`on_delete_target` one generation per invocation: `REMOVE` despawns the
+dangling edge, `DELETE` also despawns its source, and `FLAG` only reports the
+dangling edge.  Those mutations are staged and become visible at the following
+tick.  A relation-declared non-empty foreign scope is excluded from local
+liveness decisions.  `ChildOf` is exclusive and uses `DELETE`.
 
 ## Registration has two layers
 
@@ -147,6 +185,9 @@ default, expressed without a core query change.
 
 ## Instantiation is a ledger operation
 
+This section defines the implemented
+`graph.prefabs.copy_on_instantiate` contract.
+
 ```python
 unit = await instantiate(
     world,
@@ -223,8 +264,9 @@ Run the complete credential-free composition with:
 uv run python examples/13_biome_rts.py
 ```
 
-The generic graph and projection contracts remain the underlying API.  See
-the [graph-system](../design/graph-system.md) and
-[prefab-registry](../design/prefab-registry.md) design records for the
-accepted copy-on-instantiate contract and the ruled, not-yet-implemented
-cross-world registry.
+The generic graph and projection contracts remain the underlying API.  The
+current relation and copy-on-instantiate sections above are normative.  See
+the proposed [graph-system](../design/graph-system.md) and
+[prefab-registry](../design/prefab-registry.md) design records for rationale
+and the ruled, not-yet-implemented cross-world registry; those records do not
+expand the implemented contract.

@@ -16,3 +16,30 @@ evidence = [
   "tests/app/physical_ai/test_instruction_sweep.py",
 ]
 rationale = "Physical evaluation produces queryable ledger evidence; a second workflow signal would duplicate rather than strengthen that authority."
+
+[[disposition]]
+operations = [
+  "manipulation.EnvClient.reset",
+  "manipulation.EnvClient.step",
+  "policy.PolicyClient.act",
+]
+signals = ["none"]
+outcomes = ["propagated_failure", "handled_outcome"]
+authority = "Provider-owned simulator or policy state and the returned observation or action values remain authoritative until a consuming processor or workflow commits its own typed evidence."
+evidence = [
+  "docs/guide/physical-ai.md",
+  "tests/physical_ai/test_manipulation_harness.py",
+  "tests/physical_ai/test_policy_loop.py",
+]
+rationale = "Provider boundaries return the values consumed by physical-AI transitions; telemetry cannot acknowledge a provider call or a committed tick."
+
+[[disposition]]
+operations = ["optimization.PerturbationStrategy.propose"]
+signals = ["none"]
+outcomes = ["propagated_failure", "handled_outcome"]
+authority = "The returned proposal list remains authoritative; any evaluation or durable evidence belongs to the injected evaluator and its owning workflow."
+evidence = [
+  "docs/guide/physical-ai.md",
+  "tests/app/physical_ai/test_instruction_sweep.py",
+]
+rationale = "Instruction perturbation is a pure strategy call and has no independently approved signal."
