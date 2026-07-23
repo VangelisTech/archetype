@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
+from archetype.core.config import StorageConfig
 from archetype.world import query
 
 
@@ -74,3 +76,38 @@ async def test_lineage_segments_are_clipped_to_their_owned_ticks() -> None:
         ("root", "root-run", [0, 2]),
         ("parent", "parent-run", [3, 5]),
     ]
+
+
+@pytest.mark.asyncio
+async def test_visibility_is_pinned_through_storage_at_requested_tick_head() -> None:
+    @dataclass(frozen=True)
+    class _Visibility:
+        visibility_tokens: tuple[str, ...] | None
+
+    class _Storage:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, int | None]] = []
+
+        async def pin_visibility(
+            self,
+            storage_config: StorageConfig,
+            world_id: str,
+            *,
+            run_id: str,
+            max_tick: int | None,
+        ) -> _Visibility:
+            del storage_config
+            self.calls.append((world_id, run_id, max_tick))
+            return _Visibility(("token-2", "token-5"))
+
+    storage = _Storage()
+    tokens = await query._visible_tokens(
+        storage,  # type: ignore[arg-type]
+        StorageConfig(),
+        "world",
+        "run",
+        [2, 5],
+    )
+
+    assert tokens == ["token-2", "token-5"]
+    assert storage.calls == [("world", "run", 5)]
