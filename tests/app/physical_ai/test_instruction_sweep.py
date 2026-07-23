@@ -25,9 +25,10 @@ from __future__ import annotations
 
 import pytest
 
+import archetype.app.gateway.auth.guard as guard
 from archetype import ArchetypeRuntime, InstructionSweepConfig
 from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.core.config import StorageConfig
 from archetype.physical_ai.manipulation import ManipStatus, ManipTask, ScriptedReachEnv
 from archetype.physical_ai.optimization import (
@@ -112,10 +113,10 @@ def _expected_success_rate(
 
 @pytest.fixture(autouse=True)
 def _reset_quotas():
-    reset_tick_counters()
+    guard._tick_counters.clear()
     reset_daily_tokens()
     yield
-    reset_tick_counters()
+    guard._tick_counters.clear()
     reset_daily_tokens()
 
 

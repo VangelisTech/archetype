@@ -77,7 +77,7 @@ async def test_transcript_persists_sanitized_artifact_and_normalized_rows(
     storage = _storage(tmp_path, "transcripts")
     container = ServiceContainer()
     try:
-        world = await container.world_service.create_world(
+        world = await container.world_lifecycle.create_world(
             WorldConfig(name="transcript-ingestion"), storage
         )
         result = await container.transcript_ingestion_service.ingest(str(world.world_id), source)
@@ -151,7 +151,7 @@ async def test_reingestion_records_a_new_artifact_occurrence(tmp_path: Path) -> 
     storage = _storage(tmp_path, "retry")
     container = ServiceContainer()
     try:
-        world = await container.world_service.create_world(WorldConfig(name="retry"), storage)
+        world = await container.world_lifecycle.create_world(WorldConfig(name="retry"), storage)
         first = await container.transcript_ingestion_service.ingest(str(world.world_id), source)
         second = await container.transcript_ingestion_service.ingest(str(world.world_id), source)
 

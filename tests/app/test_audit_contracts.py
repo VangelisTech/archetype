@@ -8,10 +8,11 @@ import logging
 import pytest
 from uuid_utils import uuid7
 
+import archetype.app.gateway.auth.guard as guard
 from archetype.app.audit.models import make_audit_row
 from archetype.app.audit.service import AuditBackpressureError, AuditLog
 from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.models import CommandType
 from archetype.core.component import Component
@@ -93,7 +94,7 @@ async def test_injected_session_requires_and_enforces_audit_identity(tmp_path):
 
         different = storage.model_copy(update={"uri": str(tmp_path / "other")})
         with pytest.raises(ValueError, match="configured for a different storage identity"):
-            await container.world_service.create_world(WorldConfig(name="other"), different)
+            await container.world_lifecycle.create_world(WorldConfig(name="other"), different)
     finally:
         if container is not None:
             await container.shutdown()
@@ -102,10 +103,10 @@ async def test_injected_session_requires_and_enforces_audit_identity(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _reset_quotas():
-    reset_tick_counters()
+    guard._tick_counters.clear()
     reset_daily_tokens()
     yield
-    reset_tick_counters()
+    guard._tick_counters.clear()
     reset_daily_tokens()
 
 
@@ -114,7 +115,7 @@ async def test_gated_mutations_emit_exactly_one_audit_row(tmp_path):
     c = ServiceContainer(audit_storage_config=_storage(tmp_path))
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        world = await c.world_service.create_world(
+        world = await c.world_lifecycle.create_world(
             WorldConfig(name="audit"), StorageConfig(uri=str(tmp_path / "world"))
         )
         wid = world.world_id

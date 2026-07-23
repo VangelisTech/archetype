@@ -8,7 +8,7 @@ from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.core.errors import TickExecutionError, TickFailure
-from tests.conftest import make_world_service
+from tests.conftest import make_world_harness
 
 
 class Foo(Component):
@@ -40,13 +40,15 @@ async def test_async_world_processor_error_fails_the_step(tmp_path, caplog):
     append rows the failed processor never transformed — a silent hole in
     the per-tick history.
     """
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         system = AsyncSystem()
         await system.add_processor(OKProc())
         await system.add_processor(BadProc())
-        world = await ws.create_world(WorldConfig(name="w"), storage_config=storage, system=system)
+        world = await ws.lifecycle.create_world(
+            WorldConfig(name="w"), storage_config=storage, system=system
+        )
         await world.create_entity([Foo(x=1)])
 
         with caplog.at_level("ERROR"):
@@ -62,7 +64,7 @@ async def test_async_world_processor_error_fails_the_step(tmp_path, caplog):
         # The failed tick did not happen: the counter never advanced.
         assert world.tick == 0
     finally:
-        await ws.shutdown()
+        await ws.close()
 
 
 @pytest.mark.asyncio
@@ -73,13 +75,15 @@ async def test_failed_tick_commits_nothing_and_is_retryable(tmp_path):
     The compute phase runs before any append, so a processor failure
     cannot half-commit a tick or consume the spawn it never persisted.
     """
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         system = AsyncSystem()
         await system.add_processor(OKProc())
         await system.add_processor(BadProc())
-        world = await ws.create_world(WorldConfig(name="w"), storage_config=storage, system=system)
+        world = await ws.lifecycle.create_world(
+            WorldConfig(name="w"), storage_config=storage, system=system
+        )
         eid = await world.create_entity([Foo(x=1)])
         sig = (Foo,)
 
@@ -97,7 +101,7 @@ async def test_failed_tick_commits_nothing_and_is_retryable(tmp_path):
         assert [row["entity_id"] for row in rows] == [eid]
         assert world.tick == 1
     finally:
-        await ws.shutdown()
+        await ws.close()
 
 
 class Bar(Component):
@@ -109,12 +113,14 @@ async def test_one_failing_archetype_blocks_all_appends(tmp_path):
     """The compute phase is a barrier: when any archetype's processor
     fails, NO archetype appends rows for that tick — a tick either
     commits or it didn't happen, across the whole world."""
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         system = AsyncSystem()
         await system.add_processor(BadProc())  # matches Foo archetypes only
-        world = await ws.create_world(WorldConfig(name="w"), storage_config=storage, system=system)
+        world = await ws.lifecycle.create_world(
+            WorldConfig(name="w"), storage_config=storage, system=system
+        )
         await world.create_entity([Foo(x=1)])
         bar_eid = await world.create_entity([Bar(y=2)])
 
@@ -127,7 +133,7 @@ async def test_one_failing_archetype_blocks_all_appends(tmp_path):
         assert any(row["entity_id"] == bar_eid for row in world.spawn_cache.get(bar_sig, []))
         assert world.tick == 0
     finally:
-        await ws.shutdown()
+        await ws.close()
 
 
 class RateLimitError(RuntimeError):
@@ -168,13 +174,15 @@ async def test_step_preserves_ordered_structured_compute_failures(tmp_path):
         Archetype.get_name((Foo,)): timeout,
         Archetype.get_name((Bar,)): rate_limit,
     }
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         system = AsyncSystem()
         await system.add_processor(FailFooWith(timeout))
         await system.add_processor(FailBarWith(rate_limit))
-        world = await ws.create_world(WorldConfig(name="w"), storage_config=storage, system=system)
+        world = await ws.lifecycle.create_world(
+            WorldConfig(name="w"), storage_config=storage, system=system
+        )
         await world.create_entity([Foo(x=1)])
         await world.create_entity([Bar(y=2)])
 
@@ -197,7 +205,7 @@ async def test_step_preserves_ordered_structured_compute_failures(tmp_path):
         assert world.tick == 0
         assert set(world.spawn_cache) == {(Foo,), (Bar,)}
     finally:
-        await ws.shutdown()
+        await ws.close()
 
 
 @pytest.mark.asyncio
@@ -210,13 +218,15 @@ async def test_step_preserves_ordered_structured_commit_failures(tmp_path, monke
         Archetype.get_name((Foo,)): foo_error,
         Archetype.get_name((Bar,)): bar_error,
     }
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await ws.create_world(WorldConfig(name="w"), storage_config=storage)
+        world = await ws.lifecycle.create_world(WorldConfig(name="w"), storage_config=storage)
         await world.create_entity([Foo(x=1)])
         await world.create_entity([Bar(y=2)])
-        world.commit_coordinator = None
+        # This focused commit-path test intentionally bypasses managed
+        # coordination; the public coordinator binding is immutable.
+        world._commit_coordinator = None
 
         async def fail_commit(sig, df, run_config):
             raise errors_by_table[Archetype.get_name(sig)]
@@ -241,7 +251,7 @@ async def test_step_preserves_ordered_structured_commit_failures(tmp_path, monke
         assert world.tick == 0
         assert set(world.spawn_cache) == {(Foo,), (Bar,)}
     finally:
-        await ws.shutdown()
+        await ws.close()
 
 
 @pytest.mark.asyncio
@@ -257,12 +267,14 @@ async def test_step_does_not_wrap_task_cancellation(tmp_path):
         async def process(self, df, **kwargs):
             raise asyncio.CancelledError("cancel step")
 
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         system = AsyncSystem()
         await system.add_processor(CancelFoo())
-        world = await ws.create_world(WorldConfig(name="w"), storage_config=storage, system=system)
+        world = await ws.lifecycle.create_world(
+            WorldConfig(name="w"), storage_config=storage, system=system
+        )
         await world.create_entity([Foo(x=1)])
 
         # asyncio surfaces a task's cancellation as a fresh CancelledError
@@ -274,7 +286,7 @@ async def test_step_does_not_wrap_task_cancellation(tmp_path):
         assert world.tick == 0
         assert (Foo,) in world.spawn_cache
     finally:
-        await ws.shutdown()
+        await ws.close()
 
 
 def test_tick_execution_error_survives_pickle_round_trip():

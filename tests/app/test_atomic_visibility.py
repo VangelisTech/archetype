@@ -43,9 +43,9 @@ def _storage(tmp_path) -> StorageConfig:
 
 
 async def _spawn_and_step(c: ServiceContainer, world, n_steps: int = 1) -> None:
-    await c.mutation_service.create_entity(world.world_id, [Counter(value=1.0)])
+    await c.application.create_entity(world.world_id, [Counter(value=1.0)])
     for _ in range(n_steps):
-        await c.simulation_service.step(world.world_id, RunConfig())
+        await c.application.step(world.world_id, RunConfig())
 
 
 async def _visible_rows(
@@ -55,7 +55,7 @@ async def _visible_rows(
     ticks=None,
     component: type[Component] = Counter,
 ) -> list[dict]:
-    df = await c.query_service.query_components(
+    df = await c.application.query_components(
         [component], str(world.world_id), str(world.run_id), storage, ticks=ticks
     )
     return df.to_pylist()
@@ -70,7 +70,7 @@ async def test_service_worlds_publish_manifests_per_tick(tmp_path):
     c = ServiceContainer()
     try:
         storage = _storage(tmp_path)
-        world = await c.world_service.create_world(WorldConfig(name="w"), storage)
+        world = await c.world_lifecycle.create_world(WorldConfig(name="w"), storage)
         assert world.commit_coordinator is not None, "service worlds are coordinated"
         await _spawn_and_step(c, world, n_steps=2)
 
@@ -93,8 +93,8 @@ async def test_failed_publish_leaves_tick_invisible_and_retry_wins(tmp_path, mon
     c = ServiceContainer()
     try:
         storage = _storage(tmp_path)
-        world = await c.world_service.create_world(WorldConfig(name="w"), storage)
-        await c.mutation_service.create_entity(world.world_id, [Counter(value=1.0)])
+        world = await c.world_lifecycle.create_world(WorldConfig(name="w"), storage)
+        await c.application.create_entity(world.world_id, [Counter(value=1.0)])
 
         real_publish = SqliteControlCatalog.publish_manifest
 
@@ -103,14 +103,14 @@ async def test_failed_publish_leaves_tick_invisible_and_retry_wins(tmp_path, mon
 
         monkeypatch.setattr(SqliteControlCatalog, "publish_manifest", _crash)
         with pytest.raises(RuntimeError, match="injected crash"):
-            await c.simulation_service.step(world.world_id, RunConfig())
+            await c.application.step(world.world_id, RunConfig())
 
         assert world.tick == 0, "a tick that did not publish did not happen"
         assert await _visible_rows(c, world, storage) == [], "unmanifested rows must be invisible"
 
         # Recovery: the same writer retries the tick.
         monkeypatch.setattr(SqliteControlCatalog, "publish_manifest", real_publish)
-        await c.simulation_service.step(world.world_id, RunConfig())
+        await c.application.step(world.world_id, RunConfig())
 
         rows = await _visible_rows(c, world, storage, ticks=[0])
         assert len(rows) == 1, (
@@ -125,9 +125,9 @@ async def test_partial_archetype_append_is_invisible_and_retry_is_atomic(tmp_pat
     c = ServiceContainer()
     try:
         storage = _storage(tmp_path)
-        world = await c.world_service.create_world(WorldConfig(name="w"), storage)
-        await c.mutation_service.create_entity(world.world_id, [Counter(value=1.0)])
-        await c.mutation_service.create_entity(world.world_id, [Gauge(value=2.0)])
+        world = await c.world_lifecycle.create_world(WorldConfig(name="w"), storage)
+        await c.application.create_entity(world.world_id, [Counter(value=1.0)])
+        await c.application.create_entity(world.world_id, [Gauge(value=2.0)])
 
         store = world.updater.store
         real_append = store.append
@@ -146,7 +146,7 @@ async def test_partial_archetype_append_is_invisible_and_retry_is_atomic(tmp_pat
         # #444: the commit-phase aggregate names the failed table only; the
         # injected append error rides in failures with its text intact.
         with pytest.raises(TickExecutionError) as raised:
-            await c.simulation_service.step(world.world_id, RunConfig())
+            await c.application.step(world.world_id, RunConfig())
         assert raised.value.phase == "commit"
         assert any("second-archetype append failure" in str(f.error) for f in raised.value.failures)
 
@@ -154,7 +154,7 @@ async def test_partial_archetype_append_is_invisible_and_retry_is_atomic(tmp_pat
         assert await _visible_rows(c, world, storage, component=Counter) == []
 
         monkeypatch.setattr(store, "append", real_append)
-        await c.simulation_service.step(world.world_id, RunConfig())
+        await c.application.step(world.world_id, RunConfig())
 
         assert len(await _visible_rows(c, world, storage, ticks=[0], component=Counter)) == 1
         assert len(await _visible_rows(c, world, storage, ticks=[0], component=Gauge)) == 1
@@ -175,7 +175,7 @@ async def test_cache_enabled_head_never_claims_ram_only_rows(tmp_path):
     try:
         storage = _storage(tmp_path)
         cache = CacheConfig(flush_rows=1_000_000, flush_mb=1_000, idle_sec=3600)
-        world = await c.world_service.create_world(WorldConfig(name="w"), storage, cache)
+        world = await c.world_lifecycle.create_world(WorldConfig(name="w"), storage, cache)
         await _spawn_and_step(c, world, n_steps=2)
         wid, rid = str(world.world_id), str(world.run_id)
     finally:
@@ -183,7 +183,7 @@ async def test_cache_enabled_head_never_claims_ram_only_rows(tmp_path):
 
     cold = ServiceContainer()
     try:
-        df = await cold.query_service.query_components([Counter], wid, rid, storage)
+        df = await cold.application.query_components([Counter], wid, rid, storage)
         rows = df.to_pylist()
         assert {r["tick"] for r in rows} == {0, 1}, (
             "every published tick must be durably readable cold"
@@ -201,7 +201,7 @@ async def test_second_fence_acquisition_stales_first_writer(tmp_path):
     c = ServiceContainer()
     try:
         storage = _storage(tmp_path)
-        world = await c.world_service.create_world(WorldConfig(name="w"), storage)
+        world = await c.world_lifecycle.create_world(WorldConfig(name="w"), storage)
         await _spawn_and_step(c, world)
 
         # A second writer (e.g. another process resuming this world) takes
@@ -210,7 +210,7 @@ async def test_second_fence_acquisition_stales_first_writer(tmp_path):
         await catalog.acquire_fence(str(world.world_id), "intruder:999")
 
         with pytest.raises(RuntimeError) as exc_info:
-            await c.simulation_service.step(world.world_id, RunConfig())
+            await c.application.step(world.world_id, RunConfig())
         assert "StaleWriter" in type(exc_info.value).__name__ or "not the" in str(exc_info.value)
         assert world.tick == 1, "stale writer must not advance"
         rows = await _visible_rows(c, world, storage)
@@ -230,7 +230,7 @@ async def test_stale_epoch_rows_at_visible_tick_are_excluded(tmp_path):
     c = ServiceContainer()
     try:
         storage = _storage(tmp_path)
-        world = await c.world_service.create_world(WorldConfig(name="w"), storage)
+        world = await c.world_lifecycle.create_world(WorldConfig(name="w"), storage)
         await _spawn_and_step(c, world)
         assert len(await _visible_rows(c, world, storage, ticks=[0])) == 1
 
@@ -382,7 +382,7 @@ async def test_catalog_failure_fails_reads_closed_not_open(tmp_path, monkeypatch
     c = ServiceContainer()
     try:
         storage = _storage(tmp_path)
-        world = await c.world_service.create_world(WorldConfig(name="w"), storage)
+        world = await c.world_lifecycle.create_world(WorldConfig(name="w"), storage)
         await _spawn_and_step(c, world)
         assert len(await _visible_rows(c, world, storage, ticks=[0])) == 1
 
@@ -405,7 +405,7 @@ async def test_querier_without_commit_tokens_support_fails_closed(tmp_path):
     c = ServiceContainer()
     try:
         storage = _storage(tmp_path)
-        world = await c.world_service.create_world(WorldConfig(name="w"), storage)
+        world = await c.world_lifecycle.create_world(WorldConfig(name="w"), storage)
         await _spawn_and_step(c, world)
 
         class NoTokenQuerier:
@@ -440,20 +440,20 @@ async def test_querier_without_commit_tokens_support_fails_closed(tmp_path):
 async def test_coordinator_epoch_and_manifest_roundtrip(tmp_path):
     catalog = SqliteControlCatalog(tmp_path / "cat.db")
     epoch = await catalog.acquire_fence("w", "h1")
-    coordinator = CatalogCommitCoordinator(catalog, epoch=epoch)
+    coordinator = CatalogCommitCoordinator.bound(catalog, "w", "r", epoch)
 
-    ctx = await coordinator.begin_tick("w", "r", 0)
+    ctx = await coordinator.begin_tick(0)
     assert ctx.writer_epoch == epoch and ctx.commit_token
 
-    await coordinator.publish_tick("w", "r", 0, ctx, [(Counter,)])
-    await coordinator.publish_tick("w", "r", 0, ctx, [(Counter,)])  # idempotent retry
+    await coordinator.publish_tick(0, ctx, [(Counter,)])
+    await coordinator.publish_tick(0, ctx, [(Counter,)])  # idempotent retry
 
     visible = await coordinator.visible_tokens("w", "r", [0, 1])
     assert visible == {0: [ctx.commit_token]}
 
     # A newer fence stales this coordinator.
     await catalog.acquire_fence("w", "h2")
-    ctx2 = await coordinator.begin_tick("w", "r", 1)
+    ctx2 = await coordinator.begin_tick(1)
     with pytest.raises(StaleWriterError):
-        await coordinator.publish_tick("w", "r", 1, ctx2, [(Counter,)])
+        await coordinator.publish_tick(1, ctx2, [(Counter,)])
     await catalog.close()

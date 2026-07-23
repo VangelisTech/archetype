@@ -17,7 +17,7 @@ import pytest
 from archetype.core.aio import AsyncProcessor, AsyncSystem
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
-from tests.conftest import make_world_service
+from tests.conftest import make_world_harness
 
 
 class Level(Component):
@@ -37,12 +37,14 @@ class Step(AsyncProcessor):
 @pytest.mark.asyncio
 async def test_initial_conditions_persist_at_spawn_tick(tmp_path):
     """The first persisted row is x_0, not f(x_0)."""
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         system = AsyncSystem()
         await system.add_processor(Step())
-        world = await ws.create_world(WorldConfig(name="w"), storage_config=storage, system=system)
+        world = await ws.lifecycle.create_world(
+            WorldConfig(name="w"), storage_config=storage, system=system
+        )
         await world.create_entity([Level(n=5.0)])
 
         await world.run(RunConfig(num_steps=3))
@@ -59,7 +61,7 @@ async def test_initial_conditions_persist_at_spawn_tick(tmp_path):
             f"ledger must contain x_0, f(x_0), f^2(x_0); got {by_tick}"
         )
     finally:
-        await ws.shutdown()
+        await ws.close()
 
 
 @pytest.mark.asyncio
@@ -67,12 +69,14 @@ async def test_mid_run_spawn_persists_initial_conditions(tmp_path):
     """An entity spawned mid-simulation lands raw at its spawn tick and is
     first transformed on the next tick — while older entities keep
     advancing uninterrupted."""
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         system = AsyncSystem()
         await system.add_processor(Step())
-        world = await ws.create_world(WorldConfig(name="w"), storage_config=storage, system=system)
+        world = await ws.lifecycle.create_world(
+            WorldConfig(name="w"), storage_config=storage, system=system
+        )
         first = await world.create_entity([Level(n=0.0)])
 
         await world.run(RunConfig(num_steps=2))  # first: 0.0 @ t0, 1.0 @ t1
@@ -95,4 +99,4 @@ async def test_mid_run_spawn_persists_initial_conditions(tmp_path):
         assert t3[second] == 101.0, f"the transition applies on the tick after spawn: {t3}"
         assert t3[first] == 3.0
     finally:
-        await ws.shutdown()
+        await ws.close()

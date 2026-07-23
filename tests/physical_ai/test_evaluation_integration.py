@@ -17,8 +17,8 @@ ledger). If eval reproduces the accounting, ``EvalTrialResult`` is legacy
 (roadmap E1).
 
 It also exercises the two core fixes end-to-end:
-- B1: ``run_episode`` drives ``SimulationService.step``, which now resets the
-  per-tick RBAC quota (no manual ``reset_tick_counters`` like the driver).
+- B1: ``run_episode`` drives target-tick-aware application steps without a
+  process-wide quota reset callback.
 - B2: termination is the value-based "all entities done" contract on
   ``ManipStatus.done`` — no hand-rolled per-tick done-check.
 """
@@ -28,8 +28,9 @@ from __future__ import annotations
 import pytest
 from daft import DataFrame
 
+import archetype.app.gateway.auth.guard as guard
 from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.core.config import StorageConfig, WorldConfig
 from archetype.physical_ai.manipulation import (
     ACTION_DIM,
@@ -54,11 +55,11 @@ START = (0.001 * SEED, -0.001 * SEED, 0.5)
 
 @pytest.fixture(autouse=True)
 def _reset_quotas():
-    # run_episode → step resets the global tick counters (B1); isolate tests.
-    reset_tick_counters()
+    # Quota state is process-local in PR-2; isolate test actors explicitly.
+    guard._tick_counters.clear()
     reset_daily_tokens()
     yield
-    reset_tick_counters()
+    guard._tick_counters.clear()
     reset_daily_tokens()
 
 
@@ -116,11 +117,11 @@ async def test_eval_reproduces_success_and_length_from_raw_manipstatus(tmp_path)
     container = ServiceContainer()
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="dogfood")
     try:
-        world = await container.world_service.create_world(WorldConfig(name="dogfood"), storage)
+        world = await container.world_lifecycle.create_world(WorldConfig(name="dogfood"), storage)
         await world.add_processor(EnvStepProcessor(client))
         eids = {k: await _spawn_trial(world, client, k) for k in targets}
 
-        episode = await container.simulation_service.run_episode(
+        episode = await container.application.run_episode(
             world.world_id,
             EpisodeConfig(
                 max_steps=50,
@@ -182,14 +183,14 @@ async def test_eval_grades_a_failed_trial_and_fractional_success_rate(tmp_path):
     container = ServiceContainer()
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="dogfood_fail")
     try:
-        world = await container.world_service.create_world(
+        world = await container.world_lifecycle.create_world(
             WorldConfig(name="dogfood-fail"), storage
         )
         await world.add_processor(EnvStepProcessor(client))
         eids = {k: await _spawn_trial(world, client, k) for k in targets}
 
         # terminal_all with one never-done trial → runs to max_steps.
-        episode = await container.simulation_service.run_episode(
+        episode = await container.application.run_episode(
             world.world_id,
             EpisodeConfig(
                 max_steps=10,

@@ -64,10 +64,20 @@ def _scripted_evaluator(scores: list[float]):
 
 
 async def _base_world(c: ServiceContainer, tmp_path):
-    base = await c.world_service.create_world(WorldConfig(name="base"), _storage(tmp_path))
-    await c.mutation_service.create_entity(base.world_id, [Tag(label="seed")])
-    await c.simulation_service.step(base.world_id, RunConfig())
+    base = await c.world_lifecycle.create_world(WorldConfig(name="base"), _storage(tmp_path))
+    await c.application.create_entity(base.world_id, [Tag(label="seed")])
+    await c.application.step(base.world_id, RunConfig())
     return base
+
+
+async def _live_world(c: ServiceContainer, world_id):
+    world = await c.world_registry.live_world(str(world_id))
+    assert world is not None
+    return world
+
+
+async def _world_by_name(c: ServiceContainer, name: str):
+    return await _live_world(c, await c.world_registry.world_id_for_name(name))
 
 
 @pytest.mark.asyncio
@@ -83,7 +93,7 @@ async def test_loop_records_genesis_and_iterations(tmp_path):
         )
 
         assert result.lab_world_id, "loop must report its lab world"
-        lab = c.world_service.get_world(result.lab_world_id)
+        lab = await _live_world(c, result.lab_world_id)
         # genesis + RUNNING/terminal ticks for each iteration
         assert lab.tick == 7
 
@@ -158,7 +168,7 @@ async def test_loop_resumes_incumbent_from_ledger(tmp_path):
             base.world_id,
             _config("exp", max_iterations=1),
             _scripted_evaluator([1.5]),
-            lab_world_id=(c.world_service.get_world_by_name("autoresearch:exp-id").world_id),
+            lab_world_id=(await _world_by_name(c, "autoresearch:exp-id")).world_id,
         )
 
         step = resumed.iterations[0]
@@ -169,7 +179,7 @@ async def test_loop_resumes_incumbent_from_ledger(tmp_path):
         assert resumed.final_score == 2.0
         assert resumed.improved is False
 
-        lab = c.world_service.get_world(resumed.lab_world_id)
+        lab = await _live_world(c, resumed.lab_world_id)
         rows = (await lab.query_archetype(sig=(BranchHead,), ticks=[lab.tick - 1])).to_pylist()
         assert json.loads(rows[0]["branchhead__descriptor_json"])["score"] == 2.0
     finally:
@@ -195,7 +205,7 @@ async def test_record_to_ledger_opt_out(tmp_path):
         result = await c.autoresearch_service.run(base.world_id, config, _scripted_evaluator([1.0]))
         assert result.lab_world_id == ""
         with pytest.raises(KeyError):
-            c.world_service.get_world_by_name("autoresearch:ephemeral-id")
+            await c.world_registry.world_id_for_name("autoresearch:ephemeral-id")
     finally:
         await c.shutdown()
 
@@ -267,7 +277,7 @@ async def test_run_metadata_with_uuid_and_path_hashes_and_resumes(tmp_path):
         first = await c.autoresearch_service.run(
             base.world_id, config(max_iterations=1), _scripted_evaluator([1.0])
         )
-        lab = c.world_service.get_world(first.lab_world_id)
+        lab = await _live_world(c, first.lab_world_id)
         exp_rows = (await lab.query_archetype(sig=(Experiment,), ticks=[0])).to_pylist()
         stored = json.loads(exp_rows[0]["experiment__metadata_json"])
         assert stored["config"]["episode"]["run"]["metadata"] == {
@@ -314,7 +324,7 @@ async def test_run_metadata_that_cannot_identify_the_experiment_fails_closed(tmp
             )
         for name in ("opaque", "nonjson"):
             with pytest.raises(KeyError):
-                c.world_service.get_world_by_name(f"autoresearch:{name}-id")
+                await c.world_registry.world_id_for_name(f"autoresearch:{name}-id")
     finally:
         await c.shutdown()
 
@@ -327,7 +337,7 @@ async def test_candidate_preparer_can_select_a_distinct_world_per_iteration(tmp_
         candidate_ids: list[str] = []
 
         async def prepare(context):
-            candidate = await c.world_service.fork_world(
+            candidate = await c.world_lifecycle.fork_world(
                 base.world_id,
                 name=f"candidate-{context.iteration}",
             )
@@ -359,7 +369,7 @@ async def test_candidate_preparer_can_select_a_distinct_world_per_iteration(tmp_
         assert [str(step.rollout.base_world_id) for step in result.iterations] == candidate_ids
         assert all(step.evaluation.evaluator == "candidate-score-v1" for step in result.iterations)
 
-        lab = c.world_service.get_world(result.lab_world_id)
+        lab = await _live_world(c, result.lab_world_id)
         rows = (await lab.query_archetype(sig=(Result,), ticks=[lab.tick - 1])).to_pylist()
         outputs = [json.loads(row["result__outputs_json"]) for row in rows]
         assert {row["result__evaluator"] for row in rows} == {"candidate-score-v1"}
@@ -387,7 +397,7 @@ async def test_candidate_preparation_failure_records_crashed_terminal_state(tmp_
                 prepare_candidate=fail_preparation,
             )
 
-        lab = c.world_service.get_world_by_name("autoresearch:crash-exp-id")
+        lab = await _world_by_name(c, "autoresearch:crash-exp-id")
         assert lab.tick == 3  # genesis, RUNNING, CRASHED
         running_rows = (await lab.query_archetype(sig=(Run,), ticks=[1])).to_pylist()
         assert running_rows[0]["run__status"] == RunStatus.RUNNING.value
@@ -407,7 +417,7 @@ async def test_failure_after_candidate_selection_records_candidate_provenance(tm
     c = ServiceContainer()
     try:
         base = await _base_world(c, tmp_path)
-        candidate = await c.world_service.fork_world(base.world_id, name="failing-candidate")
+        candidate = await c.world_lifecycle.fork_world(base.world_id, name="failing-candidate")
 
         async def prepare(_context):
             return candidate.world_id
@@ -423,7 +433,7 @@ async def test_failure_after_candidate_selection_records_candidate_provenance(tm
                 prepare_candidate=prepare,
             )
 
-        lab = c.world_service.get_world_by_name("autoresearch:candidate-crash-id")
+        lab = await _world_by_name(c, "autoresearch:candidate-crash-id")
         result_rows = (await lab.query_archetype(sig=(Result,), ticks=[lab.tick - 1])).to_pylist()
         crash = json.loads(result_rows[0]["result__outputs_json"])
         assert crash["candidate_world_id"] == str(candidate.world_id)
@@ -442,7 +452,7 @@ async def test_non_finite_evaluation_is_rejected_and_recorded_as_crashed(tmp_pat
         with pytest.raises(ValueError, match="score must be finite"):
             await c.autoresearch_service.run(base.world_id, config, _scripted_evaluator([score]))
 
-        lab = c.world_service.get_world_by_name("autoresearch:nonfinite-id")
+        lab = await _world_by_name(c, "autoresearch:nonfinite-id")
         rows = (await lab.query_archetype(sig=(Run,), ticks=[lab.tick - 1])).to_pylist()
         assert rows[0]["run__status"] == RunStatus.CRASHED.value
         heads = (await lab.query_archetype(sig=(BranchHead,), ticks=[lab.tick - 1])).to_pylist()
@@ -470,7 +480,7 @@ async def test_resume_rejects_experiment_config_identity_collision(tmp_path):
                 lab_world_id=first.lab_world_id,
             )
 
-        lab = c.world_service.get_world(first.lab_world_id)
+        lab = await _live_world(c, first.lab_world_id)
         rows = (await lab.query_archetype(sig=(Run,), ticks=[lab.tick - 1])).to_pylist()
         assert len(rows) == 1, "collision must fail before a new attempt is recorded"
     finally:
@@ -493,7 +503,7 @@ async def test_evaluator_contract_mismatch_crashes_without_advancing_head(tmp_pa
                 mismatched_evaluator,
             )
 
-        lab = c.world_service.get_world_by_name("autoresearch:evaluator-mismatch-id")
+        lab = await _world_by_name(c, "autoresearch:evaluator-mismatch-id")
         runs = (await lab.query_archetype(sig=(Run,), ticks=[lab.tick - 1])).to_pylist()
         assert runs[0]["run__status"] == RunStatus.CRASHED.value
         heads = (await lab.query_archetype(sig=(BranchHead,), ticks=[lab.tick - 1])).to_pylist()
@@ -525,7 +535,7 @@ async def test_resume_fails_closed_while_an_attempt_is_running(tmp_path):
             )
         )
         await entered.wait()
-        lab = c.world_service.get_world_by_name("autoresearch:active-attempt-id")
+        lab = await _world_by_name(c, "autoresearch:active-attempt-id")
 
         with pytest.raises(RuntimeError, match="active attempt"):
             await c.autoresearch_service.run(
@@ -554,7 +564,7 @@ async def test_resume_rejects_unknown_run_status(tmp_path):
             _config("unknown-status", max_iterations=1),
             _scripted_evaluator([1.0]),
         )
-        lab = c.world_service.get_world(completed.lab_world_id)
+        lab = await _live_world(c, completed.lab_world_id)
         rows = (await lab.query_archetype(sig=(Run,), ticks=[lab.tick - 1])).to_pylist()
         await lab.update_entity(
             int(rows[0]["entity_id"]),
@@ -590,7 +600,7 @@ async def test_resume_rejects_non_contiguous_iteration_history(tmp_path):
             _config("gapped-history", max_iterations=1),
             _scripted_evaluator([1.0]),
         )
-        lab = c.world_service.get_world(completed.lab_world_id)
+        lab = await _live_world(c, completed.lab_world_id)
         await lab.create_entity(
             [
                 Run(

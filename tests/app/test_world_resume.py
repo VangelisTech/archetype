@@ -20,6 +20,7 @@ import textwrap
 import pytest
 from uuid_utils import uuid7
 
+import archetype.world.lifecycle as lifecycle_module
 from archetype.app.container import ServiceContainer
 from archetype.artifacts import ArtifactSource
 from archetype.core.component import Component
@@ -47,15 +48,13 @@ async def _seed_world(c: ServiceContainer, storage) -> tuple[str, str, int, int]
 
     Returns (world_id, run_id, live_entity_id, despawned_entity_id).
     """
-    world = await c.world_service.create_world(WorldConfig(name="seed"), storage)
-    e1 = await c.mutation_service.create_entity(world.world_id, [Score(points=1.0)])
-    e2 = await c.mutation_service.create_entity(
-        world.world_id, [Score(points=2.0), Flag(label="x")]
-    )
-    await c.simulation_service.step(world.world_id, RunConfig())
-    await c.simulation_service.step(world.world_id, RunConfig())
-    await c.mutation_service.remove_entity(world.world_id, e2)
-    await c.simulation_service.step(world.world_id, RunConfig())
+    world = await c.world_lifecycle.create_world(WorldConfig(name="seed"), storage)
+    e1 = await c.application.create_entity(world.world_id, [Score(points=1.0)])
+    e2 = await c.application.create_entity(world.world_id, [Score(points=2.0), Flag(label="x")])
+    await c.application.step(world.world_id, RunConfig())
+    await c.application.step(world.world_id, RunConfig())
+    await c.application.remove_entity(world.world_id, e2)
+    await c.application.step(world.world_id, RunConfig())
     return str(world.world_id), str(world.run_id), int(e1), int(e2)
 
 
@@ -69,7 +68,7 @@ async def test_resume_restores_tick_entities_and_continues(tmp_path):
 
     fresh = ServiceContainer()
     try:
-        world = await fresh.world_service.open_world_mutable(storage, wid)
+        world = await fresh.world_lifecycle.open_world_mutable(storage, wid)
         assert world.tick == 3, "resume tick = last published tick + 1"
         assert str(world.run_id) == rid, "run identity continues"
         assert set(world.entity2sig) == {e1}, "despawned entities stay dead"
@@ -83,10 +82,10 @@ async def test_resume_restores_tick_entities_and_continues(tmp_path):
         assert world.commit_coordinator is not None and world.commit_coordinator.epoch == 2
 
         # The resumed world is live and steps under the new epoch.
-        e3 = await fresh.mutation_service.create_entity(wid, [Score(points=9.0)])
+        e3 = await fresh.application.create_entity(wid, [Score(points=9.0)])
         assert e3 > max(e1, e2)
-        await fresh.simulation_service.step(wid, RunConfig())
-        df = await fresh.query_service.query_components([Score], wid, rid, storage, ticks=[3])
+        await fresh.application.step(wid, RunConfig())
+        df = await fresh.application.query_components([Score], wid, rid, storage, ticks=[3])
         points = sorted(r["score__points"] for r in df.to_pylist())
         assert points == [1.0, 9.0], "continued history unions old and new entities"
     finally:
@@ -98,22 +97,22 @@ async def test_resume_fences_out_previous_writer(tmp_path):
     b = ServiceContainer()
     try:
         storage = _storage(tmp_path)
-        world_a = await a.world_service.create_world(WorldConfig(name="w"), storage)
-        await a.mutation_service.create_entity(world_a.world_id, [Score(points=1.0)])
-        await a.simulation_service.step(world_a.world_id, RunConfig())
+        world_a = await a.world_lifecycle.create_world(WorldConfig(name="w"), storage)
+        await a.application.create_entity(world_a.world_id, [Score(points=1.0)])
+        await a.application.step(world_a.world_id, RunConfig())
         wid = str(world_a.world_id)
 
         # A second container (a second process, logically) resumes the world.
-        world_b = await b.world_service.open_world_mutable(storage, wid)
+        world_b = await b.world_lifecycle.open_world_mutable(storage, wid)
         assert world_b.commit_coordinator.epoch == 2
 
         # The original writer is now stale: its publish fails closed.
         with pytest.raises((StaleWriterError, RuntimeError)):
-            await a.simulation_service.step(wid, RunConfig())
+            await a.application.step(wid, RunConfig())
         assert world_a.tick == 1, "stale writer must not advance"
 
         # The new writer owns the world.
-        await b.simulation_service.step(wid, RunConfig())
+        await b.application.step(wid, RunConfig())
         assert world_b.tick == 2
     finally:
         await a.shutdown()
@@ -126,9 +125,9 @@ async def test_resume_after_crash_resumes_at_last_visible_tick(tmp_path, monkeyp
     c = ServiceContainer()
     try:
         storage = _storage(tmp_path)
-        world = await c.world_service.create_world(WorldConfig(name="w"), storage)
-        await c.mutation_service.create_entity(world.world_id, [Score(points=1.0)])
-        await c.simulation_service.step(world.world_id, RunConfig())  # tick 0 published
+        world = await c.world_lifecycle.create_world(WorldConfig(name="w"), storage)
+        await c.application.create_entity(world.world_id, [Score(points=1.0)])
+        await c.application.step(world.world_id, RunConfig())  # tick 0 published
         wid, rid = str(world.world_id), str(world.run_id)
 
         async def _crash(self, *args, **kwargs):
@@ -136,17 +135,17 @@ async def test_resume_after_crash_resumes_at_last_visible_tick(tmp_path, monkeyp
 
         monkeypatch.setattr(SqliteControlCatalog, "publish_manifest", _crash)
         with pytest.raises(RuntimeError, match="injected crash"):
-            await c.simulation_service.step(wid, RunConfig())  # tick 1 rows, no manifest
+            await c.application.step(wid, RunConfig())  # tick 1 rows, no manifest
         monkeypatch.undo()
     finally:
         await c.shutdown()
 
     fresh = ServiceContainer()
     try:
-        resumed = await fresh.world_service.open_world_mutable(storage, wid)
+        resumed = await fresh.world_lifecycle.open_world_mutable(storage, wid)
         assert resumed.tick == 1, "unpublished tick-1 rows must not advance the head"
-        await fresh.simulation_service.step(wid, RunConfig())
-        df = await fresh.query_service.query_components([Score], wid, rid, storage, ticks=[1])
+        await fresh.application.step(wid, RunConfig())
+        df = await fresh.application.query_components([Score], wid, rid, storage, ticks=[1])
         assert len(df.to_pylist()) == 1, "exactly one visible attempt at the retried tick"
     finally:
         await fresh.shutdown()
@@ -156,7 +155,7 @@ async def test_artifact_index_does_not_advance_resume_tick(tmp_path):
     c = ServiceContainer()
     try:
         storage = _storage(tmp_path).model_copy(update={"backend": StorageBackend.ICEBERG})
-        world = await c.world_service.create_world(WorldConfig(name="artifacts-first"), storage)
+        world = await c.world_lifecycle.create_world(WorldConfig(name="artifacts-first"), storage)
         output = tmp_path / "before-first-step.txt"
         output.write_text("artifact before the first tick")
         await c.artifact_service.ingest(
@@ -169,7 +168,7 @@ async def test_artifact_index_does_not_advance_resume_tick(tmp_path):
 
     fresh = ServiceContainer()
     try:
-        resumed = await fresh.world_service.open_world_mutable(storage, wid)
+        resumed = await fresh.world_lifecycle.open_world_mutable(storage, wid)
         assert resumed.tick == 0, "artifact indexes are durable but are not tick manifests"
     finally:
         await fresh.shutdown()
@@ -179,11 +178,11 @@ async def test_resume_restores_fork_lineage(tmp_path):
     c = ServiceContainer()
     try:
         storage = _storage(tmp_path)
-        base = await c.world_service.create_world(WorldConfig(name="base"), storage)
-        await c.mutation_service.create_entity(base.world_id, [Score(points=5.0)])
-        await c.simulation_service.step(base.world_id, RunConfig())
-        fork = await c.world_service.fork_world(base.world_id, name="branch")
-        await c.simulation_service.step(fork.world_id, RunConfig())
+        base = await c.world_lifecycle.create_world(WorldConfig(name="base"), storage)
+        await c.application.create_entity(base.world_id, [Score(points=5.0)])
+        await c.application.step(base.world_id, RunConfig())
+        fork = await c.world_lifecycle.fork_world(base.world_id, name="branch")
+        await c.application.step(fork.world_id, RunConfig())
         fid = str(fork.world_id)
         expected_lineage = list(fork.lineage)
         assert expected_lineage, "fork must carry lineage"
@@ -192,7 +191,7 @@ async def test_resume_restores_fork_lineage(tmp_path):
 
     fresh = ServiceContainer()
     try:
-        resumed = await fresh.world_service.open_world_mutable(storage, fid)
+        resumed = await fresh.world_lifecycle.open_world_mutable(storage, fid)
         assert resumed.lineage == expected_lineage, "ancestor segments restored"
         # Pre-fork history still resolves through the ancestor's run.
         df = await resumed.query_archetype((Score,), ticks=[0])
@@ -206,28 +205,28 @@ async def test_resume_refusals(tmp_path):
     c = ServiceContainer()
     try:
         storage = _storage(tmp_path)
-        world = await c.world_service.create_world(WorldConfig(name="w"), storage)
-        await c.mutation_service.create_entity(world.world_id, [Score(points=1.0)])
-        await c.simulation_service.step(world.world_id, RunConfig())
+        world = await c.world_lifecycle.create_world(WorldConfig(name="w"), storage)
+        await c.application.create_entity(world.world_id, [Score(points=1.0)])
+        await c.application.step(world.world_id, RunConfig())
         wid = str(world.world_id)
 
         # Already live in this process.
         with pytest.raises(RuntimeError, match="already live"):
-            await c.world_service.open_world_mutable(storage, wid)
+            await c.world_lifecycle.open_world_mutable(storage, wid)
 
         # Unrecorded world.
         with pytest.raises(KeyError):
-            await c.world_service.open_world_mutable(storage, str(uuid7()))
+            await c.world_lifecycle.open_world_mutable(storage, str(uuid7()))
 
         # Destroyed world: queryable, not resumable.
-        await c.world_service.destroy_world(wid)
+        await c.world_lifecycle.destroy_world(wid)
     finally:
         await c.shutdown()
 
     fresh = ServiceContainer()
     try:
         with pytest.raises(RuntimeError, match="destroyed"):
-            await fresh.world_service.open_world_mutable(storage, wid)
+            await fresh.world_lifecycle.open_world_mutable(storage, wid)
 
         # Fork record without lineage rows = detectable corruption.
         catalog = fresh.storage_service.get_control_catalog(storage)
@@ -243,7 +242,7 @@ async def test_resume_refusals(tmp_path):
             )
         )
         with pytest.raises(RuntimeError, match="lineage"):
-            await fresh.world_service.open_world_mutable(storage, orphan)
+            await fresh.world_lifecycle.open_world_mutable(storage, orphan)
     finally:
         await fresh.shutdown()
 
@@ -269,11 +268,11 @@ async def test_resume_requires_component_classes(tmp_path):
             c = ServiceContainer()
             try:
                 storage = StorageConfig(uri=uri, namespace="ns")
-                world = await c.world_service.create_world(WorldConfig(name="child"), storage)
-                await c.mutation_service.create_entity(
+                world = await c.world_lifecycle.create_world(WorldConfig(name="child"), storage)
+                await c.application.create_entity(
                     world.world_id, [Score(points=1.0), OnlyInChild(secret="s")]
                 )
-                await c.simulation_service.step(world.world_id, RunConfig())
+                await c.application.step(world.world_id, RunConfig())
                 print(json.dumps({"world_id": str(world.world_id)}))
             finally:
                 await c.shutdown()
@@ -295,7 +294,7 @@ async def test_resume_requires_component_classes(tmp_path):
     try:
         storage = StorageConfig(uri=uri, namespace="ns")
         with pytest.raises(RuntimeError, match="OnlyInChild"):
-            await c.world_service.open_world_mutable(storage, wid)
+            await c.world_lifecycle.open_world_mutable(storage, wid)
     finally:
         await c.shutdown()
 
@@ -450,23 +449,23 @@ async def test_fork_resumed_before_first_step_inherits_snapshot(tmp_path):
     c = ServiceContainer()
     try:
         storage = _storage(tmp_path)
-        base = await c.world_service.create_world(WorldConfig(name="base"), storage)
-        e1 = await c.mutation_service.create_entity(base.world_id, [Score(points=5.0)])
-        await c.simulation_service.step(base.world_id, RunConfig())
-        fork = await c.world_service.fork_world(base.world_id, name="unstepped")
+        base = await c.world_lifecycle.create_world(WorldConfig(name="base"), storage)
+        e1 = await c.application.create_entity(base.world_id, [Score(points=5.0)])
+        await c.application.step(base.world_id, RunConfig())
+        fork = await c.world_lifecycle.fork_world(base.world_id, name="unstepped")
         fid, fork_tick = str(fork.world_id), int(fork.tick)
     finally:
         await c.shutdown()
 
     fresh = ServiceContainer()
     try:
-        resumed = await fresh.world_service.open_world_mutable(storage, fid)
+        resumed = await fresh.world_lifecycle.open_world_mutable(storage, fid)
         assert resumed.tick == fork_tick, "unstepped fork resumes at the fork point"
         assert set(resumed.entity2sig) == {e1}, "inherited entities restored from lineage"
         assert resumed.next_entity_id > e1, "counter accounts for inherited ids"
 
         # The resumed fork is a working world: step and read continuity.
-        await fresh.simulation_service.step(fid, RunConfig())
+        await fresh.application.step(fid, RunConfig())
         df = await resumed.query_archetype((Score,), ticks=[fork_tick])
         rows = df.to_pylist()
         assert len(rows) == 1 and rows[0]["score__points"] == 5.0
@@ -483,9 +482,9 @@ async def test_resume_snapshot_taken_after_fence_beats_racing_publisher(tmp_path
     b = ServiceContainer()
     try:
         storage = _storage(tmp_path)
-        world_a = await a.world_service.create_world(WorldConfig(name="w"), storage)
-        await a.mutation_service.create_entity(world_a.world_id, [Score(points=1.0)])
-        await a.simulation_service.step(world_a.world_id, RunConfig())  # tick 0
+        world_a = await a.world_lifecycle.create_world(WorldConfig(name="w"), storage)
+        await a.application.create_entity(world_a.world_id, [Score(points=1.0)])
+        await a.application.step(world_a.world_id, RunConfig())  # tick 0
         wid = str(world_a.world_id)
 
         # Interleave: the incumbent publishes tick 1 exactly between B's
@@ -497,20 +496,20 @@ async def test_resume_snapshot_taken_after_fence_beats_racing_publisher(tmp_path
             nonlocal fired
             if not fired and world_id == wid:
                 fired = True
-                await a.simulation_service.step(wid, RunConfig())  # tick 1 lands
+                await a.application.step(wid, RunConfig())  # tick 1 lands
             return await real_acquire(self, world_id, holder)
 
         SqliteControlCatalog.acquire_fence = racing_acquire
         try:
-            resumed = await b.world_service.open_world_mutable(storage, wid)
+            resumed = await b.world_lifecycle.open_world_mutable(storage, wid)
         finally:
             SqliteControlCatalog.acquire_fence = real_acquire
 
         assert resumed.tick == 2, (
             f"snapshot must include the racing publish (tick 1); resumed at {resumed.tick}"
         )
-        await b.simulation_service.step(wid, RunConfig())  # tick 2 under epoch 2
-        df = await b.query_service.query_components([Score], wid, str(resumed.run_id), storage)
+        await b.application.step(wid, RunConfig())  # tick 2 under epoch 2
+        df = await b.application.query_components([Score], wid, str(resumed.run_id), storage)
         assert {r["tick"] for r in df.to_pylist()} == {0, 1, 2}, "no tick lost, none doubled"
     finally:
         await a.shutdown()
@@ -522,12 +521,12 @@ async def test_post_fence_resume_failure_is_operationally_loud(tmp_path, monkeyp
     replacement = ServiceContainer()
     try:
         storage = _storage(tmp_path)
-        world = await incumbent.world_service.create_world(WorldConfig(name="w"), storage)
-        await incumbent.mutation_service.create_entity(world.world_id, [Score(points=1.0)])
-        await incumbent.simulation_service.step(world.world_id, RunConfig())
+        world = await incumbent.world_lifecycle.create_world(WorldConfig(name="w"), storage)
+        await incumbent.application.create_entity(world.world_id, [Score(points=1.0)])
+        await incumbent.application.step(world.world_id, RunConfig())
         wid = str(world.world_id)
 
-        real_resolve = replacement.world_service._resolve_live_signatures
+        real_resolve = lifecycle_module.resolve_live_signatures
         calls = 0
 
         def fail_after_fence(directory):
@@ -538,17 +537,18 @@ async def test_post_fence_resume_failure_is_operationally_loud(tmp_path, monkeyp
             return real_resolve(directory)
 
         monkeypatch.setattr(
-            replacement.world_service,
-            "_resolve_live_signatures",
+            lifecycle_module,
+            "resolve_live_signatures",
             fail_after_fence,
         )
         with caplog.at_level(logging.ERROR):
             with pytest.raises(RuntimeError, match="post-fence reconstruction"):
-                await replacement.world_service.open_world_mutable(storage, wid)
+                await replacement.world_lifecycle.open_world_mutable(storage, wid)
 
-        assert "previous writer is now stale" in caplog.text
+        assert "acquired fence epoch" in caplog.text
+        assert "failed before installing its replacement writer" in caplog.text
         with pytest.raises((StaleWriterError, RuntimeError)):
-            await incumbent.simulation_service.step(wid, RunConfig())
+            await incumbent.application.step(wid, RunConfig())
     finally:
         await incumbent.shutdown()
         await replacement.shutdown()

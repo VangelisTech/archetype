@@ -493,11 +493,11 @@ async def test_service_stack_runs_against_remote_catalog(tmp_path, worker_url, m
             namespace="ns",
             backend=StorageBackend.ICEBERG,
         )
-        world = await c.world_service.create_world(WorldConfig(name="remote-w"), storage)
+        world = await c.world_lifecycle.create_world(WorldConfig(name="remote-w"), storage)
         assert world.commit_coordinator is not None
-        await c.mutation_service.create_entity(world.world_id, [Probe(value=1.0)])
-        await c.simulation_service.step(world.world_id, RunConfig())
-        await c.simulation_service.step(world.world_id, RunConfig())
+        await c.application.create_entity(world.world_id, [Probe(value=1.0)])
+        await c.application.step(world.world_id, RunConfig())
+        await c.application.step(world.world_id, RunConfig())
         wid, rid = str(world.world_id), str(world.run_id)
 
         output = tmp_path / "remote-artifact.txt"
@@ -527,9 +527,9 @@ async def test_service_stack_runs_against_remote_catalog(tmp_path, worker_url, m
         await c.shutdown()
         fresh = ServiceContainer()
         try:
-            infos = await fresh.world_service.discover_worlds(storage)
+            infos = await fresh.world_lifecycle.discover_worlds(storage)
             assert wid in [str(i.world_id) for i in infos]
-            df = await fresh.query_service.query_components([Probe], wid, rid, storage)
+            df = await fresh.application.query_components([Probe], wid, rid, storage)
             rows = df.to_pylist()
             assert {r["tick"] for r in rows} >= {0, 1}, "stepped history visible cold"
             artifacts = await fresh.artifact_service.index(wid, storage_config=storage)

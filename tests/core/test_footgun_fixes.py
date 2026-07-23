@@ -21,7 +21,7 @@ from archetype.core.aio import AsyncSystem, UnknownSignatureError
 from archetype.core.aio.async_querier import _canonicalize
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
-from tests.conftest import make_world_service
+from tests.conftest import make_world_harness
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared test components
@@ -76,11 +76,13 @@ async def test_unsorted_4component_query_returns_rows(tmp_path):
     Regression: before canonicalization, unsorted sigs silently resolved to a
     different (empty) table name and returned 0 rows.
     """
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         system = AsyncSystem()
-        world = await ws.create_world(WorldConfig(name="w"), storage_config=storage, system=system)
+        world = await ws.lifecycle.create_world(
+            WorldConfig(name="w"), storage_config=storage, system=system
+        )
 
         # Spawn an entity with all four components
         await world.create_entity([Alpha(a=10.0), Beta(b=20.0), Gamma(g=30.0), Delta(d=40.0)])
@@ -119,7 +121,7 @@ async def test_unsorted_4component_query_returns_rows(tmp_path):
         assert unsorted_ids == canon_ids
 
     finally:
-        await ws.shutdown()
+        await ws.close()
 
 
 @pytest.mark.asyncio
@@ -129,11 +131,13 @@ async def test_unknown_signature_raises_distinctly_from_empty_tick(tmp_path):
     This is distinct from 'the signature exists but has zero rows at this tick',
     which returns an empty DataFrame without raising.
     """
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         system = AsyncSystem()
-        world = await ws.create_world(WorldConfig(name="w"), storage_config=storage, system=system)
+        world = await ws.lifecycle.create_world(
+            WorldConfig(name="w"), storage_config=storage, system=system
+        )
 
         # Spawn an entity with Alpha + Beta
         await world.create_entity([Alpha(a=1.0), Beta(b=2.0)])
@@ -158,15 +162,15 @@ async def test_unknown_signature_raises_distinctly_from_empty_tick(tmp_path):
             )
 
     finally:
-        await ws.shutdown()
+        await ws.close()
 
 
 @pytest.mark.asyncio
 async def test_unknown_signature_read_never_creates_a_table(tmp_path):
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await ws.create_world(
+        world = await ws.lifecycle.create_world(
             WorldConfig(name="w"), storage_config=storage, system=AsyncSystem()
         )
         probed_sig = (Gamma, Delta)
@@ -182,17 +186,17 @@ async def test_unknown_signature_read_never_creates_a_table(tmp_path):
         with pytest.raises(UnknownSignatureError, match="never been written or spawned"):
             await world.query_archetype(probed_sig, run_id=world.run_id, ticks=[0])
     finally:
-        await ws.shutdown()
+        await ws.close()
 
 
 @pytest.mark.asyncio
 async def test_unknown_signature_message_is_descriptive(tmp_path):
     """The UnknownSignatureError message must name the component types so the
     user can diagnose the problem without a debugger."""
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await ws.create_world(
+        world = await ws.lifecycle.create_world(
             WorldConfig(name="w"), storage_config=storage, system=AsyncSystem()
         )
         await world.create_entity([Alpha(a=1.0)])
@@ -210,7 +214,7 @@ async def test_unknown_signature_message_is_descriptive(tmp_path):
         assert "never been written or spawned" in msg
 
     finally:
-        await ws.shutdown()
+        await ws.close()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -304,10 +308,10 @@ async def test_query_components_missing_component_raises_with_name(tmp_path):
     We use the world's own querier (populated with the world's sigs) so that
     list_signatures() correctly reflects what the world has committed.
     """
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await ws.create_world(
+        world = await ws.lifecycle.create_world(
             WorldConfig(name="w"), storage_config=storage, system=AsyncSystem()
         )
 
@@ -331,7 +335,7 @@ async def test_query_components_missing_component_raises_with_name(tmp_path):
         assert "ManipAction" in msg, f"error message does not name ManipAction: {msg!r}"
 
     finally:
-        await ws.shutdown()
+        await ws.close()
 
 
 @pytest.mark.asyncio
@@ -344,10 +348,10 @@ async def test_query_components_wrong_combination_raises_with_hint(tmp_path):
     (ManipProprio, ManipAction) together should fail with a hint naming the
     mismatched component.
     """
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await ws.create_world(
+        world = await ws.lifecycle.create_world(
             WorldConfig(name="w"), storage_config=storage, system=AsyncSystem()
         )
 
@@ -375,4 +379,4 @@ async def test_query_components_wrong_combination_raises_with_hint(tmp_path):
         )
 
     finally:
-        await ws.shutdown()
+        await ws.close()

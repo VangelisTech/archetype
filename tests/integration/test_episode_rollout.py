@@ -60,7 +60,7 @@ class CountToGoal(AsyncProcessor):
 
 async def _make_world(container: ServiceContainer, tmp_path, name: str = "test"):
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-    world = await container.world_service.create_world(WorldConfig(name=name), storage)
+    world = await container.world_lifecycle.create_world(WorldConfig(name=name), storage)
     return world
 
 
@@ -86,7 +86,7 @@ class TestEpisode:
                 max_steps=100,
                 terminal_component=Terminal,
             )
-            result = await container.simulation_service.run_episode(world.world_id, config)
+            result = await container.application.run_episode(world.world_id, config)
 
             assert result.terminated is True
             assert result.duration_steps == 0
@@ -104,7 +104,7 @@ class TestEpisode:
                 max_steps=100,
                 termination=lambda w: w.tick >= 5,
             )
-            result = await container.simulation_service.run_episode(world.world_id, config)
+            result = await container.application.run_episode(world.world_id, config)
 
             assert result.terminated is True
             assert result.final_tick == 5
@@ -120,7 +120,7 @@ class TestEpisode:
             world = await _make_world(container, tmp_path)
 
             config = EpisodeConfig(max_steps=10)
-            result = await container.simulation_service.run_episode(world.world_id, config)
+            result = await container.application.run_episode(world.world_id, config)
 
             assert result.duration_steps == 10
             assert result.run_id == world.run_id
@@ -138,7 +138,7 @@ class TestEpisode:
             wid_before = world.world_id
 
             config = EpisodeConfig(max_steps=3)
-            result = await container.simulation_service.run_episode(world.world_id, config)
+            result = await container.application.run_episode(world.world_id, config)
 
             assert str(result.world_id) == str(wid_before)
             assert result.run_id is not None
@@ -153,7 +153,7 @@ class TestEpisode:
             world = await _make_world(container, tmp_path)
 
             config = EpisodeConfig(max_steps=5)
-            result = await container.simulation_service.run_episode(world.world_id, config)
+            result = await container.application.run_episode(world.world_id, config)
 
             assert result.terminated is False
             assert result.duration_steps == 5
@@ -168,7 +168,7 @@ class TestEpisode:
 
 async def _make_countdown_world(container, tmp_path, name="b2"):
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-    world = await container.world_service.create_world(WorldConfig(name=name), storage)
+    world = await container.world_lifecycle.create_world(WorldConfig(name=name), storage)
     await world.add_processor(CountToGoal())
     return world
 
@@ -201,7 +201,7 @@ class TestValueBasedTermination:
                 terminal_field="done",
                 terminal_all=True,
             )
-            result = await container.simulation_service.run_episode(world.world_id, config)
+            result = await container.application.run_episode(world.world_id, config)
 
             assert result.terminated is True
             assert result.duration_steps < 50  # stopped on the data, not the cap
@@ -224,7 +224,7 @@ class TestValueBasedTermination:
                 terminal_component=Countdown,
                 terminal_field="done",
             )
-            result = await container.simulation_service.run_episode(world.world_id, config)
+            result = await container.application.run_episode(world.world_id, config)
 
             assert result.terminated is True
             assert result.duration_steps > 1  # ran, did not fire structurally at tick 0
@@ -245,7 +245,7 @@ class TestValueBasedTermination:
                 terminal_field="done",
                 terminal_all=True,
             )
-            result = await container.simulation_service.run_episode(world.world_id, config)
+            result = await container.application.run_episode(world.world_id, config)
 
             assert result.terminated is True
             assert result.duration_steps < 50
@@ -270,7 +270,7 @@ class TestValueBasedTermination:
                 terminal_field="done",
                 terminal_all=False,
             )
-            result = await container.simulation_service.run_episode(world.world_id, config)
+            result = await container.application.run_episode(world.world_id, config)
 
             assert result.terminated is True
             done = await _done_by_entity(world)
@@ -293,7 +293,7 @@ class TestValueBasedTermination:
                 terminal_field="done",
                 terminal_all=True,
             )
-            result = await container.simulation_service.run_episode(world.world_id, config)
+            result = await container.application.run_episode(world.world_id, config)
 
             assert result.terminated is False
             assert result.duration_steps == 4
@@ -318,7 +318,7 @@ class TestRollout:
                 num_episodes=3,
                 episode_config=EpisodeConfig(max_steps=2),
             )
-            result = await container.simulation_service.run_rollout(world.world_id, config)
+            result = await container.application.run_rollout(world.world_id, config)
 
             assert result.num_episodes == 3
             assert len(result.episodes) == 3
@@ -337,7 +337,7 @@ class TestRollout:
                 num_episodes=2,
                 episode_config=EpisodeConfig(max_steps=5),
             )
-            await container.simulation_service.run_rollout(world.world_id, config)
+            await container.application.run_rollout(world.world_id, config)
 
             assert world.tick == tick_before
         finally:
@@ -355,14 +355,14 @@ class TestRollout:
                 episode_config=EpisodeConfig(max_steps=2),
                 destroy_forks_on_complete=True,
             )
-            result = await container.simulation_service.run_rollout(world.world_id, config)
+            result = await container.application.run_rollout(world.world_id, config)
 
             # Fork worlds should no longer be in the registry
             for ep in result.episodes:
-                assert not container.world_service._orchestrator._registry.has(ep.world_id)
+                assert not await container.world_registry.contains(str(ep.world_id))
 
             # Base world should still be in the registry
-            assert container.world_service._orchestrator._registry.has(world.world_id)
+            assert await container.world_registry.contains(str(world.world_id))
         finally:
             await container.shutdown()
 
@@ -377,7 +377,7 @@ class TestRollout:
                 num_episodes=3,
                 episode_config=EpisodeConfig(max_steps=4),
             )
-            result = await container.simulation_service.run_rollout(world.world_id, config)
+            result = await container.application.run_rollout(world.world_id, config)
 
             expected = sum(ep.duration_steps for ep in result.episodes)
             assert result.total_duration_steps == expected
@@ -397,7 +397,7 @@ class TestRollout:
                 episode_config=EpisodeConfig(max_steps=3),
                 parallel=True,
             )
-            result = await container.simulation_service.run_rollout(world.world_id, config)
+            result = await container.application.run_rollout(world.world_id, config)
 
             assert len(result.episodes) == 3
             for ep in result.episodes:

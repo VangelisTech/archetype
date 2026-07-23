@@ -31,7 +31,7 @@ from archetype.physical_ai.manipulation import (
     ScriptedReachEnv,
 )
 from archetype.physical_ai.policy import PolicyActionProcessor, ScriptedReachPolicy
-from tests.conftest import make_world_service
+from tests.conftest import make_world_harness
 
 SIG = (ManipAction, ManipProprio, ManipStatus, ManipTask)
 
@@ -54,13 +54,13 @@ async def test_ledger_rows_satisfy_action_provenance(tmp_path):
     env = ScriptedReachEnv(targets=TARGETS, tolerance=0.02)
     policy = ScriptedReachPolicy(targets=TARGETS)
 
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="policy")
         system = AsyncSystem()
         await system.add_processor(PolicyActionProcessor(policy))
         await system.add_processor(EnvStepProcessor(env))
-        world = await ws.create_world(
+        world = await ws.lifecycle.create_world(
             WorldConfig(name="policy-loop"), storage_config=storage, system=system
         )
 
@@ -137,21 +137,21 @@ async def test_ledger_rows_satisfy_action_provenance(tmp_path):
             f"both envs should succeed within {TICKS} ticks"
         )
     finally:
-        await ws.shutdown()
+        await ws.close()
 
 
 @pytest.mark.parametrize("with_refs", [False, True], ids=["unframed", "framed"])
 @pytest.mark.asyncio
 async def test_despawned_episode_never_calls_external_policy(tmp_path, with_refs):
     policy = RecordingPolicy()
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         storage = StorageConfig(
             uri=str(tmp_path / "store"), namespace=f"policy_despawn_{with_refs}"
         )
         system = AsyncSystem()
         await system.add_processor(PolicyActionProcessor(policy))
-        world = await ws.create_world(
+        world = await ws.lifecycle.create_world(
             WorldConfig(name=f"policy-despawn-{with_refs}"),
             storage_config=storage,
             system=system,
@@ -177,4 +177,4 @@ async def test_despawned_episode_never_calls_external_policy(tmp_path, with_refs
 
         assert policy.act_calls == calls_before_despawn
     finally:
-        await ws.shutdown()
+        await ws.close()

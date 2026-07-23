@@ -36,7 +36,7 @@ def _reset_quotas():
 
 def _application() -> AsyncMock:
     application = AsyncMock()
-    application.require_world = Mock()
+    application.require_world = AsyncMock()
     application.validate_deferred_command = Mock()
     return application
 

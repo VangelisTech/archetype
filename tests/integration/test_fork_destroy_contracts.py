@@ -16,13 +16,15 @@ Verifies:
 import pytest
 from uuid_utils import uuid7
 
+import archetype.app.gateway.auth.guard as guard
 from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.models import Command, CommandType
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.core.hooks import PostTick
+from archetype.world.query import get_lineage
 
 # ---------------------------------------------------------------------------
 # Test component
@@ -40,10 +42,10 @@ class Tag(Component):
 
 @pytest.fixture(autouse=True)
 def _reset_quotas():
-    reset_tick_counters()
+    guard._tick_counters.clear()
     reset_daily_tokens()
     yield
-    reset_tick_counters()
+    guard._tick_counters.clear()
     reset_daily_tokens()
 
 
@@ -67,29 +69,29 @@ async def test_spawn_then_fork_pending_mutation_transfer(tmp_path):
     c = ServiceContainer()
     storage = _storage(tmp_path)
     try:
-        source = await c.world_service.create_world(WorldConfig(name="src"), storage)
+        source = await c.world_lifecycle.create_world(WorldConfig(name="src"), storage)
         # Spawn goes to spawn_cache (not yet materialized)
-        eid = await c.mutation_service.create_entity(source.world_id, [Tag(label="pending")])
+        eid = await c.application.create_entity(source.world_id, [Tag(label="pending")])
         assert eid in source.entity2sig
 
         # Fork before stepping — spawn_cache should transfer
-        fork = await c.world_service.fork_world(
+        fork = await c.world_lifecycle.fork_world(
             source.world_id, name="fork", storage_config=storage
         )
         assert eid in fork.entity2sig
 
         # Step both worlds to materialize
-        await c.simulation_service.step(source.world_id, RunConfig())
-        await c.simulation_service.step(fork.world_id, RunConfig())
+        await c.application.step(source.world_id, RunConfig())
+        await c.application.step(fork.world_id, RunConfig())
 
         # Query both — entity should exist in each
-        source_df = await c.query_service.query_components(
+        source_df = await c.application.query_components(
             [Tag],
             world_id=str(source.world_id),
             run_id=str(source.run_id),
             storage_config=storage,
         )
-        fork_df = await c.query_service.query_components(
+        fork_df = await c.application.query_components(
             [Tag],
             world_id=str(fork.world_id),
             run_id=str(fork.run_id),
@@ -114,11 +116,11 @@ async def test_post_fork_hook_isolation(tmp_path):
     storage = _storage(tmp_path)
     hook_fired: list[str] = []
     try:
-        source = await c.world_service.create_world(WorldConfig(name="src"), storage)
-        await c.mutation_service.create_entity(source.world_id, [Tag(label="x")])
+        source = await c.world_lifecycle.create_world(WorldConfig(name="src"), storage)
+        await c.application.create_entity(source.world_id, [Tag(label="x")])
 
         # Fork first
-        fork = await c.world_service.fork_world(
+        fork = await c.world_lifecycle.fork_world(
             source.world_id, name="fork", storage_config=storage
         )
 
@@ -126,14 +128,14 @@ async def test_post_fork_hook_isolation(tmp_path):
         async def _on_post_tick(event: PostTick):
             hook_fired.append("source")
 
-        c.world_service.add_hook(source.world_id, PostTick, _on_post_tick)
+        await c.application.add_hook(source.world_id, PostTick, _on_post_tick)
 
         # Step the fork — the hook must NOT fire
-        await c.simulation_service.step(fork.world_id, RunConfig())
+        await c.application.step(fork.world_id, RunConfig())
         assert hook_fired == [], f"Hook fired on fork unexpectedly: {hook_fired}"
 
         # Step the source — the hook SHOULD fire
-        await c.simulation_service.step(source.world_id, RunConfig())
+        await c.application.step(source.world_id, RunConfig())
         assert hook_fired == ["source"]
     finally:
         await c.shutdown()
@@ -151,15 +153,15 @@ async def test_destroy_storage_row_preservation(tmp_path):
     c = ServiceContainer()
     storage = _storage(tmp_path)
     try:
-        world = await c.world_service.create_world(WorldConfig(name="w"), storage)
-        await c.mutation_service.create_entity(world.world_id, [Tag(label="keep")])
-        await c.simulation_service.step(world.world_id, RunConfig())
+        world = await c.world_lifecycle.create_world(WorldConfig(name="w"), storage)
+        await c.application.create_entity(world.world_id, [Tag(label="keep")])
+        await c.application.step(world.world_id, RunConfig())
 
         world_id = str(world.world_id)
         run_id = str(world.run_id)
 
         # Rows should be in the store
-        df_before = await c.query_service.query_components(
+        df_before = await c.application.query_components(
             [Tag],
             world_id=world_id,
             run_id=run_id,
@@ -169,10 +171,10 @@ async def test_destroy_storage_row_preservation(tmp_path):
         assert rows_before >= 1
 
         # Destroy the world (in-memory only; storage preserved)
-        await c.world_service.destroy_world(world.world_id)
+        await c.world_lifecycle.destroy_world(world.world_id)
 
         # Query again — rows must still be present
-        df_after = await c.query_service.query_components(
+        df_after = await c.application.query_components(
             [Tag],
             world_id=world_id,
             run_id=run_id,
@@ -248,7 +250,9 @@ async def test_gated_destroy_rejects_only_target_world_pending_commands(tmp_path
         assert [command.id for command in await c.command_scheduler.history(sibling.world_id)] == [
             sibling_command.id
         ]
-        assert c.world_service.get_world(sibling.world_id).world_id == sibling.world_id
+        live_sibling = await c.world_registry.live_world(str(sibling.world_id))
+        assert live_sibling is not None
+        assert live_sibling.world_id == sibling.world_id
     finally:
         await c.shutdown()
 
@@ -267,15 +271,15 @@ async def test_10_world_destroy_stress(tmp_path):
     try:
         worlds = []
         for i in range(10):
-            w = await c.world_service.create_world(WorldConfig(name=f"stress-{i}"), storage)
-            await c.mutation_service.create_entity(w.world_id, [Tag(label=f"e{i}")])
-            await c.simulation_service.step(w.world_id, RunConfig())
+            w = await c.world_lifecycle.create_world(WorldConfig(name=f"stress-{i}"), storage)
+            await c.application.create_entity(w.world_id, [Tag(label=f"e{i}")])
+            await c.application.step(w.world_id, RunConfig())
             worlds.append(w)
 
         # Collect row counts before destroy
         counts_before: dict[str, int] = {}
         for w in worlds:
-            df = await c.query_service.query_components(
+            df = await c.application.query_components(
                 [Tag],
                 world_id=str(w.world_id),
                 run_id=str(w.run_id),
@@ -286,11 +290,11 @@ async def test_10_world_destroy_stress(tmp_path):
 
         # Destroy all 10
         for w in worlds:
-            await c.world_service.destroy_world(w.world_id)
+            await c.world_lifecycle.destroy_world(w.world_id)
 
         # All queries must still return the same data
         for w in worlds:
-            df = await c.query_service.query_components(
+            df = await c.application.query_components(
                 [Tag],
                 world_id=str(w.world_id),
                 run_id=str(w.run_id),
@@ -358,19 +362,19 @@ async def test_fork_inherits_source_storage(tmp_path):
     c = ServiceContainer()
     source_storage = StorageConfig(uri=str(tmp_path / "src_store"), namespace="ns")
     try:
-        source = await c.world_service.create_world(WorldConfig(name="src"), source_storage)
-        await c.mutation_service.create_entity(source.world_id, [Tag(label="seed")])
-        await c.simulation_service.step(source.world_id, RunConfig())
+        source = await c.world_lifecycle.create_world(WorldConfig(name="src"), source_storage)
+        await c.application.create_entity(source.world_id, [Tag(label="seed")])
+        await c.application.step(source.world_id, RunConfig())
 
         # Fork without specifying storage — must inherit source's store.
-        fork = await c.world_service.fork_world(source.world_id, name="fork")
+        fork = await c.world_lifecycle.fork_world(source.world_id, name="fork")
 
         # Spawn a fresh entity in the fork and step it so a write is forced.
-        fork_eid = await c.mutation_service.create_entity(fork.world_id, [Tag(label="fork-only")])
-        await c.simulation_service.step(fork.world_id, RunConfig())
+        fork_eid = await c.application.create_entity(fork.world_id, [Tag(label="fork-only")])
+        await c.application.step(fork.world_id, RunConfig())
 
         rows_in_source_store = (
-            await c.query_service.query_components(
+            await c.application.query_components(
                 [Tag],
                 world_id=str(fork.world_id),
                 run_id=str(fork.run_id),
@@ -378,23 +382,17 @@ async def test_fork_inherits_source_storage(tmp_path):
                 entity_ids=[fork_eid],
             )
         ).count_rows()
-        rows_in_default_store = (
-            await c.query_service.query_components(
+        with pytest.raises(KeyError, match="not recorded in catalog"):
+            await c.application.query_components(
                 [Tag],
                 world_id=str(fork.world_id),
                 run_id=str(fork.run_id),
                 storage_config=StorageConfig(),
                 entity_ids=[fork_eid],
             )
-        ).count_rows()
 
         assert rows_in_source_store >= 1, (
-            f"fork's data must land in source's store; got {rows_in_source_store} rows there "
-            f"and {rows_in_default_store} rows in the default store"
-        )
-        assert rows_in_default_store == 0, (
-            "fork without explicit storage_config must NOT write to ./archetype_db; "
-            f"found {rows_in_default_store} stray rows there"
+            f"fork's data must land in source's store; got {rows_in_source_store} rows there"
         )
     finally:
         await c.shutdown()
@@ -412,18 +410,18 @@ async def test_fork_explicit_storage_override(tmp_path):
     source_storage = StorageConfig(uri=str(tmp_path / "src_store"), namespace="ns")
     fork_storage = StorageConfig(uri=str(tmp_path / "fork_store"), namespace="ns")
     try:
-        source = await c.world_service.create_world(WorldConfig(name="src"), source_storage)
-        await c.mutation_service.create_entity(source.world_id, [Tag(label="seed")])
-        await c.simulation_service.step(source.world_id, RunConfig())
+        source = await c.world_lifecycle.create_world(WorldConfig(name="src"), source_storage)
+        await c.application.create_entity(source.world_id, [Tag(label="seed")])
+        await c.application.step(source.world_id, RunConfig())
 
-        fork = await c.world_service.fork_world(
+        fork = await c.world_lifecycle.fork_world(
             source.world_id, name="fork", storage_config=fork_storage
         )
-        fork_eid = await c.mutation_service.create_entity(fork.world_id, [Tag(label="fork-only")])
-        await c.simulation_service.step(fork.world_id, RunConfig())
+        fork_eid = await c.application.create_entity(fork.world_id, [Tag(label="fork-only")])
+        await c.application.step(fork.world_id, RunConfig())
 
         rows_in_fork_store = (
-            await c.query_service.query_components(
+            await c.application.query_components(
                 [Tag],
                 world_id=str(fork.world_id),
                 run_id=str(fork.run_id),
@@ -431,18 +429,16 @@ async def test_fork_explicit_storage_override(tmp_path):
                 entity_ids=[fork_eid],
             )
         ).count_rows()
-        rows_in_source_store = (
-            await c.query_service.query_components(
+        with pytest.raises(KeyError, match="not recorded in catalog"):
+            await c.application.query_components(
                 [Tag],
                 world_id=str(fork.world_id),
                 run_id=str(fork.run_id),
                 storage_config=source_storage,
                 entity_ids=[fork_eid],
             )
-        ).count_rows()
 
         assert rows_in_fork_store >= 1
-        assert rows_in_source_store == 0
     finally:
         await c.shutdown()
 
@@ -464,21 +460,20 @@ async def test_fork_after_step_reads_parent_history(tmp_path):
     c = ServiceContainer()
     storage = _storage(tmp_path)
     try:
-        source = await c.world_service.create_world(WorldConfig(name="src"), storage)
-        await c.mutation_service.create_entity(source.world_id, [Score(value=7.0)])
-        await c.simulation_service.step(source.world_id, RunConfig())
+        source = await c.world_lifecycle.create_world(WorldConfig(name="src"), storage)
+        await c.application.create_entity(source.world_id, [Score(value=7.0)])
+        await c.application.step(source.world_id, RunConfig())
 
-        fork = await c.world_service.fork_world(
+        fork = await c.world_lifecycle.fork_world(
             source.world_id, name="fork", storage_config=storage
         )
         assert fork.lineage == [(str(source.world_id), str(source.run_id), source.tick - 1)]
 
-        fork_df = await c.query_service.query_components(
+        fork_df = await c.application.query_components(
             [Score],
             world_id=str(fork.world_id),
             run_id=str(fork.run_id),
             storage_config=storage,
-            lineage=fork.lineage,
         )
         rows = fork_df.to_pydict()
         assert rows["score__value"] == [7.0]
@@ -504,19 +499,19 @@ async def test_fork_after_step_processes_parent_state(tmp_path):
     c = ServiceContainer()
     storage = _storage(tmp_path)
     try:
-        source = await c.world_service.create_world(WorldConfig(name="src"), storage)
+        source = await c.world_lifecycle.create_world(WorldConfig(name="src"), storage)
         source.system.processors = [Inc()]
-        await c.mutation_service.create_entity(source.world_id, [Score(value=0.0)])
+        await c.application.create_entity(source.world_id, [Score(value=0.0)])
         # Initial conditions persist raw at tick 0; the transition applies next tick.
-        await c.simulation_service.step(source.world_id, RunConfig())  # 0.0 at tick 0
-        await c.simulation_service.step(source.world_id, RunConfig())  # 1.0 at tick 1
+        await c.application.step(source.world_id, RunConfig())  # 0.0 at tick 0
+        await c.application.step(source.world_id, RunConfig())  # 1.0 at tick 1
 
-        fork = await c.world_service.fork_world(
+        fork = await c.world_lifecycle.fork_world(
             source.world_id, name="fork", storage_config=storage
         )
-        await c.simulation_service.step(fork.world_id, RunConfig())  # must see 1.0 -> 2.0
+        await c.application.step(fork.world_id, RunConfig())  # must see 1.0 -> 2.0
 
-        fork_df = await c.query_service.query_components(
+        fork_df = await c.application.query_components(
             [Score],
             world_id=str(fork.world_id),
             run_id=str(fork.run_id),
@@ -535,23 +530,22 @@ async def test_fork_lineage_excludes_parent_post_fork_rows(tmp_path):
     c = ServiceContainer()
     storage = _storage(tmp_path)
     try:
-        source = await c.world_service.create_world(WorldConfig(name="src"), storage)
-        await c.mutation_service.create_entity(source.world_id, [Score(value=1.0)])
-        await c.simulation_service.step(source.world_id, RunConfig())
+        source = await c.world_lifecycle.create_world(WorldConfig(name="src"), storage)
+        await c.application.create_entity(source.world_id, [Score(value=1.0)])
+        await c.application.step(source.world_id, RunConfig())
 
-        fork = await c.world_service.fork_world(
+        fork = await c.world_lifecycle.fork_world(
             source.world_id, name="fork", storage_config=storage
         )
         # Parent advances past the fork point
-        await c.simulation_service.step(source.world_id, RunConfig())
-        await c.simulation_service.step(source.world_id, RunConfig())
+        await c.application.step(source.world_id, RunConfig())
+        await c.application.step(source.world_id, RunConfig())
 
-        fork_df = await c.query_service.query_components(
+        fork_df = await c.application.query_components(
             [Score],
             world_id=str(fork.world_id),
             run_id=str(fork.run_id),
             storage_config=storage,
-            lineage=fork.lineage,
         )
         # Only the single pre-fork tick — not the parent's two later ticks
         assert fork_df.count_rows() == 1
@@ -566,23 +560,22 @@ async def test_fork_of_fork_lineage_chain(tmp_path):
     c = ServiceContainer()
     storage = _storage(tmp_path)
     try:
-        base = await c.world_service.create_world(WorldConfig(name="base"), storage)
-        await c.mutation_service.create_entity(base.world_id, [Score(value=5.0)])
-        await c.simulation_service.step(base.world_id, RunConfig())
+        base = await c.world_lifecycle.create_world(WorldConfig(name="base"), storage)
+        await c.application.create_entity(base.world_id, [Score(value=5.0)])
+        await c.application.step(base.world_id, RunConfig())
 
-        mid = await c.world_service.fork_world(base.world_id, name="mid", storage_config=storage)
-        await c.simulation_service.step(mid.world_id, RunConfig())
+        mid = await c.world_lifecycle.fork_world(base.world_id, name="mid", storage_config=storage)
+        await c.application.step(mid.world_id, RunConfig())
 
-        leaf = await c.world_service.fork_world(mid.world_id, name="leaf", storage_config=storage)
+        leaf = await c.world_lifecycle.fork_world(mid.world_id, name="leaf", storage_config=storage)
         assert len(leaf.lineage) == 2
-        await c.simulation_service.step(leaf.world_id, RunConfig())
+        await c.application.step(leaf.world_id, RunConfig())
 
-        leaf_df = await c.query_service.query_components(
+        leaf_df = await c.application.query_components(
             [Score],
             world_id=str(leaf.world_id),
             run_id=str(leaf.run_id),
             storage_config=storage,
-            lineage=leaf.lineage,
         )
         ticks = sorted(leaf_df.to_pydict()["tick"])
         assert ticks == [0, 1, 2]  # base tick, mid tick, leaf tick
@@ -597,10 +590,10 @@ async def test_unstepped_fork_has_no_lineage_segment(tmp_path):
     c = ServiceContainer()
     storage = _storage(tmp_path)
     try:
-        source = await c.world_service.create_world(WorldConfig(name="src"), storage)
-        await c.mutation_service.create_entity(source.world_id, [Score(value=1.0)])
+        source = await c.world_lifecycle.create_world(WorldConfig(name="src"), storage)
+        await c.application.create_entity(source.world_id, [Score(value=1.0)])
 
-        fork = await c.world_service.fork_world(
+        fork = await c.world_lifecycle.fork_world(
             source.world_id, name="fork", storage_config=storage
         )
         assert fork.lineage == []
@@ -621,28 +614,30 @@ async def test_destroyed_fork_ancestry_remains_resolvable(tmp_path):
     storage = _storage(tmp_path)
     ctx = _admin_ctx()
     try:
-        source = await c.world_service.create_world(WorldConfig(name="src"), storage)
-        await c.mutation_service.create_entity(source.world_id, [Score(value=9.0)])
-        await c.simulation_service.step(source.world_id, RunConfig())
+        source = await c.world_lifecycle.create_world(WorldConfig(name="src"), storage)
+        await c.application.create_entity(source.world_id, [Score(value=9.0)])
+        await c.application.step(source.world_id, RunConfig())
 
-        fork = await c.world_service.fork_world(
+        fork = await c.world_lifecycle.fork_world(
             source.world_id, name="fork", storage_config=storage
         )
-        await c.simulation_service.step(fork.world_id, RunConfig())
+        await c.application.step(fork.world_id, RunConfig())
         fork_world_id, fork_run_id = str(fork.world_id), str(fork.run_id)
         expected_lineage = list(fork.lineage)
 
         await c.command_gateway.destroy_world(ctx, fork.world_id)
 
         # Persisted lineage is recoverable without the live world object
-        recovered = await c.query_service.get_lineage(
-            fork_world_id, fork_run_id, storage_config=storage
+        recovered = await get_lineage(
+            c.storage_service,
+            fork_world_id,
+            fork_run_id,
+            storage_config=storage,
         )
         assert recovered == expected_lineage
 
-        # Gated read on the dead fork still includes the pre-fork tick
-        df = await c.command_gateway.query_components(
-            ctx,
+        # The trusted durable read remains available after live-world cleanup.
+        df = await c.application.query_components(
             [Score],
             fork_world_id,
             fork_run_id,
@@ -659,12 +654,15 @@ async def test_root_world_has_no_persisted_lineage(tmp_path):
     c = ServiceContainer()
     storage = _storage(tmp_path)
     try:
-        source = await c.world_service.create_world(WorldConfig(name="src"), storage)
-        await c.mutation_service.create_entity(source.world_id, [Score(value=1.0)])
-        await c.simulation_service.step(source.world_id, RunConfig())
+        source = await c.world_lifecycle.create_world(WorldConfig(name="src"), storage)
+        await c.application.create_entity(source.world_id, [Score(value=1.0)])
+        await c.application.step(source.world_id, RunConfig())
 
-        recovered = await c.query_service.get_lineage(
-            str(source.world_id), str(source.run_id), storage_config=storage
+        recovered = await get_lineage(
+            c.storage_service,
+            str(source.world_id),
+            str(source.run_id),
+            storage_config=storage,
         )
         assert recovered is None
     finally:

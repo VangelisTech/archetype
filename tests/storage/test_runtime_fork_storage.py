@@ -21,9 +21,11 @@ from __future__ import annotations
 import pytest
 from daft import DataFrame, col
 
+import archetype.app.gateway.auth.guard as guard
 from archetype import ArchetypeRuntime, AsyncProcessor, Component
-from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.core.config import StorageConfig
+from archetype.world.query import get_lineage
 
 
 class Meter(Component):
@@ -40,10 +42,10 @@ class Inc(AsyncProcessor):
 
 @pytest.fixture(autouse=True)
 def _reset_quotas():
-    reset_tick_counters()
+    guard._tick_counters.clear()
     reset_daily_tokens()
     yield
-    reset_tick_counters()
+    guard._tick_counters.clear()
     reset_daily_tokens()
 
 
@@ -103,27 +105,24 @@ async def test_runtime_fork_writes_land_in_source_store(tmp_path):
         await fork.step()
 
         container = rt._container
-        fork_world = container.world_service.get_world(fork.world_id)
+        fork_world = await container.world_registry.live_world(str(fork.world_id))
+        assert fork_world is not None
         rows_in_source_store = (
-            await container.query_service.query_components(
+            await container.application.query_components(
                 [Meter],
                 world_id=str(fork.world_id),
                 run_id=str(fork_world.run_id),
                 storage_config=storage,
             )
         ).count_rows()
-        rows_in_default_store = (
-            await container.query_service.query_components(
+        with pytest.raises(KeyError, match="not recorded in catalog"):
+            await container.application.query_components(
                 [Meter],
                 world_id=str(fork.world_id),
                 run_id=str(fork_world.run_id),
                 storage_config=StorageConfig(),
             )
-        ).count_rows()
         assert rows_in_source_store >= 1
-        assert rows_in_default_store == 0, (
-            "fork wrote to the default store instead of inheriting the source's"
-        )
 
 
 @pytest.mark.asyncio
@@ -153,12 +152,13 @@ async def test_runtime_fork_explicit_storage_override_still_wins(tmp_path, caplo
         await fork.step()
 
         container = rt._container
-        fork_world = container.world_service.get_world(fork.world_id)
-        record = container.world_service.storage_record(fork.world_id)
+        fork_world = await container.world_registry.live_world(str(fork.world_id))
+        assert fork_world is not None
+        record = await container.world_registry.storage_record(str(fork.world_id))
         assert record is not None
         assert record[0].uri == fork_storage.uri
         rows = (
-            await container.query_service.query_components(
+            await container.application.query_components(
                 [Meter],
                 world_id=str(fork.world_id),
                 run_id=str(fork_world.run_id),
@@ -180,11 +180,15 @@ async def test_fork_lineage_persisted_under_fork_run_id(tmp_path):
 
         fork = await world.fork("fork")
         container = rt._container
-        fork_world = container.world_service.get_world(fork.world_id)
+        fork_world = await container.world_registry.live_world(str(fork.world_id))
+        assert fork_world is not None
         assert fork_world.run_id, "fork must mint its run_id at fork time"
 
-        recovered = await container.query_service.get_lineage(
-            str(fork.world_id), str(fork_world.run_id), storage_config=storage
+        recovered = await get_lineage(
+            container.storage_service,
+            str(fork.world_id),
+            str(fork_world.run_id),
+            storage_config=storage,
         )
         assert recovered == list(fork_world.lineage)
         assert recovered, "persisted lineage must be recoverable by the fork's run_id"
@@ -201,7 +205,8 @@ async def test_application_query_resolves_world_storage_without_config(tmp_path)
         await world.step()
 
         container = rt._container
-        live = container.world_service.get_world(world.world_id)
+        live = await container.world_registry.live_world(str(world.world_id))
+        assert live is not None
         df = await container.application.query_components(
             [Meter],
             str(world.world_id),

@@ -38,7 +38,7 @@ async def test_spawn_operations_emit_one_row_with_structured_metadata(
     container = ServiceContainer(audit_storage_config=_audit_storage(tmp_path))
     actor = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        world = await container.world_service.create_world(
+        world = await container.world_lifecycle.create_world(
             WorldConfig(name="spawn-audit-contract"),
             StorageConfig(uri=str(tmp_path / "world-store")),
         )
@@ -49,10 +49,12 @@ async def test_spawn_operations_emit_one_row_with_structured_metadata(
                 world.world_id,
                 [[AuditPosition(x=1.0)], [AuditPosition(x=2.0)]],
             )
-            reserved_id = container.command_gateway.reserve_entity_ids(
-                actor,
-                world.world_id,
-                1,
+            reserved_id = (
+                await container.command_gateway.reserve_entity_ids(
+                    actor,
+                    world.world_id,
+                    1,
+                )
             )[0]
             await container.command_gateway.spawn_with_reserved_id(
                 actor,

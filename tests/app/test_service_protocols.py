@@ -32,17 +32,11 @@ from archetype.app.missions.interfaces import (
 from archetype.app.missions.service import MissionService
 from archetype.app.missions.trajectory_service import TrajectoryService
 from archetype.app.missions.transcript_service import TranscriptIngestionService
-from archetype.app.query.interfaces import iQueryService
-from archetype.app.query.service import QueryService
 from archetype.app.redaction.interfaces import iRedactionService
 from archetype.app.redaction.service import RedactionService
 from archetype.app.research.interfaces import iResearchService
 from archetype.app.research.service import AutoResearchService
 from archetype.app.storage.interfaces import iStorageService
-from archetype.app.world.interfaces import iMutationService, iSimulationService, iWorldService
-from archetype.app.world.mutation import MutationService
-from archetype.app.world.service import WorldService
-from archetype.app.world.simulation import SimulationService
 from archetype.storage.service import StorageService
 
 pytestmark = pytest.mark.contract("architecture.protocols.complete")
@@ -50,10 +44,6 @@ pytestmark = pytest.mark.contract("architecture.protocols.complete")
 
 SERVICE_PROTOCOLS = (
     (StorageService, iStorageService),
-    (WorldService, iWorldService),
-    (MutationService, iMutationService),
-    (SimulationService, iSimulationService),
-    (QueryService, iQueryService),
     (IngestionService, iIngestionService),
     (ArtifactService, iArtifactService),
     (MissionService, iMissionService),
@@ -89,10 +79,6 @@ async def test_container_wiring_conforms_to_every_family_protocol() -> None:
     try:
         bindings = (
             (container.storage_service, iStorageService),
-            (container.world_service, iWorldService),
-            (container.mutation_service, iMutationService),
-            (container.simulation_service, iSimulationService),
-            (container.query_service, iQueryService),
             (container.ingestion_service, iIngestionService),
             (container.artifact_service, iArtifactService),
             (container.transcript_ingestion_service, iTranscriptIngestionService),

@@ -233,7 +233,7 @@ async def test_command_id_is_durable_idempotency_identity(tmp_path):
     container = ServiceContainer(audit_storage_config=_audit_storage(tmp_path))
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        world = await container.world_service.create_world(
+        world = await container.world_lifecycle.create_world(
             WorldConfig(name="idempotency"), _storage(tmp_path)
         )
         command = Command(
@@ -261,7 +261,7 @@ async def test_permanent_rejection_does_not_block_later_same_tick_command(tmp_pa
     container = ServiceContainer(audit_storage_config=_audit_storage(tmp_path))
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        world = await container.world_service.create_world(
+        world = await container.world_lifecycle.create_world(
             WorldConfig(name="poison"), _storage(tmp_path)
         )
         poison = Command(
@@ -274,7 +274,7 @@ async def test_permanent_rejection_does_not_block_later_same_tick_command(tmp_pa
         )
         await container.command_gateway.submit_batch(ctx, world.world_id, [poison, valid])
 
-        applied = await container.simulation_service.step(world.world_id, RunConfig())
+        applied = await container.application.step(world.world_id, RunConfig())
         records = await container.command_scheduler.records(world.world_id)
 
         assert applied == 1
@@ -289,7 +289,7 @@ async def test_transient_failure_retries_and_preserves_tail_order(tmp_path, monk
     container = ServiceContainer(audit_storage_config=_audit_storage(tmp_path))
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        world = await container.world_service.create_world(
+        world = await container.world_lifecycle.create_world(
             WorldConfig(name="retry"), _storage(tmp_path)
         )
         first = Command(type=CommandType.CUSTOM, payload={"position": 1})
@@ -309,11 +309,11 @@ async def test_transient_failure_retries_and_preserves_tail_order(tmp_path, monk
             return await real_apply(world_id, command)
 
         monkeypatch.setattr(container.command_scheduler, "_apply", fail_once)
-        assert await container.simulation_service.step(world.world_id, RunConfig()) == 0
+        assert await container.application.step(world.world_id, RunConfig()) == 0
         first_attempt = await container.command_scheduler.records(world.world_id)
         assert [record.status for record in first_attempt] == ["RETRYABLE", "PENDING"]
 
-        assert await container.simulation_service.step(world.world_id, RunConfig()) == 2
+        assert await container.application.step(world.world_id, RunConfig()) == 2
         settled = await container.command_scheduler.records(world.world_id)
         assert [record.status for record in settled] == ["APPLIED", "APPLIED"]
         assert [record.applied_tick for record in settled] == [1, 1]
@@ -326,7 +326,7 @@ async def test_exhausted_transient_command_dead_letters_then_tail_continues(tmp_
     container = ServiceContainer(audit_storage_config=_audit_storage(tmp_path))
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        world = await container.world_service.create_world(
+        world = await container.world_lifecycle.create_world(
             WorldConfig(name="dead-letter"), _storage(tmp_path)
         )
         poison = Command(type=CommandType.CUSTOM, payload={"poison": True})
@@ -343,9 +343,9 @@ async def test_exhausted_transient_command_dead_letters_then_tail_continues(tmp_
             return await real_apply(world_id, command)
 
         monkeypatch.setattr(container.command_scheduler, "_apply", fail_poison)
-        assert await container.simulation_service.step(world.world_id, RunConfig()) == 0
-        assert await container.simulation_service.step(world.world_id, RunConfig()) == 0
-        assert await container.simulation_service.step(world.world_id, RunConfig()) == 1
+        assert await container.application.step(world.world_id, RunConfig()) == 0
+        assert await container.application.step(world.world_id, RunConfig()) == 0
+        assert await container.application.step(world.world_id, RunConfig()) == 1
 
         records = await container.command_scheduler.records(world.world_id)
         assert [record.status for record in records] == ["DEAD_LETTER", "APPLIED"]
@@ -362,7 +362,7 @@ async def test_manifest_failure_keeps_command_leased_and_retry_does_not_restage(
     container = ServiceContainer(audit_storage_config=_audit_storage(tmp_path))
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        world = await container.world_service.create_world(
+        world = await container.world_lifecycle.create_world(
             WorldConfig(name="atomic"), _storage(tmp_path)
         )
         command = Command(
@@ -370,7 +370,9 @@ async def test_manifest_failure_keeps_command_leased_and_retry_does_not_restage(
             payload={"entity_id": 41, "components": [DurableMarker(value=41)]},
         )
         await container.command_gateway.submit(ctx, world.world_id, command)
-        catalog = container.world_service.control_catalog(world.world_id)
+        record = await container.world_registry.storage_record(str(world.world_id))
+        assert record is not None
+        catalog = container.storage_service.get_control_catalog(record[0])
         real_publish = catalog.publish_manifest
         crashed = False
 
@@ -383,14 +385,14 @@ async def test_manifest_failure_keeps_command_leased_and_retry_does_not_restage(
 
         monkeypatch.setattr(catalog, "publish_manifest", crash_once)
         with pytest.raises(RuntimeError, match="crash before manifest"):
-            await container.simulation_service.step(world.world_id, RunConfig())
+            await container.application.step(world.world_id, RunConfig())
 
         (leased,) = await container.command_scheduler.records(world.world_id)
         assert leased.status == "LEASED"
         signature = world.entity2sig[41]
         assert len([row for row in world.spawn_cache[signature] if row["entity_id"] == 41]) == 1
 
-        assert await container.simulation_service.step(world.world_id, RunConfig()) == 1
+        assert await container.application.step(world.world_id, RunConfig()) == 1
         (applied,) = await container.command_scheduler.records(world.world_id)
         assert applied.status == "APPLIED" and applied.applied_tick == 0
         assert (
@@ -408,7 +410,7 @@ async def test_pending_reserved_spawn_survives_process_restart(tmp_path):
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     world_id = None
     try:
-        world = await first.world_service.create_world(WorldConfig(name="restart"), storage)
+        world = await first.world_lifecycle.create_world(WorldConfig(name="restart"), storage)
         world_id = str(world.world_id)
         reserved = await first.command_gateway.submit_spawn(
             ctx, world.world_id, [DurableMarker(value=7)]
@@ -420,9 +422,9 @@ async def test_pending_reserved_spawn_survives_process_restart(tmp_path):
     second = ServiceContainer(audit_storage_config=_audit_storage(tmp_path, "audit-second"))
     try:
         assert world_id is not None
-        resumed = await second.world_service.open_world_mutable(storage, world_id)
+        resumed = await second.world_lifecycle.open_world_mutable(storage, world_id)
         assert resumed.next_entity_id == 2
-        assert await second.simulation_service.step(world_id, RunConfig()) == 1
+        assert await second.application.step(world_id, RunConfig()) == 1
         assert 1 in resumed.entity2sig
         (record,) = await second.command_scheduler.records(world_id)
         assert record.status == "APPLIED"
@@ -436,10 +438,12 @@ async def test_expired_lease_is_recovered_by_another_owner_without_dequeue(tmp_p
     container = ServiceContainer(audit_storage_config=_audit_storage(tmp_path))
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        world = await container.world_service.create_world(WorldConfig(name="lease"), storage)
+        world = await container.world_lifecycle.create_world(WorldConfig(name="lease"), storage)
         command = Command(type=CommandType.CUSTOM)
         await container.command_gateway.submit(ctx, world.world_id, command)
-        catalog = container.world_service.control_catalog(world.world_id)
+        record = await container.world_registry.storage_record(str(world.world_id))
+        assert record is not None
+        catalog = container.storage_service.get_control_catalog(record[0])
         first = await catalog.lease_commands(str(world.world_id), 0, "worker-a")
         assert [record.status for record in first] == ["LEASED"]
 
@@ -459,12 +463,12 @@ async def test_command_outbox_projects_queued_and_applied_with_watermark(tmp_pat
     container = ServiceContainer(audit_storage_config=_audit_storage(tmp_path))
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        world = await container.world_service.create_world(
+        world = await container.world_lifecycle.create_world(
             WorldConfig(name="projection"), _storage(tmp_path)
         )
         command = Command(type=CommandType.CUSTOM)
         await container.command_gateway.submit(ctx, world.world_id, command)
-        await container.simulation_service.step(world.world_id, RunConfig())
+        await container.application.step(world.world_id, RunConfig())
 
         rows = (await container.audit_log.query(world_id=world.world_id)).to_pylist()
         command_rows = [row for row in rows if row["command_id"] == str(command.id)]
@@ -482,7 +486,7 @@ async def test_cold_readonly_open_discovers_unprojected_command_outbox(tmp_path)
     reader = ServiceContainer(audit_storage_config=audit_storage)
     command = Command(type=CommandType.CUSTOM)
     try:
-        world = await writer.world_service.create_world(
+        world = await writer.world_lifecycle.create_world(
             WorldConfig(name="cold-outbox"), world_storage
         )
         await writer.command_scheduler.admit(world.world_id, command)
@@ -505,7 +509,7 @@ async def test_message_commands_wait_for_scheduled_tick_and_settle_as_noops(tmp_
     container = ServiceContainer(audit_storage_config=_audit_storage(tmp_path))
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        world = await container.world_service.create_world(
+        world = await container.world_lifecycle.create_world(
             WorldConfig(name="messages"), _storage(tmp_path)
         )
         commands = [
@@ -514,10 +518,10 @@ async def test_message_commands_wait_for_scheduled_tick_and_settle_as_noops(tmp_
         ]
         await container.command_gateway.submit_batch(ctx, world.world_id, commands)
 
-        assert await container.simulation_service.step(world.world_id, RunConfig()) == 1
+        assert await container.application.step(world.world_id, RunConfig()) == 1
         assert await container.command_scheduler.pending_count(world.world_id) == 2
-        assert await container.simulation_service.step(world.world_id, RunConfig()) == 1
-        assert await container.simulation_service.step(world.world_id, RunConfig()) == 1
+        assert await container.application.step(world.world_id, RunConfig()) == 1
+        assert await container.application.step(world.world_id, RunConfig()) == 1
 
         records = await container.command_scheduler.records(world.world_id)
         assert [(record.scheduled_tick, record.applied_tick) for record in records] == [
@@ -535,14 +539,14 @@ async def test_component_wire_identity_survives_same_named_loaded_classes(tmp_pa
     container = ServiceContainer(audit_storage_config=_audit_storage(tmp_path))
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        world = await container.world_service.create_world(
+        world = await container.world_lifecycle.create_world(
             WorldConfig(name="component-wire"), _storage(tmp_path, "component-wire")
         )
-        entity_id = await container.mutation_service.create_entity(
+        entity_id = await container.application.create_entity(
             world.world_id,
             [DurableMarker(value=1), WireCollision(value=2)],
         )
-        await container.simulation_service.step(world.world_id, RunConfig())
+        await container.application.step(world.world_id, RunConfig())
 
         await container.command_gateway.submit(
             ctx,
@@ -555,7 +559,7 @@ async def test_component_wire_identity_survives_same_named_loaded_classes(tmp_pa
                 },
             ),
         )
-        assert await container.simulation_service.step(world.world_id, RunConfig()) == 1
+        assert await container.application.step(world.world_id, RunConfig()) == 1
         rows = (await world.get_components([WireCollision])).collect().to_pylist()
         assert rows[0]["durablewirecollision__value"] == 9
 
@@ -567,7 +571,7 @@ async def test_component_wire_identity_survives_same_named_loaded_classes(tmp_pa
                 payload={"entity_id": entity_id, "component_types": [WireCollision]},
             ),
         )
-        assert await container.simulation_service.step(world.world_id, RunConfig()) == 1
+        assert await container.application.step(world.world_id, RunConfig()) == 1
         assert world.entity2sig[entity_id] == (DurableMarker,)
     finally:
         await container.shutdown()

@@ -98,7 +98,7 @@ async def test_failed_catalog_registration_leaves_no_live_world(tmp_path, monkey
     c = ServiceContainer()
     try:
         storage = _storage(tmp_path)
-        source = await c.world_service.create_world(WorldConfig(name="src"), storage)
+        source = await c.world_lifecycle.create_world(WorldConfig(name="src"), storage)
 
         async def _boom(self, record):
             raise CatalogConflictError("injected registration failure")
@@ -106,14 +106,14 @@ async def test_failed_catalog_registration_leaves_no_live_world(tmp_path, monkey
         monkeypatch.setattr(SqliteControlCatalog, "register_world", _boom)
 
         with pytest.raises(CatalogConflictError):
-            await c.world_service.create_world(WorldConfig(name="orphan"), storage)
+            await c.world_lifecycle.create_world(WorldConfig(name="orphan"), storage)
         with pytest.raises(CatalogConflictError):
-            await c.world_service.fork_world(source.world_id, name="orphan-fork")
+            await c.world_lifecycle.fork_world(source.world_id, name="orphan-fork")
 
-        live = {w.name for w in c.world_service.list_worlds()}
+        live = {w.name for w in await c.world_registry.list_worlds()}
         assert live == {"src"}, f"failed registrations must unwind, saw {live}"
         with pytest.raises(KeyError):
-            c.world_service.get_world_by_name("orphan")
+            await c.world_registry.world_id_for_name("orphan")
     finally:
         await c.shutdown()
 
@@ -198,10 +198,10 @@ async def test_destroyed_worlds_stay_discoverable_with_status(tmp_path):
     c = ServiceContainer()
     try:
         storage = _storage(tmp_path)
-        world = await c.world_service.create_world(WorldConfig(name="ephemeral"), storage)
-        await c.world_service.destroy_world(world.world_id)
+        world = await c.world_lifecycle.create_world(WorldConfig(name="ephemeral"), storage)
+        await c.world_lifecycle.destroy_world(world.world_id)
 
-        infos = await c.world_service.discover_worlds(storage)
+        infos = await c.world_lifecycle.discover_worlds(storage)
         assert [str(i.world_id) for i in infos] == [str(world.world_id)]
         record = await c.storage_service.get_control_catalog(storage).get_world(str(world.world_id))
         assert record.status == "destroyed", "append-only: destroy marks, never deletes"
@@ -210,17 +210,17 @@ async def test_destroyed_worlds_stay_discoverable_with_status(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_record_step_remains_advisory_after_destroy(tmp_path, caplog):
+async def test_storage_identity_remains_available_after_destroy(tmp_path):
     c = ServiceContainer()
     try:
         storage = _storage(tmp_path)
-        world = await c.world_service.create_world(WorldConfig(name="ephemeral"), storage)
-        await c.world_service.destroy_world(world.world_id)
+        world = await c.world_lifecycle.create_world(WorldConfig(name="ephemeral"), storage)
+        await c.world_lifecycle.destroy_world(world.world_id)
 
-        with caplog.at_level(logging.ERROR):
-            await c.world_service.record_step(world.world_id)
-
-        assert "catalog run update failed" in caplog.text
+        assert await c.world_registry.storage_record(str(world.world_id)) == (
+            storage,
+            None,
+        )
     finally:
         await c.shutdown()
 
@@ -230,10 +230,10 @@ async def test_fork_records_parent_world(tmp_path):
     c = ServiceContainer()
     try:
         storage = _storage(tmp_path)
-        base = await c.world_service.create_world(WorldConfig(name="base"), storage)
-        await c.mutation_service.create_entity(base.world_id, [Score(points=1.0)])
-        await c.simulation_service.step(base.world_id, RunConfig())
-        fork = await c.world_service.fork_world(base.world_id, name="branch")
+        base = await c.world_lifecycle.create_world(WorldConfig(name="base"), storage)
+        await c.application.create_entity(base.world_id, [Score(points=1.0)])
+        await c.application.step(base.world_id, RunConfig())
+        fork = await c.world_lifecycle.fork_world(base.world_id, name="branch")
 
         record = await c.storage_service.get_control_catalog(storage).get_world(str(fork.world_id))
         assert record.parent_world_id == str(base.world_id)
@@ -246,20 +246,20 @@ async def test_readonly_open_never_constructs_a_live_world(tmp_path):
     c = ServiceContainer()
     try:
         storage = _storage(tmp_path)
-        world = await c.world_service.create_world(WorldConfig(name="cold"), storage)
+        world = await c.world_lifecycle.create_world(WorldConfig(name="cold"), storage)
         wid = str(world.world_id)
     finally:
         await c.shutdown()
 
     fresh = ServiceContainer()
     try:
-        info = await fresh.world_service.open_world_readonly(storage, wid)
+        info = await fresh.world_lifecycle.open_world_readonly(storage, wid)
         assert str(info.world_id) == wid
-        assert not fresh.world_service.has_world(wid), (
+        assert not await fresh.world_registry.contains(wid), (
             "read-only open must not register a live world"
         )
         with pytest.raises(KeyError):
-            await fresh.world_service.open_world_readonly(storage, str(uuid7()))
+            await fresh.world_lifecycle.open_world_readonly(storage, str(uuid7()))
     finally:
         await fresh.shutdown()
 
@@ -284,16 +284,16 @@ _CHILD = textwrap.dedent(
     async def main():
         c = ServiceContainer()
         try:
-            w = await c.world_service.create_world(
+            w = await c.world_lifecycle.create_world(
                 WorldConfig(name="cold"), StorageConfig(uri=sys.argv[1], namespace="ns")
             )
             # Two archetypes: (Score,) and (Score, Flag) — the subset query
             # must union both, cold.
-            await c.mutation_service.create_entity(w.world_id, [Score(points=7.5)])
-            await c.mutation_service.create_entity(
+            await c.application.create_entity(w.world_id, [Score(points=7.5)])
+            await c.application.create_entity(
                 w.world_id, [Score(points=2.5), Flag(label="x")]
             )
-            await c.simulation_service.step(w.world_id, RunConfig())
+            await c.application.step(w.world_id, RunConfig())
             print(w.world_id)
         finally:
             await c.shutdown()
@@ -320,11 +320,11 @@ async def test_p0_cold_subset_query_across_process_boundary(tmp_path):
 
     c = ServiceContainer()
     try:
-        infos = await c.world_service.discover_worlds(storage)
+        infos = await c.world_lifecycle.discover_worlds(storage)
         assert [str(i.world_id) for i in infos] == [world_id]
-        info = await c.world_service.open_world_readonly(storage, world_id)
+        info = await c.world_lifecycle.open_world_readonly(storage, world_id)
 
-        signatures = await c.query_service.list_signatures(storage)
+        signatures = await c.application.list_signatures(storage)
         signature_names = {
             tuple(component.__name__ for component in signature) for signature in signatures
         }
@@ -333,7 +333,7 @@ async def test_p0_cold_subset_query_across_process_boundary(tmp_path):
             "fresh store's empty process-local registry"
         )
 
-        df = await c.query_service.query_components([Score], world_id, str(info.run_id), storage)
+        df = await c.application.query_components([Score], world_id, str(info.run_id), storage)
         points = sorted(row["score__points"] for row in df.to_pylist())
         assert points == [2.5, 7.5], "subset query must union both archetypes, cold"
     finally:
@@ -346,9 +346,9 @@ async def test_cold_signature_listing_skips_unresolvable_history(tmp_path, caplo
     storage = _storage(tmp_path)
     writer = ServiceContainer()
     try:
-        world = await writer.world_service.create_world(WorldConfig(name="current"), storage)
-        await writer.mutation_service.create_entity(world.world_id, [Score(points=1.0)])
-        await writer.simulation_service.step(world.world_id, RunConfig())
+        world = await writer.world_lifecycle.create_world(WorldConfig(name="current"), storage)
+        await writer.application.create_entity(world.world_id, [Score(points=1.0)])
+        await writer.application.step(world.world_id, RunConfig())
 
         schema = Archetype.get_archetype_schema((Score,))
         catalog = writer.storage_service.get_control_catalog(storage)
@@ -373,8 +373,8 @@ async def test_cold_signature_listing_skips_unresolvable_history(tmp_path, caplo
 
     reader = ServiceContainer()
     try:
-        with caplog.at_level(logging.WARNING, logger="archetype.app.query.service"):
-            signatures = await reader.query_service.list_signatures(storage)
+        with caplog.at_level(logging.WARNING, logger="archetype.world.query"):
+            signatures = await reader.application.list_signatures(storage)
 
         names = {tuple(component.__name__ for component in sig) for sig in signatures}
         assert ("Score",) in names
@@ -391,9 +391,9 @@ async def test_warm_signature_listing_preserves_local_class_identity(tmp_path):
     container = ServiceContainer()
     shadow_score_type: type[Component] | None = None
     try:
-        world = await container.world_service.create_world(WorldConfig(name="warm"), storage)
-        await container.mutation_service.create_entity(world.world_id, [Score(points=1.0)])
-        await container.simulation_service.step(world.world_id, RunConfig())
+        world = await container.world_lifecycle.create_world(WorldConfig(name="warm"), storage)
+        await container.application.create_entity(world.world_id, [Score(points=1.0)])
+        await container.application.step(world.world_id, RunConfig())
 
         shadow_score_type = type(
             "Score",
@@ -406,7 +406,7 @@ async def test_warm_signature_listing_preserves_local_class_identity(tmp_path):
         )
         assert Archetype.get_name((shadow_score_type,)) == Archetype.get_name((Score,))
 
-        signatures = await container.query_service.list_signatures(storage)
+        signatures = await container.application.list_signatures(storage)
         score_table_id = Archetype.get_name((Score,))
         by_table_id = {Archetype.get_name(signature): signature for signature in signatures}
 
@@ -424,16 +424,16 @@ async def test_warm_signature_listing_survives_catalog_failure(tmp_path, monkeyp
     storage = _storage(tmp_path)
     container = ServiceContainer()
     try:
-        world = await container.world_service.create_world(WorldConfig(name="warm"), storage)
-        await container.mutation_service.create_entity(world.world_id, [Score(points=1.0)])
-        await container.simulation_service.step(world.world_id, RunConfig())
+        world = await container.world_lifecycle.create_world(WorldConfig(name="warm"), storage)
+        await container.application.create_entity(world.world_id, [Score(points=1.0)])
+        await container.application.step(world.world_id, RunConfig())
 
         def _unavailable(_storage_config):
             raise RuntimeError("injected catalog outage")
 
         monkeypatch.setattr(container.storage_service, "get_control_catalog", _unavailable)
-        with caplog.at_level(logging.ERROR, logger="archetype.app.query.service"):
-            signatures = await container.query_service.list_signatures(storage)
+        with caplog.at_level(logging.ERROR, logger="archetype.world.query"):
+            signatures = await container.application.list_signatures(storage)
 
         assert (Score,) in signatures
         assert "control catalog unavailable for durable signature discovery" in caplog.text
@@ -465,9 +465,9 @@ async def test_p0_stale_descriptor_fails_closed(tmp_path):
 
     c = ServiceContainer()
     try:
-        info = await c.world_service.open_world_readonly(storage, world_id)
+        info = await c.world_lifecycle.open_world_readonly(storage, world_id)
         with pytest.raises(CatalogSchemaMismatchError):
-            await c.query_service.query_components([Score], world_id, str(info.run_id), storage)
+            await c.application.query_components([Score], world_id, str(info.run_id), storage)
     finally:
         await c.shutdown()
 
@@ -479,9 +479,9 @@ async def test_reads_never_create_tables(tmp_path):
     c = ServiceContainer()
     try:
         storage = _storage(tmp_path)
-        world = await c.world_service.create_world(WorldConfig(name="w"), storage)
-        await c.mutation_service.create_entity(world.world_id, [Score(points=1.0)])
-        await c.simulation_service.step(world.world_id, RunConfig())
+        world = await c.world_lifecycle.create_world(WorldConfig(name="w"), storage)
+        await c.application.create_entity(world.world_id, [Score(points=1.0)])
+        await c.application.step(world.world_id, RunConfig())
 
         store = await c.storage_service.get_or_create_store(storage, None)
         before = sorted(await store._list_table_names())

@@ -3,7 +3,7 @@ import pytest
 from archetype.core.aio import AsyncProcessor, AsyncSystem
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
-from tests.conftest import make_world_service
+from tests.conftest import make_world_harness
 
 
 class A(Component):
@@ -21,12 +21,14 @@ class Noop(AsyncProcessor):
 @pytest.mark.asyncio
 async def test_duplicate_spawn_same_entity_overwrites(monkeypatch, tmp_path):
     """Simulate duplicate spawn commands for the same entity within the same tick; ensure last write wins via world internals by using public API to observe final state."""
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         system = AsyncSystem()
         await system.add_processor(Noop())
-        world = await ws.create_world(WorldConfig(name="w"), storage_config=storage, system=system)
+        world = await ws.lifecycle.create_world(
+            WorldConfig(name="w"), storage_config=storage, system=system
+        )
 
         # Create one entity, then enqueue another spawn for the same entity id by patching next id backwards
         eid = await world.create_entity([A(i=1)])
@@ -43,4 +45,4 @@ async def test_duplicate_spawn_same_entity_overwrites(monkeypatch, tmp_path):
         assert len(rows) == 1
         assert rows[0]["a__i"] == 99
     finally:
-        await ws.shutdown()
+        await ws.close()

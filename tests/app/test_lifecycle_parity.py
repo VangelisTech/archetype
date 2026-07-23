@@ -14,8 +14,9 @@ import asyncio
 import pytest
 from daft import DataFrame, col
 
+import archetype.app.gateway.auth.guard as guard
 from archetype import ArchetypeRuntime, AsyncProcessor, Component
-from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.core.config import StorageConfig
 from archetype.runtime import SyncRuntimeWorld
 from archetype.runtime.world import RuntimeWorld
@@ -43,10 +44,10 @@ class BlockingIncrement(AsyncProcessor):
 
 @pytest.fixture(autouse=True)
 def _reset_quotas():
-    reset_tick_counters()
+    guard._tick_counters.clear()
     reset_daily_tokens()
     yield
-    reset_tick_counters()
+    guard._tick_counters.clear()
     reset_daily_tokens()
 
 

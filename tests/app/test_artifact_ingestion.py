@@ -47,7 +47,7 @@ def _storage(tmp_path: Path) -> StorageConfig:
 
 
 async def _world(container: ServiceContainer, storage: StorageConfig):
-    return await container.world_service.create_world(WorldConfig(name="w"), storage)
+    return await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
 
 
 def _write_audio(path: Path) -> None:

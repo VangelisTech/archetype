@@ -60,9 +60,9 @@ def _contract(**overrides) -> GraderContract:
 
 
 async def _seeded_world(container: ServiceContainer, storage):
-    world = await container.world_service.create_world(WorldConfig(name="w"), storage)
-    await container.mutation_service.create_entity(world.world_id, [Telemetry(reading=0.8)])
-    await container.simulation_service.step(world.world_id, RunConfig())
+    world = await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
+    await container.application.create_entity(world.world_id, [Telemetry(reading=0.8)])
+    await container.application.step(world.world_id, RunConfig())
     return world
 
 
@@ -153,8 +153,7 @@ async def test_concurrent_service_graphs_run_paid_grader_once(tmp_path):
         )
         await asyncio.wait_for(grader_started.wait(), timeout=30)
         second_task = asyncio.create_task(
-            second_container.command_gateway.evaluate(
-                _ctx(),
+            second_container.application.evaluate(
                 world.world_id,
                 [Telemetry],
                 contract=_contract(),
@@ -359,7 +358,7 @@ async def test_grader_reads_captured_snapshot_when_world_advances(tmp_path, monk
 
         async def capture_then_advance(*args, **kwargs):
             snapshot = await original_snapshot(*args, **kwargs)
-            await container.simulation_service.step(world.world_id, RunConfig())
+            await container.application.step(world.world_id, RunConfig())
             return snapshot
 
         monkeypatch.setattr(container.evaluation_service, "_snapshot", capture_then_advance)
@@ -460,7 +459,7 @@ async def test_fail_closed_inputs(tmp_path):
                 evaluation_id="t2",
             )
 
-        bare = await container.world_service.create_world(WorldConfig(name="unstepped"), storage)
+        bare = await container.world_lifecycle.create_world(WorldConfig(name="unstepped"), storage)
         with pytest.raises(RuntimeError, match="no published visibility"):
             await container.command_gateway.evaluate(
                 _ctx(),
@@ -534,10 +533,10 @@ async def test_cold_process_can_grade_persisted_world(tmp_path):
                     namespace="ns",
                     backend=StorageBackend.ICEBERG,
                 )
-                world = await c.world_service.create_world(WorldConfig(name="gpu"), storage)
-                await c.mutation_service.create_entity(world.world_id, [Telemetry(reading=0.9)])
+                world = await c.world_lifecycle.create_world(WorldConfig(name="gpu"), storage)
+                await c.application.create_entity(world.world_id, [Telemetry(reading=0.9)])
                 for _ in range(3):
-                    await c.simulation_service.step(world.world_id, RunConfig())
+                    await c.application.step(world.world_id, RunConfig())
                 print(json.dumps({"world_id": str(world.world_id), "run_id": str(world.run_id)}))
             finally:
                 await c.shutdown()
@@ -562,8 +561,7 @@ async def test_cold_process_can_grade_persisted_world(tmp_path):
             namespace="ns",
             backend=StorageBackend.ICEBERG,
         )
-        result = await cold.command_gateway.evaluate(
-            _ctx(),
+        result = await cold.application.evaluate(
             info["world_id"],
             [Telemetry],
             contract=_contract(),
