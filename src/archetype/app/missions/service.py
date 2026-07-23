@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from archetype.core.hooks import PostTick
 from archetype.graph import GraphView
 from archetype.missions.coding_agents.contracts import (
     AgentExecutionResult,
+    FrictionObservation,
     TaskDispatchRequest,
 )
 from archetype.missions.coding_agents.harness import (
@@ -84,6 +86,7 @@ class _ExecutionEnvelope:
     result: AgentExecutionResult
     sandbox_status: SandboxStatus
     session: SandboxSession | None
+    bind_mission: bool = True
 
 
 @dataclass(frozen=True)
@@ -329,6 +332,7 @@ class MissionService:
                 execution_id = await self._stage_result(
                     envelope.result,
                     envelope.sandbox_status,
+                    bind_mission=envelope.bind_mission,
                 )
                 if (
                     self._checkpoint_after_dispatch
@@ -385,11 +389,22 @@ class MissionService:
 
     async def close(self) -> None:
         failures: list[BaseException] = []
-        for close in (self._sandboxes.shutdown, self._world.shutdown):
-            try:
-                await close()
-            except BaseException as exc:
-                failures.append(exc)
+        sandbox_failure: BaseException | None = None
+        try:
+            await self._sandboxes.shutdown()
+        except BaseException as exc:
+            sandbox_failure = exc
+            failures.append(exc)
+
+        try:
+            await self._reconcile_sandboxes_after_shutdown(sandbox_failure)
+        except BaseException as exc:
+            failures.append(exc)
+
+        try:
+            await self._world.shutdown()
+        except BaseException as exc:
+            failures.append(exc)
         if failures:
             raise BaseExceptionGroup(
                 f"Agent Missions shutdown failed for {len(failures)} operation(s)",
@@ -416,8 +431,16 @@ class MissionService:
             key = SandboxKey(f"mission:{request.mission_id}")
             spec = self._sandbox_spec(request.mission_id, request.branch)
             session: SandboxSession | None = None
+            previous_sandbox_id = self._mission_sandboxes.get(request.mission_id)
+            bind_mission = True
             try:
                 session = await self._sandboxes.acquire(key, spec)
+                if (
+                    previous_sandbox_id is not None
+                    and previous_sandbox_id != session.identity.sandbox_id
+                    and previous_sandbox_id in self._sandbox_entities
+                ):
+                    await self._mark_sandbox_closed(previous_sandbox_id)
                 await self._ensure_sandbox_entity(
                     request.mission_id,
                     session.identity,
@@ -437,23 +460,63 @@ class MissionService:
                     operation="coding-agent",
                     returncode=result.agent_returncode,
                 )
-            except Exception as exc:
+            except SandboxTeardownError as exc:
                 sandbox_status = SandboxStatus.ERRORED
+                bind_mission = False
+                if exc.identity.sandbox_id in self._sandbox_entities:
+                    await self._mark_sandbox_errored(exc.identity.sandbox_id, exc)
+                error = f"{type(exc).__name__}: {exc}"
                 result = AgentExecutionResult(
                     mission_id=request.mission_id,
                     task_id=request.task_id,
                     dispatch_id=request.dispatch_id,
                     dispatch_sequence=request.dispatch_sequence,
                     status=AgentExecutionStatus.ERRORED,
-                    sandbox=(
-                        session.identity
-                        if session is not None
-                        else SandboxIdentity(
-                            self._sandbox_provider,
-                            f"unavailable-{request.dispatch_id}",
-                            self._sandbox_environment,
-                        )
+                    sandbox=exc.identity,
+                    worktree=self._workspace,
+                    agent_session_id="",
+                    agent_returncode=-1,
+                    starting_revision=request.task_base_revision,
+                    final_revision="",
+                    friction=(
+                        FrictionObservation(
+                            kind="sandbox_teardown",
+                            message=error,
+                        ),
                     ),
+                    error=error,
+                )
+            except Exception as exc:
+                sandbox_status = SandboxStatus.ERRORED
+                retained = self._sandboxes.session(key)
+                if session is None and previous_sandbox_id is not None:
+                    replaced_is_gone = retained is None or (
+                        retained.identity.sandbox_id != previous_sandbox_id
+                    )
+                    if replaced_is_gone:
+                        if previous_sandbox_id in self._sandbox_entities:
+                            await self._mark_sandbox_closed(previous_sandbox_id)
+                        if self._mission_sandboxes.get(request.mission_id) == previous_sandbox_id:
+                            self._mission_sandboxes.pop(request.mission_id, None)
+                failed_identity = (
+                    session.identity
+                    if session is not None
+                    else retained.identity
+                    if retained is not None
+                    else SandboxIdentity(
+                        self._sandbox_provider,
+                        f"unavailable-{request.dispatch_id}",
+                        self._sandbox_environment,
+                    )
+                )
+                bind_mission = session is not None or retained is not None
+                result = AgentExecutionResult(
+                    mission_id=request.mission_id,
+                    task_id=request.task_id,
+                    dispatch_id=request.dispatch_id,
+                    dispatch_sequence=request.dispatch_sequence,
+                    status=AgentExecutionStatus.ERRORED,
+                    sandbox=failed_identity,
                     worktree=self._workspace,
                     agent_session_id="",
                     agent_returncode=-1,
@@ -461,13 +524,22 @@ class MissionService:
                     final_revision="",
                     error=f"{type(exc).__name__}: {exc}",
                 )
-            results.append(_ExecutionEnvelope(result, sandbox_status, session))
+            results.append(
+                _ExecutionEnvelope(
+                    result,
+                    sandbox_status,
+                    session,
+                    bind_mission=bind_mission,
+                )
+            )
         return tuple(results)
 
     async def _stage_result(
         self,
         result: AgentExecutionResult,
         sandbox_status: SandboxStatus,
+        *,
+        bind_mission: bool,
     ) -> int:
         retained_sandbox = self._sandbox_entities.get(result.sandbox.sandbox_id)
         if retained_sandbox is None:
@@ -476,17 +548,28 @@ class MissionService:
                 result.sandbox,
                 status=sandbox_status,
                 error=result.error if sandbox_status is SandboxStatus.ERRORED else "",
+                bind_mission=bind_mission,
             )
         else:
             sandbox_entity, sandbox_state = retained_sandbox
+            observed_error = self._redact_and_tail(
+                result.error if sandbox_status is SandboxStatus.ERRORED else "",
+                limit=4_000,
+                scope=f"mission:{result.mission_id}:sandbox-error",
+            )
+            if sandbox_state.status == SandboxStatus.CLOSED.value:
+                # A later request in the same execution batch may already have
+                # replaced and closed this session. Staging the earlier envelope
+                # must not move durable lifecycle evidence backwards.
+                updated_status = SandboxStatus.CLOSED.value
+                updated_error = sandbox_state.error or observed_error
+            else:
+                updated_status = sandbox_status.value
+                updated_error = observed_error
             updated = sandbox_state.model_copy(
                 update={
-                    "status": sandbox_status.value,
-                    "error": self._redact_and_tail(
-                        result.error if sandbox_status is SandboxStatus.ERRORED else "",
-                        limit=4_000,
-                        scope=f"mission:{result.mission_id}:sandbox-error",
-                    ),
+                    "status": updated_status,
+                    "error": updated_error,
                 }
             )
             if updated != sandbox_state:
@@ -616,6 +699,17 @@ class MissionService:
                 )
             )
             await self._world.spawn(ProducedBy(source=friction_id, target=candidate.execution_id))
+            try:
+                sandbox_status = await candidate.session.status()
+            except Exception:
+                sandbox_status = SandboxStatus.ERRORED
+            if sandbox_status is not SandboxStatus.READY:
+                await self._ensure_sandbox_entity(
+                    result.mission_id,
+                    identity,
+                    status=sandbox_status,
+                    error=checkpoint_error,
+                )
         else:
             self._emit_sandbox_event(
                 SandboxEventType.CHECKPOINT_FINISHED,
@@ -656,10 +750,28 @@ class MissionService:
         *,
         status: SandboxStatus,
         error: str = "",
+        bind_mission: bool = True,
     ) -> int:
         retained = self._sandbox_entities.get(identity.sandbox_id)
         if retained is not None:
             entity_id, sandbox_state = retained
+            if sandbox_state.status == SandboxStatus.CLOSED.value:
+                # Deferred observations may arrive after another request has
+                # replaced and closed this session. Preserve terminal evidence;
+                # only fill a previously empty error with the late observation.
+                if not sandbox_state.error and error:
+                    updated = sandbox_state.model_copy(
+                        update={
+                            "error": self._redact_and_tail(
+                                error,
+                                limit=4_000,
+                                scope=f"mission:{mission_id}:sandbox-error",
+                            )
+                        }
+                    )
+                    await self._world.update(entity_id, updated)
+                    self._sandbox_entities[identity.sandbox_id] = (entity_id, updated)
+                return entity_id
             if sandbox_state.status != status.value or sandbox_state.error:
                 updated = sandbox_state.model_copy(
                     update={
@@ -688,27 +800,109 @@ class MissionService:
         )
         entity_id = await self._world.spawn(sandbox_state)
         self._sandbox_entities[identity.sandbox_id] = (entity_id, sandbox_state)
-        self._mission_sandboxes[mission_id] = identity.sandbox_id
+        if bind_mission:
+            self._mission_sandboxes[mission_id] = identity.sandbox_id
         return entity_id
 
     async def _close_mission_sandbox(self, mission_id: int) -> None:
-        await self._sandboxes.close(SandboxKey(f"mission:{mission_id}"))
+        key = SandboxKey(f"mission:{mission_id}")
         sandbox_id = self._mission_sandboxes.get(mission_id)
+        try:
+            await self._sandboxes.close(key)
+        except asyncio.CancelledError:
+            # SandboxService.close() shields provider teardown. Caller
+            # cancellation is not evidence that the provider cleanup failed;
+            # a later run or service shutdown reconciles the retained entity
+            # with the single-flight close result.
+            raise
+        except BaseException as exc:
+            if sandbox_id is not None:
+                await self._record_sandbox_teardown_failure(
+                    mission_id,
+                    sandbox_id,
+                    self._sandboxes.session(key),
+                    exc,
+                )
+                await self._world.step()
+            raise
         if sandbox_id is None:
             return
         await self._mark_sandbox_closed(sandbox_id)
 
-    async def _mark_sandbox_closed(self, sandbox_id: str) -> None:
+    async def _reconcile_sandboxes_after_shutdown(
+        self,
+        shutdown_failure: BaseException | None,
+    ) -> None:
+        if not self._mission_sandboxes:
+            return
+        changed = False
+        for mission_id, sandbox_id in tuple(self._mission_sandboxes.items()):
+            key = SandboxKey(f"mission:{mission_id}")
+            retained = self._sandboxes.session(key)
+            if retained is None:
+                changed = await self._mark_sandbox_closed(sandbox_id) or changed
+                continue
+            failure = shutdown_failure or RuntimeError("sandbox teardown remained incomplete")
+            await self._record_sandbox_teardown_failure(
+                mission_id,
+                sandbox_id,
+                retained,
+                failure,
+            )
+            changed = True
+        if changed:
+            await self._world.step()
+
+    async def _record_sandbox_teardown_failure(
+        self,
+        mission_id: int,
+        sandbox_id: str,
+        session: SandboxSession | None,
+        exc: BaseException,
+    ) -> None:
+        status = SandboxStatus.ERRORED
+        if session is not None:
+            try:
+                observed_status = await session.status()
+            except BaseException:
+                pass
+            else:
+                if observed_status is not SandboxStatus.READY:
+                    status = observed_status
+        await self._mark_sandbox_failed(sandbox_id, status, exc)
+        await self._world.spawn(
+            FrictionLog(
+                kind="sandbox_teardown",
+                message=self._redact_and_tail(
+                    f"{type(exc).__name__}: {exc}",
+                    limit=4_000,
+                    scope=f"mission:{mission_id}:sandbox-teardown",
+                ),
+            )
+        )
+
+    async def _mark_sandbox_closed(self, sandbox_id: str) -> bool:
         entity_id, sandbox_state = self._sandbox_entities[sandbox_id]
+        if sandbox_state.status == SandboxStatus.CLOSED.value:
+            return False
         closed = sandbox_state.model_copy(update={"status": SandboxStatus.CLOSED.value})
         await self._world.update(entity_id, closed)
         self._sandbox_entities[sandbox_id] = (entity_id, closed)
+        return True
 
     async def _mark_sandbox_errored(self, sandbox_id: str, exc: BaseException) -> None:
+        await self._mark_sandbox_failed(sandbox_id, SandboxStatus.ERRORED, exc)
+
+    async def _mark_sandbox_failed(
+        self,
+        sandbox_id: str,
+        status: SandboxStatus,
+        exc: BaseException,
+    ) -> None:
         entity_id, sandbox_state = self._sandbox_entities[sandbox_id]
         errored = sandbox_state.model_copy(
             update={
-                "status": SandboxStatus.ERRORED.value,
+                "status": status.value,
                 "error": self._redact_and_tail(
                     f"{type(exc).__name__}: {exc}",
                     limit=4_000,

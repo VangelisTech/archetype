@@ -36,6 +36,13 @@ class _Session:
         self.closed = 0
         self.close_attempts = 0
         self.close_error = False
+        self.close_failures = 0
+        self.close_started = asyncio.Event()
+        self.close_release = asyncio.Event()
+        self.close_release.set()
+        self.status_started = asyncio.Event()
+        self.status_release = asyncio.Event()
+        self.status_release.set()
 
     @property
     def identity(self) -> SandboxIdentity:
@@ -46,7 +53,10 @@ class _Session:
         return SandboxCapabilities(checkpoints=True)
 
     async def status(self) -> SandboxStatus:
-        return self._status
+        observed = self._status
+        self.status_started.set()
+        await self.status_release.wait()
+        return observed
 
     async def exec(self, request: ProcessRequest) -> ProcessResult:
         return ProcessResult(request.argv, 0, stdout="ok")
@@ -63,7 +73,10 @@ class _Session:
 
     async def close(self) -> None:
         self.close_attempts += 1
-        if self.close_error:
+        self.close_started.set()
+        await self.close_release.wait()
+        if self.close_error or self.close_failures:
+            self.close_failures = max(0, self.close_failures - 1)
             self._status = SandboxStatus.ERRORED
             raise RuntimeError("provider close unavailable")
         self.closed += 1
@@ -78,12 +91,18 @@ class _Backend:
         self.restores = 0
         self.started = asyncio.Event()
         self.release = asyncio.Event()
+        self.sessions: list[_Session] = []
+        self.create_error: Exception | None = None
 
     async def create(self, spec: SandboxSpec) -> _Session:
         self.creates += 1
+        session = _Session(SandboxIdentity(self.name, f"sandbox-{self.creates}", spec.environment))
+        self.sessions.append(session)
         self.started.set()
         await self.release.wait()
-        return _Session(SandboxIdentity(self.name, f"sandbox-{self.creates}", spec.environment))
+        if self.create_error is not None:
+            raise self.create_error
+        return session
 
     async def restore(self, spec: SandboxSpec, checkpoint: CheckpointRef) -> _Session:
         self.restores += 1
@@ -105,6 +124,28 @@ def test_sandbox_contracts_describe_resources_not_task_outcomes() -> None:
     assert isinstance(_Backend(), SandboxBackend)
     assert isinstance(_Session(SandboxIdentity("fake", "sandbox", "environment")), SandboxSession)
     assert isinstance(SandboxService(), SandboxServiceProtocol)
+
+
+@pytest.mark.asyncio
+async def test_new_non_ready_session_fails_once_without_creation_churn() -> None:
+    backend = _Backend()
+    service = SandboxService([backend])
+    key = SandboxKey("mission:non-ready")
+
+    acquiring = asyncio.create_task(service.acquire(key, _spec()))
+    await backend.started.wait()
+    backend.sessions[0]._status = SandboxStatus.ERRORED
+    backend.release.set()
+
+    with pytest.raises(RuntimeError, match="became non-ready: errored"):
+        await asyncio.wait_for(acquiring, timeout=1)
+
+    assert backend.creates == 1
+    assert service.session(key) is backend.sessions[0]
+    assert await backend.sessions[0].status() is SandboxStatus.ERRORED
+    await service.shutdown()
+    assert backend.sessions[0].closed == 1
+    assert service.session(key) is None
 
 
 def test_process_request_requires_explicit_portable_inputs() -> None:
@@ -366,6 +407,386 @@ async def test_failed_replacement_close_retains_the_session_for_cleanup_retry() 
     assert original.closed == 1
     assert backend.restores == 1
     assert service.session(key) is restored
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_failed_direct_close_retains_the_session_for_cleanup_retry() -> None:
+    backend = _Backend()
+    backend.release.set()
+    service = SandboxService((backend,))
+    key = SandboxKey("mission:direct-close-retry")
+    session = await service.acquire(key, _spec())
+    session.close_error = True
+
+    with pytest.raises(RuntimeError, match="provider close unavailable"):
+        await service.close(key)
+
+    assert service.session(key) is session
+    assert await session.status() is SandboxStatus.ERRORED
+
+    session.close_error = False
+    await service.close(key)
+
+    assert session.close_attempts == 2
+    assert await session.status() is SandboxStatus.CLOSED
+    assert service.session(key) is None
+
+
+@pytest.mark.asyncio
+async def test_acquire_waits_for_direct_close_then_returns_a_replacement() -> None:
+    backend = _Backend()
+    backend.release.set()
+    service = SandboxService((backend,))
+    key = SandboxKey("mission:close-acquire-race")
+    spec = _spec()
+    original = await service.acquire(key, spec)
+    original.close_release.clear()
+
+    closing = asyncio.create_task(service.close(key))
+    await original.close_started.wait()
+    acquiring = asyncio.create_task(service.acquire(key, spec))
+    await asyncio.sleep(0)
+
+    assert not acquiring.done()
+    assert backend.creates == 1
+
+    original.close_release.set()
+    replacement = await acquiring
+    await closing
+
+    assert replacement is not original
+    assert original.close_attempts == 1
+    assert await original.status() is SandboxStatus.CLOSED
+    assert service.session(key) is replacement
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_close_linearizes_before_an_inflight_successful_acquire_returns() -> None:
+    backend = _Backend()
+    service = SandboxService((backend,))
+    key = SandboxKey("mission:pending-acquire-close-race")
+    spec = _spec()
+
+    acquiring = asyncio.create_task(service.acquire(key, spec))
+    await backend.started.wait()
+    created = backend.sessions[0]
+    created.close_release.clear()
+    closing = asyncio.create_task(service.close(key))
+    await asyncio.sleep(0)
+    backend.release.set()
+    await created.close_started.wait()
+    await asyncio.sleep(0)
+
+    assert not acquiring.done()
+    assert not closing.done()
+
+    created.close_release.set()
+    await closing
+    replacement = await acquiring
+
+    assert replacement is not created
+    assert created.close_attempts == 1
+    assert await created.status() is SandboxStatus.CLOSED
+    assert backend.creates == 2
+    assert service.session(key) is replacement
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_acquire_retries_after_a_concurrent_direct_close_failure() -> None:
+    backend = _Backend()
+    backend.release.set()
+    service = SandboxService((backend,))
+    key = SandboxKey("mission:failed-close-acquire-race")
+    spec = _spec()
+    original = await service.acquire(key, spec)
+    original.close_failures = 1
+    original.close_release.clear()
+
+    closing = asyncio.create_task(service.close(key))
+    await original.close_started.wait()
+    acquiring = asyncio.create_task(service.acquire(key, spec))
+    await asyncio.sleep(0)
+    assert not acquiring.done()
+
+    original.close_release.set()
+    with pytest.raises(RuntimeError, match="provider close unavailable"):
+        await closing
+    replacement = await acquiring
+
+    assert replacement is not original
+    assert original.close_attempts == 2
+    assert await original.status() is SandboxStatus.CLOSED
+    assert service.session(key) is replacement
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_close_waiter_does_not_cancel_provider_teardown() -> None:
+    backend = _Backend()
+    backend.release.set()
+    service = SandboxService((backend,))
+    key = SandboxKey("mission:cancelled-close-waiter")
+    spec = _spec()
+    original = await service.acquire(key, spec)
+    original.close_release.clear()
+
+    closing = asyncio.create_task(service.close(key))
+    await original.close_started.wait()
+    closing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+
+    acquiring = asyncio.create_task(service.acquire(key, spec))
+    await asyncio.sleep(0)
+    assert not acquiring.done()
+
+    original.close_release.set()
+    replacement = await acquiring
+
+    assert replacement is not original
+    assert original.close_attempts == 1
+    assert await original.status() is SandboxStatus.CLOSED
+    assert service.session(key) is replacement
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_close_waits_for_a_shielded_creator_after_its_waiter_is_cancelled() -> None:
+    backend = _Backend()
+    service = SandboxService((backend,))
+    key = SandboxKey("mission:cancelled-create-waiter")
+    spec = _spec()
+
+    acquiring = asyncio.create_task(service.acquire(key, spec))
+    await backend.started.wait()
+    created = backend.sessions[0]
+    acquiring.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await acquiring
+
+    closing = asyncio.create_task(service.close(key))
+    await asyncio.sleep(0)
+    assert not closing.done()
+    assert created.close_attempts == 0
+
+    backend.release.set()
+    await closing
+
+    assert created.close_attempts == 1
+    assert await created.status() is SandboxStatus.CLOSED
+    assert service.session(key) is None
+
+
+@pytest.mark.asyncio
+async def test_cancelled_acquire_consumes_a_later_creator_failure() -> None:
+    backend = _Backend()
+    backend.create_error = RuntimeError("creator exploded")
+    service = SandboxService((backend,))
+    completed = asyncio.Event()
+
+    acquiring = asyncio.create_task(
+        service.acquire(SandboxKey("mission:abandoned-create"), _spec())
+    )
+    await backend.started.wait()
+    pending = next(iter(service._pending.values()))[2]  # noqa: SLF001
+    pending.add_done_callback(lambda _task: completed.set())
+
+    acquiring.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await acquiring
+    backend.release.set()
+    await completed.wait()
+    await asyncio.sleep(0)
+
+    assert pending.done()
+    assert pending._log_traceback is False  # noqa: SLF001 - exception was retrieved
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_failed_shutdown_retains_sessions_for_cleanup_retry() -> None:
+    backend = _Backend()
+    backend.release.set()
+    service = SandboxService((backend,))
+    key = SandboxKey("mission:shutdown-retry")
+    session = await service.acquire(key, _spec())
+    session.close_error = True
+
+    with pytest.raises(BaseExceptionGroup, match="failed to close 1"):
+        await service.shutdown()
+
+    assert service.session(key) is session
+    assert await session.status() is SandboxStatus.ERRORED
+
+    session.close_error = False
+    await service.shutdown()
+
+    assert session.close_attempts == 2
+    assert await session.status() is SandboxStatus.CLOSED
+    assert service.session(key) is None
+
+
+@pytest.mark.asyncio
+async def test_shutdown_retains_failed_cleanup_from_an_inflight_create() -> None:
+    backend = _Backend()
+    service = SandboxService((backend,))
+    key = SandboxKey("mission:pending-shutdown-cleanup")
+
+    acquiring = asyncio.create_task(service.acquire(key, _spec()))
+    await backend.started.wait()
+    created = backend.sessions[0]
+    created.close_failures = 1
+    shutting_down = asyncio.create_task(service.shutdown())
+    while service._accepting:  # noqa: SLF001 - deterministic concurrency contract
+        await asyncio.sleep(0)
+    backend.release.set()
+
+    with pytest.raises(RuntimeError, match="shutting down"):
+        await acquiring
+    with pytest.raises(BaseExceptionGroup, match="failed to close 1"):
+        await shutting_down
+
+    assert created.close_attempts == 1
+    assert await created.status() is SandboxStatus.ERRORED
+    assert service.session(key) is None
+    assert len(service._cleanup_sessions) == 1  # noqa: SLF001 - retained cleanup ownership
+
+    await service.shutdown()
+
+    assert created.close_attempts == 2
+    assert await created.status() is SandboxStatus.CLOSED
+    assert not service._cleanup_sessions  # noqa: SLF001 - successful retry releases ownership
+
+
+@pytest.mark.asyncio
+async def test_concurrent_direct_close_and_shutdown_close_the_session_once() -> None:
+    backend = _Backend()
+    backend.release.set()
+    service = SandboxService((backend,))
+    key = SandboxKey("mission:close-shutdown-race")
+    session = await service.acquire(key, _spec())
+    session.close_release.clear()
+
+    closing = asyncio.create_task(service.close(key))
+    await session.close_started.wait()
+    shutting_down = asyncio.create_task(service.shutdown())
+    while service._accepting:  # noqa: SLF001 - deterministic concurrency contract
+        await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert session.close_attempts == 1
+
+    session.close_release.set()
+    await asyncio.gather(closing, shutting_down)
+
+    assert session.close_attempts == 1
+    assert await session.status() is SandboxStatus.CLOSED
+    assert service.session(key) is None
+
+
+@pytest.mark.asyncio
+async def test_closing_one_key_does_not_block_acquisition_for_another() -> None:
+    backend = _Backend()
+    backend.release.set()
+    service = SandboxService((backend,))
+    first_key = SandboxKey("mission:independent-close")
+    second_key = SandboxKey("mission:independent-acquire")
+    spec = _spec()
+    first = await service.acquire(first_key, spec)
+    second = await service.acquire(second_key, spec)
+    first.close_release.clear()
+
+    closing = asyncio.create_task(service.close(first_key))
+    await first.close_started.wait()
+    acquiring = asyncio.create_task(service.acquire(second_key, spec))
+    await asyncio.sleep(0)
+
+    assert acquiring.done()
+    assert await acquiring is second
+
+    first.close_release.set()
+    await closing
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_observing_one_key_status_does_not_block_another_key() -> None:
+    backend = _Backend()
+    backend.release.set()
+    service = SandboxService((backend,))
+    first_key = SandboxKey("mission:slow-status")
+    second_key = SandboxKey("mission:status-independent")
+    spec = _spec()
+    first = await service.acquire(first_key, spec)
+    second = await service.acquire(second_key, spec)
+    first.status_started.clear()
+    first.status_release.clear()
+
+    blocked = asyncio.create_task(service.acquire(first_key, spec))
+    await first.status_started.wait()
+    second.status_started.clear()
+    unrelated = asyncio.create_task(service.acquire(second_key, spec))
+
+    try:
+        await asyncio.wait_for(second.status_started.wait(), timeout=1)
+        assert await unrelated is second
+    finally:
+        first.status_release.set()
+        await asyncio.gather(blocked, unrelated, return_exceptions=True)
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_acquire_revalidates_a_status_observation_after_concurrent_close() -> None:
+    backend = _Backend()
+    backend.release.set()
+    service = SandboxService((backend,))
+    key = SandboxKey("mission:stale-status")
+    spec = _spec()
+    original = await service.acquire(key, spec)
+    original.status_started.clear()
+    original.status_release.clear()
+
+    acquiring = asyncio.create_task(service.acquire(key, spec))
+    await original.status_started.wait()
+    await asyncio.wait_for(service.close(key), timeout=1)
+    replacement = await service.acquire(key, spec)
+    original.status_release.set()
+
+    assert await acquiring is replacement
+    assert replacement is not original
+    assert await original.status() is SandboxStatus.CLOSED
+    assert service.session(key) is replacement
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_acquire_discards_stale_ready_after_concurrent_close_failure() -> None:
+    backend = _Backend()
+    backend.release.set()
+    service = SandboxService((backend,))
+    key = SandboxKey("mission:stale-status-close-failure")
+    spec = _spec()
+    original = await service.acquire(key, spec)
+    original.close_failures = 1
+    original.status_started.clear()
+    original.status_release.clear()
+
+    acquiring = asyncio.create_task(service.acquire(key, spec))
+    await original.status_started.wait()
+    with pytest.raises(RuntimeError, match="provider close unavailable"):
+        await service.close(key)
+    original.status_release.set()
+
+    replacement = await acquiring
+
+    assert replacement is not original
+    assert original.close_attempts == 2
+    assert await original.status() is SandboxStatus.CLOSED
+    assert service.session(key) is replacement
     await service.shutdown()
 
 

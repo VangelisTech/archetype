@@ -377,7 +377,7 @@ class AppleContainerSandboxSession:
     @staticmethod
     def _raise(result: ProcessResult, label: str) -> None:
         if result.returncode != 0:
-            detail = (result.stderr or result.stdout)[-4000:]
+            detail = result.stderr or result.stdout
             raise RuntimeError(f"{label} failed with exit code {result.returncode}: {detail}")
 
 

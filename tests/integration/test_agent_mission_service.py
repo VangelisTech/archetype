@@ -43,6 +43,7 @@ from archetype.missions.sandboxes import (
     SandboxSpec,
     SandboxStatus,
 )
+from archetype.missions.sandboxes.apple_container import AppleContainerSandboxSession
 from archetype.projections import latest
 
 
@@ -138,6 +139,168 @@ class _LocalBackend:
         raise NotImplementedError
 
 
+class _LiveOutputSession(_LocalSession):
+    @property
+    def capabilities(self) -> SandboxCapabilities:
+        return SandboxCapabilities(live_output=True, secret_names=("github",))
+
+
+class _LiveOutputBackend(_LocalBackend):
+    async def create(self, spec: SandboxSpec) -> _LiveOutputSession:
+        self.creates += 1
+        session = _LiveOutputSession(spec)
+        self.session = session
+        return session
+
+
+class _BlockingCloseSession(_LocalSession):
+    def __init__(self, spec: SandboxSpec) -> None:
+        super().__init__(spec)
+        self.close_started = asyncio.Event()
+        self.close_release = asyncio.Event()
+        self.close_finished = asyncio.Event()
+
+    async def close(self) -> None:
+        self.close_attempts += 1
+        self.close_started.set()
+        await self.close_release.wait()
+        self.closed += 1
+        self.close_finished.set()
+
+
+class _BlockingCloseBackend(_LocalBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.created = asyncio.Event()
+
+    async def create(self, spec: SandboxSpec) -> _BlockingCloseSession:
+        self.creates += 1
+        session = _BlockingCloseSession(spec)
+        self.session = session
+        self.created.set()
+        return session
+
+
+class _AutoReplacementSession(_LocalSession):
+    def __init__(
+        self,
+        spec: SandboxSpec,
+        sandbox_id: str,
+        *,
+        fail_checkpoint: bool = False,
+        close_failures: int = 0,
+    ) -> None:
+        super().__init__(spec)
+        self.sandbox_id = sandbox_id
+        self.fail_checkpoint = fail_checkpoint
+        self.checkpoints = 0
+        self.close_failures = close_failures
+        self._status = SandboxStatus.READY
+
+    @property
+    def identity(self) -> SandboxIdentity:
+        return SandboxIdentity("local", self.sandbox_id, self.spec.environment)
+
+    @property
+    def capabilities(self) -> SandboxCapabilities:
+        return SandboxCapabilities(checkpoints=True, secret_names=("github",))
+
+    async def status(self) -> SandboxStatus:
+        return self._status
+
+    async def exec(self, request: ProcessRequest) -> ProcessResult:
+        if self._status is not SandboxStatus.READY:
+            raise RuntimeError(f"local sandbox session is {self._status.value}")
+        return await super().exec(request)
+
+    async def checkpoint(self) -> CheckpointRef:
+        self.checkpoints += 1
+        if self._status is not SandboxStatus.READY:
+            raise RuntimeError(f"local sandbox session is {self._status.value}")
+        if self.fail_checkpoint:
+            self._status = SandboxStatus.ERRORED
+            raise RuntimeError("simulated checkpoint restart failure")
+        return CheckpointRef(
+            "local",
+            f"checkpoint-{self.sandbox_id}",
+            f"local-checkpoint://{self.sandbox_id}",
+            1,
+            environment=self.spec.environment,
+            source_sandbox_id=self.sandbox_id,
+            owner_id=self.spec.metadata_dict()["mission"],
+        )
+
+    async def close(self) -> None:
+        self.close_attempts += 1
+        if self.close_error or self.close_failures:
+            self.close_failures = max(0, self.close_failures - 1)
+            self._status = SandboxStatus.ERRORED
+            raise RuntimeError("provider close unavailable")
+        self.closed += 1
+        self._status = SandboxStatus.CLOSED
+
+    def simulate_transport_loss(self) -> None:
+        self._status = SandboxStatus.ERRORED
+
+
+class _AutoReplacementBackend:
+    name = "local"
+
+    def __init__(
+        self,
+        *,
+        fail_first_checkpoint: bool = False,
+        fail_first_close: bool = False,
+        fail_create_sequences: tuple[int, ...] = (),
+    ) -> None:
+        self.fail_first_checkpoint = fail_first_checkpoint
+        self.fail_first_close = fail_first_close
+        self.fail_create_sequences = fail_create_sequences
+        self.create_attempts = 0
+        self.sessions: list[_AutoReplacementSession] = []
+
+    async def create(self, spec: SandboxSpec) -> _AutoReplacementSession:
+        self.create_attempts += 1
+        sequence = self.create_attempts
+        if sequence in self.fail_create_sequences:
+            raise RuntimeError(f"simulated create failure {sequence}")
+        session = _AutoReplacementSession(
+            spec,
+            f"sandbox-replacement-{sequence}",
+            fail_checkpoint=self.fail_first_checkpoint and sequence == 1,
+            close_failures=1 if self.fail_first_close and sequence == 1 else 0,
+        )
+        self.sessions.append(session)
+        return session
+
+    async def restore(
+        self,
+        spec: SandboxSpec,
+        checkpoint: CheckpointRef,
+    ) -> _AutoReplacementSession:
+        del spec, checkpoint
+        raise NotImplementedError
+
+
+class _ProviderFailureBackend:
+    name = "local"
+
+    async def create(self, spec: SandboxSpec) -> _LocalSession:
+        del spec
+        token = "ghp_" + "A" * 36
+        output = "x" * 100 + token + "s" * 3_970
+        assert len(output) == 4_110
+        AppleContainerSandboxSession._raise(  # noqa: SLF001 - provider/app boundary probe
+            ProcessResult(("container", "run"), 7, stderr=output),
+            "provider preflight",
+        )
+        raise AssertionError("provider failure must raise")
+
+    async def restore(self, spec: SandboxSpec, checkpoint: CheckpointRef) -> _LocalSession:
+        del spec, checkpoint
+        raise NotImplementedError
+
+
 class _MissionDriver:
     """Fail one validator, repair in place, then complete the dependent task."""
 
@@ -161,6 +324,72 @@ class _MissionDriver:
         result = await session.exec(
             ProcessRequest(
                 ("sh", "-lc", f"printf '%s\\n' {content} > {filename}{commit}"),
+                workdir=str(self.workspace),
+            )
+        )
+        return AgentProcessObservation(
+            result.returncode,
+            result.stdout,
+            result.stderr,
+            session_id=f"session-{request.task_name}",
+        )
+
+
+class _TransportLossThenRepairDriver:
+    def __init__(self, workspace: Path) -> None:
+        self.workspace = workspace
+        self.calls = 0
+
+    async def run(
+        self,
+        session,
+        request,
+        prompt: str,
+    ) -> AgentProcessObservation:
+        del request, prompt
+        self.calls += 1
+        assert isinstance(session, _AutoReplacementSession)
+        if self.calls == 1:
+            session.simulate_transport_loss()
+            raise RuntimeError("simulated provider transport loss")
+
+        result = await session.exec(
+            ProcessRequest(
+                ("sh", "-lc", "printf 'good\\n' > artifact.txt"),
+                workdir=str(self.workspace),
+            )
+        )
+        return AgentProcessObservation(
+            result.returncode,
+            result.stdout,
+            result.stderr,
+            session_id="repaired-session",
+        )
+
+
+class _SameTickTransportLossDriver:
+    """Fail the first ready task while allowing its sibling to replace the session."""
+
+    def __init__(self, workspace: Path) -> None:
+        self.workspace = workspace
+        self.calls: list[str] = []
+
+    async def run(
+        self,
+        session,
+        request,
+        prompt: str,
+    ) -> AgentProcessObservation:
+        del prompt
+        self.calls.append(request.task_name)
+        assert isinstance(session, _AutoReplacementSession)
+        if len(self.calls) == 1:
+            session.simulate_transport_loss()
+            raise RuntimeError("simulated batched provider transport loss")
+
+        result = await session.exec(
+            ProcessRequest(
+                ("sh", "-lc", f"printf 'good\\n' > {request.task_name}.txt"),
                 workdir=str(self.workspace),
             )
         )
@@ -246,6 +475,28 @@ class _SecretOutputDriver:
             result.returncode,
             stdout=output,
             session_id="session-redaction",
+        )
+
+
+class _TraceOutputDriver:
+    def __init__(self, workspace: Path, trace_uri: str) -> None:
+        self.workspace = workspace
+        self.trace_uri = trace_uri
+
+    async def run(self, session, request, prompt: str) -> AgentProcessObservation:
+        del request, prompt
+        result = await session.exec(
+            ProcessRequest(
+                ("sh", "-lc", "printf 'done\\n' > feature.txt"),
+                workdir=str(self.workspace),
+            )
+        )
+        return AgentProcessObservation(
+            result.returncode,
+            result.stdout,
+            result.stderr,
+            session_id="session-trace",
+            trace_uri=self.trace_uri,
         )
 
 
@@ -407,6 +658,597 @@ async def test_explicit_graph_drives_revision_bound_retry_and_downstream_readine
         )
         == result.tasks[-1].commit_shas[-1]
     )
+
+
+@pytest.mark.asyncio
+async def test_automatic_replacement_closes_prior_sandbox_evidence(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    backend = _AutoReplacementBackend()
+    driver = _TransportLossThenRepairDriver(workspace)
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "automatic-replacement-lifecycle",
+            config=AgentMissionConfig(
+                sandbox_backend=backend,
+                sandbox_environment="local-replacement-test",
+                driver=driver,
+                workspace=str(workspace),
+                checkpoint_after_dispatch=False,
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "automatic_replacement_missions"),
+                namespace="automatic_replacement_contract",
+            ),
+        ) as missions:
+            submitted = await missions.submit(
+                repository=str(remote),
+                branch="agent/automatic-replacement",
+                tasks=(
+                    AgentTask(
+                        "repair",
+                        "Create artifact.txt containing good.",
+                        (
+                            CommandValidator(
+                                "focused",
+                                ("sh", "-lc", 'test "$(cat artifact.txt)" = good'),
+                            ),
+                        ),
+                        max_dispatches=2,
+                    ),
+                ),
+            )
+
+            result = await missions.run(submitted)
+
+            assert result.status == "succeeded"
+            assert driver.calls == 2
+            assert len(backend.sessions) == 2
+            assert [session.closed for session in backend.sessions] == [1, 1]
+            assert [await session.status() for session in backend.sessions] == [
+                SandboxStatus.CLOSED,
+                SandboxStatus.CLOSED,
+            ]
+
+            sandbox = Sandbox.get_prefix()
+            rows = latest(await missions.query(Sandbox)).to_pylist()
+            by_id = {str(row[f"{sandbox}sandbox_id"]): row for row in rows}
+
+            assert set(by_id) == {
+                "sandbox-replacement-1",
+                "sandbox-replacement-2",
+            }
+            assert by_id["sandbox-replacement-1"][f"{sandbox}status"] == SandboxStatus.CLOSED.value
+            assert "simulated provider transport loss" in str(
+                by_id["sandbox-replacement-1"][f"{sandbox}error"]
+            )
+            assert by_id["sandbox-replacement-2"][f"{sandbox}status"] == SandboxStatus.CLOSED.value
+
+
+@pytest.mark.asyncio
+async def test_same_tick_replacement_keeps_prior_sandbox_closed(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    backend = _AutoReplacementBackend()
+    driver = _SameTickTransportLossDriver(workspace)
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "batched-replacement-lifecycle",
+            config=AgentMissionConfig(
+                sandbox_backend=backend,
+                sandbox_environment="local-replacement-test",
+                driver=driver,
+                workspace=str(workspace),
+                checkpoint_after_dispatch=True,
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "batched_replacement_missions"),
+                namespace="batched_replacement_contract",
+            ),
+        ) as missions:
+            submitted = await missions.submit(
+                repository=str(remote),
+                branch="agent/batched-replacement",
+                tasks=tuple(
+                    AgentTask(
+                        task_name,
+                        f"Create {task_name}.txt containing good.",
+                        (
+                            CommandValidator(
+                                task_name,
+                                (
+                                    "sh",
+                                    "-lc",
+                                    f'test "$(cat {task_name}.txt)" = good',
+                                ),
+                            ),
+                        ),
+                        max_dispatches=2,
+                    )
+                    for task_name in ("first", "second")
+                ),
+            )
+
+            result = await missions.run(submitted)
+
+            assert result.status == "succeeded"
+            assert len(driver.calls) == 3
+            assert len(backend.sessions) == 2
+            assert [session.checkpoints for session in backend.sessions] == [1, 2]
+            assert [await session.status() for session in backend.sessions] == [
+                SandboxStatus.CLOSED,
+                SandboxStatus.CLOSED,
+            ]
+
+            sandbox = Sandbox.get_prefix()
+            rows = latest(await missions.query(Sandbox)).to_pylist()
+            by_id = {str(row[f"{sandbox}sandbox_id"]): row for row in rows}
+            assert by_id["sandbox-replacement-1"][f"{sandbox}status"] == (
+                SandboxStatus.CLOSED.value
+            )
+            assert "simulated batched provider transport loss" in str(
+                by_id["sandbox-replacement-1"][f"{sandbox}error"]
+            )
+            assert by_id["sandbox-replacement-2"][f"{sandbox}status"] == (
+                SandboxStatus.CLOSED.value
+            )
+
+
+@pytest.mark.asyncio
+async def test_cancelled_terminal_close_does_not_record_teardown_failure(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    backend = _BlockingCloseBackend()
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "cancelled-terminal-close",
+            config=AgentMissionConfig(
+                sandbox_backend=backend,
+                sandbox_environment="local-close-cancellation-test",
+                driver=_MissionDriver(workspace),
+                workspace=str(workspace),
+                checkpoint_after_dispatch=False,
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "cancelled_terminal_close_missions"),
+                namespace="cancelled_terminal_close_contract",
+            ),
+        ) as missions:
+            submitted = await missions.submit(
+                repository=str(remote),
+                branch="agent/cancelled-terminal-close",
+                tasks=(
+                    AgentTask(
+                        "implementation",
+                        "Create implementation.txt containing fixed.",
+                        (
+                            CommandValidator(
+                                "focused",
+                                (
+                                    "sh",
+                                    "-lc",
+                                    'test "$(cat implementation.txt)" = fixed',
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+            running = asyncio.create_task(missions.run(submitted))
+            await backend.created.wait()
+            assert isinstance(backend.session, _BlockingCloseSession)
+            session = backend.session
+            await session.close_started.wait()
+            running.cancel()
+
+            with pytest.raises(asyncio.CancelledError):
+                await running
+
+            session.close_release.set()
+            await asyncio.wait_for(session.close_finished.wait(), timeout=1)
+            result = await missions.run(submitted)
+
+            assert result.status == "succeeded"
+            assert session.close_attempts == 1
+            sandbox = Sandbox.get_prefix()
+            sandbox_rows = latest(await missions.query(Sandbox)).to_pylist()
+            assert sandbox_rows[0][f"{sandbox}status"] == SandboxStatus.CLOSED.value
+            assert sandbox_rows[0][f"{sandbox}error"] == ""
+            with pytest.raises(KeyError, match="FrictionLog has never been spawned"):
+                await missions.query(FrictionLog)
+
+
+@pytest.mark.asyncio
+async def test_terminal_close_failure_is_durable_and_retryable(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    backend = _AutoReplacementBackend(fail_first_close=True)
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "terminal-close-retry",
+            config=AgentMissionConfig(
+                sandbox_backend=backend,
+                sandbox_environment="local-replacement-test",
+                driver=_MissionDriver(workspace),
+                workspace=str(workspace),
+                checkpoint_after_dispatch=False,
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "terminal_close_retry_missions"),
+                namespace="terminal_close_retry_contract",
+            ),
+        ) as missions:
+            submitted = await missions.submit(
+                repository=str(remote),
+                branch="agent/terminal-close-retry",
+                tasks=(
+                    AgentTask(
+                        "implementation",
+                        "Create implementation.txt containing fixed.",
+                        (
+                            CommandValidator(
+                                "focused",
+                                (
+                                    "sh",
+                                    "-lc",
+                                    'test "$(cat implementation.txt)" = fixed',
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+            with pytest.raises(RuntimeError, match="provider close unavailable"):
+                await missions.run(submitted)
+
+            assert len(backend.sessions) == 1
+            session = backend.sessions[0]
+            assert await session.status() is SandboxStatus.ERRORED
+            sandbox = Sandbox.get_prefix()
+            rows = latest(await missions.query(Sandbox)).to_pylist()
+            assert rows[0][f"{sandbox}status"] == SandboxStatus.ERRORED.value
+            assert "provider close unavailable" in str(rows[0][f"{sandbox}error"])
+            friction = FrictionLog.get_prefix()
+            friction_rows = latest(await missions.query(FrictionLog)).to_pylist()
+            assert any(
+                row[f"{friction}kind"] == "sandbox_teardown"
+                and "provider close unavailable" in str(row[f"{friction}message"])
+                for row in friction_rows
+            )
+
+            result = await missions.run(submitted)
+
+            assert result.status == "succeeded"
+            assert session.close_attempts == 2
+            assert await session.status() is SandboxStatus.CLOSED
+            rows = latest(await missions.query(Sandbox)).to_pylist()
+            assert rows[0][f"{sandbox}status"] == SandboxStatus.CLOSED.value
+            assert "provider close unavailable" in str(rows[0][f"{sandbox}error"])
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_failure_replacement_closes_prior_sandbox_evidence(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    backend = _AutoReplacementBackend(fail_first_checkpoint=True)
+    driver = _MissionDriver(workspace)
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "checkpoint-replacement-lifecycle",
+            config=AgentMissionConfig(
+                sandbox_backend=backend,
+                sandbox_environment="local-replacement-test",
+                driver=driver,
+                workspace=str(workspace),
+                checkpoint_after_dispatch=True,
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "checkpoint_replacement_missions"),
+                namespace="checkpoint_replacement_contract",
+            ),
+        ) as missions:
+            submitted = await missions.submit(
+                repository=str(remote),
+                branch="agent/checkpoint-replacement",
+                tasks=(
+                    AgentTask(
+                        "regression",
+                        "Create regression.txt containing good.",
+                        (
+                            CommandValidator(
+                                "focused",
+                                ("sh", "-lc", 'test "$(cat regression.txt)" = good'),
+                            ),
+                        ),
+                        max_dispatches=2,
+                    ),
+                ),
+            )
+
+            result = await missions.run(submitted)
+
+            assert result.status == "succeeded"
+            assert len(backend.sessions) == 2
+            assert [session.closed for session in backend.sessions] == [1, 1]
+            assert [session.checkpoints for session in backend.sessions] == [1, 1]
+
+            sandbox = Sandbox.get_prefix()
+            rows = latest(await missions.query(Sandbox)).to_pylist()
+            by_id = {str(row[f"{sandbox}sandbox_id"]): row for row in rows}
+
+            assert set(by_id) == {
+                "sandbox-replacement-1",
+                "sandbox-replacement-2",
+            }
+            assert by_id["sandbox-replacement-1"][f"{sandbox}status"] == SandboxStatus.CLOSED.value
+            assert "simulated checkpoint restart failure" in str(
+                by_id["sandbox-replacement-1"][f"{sandbox}error"]
+            )
+            assert by_id["sandbox-replacement-2"][f"{sandbox}status"] == SandboxStatus.CLOSED.value
+
+            friction = FrictionLog.get_prefix()
+            friction_rows = latest(await missions.query(FrictionLog)).to_pylist()
+            assert any(
+                row[f"{friction}kind"] == "checkpoint"
+                and "simulated checkpoint restart failure" in str(row[f"{friction}message"])
+                for row in friction_rows
+            )
+
+
+@pytest.mark.asyncio
+async def test_failed_automatic_replacement_uses_retained_sandbox_identity(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    backend = _AutoReplacementBackend(fail_first_close=True)
+    driver = _TransportLossThenRepairDriver(workspace)
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "automatic-replacement-close-retry",
+            config=AgentMissionConfig(
+                sandbox_backend=backend,
+                sandbox_environment="local-replacement-test",
+                driver=driver,
+                workspace=str(workspace),
+                checkpoint_after_dispatch=False,
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "automatic_replacement_close_retry"),
+                namespace="automatic_replacement_close_retry_contract",
+            ),
+        ) as missions:
+            submitted = await missions.submit(
+                repository=str(remote),
+                branch="agent/automatic-replacement-close-retry",
+                tasks=(
+                    AgentTask(
+                        "repair",
+                        "Create artifact.txt containing good.",
+                        (
+                            CommandValidator(
+                                "focused",
+                                ("sh", "-lc", 'test "$(cat artifact.txt)" = good'),
+                            ),
+                        ),
+                        max_dispatches=3,
+                    ),
+                ),
+            )
+
+            result = await missions.run(submitted)
+
+            assert result.status == "succeeded"
+            assert driver.calls == 2
+            assert len(backend.sessions) == 2
+            assert backend.sessions[0].close_attempts == 2
+            assert [session.closed for session in backend.sessions] == [1, 1]
+
+            sandbox = Sandbox.get_prefix()
+            rows = latest(await missions.query(Sandbox)).to_pylist()
+            by_id = {str(row[f"{sandbox}sandbox_id"]): row for row in rows}
+            assert set(by_id) == {
+                "sandbox-replacement-1",
+                "sandbox-replacement-2",
+            }
+            assert all(
+                row[f"{sandbox}status"] == SandboxStatus.CLOSED.value for row in by_id.values()
+            )
+            assert "provider close unavailable" in str(
+                by_id["sandbox-replacement-1"][f"{sandbox}error"]
+            )
+
+            friction = FrictionLog.get_prefix()
+            friction_rows = latest(await missions.query(FrictionLog)).to_pylist()
+            assert any(
+                row[f"{friction}kind"] == "sandbox_teardown"
+                and "provider close unavailable" in str(row[f"{friction}message"])
+                for row in friction_rows
+            )
+
+
+@pytest.mark.asyncio
+async def test_failed_replacement_create_does_not_bind_unavailable_evidence(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    backend = _AutoReplacementBackend(fail_create_sequences=(2,))
+    driver = _TransportLossThenRepairDriver(workspace)
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "automatic-replacement-create-retry",
+            config=AgentMissionConfig(
+                sandbox_backend=backend,
+                sandbox_environment="local-replacement-test",
+                driver=driver,
+                workspace=str(workspace),
+                checkpoint_after_dispatch=False,
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "automatic_replacement_create_retry"),
+                namespace="automatic_replacement_create_retry_contract",
+            ),
+        ) as missions:
+            submitted = await missions.submit(
+                repository=str(remote),
+                branch="agent/automatic-replacement-create-retry",
+                tasks=(
+                    AgentTask(
+                        "repair",
+                        "Create artifact.txt containing good.",
+                        (
+                            CommandValidator(
+                                "focused",
+                                ("sh", "-lc", 'test "$(cat artifact.txt)" = good'),
+                            ),
+                        ),
+                        max_dispatches=3,
+                    ),
+                ),
+            )
+
+            result = await missions.run(submitted)
+
+            assert result.status == "succeeded"
+            assert driver.calls == 2
+            assert backend.create_attempts == 3
+            assert [session.identity.sandbox_id for session in backend.sessions] == [
+                "sandbox-replacement-1",
+                "sandbox-replacement-3",
+            ]
+            assert [session.closed for session in backend.sessions] == [1, 1]
+
+            sandbox = Sandbox.get_prefix()
+            rows = latest(await missions.query(Sandbox)).to_pylist()
+            by_id = {str(row[f"{sandbox}sandbox_id"]): row for row in rows}
+            unavailable = [
+                sandbox_id for sandbox_id in by_id if sandbox_id.startswith("unavailable-")
+            ]
+            assert len(unavailable) == 1
+            assert by_id["sandbox-replacement-1"][f"{sandbox}status"] == SandboxStatus.CLOSED.value
+            assert by_id["sandbox-replacement-3"][f"{sandbox}status"] == SandboxStatus.CLOSED.value
+            assert by_id[unavailable[0]][f"{sandbox}status"] == SandboxStatus.ERRORED.value
+            assert "simulated create failure 2" in str(by_id[unavailable[0]][f"{sandbox}error"])
+
+
+@pytest.mark.parametrize(
+    "trace_uri",
+    (
+        "",
+        "local-sandbox://sandbox-contract/live/executions/process-1/agent.stdout.log",
+    ),
+    ids=("untraced", "provider-scoped-trace"),
+)
+@pytest.mark.asyncio
+async def test_execution_trace_requires_exact_per_call_provider_evidence(
+    tmp_path: Path,
+    trace_uri: str,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    backend = _LiveOutputBackend()
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "per-call-trace-evidence",
+            config=AgentMissionConfig(
+                sandbox_backend=backend,
+                sandbox_environment="local-live-output-test",
+                driver=_TraceOutputDriver(workspace, trace_uri),
+                workspace=str(workspace),
+                checkpoint_after_dispatch=False,
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "per_call_trace_evidence"),
+                namespace=("per_call_trace_present" if trace_uri else "per_call_trace_absent"),
+            ),
+        ) as missions:
+            submitted = await missions.submit(
+                repository=str(remote),
+                branch=(
+                    "agent/per-call-trace-present" if trace_uri else "agent/per-call-trace-absent"
+                ),
+                tasks=(
+                    AgentTask(
+                        "implementation",
+                        "Create feature.txt.",
+                        (CommandValidator("focused", ("test", "-f", "feature.txt")),),
+                    ),
+                ),
+            )
+
+            result = await missions.run(submitted)
+
+            assert result.status == "succeeded"
+            execution = AgentExecution.get_prefix()
+            rows = latest(await missions.query(AgentExecution)).to_pylist()
+            assert len(rows) == 1
+            assert rows[0][f"{execution}trace_uri"] == trace_uri
+
+
+@pytest.mark.asyncio
+async def test_provider_error_is_redacted_before_persistence_bound(tmp_path: Path) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "provider-error-redaction",
+            config=AgentMissionConfig(
+                sandbox_backend=_ProviderFailureBackend(),
+                sandbox_environment="local-test@sha256:contract",
+                driver=_MissionDriver(workspace),
+                workspace=str(workspace),
+                max_ticks=20,
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "provider_error_redaction"),
+                namespace="contract",
+            ),
+        ) as missions:
+            submitted = await missions.submit(
+                repository=str(remote),
+                branch="agent/provider-error-redaction",
+                tasks=(
+                    AgentTask(
+                        "implementation",
+                        "This provider fails before the agent starts.",
+                        (CommandValidator("focused", ("true",)),),
+                        max_dispatches=1,
+                    ),
+                ),
+            )
+
+            result = await missions.run(submitted)
+
+            assert result.status == "failed"
+            rows = latest(await missions.query(AgentExecution)).to_pylist()
+            execution = AgentExecution.get_prefix()
+            error = str(rows[0][f"{execution}error"])
+            assert 0 < len(error) <= 4_000
+            assert "ghp_" not in error
+            assert "A" * 20 not in error
+            assert "<redacted:github-token>" in error
 
 
 @pytest.mark.asyncio

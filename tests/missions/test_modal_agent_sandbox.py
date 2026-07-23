@@ -18,6 +18,7 @@ from archetype.missions.sandboxes import (
     ProcessRequest,
     ProcessResult,
     SandboxBackend,
+    SandboxEventType,
     SandboxSpec,
     SandboxStatus,
 )
@@ -616,6 +617,7 @@ async def test_modal_checkpoint_fails_closed_when_live_output_scrub_fails(
     sandbox = _LifecycleSandbox("sb-agent")
     session = _lifecycle_session(sandbox)
     snapshot_called = False
+    events: list[str] = []
 
     class _Snapshot:
         async def aio(self, **kwargs):
@@ -632,13 +634,19 @@ async def test_modal_checkpoint_fails_closed_when_live_output_scrub_fails(
             stderr="scrub failed",
         )
 
+    async def record_event(kind: SandboxEventType, **kwargs) -> None:
+        del kwargs
+        events.append(kind.value)
+
     sandbox.snapshot_filesystem = _Snapshot()
     monkeypatch.setattr(session, "_exec_on", execute)
+    monkeypatch.setattr(session, "_emit_event", record_event)
 
     with pytest.raises(RuntimeError, match="remove raw live output before checkpoint"):
         await session.checkpoint()
 
     assert snapshot_called is False
+    assert events == ["checkpoint_started", "checkpoint_failed"]
 
 
 @pytest.mark.asyncio
@@ -656,6 +664,8 @@ async def test_modal_session_error_checkpoint_and_close_states(
     assert await session.status() is SandboxStatus.ERRORED
     with pytest.raises(RuntimeError, match="errored"):
         await session.exec(ProcessRequest(("true",)))
+    with pytest.raises(RuntimeError, match="errored"):
+        await session.checkpoint()
 
     session = _lifecycle_session(_LifecycleSandbox("sb-cancelled"))
 
@@ -667,10 +677,21 @@ async def test_modal_session_error_checkpoint_and_close_states(
     with pytest.raises(asyncio.CancelledError):
         await session.exec(ProcessRequest(("true",)))
     assert await session.status() is SandboxStatus.INTERRUPTED
+
+    executed = False
+
+    async def should_not_execute(*args, **kwargs):
+        nonlocal executed
+        del args, kwargs
+        executed = True
+        return ProcessResult(("true",), 0)
+
+    monkeypatch.setattr(session, "_exec_on", should_not_execute)
     with pytest.raises(RuntimeError, match="interrupted"):
         await session.exec(ProcessRequest(("true",)))
     with pytest.raises(RuntimeError, match="interrupted"):
         await session.checkpoint()
+    assert executed is False
 
     async def errored(*args, **kwargs):
         del args, kwargs
@@ -685,6 +706,13 @@ async def test_modal_session_error_checkpoint_and_close_states(
         await errored_session.exec(ProcessRequest(("true",)))
     with pytest.raises(RuntimeError, match="errored"):
         await errored_session.checkpoint()
+
+    monkeypatch.setattr(errored_session, "_exec_on", should_not_execute)
+    with pytest.raises(RuntimeError, match="errored"):
+        await errored_session.exec(ProcessRequest(("true",)))
+    with pytest.raises(RuntimeError, match="errored"):
+        await errored_session.checkpoint()
+    assert executed is False
 
     errored_session._status = SandboxStatus.CLOSED
     with pytest.raises(RuntimeError, match="closed"):

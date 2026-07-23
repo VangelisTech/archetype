@@ -344,6 +344,23 @@ class SandboxService:
 - Service selects a backend, reuses sessions according to policy, and owns
   shutdown.
 
+Execution and checkpoint capabilities require a `READY` session. An
+`ERRORED` or `INTERRUPTED` handle cannot run more work or capture another
+checkpoint. The service keeps it registered until teardown succeeds: a later
+acquisition may close and replace it, while a teardown failure retains the
+handle for explicit restore or close retry instead of silently evicting a
+possibly live provider resource. Close is single-flight per sandbox key and
+continues if its caller is cancelled; concurrent acquisition waits for that
+teardown and never receives the closing handle. A provider session returned
+while shutdown is winning the race remains cleanup-owned until close succeeds,
+and failed shutdown cleanup is reported and retryable.
+
+Durable lifecycle evidence follows physical ownership. A failed terminal close
+projects the retained session's non-ready status and a `sandbox_teardown`
+friction before the error returns. Once replacement or cleanup has closed a
+sandbox, staging an earlier same-tick execution cannot move its durable status
+backward from `closed`.
+
 The coding-agent harness works through `SandboxSession`. It owns clone and
 branch preparation, agent invocation, validator execution, Git publication,
 and translation into factual Components. Provider adapters do not know task
@@ -402,10 +419,13 @@ and exposes the provider identity as soon as acquisition completes, while
 `ModalSandboxSession.monitor("sb-...")` can attach from another process with
 byte-offset reads and bounded disconnect recovery. Each successfully captured
 agent invocation is also copied to an execution-scoped spool path; only that
-per-call success returns the `trace_uri` persisted on `AgentExecution`. A
-failed best-effort trace setup leaves `trace_uri` empty instead of advertising
-a missing or stale file. The authoritative ECS copy of execution and validator
-output is bounded and redacted before persistence.
+per-call success returns the exact `trace_uri` persisted on `AgentExecution`;
+static live-output capability alone never proves a trace exists. A failed
+best-effort trace setup leaves the URI empty instead of advertising a missing
+or stale file. Raw trace URIs are ephemeral operational evidence: checkpoint
+sanitization or teardown can make them unavailable, and snapshots remove both
+current and execution-scoped raw output. The authoritative ECS copy of execution
+and validator output is bounded and redacted before persistence.
 Provider-native snapshots are recovery objects, not portable or sanitized
 artifact bundles. The consolidated `ArtifactService` accepts explicit file
 sources, but V1 intentionally does not crawl or publish arbitrary sandbox

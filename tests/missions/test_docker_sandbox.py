@@ -349,10 +349,20 @@ async def test_docker_oauth_round_trip_and_session_error_states(
     with pytest.raises(asyncio.CancelledError):
         await session.exec(ProcessRequest(("true",)))
     assert await session.status() is SandboxStatus.INTERRUPTED
+
+    executed = False
+
+    async def should_not_execute(_request: ProcessRequest) -> ProcessResult:
+        nonlocal executed
+        executed = True
+        return ProcessResult(("true",), 0)
+
+    monkeypatch.setattr(session, "_exec_request", should_not_execute)
     with pytest.raises(RuntimeError, match="interrupted"):
         await session.exec(ProcessRequest(("true",)))
     with pytest.raises(RuntimeError, match="interrupted"):
         await session.checkpoint()
+    assert executed is False
 
     async def errored(_request: ProcessRequest) -> ProcessResult:
         raise RuntimeError("provider exec failed")
@@ -366,6 +376,13 @@ async def test_docker_oauth_round_trip_and_session_error_states(
         await errored_session.exec(ProcessRequest(("true",)))
     with pytest.raises(RuntimeError, match="errored"):
         await errored_session.checkpoint()
+
+    monkeypatch.setattr(errored_session, "_exec_request", should_not_execute)
+    with pytest.raises(RuntimeError, match="errored"):
+        await errored_session.exec(ProcessRequest(("true",)))
+    with pytest.raises(RuntimeError, match="errored"):
+        await errored_session.checkpoint()
+    assert executed is False
 
     errored_session._status = SandboxStatus.CLOSED
     with pytest.raises(RuntimeError, match="closed"):
