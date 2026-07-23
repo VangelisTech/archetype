@@ -111,16 +111,18 @@ class _EditingDriver:
         commit: bool,
         returncode: int = 0,
         trace_uri: str = "",
+        filename: str = "feature.txt",
     ) -> None:
         self.workspace = workspace
         self.commit = commit
         self.returncode = returncode
         self.trace_uri = trace_uri
+        self.filename = filename
 
     async def run(self, session, request, prompt: str) -> AgentProcessObservation:
-        command = "printf 'done\\n' > feature.txt"
+        command = f"printf 'done\\n' > {self.filename}"
         if self.commit:
-            command += " && git add feature.txt && git commit -m 'agent-authored change'"
+            command += f" && git add {self.filename} && git commit -m 'agent-authored change'"
         result = await session.exec(
             ProcessRequest(
                 ("sh", "-lc", command),
@@ -198,6 +200,68 @@ async def test_harness_preserves_agent_commits_and_publishes_the_validated_tree(
         )
         == result.final_revision
     )
+
+
+@pytest.mark.asyncio
+async def test_validator_can_scope_agent_commit_from_task_base_revision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ARCHETYPE_TASK_BASE_REVISION", "ambient-value-must-not-win")
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    harness = CodingAgentHarness(
+        _EditingDriver(workspace, commit=True),
+        CodingAgentHarnessConfig(workspace=str(workspace)),
+    )
+
+    result = await harness.execute(
+        _LocalSession(),
+        _request(
+            remote,
+            validator_command=(
+                "sh",
+                "-lc",
+                "printf '%s\\n' \"$ARCHETYPE_TASK_BASE_REVISION\" && "
+                'test "$ARCHETYPE_TASK_BASE_REVISION" = "$(git rev-parse HEAD^)" && '
+                'test "$(git diff --name-only '
+                '"$ARCHETYPE_TASK_BASE_REVISION"...HEAD)" = feature.txt',
+            ),
+        ),
+    )
+
+    assert result.validation[0].passed is True
+    assert result.validation[0].stdout.strip() == result.starting_revision
+    assert result.starting_revision != "ambient-value-must-not-win"
+
+
+@pytest.mark.asyncio
+async def test_validator_task_base_diff_includes_dirty_tracked_changes(tmp_path: Path) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    harness = CodingAgentHarness(
+        _EditingDriver(workspace, commit=False, filename="README.md"),
+        CodingAgentHarnessConfig(workspace=str(workspace)),
+    )
+
+    result = await harness.execute(
+        _LocalSession(),
+        _request(
+            remote,
+            validator_command=(
+                "sh",
+                "-lc",
+                'test -n "$ARCHETYPE_TASK_BASE_REVISION" && '
+                "git merge-base --is-ancestor "
+                '"$ARCHETYPE_TASK_BASE_REVISION" HEAD && '
+                'test "$(git diff --name-only '
+                '"$ARCHETYPE_TASK_BASE_REVISION" --)" = README.md',
+            ),
+        ),
+    )
+
+    assert result.validation[0].passed is True
+    assert result.commits[-1].pushed is True
 
 
 @pytest.mark.asyncio

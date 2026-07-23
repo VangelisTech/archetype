@@ -432,11 +432,19 @@ The task decision processor accepts only when all guards have a result for the
 **current dispatch and exact final repository revision**. Evidence from a
 prior dispatch or pre-repair tree is stale by construction.
 
+Every validator process receives the harness-reserved
+`ARCHETYPE_TASK_BASE_REVISION` environment variable. The harness resolves it
+from `HEAD` immediately before the task's first agent turn and preserves that
+same SHA across retries. This lets repository policy inspect the complete task
+delta even when the agent created commits before validation. The variable is
+context, not authority: acceptance still requires revision-bound validator and
+publication evidence.
+
 ### Git and publication
 
 Git is part of the coding contract:
 
-1. the harness records the dispatch's starting revision;
+1. the harness records the task's starting revision and preserves it across retries;
 2. the agent may create commits during its work;
 3. validators run against the final working tree;
 4. if validated work remains dirty, the publisher creates one final commit;
