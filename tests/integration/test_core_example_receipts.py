@@ -75,6 +75,32 @@ async def test_world_mutation_receipt_proves_each_public_mutation(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_world_mutation_narration_does_not_log_audit_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    sensitive_audit_payload = "audit-secret-must-not-be-logged"
+
+    async def fake_run_demo(_storage_uri: str) -> dict[str, object]:
+        return {
+            "spawned_entities": 2,
+            "component_mutations": {},
+            "processor_mutation": {},
+            "fork": {},
+            "trusted_audit_rows": sensitive_audit_payload,
+        }
+
+    monkeypatch.setattr(world_mutations, "run_demo", fake_run_demo)
+
+    await world_mutations.main()
+
+    captured = capsys.readouterr()
+    assert sensitive_audit_payload not in captured.out
+    assert sensitive_audit_payload not in captured.err
+    assert "projected audit history queried for trusted runtime calls" in captured.out
+
+
+@pytest.mark.asyncio
 async def test_counterfactual_receipt_proves_identity_lineage_and_divergence(
     tmp_path: Path,
 ) -> None:

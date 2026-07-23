@@ -194,7 +194,7 @@ async def main() -> None:
     print("\n4. FORK")
     print(f"   {result['fork']}")
     print("\n5. HISTORY")
-    print(f"   {result['trusted_audit_rows']} projected audit rows for trusted runtime calls")
+    print("   projected audit history queried for trusted runtime calls")
 
 
 if __name__ == "__main__":
