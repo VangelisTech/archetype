@@ -10,7 +10,6 @@ replaces = ["interfaces.iStorageService"]
 operations = [
   "catalog.interface.ControlCatalog.register_world",
   "catalog.interface.ControlCatalog.set_world_status",
-  "catalog.interface.ControlCatalog.set_world_run",
   "catalog.interface.ControlCatalog.get_world",
   "catalog.interface.ControlCatalog.list_worlds",
   "catalog.interface.ControlCatalog.register_signature",

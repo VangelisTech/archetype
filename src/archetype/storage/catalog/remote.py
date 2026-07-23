@@ -115,9 +115,6 @@ class RemoteControlCatalog:
     async def set_world_status(self, world_id: str, status: str) -> None:
         await self._call("PATCH", f"/worlds/{world_id}", {"status": status})
 
-    async def set_world_run(self, world_id: str, run_id: str) -> None:
-        await self._call("PATCH", f"/worlds/{world_id}", {"run_id": run_id})
-
     async def get_world(self, world_id: str) -> WorldRecord | None:
         response = await self._call("GET", f"/worlds/{world_id}", ignore_status=(404,))
         if response.status_code == 404:

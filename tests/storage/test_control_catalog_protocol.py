@@ -39,7 +39,6 @@ _REQUIRED_METHODS = {
     "register_world",
     "release_commands",
     "release_evaluation",
-    "set_world_run",
     "set_world_status",
     "visible_tokens",
 }

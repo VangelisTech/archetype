@@ -327,16 +327,6 @@ class SqliteControlCatalog:
 
         await self._run(_set)
 
-    async def set_world_run(self, world_id: str, run_id: str) -> None:
-        """Track the world's current run (manifests own the tick head)."""
-
-        def _set() -> None:
-            conn = self._connect_sync()
-            with conn:
-                conn.execute("UPDATE worlds SET run_id=? WHERE world_id=?", (run_id, world_id))
-
-        await self._run(_set)
-
     async def get_world(self, world_id: str) -> WorldRecord | None:
         def _get() -> WorldRecord | None:
             conn = self._connect_sync()

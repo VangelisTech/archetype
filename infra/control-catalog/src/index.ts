@@ -137,6 +137,15 @@ export default {
 
     if (parts[2] === "worlds" && parts.length === 4 && request.method === "PATCH") {
       const patch = (await request.clone().json()) as Record<string, unknown>;
+      if (Object.prototype.hasOwnProperty.call(patch, "run_id")) {
+        return json(
+          {
+            error: "immutable_identity",
+            message: "world run_id is assigned at registration and cannot be changed",
+          },
+          422,
+        );
+      }
       if (typeof patch.status === "string") {
         const worldId = decodeURIComponent(parts[3]);
         const world = env.WORLD.get(env.WORLD.idFromName(`${namespace}:${worldId}`));
@@ -284,11 +293,17 @@ export class CatalogDirectoryDO implements DurableObject {
       }
       if (method === "PATCH") {
         const patch = (await request.json()) as Record<string, unknown>;
+        if (Object.prototype.hasOwnProperty.call(patch, "run_id")) {
+          return json(
+            {
+              error: "immutable_identity",
+              message: "world run_id is assigned at registration and cannot be changed",
+            },
+            422,
+          );
+        }
         if (typeof patch.status === "string") {
           this.sql.exec("UPDATE worlds SET status = ? WHERE world_id = ?", patch.status, worldId);
-        }
-        if (typeof patch.run_id === "string") {
-          this.sql.exec("UPDATE worlds SET run_id = ? WHERE world_id = ?", patch.run_id, worldId);
         }
         if (typeof patch.tick_head === "number") {
           this.sql.exec(
