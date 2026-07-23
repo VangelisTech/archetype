@@ -15,7 +15,7 @@
 """Auth: RBAC guardrails and the four-role permissions model."""
 
 from archetype.app.gateway.auth.errors import GuardrailError
-from archetype.app.gateway.auth.guard import guardrail_allow, reset_tick_counters
+from archetype.app.gateway.auth.guard import guardrail_allow
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.gateway.auth.permissions import COMMANDS_BY_ROLE
 
@@ -24,5 +24,4 @@ __all__ = [
     "COMMANDS_BY_ROLE",
     "GuardrailError",
     "guardrail_allow",
-    "reset_tick_counters",
 ]

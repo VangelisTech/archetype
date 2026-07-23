@@ -17,7 +17,6 @@ from archetype.app.gateway.auth.guard import (
     guardrail_allow,
     maybe_reset_daily_tokens,
     reset_daily_tokens,
-    reset_tick_counters,
 )
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.models import Command, CommandType
@@ -26,11 +25,28 @@ from archetype.app.models import Command, CommandType
 @pytest.fixture(autouse=True)
 def _reset_quotas():
     """Reset quotas before each test."""
-    reset_tick_counters()
+    _guard._tick_counters.clear()
     reset_daily_tokens()
     yield
-    reset_tick_counters()
+    _guard._tick_counters.clear()
     reset_daily_tokens()
+
+
+def _allow(
+    command: Command,
+    ctx: ActorCtx,
+    *,
+    world_id: str = "world-1",
+    target_tick: int = 0,
+    now: datetime | None = None,
+) -> None:
+    guardrail_allow(
+        command,
+        ctx,
+        world_id=world_id,
+        target_tick=target_tick,
+        now=now,
+    )
 
 
 class TestQuotas:
@@ -38,29 +54,60 @@ class TestQuotas:
         ctx = ActorCtx(id=uuid7(), roles={"admin"})
 
         for _ in range(MAX_CMDS_PER_TICK):
-            guardrail_allow(Command(type=CommandType.CUSTOM, payload={}), ctx)
+            _allow(Command(type=CommandType.CUSTOM, payload={}), ctx)
 
         with pytest.raises(GuardrailError, match="per-tick quota"):
-            guardrail_allow(Command(type=CommandType.CUSTOM, payload={}), ctx)
+            _allow(Command(type=CommandType.CUSTOM, payload={}), ctx)
 
-    def test_reset_tick_counters_clears_quota(self):
+    def test_next_target_tick_has_an_independent_quota(self, monkeypatch):
+        monkeypatch.setattr(_guard, "MAX_CMDS_PER_TICK", 1)
         ctx = ActorCtx(id=uuid7(), roles={"admin"})
+        command = Command(type=CommandType.CUSTOM, payload={})
 
-        for _ in range(MAX_CMDS_PER_TICK):
-            guardrail_allow(Command(type=CommandType.CUSTOM, payload={}), ctx)
+        _allow(command, ctx, target_tick=41)
+        _allow(command, ctx, target_tick=42)
 
-        reset_tick_counters()
-        guardrail_allow(Command(type=CommandType.CUSTOM, payload={}), ctx)
+        assert _guard._tick_counters == {
+            (ctx.id, "world-1", 41): 1,
+            (ctx.id, "world-1", 42): 1,
+        }
 
     def test_different_actors_have_separate_quotas(self):
         ctx1 = ActorCtx(id=uuid7(), roles={"admin"})
         ctx2 = ActorCtx(id=uuid7(), roles={"admin"})
 
         for _ in range(MAX_CMDS_PER_TICK):
-            guardrail_allow(Command(type=CommandType.CUSTOM, payload={}), ctx1)
+            _allow(Command(type=CommandType.CUSTOM, payload={}), ctx1)
 
         # ctx2 should still have quota
-        guardrail_allow(Command(type=CommandType.CUSTOM, payload={}), ctx2)
+        _allow(Command(type=CommandType.CUSTOM, payload={}), ctx2)
+
+    def test_different_worlds_have_separate_same_tick_quotas(self, monkeypatch):
+        monkeypatch.setattr(_guard, "MAX_CMDS_PER_TICK", 1)
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+        command = Command(type=CommandType.CUSTOM, payload={})
+
+        _allow(command, ctx, world_id="world-a", target_tick=7)
+        _allow(command, ctx, world_id="world-b", target_tick=7)
+
+        with pytest.raises(GuardrailError, match="per-tick quota"):
+            _allow(command, ctx, world_id="world-a", target_tick=7)
+
+        assert _guard._tick_counters == {
+            (ctx.id, "world-a", 7): 1,
+            (ctx.id, "world-b", 7): 1,
+        }
+
+    @pytest.mark.parametrize("target_tick", [-1, True, 1.5])
+    def test_target_tick_must_be_an_explicit_non_negative_integer(self, target_tick):
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+
+        with pytest.raises(ValueError, match="target_tick"):
+            _allow(
+                Command(type=CommandType.CUSTOM, payload={}),
+                ctx,
+                target_tick=target_tick,
+            )
 
 
 class TestDailyTokenReset:
@@ -103,9 +150,9 @@ class TestDailyTokenReset:
 
         cmd = Command(type=CommandType.SPAWN, payload={})
         with pytest.raises(GuardrailError, match="daily token budget"):
-            guardrail_allow(cmd, ctx, now=today)
+            _allow(cmd, ctx, now=today)
 
-        guardrail_allow(cmd, ctx, now=today + timedelta(days=1))
+        _allow(cmd, ctx, now=today + timedelta(days=1))
         assert _guard._daily_tokens[ctx.id] == _guard.estimate_token_cost(cmd)
 
 
@@ -137,10 +184,10 @@ class TestAutoresearchTokenCost:
         ctx = ActorCtx(id=uuid7(), roles={"operator"})
         _guard._daily_tokens[ctx.id] = MAX_TOKENS_PER_DAY - 300
 
-        guardrail_allow(Command(type=CommandType.RUN_ROLLOUT, payload={}), ctx)
+        _allow(Command(type=CommandType.RUN_ROLLOUT, payload={}), ctx)
 
         with pytest.raises(GuardrailError, match="daily token budget"):
-            guardrail_allow(
+            _allow(
                 Command(type=CommandType.AUTORESEARCH, payload={"max_iterations": 100}),
                 ctx,
             )

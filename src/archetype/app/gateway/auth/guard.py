@@ -20,6 +20,7 @@ The four-role model (viewer, player, operator, admin) is defined in
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 
@@ -69,8 +70,14 @@ _TOKEN_COSTS: dict[str, int] = {
     "custom": 10,
 }
 
-# Per-actor tick counters: actor_id → count this tick
-_tick_counters: dict[UUID, int] = {}
+# PR-2's temporary process-local quota generation. PR-3 moves this state into
+# Policy, but the key already carries the full durable admission scope so no
+# simulation callback or process-wide tick reset is required.
+type TickQuotaScope = tuple[str, int]
+type TickQuotaKey = tuple[UUID, str, int]
+
+# Per-actor/world/target-tick counters.
+_tick_counters: dict[TickQuotaKey, int] = {}
 # Per-actor daily token usage: actor_id → tokens used today
 _daily_tokens: dict[UUID, int] = {}
 # UTC date of the last daily-token reset.
@@ -95,6 +102,9 @@ def estimate_token_cost(cmd: Command) -> int:
 def guardrail_check(
     cmd: Command,
     ctx: ActorCtx,
+    *,
+    world_id: object,
+    target_tick: int,
     projected_count: int = 0,
     projected_tokens: int = 0,
     now: datetime | None = None,
@@ -114,8 +124,9 @@ def guardrail_check(
             f"Actor {ctx.id} with roles {sorted(ctx.roles)} cannot execute '{cmd.type.value}'"
         )
 
-    # 2. Per-tick quota
-    current_count = _tick_counters.get(ctx.id, 0)
+    # 2. Per-world, per-target-tick quota
+    key = _tick_quota_key(ctx, world_id, target_tick)
+    current_count = _tick_counters.get(key, 0)
     if current_count + projected_count >= MAX_CMDS_PER_TICK:
         raise GuardrailError(
             f"Actor {ctx.id} exceeded per-tick quota ({MAX_CMDS_PER_TICK} commands)"
@@ -132,23 +143,52 @@ def guardrail_check(
     return cost
 
 
-def guardrail_commit(ctx: ActorCtx, count: int, tokens: int) -> None:
-    """Apply the quota debit after commands are confirmed enqueued."""
-    if count:
-        _tick_counters[ctx.id] = _tick_counters.get(ctx.id, 0) + count
+def guardrail_commit(
+    ctx: ActorCtx,
+    *,
+    tick_counts: Mapping[TickQuotaScope, int],
+    tokens: int,
+) -> None:
+    """Apply one already-validated quota debit without a partial batch state."""
+    if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < 0:
+        raise ValueError("tokens must be a non-negative integer")
+    debits: list[tuple[TickQuotaKey, int]] = []
+    for (world_id, target_tick), count in tick_counts.items():
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ValueError("tick quota count must be a non-negative integer")
+        normalized_world_id, normalized_target_tick = _tick_quota_scope(world_id, target_tick)
+        key = (ctx.id, normalized_world_id, normalized_target_tick)
+        debits.append((key, _tick_counters.get(key, 0) + count))
+
+    for key, new_count in debits:
+        if new_count:
+            _tick_counters[key] = new_count
     if tokens:
         _daily_tokens[ctx.id] = _daily_tokens.get(ctx.id, 0) + tokens
 
 
-def guardrail_allow(cmd: Command, ctx: ActorCtx, now: datetime | None = None) -> None:
+def guardrail_allow(
+    cmd: Command,
+    ctx: ActorCtx,
+    *,
+    world_id: object,
+    target_tick: int,
+    now: datetime | None = None,
+) -> None:
     """Check RBAC + quotas and debit counters. Raises GuardrailError if denied."""
-    cost = guardrail_check(cmd, ctx, now=now)
-    guardrail_commit(ctx, count=1, tokens=cost)
-
-
-def reset_tick_counters() -> None:
-    """Reset per-tick command counters. Called at the start of each tick."""
-    _tick_counters.clear()
+    normalized_world_id, normalized_target_tick = _tick_quota_scope(world_id, target_tick)
+    cost = guardrail_check(
+        cmd,
+        ctx,
+        world_id=normalized_world_id,
+        target_tick=normalized_target_tick,
+        now=now,
+    )
+    guardrail_commit(
+        ctx,
+        tick_counts={(normalized_world_id, normalized_target_tick): 1},
+        tokens=cost,
+    )
 
 
 def reset_daily_tokens() -> None:
@@ -170,3 +210,18 @@ def maybe_reset_daily_tokens(now: datetime | None = None) -> bool:
         _last_reset_date = current_date
         return True
     return False
+
+
+def _tick_quota_scope(world_id: object, target_tick: int) -> TickQuotaScope:
+    """Normalize and validate the non-ambient coordinates of one quota debit."""
+    normalized_world_id = str(world_id)
+    if not normalized_world_id:
+        raise ValueError("world_id must not be empty")
+    if isinstance(target_tick, bool) or not isinstance(target_tick, int) or target_tick < 0:
+        raise ValueError("target_tick must be a non-negative integer")
+    return normalized_world_id, target_tick
+
+
+def _tick_quota_key(ctx: ActorCtx, world_id: object, target_tick: int) -> TickQuotaKey:
+    normalized_world_id, normalized_target_tick = _tick_quota_scope(world_id, target_tick)
+    return ctx.id, normalized_world_id, normalized_target_tick

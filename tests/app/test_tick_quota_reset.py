@@ -1,106 +1,143 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Per-tick RBAC quota reset contract (bug B1).
+"""Target-tick-aware gateway quota contracts.
 
-The gate debits a per-actor, per-tick command counter (``_tick_counters``)
-at submit time and rejects an actor once it exceeds ``MAX_CMDS_PER_TICK``
-*in a single tick*. Nothing reset that counter between ticks, so it
-accumulated across the whole process: a long-running driver eventually hit
-the per-tick ceiling even though no single tick was anywhere near it. The
-LIBERO eval driver papered over this by calling ``reset_tick_counters()``
-by hand before every step (eval_driver.py:179/237). That hand-roll is the
-symptom; the contract belongs in the framework.
-
-Contract: advancing a world by one tick (``SimulationService.step``) resets
-the per-tick command quota, so the budget is *per tick*, not *per process*.
-
-Given / When / Then:
-- GIVEN an actor that has issued commands on previous ticks
-- WHEN the world is stepped (a new tick begins)
-- THEN the actor's per-tick budget is fresh again.
+Quota scope is carried explicitly from gateway composition or from the durable
+command envelope. Advancing one world therefore creates a new quota key without
+clearing unrelated worlds or relying on a simulation callback.
 """
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, Mock
+
 import pytest
-from uuid_utils import UUID, uuid7
+from uuid_utils import uuid7
 
 import archetype.app.gateway.auth.guard as guard
-from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.app.gateway.auth.errors import GuardrailError
+from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.app.gateway.auth.models import ActorCtx
-from archetype.core.component import Component
-from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.app.gateway.service import CommandGateway
+from archetype.app.models import Command, CommandType
 
-
-class Marker(Component):
-    tag: str = ""
+pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture(autouse=True)
 def _reset_quotas():
-    # ``_tick_counters`` / ``_daily_tokens`` are module globals; isolate tests.
-    reset_tick_counters()
+    guard._tick_counters.clear()
     reset_daily_tokens()
     yield
-    reset_tick_counters()
+    guard._tick_counters.clear()
     reset_daily_tokens()
 
 
-@pytest.mark.asyncio
-async def test_step_clears_per_actor_tick_counter(tmp_path):
-    """TDD (mechanism): a step empties the per-tick counter.
-
-    Pre-seed the counter to the ceiling for one actor, step the world, and
-    assert the counter is cleared — proving the tick boundary resets quota.
-    """
-    container = ServiceContainer()
-    actor = uuid7()
-    try:
-        world = await container.world_service.create_world(
-            WorldConfig(name="quota"), StorageConfig(uri=str(tmp_path / "store"))
-        )
-
-        # Simulate an actor that has already saturated this tick's budget.
-        guard._tick_counters[UUID(str(actor))] = guard.MAX_CMDS_PER_TICK
-        assert guard._tick_counters[UUID(str(actor))] == guard.MAX_CMDS_PER_TICK
-
-        await container.simulation_service.step(world.world_id, RunConfig())
-
-        # The per-tick counter is cleared at the tick boundary.
-        assert guard._tick_counters.get(UUID(str(actor)), 0) == 0
-    finally:
-        await container.shutdown()
+def _application() -> AsyncMock:
+    application = AsyncMock()
+    application.require_world = Mock()
+    application.validate_deferred_command = Mock()
+    return application
 
 
-@pytest.mark.asyncio
-async def test_actor_not_blocked_across_many_ticks(tmp_path, monkeypatch):
-    """BDD (regression): the per-tick quota does not accumulate across ticks.
-
-    Lower the ceiling so a handful of ticks would blow a *process-wide*
-    counter, then drive (spawn + step) through the gate for more ticks than
-    the ceiling allows. Without the reset the actor is rejected partway
-    through; with it, every tick starts fresh and all ticks succeed.
-    """
-    from archetype.app.gateway.auth.errors import GuardrailError
-
-    monkeypatch.setattr(guard, "MAX_CMDS_PER_TICK", 4)
-
-    container = ServiceContainer()
+async def test_direct_calls_are_scoped_by_resolved_world_and_target_tick(monkeypatch):
+    monkeypatch.setattr(guard, "MAX_CMDS_PER_TICK", 1)
+    application = _application()
+    target_ticks = {"world-a": 7, "world-b": 7}
+    gateway = CommandGateway(
+        application,
+        target_tick_for_world=lambda world_id: target_ticks[str(world_id)],
+    )
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
-    try:
-        info = await container.command_gateway.create_world(
-            ctx, WorldConfig(name="long-run"), StorageConfig(uri=str(tmp_path / "store"))
+
+    await gateway.create_entity(ctx, "world-a", [])
+    await gateway.create_entity(ctx, "world-b", [])
+
+    with pytest.raises(GuardrailError, match="per-tick quota"):
+        await gateway.create_entity(ctx, "world-a", [])
+
+    target_ticks["world-a"] = 8
+    await gateway.create_entity(ctx, "world-a", [])
+
+    assert guard._tick_counters == {
+        (ctx.id, "world-a", 7): 1,
+        (ctx.id, "world-b", 7): 1,
+        (ctx.id, "world-a", 8): 1,
+    }
+    assert application.create_entity.await_count == 3
+
+
+async def test_direct_world_call_without_target_tick_resolver_fails_closed():
+    application = _application()
+    gateway = CommandGateway(application)
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+
+    with pytest.raises(RuntimeError, match="target_tick_for_world"):
+        await gateway.create_entity(ctx, "world-a", [])
+
+    application.create_entity.assert_not_awaited()
+    assert guard._tick_counters == {}
+    assert guard._daily_tokens == {}
+
+
+async def test_deferred_commands_use_their_actual_scheduled_target_tick(monkeypatch):
+    monkeypatch.setattr(guard, "MAX_CMDS_PER_TICK", 1)
+    application = _application()
+
+    def unexpected_resolver(_world_id):
+        pytest.fail("deferred command admission must use command.tick")
+
+    gateway = CommandGateway(application, target_tick_for_world=unexpected_resolver)
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    tick_11 = Command(type=CommandType.CUSTOM, tick=11)
+    tick_12 = Command(type=CommandType.CUSTOM, tick=12)
+
+    await gateway.submit(ctx, "world-a", tick_11)
+    await gateway.submit(ctx, "world-a", tick_12)
+
+    with pytest.raises(GuardrailError, match="per-tick quota"):
+        await gateway.submit(
+            ctx,
+            "world-a",
+            Command(type=CommandType.CUSTOM, tick=11),
         )
 
-        # 8 ticks × (1 spawn + 1 step) = 16 gated commands, four-fold over the
-        # ceiling of 4. Each individual tick issues only 2 commands (< 4), so a
-        # correct per-tick quota never trips.
-        for _ in range(8):
-            await container.command_gateway.create_entity(ctx, info.world_id, [Marker(tag="x")])
-            await container.command_gateway.step(ctx, info.world_id, RunConfig())
-    except GuardrailError as exc:  # pragma: no cover - the bug path
-        pytest.fail(f"per-tick quota accumulated across ticks: {exc}")
-    finally:
-        await container.shutdown()
+    assert guard._tick_counters == {
+        (ctx.id, "world-a", 11): 1,
+        (ctx.id, "world-a", 12): 1,
+    }
+    assert application.submit.await_count == 2
+
+
+async def test_batch_validation_is_atomic_and_groups_each_scheduled_tick(monkeypatch):
+    monkeypatch.setattr(guard, "MAX_CMDS_PER_TICK", 1)
+    application = _application()
+    gateway = CommandGateway(application)
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+
+    rejected = [
+        Command(type=CommandType.CUSTOM, tick=20),
+        Command(type=CommandType.CUSTOM, tick=20),
+    ]
+    with pytest.raises(GuardrailError, match="per-tick quota"):
+        await gateway.submit_batch(ctx, "world-a", rejected)
+
+    assert guard._tick_counters == {}
+    assert guard._daily_tokens == {}
+    application.submit_batch.assert_not_awaited()
+
+    accepted = [
+        Command(type=CommandType.CUSTOM, tick=20),
+        Command(type=CommandType.CUSTOM, tick=21),
+    ]
+    await gateway.submit_batch(ctx, "world-a", accepted)
+
+    assert guard._tick_counters == {
+        (ctx.id, "world-a", 20): 1,
+        (ctx.id, "world-a", 21): 1,
+    }
+    assert guard._daily_tokens[ctx.id] == sum(
+        guard.estimate_token_cost(command) for command in accepted
+    )
+    application.submit_batch.assert_awaited_once()

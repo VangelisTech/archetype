@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock
 import pytest
 from uuid_utils import uuid7
 
-from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.app.gateway.auth import guard
+from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.gateway.service import CommandGateway
 
@@ -17,16 +18,16 @@ pytestmark = pytest.mark.asyncio
 
 @pytest.fixture(autouse=True)
 def _reset_gateway_quotas():
-    reset_tick_counters()
+    guard._tick_counters.clear()
     reset_daily_tokens()
     yield
-    reset_tick_counters()
+    guard._tick_counters.clear()
     reset_daily_tokens()
 
 
 async def test_direct_mutations_authorize_then_delegate_without_owning_workflow():
     application = AsyncMock()
-    gateway = CommandGateway(application)
+    gateway = CommandGateway(application, target_tick_for_world=lambda _world_id: 17)
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     components = [object()]
     component_types = [type]
@@ -47,7 +48,7 @@ async def test_direct_mutations_authorize_then_delegate_without_owning_workflow(
 
 async def test_discovery_and_resume_delegate_to_the_application_boundary():
     application = AsyncMock()
-    gateway = CommandGateway(application)
+    gateway = CommandGateway(application, target_tick_for_world=lambda _world_id: 17)
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     storage = object()
     discovered = [object()]
