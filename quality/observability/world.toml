@@ -155,6 +155,8 @@ operations = [
   "resume.ResumeStorage.materialize",
   "resume.ResumeStorage.pin_visibility",
   "resume.ResumeStorage.scan_visible_world_rows",
+  "simulation.reconcile_committed_work_locked",
+  "simulation.reconcile_prepared_tick_locked",
   "simulation.retry_required_projection",
 ]
 signals = ["none"]
