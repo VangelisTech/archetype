@@ -933,8 +933,8 @@ async def _task_fixed_reads_are_idempotent() -> list[GraderResult]:
                     storage,
                 )
             ).to_pylist()
-            history_a = await container.query_service.get_command_history(str(world.world_id))
-            history_b = await container.query_service.get_command_history(str(world.world_id))
+            history_a = await container.audit_log.get_command_history(str(world.world_id))
+            history_b = await container.audit_log.get_command_history(str(world.world_id))
             signatures_a = await container.query_service.list_signatures(storage)
             signatures_b = await container.query_service.list_signatures(storage)
 

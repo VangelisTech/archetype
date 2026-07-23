@@ -9,7 +9,6 @@ from typing import Protocol, runtime_checkable
 
 from daft import DataFrame
 
-from archetype.app.models import Command
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
 from archetype.core.interfaces import ArchetypeSignature
@@ -55,5 +54,3 @@ class iQueryService(Protocol):
     async def list_signatures(
         self, storage_config: StorageConfig | None = None
     ) -> list[ArchetypeSignature]: ...
-
-    async def get_command_history(self, world_id: str, limit: int = 100) -> list[Command]: ...

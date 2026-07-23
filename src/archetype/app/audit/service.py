@@ -24,7 +24,7 @@ import pyarrow as pa
 from daft import Expression
 from uuid_utils import UUID
 
-from archetype.app.models import AuditRow
+from archetype.app.models import AuditRow, Command, CommandType
 from archetype.app.storage.interfaces import iStorageService
 from archetype.core.config import StorageBackend, StorageConfig
 from archetype.errors import AvailabilityError
@@ -244,6 +244,26 @@ class AuditLog:
                 return frame.limit(0)
             frame = frame.sort(order, desc=[True, True]).limit(limit)
         return frame.sort(order)
+
+    async def get_command_history(
+        self,
+        world_id: str | UUID,
+        limit: int = 100,
+    ) -> list[Command]:
+        """Project queued audit rows into the application-owned command value."""
+        frame = await self.query(world_id=world_id, status="queued", limit=limit)
+        materialized = await self._storage_service.materialize(frame)
+        result: list[Command] = []
+        for row in materialized.to_pylist():
+            command_id = row["command_id"]
+            if command_id is None:
+                raise ValueError("queued audit row is missing command_id")
+            try:
+                command_type = CommandType(row["command_type"])
+            except ValueError:
+                command_type = CommandType.CUSTOM
+            result.append(Command(id=UUID(str(command_id)), type=command_type))
+        return result
 
     async def shutdown(self) -> None:
         """Flush pending rows and release standalone storage ownership."""

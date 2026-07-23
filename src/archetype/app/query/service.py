@@ -24,10 +24,7 @@ from __future__ import annotations
 import logging
 
 from daft import DataFrame, col, lit
-from uuid_utils import UUID
 
-from archetype.app.audit.interfaces import iAuditLog
-from archetype.app.models import Command, CommandType
 from archetype.app.storage.interfaces import iStorageService
 from archetype.core.aio import AsyncQueryManager
 from archetype.core.archetype import Archetype
@@ -55,10 +52,8 @@ class QueryService:
     def __init__(
         self,
         storage_service: iStorageService,
-        audit: iAuditLog | None = None,
     ) -> None:
         self._storage_service = storage_service
-        self._audit = audit
 
     async def _querier_for(self, storage_config: StorageConfig | None):
         """Resolve (config, store, querier) for one call.
@@ -394,27 +389,3 @@ class QueryService:
             )
         signatures = discovered | signatures
         return [signature for _table_id, signature in sorted(signatures.items())]
-
-    async def get_command_history(
-        self,
-        world_id: str,
-        limit: int = 100,
-    ) -> list[Command]:
-        """Compatibility read for pre-gate callers; queued command history only."""
-        if self._audit is None:
-            return []
-
-        frame = await self._audit.query(world_id=world_id, status="queued", limit=limit)
-        materialized = await self._storage_service.materialize(frame)
-        rows = materialized.to_pylist()
-        result: list[Command] = []
-        for row in rows:
-            command_id = row["command_id"]
-            if command_id is None:
-                raise ValueError("queued audit row is missing command_id")
-            try:
-                command_type = CommandType(row["command_type"])
-            except ValueError:
-                command_type = CommandType.CUSTOM
-            result.append(Command(id=UUID(str(command_id)), type=command_type))
-        return result

@@ -14,7 +14,6 @@ from archetype.app.container import ServiceContainer
 from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.models import CommandType
-from archetype.app.query.service import QueryService
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
 from archetype.storage.service import StorageService
@@ -196,7 +195,6 @@ async def test_audit_query_filters_orders_and_limits_in_daft(tmp_path):
 async def test_queued_history_restores_command_uuid_from_iceberg(tmp_path):
     storage_service = StorageService()
     audit = AuditLog(storage_service, _storage(tmp_path))
-    query = QueryService(storage_service, audit)
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     world_id = str(uuid7())
     command_id = uuid7()
@@ -211,7 +209,7 @@ async def test_queued_history_restores_command_uuid_from_iceberg(tmp_path):
             )
         )
 
-        history = await query.get_command_history(world_id)
+        history = await audit.get_command_history(world_id)
 
         assert [(command.id, command.type) for command in history] == [
             (command_id, CommandType.SPAWN)

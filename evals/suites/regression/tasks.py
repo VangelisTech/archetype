@@ -305,7 +305,7 @@ async def _task_command_pipeline() -> list[GraderResult]:
             pending_after = await container.command_scheduler.pending_count(wid)
 
             # History
-            history = await container.query_service.get_command_history(world.world_id)
+            history = await container.audit_log.get_command_history(world.world_id)
 
             # RBAC at service boundary
             viewer_blocked = False

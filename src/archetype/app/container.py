@@ -85,7 +85,7 @@ class ServiceContainer:
         # Storage-backed services
         self.world_service = WorldService(self.storage_service)
         self.audit_log = AuditLog(self.storage_service, audit_storage_config)
-        self.query_service = QueryService(self.storage_service, self.audit_log)
+        self.query_service = QueryService(self.storage_service)
         self.ingestion_service = IngestionService(self.storage_service, self.world_service)
         self.artifact_service = ArtifactService(
             self.storage_service,
