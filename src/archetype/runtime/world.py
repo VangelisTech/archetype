@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 from weakref import WeakSet
@@ -68,6 +68,20 @@ _FireMode = Any  # Literal["blocking", "spawn"] — kept loose for forward compa
 _ADMITTED_STATE: ContextVar[_RuntimeWorldState | None] = ContextVar(
     "archetype_runtime_admitted_state", default=None
 )
+_RUNTIME_CLEANUP_STATE: ContextVar[_RuntimeWorldState | None] = ContextVar(
+    "archetype_runtime_cleanup_state", default=None
+)
+
+
+@contextmanager
+def _runtime_cleanup_scope(state: _RuntimeWorldState):
+    """Authorize cleanup only for one exact mission-world state."""
+
+    token = _RUNTIME_CLEANUP_STATE.set(state)
+    try:
+        yield
+    finally:
+        _RUNTIME_CLEANUP_STATE.reset(token)
 
 
 def _clone_components(components: tuple[Component, ...]) -> list[Component]:
@@ -158,7 +172,13 @@ class _RuntimeWorldState:
             return
 
         async with self.admission_lock:
-            if self.closing or self.closed or self.runtime._closed:
+            runtime_rejects_public_work = self.runtime._shutdown_started or self.runtime._closed
+            runtime_owns_cleanup = _RUNTIME_CLEANUP_STATE.get() is self
+            if (
+                self.closing
+                or self.closed
+                or (runtime_rejects_public_work and not runtime_owns_cleanup)
+            ):
                 raise RuntimeError("World handle is closed")
             self.active_operations += 1
             self.drained.clear()
@@ -172,6 +192,13 @@ class _RuntimeWorldState:
                 self.active_operations -= 1
                 if self.active_operations == 0:
                     self.drained.set()
+
+    async def drain_admitted_operations(self) -> None:
+        """Wait for tracked workflows and the current serialized operation."""
+
+        await self.drained.wait()
+        async with self.op_lock:
+            pass
 
     async def ensure_init(self) -> str | UUID:
         """Single-flight activation. Returns world_id."""
@@ -229,7 +256,6 @@ class _RuntimeWorldState:
         async with self.op_lock:
             if self.closed:
                 return
-            self.closed = True
 
             if (
                 not from_runtime
@@ -241,6 +267,7 @@ class _RuntimeWorldState:
 
             for alias in list(self.aliases):
                 self.runtime._unregister_handle(alias)
+            self.closed = True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -265,9 +292,13 @@ class RuntimeWorld:
         return self._state.runtime._application
 
     async def _ensure_id(self) -> str | UUID:
-        if _ADMITTED_STATE.get() is not self._state:
+        operation_is_admitted = _ADMITTED_STATE.get() is self._state
+        cleanup_owns_state = _RUNTIME_CLEANUP_STATE.get() is self._state
+        if not operation_is_admitted and not cleanup_owns_state:
             self._state.runtime._ensure_open()
-        if self._state.closed:
+        if self._state.closed or (
+            self._state.closing and not operation_is_admitted and not cleanup_owns_state
+        ):
             raise RuntimeError("World handle is closed")
         return await self._state.ensure_init()
 
@@ -614,6 +645,9 @@ class RuntimeWorld:
 
     async def _shutdown_internal(self, *, from_runtime: bool) -> None:
         await self._state.shutdown(from_runtime=from_runtime)
+
+    async def _drain_admitted_operations(self) -> None:
+        await self._state.drain_admitted_operations()
 
     # ── Queries ───────────────────────────────────────────────────────────
 

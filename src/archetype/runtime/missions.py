@@ -5,8 +5,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from daft import DataFrame
 
@@ -18,6 +19,7 @@ from archetype.missions.contracts import (
     SubmittedMission,
 )
 from archetype.missions.sandboxes import CheckpointRef, SandboxIdentity
+from archetype.runtime.world import RuntimeWorld, _runtime_cleanup_scope
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -38,12 +40,24 @@ class RuntimeMissions:
         storage: str | Path | StorageConfig | None = None,
     ) -> None:
         self._runtime = runtime
+
+        mission_world: RuntimeWorld | None = None
+
+        def world_factory(*args: Any, **kwargs: Any) -> RuntimeWorld:
+            nonlocal mission_world
+            mission_world = runtime.world(*args, **kwargs)
+            return mission_world
+
         self._service = runtime._agent_mission_service(
-            world_factory=runtime.world,
+            world_factory=world_factory,
             name=name,
             config=config,
             storage=storage,
         )
+        if mission_world is None:
+            raise RuntimeError("Agent Missions service did not create its mission world")
+        self._world = mission_world
+        self._shutdown_lock = asyncio.Lock()
         self._closed = False
 
     async def __aenter__(self) -> RuntimeMissions:
@@ -92,12 +106,16 @@ class RuntimeMissions:
         await self._shutdown_internal(from_runtime=False)
 
     async def _shutdown_internal(self, *, from_runtime: bool) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        try:
-            await self._service.close()
-        finally:
+        async with self._shutdown_lock:
+            if self._closed:
+                return
+            # Public and runtime callers share one exact cleanup capability.
+            # Keeping the parameter distinguishes the internal protocol while
+            # preventing that capability from admitting unrelated worlds.
+            _ = from_runtime
+            with _runtime_cleanup_scope(self._world._state):
+                await self._service.close()
+            self._closed = True
             self._runtime._unregister_mission_handle(self)
 
     async def query(self, *components: type[Component]) -> DataFrame:

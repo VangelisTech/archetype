@@ -66,8 +66,18 @@ Shutdown must:
 2. wait for every already-admitted world operation;
 3. close handles without destroying attached or runtime-owned durable worlds;
 4. call `container.shutdown()` only after admitted work drains;
-5. attempt every cleanup step and aggregate failures; and
+5. attempt every independent cleanup step in the current phase and aggregate
+   failures; and
 6. be idempotent.
+
+Shutdown phases preserve cleanup dependencies. Runtime-owned mission handles
+are attempted first. If any mission cleanup fails, the runtime rejects public
+work, drains every operation admitted before shutdown, and retains cleanup
+authority only for the exact mission world being reconciled. It does not close
+world handles or finalize the shared container. A later, serialized
+`shutdown()` call retries every retained mission cleanup. World-handle and
+container finalization begin only after that phase succeeds; calls after
+successful finalization are no-ops.
 
 ### R5 — Sync parity
 

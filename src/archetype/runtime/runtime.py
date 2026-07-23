@@ -31,7 +31,11 @@ from archetype.artifacts.contracts import ArtifactStoreConfig
 from archetype.core.config import CacheConfig, StorageConfig
 from archetype.core.hooks import HookEvent
 from archetype.runtime._config import coerce_cache, coerce_storage
-from archetype.runtime.world import RuntimeWorld, SyncRuntimeWorld, _RuntimeWorldState
+from archetype.runtime.world import (
+    RuntimeWorld,
+    SyncRuntimeWorld,
+    _RuntimeWorldState,
+)
 
 if TYPE_CHECKING:
     from archetype.missions.contracts import AgentMissionConfig
@@ -85,11 +89,16 @@ class ArchetypeRuntime:
         self._container = ServiceContainer(artifact_store_config=artifact_store)
         self._application: iRuntimeApplication = self._container.application
         self._handles: WeakSet[RuntimeWorld] = WeakSet()
-        self._mission_handles: WeakSet[RuntimeMissions] = WeakSet()
+        # Mission handles own external provider resources. Keep them strongly
+        # reachable until successful cleanup unregisters them, including
+        # across a failed runtime shutdown attempt.
+        self._mission_handles: set[RuntimeMissions] = set()
+        self._shutdown_lock = asyncio.Lock()
+        self._shutdown_started = False
         self._closed = False
 
     async def __aenter__(self) -> ArchetypeRuntime:
-        if self._closed:
+        if self._shutdown_started or self._closed:
             raise RuntimeError("ArchetypeRuntime cannot be reused after close")
         return self
 
@@ -102,33 +111,48 @@ class ArchetypeRuntime:
         New operations are rejected as soon as shutdown starts. Each shared
         world state waits for its current lock-protected operation to finish
         before closing, so storage stays available to an admitted call.
-        Repeated calls have no effect.
+        Cleanup is phased and serialized. A failed mission cleanup keeps the
+        runtime's internal cleanup authority and shared services alive; a
+        later call retries that phase while public admission remains closed.
+        Repeated calls after successful finalization have no effect.
         """
-        if self._closed:
-            return
-        self._closed = True
+        async with self._shutdown_lock:
+            if self._closed:
+                return
+            self._shutdown_started = True
 
-        errors: list[BaseException] = []
-        for handle in list(self._mission_handles):
+            errors: list[BaseException] = []
+            for handle in list(self._mission_handles):
+                try:
+                    await handle._shutdown_internal(from_runtime=True)
+                except BaseException as e:
+                    errors.append(e)
+            if errors:
+                # A mission cleanup failure must preserve its world for retry,
+                # but shutdown still owes every already-admitted world call a
+                # drain before returning the retryable failure.
+                states = {handle._state for handle in list(self._handles)}
+                for state in states:
+                    try:
+                        await state.drain_admitted_operations()
+                    except BaseException as e:
+                        errors.append(e)
+                self._raise_shutdown_failures(errors)
+
+            for handle in list(self._handles):
+                try:
+                    await handle._shutdown_internal(from_runtime=True)
+                except BaseException as e:
+                    errors.append(e)
+            self._raise_shutdown_failures(errors)
+
             try:
-                await handle._shutdown_internal(from_runtime=True)
-            except BaseException as e:
-                errors.append(e)
-        for handle in list(self._handles):
-            try:
-                await handle._shutdown_internal(from_runtime=True)
-            except Exception as e:
+                await self._container.shutdown()
+            except (Exception, BaseExceptionGroup) as e:
                 errors.append(e)
 
-        try:
-            await self._container.shutdown()
-        except (Exception, BaseExceptionGroup) as e:
-            errors.append(e)
-
-        if errors:
-            raise RuntimeError(
-                f"ArchetypeRuntime shutdown encountered {len(errors)} error(s): {errors[0]!r}"
-            ) from errors[0]
+            self._raise_shutdown_failures(errors)
+            self._closed = True
 
     def world(
         self,
@@ -153,8 +177,7 @@ class ArchetypeRuntime:
         Returns:
             A handle that activates the world on its first operation.
         """
-        if self._closed:
-            raise RuntimeError("ArchetypeRuntime is closed")
+        self._ensure_open()
 
         state = _RuntimeWorldState(
             runtime=self,
@@ -179,8 +202,7 @@ class ArchetypeRuntime:
     ) -> RuntimeMissions:
         """Create a lazy, batteries-included Agent Missions handle."""
 
-        if self._closed:
-            raise RuntimeError("ArchetypeRuntime is closed")
+        self._ensure_open()
         from archetype.runtime.missions import RuntimeMissions
 
         handle = RuntimeMissions(self, name, config=config, storage=storage)
@@ -244,8 +266,7 @@ class ArchetypeRuntime:
             storage: Storage containing the world.
             name: Local name for the returned handle.
         """
-        if self._closed:
-            raise RuntimeError("ArchetypeRuntime is closed")
+        self._ensure_open()
         info = await self._container.application.resume_world(
             coerce_storage(storage) or StorageConfig(), world_id
         )
@@ -263,8 +284,7 @@ class ArchetypeRuntime:
         Returns:
             Durable descriptors for every world recorded in that storage.
         """
-        if self._closed:
-            raise RuntimeError("ArchetypeRuntime is closed")
+        self._ensure_open()
         return await self._container.application.discover_worlds(
             coerce_storage(storage) or StorageConfig()
         )
@@ -288,8 +308,7 @@ class ArchetypeRuntime:
             name: Local name for the returned handle.
             storage: Storage containing a cold world. Omit it for a live world.
         """
-        if self._closed:
-            raise RuntimeError("ArchetypeRuntime is closed")
+        self._ensure_open()
 
         state = _RuntimeWorldState(
             runtime=self,
@@ -331,8 +350,15 @@ class ArchetypeRuntime:
     def _unregister_mission_handle(self, handle: RuntimeMissions) -> None:
         self._mission_handles.discard(handle)
 
+    @staticmethod
+    def _raise_shutdown_failures(failures: list[BaseException]) -> None:
+        if failures:
+            raise RuntimeError(
+                f"ArchetypeRuntime shutdown encountered {len(failures)} error(s): {failures[0]!r}"
+            ) from failures[0]
+
     def _ensure_open(self) -> None:
-        if self._closed:
+        if self._shutdown_started or self._closed:
             raise RuntimeError("ArchetypeRuntime is closed")
 
 

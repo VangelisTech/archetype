@@ -401,15 +401,19 @@ class MissionService:
         except BaseException as exc:
             failures.append(exc)
 
-        try:
-            await self._world.shutdown()
-        except BaseException as exc:
-            failures.append(exc)
         if failures:
             raise BaseExceptionGroup(
                 f"Agent Missions shutdown failed for {len(failures)} operation(s)",
                 failures,
             )
+
+        try:
+            await self._world.shutdown()
+        except BaseException as exc:
+            raise BaseExceptionGroup(
+                "Agent Missions shutdown failed for 1 operation(s)",
+                [exc],
+            ) from exc
 
     async def query(self, *components: type[Component]) -> DataFrame:
         """Query persisted mission state through the mission-world read path."""
@@ -874,7 +878,7 @@ class MissionService:
             FrictionLog(
                 kind="sandbox_teardown",
                 message=self._redact_and_tail(
-                    f"{type(exc).__name__}: {exc}",
+                    self._format_exception(exc),
                     limit=4_000,
                     scope=f"mission:{mission_id}:sandbox-teardown",
                 ),
@@ -904,7 +908,7 @@ class MissionService:
             update={
                 "status": status.value,
                 "error": self._redact_and_tail(
-                    f"{type(exc).__name__}: {exc}",
+                    self._format_exception(exc),
                     limit=4_000,
                     scope=f"sandbox:{sandbox_id}:close-error",
                 ),
@@ -912,6 +916,13 @@ class MissionService:
         )
         await self._world.update(entity_id, errored)
         self._sandbox_entities[sandbox_id] = (entity_id, errored)
+
+    @classmethod
+    def _format_exception(cls, exc: BaseException) -> str:
+        if isinstance(exc, BaseExceptionGroup):
+            nested = "; ".join(cls._format_exception(child) for child in exc.exceptions)
+            return f"{type(exc).__name__}: {exc.message}: {nested}"
+        return f"{type(exc).__name__}: {exc}"
 
     def _redact(self, value: str, *, scope: str) -> str:
         if not value:
