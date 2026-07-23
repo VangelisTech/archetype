@@ -135,6 +135,7 @@ async def retry_required_projection(
     if lease is None:
         async with registry.operation(world_id):
             return await _retry_required_projection_locked(registry, world_id)
+    registry.validate_cleanup_lease(lease, world_id=world_id)
     async with registry.cleanup_operation(lease):
         return await _retry_required_projection_locked(registry, world_id)
 

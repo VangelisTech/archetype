@@ -15,6 +15,7 @@ from archetype.core.interfaces import CommittedTickReceipt
 from archetype.world.simulation import (
     PostCommitProjectionError,
     RequiredProjector,
+    retry_required_projection,
     run,
     step,
 )
@@ -75,6 +76,36 @@ class _Registry:
         assert self.pending is not None
         assert receipt_identity == self.pending.identity
         self.pending = None
+
+
+@dataclass(frozen=True)
+class _CleanupLease:
+    world_id: str
+
+
+class _CleanupRegistry(_Registry):
+    def __init__(
+        self,
+        world: _World,
+        projector: RequiredProjector,
+        pending: CommittedTickReceipt,
+    ) -> None:
+        super().__init__(world, projector, pending)
+        self.cleanup_entries = 0
+
+    def validate_cleanup_lease(
+        self,
+        lease: _CleanupLease,
+        *,
+        world_id: object,
+    ) -> None:
+        if str(world_id) != lease.world_id:
+            raise ValueError("cleanup lease belongs to a different world")
+
+    @asynccontextmanager
+    async def cleanup_operation(self, lease: _CleanupLease):
+        self.cleanup_entries += 1
+        yield self.world
 
 
 _DEFAULT_TOKEN = object()
@@ -147,3 +178,30 @@ async def test_run_retries_pending_receipt_without_replaying_tick() -> None:
     assert result.commands_applied == 1
     assert result.final_tick == 2
     assert registry.pending is None
+
+
+async def test_cleanup_retry_rejects_a_lease_for_another_world_before_entry() -> None:
+    receipt = _receipt(0)
+    world = _World([receipt])
+    projected: list[CommittedTickReceipt] = []
+
+    async def project(value: CommittedTickReceipt) -> None:
+        projected.append(value)
+
+    registry = _CleanupRegistry(
+        world,
+        RequiredProjector(consumer_name="required", project=project),
+        receipt,
+    )
+    lease = _CleanupLease(world_id="a-different-world")
+
+    with pytest.raises(ValueError, match="different world"):
+        await retry_required_projection(
+            registry,
+            world.world_id,
+            lease=lease,  # type: ignore[arg-type]
+        )
+
+    assert registry.cleanup_entries == 0
+    assert registry.pending is receipt
+    assert projected == []
