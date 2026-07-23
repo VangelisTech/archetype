@@ -6,3 +6,35 @@
 name = "world-domain-family"
 consumer = "archetype.world"
 allowed_families = ["archetype.storage"]
+
+# Canonical world coordination is concrete, but it consumes only lower-layer
+# core interfaces and the reviewed storage family. Keeping these permissions
+# exact prevents composition work from recreating an application dependency.
+
+[[module_rule]]
+module = "archetype.world.lifecycle"
+allowed_interfaces = [
+  "archetype.core.interfaces.CommittedTickReceipt",
+  "archetype.core.interfaces.iAsyncStore",
+  "archetype.core.interfaces.iAsyncSystem",
+  "archetype.core.interfaces.iCommitCoordinator",
+]
+allowed_app = []
+
+[[module_rule]]
+module = "archetype.world.registry"
+allowed_interfaces = []
+allowed_app = []
+
+[[module_rule]]
+module = "archetype.world.query"
+allowed_interfaces = [
+  "archetype.core.interfaces.ArchetypeSignature",
+  "archetype.core.interfaces.iAsyncStore",
+]
+allowed_app = []
+
+[[module_rule]]
+module = "archetype.world.simulation"
+allowed_interfaces = ["archetype.core.interfaces.CommittedTickReceipt"]
+allowed_app = []

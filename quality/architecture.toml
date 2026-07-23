@@ -22,6 +22,7 @@ types = [
   "StorageService",
   "TranscriptIngestionService",
   "TrajectoryService",
+  "WorldLifecycle",
   "WorldService",
 ]
 composition_roots = [
