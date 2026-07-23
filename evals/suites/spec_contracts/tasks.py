@@ -84,9 +84,9 @@ SPEC_CASES: tuple[SpecCase, ...] = (
         task_id="spec.command_gateway_gate_map",
     ),
     SpecCase(
-        spec_id="world-lifecycle.6",
+        spec_id="world-lifecycle.7",
         source="world-lifecycle.md",
-        anchors=("info-class downgrade", "Live objects"),
+        anchors=("Boundary-safe information", "downgrade it to frozen values"),
         task_id="spec.info_class_downgrades",
     ),
     SpecCase(
@@ -256,7 +256,7 @@ _DYNAMIC_GATE_METHODS = {
 
 _OUTBOX_AUDITED_METHODS = {"submit", "submit_batch", "submit_spawn"}
 _SYNCHRONOUS_GATE_METHODS = {"reserve_entity_ids"}
-_GATE_HELPERS = frozenset({"_gate", "_gate_world", "_gate_application"})
+_GATE_HELPERS = frozenset({"_gate", "_gate_world", "_gate_durable_world", "_gate_application"})
 
 
 def _python_files(path: Path) -> list[Path]:
@@ -581,6 +581,7 @@ class _FakeWorld:
         self.system = SimpleNamespace(processors=[_FakeProcessor()])
         self.hooks = _FakeHooks()
         self.resources = _FakeResources()
+        self.has_prepared_tick_commit = False
 
 
 class _FakeProcessor:
@@ -644,6 +645,12 @@ class _FakeWorldGraph:
 
     async def list_worlds(self):
         return [self.created, self.forked]
+
+    def pending_receipt(self, world_id):
+        worlds = {str(world.world_id): world for world in (self.created, self.forked)}
+        if str(world_id) not in worlds:
+            raise KeyError(str(world_id))
+        return None
 
     def target_tick(self, world_id):
         worlds = {str(world.world_id): world for world in (self.created, self.forked)}
