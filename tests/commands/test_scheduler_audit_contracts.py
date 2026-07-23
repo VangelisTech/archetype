@@ -19,6 +19,7 @@ from uuid_utils import uuid7
 
 from archetype.core.config import StorageBackend, StorageConfig
 from archetype.storage.catalog import CommandConflictError
+from archetype.world.models import Spawn, SpawnReserved
 
 pytestmark = [
     pytest.mark.contract("commands.identity.idempotent"),
@@ -29,6 +30,7 @@ pytestmark = [
 
 class _SchedulerApi(NamedTuple):
     CommandScheduler: type[Any]
+    DeferredItem: type[Any]
     DurableOptions: type[Any]
 
 
@@ -38,6 +40,7 @@ def _scheduler_api() -> _SchedulerApi:
     models_module = import_module("archetype.commands.models")
     return _SchedulerApi(
         CommandScheduler=scheduler_module.CommandScheduler,
+        DeferredItem=models_module.DeferredItem,
         DurableOptions=models_module.DurableOptions,
     )
 
@@ -152,13 +155,19 @@ class _Record:
 
 
 class _Catalog:
-    def __init__(self, *, lease_batches: list[list[_Record]] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        lease_batches: list[list[_Record]] | None = None,
+        admit_failure: Exception | None = None,
+    ) -> None:
         self.records: dict[str, _Record] = {}
         self.admit_calls: list[tuple[str, tuple[object, ...]]] = []
         self.lease_calls: list[tuple[str, int, str, float, int]] = []
         self.failures: list[dict[str, str]] = []
         self.releases: list[tuple[str, tuple[str, ...], str]] = []
         self.lease_batches = list(lease_batches or [])
+        self.admit_failure = admit_failure
         self._next_sequence = 0
 
     @staticmethod
@@ -181,12 +190,17 @@ class _Catalog:
         admissions: list[object],
     ) -> list[_Record]:
         self.admit_calls.append((world_id, tuple(admissions)))
+        if self.admit_failure is not None:
+            raise self.admit_failure
         result: list[_Record] = []
         for admission in admissions:
             command_id = str(_field(admission, "command_id"))
             existing = self.records.get(command_id)
             if existing is not None:
-                if self._immutable(existing) != self._immutable(admission):
+                if (
+                    existing.world_id != world_id
+                    or self._immutable(existing) != self._immutable(admission)
+                ):
                     raise CommandConflictError(
                         f"command {command_id} content conflicts with its durable identity"
                     )
@@ -364,6 +378,7 @@ def _scheduler(
     catalog: _Catalog,
     resolutions: list[str] | None = None,
     owner: str = "scheduler-test",
+    reserve_entity_ids: Callable[[object, int], Awaitable[list[int]]] | None = None,
 ) -> Any:
     catalog_resolutions = resolutions if resolutions is not None else []
 
@@ -376,6 +391,7 @@ def _scheduler(
         owner=owner,
         lease_seconds=30.0,
         max_dequeue=100,
+        reserve_entity_ids=reserve_entity_ids,
     )
 
 

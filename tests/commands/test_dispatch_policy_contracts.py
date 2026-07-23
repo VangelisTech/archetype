@@ -9,18 +9,25 @@ import asyncio
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, is_dataclass
+from datetime import UTC, datetime, timedelta
 from importlib import import_module
+from inspect import signature
 from typing import Any, ClassVar, Literal, NamedTuple, cast
 
 import pytest
 from pydantic import BaseModel, ConfigDict, Field
 from uuid_utils import UUID, uuid7
 
+from archetype.storage.catalog import CommandConflictError
+from archetype.world.models import Spawn
+
 pytestmark = pytest.mark.contract("gateway.authorization.rbac")
 
 
 class _CommandsApi(NamedTuple):
     CommandDispatcher: type[Any]
+    DeferredItem: type[Any]
+    PolicyRequest: type[Any]
     Policy: type[Any]
     policy_module: Any
 
@@ -29,8 +36,11 @@ def _commands_api() -> _CommandsApi:
     """Load the intentionally absent pre-PR-3 family after collection."""
     dispatch_module = import_module("archetype.commands.dispatch")
     policy_module = import_module("archetype.commands.policy")
+    models_module = import_module("archetype.commands.models")
     return _CommandsApi(
         CommandDispatcher=dispatch_module.CommandDispatcher,
+        DeferredItem=models_module.DeferredItem,
+        PolicyRequest=models_module.PolicyRequest,
         Policy=policy_module.Policy,
         policy_module=policy_module,
     )
@@ -78,6 +88,22 @@ class _LiveOperation(BaseModel):
     world_id: str
     callback: Callable[[], None]
     credential: str
+
+
+class _ApplicationOperation(BaseModel):
+    direct_only: ClassVar[bool] = True
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    operation: Literal["application_operation"] = "application_operation"
+    label: str = "application"
+
+
+class _DurableReadOperation(BaseModel):
+    direct_only: ClassVar[bool] = True
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    operation: Literal["durable_read"] = "durable_read"
+    world_id: str
 
 
 class _DurableOptions(BaseModel):
@@ -133,6 +159,8 @@ class _PolicyPort:
         self.events = events
         self.denial = denial
         self.calls: list[dict[str, Any]] = []
+        self.application_calls: list[dict[str, Any]] = []
+        self.batch_calls: list[dict[str, Any]] = []
 
     def authorize(
         self,
@@ -156,40 +184,143 @@ class _PolicyPort:
         if self.denial is not None:
             raise self.denial
 
+    def authorize_application(
+        self,
+        actor: _Actor,
+        *,
+        permission: str,
+        token_cost: int = 0,
+    ) -> None:
+        self.events.append("policy_application")
+        self.application_calls.append(
+            {
+                "actor": actor,
+                "permission": permission,
+                "token_cost": token_cost,
+            }
+        )
+        if self.denial is not None:
+            raise self.denial
+
+    def authorize_batch(
+        self,
+        actor: _Actor,
+        *,
+        requests: tuple[object, ...],
+    ) -> None:
+        self.events.append("policy_batch")
+        self.batch_calls.append(
+            {
+                "actor": actor,
+                "requests": requests,
+            }
+        )
+        if self.denial is not None:
+            raise self.denial
+
 
 class _SchedulerPort:
     def __init__(self, events: list[str]) -> None:
         self.events = events
         self.admissions: list[dict[str, Any]] = []
+        self.batch_admissions: list[dict[str, Any]] = []
+        self.spawn_admissions: list[dict[str, Any]] = []
+        self._replays: dict[str, tuple[object, ...]] = {}
 
     async def admit(
         self,
         operation: BaseModel,
         options: BaseModel,
         *,
+        command_id: object | None = None,
         principal_id: object | None = None,
         origin: str = "local",
+        version: int = 1,
     ) -> str:
         self.events.append("scheduler")
+        resolved_command_id = str(command_id or f"command-{len(self.admissions) + 1}")
+        immutable = (
+            operation,
+            options,
+            str(principal_id) if principal_id is not None else None,
+            origin,
+            version,
+        )
+        existing = self._replays.get(resolved_command_id)
+        if existing is not None and existing != immutable:
+            raise CommandConflictError(
+                f"command {resolved_command_id} content conflicts with its durable identity"
+            )
+        self._replays[resolved_command_id] = immutable
         self.admissions.append(
             {
                 "operation": operation,
                 "options": options,
+                "command_id": command_id,
+                "principal_id": principal_id,
+                "origin": origin,
+                "version": version,
+            }
+        )
+        return resolved_command_id
+
+    async def admit_batch(
+        self,
+        items: tuple[object, ...],
+        *,
+        principal_id: object | None = None,
+        origin: str = "local",
+    ) -> list[str]:
+        self.events.append("scheduler_batch")
+        self.batch_admissions.append(
+            {
+                "items": items,
                 "principal_id": principal_id,
                 "origin": origin,
             }
         )
-        return "command-1"
+        return [str(getattr(item, "command_id", None) or uuid7()) for item in items]
+
+    async def admit_spawn(
+        self,
+        operation: Spawn,
+        options: BaseModel,
+        *,
+        command_id: object | None = None,
+        principal_id: object | None = None,
+        origin: str = "local",
+        version: int = 1,
+    ) -> tuple[int, str]:
+        self.events.append("scheduler_spawn")
+        self.spawn_admissions.append(
+            {
+                "operation": operation,
+                "options": options,
+                "command_id": command_id,
+                "principal_id": principal_id,
+                "origin": origin,
+                "version": version,
+            }
+        )
+        return 41, str(command_id or "spawn-command-1")
 
 
 class _AccessSink:
-    def __init__(self, events: list[str]) -> None:
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        failure: Exception | None = None,
+    ) -> None:
         self.events = events
+        self.failure = failure
         self.rows: list[Any] = []
 
     async def __call__(self, evidence: Any) -> None:
         self.events.append("evidence")
         self.rows.append(evidence)
+        if self.failure is not None:
+            raise self.failure
 
 
 class _TargetTickResolver:
@@ -524,16 +655,12 @@ async def test_defer_as_rejects_live_direct_only_before_scheduler_persistence() 
     with pytest.raises(ValueError, match=r"(?i)direct-only"):
         await dispatcher.defer_as(actor, operation, options)
 
-    assert policy.calls == [
-        {
-            "actor": actor,
-            "permission": "add_processor",
-            "world_id": "world-live",
-            "target_tick": 29,
-            "token_cost": 0,
-        }
-    ]
+    assert policy.calls == []
+    assert policy.application_calls == []
+    assert policy.batch_calls == []
     assert scheduler.admissions == []
+    assert events[0] == "resolve"
+    assert "policy" not in events
     assert "scheduler" not in events
     assert len(access.rows) == 1
     evidence = _evidence_dict(access.rows[0])
@@ -544,6 +671,607 @@ async def test_defer_as_rejects_live_direct_only_before_scheduler_persistence() 
         sort_keys=True,
         default=str,
     )
+
+
+@pytest.mark.asyncio
+async def test_application_and_durable_world_policy_coordinates_are_exact_and_fail_closed() -> None:
+    api = _commands_api()
+    events: list[str] = []
+    handled: list[str] = []
+
+    async def application_handler(operation: _ApplicationOperation) -> str:
+        handled.append(operation.operation)
+        return operation.label
+
+    async def durable_handler(operation: _DurableReadOperation) -> str:
+        handled.append(operation.world_id)
+        return operation.world_id
+
+    specs = (
+        _Spec(
+            name="application_operation",
+            model=_ApplicationOperation,
+            handler=application_handler,
+            permission="list_worlds",
+            summarize=lambda operation: {"label": operation.label},
+            quota_scope="application",
+            world_key=None,
+        ),
+        _Spec(
+            name="durable_read",
+            model=_DurableReadOperation,
+            handler=durable_handler,
+            permission="query_components",
+            summarize=lambda operation: {"world_id": operation.world_id},
+            quota_scope="durable_world",
+        ),
+    )
+    registry = _Registry(specs, events)
+    policy = _PolicyPort(events)
+    target_ticks = _TargetTickResolver({"world-live": 17})
+    dispatcher = _dispatcher(
+        api,
+        registry=registry,
+        policy=policy,
+        scheduler=_SchedulerPort(events),
+        access=_AccessSink(events),
+        target_tick_for_world=target_ticks,
+    )
+    actor = _Actor(roles=frozenset({"viewer"}))
+
+    assert await dispatcher.apply_as(actor, _ApplicationOperation()) == "application"
+    assert (
+        await dispatcher.apply_as(
+            actor,
+            _DurableReadOperation(world_id="world-live"),
+        )
+        == "world-live"
+    )
+    assert (
+        await dispatcher.apply_as(
+            actor,
+            _DurableReadOperation(world_id="world-cold"),
+        )
+        == "world-cold"
+    )
+
+    assert policy.application_calls == [
+        {
+            "actor": actor,
+            "permission": "list_worlds",
+            "token_cost": 0,
+        }
+    ]
+    assert [
+        (call["world_id"], call["target_tick"], call["permission"]) for call in policy.calls
+    ] == [
+        ("world-live", 17, "query_components"),
+        ("world-cold", 0, "query_components"),
+    ]
+    assert target_ticks.calls == ["world-live", "world-cold"]
+    assert handled == ["application_operation", "world-live", "world-cold"]
+
+    closed_policy = _PolicyPort([])
+
+    def resolver_failure(_world_id: object) -> int:
+        raise RuntimeError("catalog resolver unavailable")
+
+    closed_dispatcher = _dispatcher(
+        api,
+        registry=_Registry((specs[1],), []),
+        policy=closed_policy,
+        scheduler=_SchedulerPort([]),
+        access=_AccessSink([]),
+        target_tick_for_world=resolver_failure,
+    )
+    with pytest.raises(RuntimeError, match="catalog resolver unavailable"):
+        await closed_dispatcher.apply_as(
+            actor,
+            _DurableReadOperation(world_id="world-error"),
+        )
+    assert closed_policy.calls == []
+    assert handled == ["application_operation", "world-live", "world-cold"]
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_preserves_command_identity_version_and_replay_conflicts() -> None:
+    api = _commands_api()
+    events: list[str] = []
+
+    async def handler(operation: _Operation) -> str:
+        return operation.label
+
+    registry = _Registry(
+        (
+            _Spec(
+                name="synthetic",
+                model=_Operation,
+                handler=handler,
+                permission="spawn",
+                summarize=lambda operation: {"label": operation.label},
+                durable=object(),
+            ),
+        ),
+        events,
+    )
+    scheduler = _SchedulerPort(events)
+    dispatcher = _dispatcher(
+        api,
+        registry=registry,
+        policy=_PolicyPort(events),
+        scheduler=scheduler,
+        access=_AccessSink(events),
+        target_tick_for_world=lambda _world_id: 99,
+    )
+    operation = _Operation(world_id="world-replay", label="same")
+    options = _DurableOptions(target_tick=12, priority=-3)
+    command_id = uuid7()
+
+    first = await dispatcher.defer(
+        operation,
+        options,
+        command_id=command_id,
+        version=7,
+    )
+    replay = await dispatcher.defer(
+        operation,
+        options,
+        command_id=command_id,
+        version=7,
+    )
+    assert str(first) == str(replay) == str(command_id)
+    assert scheduler.admissions == [
+        {
+            "operation": operation,
+            "options": options,
+            "command_id": command_id,
+            "principal_id": None,
+            "origin": "local",
+            "version": 7,
+        },
+        {
+            "operation": operation,
+            "options": options,
+            "command_id": command_id,
+            "principal_id": None,
+            "origin": "local",
+            "version": 7,
+        },
+    ]
+
+    with pytest.raises(CommandConflictError):
+        await dispatcher.defer(
+            operation.model_copy(update={"label": "changed"}),
+            options,
+            command_id=command_id,
+            version=7,
+        )
+    with pytest.raises(CommandConflictError):
+        await dispatcher.defer(
+            operation,
+            options,
+            command_id=command_id,
+            version=8,
+        )
+
+
+@pytest.mark.asyncio
+async def test_batch_validates_all_members_then_debits_and_admits_once() -> None:
+    api = _commands_api()
+    events: list[str] = []
+
+    async def handler(operation: BaseModel) -> str:
+        return str(operation)
+
+    portable_spec = _Spec(
+        name="synthetic",
+        model=_Operation,
+        handler=handler,
+        permission="spawn",
+        summarize=lambda operation: {"label": operation.label},
+        durable=object(),
+        token_cost=3,
+    )
+    direct_spec = _Spec(
+        name="live_operation",
+        model=_LiveOperation,
+        handler=handler,
+        permission="add_processor",
+        summarize=lambda _operation: {"classification": "direct_only"},
+        durable=None,
+    )
+    registry = _Registry((portable_spec, direct_spec), events)
+    policy = _PolicyPort(events)
+    scheduler = _SchedulerPort(events)
+    dispatcher = _dispatcher(
+        api,
+        registry=registry,
+        policy=policy,
+        scheduler=scheduler,
+        access=_AccessSink(events),
+        target_tick_for_world=lambda _world_id: 99,
+    )
+    actor = _Actor()
+    command_a = uuid7()
+    command_b = uuid7()
+    items = (
+        api.DeferredItem(
+            operation=_Operation(world_id="world-batch", label="a"),
+            options=_DurableOptions(target_tick=4, priority=0),
+            command_id=command_a,
+            version=2,
+        ),
+        api.DeferredItem(
+            operation=_Operation(world_id="world-batch", label="b"),
+            options=_DurableOptions(target_tick=4, priority=1),
+            command_id=command_b,
+            version=3,
+        ),
+    )
+
+    admitted = await dispatcher.defer_batch_as(actor, items)
+
+    assert [str(value) for value in admitted] == [str(command_a), str(command_b)]
+    assert len(policy.batch_calls) == 1
+    requests = policy.batch_calls[0]["requests"]
+    assert [
+        (
+            request.permission,
+            str(request.world_id),
+            request.target_tick,
+            request.token_cost,
+        )
+        for request in requests
+    ] == [
+        ("spawn", "world-batch", 4, 3),
+        ("spawn", "world-batch", 4, 3),
+    ]
+    assert scheduler.batch_admissions == [
+        {
+            "items": items,
+            "principal_id": actor.id,
+            "origin": "gateway",
+        }
+    ]
+    assert events.count("policy_batch") == 1
+    assert events.count("scheduler_batch") == 1
+    assert events.index("policy_batch") < events.index("scheduler_batch")
+
+    rejected = (
+        items[0],
+        api.DeferredItem(
+            operation=_LiveOperation(
+                world_id="world-batch",
+                callback=lambda: None,
+                credential="BATCH_SECRET",
+            ),
+            options=_DurableOptions(target_tick=4),
+        ),
+    )
+    policy.batch_calls.clear()
+    scheduler.batch_admissions.clear()
+    with pytest.raises(ValueError, match=r"(?i)direct-only"):
+        await dispatcher.defer_batch_as(actor, rejected)
+    assert policy.batch_calls == []
+    assert scheduler.batch_admissions == []
+
+
+@pytest.mark.asyncio
+async def test_reserved_spawn_authorizes_before_scheduler_and_dispatcher_never_reserves() -> None:
+    api = _commands_api()
+    assert "reserve_entity_ids" not in signature(api.CommandDispatcher).parameters
+    events: list[str] = []
+
+    async def handler(_operation: Spawn) -> None:
+        raise AssertionError("reserved deferred spawn must not invoke the direct handler")
+
+    operation = Spawn(world_id="world-spawn", components=())
+    registry = _Registry(
+        (
+            _Spec(
+                name="spawn",
+                model=Spawn,
+                handler=handler,
+                permission="spawn",
+                summarize=lambda item: {"world_id": str(item.world_id)},
+                durable=object(),
+            ),
+        ),
+        events,
+    )
+    policy = _PolicyPort(events, denial=PermissionError("reserved spawn denied"))
+    scheduler = _SchedulerPort(events)
+    dispatcher = _dispatcher(
+        api,
+        registry=registry,
+        policy=policy,
+        scheduler=scheduler,
+        access=_AccessSink(events),
+        target_tick_for_world=lambda _world_id: 99,
+    )
+    actor = _Actor()
+    options = _DurableOptions(target_tick=9, priority=-10)
+    command_id = uuid7()
+
+    with pytest.raises(PermissionError, match="reserved spawn denied"):
+        await dispatcher.defer_spawn_as(
+            actor,
+            operation,
+            options,
+            command_id=command_id,
+            version=4,
+        )
+    assert scheduler.spawn_admissions == []
+
+    policy.denial = None
+    entity_id, admitted = await dispatcher.defer_spawn_as(
+        actor,
+        operation,
+        options,
+        command_id=command_id,
+        version=4,
+    )
+    assert entity_id == 41
+    assert str(admitted) == str(command_id)
+    assert scheduler.spawn_admissions == [
+        {
+            "operation": operation,
+            "options": options,
+            "command_id": command_id,
+            "principal_id": actor.id,
+            "origin": "gateway",
+            "version": 4,
+        }
+    ]
+    assert events.index("policy") < events.index("scheduler_spawn")
+
+
+@pytest.mark.asyncio
+async def test_access_sink_failures_are_advisory_to_result_denial_and_handler_failure() -> None:
+    api = _commands_api()
+    actor = _Actor()
+    operation = _Operation(world_id="world-evidence", label="allowed")
+
+    async def allowed_handler(item: _Operation) -> str:
+        return item.label
+
+    allowed_spec = _Spec(
+        name="synthetic",
+        model=_Operation,
+        handler=allowed_handler,
+        permission="spawn",
+        summarize=lambda item: {"label": item.label},
+    )
+
+    def build(
+        *,
+        spec: _Spec,
+        policy_error: BaseException | None = None,
+    ) -> tuple[Any, _AccessSink]:
+        events: list[str] = []
+        sink = _AccessSink(events, failure=RuntimeError("projection unavailable"))
+        return (
+            _dispatcher(
+                api,
+                registry=_Registry((spec,), events),
+                policy=_PolicyPort(events, denial=policy_error),
+                scheduler=_SchedulerPort(events),
+                access=sink,
+                target_tick_for_world=lambda _world_id: 1,
+            ),
+            sink,
+        )
+
+    allowed, allowed_sink = build(spec=allowed_spec)
+    assert await allowed.apply_as(actor, operation) == "allowed"
+    assert len(allowed_sink.rows) == 1
+
+    denied, denied_sink = build(
+        spec=allowed_spec,
+        policy_error=PermissionError("original denial"),
+    )
+    with pytest.raises(PermissionError, match="original denial"):
+        await denied.apply_as(actor, operation)
+    assert len(denied_sink.rows) == 1
+
+    async def failed_handler(_item: _Operation) -> None:
+        raise LookupError("original handler failure")
+
+    failed_spec = _Spec(
+        name="synthetic",
+        model=_Operation,
+        handler=failed_handler,
+        permission="spawn",
+        summarize=lambda item: {"label": item.label},
+    )
+    failed, failed_sink = build(spec=failed_spec)
+    with pytest.raises(LookupError, match="original handler failure"):
+        await failed.apply_as(actor, operation)
+    assert len(failed_sink.rows) == 1
+
+
+class _FatalSignal(BaseException):
+    pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_type", [asyncio.CancelledError, _FatalSignal])
+async def test_process_fatal_dispatch_failures_are_never_converted(
+    failure_type: type[BaseException],
+) -> None:
+    api = _commands_api()
+    events: list[str] = []
+
+    async def handler(_operation: _Operation) -> None:
+        raise failure_type()
+
+    access = _AccessSink(events)
+    dispatcher = _dispatcher(
+        api,
+        registry=_Registry(
+            (
+                _Spec(
+                    name="synthetic",
+                    model=_Operation,
+                    handler=handler,
+                    permission="spawn",
+                    summarize=lambda item: {"label": item.label},
+                ),
+            ),
+            events,
+        ),
+        policy=_PolicyPort(events),
+        scheduler=_SchedulerPort(events),
+        access=access,
+        target_tick_for_world=lambda _world_id: 1,
+    )
+
+    with pytest.raises(failure_type):
+        await dispatcher.apply_as(
+            _Actor(),
+            _Operation(world_id="world-fatal"),
+        )
+    assert access.rows == []
+
+
+_VIEWER_PERMISSIONS = frozenset(
+    {
+        "get_world_info",
+        "list_worlds",
+        "discover_worlds",
+        "open_world_readonly",
+        "query_components",
+        "query_archetype",
+        "list_signatures",
+        "get_audit_history",
+        "list_processors",
+        "list_hooks",
+        "list_resources",
+        "query_artifacts",
+    }
+)
+_PLAYER_PERMISSIONS = _VIEWER_PERMISSIONS | {
+    "spawn",
+    "create_entities",
+    "despawn",
+    "update",
+}
+_OPERATOR_PERMISSIONS = _PLAYER_PERMISSIONS | {
+    "add_components",
+    "remove_components",
+    "add_processor",
+    "remove_processor",
+    "fork_world",
+    "destroy_world",
+    "step",
+    "run",
+    "run_episode",
+    "run_rollout",
+    "add_resource",
+    "add_hook",
+    "remove_hook",
+    "autoresearch",
+    "ingest_artifacts",
+    "evaluate",
+}
+_ADMIN_PERMISSIONS = _OPERATOR_PERMISSIONS | {
+    "create_world",
+    "resume_world",
+}
+_EXPECTED_PERMISSIONS_BY_ROLE = {
+    "viewer": _VIEWER_PERMISSIONS,
+    "player": _PLAYER_PERMISSIONS,
+    "operator": _OPERATOR_PERMISSIONS,
+    "admin": _ADMIN_PERMISSIONS,
+}
+
+
+def test_policy_role_matrix_is_complete_for_world_audit_and_pr3_bridge_permissions() -> None:
+    api = _commands_api()
+    all_permissions = frozenset().union(*_EXPECTED_PERMISSIONS_BY_ROLE.values())
+
+    for role, allowed_permissions in _EXPECTED_PERMISSIONS_BY_ROLE.items():
+        actor = _Actor(roles=frozenset({role}))
+        for permission in sorted(all_permissions):
+            policy = api.Policy(
+                max_commands_per_tick=10,
+                max_tokens_per_day=1_000_000,
+            )
+            if permission in allowed_permissions:
+                policy.authorize_application(
+                    actor,
+                    permission=permission,
+                    token_cost=0,
+                )
+            else:
+                with pytest.raises(PermissionError, match=r"(?i)cannot|permission|denied"):
+                    policy.authorize_application(
+                        actor,
+                        permission=permission,
+                        token_cost=0,
+                    )
+
+    assert "add_components" not in _EXPECTED_PERMISSIONS_BY_ROLE["player"]
+    assert "remove_components" not in _EXPECTED_PERMISSIONS_BY_ROLE["player"]
+    assert "create_world" not in _EXPECTED_PERMISSIONS_BY_ROLE["operator"]
+    assert "resume_world" not in _EXPECTED_PERMISSIONS_BY_ROLE["operator"]
+
+
+@dataclass(slots=True)
+class _UtcClock:
+    value: datetime
+
+    def __call__(self) -> datetime:
+        return self.value
+
+
+def test_application_quota_has_no_tick_zero_bucket_and_daily_rollover_is_instance_owned() -> None:
+    api = _commands_api()
+    actor = _Actor(roles=frozenset({"admin"}))
+    clock = _UtcClock(datetime(2026, 7, 23, 23, 59, tzinfo=UTC))
+    policy = api.Policy(
+        max_commands_per_tick=1,
+        max_tokens_per_day=5,
+        utcnow=clock,
+    )
+
+    policy.authorize_application(actor, permission="create_world", token_cost=0)
+    policy.authorize_application(actor, permission="create_world", token_cost=0)
+    policy.authorize_application(actor, permission="create_world", token_cost=4)
+    with pytest.raises(PermissionError, match=r"(?i)daily|token"):
+        policy.authorize_application(actor, permission="create_world", token_cost=2)
+
+    independent = api.Policy(
+        max_commands_per_tick=1,
+        max_tokens_per_day=5,
+        utcnow=clock,
+    )
+    independent.authorize_application(actor, permission="create_world", token_cost=4)
+
+    clock.value += timedelta(minutes=2)
+    policy.authorize_application(actor, permission="create_world", token_cost=2)
+
+
+def test_policy_batch_rejection_is_atomic_and_uses_one_debit_generation() -> None:
+    api = _commands_api()
+    actor = _Actor()
+    policy = api.Policy(
+        max_commands_per_tick=1,
+        max_tokens_per_day=1_000_000,
+    )
+    request = api.PolicyRequest(
+        permission="spawn",
+        world_id="world-batch-policy",
+        target_tick=6,
+        token_cost=0,
+    )
+
+    with pytest.raises(PermissionError, match=r"(?i)per-tick quota"):
+        policy.authorize_batch(actor, requests=(request, request))
+
+    policy.authorize_batch(actor, requests=(request,))
+    with pytest.raises(PermissionError, match=r"(?i)per-tick quota"):
+        policy.authorize_batch(actor, requests=(request,))
 
 
 def test_policy_quota_generations_are_actor_world_tick_and_instance_owned() -> None:

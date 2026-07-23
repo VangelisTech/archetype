@@ -135,22 +135,25 @@ def _spec(
     model: type[BaseModel],
     handler: Any,
     summarize: Any,
+    permission: str | None = None,
     durable: Any = None,
     quota_scope: Literal["application", "live_world", "durable_world"] = "live_world",
     world_key: Callable[[BaseModel], object] | None = _model_world_key,
     trusted: bool = True,
     untrusted: bool = True,
+    token_cost: int | Callable[[BaseModel], int] = 0,
 ) -> Any:
     return api.OperationSpec(
         name=name,
         model=model,
         handler=handler,
-        permission=name,
+        permission=permission or name,
         summarize=summarize,
         quota_scope=quota_scope,
         world_key=world_key,
         trusted=trusted,
         untrusted=untrusted,
+        token_cost=token_cost,
         durable=durable,
     )
 
@@ -353,70 +356,279 @@ def test_direct_only_registration_exposes_rejection_metadata_without_payload() -
     assert repr(secret_capability) not in json.dumps(rejection_metadata)
 
 
-_EXPECTED_WORLD_OPERATIONS = {
-    "spawn": "archetype.world.models.Spawn",
-    "create_entities": "archetype.world.models.CreateEntities",
-    "reserve_entity_ids": "archetype.world.models.ReserveEntityIds",
-    "spawn_reserved": "archetype.world.models.SpawnReserved",
-    "despawn": "archetype.world.models.Despawn",
-    "update": "archetype.world.models.Update",
-    "add_components": "archetype.world.models.AddComponents",
-    "remove_components": "archetype.world.models.RemoveComponents",
-    "add_processor": "archetype.world.models.AddProcessor",
-    "remove_processor": "archetype.world.models.RemoveProcessor",
-    "create_world": "archetype.world.models.CreateWorld",
-    "fork_world": "archetype.world.models.ForkWorld",
-    "destroy_world": "archetype.world.models.DestroyWorld",
-    "get_world_info": "archetype.world.models.GetWorldInfo",
-    "list_worlds": "archetype.world.models.ListWorlds",
-    "discover_worlds": "archetype.world.models.DiscoverWorlds",
-    "open_world_readonly": "archetype.world.models.OpenWorldReadonly",
-    "resume_world": "archetype.world.models.ResumeWorld",
-    "step": "archetype.world.models.Step",
-    "run": "archetype.world.models.Run",
-    "run_episode": "archetype.world.models.RunEpisode",
-    "run_rollout": "archetype.world.models.RunRollout",
-    "query_components": "archetype.world.models.QueryComponents",
-    "query_archetype": "archetype.world.models.QueryArchetype",
-    "list_signatures": "archetype.world.models.ListSignatures",
-    "add_resource": "archetype.world.models.AddResource",
-    "add_hook": "archetype.world.models.AddHook",
-    "remove_hook": "archetype.world.models.RemoveHook",
-    "list_processors": "archetype.world.models.ListProcessors",
-    "list_hooks": "archetype.world.models.ListHooks",
-    "list_resources": "archetype.world.models.ListResources",
+class _ExpectedWorldRegistration(NamedTuple):
+    model: str
+    permission: str
+    quota_scope: Literal["application", "live_world", "durable_world"]
+    world_key_field: Literal["world_id", "source_world_id"] | None
+    trusted: bool
+    untrusted: bool
+    token_cost: int
+    durable: bool
+
+
+def _world_registration(
+    model: str,
+    *,
+    permission: str,
+    quota_scope: Literal["application", "live_world", "durable_world"],
+    world_key_field: Literal["world_id", "source_world_id"] | None,
+    token_cost: int,
+    durable: bool = False,
+    untrusted: bool = True,
+) -> _ExpectedWorldRegistration:
+    return _ExpectedWorldRegistration(
+        model=f"archetype.world.models.{model}",
+        permission=permission,
+        quota_scope=quota_scope,
+        world_key_field=world_key_field,
+        trusted=True,
+        untrusted=untrusted,
+        token_cost=token_cost,
+        durable=durable,
+    )
+
+
+_EXPECTED_WORLD_REGISTRATIONS = {
+    "spawn": _world_registration(
+        "Spawn",
+        permission="spawn",
+        quota_scope="live_world",
+        world_key_field="world_id",
+        token_cost=10,
+        durable=True,
+    ),
+    "create_entities": _world_registration(
+        "CreateEntities",
+        permission="create_entities",
+        quota_scope="live_world",
+        world_key_field="world_id",
+        token_cost=10,
+    ),
+    "reserve_entity_ids": _world_registration(
+        "ReserveEntityIds",
+        permission="spawn",
+        quota_scope="live_world",
+        world_key_field="world_id",
+        token_cost=10,
+        untrusted=False,
+    ),
+    "spawn_reserved": _world_registration(
+        "SpawnReserved",
+        permission="spawn",
+        quota_scope="live_world",
+        world_key_field="world_id",
+        token_cost=10,
+        durable=True,
+        untrusted=False,
+    ),
+    "despawn": _world_registration(
+        "Despawn",
+        permission="despawn",
+        quota_scope="live_world",
+        world_key_field="world_id",
+        token_cost=5,
+        durable=True,
+    ),
+    "update": _world_registration(
+        "Update",
+        permission="update",
+        quota_scope="live_world",
+        world_key_field="world_id",
+        token_cost=8,
+        durable=True,
+    ),
+    "add_components": _world_registration(
+        "AddComponents",
+        permission="add_components",
+        quota_scope="live_world",
+        world_key_field="world_id",
+        token_cost=8,
+        durable=True,
+    ),
+    "remove_components": _world_registration(
+        "RemoveComponents",
+        permission="remove_components",
+        quota_scope="live_world",
+        world_key_field="world_id",
+        token_cost=5,
+        durable=True,
+    ),
+    "add_processor": _world_registration(
+        "AddProcessor",
+        permission="add_processor",
+        quota_scope="live_world",
+        world_key_field="world_id",
+        token_cost=15,
+    ),
+    "remove_processor": _world_registration(
+        "RemoveProcessor",
+        permission="remove_processor",
+        quota_scope="live_world",
+        world_key_field="world_id",
+        token_cost=5,
+    ),
+    "create_world": _world_registration(
+        "CreateWorld",
+        permission="create_world",
+        quota_scope="application",
+        world_key_field=None,
+        token_cost=50,
+    ),
+    "fork_world": _world_registration(
+        "ForkWorld",
+        permission="fork_world",
+        quota_scope="live_world",
+        world_key_field="source_world_id",
+        token_cost=100,
+    ),
+    "destroy_world": _world_registration(
+        "DestroyWorld",
+        permission="destroy_world",
+        quota_scope="durable_world",
+        world_key_field="world_id",
+        token_cost=10,
+    ),
+    "get_world_info": _world_registration(
+        "GetWorldInfo",
+        permission="get_world_info",
+        quota_scope="live_world",
+        world_key_field="world_id",
+        token_cost=2,
+    ),
+    "list_worlds": _world_registration(
+        "ListWorlds",
+        permission="list_worlds",
+        quota_scope="application",
+        world_key_field=None,
+        token_cost=2,
+    ),
+    "discover_worlds": _world_registration(
+        "DiscoverWorlds",
+        permission="discover_worlds",
+        quota_scope="application",
+        world_key_field=None,
+        token_cost=2,
+    ),
+    "open_world_readonly": _world_registration(
+        "OpenWorldReadonly",
+        permission="open_world_readonly",
+        quota_scope="durable_world",
+        world_key_field="world_id",
+        token_cost=2,
+    ),
+    "resume_world": _world_registration(
+        "ResumeWorld",
+        permission="resume_world",
+        quota_scope="durable_world",
+        world_key_field="world_id",
+        token_cost=50,
+    ),
+    "step": _world_registration(
+        "Step",
+        permission="step",
+        quota_scope="live_world",
+        world_key_field="world_id",
+        token_cost=10,
+    ),
+    "run": _world_registration(
+        "Run",
+        permission="run",
+        quota_scope="live_world",
+        world_key_field="world_id",
+        token_cost=50,
+    ),
+    "run_episode": _world_registration(
+        "RunEpisode",
+        permission="run_episode",
+        quota_scope="live_world",
+        world_key_field="world_id",
+        token_cost=500,
+    ),
+    "run_rollout": _world_registration(
+        "RunRollout",
+        permission="run_rollout",
+        quota_scope="live_world",
+        world_key_field="world_id",
+        token_cost=200,
+    ),
+    "query_components": _world_registration(
+        "QueryComponents",
+        permission="query_components",
+        quota_scope="durable_world",
+        world_key_field="world_id",
+        token_cost=5,
+    ),
+    "query_archetype": _world_registration(
+        "QueryArchetype",
+        permission="query_archetype",
+        quota_scope="durable_world",
+        world_key_field="world_id",
+        token_cost=5,
+    ),
+    "list_signatures": _world_registration(
+        "ListSignatures",
+        permission="list_signatures",
+        quota_scope="application",
+        world_key_field=None,
+        token_cost=2,
+    ),
+    "list_world_signatures": _world_registration(
+        "ListWorldSignatures",
+        permission="list_signatures",
+        quota_scope="durable_world",
+        world_key_field="world_id",
+        token_cost=2,
+    ),
+    "add_resource": _world_registration(
+        "AddResource",
+        permission="add_resource",
+        quota_scope="live_world",
+        world_key_field="world_id",
+        token_cost=10,
+    ),
+    "add_hook": _world_registration(
+        "AddHook",
+        permission="add_hook",
+        quota_scope="live_world",
+        world_key_field="world_id",
+        token_cost=10,
+    ),
+    "remove_hook": _world_registration(
+        "RemoveHook",
+        permission="remove_hook",
+        quota_scope="live_world",
+        world_key_field="world_id",
+        token_cost=5,
+    ),
+    "list_processors": _world_registration(
+        "ListProcessors",
+        permission="list_processors",
+        quota_scope="live_world",
+        world_key_field="world_id",
+        token_cost=2,
+    ),
+    "list_hooks": _world_registration(
+        "ListHooks",
+        permission="list_hooks",
+        quota_scope="live_world",
+        world_key_field="world_id",
+        token_cost=2,
+    ),
+    "list_resources": _world_registration(
+        "ListResources",
+        permission="list_resources",
+        quota_scope="live_world",
+        world_key_field="world_id",
+        token_cost=2,
+    ),
 }
 
-_APPLICATION_SCOPED_OPERATIONS = {
-    "create_world",
-    "list_worlds",
-    "discover_worlds",
-    "list_signatures",
-}
-_DURABLE_WORLD_SCOPED_OPERATIONS = {
-    "destroy_world",
-    "open_world_readonly",
-    "resume_world",
-    "query_components",
-    "query_archetype",
-}
 
-
-def _world_quota_scope(
-    operation_name: str,
-) -> Literal["application", "live_world", "durable_world"]:
-    if operation_name in _APPLICATION_SCOPED_OPERATIONS:
-        return "application"
-    if operation_name in _DURABLE_WORLD_SCOPED_OPERATIONS:
-        return "durable_world"
-    return "live_world"
-
-
-def _world_key(operation: BaseModel) -> object:
-    dynamic_operation = cast("Any", operation)
-    if hasattr(operation, "world_id"):
-        return dynamic_operation.world_id
-    return dynamic_operation.source_world_id
+def _registration_world_key(
+    field: Literal["world_id", "source_world_id"],
+) -> Callable[[BaseModel], object]:
+    return lambda operation: getattr(operation, field)
 
 
 def test_world_operation_registration_inventory_is_exact_and_complete() -> None:
@@ -428,6 +640,7 @@ def test_world_operation_registration_inventory_is_exact_and_complete() -> None:
 
     for model in WORLD_OPERATION_TYPES:
         operation_name = str(model.model_fields["operation"].default)
+        expected = _EXPECTED_WORLD_REGISTRATIONS[operation_name]
         durable = None
         if model in PORTABLE_TICK_OPERATION_TYPES:
             durable = api.DurableOperation(
@@ -441,26 +654,32 @@ def test_world_operation_registration_inventory_is_exact_and_complete() -> None:
                 model=model,
                 handler=_bind_world_handler(WORLD_OPERATION_HANDLERS[model]),
                 summarize=summarize,
+                permission=expected.permission,
                 durable=durable,
-                quota_scope=_world_quota_scope(operation_name),
+                quota_scope=expected.quota_scope,
                 world_key=(
-                    None if operation_name in _APPLICATION_SCOPED_OPERATIONS else _world_key
+                    None
+                    if expected.world_key_field is None
+                    else _registration_world_key(expected.world_key_field)
                 ),
+                trusted=expected.trusted,
+                untrusted=expected.untrusted,
+                token_cost=expected.token_cost,
             )
         )
 
     actual = {
         spec.name: f"{spec.model.__module__}.{spec.model.__qualname__}" for spec in registry.specs
     }
-    missing = sorted(_EXPECTED_WORLD_OPERATIONS.keys() - actual.keys())
-    extra = sorted(actual.keys() - _EXPECTED_WORLD_OPERATIONS.keys())
+    missing = sorted(_EXPECTED_WORLD_REGISTRATIONS.keys() - actual.keys())
+    extra = sorted(actual.keys() - _EXPECTED_WORLD_REGISTRATIONS.keys())
     mismatched = {
         name: {
-            "expected": _EXPECTED_WORLD_OPERATIONS[name],
+            "expected": _EXPECTED_WORLD_REGISTRATIONS[name].model,
             "actual": actual[name],
         }
-        for name in sorted(_EXPECTED_WORLD_OPERATIONS.keys() & actual.keys())
-        if actual[name] != _EXPECTED_WORLD_OPERATIONS[name]
+        for name in sorted(_EXPECTED_WORLD_REGISTRATIONS.keys() & actual.keys())
+        if actual[name] != _EXPECTED_WORLD_REGISTRATIONS[name].model
     }
     assert not (missing or extra or mismatched), (
         "world operation registry mismatch: "
@@ -475,11 +694,19 @@ def test_world_operation_registration_inventory_is_exact_and_complete() -> None:
         f"world handler inventory mismatch: missing={missing_handlers}, extra={extra_handlers}"
     )
     for spec in registry.specs:
+        expected = _EXPECTED_WORLD_REGISTRATIONS[spec.name]
         assert isinstance(spec.handler, partial)
         assert spec.handler.func is WORLD_OPERATION_HANDLERS[spec.model]
         assert tuple(signature(spec.handler).parameters) == ("operation",)
-        assert spec.quota_scope == _world_quota_scope(spec.name)
-        assert (spec.world_key is None) == (spec.name in _APPLICATION_SCOPED_OPERATIONS)
+        assert spec.permission == expected.permission
+        assert spec.quota_scope == expected.quota_scope
+        assert spec.trusted is expected.trusted
+        assert spec.untrusted is expected.untrusted
+        assert spec.token_cost == expected.token_cost
+        assert (spec.world_key is None) == (expected.world_key_field is None)
+        assert (spec.durable is not None) is expected.durable
+
+    assert len(registry.specs) == 32
 
     durable_models = frozenset(spec.model for spec in registry.specs if spec.durable is not None)
     missing_durable = sorted(
