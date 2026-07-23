@@ -23,6 +23,8 @@ from archetype.missions.contracts import RepositoryPublicationPolicy
 from archetype.missions.sandboxes import ProcessRequest, ProcessResult, SandboxSession
 from archetype.missions.transitions import AgentExecutionStatus
 
+_TASK_BASE_REVISION_ENV = "ARCHETYPE_TASK_BASE_REVISION"
+
 
 @dataclass(frozen=True)
 class CodingAgentHarnessConfig:
@@ -158,7 +160,11 @@ class CodingAgentHarness:
                     )
                 )
 
-            raw_validation = await self._run_validators(session, request)
+            raw_validation = await self._run_validators(
+                session,
+                request,
+                task_base_revision=starting_revision,
+            )
             validators_passed = all(
                 result.returncode == validator.spec.expected_returncode
                 for validator, result in raw_validation
@@ -303,6 +309,8 @@ class CodingAgentHarness:
         self,
         session: SandboxSession,
         request: TaskDispatchRequest,
+        *,
+        task_base_revision: str,
     ) -> tuple[tuple[DispatchedValidator, ProcessResult], ...]:
         results: list[tuple[DispatchedValidator, ProcessResult]] = []
         for validator in request.validators:
@@ -311,6 +319,7 @@ class CodingAgentHarness:
                 *validator.spec.command,
                 workdir=self.config.workspace,
                 timeout=validator.spec.timeout_seconds,
+                env=((_TASK_BASE_REVISION_ENV, task_base_revision),),
             )
             results.append((validator, result))
         return tuple(results)
@@ -392,6 +401,7 @@ class CodingAgentHarness:
         *arguments: str,
         workdir: str | None = None,
         timeout: int = 900,
+        env: tuple[tuple[str, str], ...] = (),
         secrets: tuple[str, ...] = (),
     ) -> ProcessResult:
         return await session.exec(
@@ -399,6 +409,7 @@ class CodingAgentHarness:
                 tuple(arguments),
                 workdir=workdir,
                 timeout_seconds=timeout,
+                env=env,
                 secret_names=secrets,
             )
         )

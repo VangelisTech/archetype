@@ -31,6 +31,24 @@ the later task can require that same test to pass. See
 [Agent Missions V1](agent-missions.md#repository-validators-are-authority)
 for the dogfooded protocol.
 
+A changed-path validator must not rely on `git status --porcelain`: an agent
+may commit before the validator runs. Mission validators receive the task's
+stable base SHA as `ARCHETYPE_TASK_BASE_REVISION`. A complete path inventory
+combines committed and untracked changes, for example:
+
+```bash
+test -n "$ARCHETYPE_TASK_BASE_REVISION" \
+  && git merge-base --is-ancestor "$ARCHETYPE_TASK_BASE_REVISION" HEAD \
+  || exit 1
+{
+  git diff --name-only "$ARCHETYPE_TASK_BASE_REVISION" --
+  git ls-files --others --exclude-standard
+} | sort -u
+```
+
+If the base is missing or no longer an ancestor, repository policy should fail
+closed rather than silently narrowing the inspected delta.
+
 ## Evidence types
 
 Each tool answers a different question.

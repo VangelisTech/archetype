@@ -281,18 +281,22 @@ async def test_evaluation_heartbeat_renews_and_detects_lost_owner(monkeypatch):
             self.acquired = acquired
             self.owner = owner
             self.calls = 0
+            self.renewed = asyncio.Event()
 
         async def lease_evaluation(self, *_args, **_kwargs):
             self.calls += 1
+            self.renewed.set()
             return SimpleNamespace(acquired=self.acquired, owner=self.owner)
 
     renewing = Catalog()
     stop = asyncio.Event()
     lost = asyncio.Event()
     task = asyncio.create_task(containerless_heartbeat(renewing, lease, stop=stop, lost=lost))
-    await asyncio.sleep(0.025)
-    stop.set()
-    await task
+    try:
+        await asyncio.wait_for(renewing.renewed.wait(), timeout=1)
+    finally:
+        stop.set()
+        await task
     assert renewing.calls >= 1
     assert not lost.is_set()
 

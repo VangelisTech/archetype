@@ -77,6 +77,7 @@ class _LocalSession:
         self.closed = 0
         self.close_attempts = 0
         self.close_error = False
+        self.requests: list[ProcessRequest] = []
 
     @property
     def identity(self) -> SandboxIdentity:
@@ -90,6 +91,7 @@ class _LocalSession:
         return SandboxStatus.CLOSED if self.closed else SandboxStatus.READY
 
     async def exec(self, request: ProcessRequest) -> ProcessResult:
+        self.requests.append(request)
         environment = os.environ.copy()
         environment.update(request.environment_dict())
         process = await asyncio.create_subprocess_exec(
@@ -151,9 +153,14 @@ class _MissionDriver:
         else:
             content = "fixed"
             filename = "implementation.txt"
+        commit = (
+            " && git add regression.txt && git commit -m 'rejected agent checkpoint'"
+            if request.task_name == "regression" and request.dispatch_sequence == 1
+            else ""
+        )
         result = await session.exec(
             ProcessRequest(
-                ("sh", "-lc", f"printf '%s\\n' {content} > {filename}"),
+                ("sh", "-lc", f"printf '%s\\n' {content} > {filename}{commit}"),
                 workdir=str(self.workspace),
             )
         )
@@ -320,6 +327,27 @@ async def test_explicit_graph_drives_revision_bound_retry_and_downstream_readine
             request.publication_policy is RepositoryPublicationPolicy.COMMIT_AND_PUSH
             for request in driver.requests
         )
+        validator_commands = {
+            'test "$(cat regression.txt)" = good',
+            "test -f implementation.txt",
+        }
+        validator_requests = [
+            request
+            for request in backend.session.requests
+            if len(request.argv) == 3
+            and request.argv[:2] == ("sh", "-lc")
+            and request.argv[2] in validator_commands
+        ]
+        task_bases = [
+            request.environment_dict()["ARCHETYPE_TASK_BASE_REVISION"]
+            for request in validator_requests
+        ]
+        assert task_bases == [
+            driver.requests[1].task_base_revision,
+            driver.requests[1].task_base_revision,
+            result.tasks[0].commit_shas[-1],
+        ]
+        assert result.tasks[0].commit_shas[0] != driver.requests[1].task_base_revision
 
         policy_rows = latest(await missions.query(TaskPolicy)).to_pylist()
         policy = TaskPolicy.get_prefix()
@@ -347,7 +375,10 @@ async def test_explicit_graph_drives_revision_bound_retry_and_downstream_readine
         assert [int(row[f"{validation}actual_returncode"]) for row in validation_rows].count(0) == 2
         assert len(validation_rows) == 3
         assert len(latest(await missions.query(AgentExecution)).to_pylist()) == 3
-        assert len(latest(await missions.query(Commit)).to_pylist()) == 2
+        commit_rows = latest(await missions.query(Commit)).to_pylist()
+        commit = Commit.get_prefix()
+        assert len(commit_rows) == 4
+        assert sum(bool(row[f"{commit}pushed"]) for row in commit_rows) == 3
         assert len(latest(await missions.query(FrictionLog)).to_pylist()) == 1
 
         sandbox_rows = latest(await missions.query(Sandbox)).to_pylist()

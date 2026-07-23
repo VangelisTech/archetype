@@ -6,15 +6,15 @@
     "capability"
   ],
   "failure_policy": "every architectural capability task and every trial passes",
-  "started_at": "2026-07-20T20:39:36.257863Z",
-  "duration_s": 0.263636,
+  "started_at": "2026-07-23T07:41:37.543161Z",
+  "duration_s": 4.462254,
   "outcome": "passed",
   "revision": {
-    "commit": "4567ab17712d4a4123eddb205fc63ad4b513bfd8",
-    "dirty": true
+    "commit": "650ccfe7b13e965eebf808e5bff7fe09c0d7a497",
+    "dirty": false
   },
   "environment": {
-    "runner_id": "Everetts-MacBook-Pro.local",
+    "runner_id": "Mac",
     "system": "Darwin",
     "release": "25.5.0",
     "machine": "arm64",
@@ -29,7 +29,7 @@
     }
   },
   "invocation": [
-    "/Users/everettkleven/conductor/workspaces/archetype/colombo-v2/evals/run.py",
+    "/Users/everettkleven/conductor/workspaces/archetype/bogota/evals/run.py",
     "--profile",
     "capability",
     "--out",
@@ -62,7 +62,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0238,
+          "elapsed_s": 0.0274,
           "error": null,
           "graders": [
             {
@@ -103,7 +103,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0271,
+          "elapsed_s": 0.0335,
           "error": null,
           "graders": [
             {
@@ -156,7 +156,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0771,
+          "elapsed_s": 0.1027,
           "error": null,
           "graders": [
             {
@@ -221,7 +221,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0592,
+          "elapsed_s": 0.0747,
           "error": null,
           "graders": [
             {
@@ -280,7 +280,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0749,
+          "elapsed_s": 0.1036,
           "error": null,
           "graders": [
             {
@@ -329,7 +329,7 @@
       "contract_ids": [
         "missions.agent_v1.validator_gated"
       ],
-      "desc": "Explicit task graphs advance from dispatch-bound validation and pushed revisions",
+      "desc": "Runtime missions retry from repository evidence, honor dependency order, publish validated revisions, and clean up terminal resources",
       "trial_count": 1,
       "correct_samples": 1,
       "pass_rate": 1.0,
@@ -345,17 +345,23 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0001,
+          "elapsed_s": 4.1184,
           "error": null,
           "graders": [
             {
-              "name": "mission_graph_is_data",
+              "name": "mission_processors_own_transitions",
               "passed": true,
               "score": 1.0,
               "details": ""
             },
             {
-              "name": "mission_evidence_is_bound",
+              "name": "mission_retry_uses_repository_evidence",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "mission_publication_and_cleanup_are_real",
               "passed": true,
               "score": 1.0,
               "details": ""
@@ -386,7 +392,7 @@
           "trial": 0,
           "passed": true,
           "score": 1.0,
-          "elapsed_s": 0.0005,
+          "elapsed_s": 0.0008,
           "error": null,
           "graders": [
             {
