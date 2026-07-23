@@ -9,26 +9,38 @@ import hashlib
 import json
 import os
 import socket
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, is_dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import Any, cast
 
 from pydantic import BaseModel
 from pydantic_core import to_jsonable_python
 from uuid_utils import UUID, uuid7
 
 from archetype.app.models import Command, CommandType
+from archetype.core.aio import AsyncWorld
 from archetype.core.component import Component
-from archetype.errors import WorldNotFoundError
 from archetype.storage.catalog import (
     CommandAdmission,
     CommandRecord,
+    ControlCatalog,
     OutboxRecord,
     schema_fingerprint,
 )
-
-if TYPE_CHECKING:
-    from archetype.app.world.interfaces import iMutationService, iWorldService
+from archetype.world.handlers import materialize_locked
+from archetype.world.models import (
+    AddComponents,
+    ComponentTypeRef,
+    ComponentValue,
+    Despawn,
+    PortableTickOperation,
+    RemoveComponents,
+    Spawn,
+    SpawnReserved,
+    Update,
+    require_portable_tick_operation,
+)
 
 _COMMAND_DIGEST_DOMAIN = "archetype.command.v1"
 _COMPONENT_WIRE_MARKER = "__archetype_component__"
@@ -191,9 +203,11 @@ class CommandScheduler:
 
     def __init__(
         self,
-        worlds: iWorldService,
-        mutations: iMutationService,
         *,
+        require_live_world: Callable[[Any], Awaitable[None]],
+        resolve_control_catalog: Callable[[Any], Awaitable[ControlCatalog]],
+        list_catalog_world_ids: Callable[[], Awaitable[list[str]]],
+        reserve_entity_ids: Callable[[Any, int], Awaitable[list[int]]],
         lease_seconds: float = 30.0,
         max_attempts: int = 3,
         max_dequeue: int = 50_000,
@@ -203,13 +217,15 @@ class CommandScheduler:
             raise ValueError("lease_seconds must be positive")
         if max_attempts < 1:
             raise ValueError("max_attempts must be positive")
-        self._worlds = worlds
-        self._mutations = mutations
+        self._require_live_world = require_live_world
+        self._resolve_control_catalog = resolve_control_catalog
+        self._list_catalog_world_ids = list_catalog_world_ids
+        self._reserve_entity_ids = reserve_entity_ids
         self._lease_seconds = lease_seconds
         self._max_attempts = max_attempts
         self._max_dequeue = max_dequeue
         self._owner = owner or f"{socket.gethostname()}:{os.getpid()}:{uuid7().hex[:12]}"
-        self._catalogs: dict[str, Any] = {}
+        self._catalogs: dict[str, ControlCatalog] = {}
 
     @property
     def owner(self) -> str:
@@ -223,21 +239,23 @@ class CommandScheduler:
                 "tick-deferred dispatcher; it cannot enter the deferred scheduler"
             )
 
-    def require_world(self, world_id) -> None:
-        if not self._worlds.has_world(world_id):
-            raise WorldNotFoundError(world_id)
+    async def require_world(self, world_id) -> None:
+        """Require an exact live admission target through the injected authority."""
+        await self._require_live_world(world_id)
 
-    def _catalog(self, world_id):
+    async def _catalog(self, world_id) -> ControlCatalog:
         key = str(world_id)
-        catalog = self._worlds.control_catalog(key)
-        self._catalogs[key] = catalog
+        catalog = self._catalogs.get(key)
+        if catalog is None:
+            catalog = await self._resolve_control_catalog(key)
+            self._catalogs[key] = catalog
         return catalog
 
-    def _refresh_known_catalogs(self) -> None:
+    async def _refresh_known_catalogs(self) -> None:
         """Resolve every catalog coordinate discovered by the world family."""
-        for world_id in self._worlds.catalog_world_ids():
+        for world_id in await self._list_catalog_world_ids():
             if world_id not in self._catalogs:
-                self._catalog(world_id)
+                await self._catalog(world_id)
 
     async def admit(
         self,
@@ -263,7 +281,7 @@ class CommandScheduler:
         principal_id: str | UUID | None = None,
         origin: str = "local",
     ) -> list[UUID]:
-        self.require_world(world_id)
+        await self.require_world(world_id)
         principal = str(principal_id) if principal_id is not None else None
         admissions: list[CommandAdmission] = []
         for command in commands:
@@ -276,7 +294,8 @@ class CommandScheduler:
                 max_attempts=self._max_attempts,
             )
             admissions.append(admission)
-        records = await self._catalog(world_id).admit_commands(str(world_id), admissions)
+        catalog = await self._catalog(world_id)
+        records = await catalog.admit_commands(str(world_id), admissions)
         return [UUID(record.command_id) for record in records]
 
     async def admit_spawn(
@@ -289,52 +308,62 @@ class CommandScheduler:
         principal_id: str | UUID | None = None,
         origin: str = "local",
     ) -> tuple[int, Command]:
-        self.require_world(world_id)
-        entity_id = self._mutations.reserve_entity_ids(world_id, 1)[0]
+        await self.require_world(world_id)
+        entity_id = (await self._reserve_entity_ids(world_id, 1))[0]
         command = Command(
             type=CommandType.SPAWN,
             tick=tick,
             priority=priority,
             payload={"entity_id": entity_id, "components": list(components)},
         )
-        try:
-            await self.admit(
-                world_id,
-                command,
-                principal_id=principal_id,
-                origin=origin,
-            )
-        except BaseException:
-            world = self._worlds.get_world(UUID(str(world_id)))
-            if world.next_entity_id == entity_id + 1:
-                world.next_entity_id = entity_id
-            raise
+        await self.admit(
+            world_id,
+            command,
+            principal_id=principal_id,
+            origin=origin,
+        )
         return entity_id, command
 
-    async def drain_and_apply(self, world_id, tick: int) -> list[Command]:
-        """Lease and stage due commands; the manifest transaction settles them."""
-        world = self._worlds.get_world(UUID(str(world_id)))
-        coordinator = getattr(world, "commit_coordinator", None)
-        if coordinator is None or not hasattr(coordinator, "stage_command"):
+    async def materialize(self, world: AsyncWorld, tick: int) -> int:
+        """Apply due commands to the exact already-locked world.
+
+        The coordinator stages successful command IDs for settlement by the
+        same manifest transaction that publishes this tick. This method never
+        resolves a world or enters a public mutation path: construction gives
+        core this bound method, and core passes the live object whose operation
+        lease is already held.
+        """
+        coordinator = world.commit_coordinator
+        if (
+            coordinator is None
+            or not hasattr(coordinator, "stage_command")
+            or not hasattr(coordinator, "is_command_staged")
+        ):
             raise RuntimeError(
                 "deferred commands require a coordinated world with atomic manifest settlement"
             )
-        catalog = self._catalog(world_id)
+        settlement = cast("Any", coordinator)
+        world_id = str(world.world_id)
+        catalog = await self._catalog(world_id)
         records = await catalog.lease_commands(
-            str(world_id),
+            world_id,
             tick,
             self._owner,
             lease_seconds=self._lease_seconds,
             limit=self._max_dequeue,
         )
-        staged: list[Command] = []
+        # Both catalog implementations guarantee this order. Sorting again at
+        # the family boundary makes the materializer deterministic even for a
+        # narrow test/different backend implementation.
+        records.sort(key=lambda record: (record.scheduled_tick, record.priority, record.sequence))
+        applied = 0
         for index, record in enumerate(records):
             command = _record_to_command(record)
-            if coordinator.is_command_staged(tick, record.command_id):
-                staged.append(command)
+            if settlement.is_command_staged(tick, record.command_id):
+                applied += 1
                 continue
             try:
-                await self._apply(world_id, command)
+                await self._apply(world, command)
             except BaseException as exc:
                 if not isinstance(exc, Exception):
                     raise
@@ -357,54 +386,65 @@ class CommandScheduler:
                 # rejection and exhausted poison commands do not block it.
                 if status == "RETRYABLE":
                     await catalog.release_commands(
-                        str(world_id),
+                        world_id,
                         [tail.command_id for tail in records[index + 1 :]],
                         self._owner,
                     )
                     break
                 continue
-            coordinator.stage_command(tick, self._owner, record.command_id)
-            staged.append(command)
-        return staged
+            settlement.stage_command(tick, self._owner, record.command_id)
+            applied += 1
+        return applied
 
-    async def _apply(self, world_id, command: Command) -> None:
+    async def _apply(self, world: AsyncWorld, command: Command) -> None:
+        """Translate one durable command into an exact portable world operation."""
         payload = command.payload
+        world_id = str(world.world_id)
+        operation: PortableTickOperation | None
         match command.type:
             case CommandType.SPAWN:
-                components = self._hydrate_components(payload.get("components", []))
+                components = self._component_values(payload.get("components", []))
                 entity_id = payload.get("entity_id")
                 if entity_id is None:
-                    await self._mutations.create_entity(world_id, components)
+                    operation = Spawn(world_id=world_id, components=components)
                 else:
-                    await self._mutations.spawn_with_reserved_id(
-                        world_id, _parse_entity_id(entity_id), components
+                    operation = SpawnReserved(
+                        world_id=world_id,
+                        entity_id=_parse_entity_id(entity_id),
+                        components=components,
                     )
             case CommandType.UPDATE:
-                await self._mutations.update_entity(
-                    world_id,
-                    _parse_entity_id(payload["entity_id"]),
-                    self._hydrate_components(payload.get("components", [])),
+                operation = Update(
+                    world_id=world_id,
+                    entity_id=_parse_entity_id(payload["entity_id"]),
+                    components=self._component_values(payload.get("components", [])),
                 )
             case CommandType.DESPAWN:
-                await self._mutations.remove_entity(
-                    world_id, _parse_entity_id(payload["entity_id"])
+                operation = Despawn(
+                    world_id=world_id,
+                    entity_id=_parse_entity_id(payload["entity_id"]),
                 )
             case CommandType.ADD_COMPONENT:
-                await self._mutations.add_components(
-                    world_id,
-                    _parse_entity_id(payload["entity_id"]),
-                    self._hydrate_components(payload.get("components", [])),
+                operation = AddComponents(
+                    world_id=world_id,
+                    entity_id=_parse_entity_id(payload["entity_id"]),
+                    components=self._component_values(payload.get("components", [])),
                 )
             case CommandType.REMOVE_COMPONENT:
-                await self._mutations.remove_components(
-                    world_id,
-                    _parse_entity_id(payload["entity_id"]),
-                    self._hydrate_component_types(payload.get("component_types", [])),
+                operation = RemoveComponents(
+                    world_id=world_id,
+                    entity_id=_parse_entity_id(payload["entity_id"]),
+                    component_types=self._component_type_refs(payload.get("component_types", [])),
                 )
             case CommandType.MESSAGE | CommandType.CUSTOM | CommandType.QUERY_WORLD:
-                return
+                operation = None
             case _:
                 raise ValueError(f"no deferred dispatcher for {command.type.value}")
+        if operation is not None:
+            await materialize_locked(
+                world,
+                require_portable_tick_operation(operation),
+            )
 
     @staticmethod
     def _component_candidates(name: str) -> list[type[Component]]:
@@ -423,6 +463,17 @@ class CommandScheduler:
 
     @classmethod
     def _hydrate_component_type(cls, payload) -> type[Component]:
+        if isinstance(payload, ComponentTypeRef):
+            return payload.resolve()
+        if (
+            isinstance(payload, dict)
+            and {
+                "type_name",
+                "schema_fingerprint",
+            }
+            <= payload.keys()
+        ):
+            return ComponentTypeRef.model_validate(payload).resolve()
         if not isinstance(payload, dict) or payload.get(_COMPONENT_WIRE_MARKER) != 1:
             return (
                 payload
@@ -453,6 +504,18 @@ class CommandScheduler:
         for payload in payload_components:
             if isinstance(payload, Component):
                 hydrated.append(payload)
+            elif isinstance(payload, ComponentValue):
+                hydrated.append(payload.materialize())
+            elif (
+                isinstance(payload, dict)
+                and {
+                    "type_name",
+                    "schema_fingerprint",
+                    "fields_json",
+                }
+                <= payload.keys()
+            ):
+                hydrated.append(ComponentValue.model_validate(payload).materialize())
             elif isinstance(payload, dict) and payload.get(_COMPONENT_WIRE_MARKER) == 1:
                 component_type = cls._hydrate_component_type(payload)
                 fields = payload.get("fields")
@@ -464,27 +527,38 @@ class CommandScheduler:
         return hydrated
 
     @classmethod
-    def _hydrate_component_types(cls, payload_types):
-        return [cls._hydrate_component_type(component_type) for component_type in payload_types]
+    def _component_values(cls, payload_components) -> tuple[ComponentValue, ...]:
+        return tuple(
+            ComponentValue.from_component(component)
+            for component in cls._hydrate_components(payload_components)
+        )
+
+    @classmethod
+    def _component_type_refs(cls, payload_types) -> tuple[ComponentTypeRef, ...]:
+        return tuple(
+            ComponentTypeRef.from_type(cls._hydrate_component_type(component_type))
+            for component_type in payload_types
+        )
 
     async def pending_count(self, world_id) -> int:
-        return await self._catalog(world_id).pending_command_count(str(world_id))
+        catalog = await self._catalog(world_id)
+        return await catalog.pending_command_count(str(world_id))
 
     async def records(
         self, world_id, *, status: str | None = None, limit: int = 100
     ) -> list[CommandRecord]:
-        return await self._catalog(world_id).list_commands(
-            str(world_id), status=status, limit=limit
-        )
+        catalog = await self._catalog(world_id)
+        return await catalog.list_commands(str(world_id), status=status, limit=limit)
 
     async def history(self, world_id, *, limit: int = 100) -> list[Command]:
         return [_record_to_command(record) for record in await self.records(world_id, limit=limit)]
 
     async def cancel_world(self, world_id, *, reason: str = "world destroyed") -> int:
-        return await self._catalog(world_id).cancel_commands(str(world_id), reason=reason)
+        catalog = await self._catalog(world_id)
+        return await catalog.cancel_commands(str(world_id), reason=reason)
 
     async def read_outbox(self, *, limit: int = 1000) -> list[OutboxRecord]:
-        self._refresh_known_catalogs()
+        await self._refresh_known_catalogs()
         events: list[OutboxRecord] = []
         for world_id, catalog in sorted(self._catalogs.items()):
             if len(events) >= limit:
@@ -499,11 +573,11 @@ class CommandScheduler:
         for world_id, event_ids in by_world.items():
             catalog = self._catalogs.get(world_id)
             if catalog is None:
-                catalog = self._catalog(world_id)
+                catalog = await self._catalog(world_id)
             await catalog.mark_outbox_projected(world_id, event_ids)
 
     async def outbox_progress(self) -> dict[str, tuple[int, int]]:
-        self._refresh_known_catalogs()
+        await self._refresh_known_catalogs()
         return {
             world_id: await catalog.outbox_progress(world_id)
             for world_id, catalog in sorted(self._catalogs.items())
