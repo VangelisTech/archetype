@@ -126,6 +126,25 @@ def test_sandbox_contracts_describe_resources_not_task_outcomes() -> None:
     assert isinstance(SandboxService(), SandboxServiceProtocol)
 
 
+@pytest.mark.asyncio
+async def test_new_non_ready_session_fails_once_without_creation_churn() -> None:
+    backend = _Backend()
+    service = SandboxService([backend])
+    key = SandboxKey("mission:non-ready")
+
+    acquiring = asyncio.create_task(service.acquire(key, _spec()))
+    await backend.started.wait()
+    backend.sessions[0]._status = SandboxStatus.ERRORED
+    backend.release.set()
+
+    with pytest.raises(RuntimeError, match="became non-ready: errored"):
+        await asyncio.wait_for(acquiring, timeout=1)
+
+    assert backend.creates == 1
+    assert service.session(key) is backend.sessions[0]
+    await service.shutdown()
+
+
 def test_process_request_requires_explicit_portable_inputs() -> None:
     request = ProcessRequest(
         ("python", "-V"),

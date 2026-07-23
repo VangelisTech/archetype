@@ -253,15 +253,18 @@ class SandboxService:
                 raise RuntimeError("SandboxService is shutting down")
             closing = self._closing.get(key)
             retained = self._sessions.get(key)
-            ready = (
+            current = (
                 closing is None
                 and self._pending.get(key) is None
                 and retained is not None
                 and retained[1] is session
                 and self._lifecycle_generations.get(key, 0) == generation
-                and status is SandboxStatus.READY
             )
-            return ready, closing
+            if current and status is not SandboxStatus.READY:
+                raise RuntimeError(
+                    f"sandbox {session.identity.sandbox_id!r} became non-ready: {status.value}"
+                )
+            return current, closing
 
     def _advance_lifecycle(self, key: SandboxKey) -> None:
         self._lifecycle_generations[key] = self._lifecycle_generations.get(key, 0) + 1
