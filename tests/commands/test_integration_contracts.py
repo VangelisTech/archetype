@@ -45,6 +45,51 @@ _DURABLE_WORLD_SCOPED_OPERATIONS = {
     "resume_world",
     "query_components",
     "query_archetype",
+    "list_world_signatures",
+}
+
+_WORLD_PERMISSION_OVERRIDES = {
+    "reserve_entity_ids": "spawn",
+    "spawn_reserved": "spawn",
+    "list_world_signatures": "list_signatures",
+}
+_INTERNAL_WORLD_OPERATIONS = {
+    "reserve_entity_ids",
+    "spawn_reserved",
+}
+_WORLD_TOKEN_COSTS = {
+    "spawn": 10,
+    "create_entities": 10,
+    "reserve_entity_ids": 10,
+    "spawn_reserved": 10,
+    "despawn": 5,
+    "update": 8,
+    "add_components": 8,
+    "remove_components": 5,
+    "add_processor": 15,
+    "remove_processor": 5,
+    "create_world": 50,
+    "fork_world": 100,
+    "destroy_world": 10,
+    "get_world_info": 2,
+    "list_worlds": 2,
+    "discover_worlds": 2,
+    "open_world_readonly": 2,
+    "resume_world": 50,
+    "step": 10,
+    "run": 50,
+    "run_episode": 500,
+    "run_rollout": 200,
+    "query_components": 5,
+    "query_archetype": 5,
+    "list_signatures": 2,
+    "list_world_signatures": 2,
+    "add_resource": 10,
+    "add_hook": 10,
+    "remove_hook": 5,
+    "list_processors": 2,
+    "list_hooks": 2,
+    "list_resources": 2,
 }
 
 
@@ -110,6 +155,21 @@ class _Policy:
             }
         )
 
+    def authorize_application(
+        self,
+        actor: _Actor,
+        *,
+        permission: str,
+        token_cost: int = 0,
+    ) -> None:
+        self.calls.append(
+            {
+                "actor": actor,
+                "permission": permission,
+                "token_cost": token_cost,
+            }
+        )
+
 
 class _Scheduler:
     def __init__(self) -> None:
@@ -120,18 +180,22 @@ class _Scheduler:
         operation: BaseModel,
         options: BaseModel,
         *,
+        command_id: object | None = None,
         principal_id: object | None = None,
         origin: str = "local",
+        version: int = 1,
     ) -> str:
         self.admissions.append(
             {
                 "operation": operation,
                 "options": options,
+                "command_id": command_id,
                 "principal_id": principal_id,
                 "origin": origin,
+                "version": version,
             }
         )
-        return f"command-{len(self.admissions)}"
+        return str(command_id or f"command-{len(self.admissions)}")
 
 
 class _AccessSink:
@@ -264,8 +328,10 @@ async def test_reserved_spawn_direct_and_deferred_share_locked_family_behavior(
         {
             "operation": operation,
             "options": options,
+            "command_id": None,
             "principal_id": None,
             "origin": "local",
+            "version": 1,
         }
     ]
     decoded = spec.durable.decode(operation.model_dump_json())
@@ -304,6 +370,35 @@ class _RunMission(_MissionOperation):
 
 class _RestoreMissionSandbox(_MissionOperation):
     operation: Literal["restore_mission_sandbox"] = "restore_mission_sandbox"
+
+
+_PR4_PULL_FORWARD_MODEL_LITERALS = {
+    "IngestArtifacts": "ingest_artifacts",
+    "QueryArtifacts": "query_artifacts",
+    "RunGraders": "run_graders",
+    "Evaluate": "evaluate",
+    "AutoResearch": "autoresearch",
+    "EvaluatePhysicalTask": "evaluate_physical_task",
+    "SweepPhysicalInstructions": "sweep_physical_instructions",
+    "IngestClaudeTranscript": "ingest_claude_transcript",
+    "QueryTranscriptRows": "query_transcript_rows",
+    "QueryTrajectory": "query_trajectory",
+    "GradeTrajectory": "grade_trajectory",
+    "SubmitMission": "submit_mission",
+    "RunMission": "run_mission",
+    "RestoreMissionSandbox": "restore_mission_sandbox",
+}
+_PR4_ACTOR_AWARE_OPERATIONS = frozenset(
+    {
+        "autoresearch",
+        "ingest_artifacts",
+        "query_artifacts",
+        "evaluate",
+    }
+)
+_PR3_BRIDGE_ALIASES = {
+    "RuntimeMissions.query": "query_components",
+}
 
 
 @pytest.mark.asyncio
@@ -424,6 +519,29 @@ async def test_future_mission_operations_are_trusted_direct_only_and_reject_all_
             assert forbidden_key not in encoded
 
 
+def test_pr3_bridge_allowlist_is_exhaustive_bounded_and_marked_for_pr4_deletion() -> None:
+    _commands_api()
+    bridge = import_module("archetype.app.gateway._pr3_commands_bridge")
+
+    assert dict(bridge.PR3_BRIDGE_MODEL_LITERALS) == _PR4_PULL_FORWARD_MODEL_LITERALS
+    assert frozenset(bridge.PR3_BRIDGE_UNTRUSTED_OPERATIONS) == _PR4_ACTOR_AWARE_OPERATIONS
+    assert dict(bridge.PR3_BRIDGE_ALIASES) == _PR3_BRIDGE_ALIASES
+    assert bridge.DELETE_BEFORE_PR4_WIRING is True
+    assert len(bridge.PR3_BRIDGE_MODEL_LITERALS) == 14
+    assert set(bridge.PR3_BRIDGE_ALIASES.values()) <= {
+        "query_components",
+        "query_archetype",
+    }
+
+    forbidden_tokens = ("generic", "legacy", "fallback", "thunk", "callback_registry")
+    forbidden_callables = sorted(
+        name
+        for name, value in vars(bridge).items()
+        if callable(value) and any(token in name.lower() for token in forbidden_tokens)
+    )
+    assert forbidden_callables == []
+
+
 @pytest.mark.asyncio
 async def test_temporary_container_composes_the_exact_world_registry() -> None:
     """PR-3's temporary root registers the real world surface exactly once."""
@@ -438,6 +556,7 @@ async def test_temporary_container_composes_the_exact_world_registry() -> None:
 
         world_specs = tuple(spec for spec in registry.specs if spec.model in WORLD_OPERATION_TYPES)
         actual_models = tuple(spec.model for spec in world_specs)
+        assert len(world_specs) == 32
         assert len(actual_models) == len(set(actual_models))
         assert set(actual_models) == set(WORLD_OPERATION_TYPES)
         assert {spec.name for spec in world_specs} == {
@@ -450,6 +569,10 @@ async def test_temporary_container_composes_the_exact_world_registry() -> None:
             assert isinstance(spec.handler, partial)
             assert spec.handler.func is WORLD_OPERATION_HANDLERS[spec.model]
             assert spec.quota_scope == _expected_world_quota_scope(spec.name)
+            assert spec.permission == _WORLD_PERMISSION_OVERRIDES.get(spec.name, spec.name)
+            assert spec.trusted is True
+            assert spec.untrusted is (spec.name not in _INTERNAL_WORLD_OPERATIONS)
+            assert spec.token_cost == _WORLD_TOKEN_COSTS[spec.name]
             if spec.quota_scope != "application":
                 assert spec.world_key is not None
             else:
@@ -457,8 +580,12 @@ async def test_temporary_container_composes_the_exact_world_registry() -> None:
 
         audit_spec = registry.resolve_name("get_audit_history")
         assert audit_spec.model is api.GetAuditHistory
+        assert audit_spec.permission == "get_audit_history"
         assert audit_spec.quota_scope == "durable_world"
         assert audit_spec.world_key is not None
+        assert audit_spec.trusted is True
+        assert audit_spec.untrusted is True
+        assert audit_spec.token_cost == 5
         assert audit_spec.durable is None
     finally:
         await container.shutdown()

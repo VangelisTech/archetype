@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections.abc import Awaitable, Callable
@@ -191,15 +192,16 @@ class _Catalog:
     ) -> list[_Record]:
         self.admit_calls.append((world_id, tuple(admissions)))
         if self.admit_failure is not None:
-            raise self.admit_failure
+            failure = self.admit_failure
+            self.admit_failure = None
+            raise failure
         result: list[_Record] = []
         for admission in admissions:
             command_id = str(_field(admission, "command_id"))
             existing = self.records.get(command_id)
             if existing is not None:
-                if (
-                    existing.world_id != world_id
-                    or self._immutable(existing) != self._immutable(admission)
+                if existing.world_id != world_id or self._immutable(existing) != self._immutable(
+                    admission
                 ):
                     raise CommandConflictError(
                         f"command {command_id} content conflicts with its durable identity"
@@ -506,6 +508,78 @@ async def test_identical_admission_is_idempotent_and_changed_content_conflicts()
 
 
 @pytest.mark.asyncio
+async def test_every_immutable_replay_field_conflicts_under_one_command_identity() -> None:
+    api = _scheduler_api()
+
+    async def materialize(_world: object, _operation: BaseModel) -> None:
+        return None
+
+    baseline_operation = _PortableOperation(
+        world_id="world-immutable",
+        label="baseline",
+    )
+    baseline_options = _options(
+        api,
+        target_tick=5,
+        priority=2,
+        max_attempts=4,
+    )
+    baseline_principal = uuid7()
+    variants = {
+        "payload": {
+            "operation": baseline_operation.model_copy(update={"label": "changed"}),
+        },
+        "world": {
+            "operation": baseline_operation.model_copy(update={"world_id": "world-other"}),
+        },
+        "target_tick": {
+            "options": baseline_options.model_copy(update={"target_tick": 6}),
+        },
+        "priority": {
+            "options": baseline_options.model_copy(update={"priority": 3}),
+        },
+        "max_attempts": {
+            "options": baseline_options.model_copy(update={"max_attempts": 5}),
+        },
+        "version": {"version": 2},
+        "principal": {"principal_id": uuid7()},
+        "origin": {"origin": "other-ingress"},
+    }
+
+    for label, changes in variants.items():
+        registry = _OperationRegistry((_portable_spec(materialize),))
+        catalog = _Catalog()
+        scheduler = _scheduler(api, registry=registry, catalog=catalog)
+        command_id = uuid7()
+        await scheduler.admit(
+            baseline_operation,
+            baseline_options,
+            command_id=command_id,
+            principal_id=baseline_principal,
+            origin="gateway",
+            version=1,
+        )
+        replay = {
+            "operation": baseline_operation,
+            "options": baseline_options,
+            "principal_id": baseline_principal,
+            "origin": "gateway",
+            "version": 1,
+        }
+        replay.update(changes)
+        with pytest.raises(CommandConflictError, match=r"(?i)conflict"):
+            await scheduler.admit(
+                replay["operation"],
+                replay["options"],
+                command_id=command_id,
+                principal_id=replay["principal_id"],
+                origin=replay["origin"],
+                version=replay["version"],
+            )
+        assert len(catalog.records) == 1, label
+
+
+@pytest.mark.asyncio
 async def test_unregistered_and_direct_only_reject_before_catalog_persistence() -> None:
     api = _scheduler_api()
 
@@ -541,6 +615,183 @@ async def test_unregistered_and_direct_only_reject_before_catalog_persistence() 
 
     assert catalog.admit_calls == []
     assert catalog.records == {}
+
+
+@pytest.mark.asyncio
+async def test_batch_admission_canonicalizes_all_members_in_one_catalog_call() -> None:
+    api = _scheduler_api()
+
+    async def materialize(_world: object, _operation: BaseModel) -> None:
+        return None
+
+    registry = _OperationRegistry((_portable_spec(materialize),))
+    catalog = _Catalog()
+    scheduler = _scheduler(api, registry=registry, catalog=catalog)
+    principal_id = uuid7()
+    command_ids = (uuid7(), uuid7())
+    items = tuple(
+        api.DeferredItem(
+            operation=_PortableOperation(
+                world_id="world-batch",
+                label=f"item-{index}",
+                value={"index": index},
+            ),
+            options=_options(
+                api,
+                target_tick=8,
+                priority=index,
+                max_attempts=4,
+            ),
+            command_id=command_ids[index],
+            version=index + 1,
+        )
+        for index in range(2)
+    )
+
+    admitted = await scheduler.admit_batch(
+        items,
+        principal_id=principal_id,
+        origin="gateway",
+    )
+
+    assert [str(value) for value in admitted] == [str(value) for value in command_ids]
+    assert len(catalog.admit_calls) == 1
+    world_id, admissions = catalog.admit_calls[0]
+    assert world_id == "world-batch"
+    assert len(admissions) == 2
+    assert [
+        (
+            _field(value, "scheduled_tick"),
+            _field(value, "priority"),
+            _field(value, "version"),
+            _field(value, "principal_id"),
+            _field(value, "origin"),
+        )
+        for value in admissions
+    ] == [
+        (8, 0, 1, str(principal_id), "gateway"),
+        (8, 1, 2, str(principal_id), "gateway"),
+    ]
+    assert all(
+        _field(value, "operation_name", "command_type") == "portable" for value in admissions
+    )
+
+    mixed_world = (
+        items[0],
+        api.DeferredItem(
+            operation=_PortableOperation(
+                world_id="world-other",
+                label="wrong-world",
+            ),
+            options=_options(api, target_tick=8),
+        ),
+    )
+    with pytest.raises(ValueError, match=r"(?i)world"):
+        await scheduler.admit_batch(mixed_world)
+    assert len(catalog.admit_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_scheduler_alone_reserves_once_then_admits_exact_spawn_reserved() -> None:
+    api = _scheduler_api()
+    materialized: list[SpawnReserved] = []
+
+    async def materialize(_world: object, operation: BaseModel) -> None:
+        assert type(operation) is SpawnReserved
+        materialized.append(operation)
+
+    registry = _OperationRegistry(
+        (
+            _Spec(
+                name="spawn_reserved",
+                model=SpawnReserved,
+                durable=_Durable(
+                    decode=SpawnReserved.model_validate_json,
+                    materialize=materialize,
+                ),
+            ),
+        )
+    )
+    reserve_calls: list[tuple[str, int]] = []
+
+    async def reserve_entity_ids(world_id: object, count: int) -> list[int]:
+        reserve_calls.append((str(world_id), count))
+        if len(reserve_calls) > 1:
+            raise AssertionError("one reserved-spawn admission reserved twice")
+        return [41]
+
+    catalog = _Catalog()
+    scheduler = _scheduler(
+        api,
+        registry=registry,
+        catalog=catalog,
+        reserve_entity_ids=reserve_entity_ids,
+    )
+    command_id = uuid7()
+    source = Spawn(world_id="world-reserved-owner", components=())
+
+    entity_id, admitted = await scheduler.admit_spawn(
+        source,
+        _options(api, target_tick=3, priority=-10),
+        command_id=command_id,
+        version=2,
+    )
+
+    assert entity_id == 41
+    assert str(admitted) == str(command_id)
+    assert reserve_calls == [("world-reserved-owner", 1)]
+    assert len(catalog.admit_calls) == 1
+    admission = catalog.admit_calls[0][1][0]
+    assert _field(admission, "reserved_entity_id") == 41
+    assert json.loads(_field(admission, "payload_json")) == {
+        "components": [],
+        "entity_id": 41,
+        "operation": "spawn_reserved",
+        "world_id": "world-reserved-owner",
+    }
+
+    failure_calls: list[tuple[str, int]] = []
+
+    async def reserve_before_failure(world_id: object, count: int) -> list[int]:
+        failure_calls.append((str(world_id), count))
+        if len(failure_calls) > 1:
+            raise AssertionError("same command retry reserved a second entity ID")
+        return [99]
+
+    failing_catalog = _Catalog(admit_failure=RuntimeError("catalog unavailable"))
+    failing_scheduler = _scheduler(
+        api,
+        registry=registry,
+        catalog=failing_catalog,
+        reserve_entity_ids=reserve_before_failure,
+    )
+    retry_command_id = uuid7()
+    with pytest.raises(RuntimeError, match="catalog unavailable"):
+        await failing_scheduler.admit_spawn(
+            source,
+            _options(api, target_tick=3),
+            command_id=retry_command_id,
+        )
+    retry_entity_id, retry_admitted = await failing_scheduler.admit_spawn(
+        source,
+        _options(api, target_tick=3),
+        command_id=retry_command_id,
+    )
+    assert retry_entity_id == 99
+    assert str(retry_admitted) == str(retry_command_id)
+    replay_entity_id, replay_admitted = await failing_scheduler.admit_spawn(
+        source,
+        _options(api, target_tick=3),
+        command_id=retry_command_id,
+    )
+    assert replay_entity_id == 99
+    assert str(replay_admitted) == str(retry_command_id)
+    assert failure_calls == [("world-reserved-owner", 1)]
+    assert len(failing_catalog.admit_calls) == 3
+    assert {
+        json.loads(_field(call[1][0], "payload_json"))["entity_id"]
+        for call in failing_catalog.admit_calls
+    } == {99}
 
 
 @pytest.mark.asyncio
@@ -602,6 +853,148 @@ async def test_lease_order_uses_actual_world_and_only_stages_before_manifest() -
     assert catalog.failures == []
     assert registry.resolved_names == ["portable", "portable", "portable"]
     assert catalog.lease_calls == [("world-order", 1, "scheduler-test", 30.0, 100)]
+
+
+@pytest.mark.asyncio
+async def test_materialization_rejects_every_canonical_record_mismatch_before_behavior() -> None:
+    api = _scheduler_api()
+
+    def recorder(
+        target: list[BaseModel],
+    ) -> Callable[[_World, BaseModel], Awaitable[None]]:
+        async def materialize(_world: _World, operation: BaseModel) -> None:
+            target.append(operation)
+
+        return materialize
+
+    for case in (
+        "operation_name",
+        "command_type",
+        "discriminator",
+        "decoded_exact_type",
+        "payload_digest",
+        "canonical_encoding",
+        "world_key",
+    ):
+        seen: list[BaseModel] = []
+        materialize = recorder(seen)
+
+        operation = _PortableOperation(
+            world_id="world-integrity",
+            label=case,
+            value={"z": 2, "a": 1},
+        )
+        record = _record(
+            operation,
+            command_id=f"integrity-{case}",
+            scheduled_tick=2,
+            priority=0,
+            sequence=0,
+        )
+        spec = _portable_spec(materialize)
+
+        if case == "operation_name":
+            record.operation_name = "other"
+        elif case == "command_type":
+            record.command_type = "other"
+        elif case == "discriminator":
+            payload = json.loads(record.payload_json)
+            payload["operation"] = "other"
+            record.payload_json = json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            record.payload_digest = hashlib.sha256(record.payload_json.encode()).hexdigest()
+        elif case == "decoded_exact_type":
+            spec = _Spec(
+                name="portable",
+                model=_PortableOperation,
+                durable=_Durable(
+                    decode=lambda _payload: _ReservedSpawn(
+                        world_id="world-integrity",
+                        entity_id=41,
+                    ),
+                    materialize=materialize,
+                ),
+            )
+        elif case == "payload_digest":
+            record.payload_digest = "0" * 64
+        elif case == "canonical_encoding":
+            record.payload_json = json.dumps(
+                json.loads(record.payload_json),
+                indent=2,
+                sort_keys=True,
+            )
+            record.payload_digest = hashlib.sha256(record.payload_json.encode()).hexdigest()
+        elif case == "world_key":
+            payload = json.loads(record.payload_json)
+            payload["world_id"] = "world-other"
+            record.payload_json = json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            record.payload_digest = hashlib.sha256(record.payload_json.encode()).hexdigest()
+
+        registry = _OperationRegistry((spec,))
+        catalog = _Catalog(lease_batches=[[record]])
+        catalog.records[record.command_id] = record
+        scheduler = _scheduler(api, registry=registry, catalog=catalog)
+        coordinator = _Coordinator()
+        world = _World(
+            world_id="world-integrity",
+            commit_coordinator=coordinator,
+        )
+
+        assert await scheduler.materialize(world, 2) == 0, case
+        assert seen == [], case
+        assert coordinator.staged == {}, case
+        assert len(catalog.failures) == 1, case
+        assert catalog.failures[0]["status"] == "REJECTED", case
+
+
+class _FatalMaterialization(BaseException):
+    pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_type", [asyncio.CancelledError, _FatalMaterialization])
+async def test_process_fatal_materialization_is_never_classified_as_product_failure(
+    failure_type: type[BaseException],
+) -> None:
+    api = _scheduler_api()
+
+    async def materialize(_world: _World, _operation: BaseModel) -> None:
+        raise failure_type()
+
+    operation = _PortableOperation(
+        world_id="world-fatal",
+        label="fatal",
+    )
+    record = _record(
+        operation,
+        command_id="fatal-command",
+        scheduled_tick=0,
+        priority=0,
+        sequence=0,
+    )
+    catalog = _Catalog(lease_batches=[[record]])
+    catalog.records[record.command_id] = record
+    scheduler = _scheduler(
+        api,
+        registry=_OperationRegistry((_portable_spec(materialize),)),
+        catalog=catalog,
+    )
+    coordinator = _Coordinator()
+
+    with pytest.raises(failure_type):
+        await scheduler.materialize(
+            _World(world_id="world-fatal", commit_coordinator=coordinator),
+            0,
+        )
+    assert catalog.failures == []
+    assert coordinator.staged == {}
 
 
 @pytest.mark.asyncio
