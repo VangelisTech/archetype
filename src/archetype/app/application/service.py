@@ -5,27 +5,22 @@
 
 ``RuntimeApplication`` is the canonical application boundary. Trusted hosts
 call it directly; untrusted adapters reach it only after ``CommandGateway``
-has authenticated and authorized the caller. It owns operation admission and
-same-world serialization, but no storage or domain state of its own.
+has authenticated and authorized the caller. It owns process-lifetime
+admission, while ``WorldRegistry`` owns exact-world synchronization and cleanup
+authority.
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
-
-from uuid_utils import UUID
+from typing import TYPE_CHECKING, cast
 
 from archetype.app.models import Command
-from archetype.world.models import (
-    HookInfo,
-    ProcessorInfo,
-    ResourceInfo,
-    WorldInfo,
-)
+from archetype.world import handlers, mutation, query, simulation
+from archetype.world.models import ListHooks, ListProcessors, ListResources, WorldInfo
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -40,9 +35,7 @@ if TYPE_CHECKING:
         iTranscriptIngestionService,
     )
     from archetype.app.physical_ai.interfaces import iPhysicalAIService
-    from archetype.app.query.interfaces import iQueryService
     from archetype.app.research.interfaces import iResearchService
-    from archetype.app.world.interfaces import iMutationService, iSimulationService, iWorldService
     from archetype.physical_ai.contracts import (
         InstructionSweepConfig,
         InstructionSweepReport,
@@ -51,19 +44,14 @@ if TYPE_CHECKING:
     )
     from archetype.physical_ai.manipulation import EnvClient
     from archetype.physical_ai.policy import PolicyClient
+    from archetype.storage.service import StorageService
+    from archetype.world.lifecycle import WorldLifecycle
+    from archetype.world.registry import WorldRegistry
 
 
 _ACTIVE_APPLICATION: ContextVar[RuntimeApplication | None] = ContextVar(
     "archetype_active_application", default=None
 )
-_HELD_WORLD_LANES: ContextVar[frozenset[str]] = ContextVar(
-    "archetype_held_world_lanes", default=frozenset()
-)
-
-
-@dataclass
-class _WorldLane:
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 def _world_info(world) -> WorldInfo:
@@ -71,7 +59,7 @@ def _world_info(world) -> WorldInfo:
         world_id=world.world_id,
         name=world.name,
         tick=getattr(world, "tick", 0),
-        run_id=getattr(world, "run_id", None),
+        run_id=world.run_id,
     )
 
 
@@ -81,10 +69,9 @@ class RuntimeApplication:
     def __init__(
         self,
         *,
-        mutations: iMutationService,
-        worlds: iWorldService,
-        simulation: iSimulationService,
-        queries: iQueryService,
+        registry: WorldRegistry,
+        lifecycle: WorldLifecycle,
+        storage: StorageService,
         commands: iCommandScheduler,
         audit: iAuditLog | None = None,
         research: iResearchService | None = None,
@@ -95,10 +82,9 @@ class RuntimeApplication:
         physical_ai: iPhysicalAIService | None = None,
         agent_missions: Callable[..., iMissionService] | None = None,
     ) -> None:
-        self._mutations = mutations
-        self._worlds = worlds
-        self._simulation = simulation
-        self._queries = queries
+        self._registry = registry
+        self._lifecycle = lifecycle
+        self._storage = storage
         self._commands = commands
         self._audit = audit
         self._research = research
@@ -114,7 +100,6 @@ class RuntimeApplication:
         self._drained.set()
         self._active_operations = 0
         self._accepting = True
-        self._lanes: dict[str, _WorldLane] = {}
         self._create_lock = asyncio.Lock()
 
     def agent_mission_service(self, **kwargs) -> iMissionService:
@@ -128,6 +113,12 @@ class RuntimeApplication:
 
     @asynccontextmanager
     async def _admit(self):
+        """Track top-level process work without granting world authority.
+
+        ``_ACTIVE_APPLICATION`` is a temporary PR-4 nesting marker only.
+        Inherited child tasks must still acquire and validate the registry's
+        exact-world operation or cleanup lease.
+        """
         if _ACTIVE_APPLICATION.get() is self:
             yield
             return
@@ -148,24 +139,6 @@ class RuntimeApplication:
                 if self._active_operations == 0:
                     self._drained.set()
 
-    @asynccontextmanager
-    async def _world_operation(self, world_id: str | UUID):
-        """Serialize operations for one world while allowing worlds to parallelize."""
-        key = str(world_id)
-        held = _HELD_WORLD_LANES.get()
-        if key in held:
-            yield
-            return
-
-        async with self._state_lock:
-            lane = self._lanes.setdefault(key, _WorldLane())
-        async with lane.lock:
-            token = _HELD_WORLD_LANES.set(held | {key})
-            try:
-                yield
-            finally:
-                _HELD_WORLD_LANES.reset(token)
-
     async def stop_admission(self) -> None:
         """Reject new top-level calls and wait for every admitted call."""
         async with self._state_lock:
@@ -175,52 +148,71 @@ class RuntimeApplication:
     # World mutations -------------------------------------------------
 
     async def create_entity(self, world_id, components):
-        async with self._admit(), self._world_operation(world_id):
-            return await self._mutations.create_entity(world_id, components)
+        async with self._admit():
+            return await mutation.create_entity(self._registry, world_id, components)
 
     async def create_entities(self, world_id, entities):
-        async with self._admit(), self._world_operation(world_id):
-            return await self._mutations.create_entities(world_id, entities)
+        async with self._admit():
+            return await mutation.create_entities(self._registry, world_id, entities)
 
-    def reserve_entity_ids(self, world_id, n: int) -> list[int]:
-        if not self._accepting:
-            raise RuntimeError("RuntimeApplication is shutting down")
-        return self._mutations.reserve_entity_ids(world_id, n)
+    async def reserve_entity_ids(self, world_id, n: int) -> list[int]:
+        async with self._admit():
+            return await mutation.reserve_entity_ids(self._registry, world_id, n)
 
     async def spawn_with_reserved_id(self, world_id, entity_id, components):
-        async with self._admit(), self._world_operation(world_id):
-            return await self._mutations.spawn_with_reserved_id(world_id, entity_id, components)
+        async with self._admit():
+            return await mutation.spawn_with_reserved_id(
+                self._registry,
+                world_id,
+                entity_id,
+                components,
+            )
 
     async def remove_entity(self, world_id, entity_id):
-        async with self._admit(), self._world_operation(world_id):
-            return await self._mutations.remove_entity(world_id, entity_id)
+        async with self._admit():
+            return await mutation.remove_entity(self._registry, world_id, entity_id)
 
     async def update_entity(self, world_id, entity_id, components):
-        async with self._admit(), self._world_operation(world_id):
-            return await self._mutations.update_entity(world_id, entity_id, components)
+        async with self._admit():
+            return await mutation.update_entity(
+                self._registry,
+                world_id,
+                entity_id,
+                components,
+            )
 
     async def add_components(self, world_id, entity_id, components):
-        async with self._admit(), self._world_operation(world_id):
-            return await self._mutations.add_components(world_id, entity_id, components)
+        async with self._admit():
+            return await mutation.add_components(
+                self._registry,
+                world_id,
+                entity_id,
+                components,
+            )
 
     async def remove_components(self, world_id, entity_id, component_types):
-        async with self._admit(), self._world_operation(world_id):
-            return await self._mutations.remove_components(world_id, entity_id, component_types)
+        async with self._admit():
+            return await mutation.remove_components(
+                self._registry,
+                world_id,
+                entity_id,
+                component_types,
+            )
 
     async def add_processor(self, world_id, processor):
-        async with self._admit(), self._world_operation(world_id):
-            return await self._mutations.add_processor(world_id, processor)
+        async with self._admit():
+            return await mutation.add_processor(self._registry, world_id, processor)
 
     async def remove_processor(self, world_id, proc_type):
-        async with self._admit(), self._world_operation(world_id):
-            return await self._mutations.remove_processor(world_id, proc_type)
+        async with self._admit():
+            return await mutation.remove_processor(self._registry, world_id, proc_type)
 
     # World lifecycle -------------------------------------------------
 
     async def create_world(self, config, storage_config=None, cache_config=None) -> WorldInfo:
         async with self._admit(), self._create_lock:
             return _world_info(
-                await self._worlds.create_world(config, storage_config, cache_config)
+                await self._lifecycle.create_world(config, storage_config, cache_config)
             )
 
     async def fork_world(
@@ -231,57 +223,88 @@ class RuntimeApplication:
         storage_config=None,
         cache_config=None,
     ) -> WorldInfo:
-        async with self._admit(), self._world_operation(source_world_id):
+        async with self._admit():
             return _world_info(
-                await self._worlds.fork_world(source_world_id, name, storage_config, cache_config)
+                await self._lifecycle.fork_world(
+                    source_world_id,
+                    name,
+                    storage_config,
+                    cache_config,
+                )
             )
 
     async def destroy_world(self, world_id) -> None:
-        async with self._admit(), self._world_operation(world_id):
-            if not self._worlds.has_world(world_id):
-                # Destroy is an idempotent lifecycle operation. There is no
-                # live world's catalog to cancel against in this case.
+        async with self._admit():
+            try:
+                lease = await self._registry.begin_close(str(world_id))
+            except KeyError:
+                # Destroy remains idempotent when no live world is bound.
                 return
-            await self._commands.cancel_world(world_id)
-            await self._worlds.destroy_world(world_id)
+            async with self._registry.cleanup_operation(lease):
+                await self._commands.cancel_world(world_id)
+            await self._lifecycle.destroy_world(world_id, lease=lease)
 
     async def get_world_info(self, world_id) -> WorldInfo:
-        async with self._admit(), self._world_operation(world_id):
-            return _world_info(self._worlds.get_world(UUID(str(world_id))))
+        async with self._admit(), self._registry.operation(str(world_id)) as world:
+            return _world_info(world)
 
     async def list_worlds(self) -> list[WorldInfo]:
         async with self._admit():
-            return [_world_info(world) for world in self._worlds.list_worlds()]
+            return [_world_info(world) for world in await self._registry.list_worlds()]
 
     async def discover_worlds(self, storage_config) -> list[WorldInfo]:
         async with self._admit():
-            return await self._worlds.discover_worlds(storage_config)
+            return await self._lifecycle.discover_worlds(storage_config)
 
     async def open_world_readonly(self, storage_config, world_id) -> WorldInfo:
         async with self._admit():
-            return await self._worlds.open_world_readonly(storage_config, world_id)
+            return await self._lifecycle.open_world_readonly(storage_config, world_id)
 
     async def resume_world(self, storage_config, world_id) -> WorldInfo:
-        async with self._admit(), self._world_operation(world_id):
-            return _world_info(await self._worlds.open_world_mutable(storage_config, world_id))
+        async with self._admit():
+            return _world_info(await self._lifecycle.open_world_mutable(storage_config, world_id))
 
     # Simulation and long workflows ----------------------------------
 
     async def step(self, world_id, run_config, **input_kwargs) -> int:
-        async with self._admit(), self._world_operation(world_id):
-            return await self._simulation.step(world_id, run_config, **input_kwargs)
+        async with self._admit():
+            return await simulation.step(
+                self._registry,
+                world_id,
+                run_config,
+                **input_kwargs,
+            )
 
     async def run(self, world_id, run_config, **input_kwargs):
-        async with self._admit(), self._world_operation(world_id):
-            return await self._simulation.run(world_id, run_config, **input_kwargs)
+        async with self._admit():
+            return await simulation.run(
+                self._registry,
+                world_id,
+                run_config,
+                **input_kwargs,
+            )
 
     async def run_episode(self, world_id, config, **input_kwargs):
-        async with self._admit(), self._world_operation(world_id):
-            return await self._simulation.run_episode(world_id, config, **input_kwargs)
+        async with self._admit():
+            return await simulation.run_episode(
+                self._registry,
+                self._storage,
+                world_id,
+                config,
+                **input_kwargs,
+            )
 
     async def run_rollout(self, world_id, config, **input_kwargs):
         async with self._admit():
-            return await self._simulation.run_rollout(world_id, config, **input_kwargs)
+            return await simulation.run_rollout(
+                self._registry,
+                self._storage,
+                self._lifecycle.fork_world,
+                self._lifecycle.destroy_world,
+                world_id,
+                config,
+                **input_kwargs,
+            )
 
     async def autoresearch(
         self,
@@ -343,21 +366,26 @@ class RuntimeApplication:
 
     # Query and introspection ----------------------------------------
 
-    def _resolve_storage(self, world_id, storage_config):
+    async def _resolve_storage(self, world_id, storage_config):
         if storage_config is not None:
             return storage_config
-        record = self._worlds.storage_record(world_id)
+        record = await self._registry.storage_record(str(world_id))
         return record[0] if record is not None else None
 
     async def _resolve_lineage(self, world_id, run_id, storage_config):
+        # Catch only a missing binding. A live-but-closing world raises
+        # RuntimeError and must not be reclassified as a cold durable read.
         try:
-            world = self._worlds.get_world(UUID(str(world_id)))
-        except Exception:
-            world = None
-        if world is not None:
-            lineage = getattr(world, "lineage", None)
-            return list(lineage) if lineage else None
-        return await self._queries.get_lineage(str(world_id), str(run_id), storage_config)
+            async with self._registry.operation(str(world_id)) as world:
+                lineage = getattr(world, "lineage", None)
+                return list(lineage) if lineage else None
+        except KeyError:
+            return await query.get_lineage(
+                self._storage,
+                str(world_id),
+                str(run_id),
+                storage_config,
+            )
 
     async def query_components(
         self,
@@ -370,12 +398,13 @@ class RuntimeApplication:
         entity_ids=None,
     ):
         async with self._admit():
-            storage_config = self._resolve_storage(world_id, storage_config)
-            return await self._queries.query_components(
-                components=components,
-                world_id=str(world_id),
-                run_id=str(run_id),
-                storage_config=storage_config,
+            storage_config = await self._resolve_storage(world_id, storage_config)
+            return await query.query_components(
+                self._storage,
+                components,
+                str(world_id),
+                str(run_id),
+                storage_config,
                 ticks=ticks,
                 entity_ids=entity_ids,
                 lineage=await self._resolve_lineage(world_id, run_id, storage_config),
@@ -393,8 +422,9 @@ class RuntimeApplication:
         components=None,
     ):
         async with self._admit():
-            storage_config = self._resolve_storage(world_id, storage_config)
-            return await self._queries.query_archetype(
+            storage_config = await self._resolve_storage(world_id, storage_config)
+            return await query.query_archetype(
+                self._storage,
                 sig,
                 str(world_id),
                 str(run_id),
@@ -408,53 +438,47 @@ class RuntimeApplication:
     async def list_signatures(self, storage_config=None, *, world_id=None):
         async with self._admit():
             if world_id is not None:
-                storage_config = self._resolve_storage(world_id, storage_config)
-            return await self._queries.list_signatures(storage_config)
+                storage_config = await self._resolve_storage(world_id, storage_config)
+            return await query.list_signatures(self._storage, storage_config)
 
     async def add_resource(self, world_id, resource):
-        async with self._admit(), self._world_operation(world_id):
-            return await self._worlds.add_resource(world_id, resource)
+        async with self._admit():
+            return await mutation.add_resource(self._registry, world_id, resource)
 
     async def add_hook(self, world_id, event_type, fn, *, mode="blocking"):
-        async with self._admit(), self._world_operation(world_id):
-            return self._worlds.add_hook(world_id, event_type, fn, mode=mode)
+        async with self._admit():
+            return await mutation.add_hook(
+                self._registry,
+                world_id,
+                event_type,
+                fn,
+                mode=mode,
+            )
 
     async def remove_hook(self, world_id, handle):
-        async with self._admit(), self._world_operation(world_id):
-            return self._worlds.remove_hook(world_id, handle)
-
-    async def list_processors(self, world_id) -> list[ProcessorInfo]:
         async with self._admit():
-            return [
-                ProcessorInfo(
-                    qualname=f"{type(proc).__module__}.{type(proc).__qualname__}",
-                    priority=getattr(proc, "priority", 0),
-                    components=tuple(
-                        f"{component.__module__}.{component.__qualname__}"
-                        for component in getattr(proc, "components", ())
-                    ),
-                )
-                for proc in self._worlds.list_processors(world_id)
-            ]
+            return await mutation.remove_hook(self._registry, world_id, handle)
 
-    async def list_hooks(self, world_id) -> list[HookInfo]:
+    async def list_processors(self, world_id):
         async with self._admit():
-            return [
-                HookInfo(
-                    event_type=event_type.__name__,
-                    handler_qualname=getattr(fn, "__qualname__", str(fn)),
-                    mode=mode,
-                    handle_id=handle.id,
-                )
-                for event_type, handle, fn, mode in self._worlds.list_hooks(world_id)
-            ]
+            return await handlers.list_processors(
+                self._registry,
+                ListProcessors(world_id=world_id),
+            )
 
-    async def list_resources(self, world_id) -> list[ResourceInfo]:
+    async def list_hooks(self, world_id):
         async with self._admit():
-            return [
-                ResourceInfo(qualname=f"{resource_type.__module__}.{resource_type.__qualname__}")
-                for resource_type, _resource in self._worlds.list_resources(world_id)
-            ]
+            return await handlers.list_hooks(
+                self._registry,
+                ListHooks(world_id=world_id),
+            )
+
+    async def list_resources(self, world_id):
+        async with self._admit():
+            return await handlers.list_resources(
+                self._registry,
+                ListResources(world_id=world_id),
+            )
 
     async def get_audit_history(self, world_id=None, **filters):
         async with self._admit():
@@ -503,7 +527,7 @@ class RuntimeApplication:
     async def evaluate(self, world_id, components, **kwargs):
         if self._evaluations is None:
             raise RuntimeError("evaluation service is not wired")
-        async with self._admit(), self._world_operation(world_id):
+        async with self._admit():
             return await self._evaluations.evaluate(str(world_id), components, **kwargs)
 
     async def query_trajectory(
@@ -517,7 +541,7 @@ class RuntimeApplication:
         if self._trajectories is None:
             raise RuntimeError("trajectory service is not wired")
         async with self._admit():
-            storage_config = self._resolve_storage(world_id, storage_config)
+            storage_config = await self._resolve_storage(world_id, storage_config)
             return await self._trajectories.query(
                 component,
                 world_id=str(world_id),
@@ -540,7 +564,7 @@ class RuntimeApplication:
         if self._trajectories is None:
             raise RuntimeError("trajectory service is not wired")
         async with self._admit():
-            storage_config = self._resolve_storage(world_id, storage_config)
+            storage_config = await self._resolve_storage(world_id, storage_config)
             return await self._trajectories.grade(
                 component,
                 world_id=str(world_id),
@@ -553,8 +577,9 @@ class RuntimeApplication:
 
     # Deferred commands ---------------------------------------------
 
-    def require_world(self, world_id) -> None:
-        self._commands.require_world(world_id)
+    async def require_world(self, world_id) -> None:
+        async with self._admit():
+            await cast(Awaitable[None], self._commands.require_world(world_id))
 
     def validate_deferred_command(self, command: Command) -> None:
         self._commands.validate_deferred(command)
@@ -567,7 +592,7 @@ class RuntimeApplication:
         principal_id=None,
         origin: str = "local",
     ):
-        async with self._admit(), self._world_operation(world_id):
+        async with self._admit():
             return await self._commands.admit(
                 world_id,
                 command,
@@ -583,7 +608,7 @@ class RuntimeApplication:
         principal_id=None,
         origin: str = "local",
     ):
-        async with self._admit(), self._world_operation(world_id):
+        async with self._admit():
             return await self._commands.admit_batch(
                 world_id,
                 commands,
@@ -601,7 +626,7 @@ class RuntimeApplication:
         principal_id=None,
         origin: str = "local",
     ):
-        async with self._admit(), self._world_operation(world_id):
+        async with self._admit():
             return await self._commands.admit_spawn(
                 world_id,
                 components,
@@ -610,6 +635,3 @@ class RuntimeApplication:
                 principal_id=principal_id,
                 origin=origin,
             )
-
-    async def drain_and_apply(self, world_id, tick: int) -> list[Command]:
-        return await self._commands.drain_and_apply(world_id, tick)
