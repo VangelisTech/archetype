@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -754,6 +755,23 @@ class MissionService:
         retained = self._sandbox_entities.get(identity.sandbox_id)
         if retained is not None:
             entity_id, sandbox_state = retained
+            if sandbox_state.status == SandboxStatus.CLOSED.value:
+                # Deferred observations may arrive after another request has
+                # replaced and closed this session. Preserve terminal evidence;
+                # only fill a previously empty error with the late observation.
+                if not sandbox_state.error and error:
+                    updated = sandbox_state.model_copy(
+                        update={
+                            "error": self._redact_and_tail(
+                                error,
+                                limit=4_000,
+                                scope=f"mission:{mission_id}:sandbox-error",
+                            )
+                        }
+                    )
+                    await self._world.update(entity_id, updated)
+                    self._sandbox_entities[identity.sandbox_id] = (entity_id, updated)
+                return entity_id
             if sandbox_state.status != status.value or sandbox_state.error:
                 updated = sandbox_state.model_copy(
                     update={
@@ -791,6 +809,12 @@ class MissionService:
         sandbox_id = self._mission_sandboxes.get(mission_id)
         try:
             await self._sandboxes.close(key)
+        except asyncio.CancelledError:
+            # SandboxService.close() shields provider teardown. Caller
+            # cancellation is not evidence that the provider cleanup failed;
+            # a later run or service shutdown reconciles the retained entity
+            # with the single-flight close result.
+            raise
         except BaseException as exc:
             if sandbox_id is not None:
                 await self._record_sandbox_teardown_failure(

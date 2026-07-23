@@ -153,6 +153,34 @@ class _LiveOutputBackend(_LocalBackend):
         return session
 
 
+class _BlockingCloseSession(_LocalSession):
+    def __init__(self, spec: SandboxSpec) -> None:
+        super().__init__(spec)
+        self.close_started = asyncio.Event()
+        self.close_release = asyncio.Event()
+        self.close_finished = asyncio.Event()
+
+    async def close(self) -> None:
+        self.close_attempts += 1
+        self.close_started.set()
+        await self.close_release.wait()
+        self.closed += 1
+        self.close_finished.set()
+
+
+class _BlockingCloseBackend(_LocalBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.created = asyncio.Event()
+
+    async def create(self, spec: SandboxSpec) -> _BlockingCloseSession:
+        self.creates += 1
+        session = _BlockingCloseSession(spec)
+        self.session = session
+        self.created.set()
+        return session
+
+
 class _AutoReplacementSession(_LocalSession):
     def __init__(
         self,
@@ -187,6 +215,8 @@ class _AutoReplacementSession(_LocalSession):
 
     async def checkpoint(self) -> CheckpointRef:
         self.checkpoints += 1
+        if self._status is not SandboxStatus.READY:
+            raise RuntimeError(f"local sandbox session is {self._status.value}")
         if self.fail_checkpoint:
             self._status = SandboxStatus.ERRORED
             raise RuntimeError("simulated checkpoint restart failure")
@@ -715,7 +745,7 @@ async def test_same_tick_replacement_keeps_prior_sandbox_closed(
                 sandbox_environment="local-replacement-test",
                 driver=driver,
                 workspace=str(workspace),
-                checkpoint_after_dispatch=False,
+                checkpoint_after_dispatch=True,
             ),
             storage=StorageConfig(
                 uri=str(tmp_path / "batched_replacement_missions"),
@@ -750,6 +780,7 @@ async def test_same_tick_replacement_keeps_prior_sandbox_closed(
             assert result.status == "succeeded"
             assert len(driver.calls) == 3
             assert len(backend.sessions) == 2
+            assert [session.checkpoints for session in backend.sessions] == [1, 2]
             assert [await session.status() for session in backend.sessions] == [
                 SandboxStatus.CLOSED,
                 SandboxStatus.CLOSED,
@@ -767,6 +798,74 @@ async def test_same_tick_replacement_keeps_prior_sandbox_closed(
             assert by_id["sandbox-replacement-2"][f"{sandbox}status"] == (
                 SandboxStatus.CLOSED.value
             )
+
+
+@pytest.mark.asyncio
+async def test_cancelled_terminal_close_does_not_record_teardown_failure(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    backend = _BlockingCloseBackend()
+
+    async with ArchetypeRuntime() as runtime:
+        async with runtime.missions(
+            "cancelled-terminal-close",
+            config=AgentMissionConfig(
+                sandbox_backend=backend,
+                sandbox_environment="local-close-cancellation-test",
+                driver=_MissionDriver(workspace),
+                workspace=str(workspace),
+                checkpoint_after_dispatch=False,
+            ),
+            storage=StorageConfig(
+                uri=str(tmp_path / "cancelled_terminal_close_missions"),
+                namespace="cancelled_terminal_close_contract",
+            ),
+        ) as missions:
+            submitted = await missions.submit(
+                repository=str(remote),
+                branch="agent/cancelled-terminal-close",
+                tasks=(
+                    AgentTask(
+                        "implementation",
+                        "Create implementation.txt containing fixed.",
+                        (
+                            CommandValidator(
+                                "focused",
+                                (
+                                    "sh",
+                                    "-lc",
+                                    'test "$(cat implementation.txt)" = fixed',
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+            running = asyncio.create_task(missions.run(submitted))
+            await backend.created.wait()
+            assert isinstance(backend.session, _BlockingCloseSession)
+            session = backend.session
+            await session.close_started.wait()
+            running.cancel()
+
+            with pytest.raises(asyncio.CancelledError):
+                await running
+
+            session.close_release.set()
+            await asyncio.wait_for(session.close_finished.wait(), timeout=1)
+            result = await missions.run(submitted)
+
+            assert result.status == "succeeded"
+            assert session.close_attempts == 1
+            sandbox = Sandbox.get_prefix()
+            sandbox_rows = latest(await missions.query(Sandbox)).to_pylist()
+            assert sandbox_rows[0][f"{sandbox}status"] == SandboxStatus.CLOSED.value
+            assert sandbox_rows[0][f"{sandbox}error"] == ""
+            with pytest.raises(KeyError, match="FrictionLog has never been spawned"):
+                await missions.query(FrictionLog)
 
 
 @pytest.mark.asyncio
