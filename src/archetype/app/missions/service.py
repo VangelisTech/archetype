@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
@@ -31,13 +31,18 @@ from archetype.missions.coding_agents.harness import (
 )
 from archetype.missions.components import (
     AgentExecution,
+    Candidate,
     Checkpoint,
     Commit,
+    CriticExecution,
+    CriticFinding,
+    CriticReceipt,
     FrictionLog,
     Mission,
     MissionState,
     Sandbox,
     Task,
+    TaskCriticPolicy,
     TaskDispatch,
     TaskPolicy,
     TaskState,
@@ -52,19 +57,36 @@ from archetype.missions.contracts import (
     MissionSubmission,
     SubmittedMission,
 )
+from archetype.missions.critics import (
+    CandidateReviewRequest,
+    CodexCriticDriver,
+    CriticExecutionResult,
+    CriticHarness,
+    CriticHarnessConfig,
+    CriticPrewarmRequest,
+)
+from archetype.missions.critics.contracts import (
+    candidate_subject_digest,
+    canonical_digest,
+)
 from archetype.missions.processors import mission_processors
 from archetype.missions.projections import (
+    CriticReviewOutbox,
     TaskDispatchOutbox,
     current_mission_status,
     project_mission_result,
 )
 from archetype.missions.relations import (
+    AuthoredBy,
+    CandidateFor,
     DependsOn,
     Executes,
     Guards,
     PartOfMission,
     ProducedBy,
+    Reviews,
     RunsIn,
+    Supersedes,
 )
 from archetype.missions.sandboxes import (
     CheckpointRef,
@@ -78,11 +100,16 @@ from archetype.missions.sandboxes import (
     SandboxStatus,
     SandboxTeardownError,
 )
-from archetype.missions.transitions import AgentExecutionStatus, MissionStatus
+from archetype.missions.transitions import (
+    AgentExecutionStatus,
+    CriticExecutionStatus,
+    MissionStatus,
+)
 
 
 @dataclass(frozen=True)
 class _ExecutionEnvelope:
+    request: TaskDispatchRequest
     result: AgentExecutionResult
     sandbox_status: SandboxStatus
     session: SandboxSession | None
@@ -94,6 +121,14 @@ class _CheckpointCandidate:
     result: AgentExecutionResult
     execution_id: int
     session: SandboxSession
+
+
+@dataclass(frozen=True)
+class _CriticWarmSession:
+    session: SandboxSession
+    provision_started_at_ms: int
+    sandbox_ready_at_ms: int
+    base_hydrated_at_ms: int
 
 
 class MissionWorld(Protocol):
@@ -138,6 +173,7 @@ class MissionService:
     ) -> None:
         view = GraphView()
         outbox = TaskDispatchOutbox()
+        critic_outbox = CriticReviewOutbox()
         world = world_factory(
             name,
             storage=storage,
@@ -146,6 +182,7 @@ class MissionService:
             hooks=[
                 (PostTick, view.on_post_tick),
                 (PostTick, outbox.on_post_tick),
+                (PostTick, critic_outbox.on_post_tick),
             ],
         )
         driver = config.driver or CodexDriver(
@@ -155,14 +192,23 @@ class MissionService:
         self._world = world
         self._view = view
         self._outbox = outbox
+        self._critic_outbox = critic_outbox
         self._sandboxes = sandbox_service
         self._redaction_service = redaction_service
         self._sandbox_provider = config.sandbox_backend.name
         self._sandbox_environment = config.sandbox_environment
         self._workspace = config.workspace
+        self._critic_workspace = config.critic_workspace
         self._harness = CodingAgentHarness(
             driver,
             CodingAgentHarnessConfig(workspace=config.workspace),
+        )
+        critic_driver = config.critic_driver or CodexCriticDriver(
+            workspace=config.critic_workspace,
+        )
+        self._critic_harness = CriticHarness(
+            critic_driver,
+            CriticHarnessConfig(workspace=config.critic_workspace),
         )
         self._max_ticks = config.max_ticks
         self._sandbox_entities: dict[str, tuple[int, Sandbox]] = {}
@@ -170,6 +216,13 @@ class MissionService:
         self._checkpoint_after_dispatch = config.checkpoint_after_dispatch
         self._on_sandbox_event = config.on_sandbox_event
         self._observed_sandbox_ids: set[str] = set()
+        self._critic_prewarms: dict[str, asyncio.Task[_CriticWarmSession]] = {}
+        self._critic_sandbox_context: dict[
+            str,
+            tuple[SandboxKey, int, int, str],
+        ] = {}
+        self._task_candidates: dict[int, int] = {}
+        self._candidate_dispatches: set[str] = set()
 
     async def submit(
         self,
@@ -218,6 +271,20 @@ class MissionService:
                 TaskPolicy(
                     max_dispatches=task.max_dispatches,
                     publication_policy=task.publication_policy.value,
+                ),
+                TaskCriticPolicy(
+                    policy_id=task.critic_policy.policy_id,
+                    version=task.critic_policy.version,
+                    digest=task.critic_policy.digest,
+                    perspective=task.critic_policy.perspective,
+                    information_view=task.critic_policy.information_view,
+                    driver=task.critic_policy.driver,
+                    model=task.critic_policy.model,
+                    sampling=task.critic_policy.sampling,
+                    max_reviews=task.critic_policy.max_reviews,
+                    timeout_seconds=task.critic_policy.timeout_seconds,
+                    output_schema_version=task.critic_policy.output_schema_version,
+                    max_output_chars=task.critic_policy.max_output_chars,
                 ),
                 TaskState(),
                 TaskDispatch(),
@@ -311,11 +378,17 @@ class MissionService:
             raise ValueError("max_ticks must be positive")
 
         pending_checkpoints: list[tuple[int, _CheckpointCandidate]] = []
+        pending_critic_closures: list[tuple[CandidateReviewRequest, str]] = []
         checkpoint_commit_pending = False
         for _ in range(limit):
             await self._world.step()
             if checkpoint_commit_pending:
                 checkpoint_commit_pending = False
+
+            closing_reviews = pending_critic_closures
+            pending_critic_closures = []
+            for request, sandbox_id in closing_reviews:
+                await self._close_critic_sandbox(request, sandbox_id)
 
             waiting: list[tuple[int, _CheckpointCandidate]] = []
             for remaining_commits, candidate in pending_checkpoints:
@@ -328,12 +401,21 @@ class MissionService:
             pending_checkpoints = waiting
 
             requests = self._outbox.drain()
+            for request in requests:
+                self._start_critic_prewarm(request)
             for envelope in await self._execute(requests):
                 execution_id = await self._stage_result(
                     envelope.result,
                     envelope.sandbox_status,
                     bind_mission=envelope.bind_mission,
                 )
+                candidate_id = await self._stage_candidate(
+                    envelope.request,
+                    envelope.result,
+                    execution_id,
+                )
+                if candidate_id is None:
+                    await self._close_unused_critic(envelope.request)
                 if (
                     self._checkpoint_after_dispatch
                     and envelope.session is not None
@@ -351,6 +433,20 @@ class MissionService:
                             ),
                         )
                     )
+
+            for review in self._critic_outbox.drain():
+                result = await self._execute_review(review)
+                await self._stage_critic_result(result)
+                pending_critic_closures.append((review, result.sandbox.sandbox_id))
+            exhausted_reviews = self._critic_outbox.drain_exhausted()
+            if exhausted_reviews:
+                exhausted = exhausted_reviews[0]
+                raise RuntimeError(
+                    "critic review budget exhausted for "
+                    f"candidate {exhausted.candidate_id!r} "
+                    f"after {exhausted.attempts}/{exhausted.max_reviews} attempts; "
+                    "the task remains pending review"
+                )
 
             status = current_mission_status(self._view, mission.mission_id)
             if status in {MissionStatus.SUCCEEDED, MissionStatus.FAILED}:
@@ -380,6 +476,11 @@ class MissionService:
             checkpoint_commit_pending = True
         if checkpoint_commit_pending:
             await self._world.step()
+        if pending_critic_closures:
+            await self._world.step()
+            for request, sandbox_id in pending_critic_closures:
+                await self._close_critic_sandbox(request, sandbox_id)
+            await self._world.step()
 
         status = current_mission_status(self._view, mission.mission_id)
         raise RuntimeError(
@@ -390,6 +491,11 @@ class MissionService:
     async def close(self) -> None:
         failures: list[BaseException] = []
         sandbox_failure: BaseException | None = None
+        if self._critic_prewarms:
+            await asyncio.gather(
+                *tuple(self._critic_prewarms.values()),
+                return_exceptions=True,
+            )
         try:
             await self._sandboxes.shutdown()
         except BaseException as exc:
@@ -530,9 +636,10 @@ class MissionService:
                 )
             results.append(
                 _ExecutionEnvelope(
-                    result,
-                    sandbox_status,
-                    session,
+                    request=request,
+                    result=result,
+                    sandbox_status=sandbox_status,
+                    session=session,
                     bind_mission=bind_mission,
                 )
             )
@@ -673,6 +780,419 @@ class MissionService:
             )
             await self._world.spawn(ProducedBy(source=output_id, target=execution_id))
         return execution_id
+
+    async def _stage_candidate(
+        self,
+        request: TaskDispatchRequest,
+        result: AgentExecutionResult,
+        execution_id: int,
+    ) -> int | None:
+        """Stage one immutable candidate only for complete authored-green evidence."""
+
+        if request.dispatch_id in self._candidate_dispatches:
+            return None
+        expected_validator_ids = {item.validator_id for item in request.validators}
+        observed_validator_ids = {item.validator_id for item in result.validation}
+        exact_validation = (
+            expected_validator_ids == observed_validator_ids
+            and len(result.validation) == len(request.validators)
+            and all(
+                item.passed and item.revision == result.final_revision for item in result.validation
+            )
+        )
+        final_publications = [
+            item
+            for item in result.commits
+            if item.sha == result.final_revision and item.pushed and item.final_revision
+        ]
+        if not (
+            result.status is AgentExecutionStatus.EXITED
+            and exact_validation
+            and len(final_publications) == 1
+            and result.final_revision
+            and result.starting_revision
+            and result.diff_digest
+            and result.validator_bundle_digest
+        ):
+            return None
+
+        candidate_id = canonical_digest(
+            {
+                "mission_id": request.mission_id,
+                "task_id": request.task_id,
+                "dispatch_id": request.dispatch_id,
+                "author_execution_id": execution_id,
+                "head_revision": result.final_revision,
+                "policy_digest": request.critic_policy.digest,
+            }
+        )
+        subject_digest = candidate_subject_digest(
+            candidate_id=candidate_id,
+            mission_id=request.mission_id,
+            task_id=request.task_id,
+            dispatch_id=request.dispatch_id,
+            author_execution_id=execution_id,
+            repository=request.repository,
+            branch=request.branch,
+            base_ref=request.base_ref,
+            base_revision=result.starting_revision,
+            head_revision=result.final_revision,
+            diff_digest=result.diff_digest,
+            validator_bundle_digest=result.validator_bundle_digest,
+            policy_digest=request.critic_policy.digest,
+        )
+        candidate_entity_id = await self._world.spawn(
+            Candidate(
+                candidate_id=candidate_id,
+                mission_id=request.mission_id,
+                task_id=request.task_id,
+                dispatch_id=request.dispatch_id,
+                dispatch_sequence=request.dispatch_sequence,
+                author_execution_id=execution_id,
+                author_sandbox_id=result.sandbox.sandbox_id,
+                repository=request.repository,
+                branch=request.branch,
+                base_ref=request.base_ref,
+                base_revision=result.starting_revision,
+                head_revision=result.final_revision,
+                diff_digest=result.diff_digest,
+                validator_bundle_digest=result.validator_bundle_digest,
+                policy_digest=request.critic_policy.digest,
+                candidate_digest=subject_digest,
+                created_at_ms=int(time.time() * 1000),
+            )
+        )
+        await self._world.spawn(CandidateFor(source=candidate_entity_id, target=request.task_id))
+        await self._world.spawn(AuthoredBy(source=candidate_entity_id, target=execution_id))
+        prior_candidate = self._task_candidates.get(request.task_id)
+        if prior_candidate is not None:
+            await self._world.spawn(Supersedes(source=candidate_entity_id, target=prior_candidate))
+        self._task_candidates[request.task_id] = candidate_entity_id
+        self._candidate_dispatches.add(request.dispatch_id)
+        return candidate_entity_id
+
+    def _start_critic_prewarm(self, request: TaskDispatchRequest) -> None:
+        if request.dispatch_id in self._critic_prewarms:
+            return
+        prewarm = CriticPrewarmRequest(
+            mission_id=request.mission_id,
+            task_id=request.task_id,
+            dispatch_id=request.dispatch_id,
+            repository=request.repository,
+            branch=request.branch,
+            base_ref=request.base_ref,
+        )
+        self._critic_prewarms[request.dispatch_id] = asyncio.create_task(
+            self._prewarm_critic(prewarm),
+            name=f"archetype-critic-prewarm-{request.dispatch_id[:12]}",
+        )
+
+    def _start_review_prewarm(self, request: CandidateReviewRequest) -> None:
+        if request.dispatch_id in self._critic_prewarms:
+            return
+        prewarm = CriticPrewarmRequest(
+            mission_id=request.mission_id,
+            task_id=request.task_id,
+            dispatch_id=request.dispatch_id,
+            repository=request.repository,
+            branch=request.branch,
+            base_ref=request.base_ref,
+        )
+        self._critic_prewarms[request.dispatch_id] = asyncio.create_task(
+            self._prewarm_critic(prewarm),
+            name=f"archetype-critic-prewarm-{request.dispatch_id[:12]}",
+        )
+
+    async def _prewarm_critic(
+        self,
+        request: CriticPrewarmRequest,
+    ) -> _CriticWarmSession:
+        provision_started_at_ms = int(time.time() * 1000)
+        session = await self._sandboxes.acquire(
+            self._critic_sandbox_key(request.dispatch_id),
+            self._critic_sandbox_spec(
+                mission_id=request.mission_id,
+                dispatch_id=request.dispatch_id,
+                branch=request.branch,
+            ),
+        )
+        sandbox_ready_at_ms = int(time.time() * 1000)
+        await self._critic_harness.prewarm(session, request)
+        return _CriticWarmSession(
+            session=session,
+            provision_started_at_ms=provision_started_at_ms,
+            sandbox_ready_at_ms=sandbox_ready_at_ms,
+            base_hydrated_at_ms=int(time.time() * 1000),
+        )
+
+    async def _execute_review(
+        self,
+        request: CandidateReviewRequest,
+    ) -> CriticExecutionResult:
+        self._start_review_prewarm(request)
+        task = self._critic_prewarms[request.dispatch_id]
+        try:
+            warm = await asyncio.shield(task)
+        except BaseException as exc:
+            retained = self._sandboxes.session(self._critic_sandbox_key(request.dispatch_id))
+            identity = (
+                retained.identity
+                if retained is not None
+                else SandboxIdentity(
+                    self._sandbox_provider,
+                    f"critic-unavailable-{request.review_id}",
+                    self._sandbox_environment,
+                )
+            )
+            now_ms = int(time.time() * 1000)
+            return CriticExecutionResult(
+                request=request,
+                status=CriticExecutionStatus.ERRORED,
+                sandbox=identity,
+                started_at_ms=now_ms,
+                ended_at_ms=now_ms,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        if warm.session.identity.sandbox_id == request.author_sandbox_id:
+            now_ms = int(time.time() * 1000)
+            return CriticExecutionResult(
+                request=request,
+                status=CriticExecutionStatus.UNVERIFIABLE,
+                sandbox=warm.session.identity,
+                started_at_ms=now_ms,
+                ended_at_ms=now_ms,
+                provision_started_at_ms=warm.provision_started_at_ms,
+                sandbox_ready_at_ms=warm.sandbox_ready_at_ms,
+                base_hydrated_at_ms=warm.base_hydrated_at_ms,
+                error="critic reused the author sandbox identity",
+            )
+        await self._ensure_sandbox_entity(
+            request.mission_id,
+            warm.session.identity,
+            status=SandboxStatus.READY,
+            bind_mission=False,
+        )
+        self._emit_sandbox_event(SandboxEventType.READY, warm.session.identity)
+        self._emit_sandbox_event(
+            SandboxEventType.PROCESS_STARTED,
+            warm.session.identity,
+            operation="critic",
+        )
+        result = await self._critic_harness.execute(
+            warm.session,
+            request,
+            provision_started_at_ms=warm.provision_started_at_ms,
+            sandbox_ready_at_ms=warm.sandbox_ready_at_ms,
+            base_hydrated_at_ms=warm.base_hydrated_at_ms,
+        )
+        self._emit_sandbox_event(
+            SandboxEventType.PROCESS_FINISHED,
+            warm.session.identity,
+            operation="critic",
+            returncode=0 if result.status is CriticExecutionStatus.EXITED else 1,
+        )
+        if result.receipt is not None and (
+            result.receipt.candidate_digest != request.candidate_digest
+            or result.receipt.policy_digest != request.policy.digest
+        ):
+            return replace(
+                result,
+                status=CriticExecutionStatus.UNVERIFIABLE,
+                findings=(),
+                receipt=None,
+                error="critic receipt identity does not match its request",
+            )
+        return result
+
+    async def _close_unused_critic(self, request: TaskDispatchRequest) -> None:
+        task = self._critic_prewarms.pop(request.dispatch_id, None)
+        if task is None:
+            return
+        try:
+            warm = await asyncio.shield(task)
+        except BaseException:
+            retained = self._sandboxes.session(self._critic_sandbox_key(request.dispatch_id))
+            if retained is None:
+                return
+            sandbox_id = retained.identity.sandbox_id
+        else:
+            sandbox_id = warm.session.identity.sandbox_id
+        try:
+            await self._sandboxes.close(self._critic_sandbox_key(request.dispatch_id))
+        except BaseException as exc:
+            await self._world.spawn(
+                FrictionLog(
+                    task_id=request.task_id,
+                    dispatch_id=request.dispatch_id,
+                    kind="critic_prewarm_teardown",
+                    message=self._redact_and_tail(
+                        self._format_exception(exc),
+                        limit=4_000,
+                        scope=f"mission:{request.mission_id}:critic-prewarm-teardown",
+                    ),
+                )
+            )
+        else:
+            if sandbox_id in self._sandbox_entities:
+                await self._mark_sandbox_closed(sandbox_id)
+
+    async def _stage_critic_result(self, result: CriticExecutionResult) -> int:
+        request = result.request
+        self._critic_sandbox_context[result.sandbox.sandbox_id] = (
+            self._critic_sandbox_key(request.dispatch_id),
+            request.mission_id,
+            request.task_id,
+            request.dispatch_id,
+        )
+        sandbox_entity = await self._ensure_sandbox_entity(
+            request.mission_id,
+            result.sandbox,
+            status=SandboxStatus.READY,
+            bind_mission=False,
+        )
+        receipt_staged_at_ms = int(time.time() * 1000) if result.receipt else 0
+        execution_id = await self._world.spawn(
+            CriticExecution(
+                candidate_entity_id=request.candidate_entity_id,
+                candidate_id=request.candidate_id,
+                review_id=request.review_id,
+                attempt=request.attempt,
+                status=result.status.value,
+                sandbox_id=result.sandbox.sandbox_id,
+                driver=request.policy.driver,
+                model=request.policy.model,
+                started_at_ms=result.started_at_ms,
+                ended_at_ms=result.ended_at_ms,
+                provision_started_at_ms=result.provision_started_at_ms,
+                sandbox_ready_at_ms=result.sandbox_ready_at_ms,
+                base_hydrated_at_ms=result.base_hydrated_at_ms,
+                candidate_published_at_ms=request.candidate_published_at_ms,
+                head_ready_at_ms=result.head_ready_at_ms,
+                critic_started_at_ms=result.critic_started_at_ms,
+                receipt_staged_at_ms=receipt_staged_at_ms,
+                raw_output=self._redact_and_tail(
+                    result.raw_output,
+                    limit=request.policy.max_output_chars,
+                    scope=f"mission:{request.mission_id}:critic-output",
+                ),
+                trace_uri=self._safe_metadata(
+                    result.trace_uri,
+                    field="CriticExecution.trace_uri",
+                ),
+                redaction_policy_id=self._redaction_service.policy_id,
+                error=self._redact_and_tail(
+                    result.error,
+                    limit=4_000,
+                    scope=f"mission:{request.mission_id}:critic-error",
+                ),
+            )
+        )
+        await self._world.spawn(Reviews(source=execution_id, target=request.candidate_entity_id))
+        await self._world.spawn(RunsIn(source=execution_id, target=sandbox_entity))
+        for finding in result.findings:
+            finding_id = await self._world.spawn(
+                CriticFinding(
+                    candidate_entity_id=request.candidate_entity_id,
+                    critic_execution_id=execution_id,
+                    finding_id=self._redact_and_tail(
+                        finding.finding_id,
+                        limit=256,
+                        scope=f"mission:{request.mission_id}:critic-finding-id",
+                    ),
+                    severity=finding.severity,
+                    category=self._redact_and_tail(
+                        finding.category,
+                        limit=256,
+                        scope=f"mission:{request.mission_id}:critic-category",
+                    ),
+                    confidence=finding.confidence,
+                    title=self._redact_and_tail(
+                        finding.title,
+                        limit=1_000,
+                        scope=f"mission:{request.mission_id}:critic-title",
+                    ),
+                    detail=self._redact_and_tail(
+                        finding.detail,
+                        limit=4_000,
+                        scope=f"mission:{request.mission_id}:critic-detail",
+                    ),
+                    evidence_location=self._redact_and_tail(
+                        finding.evidence_location,
+                        limit=1_000,
+                        scope=f"mission:{request.mission_id}:critic-location",
+                    ),
+                    reproduction=self._redact_and_tail(
+                        finding.reproduction,
+                        limit=4_000,
+                        scope=f"mission:{request.mission_id}:critic-reproduction",
+                    ),
+                )
+            )
+            await self._world.spawn(ProducedBy(source=finding_id, target=execution_id))
+        if result.receipt is not None:
+            receipt = result.receipt
+            receipt_id = await self._world.spawn(
+                CriticReceipt(
+                    candidate_entity_id=request.candidate_entity_id,
+                    critic_execution_id=execution_id,
+                    critic_sandbox_id=result.sandbox.sandbox_id,
+                    review_id=receipt.review_id,
+                    conclusion=receipt.conclusion.value,
+                    complete=True,
+                    verifiable=True,
+                    candidate_digest=receipt.candidate_digest,
+                    policy_digest=receipt.policy_digest,
+                    evidence_digest=receipt.evidence_digest,
+                    reviewed_base_revision=request.base_revision,
+                    reviewed_head_revision=request.head_revision,
+                    reviewed_diff_digest=request.diff_digest,
+                    validator_bundle_digest=request.validator_bundle_digest,
+                    reviewed_scope=self._redact_and_tail(
+                        receipt.reviewed_scope,
+                        limit=1_000,
+                        scope=f"mission:{request.mission_id}:critic-scope",
+                    ),
+                    finding_count=receipt.finding_count,
+                    blocking_count=receipt.blocking_count,
+                    output_schema_version=receipt.output_schema_version,
+                    completed_at_ms=receipt.completed_at_ms,
+                )
+            )
+            await self._world.spawn(ProducedBy(source=receipt_id, target=execution_id))
+        return execution_id
+
+    async def _close_critic_sandbox(
+        self,
+        request: CandidateReviewRequest,
+        sandbox_id: str,
+    ) -> None:
+        key = self._critic_sandbox_key(request.dispatch_id)
+        try:
+            await self._sandboxes.close(key)
+        except BaseException as exc:
+            if sandbox_id in self._sandbox_entities:
+                await self._mark_sandbox_failed(
+                    sandbox_id,
+                    SandboxStatus.ERRORED,
+                    exc,
+                )
+            await self._world.spawn(
+                FrictionLog(
+                    task_id=request.task_id,
+                    dispatch_id=request.dispatch_id,
+                    kind="critic_sandbox_teardown",
+                    message=self._redact_and_tail(
+                        self._format_exception(exc),
+                        limit=4_000,
+                        scope=f"mission:{request.mission_id}:critic-teardown",
+                    ),
+                )
+            )
+        else:
+            if sandbox_id in self._sandbox_entities:
+                await self._mark_sandbox_closed(sandbox_id)
+        finally:
+            self._critic_prewarms.pop(request.dispatch_id, None)
 
     async def _stage_checkpoint(self, candidate: _CheckpointCandidate) -> None:
         result = candidate.result
@@ -837,7 +1357,7 @@ class MissionService:
         self,
         shutdown_failure: BaseException | None,
     ) -> None:
-        if not self._mission_sandboxes:
+        if not self._mission_sandboxes and not self._critic_sandbox_context:
             return
         changed = False
         for mission_id, sandbox_id in tuple(self._mission_sandboxes.items()):
@@ -852,6 +1372,40 @@ class MissionService:
                 sandbox_id,
                 retained,
                 failure,
+            )
+            changed = True
+        for sandbox_id, (
+            key,
+            mission_id,
+            task_id,
+            dispatch_id,
+        ) in tuple(self._critic_sandbox_context.items()):
+            retained_state = self._sandbox_entities.get(sandbox_id)
+            if retained_state is None or retained_state[1].status == SandboxStatus.CLOSED.value:
+                continue
+            retained = self._sandboxes.session(key)
+            if retained is None:
+                changed = await self._mark_sandbox_closed(sandbox_id) or changed
+                continue
+            failure = shutdown_failure or RuntimeError(
+                "critic sandbox teardown remained incomplete"
+            )
+            await self._mark_sandbox_failed(
+                sandbox_id,
+                SandboxStatus.ERRORED,
+                failure,
+            )
+            await self._world.spawn(
+                FrictionLog(
+                    task_id=task_id,
+                    dispatch_id=dispatch_id,
+                    kind="critic_sandbox_teardown",
+                    message=self._redact_and_tail(
+                        self._format_exception(failure),
+                        limit=4_000,
+                        scope=f"mission:{mission_id}:critic-teardown",
+                    ),
+                )
             )
             changed = True
         if changed:
@@ -947,6 +1501,29 @@ class MissionService:
             metadata=(
                 ("mission", str(mission_id)),
                 ("branch", branch),
+            ),
+        )
+
+    @staticmethod
+    def _critic_sandbox_key(dispatch_id: str) -> SandboxKey:
+        return SandboxKey(f"critic:{dispatch_id}")
+
+    def _critic_sandbox_spec(
+        self,
+        *,
+        mission_id: int,
+        dispatch_id: str,
+        branch: str,
+    ) -> SandboxSpec:
+        return SandboxSpec(
+            provider=self._sandbox_provider,
+            environment=self._sandbox_environment,
+            workdir=self._critic_workspace,
+            metadata=(
+                ("mission", str(mission_id)),
+                ("branch", branch),
+                ("role", "critic"),
+                ("dispatch", dispatch_id),
             ),
         )
 

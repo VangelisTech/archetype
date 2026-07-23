@@ -17,6 +17,7 @@ class TaskStatus(StrEnum):
     PENDING = "pending"
     READY = "ready"
     DISPATCHED = "dispatched"
+    CANDIDATE = "candidate"
     ACCEPTED = "accepted"
     FAILED = "failed"
 
@@ -29,6 +30,25 @@ class AgentExecutionStatus(StrEnum):
     EXITED = "exited"
     ERRORED = "errored"
     INTERRUPTED = "interrupted"
+
+
+class CriticExecutionStatus(StrEnum):
+    """Factual lifecycle of one independent review invocation."""
+
+    STARTING = "starting"
+    RUNNING = "running"
+    EXITED = "exited"
+    ERRORED = "errored"
+    TIMED_OUT = "timed_out"
+    MALFORMED = "malformed"
+    UNVERIFIABLE = "unverifiable"
+
+
+class CriticConclusion(StrEnum):
+    """Terminal structured conclusion recorded by a complete receipt."""
+
+    APPROVED = "approved"
+    BLOCKING = "blocking"
 
 
 MISSION_TRANSITIONS = MappingProxyType(
@@ -44,8 +64,9 @@ TASK_TRANSITIONS = MappingProxyType(
         TaskStatus.PENDING: frozenset({TaskStatus.READY}),
         TaskStatus.READY: frozenset({TaskStatus.DISPATCHED}),
         TaskStatus.DISPATCHED: frozenset(
-            {TaskStatus.READY, TaskStatus.ACCEPTED, TaskStatus.FAILED}
+            {TaskStatus.READY, TaskStatus.CANDIDATE, TaskStatus.FAILED}
         ),
+        TaskStatus.CANDIDATE: frozenset({TaskStatus.READY, TaskStatus.ACCEPTED, TaskStatus.FAILED}),
         TaskStatus.ACCEPTED: frozenset(),
         TaskStatus.FAILED: frozenset(),
     }

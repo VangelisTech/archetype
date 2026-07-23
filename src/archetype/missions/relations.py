@@ -28,3 +28,19 @@ class RunsIn(Relation):
 
 class ProducedBy(Relation):
     """Output ``source`` was produced by execution ``target``."""
+
+
+class CandidateFor(Relation):
+    """Immutable candidate ``source`` is a review subject for task ``target``."""
+
+
+class AuthoredBy(Relation):
+    """Candidate ``source`` was produced by author execution ``target``."""
+
+
+class Reviews(Relation):
+    """Critic execution ``source`` reviews candidate ``target``."""
+
+
+class Supersedes(Relation):
+    """New candidate ``source`` makes prior candidate ``target`` stale."""

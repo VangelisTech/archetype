@@ -17,10 +17,13 @@ from archetype.core.resources import Resources
 from archetype.graph import GraphView
 from archetype.missions.components import (
     AgentExecution,
+    Candidate,
     Commit,
+    CriticReceipt,
     Mission,
     MissionState,
     Task,
+    TaskCriticPolicy,
     TaskDispatch,
     TaskPolicy,
     TaskState,
@@ -29,15 +32,16 @@ from archetype.missions.components import (
 from archetype.missions.relations import DependsOn, Guards, PartOfMission
 from archetype.missions.transitions import (
     AgentExecutionStatus,
+    CriticConclusion,
     MissionStatus,
     TaskStatus,
 )
 
 
 class TaskDecisionProcessor(AsyncProcessor):
-    """Accept, retry, or exhaust from current revision-bound observations."""
+    """Create candidates, then accept or repair from exact independent review."""
 
-    components = (TaskState, TaskDispatch, TaskPolicy)
+    components = (TaskState, TaskDispatch, TaskPolicy, TaskCriticPolicy)
     priority = 10
 
     async def process(
@@ -184,7 +188,7 @@ class TaskDecisionProcessor(AsyncProcessor):
         complete_validation = validation_count == guard_count
         passing_validation = passed_count == guard_count
         published_revision = cast(Expression, final_commit_count == 1)
-        accepted = (
+        author_green = (
             dispatched
             & has_terminal
             & exited
@@ -193,22 +197,112 @@ class TaskDecisionProcessor(AsyncProcessor):
             & passing_validation
             & published_revision
         )
-        rejected = dispatched & has_terminal & ~accepted
-        retryable = rejected & (col(f"{dispatch}sequence") < col(f"{policy}max_dispatches"))
-        exhausted = rejected & ~retryable
+        author_rejected = dispatched & has_terminal & ~author_green
+
+        candidate_frame = view.frame(Candidate)
+        candidate = Candidate.get_prefix()
+        review_conclusion = "_review_conclusion"
+        review_policy_digest = "_review_policy_digest"
+        receipts = view.frame(CriticReceipt)
+        if candidate_frame is not None and receipts is not None:
+            candidates = candidate_frame.select(
+                col("entity_id").alias("_candidate_entity_id"),
+                col(f"{candidate}task_id").alias("_candidate_task_id"),
+                col(f"{candidate}dispatch_id").alias("_candidate_dispatch_id"),
+                col(f"{candidate}author_sandbox_id").alias("_candidate_author_sandbox_id"),
+                col(f"{candidate}base_revision").alias("_candidate_base_revision"),
+                col(f"{candidate}head_revision").alias("_candidate_head_revision"),
+                col(f"{candidate}diff_digest").alias("_candidate_diff_digest"),
+                col(f"{candidate}validator_bundle_digest").alias(
+                    "_candidate_validator_bundle_digest"
+                ),
+                col(f"{candidate}policy_digest").alias("_candidate_policy_digest"),
+                col(f"{candidate}candidate_digest").alias("_candidate_digest"),
+            )
+            receipt = CriticReceipt.get_prefix()
+            reviews = receipts.join(
+                candidates,
+                left_on=f"{receipt}candidate_entity_id",
+                right_on="_candidate_entity_id",
+            )
+            reviews = reviews.where(
+                col(f"{receipt}complete")
+                & col(f"{receipt}verifiable")
+                & (col(f"{receipt}critic_sandbox_id") != col("_candidate_author_sandbox_id"))
+                & (col(f"{receipt}candidate_digest") == col("_candidate_digest"))
+                & (col(f"{receipt}policy_digest") == col("_candidate_policy_digest"))
+                & (col(f"{receipt}reviewed_base_revision") == col("_candidate_base_revision"))
+                & (col(f"{receipt}reviewed_head_revision") == col("_candidate_head_revision"))
+                & (col(f"{receipt}reviewed_diff_digest") == col("_candidate_diff_digest"))
+                & (
+                    col(f"{receipt}validator_bundle_digest")
+                    == col("_candidate_validator_bundle_digest")
+                )
+            ).select(
+                col("_candidate_task_id").alias("_review_task_id"),
+                col("_candidate_dispatch_id").alias("_review_dispatch_id"),
+                col(f"{receipt}conclusion").alias(review_conclusion),
+                col("_candidate_policy_digest").alias(review_policy_digest),
+            )
+            df = df.join(
+                reviews,
+                left_on=["entity_id", f"{dispatch}dispatch_id"],
+                right_on=["_review_task_id", "_review_dispatch_id"],
+                how="left",
+            )
+        else:
+            df = df.with_column(review_conclusion, lit(None))
+            df = df.with_column(review_policy_digest, lit(None))
+
+        critic_policy = TaskCriticPolicy.get_prefix()
+        candidate_created = dispatched & author_green
+        awaiting_review = cast(
+            Expression,
+            col(f"{state}status") == TaskStatus.CANDIDATE.value,
+        )
+        current_policy_review = (
+            col(review_policy_digest) == col(f"{critic_policy}digest")
+        ).fill_null(False)
+        approved = (
+            awaiting_review
+            & current_policy_review
+            & cast(Expression, col(review_conclusion) == CriticConclusion.APPROVED.value)
+        )
+        approved = approved.fill_null(False)
+        blocked = (
+            awaiting_review
+            & current_policy_review
+            & cast(Expression, col(review_conclusion) == CriticConclusion.BLOCKING.value)
+        )
+        blocked = blocked.fill_null(False)
+        author_retryable = author_rejected & (
+            col(f"{dispatch}sequence") < col(f"{policy}max_dispatches")
+        )
+        author_exhausted = author_rejected & ~author_retryable
+        repairable = blocked & (col(f"{dispatch}sequence") < col(f"{policy}max_dispatches"))
+        repair_exhausted = blocked & ~repairable
         failure_reason = when(
             col("_execution_error").fill_null("") != "",
             then=col("_execution_error"),
         ).otherwise(lit("validation or repository publication failed"))
         df = df.with_columns(
             {
-                f"{state}status": when(accepted, then=lit(TaskStatus.ACCEPTED.value))
-                .when(retryable, then=lit(TaskStatus.READY.value))
-                .when(exhausted, then=lit(TaskStatus.FAILED.value))
+                f"{state}status": when(
+                    candidate_created,
+                    then=lit(TaskStatus.CANDIDATE.value),
+                )
+                .when(author_retryable, then=lit(TaskStatus.READY.value))
+                .when(author_exhausted, then=lit(TaskStatus.FAILED.value))
+                .when(approved, then=lit(TaskStatus.ACCEPTED.value))
+                .when(repairable, then=lit(TaskStatus.READY.value))
+                .when(repair_exhausted, then=lit(TaskStatus.FAILED.value))
                 .otherwise(col(f"{state}status")),
-                f"{state}reason": when(exhausted, then=failure_reason).otherwise(
-                    col(f"{state}reason")
-                ),
+                f"{state}reason": when(author_exhausted, then=failure_reason)
+                .when(
+                    repair_exhausted,
+                    then=lit("independent critic found blocking issues"),
+                )
+                .otherwise(col(f"{state}reason")),
             }
         )
         return df.select(*original)

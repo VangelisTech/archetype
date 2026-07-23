@@ -15,9 +15,10 @@ start, which observations may advance it, and why every transition occurred**.
 > **The V1 contract**
 >
 > Tasks and validators are entities. Dependencies are relations. Processors
-> are the transition authority. A dispatch is committed intent. Agent and
-> sandbox activity are observations. Only validator results bound to the
-> current dispatch and repository revision can accept a task.
+> are the transition authority. A dispatch is committed intent. Agent, critic,
+> and sandbox activity are observations. Validator-green publication creates
+> an immutable candidate; only a complete independent critic receipt bound to
+> that exact candidate can accept a task.
 
 ## 1. The contract in one view
 
@@ -27,12 +28,14 @@ start, which observations may advance it, and why every transition occurred**.
 | Mission | Names one repository objective and rolls its task graph into one result. |
 | Task | Holds one atomic goal, workflow state, retry policy, and repository coordinates. |
 | Validator | Describes one executable acceptance check; `Guards` relates it to a task. |
+| Candidate | Binds authored-green validation and publication evidence to one immutable base/head/diff and critic policy. |
+| Critic | Reviews the exact candidate in a separate sandbox and returns typed findings plus a provider-neutral receipt. |
 | Relations | Express membership, dependencies, execution placement, and provenance without serialized plans. |
 | Processors | Decide readiness, dispatch, retry, failure, acceptance, and mission rollup. |
 | `TaskDispatch` | Records committed permission to perform a particular task revision. It is intent, not an attempt object. |
 | `AgentExecution` | Records what an agent process did for a dispatch. It never says whether the task was accepted. |
 | Sandbox | Records the lifecycle of an isolated filesystem and process container. It never says whether the task was accepted. |
-| Outputs | Record validator results, commits, checkpoints, manifests, friction, and published artifacts. |
+| Outputs | Record validator results, commits, candidates, critic executions/findings/receipts, checkpoints, manifests, friction, and published artifacts. |
 | Sandbox service | Owns backend selection and live session lifetime; it has no workflow authority. |
 | Application service | Materializes the graph, crosses committed I/O boundaries, stages observations, and returns projections. |
 
@@ -42,7 +45,9 @@ The governing separation is:
 Archetype owns transitions as data.
 The sandbox owns isolated filesystem and process capabilities.
 The agent execution records what happened.
-The repository harness owns acceptance.
+The repository harness owns authored-green validation and publication.
+The independent critic produces exact-head evidence.
+Processors alone own candidate promotion, repair, and acceptance.
 ```
 
 Daft evaluates state transforms and joins. It does not keep an agent process
@@ -58,7 +63,12 @@ Components, wire processors, manage `GraphView`, or serialize a plan.
 import asyncio
 
 from archetype import ArchetypeRuntime
-from archetype.missions import AgentMissionConfig, AgentTask, CommandValidator
+from archetype.missions import (
+    AgentMissionConfig,
+    AgentTask,
+    CommandValidator,
+    CriticPolicy,
+)
 from archetype.missions.sandboxes import AppleContainerSandboxBackend
 
 
@@ -80,6 +90,7 @@ TASKS = (
                 expected_returncode=1,
             ),
         ),
+        critic_policy=CriticPolicy(max_reviews=2),
     ),
     AgentTask(
         name="implementation",
@@ -95,6 +106,7 @@ TASKS = (
             ),
         ),
         depends_on=("regression",),
+        critic_policy=CriticPolicy(max_reviews=2),
     ),
 )
 
@@ -142,8 +154,10 @@ tasks. V1 requires:
 - non-empty prompts and at least one validator per task;
 - positive dispatch budgets;
 - dependencies that name tasks in the same submission;
-- an acyclic dependency graph; and
-- a pinned sandbox environment plus an explicit publication policy.
+- an acyclic dependency graph;
+- a pinned sandbox environment plus an explicit publication policy; and
+- one valid, digestible critic policy with positive review, time, schema, and
+  output budgets per task.
 
 The sequence is already the planner seam. A later planner may take one large
 task and emit many tasks and relationships. Task decomposition is not part of
@@ -161,23 +175,26 @@ flowchart LR
         State[Components + relations]
         Behavior[Processors + transitions]
         Agents[Coding-agent harness]
+        Critics[Exact-head critic harness]
         Sandboxes[Sandbox service + backends + sessions]
     end
 
     World --> State
     World --> Behavior
     App --> Agents
+    App --> Critics
     Agents --> Sandboxes
+    Critics --> Sandboxes
     Sandboxes --> Provider[Apple Container / Docker / Modal]
     App --> World
 ```
 
 `archetype.missions` owns the reusable family:
 
-- mission, task, validator, sandbox, execution, and output Components;
+- mission, task, validator, candidate, critic, sandbox, execution, and output Components;
 - relations and pure DataFrame transition logic;
 - built-in processors and projections;
-- coding-agent protocols and harness behavior;
+- coding-agent and independent-critic protocols and harness behavior;
 - sandbox Service, Backend, and Session contracts; and
 - capability-scoped provider adapters such as Modal.
 
@@ -186,7 +203,8 @@ flowchart LR
 - reserve identities and materialize submitted graphs;
 - configure a world with the built-in mission behavior;
 - step the state machine;
-- cross the post-commit boundary and invoke the coding-agent harness;
+- cross post-commit boundaries, prewarm a critic sandbox during author work,
+  and invoke both repository harnesses;
 - stage factual observations through the mutation path;
 - compose mission trajectory reads and evaluation through a separate app service; and
 - return supported mission projections.
@@ -202,8 +220,11 @@ with many sandboxes, many worktrees in one sandbox, several agents in separate
 worktrees, or cooperating agents in one worktree. Placement policy may change
 without changing task readiness.
 
-V1 may choose one persistent repository session per mission and serialize
-tasks that share its worktree. That is a provider policy, not an ECS invariant.
+V1 uses one retained author repository session per mission and a fresh critic
+session per candidate. The critic session may reuse the same backend and pinned
+environment, but it has a distinct sandbox identity, receives no Git
+publication secret, is never checkpointed, and closes after its evidence is
+durable.
 
 ## 4. State and transition protocol
 
@@ -214,8 +235,10 @@ sequenceDiagram
     participant Service as MissionService
     participant World
     participant Processors
-    participant Harness as CodingAgentHarness
-    participant Sandboxes as SandboxService
+    participant AuthorHarness as CodingAgentHarness
+    participant CriticHarness
+    participant AuthorBox as Author sandbox
+    participant CriticBox as Critic sandbox
 
     Author->>Service: submit(repository, branch, tasks)
     Service->>World: stage mission, tasks, validators, relations
@@ -227,11 +250,17 @@ sequenceDiagram
         World->>World: commit tick N
         World-->>Service: PostTick(committed dispatches)
         opt a current dispatch is ready for external work
-            Service->>Harness: execute(dispatch)
-            Harness->>Sandboxes: acquire session and run tools
-            Sandboxes-->>Harness: process + filesystem observations
-            Harness-->>Service: execution, validation, Git, optional recovery outputs
-            Service->>World: stage observations
+            Service->>CriticBox: prewarm public base
+            Service->>AuthorHarness: execute(dispatch)
+            AuthorHarness->>AuthorBox: author, validators, exact push
+            AuthorHarness-->>Service: execution + revision-bound evidence
+            Service->>World: stage observations + immutable candidate
+        end
+        opt a committed candidate awaits review
+            Service->>CriticHarness: review exact base/head/diff
+            CriticHarness->>CriticBox: fetch, verify, probe, infer
+            CriticHarness-->>Service: findings + bound receipt
+            Service->>World: stage review evidence
         end
     end
 
@@ -248,9 +277,12 @@ stateDiagram-v2
     [*] --> pending
     pending --> ready: all prerequisites accepted at N-1
     ready --> dispatched: commit TaskDispatch
-    dispatched --> accepted: current revision passes every guard
+    dispatched --> candidate: validators pass and exact head is published
     dispatched --> ready: evidence fails and budget remains
     dispatched --> failed: evidence fails and budget is exhausted
+    candidate --> accepted: exact independent receipt approves
+    candidate --> ready: blocking findings and author budget remains
+    candidate --> failed: blocking findings exhaust author budget
     accepted --> [*]
     failed --> [*]
 ```
@@ -259,7 +291,7 @@ The built-in pipeline has four concerns:
 
 | Order | Processor | Authority |
 |---:|---|---|
-| 10 | Task decision | Consume observations for the current dispatch and accept, retry, or exhaust. |
+| 10 | Task decision | Turn authored-green publication into a candidate, then consume exact critic evidence to accept, repair, or exhaust. |
 | 20 | Task readiness | Make a task ready only when every prerequisite was accepted in the previous committed tick. |
 | 30 | Task dispatch | Convert ready state into one durable dispatch identity. |
 | 40 | Mission rollup | Succeed only when every member task is accepted; fail when a member task is terminally failed. |
@@ -274,7 +306,8 @@ These concepts never collapse into one status field:
 | Kind | Examples | May decide task state? |
 |---|---|---:|
 | Intent | `TaskDispatch` | No |
-| Runtime observation | `Sandbox`, `AgentExecution` | No |
+| Runtime observation | `Sandbox`, `AgentExecution`, `CriticExecution` | No |
+| Review subject/evidence | `Candidate`, `CriticFinding`, `CriticReceipt` | No |
 | Work output | `ValidationResult`, `Commit`, `FrictionLog`; reusable checkpoint, manifest, and artifact-reference Components | No |
 | Decision | `TaskState` written by the task decision processor | Yes |
 
@@ -282,6 +315,12 @@ These concepts never collapse into one status field:
 the task's workspace and policy Components, it projects the requested
 repository base and publication policy. `AgentExecution` records process lifecycle such as
 `starting`, `running`, `exited`, `errored`, or `interrupted`.
+
+`Candidate` binds the mission, task, dispatch, author execution and sandbox,
+repository/base/head, binary-diff digest, validator-bundle digest, and critic
+policy digest. `CriticReceipt` binds its conclusion back to the same subject.
+Neither value is a decision; the task processor verifies the full binding and
+that author and critic sandbox identities differ.
 
 Sandbox lifecycle is separate: `provisioning`, `ready`, `errored`,
 `interrupted`, or `closed`. A sandbox is never `accepted`, `rejected`, or
@@ -298,6 +337,10 @@ Guards(source=validator, target=task)
 Executes(source=execution, target=task)
 RunsIn(source=execution, target=sandbox)
 ProducedBy(source=output, target=execution)
+CandidateFor(source=candidate, target=task)
+AuthoredBy(source=candidate, target=author_execution)
+Reviews(source=critic_execution, target=candidate)
+Supersedes(source=new_candidate, target=prior_candidate)
 ```
 
 Readiness and rollup use `GraphView`, which is strictly previous-tick. If task
@@ -376,6 +419,48 @@ The coding-agent harness works through `SandboxSession`. It owns clone and
 branch preparation, agent invocation, validator execution, Git publication,
 and translation into factual Components. Provider adapters do not know task
 state and do not return an acceptance verdict.
+
+### Independent exact-head critic
+
+Every `AgentTask` carries one `CriticPolicy`. Its canonical digest fixes the
+policy identity/version, perspective, information view, driver/model,
+sampling description, review/time/output budgets, and schema version.
+
+When an author dispatch commits, `MissionService` starts provisioning a critic
+sandbox and hydrates the public base repository while the author works. After
+authored-green publication, the critic harness:
+
+1. fetches the configured remote branch without requesting a Git secret;
+2. verifies that the candidate head remains reachable from the fetched remote
+   ref, even if that ref has advanced to a later descendant;
+3. verifies and detach-checks out the exact base/head commits;
+4. recomputes the binary diff digest;
+5. invokes a fresh critic process with only its model credential;
+6. normalizes bounded structured findings and a receipt; and
+7. stages that evidence before closing the never-checkpointed critic sandbox.
+
+The receipt is accepted as evidence only when it is complete, verifiable,
+policy- and candidate-digest bound, revision/diff/validator-bundle bound, and
+produced in a sandbox distinct from the author. Missing, malformed, timed-out,
+errored, stale, wrong-head, or same-author evidence cannot accept. Reviewer
+infrastructure failures consume only the critic review budget; they never
+consume an author dispatch. When that bounded budget is exhausted,
+`missions.run()` reports the candidate as still pending review instead of
+turning reviewer failure into task failure or implicit approval.
+
+A blocking receipt moves the task back to `READY` only after its findings are
+durable. The next author request contains those findings. Any repair produces
+a new head, candidate identity, and receipt subject; evidence for the old head
+cannot be reused.
+
+The recorded phase times distinguish provision, base hydration, exact-head
+readiness, critic start, inference, and receipt staging. On the warm path,
+candidate publication to critic start performs only fetch, verification, and
+checkout. Rows whose base-hydrated time precedes candidate publication are the
+warm cohort; operators derive cold and warm p50/p95 phase latency from these
+durable timestamps rather than a process-local metric buffer. V1 supports
+public repositories; a future private-repository adapter requires a separate
+read-only Git capability, never the publication secret.
 
 Checkpointing is optional resumability. A checkpoint is a lightweight,
 provider-native reference to the session-owned writable filesystem, excluding
@@ -459,17 +544,20 @@ task. Every execution emits one `ValidationResult` per guard containing:
 never trusted from a sandbox or agent response. Expected nonzero codes are
 valid—for example, a predecessor can prove a regression test is red.
 
-The task decision processor accepts only when all guards have a result for the
-**current dispatch and exact final repository revision**. Evidence from a
-prior dispatch or pre-repair tree is stale by construction.
+The task decision processor creates a candidate only when all guards have a
+passing result for the **current dispatch and exact final repository
+revision**, and exactly one published final commit names that revision.
+Evidence from a prior dispatch or pre-repair tree is stale by construction.
+Acceptance additionally requires the independent critic receipt described
+above; critic approval cannot override a failed or incomplete validator bundle.
 
 Every validator process receives the harness-reserved
 `ARCHETYPE_TASK_BASE_REVISION` environment variable. The harness resolves it
 from `HEAD` immediately before the task's first agent turn and preserves that
 same SHA across retries. This lets repository policy inspect the complete task
 delta even when the agent created commits before validation. The variable is
-context, not authority: acceptance still requires revision-bound validator and
-publication evidence.
+context, not authority: candidate creation still requires revision-bound
+validator and publication evidence.
 
 ### Git and publication
 
@@ -483,8 +571,9 @@ Git is part of the coding contract:
 6. the configured branch policy publishes the validated final revision.
 
 The publisher never resets valid agent-authored commits merely to manufacture
-one synthetic result. Acceptance binds validation and publication evidence to
-the same final revision.
+one synthetic result. Candidate identity binds validation and publication
+evidence to the same final revision; acceptance then binds independent review
+to that immutable subject.
 
 ### Friction and artifacts
 
@@ -518,11 +607,15 @@ relationships. HTN decomposition is useful, but is not a V1 correctness gate.
 - explicit task and validator entities;
 - temporal membership, dependency, guard, placement, and provenance relations;
 - previous-tick readiness joins;
-- processor-owned acceptance, retry, exhaustion, and rollup;
+- processor-owned candidate promotion, acceptance, repair, exhaustion, and rollup;
 - post-commit dispatch;
-- separate sandbox and agent-process lifecycle;
+- separate author and critic sandbox/process lifecycles;
 - repository validators with expected nonzero support;
 - revision-bound validation and Git publication evidence;
+- immutable candidate identity plus policy-digest-bound critic executions,
+  typed findings, and exact-subject receipts;
+- critic prewarming, bounded infrastructure-only review retry, and durable
+  findings before author repair;
 - first-class commits, friction, and post-decision checkpoint evidence plus
   reusable manifest and artifact-reference schemas;
 - Apple Container, Docker, and Modal backends with checkpoint/restore parity;
@@ -534,10 +627,12 @@ relationships. HTN decomposition is useful, but is not a V1 correctness gate.
 
 - task decomposition or HTN planning;
 - prefab-driven readiness;
-- claims, leases, fences, receipts, or a mission-specific control catalog;
+- claims, leases, fences, command settlement, or a mission-specific control catalog;
 - a second sandbox workflow kernel;
 - an `Attempt` aggregate;
-- PR creation, CI watching, review, merge, or deployment;
+- PR creation, CI watching, hosted review, merge, or deployment;
+- private-repository critic Git credentials, critic sandbox pools, egress
+  attestation, or OS-level read-only mounts;
 - a general relationship-to-sandbox placement scheduler; and
 - a requirement that checkpoints or manifests gate acceptance.
 
@@ -551,6 +646,7 @@ a separate, explicit migration decision.
 | Gap | V1 treatment | Later seam |
 |---|---|---|
 | Cold process resume | Authors may explicitly replace a sandbox from a recorded checkpoint inside an already-known mission; no process-restart reconciliation, fleet claim, or automatic supervisor is implied. | Specify interrupted-dispatch reconciliation before exposing cold mission continuation. |
+| Private-repository critic materialization | V1 proves public repositories and gives critic processes no Git publication secret. | Add a distinct read-only Git capability without widening critic publication authority. |
 | Sandbox placement | Use a simple configured policy. | Add a scheduler only when multiple topologies require one. |
 | Task decomposition | Authors submit the graph. | Planner emits the same typed graph. |
 | Terminal interaction | `exec` is the required capability. | Add optional PTY/tmux/ttyd capabilities without widening workflow authority. |
@@ -565,13 +661,15 @@ The implementation follows this layout:
 | File | Owns |
 |---|---|
 | `archetype/missions/contracts.py` | Supported authoring, configuration, and result values. |
-| `archetype/missions/components.py` | Mission, task, validator, dispatch, sandbox, execution, and output Components. |
-| `archetype/missions/relations.py` | Membership, dependency, guard, placement, and provenance Relations. |
+| `archetype/missions/components.py` | Mission, task, validator, candidate, critic, sandbox, execution, and output Components. |
+| `archetype/missions/relations.py` | Membership, dependency, guard, placement, candidate/review, and provenance Relations. |
 | `archetype/missions/transitions.py` | Small persisted status vocabularies and transition tables. |
 | `archetype/missions/processors.py` | Task decision, readiness, dispatch, and mission rollup authority. |
 | `archetype/missions/projections.py` | Supported mission/task/execution result projections. |
 | `archetype/missions/coding_agents/contracts.py` | Coding-agent request and driver protocols. |
 | `archetype/missions/coding_agents/harness.py` | Repository preparation, agent invocation, validation, Git publication, and observation translation. |
+| `archetype/missions/critics/contracts.py` | Candidate review requests, critic driver protocol, normalized findings, receipts, and stable digests. |
+| `archetype/missions/critics/harness.py` | Public-base prewarming, exact-head verification, critic invocation, and structured fail-closed normalization. |
 | `archetype/missions/sandboxes/contracts.py` | Sandbox Backend, Session, process, status, and snapshot value contracts. |
 | `archetype/missions/sandboxes/service.py` | Backend registry and live-session lifetime. |
 | `archetype/missions/sandboxes/apple_container.py` | Operational macOS backend and atomic root-filesystem archive restore. |
@@ -600,6 +698,7 @@ archetype.missions
 ├── processors.py
 ├── projections.py
 ├── coding_agents/
+├── critics/
 ├── sandboxes/
 ├── planning/
 └── trajectories/
@@ -634,6 +733,12 @@ The credential-free contract lane must prove:
 - post-commit-only dispatch;
 - retry with a new dispatch identity;
 - stale-revision evidence rejection;
+- validator-green publication remaining a candidate until independent review;
+- author/critic sandbox identity separation and a negative Git-secret matrix;
+- blocking findings persisted before repair and old receipts invalidated by a
+  repaired head;
+- missing, malformed, stale, wrong-subject, same-author, and exhausted-review
+  evidence failing closed without consuming another author dispatch;
 - expected-nonzero validator derivation;
 - agent-authored and publisher-authored commit preservation;
 - validators running after a nonzero agent exit when repository evidence exists;

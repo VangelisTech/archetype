@@ -10,7 +10,13 @@ from pydantic import field_validator, model_validator
 from archetype.core.component import Component
 from archetype.missions.contracts import RepositoryPublicationPolicy
 from archetype.missions.sandboxes.contracts import SandboxStatus
-from archetype.missions.transitions import AgentExecutionStatus, MissionStatus, TaskStatus
+from archetype.missions.transitions import (
+    AgentExecutionStatus,
+    CriticConclusion,
+    CriticExecutionStatus,
+    MissionStatus,
+    TaskStatus,
+)
 
 
 class Mission(Component):
@@ -66,6 +72,42 @@ class TaskPolicy(Component):
     @classmethod
     def _valid_publication_policy(cls, value: str) -> str:
         return RepositoryPublicationPolicy(value).value
+
+
+class TaskCriticPolicy(Component):
+    """Immutable independent-review policy materialized with one task."""
+
+    policy_id: str = ""
+    version: str = ""
+    digest: str = ""
+    perspective: str = ""
+    information_view: str = ""
+    driver: str = ""
+    model: str = ""
+    sampling: str = ""
+    max_reviews: int = 1
+    timeout_seconds: int = 2700
+    output_schema_version: int = 1
+    max_output_chars: int = 16_000
+
+    @model_validator(mode="after")
+    def _valid_policy(self) -> TaskCriticPolicy:
+        required = (
+            self.policy_id,
+            self.version,
+            self.digest,
+            self.perspective,
+            self.information_view,
+            self.driver,
+            self.sampling,
+        )
+        if any(not value.strip() for value in required):
+            raise ValueError("critic policy identity fields must not be empty")
+        if self.max_reviews < 1 or self.timeout_seconds < 1:
+            raise ValueError("critic review budgets must be positive")
+        if self.output_schema_version < 1 or self.max_output_chars < 1:
+            raise ValueError("critic output schema and bound must be positive")
+        return self
 
 
 class TaskState(Component):
@@ -188,6 +230,135 @@ class Commit(Component):
     final_revision: bool = False
 
 
+class Candidate(Component):
+    """Immutable authored-green exact-head review subject."""
+
+    candidate_id: str = ""
+    mission_id: int = 0
+    task_id: int = 0
+    dispatch_id: str = ""
+    dispatch_sequence: int = 0
+    author_execution_id: int = 0
+    author_sandbox_id: str = ""
+    repository: str = ""
+    branch: str = ""
+    base_ref: str = ""
+    base_revision: str = ""
+    head_revision: str = ""
+    diff_digest: str = ""
+    validator_bundle_digest: str = ""
+    policy_digest: str = ""
+    candidate_digest: str = ""
+    created_at_ms: int = 0
+
+    @model_validator(mode="after")
+    def _valid_candidate(self) -> Candidate:
+        required = (
+            self.candidate_id,
+            self.dispatch_id,
+            self.author_sandbox_id,
+            self.repository,
+            self.branch,
+            self.base_ref,
+            self.base_revision,
+            self.head_revision,
+            self.diff_digest,
+            self.validator_bundle_digest,
+            self.policy_digest,
+            self.candidate_digest,
+        )
+        if any(not value.strip() for value in required):
+            raise ValueError("candidate identity fields must not be empty")
+        if self.dispatch_sequence < 1 or self.created_at_ms < 0:
+            raise ValueError("candidate sequence must be positive and time non-negative")
+        return self
+
+
+class CriticExecution(Component):
+    """Factual lifecycle and bounded output for one review attempt."""
+
+    candidate_entity_id: int = 0
+    candidate_id: str = ""
+    review_id: str = ""
+    attempt: int = 0
+    status: str = CriticExecutionStatus.STARTING.value
+    sandbox_id: str = ""
+    driver: str = ""
+    model: str = ""
+    started_at_ms: int = 0
+    ended_at_ms: int = 0
+    provision_started_at_ms: int = 0
+    sandbox_ready_at_ms: int = 0
+    base_hydrated_at_ms: int = 0
+    candidate_published_at_ms: int = 0
+    head_ready_at_ms: int = 0
+    critic_started_at_ms: int = 0
+    receipt_staged_at_ms: int = 0
+    raw_output: str = ""
+    trace_uri: str = ""
+    redaction_policy_id: str = ""
+    error: str = ""
+
+    @field_validator("status")
+    @classmethod
+    def _valid_status(cls, value: str) -> str:
+        return CriticExecutionStatus(value).value
+
+
+class CriticFinding(Component):
+    """One typed, provider-neutral critic finding."""
+
+    candidate_entity_id: int = 0
+    critic_execution_id: int = 0
+    finding_id: str = ""
+    severity: str = ""
+    category: str = ""
+    confidence: float = 0.0
+    title: str = ""
+    detail: str = ""
+    evidence_location: str = ""
+    reproduction: str = ""
+
+    @model_validator(mode="after")
+    def _valid_finding(self) -> CriticFinding:
+        if self.severity not in {"blocking", "advisory"}:
+            raise ValueError("critic finding severity must be blocking or advisory")
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("critic finding confidence must be between zero and one")
+        if not self.finding_id or not self.category or not self.title or not self.detail:
+            raise ValueError("critic finding identity and description must not be empty")
+        return self
+
+
+class CriticReceipt(Component):
+    """Complete exact-subject receipt consumed by task transition processors."""
+
+    candidate_entity_id: int = 0
+    critic_execution_id: int = 0
+    critic_sandbox_id: str = ""
+    review_id: str = ""
+    conclusion: str = CriticConclusion.APPROVED.value
+    complete: bool = False
+    verifiable: bool = False
+    candidate_digest: str = ""
+    policy_digest: str = ""
+    evidence_digest: str = ""
+    reviewed_base_revision: str = ""
+    reviewed_head_revision: str = ""
+    reviewed_diff_digest: str = ""
+    validator_bundle_digest: str = ""
+    reviewed_scope: str = ""
+    finding_count: int = 0
+    blocking_count: int = 0
+    output_schema_version: int = 1
+    completed_at_ms: int = 0
+
+    @field_validator("conclusion")
+    @classmethod
+    def _valid_conclusion(cls, value: str) -> str:
+        return CriticConclusion(value).value
+
+
 class Checkpoint(Component):
     """Optional provider-native recovery point for a sandbox."""
 
@@ -247,6 +418,7 @@ TASK_COMPONENTS = (
     Task,
     TaskWorkspace,
     TaskPolicy,
+    TaskCriticPolicy,
     TaskState,
     TaskDispatch,
 )
@@ -254,6 +426,10 @@ TASK_COMPONENTS = (
 OUTPUT_COMPONENTS = (
     ValidationResult,
     Commit,
+    Candidate,
+    CriticExecution,
+    CriticFinding,
+    CriticReceipt,
     Checkpoint,
     FilesystemManifest,
     FrictionLog,
