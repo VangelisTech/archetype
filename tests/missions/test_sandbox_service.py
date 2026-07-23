@@ -144,6 +144,8 @@ async def test_new_non_ready_session_fails_once_without_creation_churn() -> None
     assert service.session(key) is backend.sessions[0]
     assert await backend.sessions[0].status() is SandboxStatus.ERRORED
     await service.shutdown()
+    assert backend.sessions[0].closed == 1
+    assert service.session(key) is None
 
 
 def test_process_request_requires_explicit_portable_inputs() -> None:
