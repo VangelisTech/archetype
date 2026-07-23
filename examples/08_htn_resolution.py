@@ -129,7 +129,7 @@ async def resolve_htn(
     net0 = build_initial_network(domain, tn0)
     await world.spawn(Branch.make("r", s0, net0, max_depth=max_depth))
 
-    rc = RunConfig(num_steps=1)  # ONE reused run_id for the whole resolution (Inv HTN-V2.14)
+    rc = RunConfig(num_steps=1)  # Reusable policy; immutable run identity belongs to the world.
     solutions: list[dict] = []
     solved_ids: set[str] = set()
     ticks: list[dict] = []

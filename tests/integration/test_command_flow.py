@@ -308,9 +308,8 @@ async def test_run_result_run_id_round_trips_to_query(tmp_path):
 
     RunResult.run_id MUST match the run_id stamped on persisted rows so
     callers can round-trip the value back into a query and find the data
-    they just wrote. Previously RunResult returned RunConfig.run_id while
-    AsyncWorld stamped its construction-time uuid; the two diverged and the
-    round-trip lost data.
+    they just wrote. Run configuration cannot select identity; the immutable
+    world UUID is the single value used for both persistence and the result.
     """
     from uuid_utils import UUID, uuid7
 
@@ -321,7 +320,7 @@ async def test_run_result_run_id_round_trips_to_query(tmp_path):
         info = await c.command_gateway.create_world(ctx, WorldConfig(name="r"), storage)
         await c.command_gateway.create_entity(ctx, info.world_id, [CommandFlowMarker(tag="x")])
 
-        rc = RunConfig(run_id=str(uuid7()), num_steps=1)
+        rc = RunConfig(num_steps=1)
         result = await c.command_gateway.run(ctx, info.world_id, rc)
 
         world = c.world_service.get_world(UUID(str(info.world_id)))
@@ -382,12 +381,8 @@ async def test_consecutive_runs_share_world_run_id(tmp_path):
         info = await c.command_gateway.create_world(ctx, WorldConfig(name="r2"), storage)
         await c.command_gateway.create_entity(ctx, info.world_id, [CommandFlowMarker(tag="x")])
 
-        result_a = await c.command_gateway.run(
-            ctx, info.world_id, RunConfig(run_id=str(uuid7()), num_steps=1)
-        )
-        result_b = await c.command_gateway.run(
-            ctx, info.world_id, RunConfig(run_id=str(uuid7()), num_steps=1)
-        )
+        result_a = await c.command_gateway.run(ctx, info.world_id, RunConfig(num_steps=1))
+        result_b = await c.command_gateway.run(ctx, info.world_id, RunConfig(num_steps=1))
 
         assert str(result_a.run_id) == str(result_b.run_id), (
             "Consecutive runs reported different run_ids; the world's active "

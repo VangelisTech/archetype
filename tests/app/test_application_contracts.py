@@ -45,11 +45,9 @@ async def test_same_world_steps_serialize_and_publish_distinct_manifests(tmp_pat
     try:
         info = await container.application.create_world(WorldConfig(name="serial"), storage)
         await container.application.create_entity(info.world_id, [Value(number=1)])
-        run_id = "serialized-run"
-
         await asyncio.gather(
-            container.application.step(info.world_id, RunConfig(run_id=run_id)),
-            container.application.step(info.world_id, RunConfig(run_id=run_id)),
+            container.application.step(info.world_id, RunConfig()),
+            container.application.step(info.world_id, RunConfig()),
         )
 
         world = container.world_service.get_world(info.world_id)
@@ -116,12 +114,8 @@ async def test_different_world_lanes_execute_concurrently(tmp_path):
                 info.world_id, BlockingProcessor(entered, release)
             )
 
-        first_step = asyncio.create_task(
-            container.application.step(first.world_id, RunConfig(run_id="first-run"))
-        )
-        second_step = asyncio.create_task(
-            container.application.step(second.world_id, RunConfig(run_id="second-run"))
-        )
+        first_step = asyncio.create_task(container.application.step(first.world_id, RunConfig()))
+        second_step = asyncio.create_task(container.application.step(second.world_id, RunConfig()))
         await asyncio.wait_for(asyncio.gather(entered_a.wait(), entered_b.wait()), timeout=2)
 
         release.set()
