@@ -16,6 +16,7 @@ import asyncio
 import inspect
 import json
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from logging import getLogger
 from typing import Any, TypeVar, cast
 
@@ -30,7 +31,7 @@ from archetype.core.aio.async_querier import _canonicalize, _unknown_signature_e
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig
-from archetype.core.errors import TickExecutionError, TickFailure
+from archetype.core.errors import AmbiguousTickCommitError, TickExecutionError, TickFailure
 from archetype.core.hooks import (
     AsyncHookHandler,
     FireMode,
@@ -61,6 +62,17 @@ logger = getLogger(__name__)
 
 _HookEventT = TypeVar("_HookEventT", bound=HookEvent)
 CommandMaterializer = Callable[["AsyncWorld", int], Awaitable[int]]
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedTickCommit:
+    """Durable frames awaiting one exact manifest publication."""
+
+    tick: int
+    context: CommitContext
+    signatures: tuple[ArchetypeSignature, ...]
+    results: dict[ArchetypeSignature, DataFrame]
+    commands_applied: int
 
 
 def _validated_run_id(run_id: UUID | str | None) -> UUID:
@@ -129,19 +141,33 @@ class AsyncWorld(iAsyncWorld):
         self._commit_coordinator = commit_coordinator
         self._materialize_commands = materialize_commands or _no_commands
         self._commit_ctx: CommitContext | None = None
+        self._prepared_tick_commit: _PreparedTickCommit | None = None
+        self._last_committed_receipt: CommittedTickReceipt | None = None
         self._updater_takes_commit: bool | None = None
         self._querier_caps: dict[str, dict[str, bool]] | None = None
         self._sig_intern: dict[str, ArchetypeSignature] | None = None
 
     @property
-    def _entity2sig(self):
-        """Compatibility alias for pre-refactor evals and diagnostics."""
-        return self.entity2sig
-
-    @property
     def run_id(self) -> UUID:
         """Immutable UUIDv7 identity of this world's durable run."""
         return self._run_id
+
+    @property
+    def last_committed_receipt(self) -> CommittedTickReceipt | None:
+        """Return the latest receipt even when advisory PostTick was interrupted."""
+        return self._last_committed_receipt
+
+    @property
+    def has_prepared_tick_commit(self) -> bool:
+        """Return whether flushed frames await exact manifest reconciliation."""
+        return self._prepared_tick_commit is not None
+
+    def _require_mutable_tick(self) -> None:
+        if self._prepared_tick_commit is not None:
+            raise RuntimeError(
+                "world has a prepared tick awaiting manifest reconciliation; "
+                "retry step before mutating it"
+            )
 
     @property
     def commit_coordinator(self) -> iCommitCoordinator | None:
@@ -171,6 +197,9 @@ class AsyncWorld(iAsyncWorld):
 
         Note: Messages enqueued in tick N are dequeued in tick N+1.
         """
+        if self._prepared_tick_commit is not None:
+            return await self._publish_prepared_tick()
+
         debug_handles = self._install_step_debug_hooks() if run_config.debug else ()
         try:
             # Durable commands are a tick phase, not an outer application
@@ -217,7 +246,6 @@ class AsyncWorld(iAsyncWorld):
             # published LAST, after a forced flush — a crash or stale-writer
             # failure anywhere before publish leaves this tick's rows
             # unmanifested and therefore invisible to every reader.
-            visibility_token: str | None = None
             if self.commit_coordinator is not None:
                 self._commit_ctx = await self.commit_coordinator.begin_tick(self.tick)
             frames = cast("list[DataFrame]", results)
@@ -225,15 +253,21 @@ class AsyncWorld(iAsyncWorld):
                 self._commit_archetype(sig, df, run_config)
                 for sig, df in zip(sigs, frames, strict=False)
             ]
-            committed = await asyncio.gather(*commits, return_exceptions=True)
+            try:
+                committed = await asyncio.gather(*commits, return_exceptions=True)
+            except BaseException:
+                self._commit_ctx = None
+                raise
             errors = {}
             for sig, r in zip(sigs, committed, strict=False):
                 if isinstance(r, Exception):
                     errors[sig] = r
                 elif isinstance(r, BaseException):
                     # Never mask cancellation behind the aggregate TickExecutionError.
+                    self._commit_ctx = None
                     raise r
             if errors:
+                self._commit_ctx = None
                 failures = [
                     TickFailure(table_id=Archetype.get_name(sig), error=e)
                     for sig, e in errors.items()
@@ -254,41 +288,127 @@ class AsyncWorld(iAsyncWorld):
                 # Visibility must never outrun durability: staged (cached)
                 # rows flush before the head claims them.
                 store = getattr(self.updater, "store", None)
-                if store is not None:
-                    await store.flush()
-                await self.commit_coordinator.publish_tick(
-                    self.tick,
-                    self._commit_ctx,
-                    sigs,
+                try:
+                    if store is not None:
+                        await store.flush()
+                except BaseException:
+                    self._commit_ctx = None
+                    raise
+                self._prepared_tick_commit = _PreparedTickCommit(
+                    tick=self.tick,
+                    context=self._commit_ctx,
+                    signatures=tuple(sigs),
+                    results=result_frames,
+                    commands_applied=commands_applied,
                 )
-                visibility_token = self._commit_ctx.commit_token
-                # Mutations are consumed only now, after the manifest exists.
-                # A crash or stale-writer failure at ANY earlier point leaves
-                # the caches intact, so the retried tick recomputes and
-                # re-appends under a fresh token — the failed attempt's rows
-                # stay unmanifested and invisible; exactly one attempt per
-                # tick ever becomes visible.
-                for sig in sigs:
-                    self.spawn_cache.pop(sig, None)
-                    self.despawn_cache.pop(sig, None)
+                return await self._publish_prepared_tick()
+
             self._commit_ctx = None
-
             self.tick += 1
-
-            # Fire post-tick hooks
-            await self.hooks.fire(
-                PostTick(world_id=self.world_id, tick=self.tick, results=result_frames)
-            )
-            return CommittedTickReceipt(
+            receipt = CommittedTickReceipt(
                 world_id=str(self.world_id),
                 run_id=str(self.run_id),
                 committed_tick=self.tick - 1,
-                visibility_token=visibility_token,
+                visibility_token=None,
                 commands_applied=commands_applied,
             )
+            self._last_committed_receipt = receipt
+            await self.hooks.fire(
+                PostTick(world_id=self.world_id, tick=self.tick, results=result_frames)
+            )
+            return receipt
         finally:
             for handle in debug_handles:
-                self.remove_hook(handle)
+                self.hooks.remove(handle)
+
+    async def _publish_prepared_tick(self) -> CommittedTickReceipt:
+        """Publish or reconcile one already-flushed tick without replaying it."""
+        prepared = self._prepared_tick_commit
+        coordinator = self.commit_coordinator
+        if prepared is None or coordinator is None:
+            raise RuntimeError("prepared tick publication requires a commit coordinator")
+        if prepared.tick != self.tick or self._commit_ctx != prepared.context:
+            raise RuntimeError("prepared tick identity no longer matches live world state")
+
+        try:
+            await coordinator.publish_tick(
+                prepared.tick,
+                prepared.context,
+                list(prepared.signatures),
+            )
+        except asyncio.CancelledError:
+            # Appends are durable and may already be published. Preserve the
+            # exact context so a later entry can reconcile without replay.
+            raise
+        except Exception as publish_error:
+            try:
+                visible = await coordinator.visible_tokens(
+                    str(self.world_id),
+                    str(self.run_id),
+                    [prepared.tick],
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as visibility_error:
+                raise AmbiguousTickCommitError(
+                    tick=prepared.tick,
+                    commit_token=prepared.context.commit_token,
+                ) from ExceptionGroup(
+                    "manifest publish and reconciliation both failed",
+                    [publish_error, visibility_error],
+                )
+
+            if visible is None:
+                raise AmbiguousTickCommitError(
+                    tick=prepared.tick,
+                    commit_token=prepared.context.commit_token,
+                ) from publish_error
+            published_tokens = tuple(visible.get(prepared.tick, ()))
+            if not published_tokens:
+                # The authority proves the POST had no effect. Old appended
+                # rows stay invisible; the next entry may safely recompute
+                # under a fresh token.
+                self._prepared_tick_commit = None
+                self._commit_ctx = None
+                raise
+            if published_tokens != (prepared.context.commit_token,):
+                raise RuntimeError(
+                    f"tick {prepared.tick} was published under a different commit identity"
+                ) from publish_error
+
+            # The exact manifest, command settlement, and outbox effect are
+            # durable. Release only coordinator-local staging: a second fenced
+            # catalog write could fail after writer handoff even though this
+            # exact tick already committed.
+            coordinator.acknowledge_published_tick(
+                prepared.tick,
+                prepared.context,
+            )
+
+        for sig in prepared.signatures:
+            self.spawn_cache.pop(sig, None)
+            self.despawn_cache.pop(sig, None)
+        self._prepared_tick_commit = None
+        self._commit_ctx = None
+        self.tick += 1
+        receipt = CommittedTickReceipt(
+            world_id=str(self.world_id),
+            run_id=str(self.run_id),
+            committed_tick=prepared.tick,
+            visibility_token=prepared.context.commit_token,
+            commands_applied=prepared.commands_applied,
+        )
+        self._last_committed_receipt = receipt
+        await self.hooks.fire(
+            PostTick(world_id=self.world_id, tick=self.tick, results=prepared.results)
+        )
+        return receipt
+
+    async def reconcile_prepared_tick(self) -> CommittedTickReceipt | None:
+        """Finish exact publication without admitting ordinary tick work."""
+        if self._prepared_tick_commit is None:
+            return None
+        return await self._publish_prepared_tick()
 
     async def _compute_archetype(
         self, sig: ArchetypeSignature, run_config: RunConfig, **input_kwargs
@@ -388,6 +508,7 @@ class AsyncWorld(iAsyncWorld):
         after them (initial conditions), and consumes the caches only after
         the append commits (see _compute_archetype/_commit_archetype).
         """
+        self._require_mutable_tick()
         df = self._apply_despawns(df, sig)
         spawns_df = self._spawn_frame(sig)
         self.spawn_cache.pop(sig, None)
@@ -485,6 +606,7 @@ class AsyncWorld(iAsyncWorld):
 
     async def create_entity(self, components: list[Component]) -> int:
         """Spawn a new entity with an auto-assigned id. Fires ``OnSpawn``."""
+        self._require_mutable_tick()
         entity_id = self.next_entity_id
         self.next_entity_id += 1
         await self._register_entity(entity_id, components)
@@ -505,6 +627,7 @@ class AsyncWorld(iAsyncWorld):
         Returns:
             A list of entity IDs in the same order as ``entities``.
         """
+        self._require_mutable_tick()
         ids: list[int] = []
         for components in entities:
             entity_id = self.next_entity_id
@@ -538,6 +661,7 @@ class AsyncWorld(iAsyncWorld):
         Raises:
             ValueError: If *n* is less than 1.
         """
+        self._require_mutable_tick()
         if n < 1:
             raise ValueError(f"reserve_entity_ids requires n >= 1, got {n}")
         start = self.next_entity_id
@@ -564,6 +688,7 @@ class AsyncWorld(iAsyncWorld):
             ValueError: If *entity_id* is already registered (double-spawn
                 guard — prevents silent overwrites of live entities).
         """
+        self._require_mutable_tick()
         if entity_id in self.entity2sig:
             raise ValueError(
                 f"Entity {entity_id} is already registered. "
@@ -608,6 +733,7 @@ class AsyncWorld(iAsyncWorld):
         """Despawn an entity. Cancels a pending same-tick spawn if present,
         otherwise queues a despawn row for the current tick. Fires
         ``OnDespawn`` iff the entity existed."""
+        self._require_mutable_tick()
         sig = self.entity2sig.pop(entity_id, None)
         if sig is None:
             logger.warning(
@@ -639,6 +765,7 @@ class AsyncWorld(iAsyncWorld):
         fields are overwritten. Used for value mutations (e.g., Position.x += 1)
         as distinct from add_components which extends the signature.
         """
+        self._require_mutable_tick()
         sig = self.entity2sig.get(entity_id)
         if sig is None:
             logger.warning("update_entity: entity %s not found", entity_id)
@@ -656,6 +783,7 @@ class AsyncWorld(iAsyncWorld):
     async def add_components(self, entity_id: int, components: list[Component]) -> None:
         """Attach additional components to an existing entity. Fires
         ``OnComponentAdded`` iff the signature actually changes."""
+        self._require_mutable_tick()
         old_sig = self.entity2sig.get(entity_id)
         if old_sig is None:
             logger.warning("add_components: entity %s not found", entity_id)
@@ -694,6 +822,7 @@ class AsyncWorld(iAsyncWorld):
     ) -> None:
         """Detach components from an existing entity. Fires
         ``OnComponentRemoved`` iff the signature actually changes."""
+        self._require_mutable_tick()
         old_sig = self.entity2sig.get(entity_id)
         if old_sig is None:
             return
@@ -723,9 +852,11 @@ class AsyncWorld(iAsyncWorld):
         )
 
     async def add_processor(self, processor: iAsyncProcessor):
+        self._require_mutable_tick()
         await self.system.add_processor(processor)
 
     async def remove_processor(self, processor: type[iAsyncProcessor]):
+        self._require_mutable_tick()
         await self.system.remove_processor(processor)
 
     # ---------------------------------------------------------------------
@@ -933,6 +1064,8 @@ class AsyncWorld(iAsyncWorld):
         commit identity. Capability is determined before writing so an error
         cannot cause the same rows to be appended twice.
         """
+        if self._prepared_tick_commit is not None:
+            raise RuntimeError("cannot append while a prepared tick awaits manifest reconciliation")
         if self._updater_takes_commit is None:
             params = inspect.signature(self.updater.update).parameters
             self._updater_takes_commit = "commit" in params
@@ -987,6 +1120,7 @@ class AsyncWorld(iAsyncWorld):
             # ... later ...
             world.remove_hook(handle)
         """
+        self._require_mutable_tick()
         return self.hooks.add(event_type, fn, mode=mode)
 
     def remove_hook(self, handle: HookHandle) -> None:
@@ -995,6 +1129,7 @@ class AsyncWorld(iAsyncWorld):
         The operation is idempotent. Passing a handle that was already removed,
         or a handle minted by another world, is a no-op.
         """
+        self._require_mutable_tick()
         self.hooks.remove(handle)
 
     def _install_step_debug_hooks(self) -> tuple[HookHandle, HookHandle]:

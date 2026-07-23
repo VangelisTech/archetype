@@ -47,6 +47,7 @@ __all__ = [
     "ArchetypeSignature",
     "Resources",
     # Step failure contract
+    "AmbiguousTickCommitError",
     "TickExecutionError",
     "TickFailure",
     # Processor (with alias)
@@ -128,6 +129,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "ArchetypeSignature": ("archetype.core", "ArchetypeSignature"),
     "Resources": ("archetype.core", "Resources"),
     # Step failure contract (issue #444)
+    "AmbiguousTickCommitError": ("archetype.core", "AmbiguousTickCommitError"),
     "TickExecutionError": ("archetype.core", "TickExecutionError"),
     "TickFailure": ("archetype.core", "TickFailure"),
     # Processors (and aliases)

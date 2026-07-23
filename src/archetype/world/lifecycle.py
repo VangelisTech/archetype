@@ -35,7 +35,7 @@ from archetype.world.resume import (
     reconstruct_resume_snapshot,
     resolve_live_signatures,
 )
-from archetype.world.simulation import retry_required_projection
+from archetype.world.simulation import reconcile_committed_work_locked
 
 logger = logging.getLogger(__name__)
 
@@ -253,6 +253,11 @@ class WorldLifecycle:
                 raise TypeError("Can only fork AsyncWorld instances")
             if name and await self._registry.contains_name(name):
                 raise ValueError(f"World with name '{name}' already exists.")
+            await reconcile_committed_work_locked(
+                self._registry,
+                str(source_world_id),
+                source,
+            )
 
             source_storage = await self._registry.storage_record(str(source_world_id))
             source_storage_config = (
@@ -554,20 +559,13 @@ class WorldLifecycle:
         else:
             self._registry.validate_cleanup_lease(lease, world_id=key)
 
-        # Close is sticky, so the retained cleanup lease is the only authority
-        # that may reconcile an unacknowledged post-commit receipt.  Projection
-        # must finish before durable destruction: on failure the catalog stays
-        # active and the exact world, projector, receipt, and lease remain
-        # strongly owned for the next public destroy retry.
-        await retry_required_projection(self._registry, key, lease=lease)
-
         async with self._registry.cleanup_operation(lease) as world:
-            if bool(getattr(world, "has_prepared_tick_commit", False)):
-                raise RuntimeError(
-                    f"world {key} has a prepared tick commit awaiting exact publication; "
-                    "refusing durable destruction"
-                )
             if isinstance(world, AsyncWorld):
+                await reconcile_committed_work_locked(
+                    self._registry,
+                    key,
+                    world,
+                )
                 await world.hooks.fire(OnDestroy(world_id=world.world_id))
             storage_record = await self._registry.storage_record(key)
             if storage_record is not None:

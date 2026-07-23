@@ -238,17 +238,42 @@ class RuntimeApplication:
             except KeyError:
                 # Destroy remains idempotent when no live world is bound.
                 return
-            async with self._registry.cleanup_operation(lease):
+            async with self._registry.cleanup_operation(lease) as world:
+                await simulation.reconcile_committed_work_locked(
+                    self._registry,
+                    str(world_id),
+                    world,
+                )
                 await self._commands.cancel_world(world_id)
             await self._lifecycle.destroy_world(world_id, lease=lease)
 
     async def get_world_info(self, world_id) -> WorldInfo:
         async with self._admit(), self._registry.operation(str(world_id)) as world:
+            await simulation.reconcile_committed_work_locked(
+                self._registry,
+                str(world_id),
+                world,
+            )
             return _world_info(world)
 
     async def list_worlds(self) -> list[WorldInfo]:
         async with self._admit():
-            return [_world_info(world) for world in await self._registry.list_worlds()]
+            snapshot = await self._registry.list_worlds()
+            world_ids = [str(world.world_id) for world in snapshot]
+            infos: list[WorldInfo] = []
+            # Reconcile each snapshotted world under its own lock. Recovery
+            # runs user hooks and required projectors, so holding sibling
+            # locks here could deadlock a callback that targets another world.
+            # A close racing the snapshot fails the whole call closed.
+            for world_id in world_ids:
+                async with self._registry.operation(world_id) as world:
+                    await simulation.reconcile_committed_work_locked(
+                        self._registry,
+                        world_id,
+                        world,
+                    )
+                    infos.append(_world_info(world))
+            return infos
 
     async def discover_worlds(self, storage_config) -> list[WorldInfo]:
         async with self._admit():

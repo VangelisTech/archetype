@@ -84,17 +84,28 @@ async def test_service_worlds_publish_manifests_per_tick(tmp_path):
 
 
 async def test_failed_publish_leaves_tick_invisible_and_retry_wins(tmp_path, monkeypatch):
-    """Crash between appends and head publish: rows exist, tick invisible.
+    """A confirmed pre-effect publish failure permits one fresh append attempt.
 
-    The retried tick recomputes (caches intact), appends under a fresh
-    token, and publishes — exactly one attempt visible, no lost spawns,
-    no duplicate visible rows.
+    The visibility authority proves the first POST had no effect. The retried
+    tick therefore recomputes (caches intact), appends under a fresh token,
+    and publishes — exactly one attempt visible, no lost spawns.
     """
     c = ServiceContainer()
     try:
         storage = _storage(tmp_path)
         world = await c.world_lifecycle.create_world(WorldConfig(name="w"), storage)
         await c.application.create_entity(world.world_id, [Counter(value=1.0)])
+        coordinator = world.commit_coordinator
+        assert coordinator is not None
+        real_begin = coordinator.begin_tick
+        attempt_tokens: list[str] = []
+
+        async def _record_begin(tick):
+            context = await real_begin(tick)
+            attempt_tokens.append(context.commit_token)
+            return context
+
+        monkeypatch.setattr(coordinator, "begin_tick", _record_begin)
 
         real_publish = SqliteControlCatalog.publish_manifest
 
@@ -112,11 +123,24 @@ async def test_failed_publish_leaves_tick_invisible_and_retry_wins(tmp_path, mon
         monkeypatch.setattr(SqliteControlCatalog, "publish_manifest", real_publish)
         await c.application.step(world.world_id, RunConfig())
 
+        assert len(attempt_tokens) == 2
+        assert attempt_tokens[0] != attempt_tokens[1]
         rows = await _visible_rows(c, world, storage, ticks=[0])
         assert len(rows) == 1, (
             f"exactly one visible row despite two physical attempts, saw {len(rows)}"
         )
         assert rows[0]["counter__value"] == 1.0
+        signature = Archetype.sig_from_components([Counter()])
+        physical_rows = (
+            await world.updater.store.get_archetype_df(
+                signature,
+                str(world.world_id),
+                str(world.run_id),
+                ticks=[0],
+            )
+        ).to_pylist()
+        assert len(physical_rows) == 2
+        assert {row["commit_token"] for row in physical_rows} == set(attempt_tokens)
     finally:
         await c.shutdown()
 

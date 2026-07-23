@@ -126,6 +126,84 @@ async def _retry_required_projection_locked(
     return True
 
 
+def _retain_interrupted_receipt(
+    registry: iWorldRegistry,
+    world_id: str | UUID,
+    world: AsyncWorld,
+    target_tick: int,
+) -> None:
+    """Retain a commit completed before raw task cancellation propagated."""
+    receipt = world.last_committed_receipt
+    projector = registry.required_projector(world_id)
+    if (
+        projector is not None
+        and receipt is not None
+        and receipt.committed_tick == target_tick
+        and str(receipt.world_id) == str(world.world_id)
+        and str(receipt.run_id) == str(world.run_id)
+        and receipt.visibility_token is not None
+    ):
+        registry.retain_receipt(world_id, receipt)
+
+
+async def _accept_committed_receipt_locked(
+    registry: iWorldRegistry,
+    world_id: str | UUID,
+    world: AsyncWorld,
+    receipt: CommittedTickReceipt,
+) -> None:
+    """Validate, retain, and project one receipt under exact-world authority."""
+    projector = registry.required_projector(world_id)
+    try:
+        _validate_receipt(world, receipt)
+    except ValueError as exc:
+        raise PostCommitProjectionError(
+            receipt,
+            projector.consumer_name if projector is not None else "<managed>",
+            str(exc),
+        ) from exc
+    if projector is not None:
+        if receipt.visibility_token is None:
+            raise PostCommitProjectionError(
+                receipt,
+                projector.consumer_name,
+                "managed required projection requires a manifest visibility token",
+            )
+        registry.retain_receipt(world_id, receipt)
+        await _project_required_locked(registry, world_id, receipt)
+
+
+async def reconcile_prepared_tick_locked(
+    registry: iWorldRegistry,
+    world_id: str | UUID,
+    world: AsyncWorld,
+) -> bool:
+    """Reconcile a prepared publication while the caller holds exact-world authority."""
+    if not world.has_prepared_tick_commit:
+        return False
+    target_tick = world.tick
+    try:
+        receipt = await world.reconcile_prepared_tick()
+    except BaseException:
+        _retain_interrupted_receipt(registry, world_id, world, target_tick)
+        raise
+    if receipt is None:
+        return False
+    await _accept_committed_receipt_locked(registry, world_id, world, receipt)
+    return True
+
+
+async def reconcile_committed_work_locked(
+    registry: iWorldRegistry,
+    world_id: str | UUID,
+    world: AsyncWorld,
+) -> bool:
+    """Finish retained projection and prepared publication before other work."""
+    retried = await _retry_required_projection_locked(registry, world_id)
+    reconciled = await reconcile_prepared_tick_locked(registry, world_id, world)
+    return retried or reconciled
+
+
 async def retry_required_projection(
     registry: iWorldRegistry,
     world_id: str | UUID,
@@ -150,29 +228,21 @@ async def _step_locked(
 ) -> int:
     """Advance exactly once when the caller already holds the world lock."""
     await _retry_required_projection_locked(registry, world_id)
-    receipt = await world.step(run_config, **input_kwargs)
+    target_tick = world.tick
+    try:
+        receipt = await world.step(run_config, **input_kwargs)
+    except BaseException:
+        # Core records the manifest-bound receipt before awaiting advisory
+        # PostTick hooks. If caller cancellation lands there, retain it
+        # synchronously before preserving the raw cancellation. The next
+        # managed entry projects this exact receipt before any new core work.
+        _retain_interrupted_receipt(registry, world_id, world, target_tick)
+        raise
     if not isinstance(receipt, CommittedTickReceipt):
         raise TypeError(
             "managed AsyncWorld.step must return CommittedTickReceipt after publication"
         )
-    projector = registry.required_projector(world_id)
-    try:
-        _validate_receipt(world, receipt)
-    except ValueError as exc:
-        raise PostCommitProjectionError(
-            receipt,
-            projector.consumer_name if projector is not None else "<managed>",
-            str(exc),
-        ) from exc
-    if projector is not None:
-        if receipt.visibility_token is None:
-            raise PostCommitProjectionError(
-                receipt,
-                projector.consumer_name,
-                "managed required projection requires a manifest visibility token",
-            )
-        registry.retain_receipt(world_id, receipt)
-        await _project_required_locked(registry, world_id, receipt)
+    await _accept_committed_receipt_locked(registry, world_id, world, receipt)
     return receipt.commands_applied
 
 
@@ -201,6 +271,10 @@ async def run(
 ) -> RunResult:
     """Execute ``run_config.num_steps`` without reacquiring the world lock."""
     async with registry.operation(world_id) as world:
+        # A prior call may have committed before losing its response. Finish
+        # that exact work before counting this call's requested new steps.
+        # This also makes a zero-step run a coherent state observation.
+        await reconcile_committed_work_locked(registry, world_id, world)
         commands_applied = 0
         for _ in range(run_config.num_steps):
             commands_applied += await _step_locked(
@@ -254,6 +328,10 @@ async def _run_episode_locked(
     **input_kwargs: Any,
 ) -> EpisodeResult:
     """Run one bounded episode while the exact world lock is held."""
+    # Recovery belongs before the episode boundary: a prior prepared commit
+    # is neither one of this episode's steps nor input to a stale termination
+    # decision. ``max_steps=0`` still returns a coherent committed head.
+    await reconcile_committed_work_locked(registry, world_id, world)
     start_tick = world.tick
     terminated = False
     step_count = 0

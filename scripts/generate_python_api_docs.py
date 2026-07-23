@@ -182,6 +182,7 @@ PAGES: tuple[ReferencePage, ...] = (
             "AsyncSystem",
             "AsyncQueryManager",
             "AsyncUpdateManager",
+            "AmbiguousTickCommitError",
             "TickExecutionError",
             "TickFailure",
         ),

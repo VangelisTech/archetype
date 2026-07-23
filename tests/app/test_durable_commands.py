@@ -19,7 +19,9 @@ from archetype.app.models import Command, CommandType
 from archetype.core.aio import AsyncWorld
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
-from archetype.core.hooks import HookRegistry
+from archetype.core.errors import AmbiguousTickCommitError
+from archetype.core.hooks import HookRegistry, OnDestroy
+from archetype.core.interfaces import StaleWriterError
 from archetype.core.resources import Resources
 from archetype.errors import WorldNotFoundError
 from archetype.storage.catalog import (
@@ -399,6 +401,287 @@ async def test_manifest_failure_keeps_command_leased_and_retry_does_not_restage(
             len([row for row in world.spawn_cache.get(signature, []) if row["entity_id"] == 41])
             == 0
         )
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_committed_manifest_response_loss_reconciles_without_replaying_tick(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    container = ServiceContainer(audit_storage_config=_audit_storage(tmp_path))
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    try:
+        world = await container.world_lifecycle.create_world(
+            WorldConfig(name="committed-response-loss"),
+            _storage(tmp_path, "committed-response-loss"),
+        )
+        command = Command(
+            type=CommandType.SPAWN,
+            payload={"entity_id": 41, "components": [DurableMarker(value=41)]},
+        )
+        await container.command_gateway.submit(ctx, world.world_id, command)
+        record = await container.world_registry.storage_record(str(world.world_id))
+        assert record is not None
+        catalog = container.storage_service.get_control_catalog(record[0])
+
+        materialized_ticks: list[int] = []
+        real_materialize = world._materialize_commands  # noqa: SLF001 - replay oracle
+
+        async def record_materialize(actual_world, target_tick):
+            materialized_ticks.append(target_tick)
+            return await real_materialize(actual_world, target_tick)
+
+        monkeypatch.setattr(world, "_materialize_commands", record_materialize)
+        append_calls = 0
+        real_append = world.updater.store.append
+
+        async def record_append(sig, frame):
+            nonlocal append_calls
+            append_calls += 1
+            return await real_append(sig, frame)
+
+        monkeypatch.setattr(world.updater.store, "append", record_append)
+        execute_calls = 0
+        real_execute = world.system.execute
+
+        async def record_execute(*args, **kwargs):
+            nonlocal execute_calls
+            execute_calls += 1
+            return await real_execute(*args, **kwargs)
+
+        monkeypatch.setattr(world.system, "execute", record_execute)
+
+        publish_calls = 0
+        real_publish = catalog.publish_manifest
+
+        async def commit_then_lose_response(*args, **kwargs):
+            nonlocal publish_calls
+            publish_calls += 1
+            result = await real_publish(*args, **kwargs)
+            if publish_calls == 1:
+                raise RuntimeError("manifest committed but response was lost")
+            return result
+
+        monkeypatch.setattr(catalog, "publish_manifest", commit_then_lose_response)
+
+        assert await container.application.step(world.world_id, RunConfig()) == 1
+
+        (manifest,) = await catalog.list_manifests(
+            str(world.world_id),
+            str(world.run_id),
+        )
+        (applied,) = await container.command_scheduler.records(world.world_id)
+        assert applied.status == "APPLIED"
+        assert applied.applied_tick == 0
+        assert applied.commit_token == manifest.commit_token
+        assert materialized_ticks == [0]
+        assert execute_calls == 1
+        assert append_calls == 1
+        assert publish_calls == 1, "exact visibility must avoid a second fenced POST"
+        assert not world.commit_coordinator.is_command_staged(0, str(command.id))
+
+        audit_rows = (await container.audit_log.query(world_id=world.world_id)).to_pylist()
+        command_rows = [row for row in audit_rows if row["command_id"] == str(command.id)]
+        assert [row["status"] for row in command_rows] == ["queued", "applied"]
+        assert world.tick == 1
+        assert 41 in world.entity2sig
+        signature = world.entity2sig[41]
+        physical_rows = (
+            await world.updater.store.get_archetype_df(
+                signature,
+                str(world.world_id),
+                str(world.run_id),
+                ticks=[0],
+            )
+        ).to_pylist()
+        assert len(physical_rows) == 1
+        assert physical_rows[0]["commit_token"] == manifest.commit_token
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_exact_visible_commit_finalizes_after_fence_handoff_without_second_post(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    container = ServiceContainer(audit_storage_config=_audit_storage(tmp_path))
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    try:
+        world = await container.world_lifecycle.create_world(
+            WorldConfig(name="response-loss-fence-handoff"),
+            _storage(tmp_path, "response-loss-fence-handoff"),
+        )
+        command = Command(
+            type=CommandType.SPAWN,
+            payload={"entity_id": 45, "components": [DurableMarker(value=45)]},
+        )
+        await container.command_gateway.submit(ctx, world.world_id, command)
+        record = await container.world_registry.storage_record(str(world.world_id))
+        assert record is not None
+        catalog = container.storage_service.get_control_catalog(record[0])
+        original_epoch = world.commit_coordinator.writer_epoch
+        publish_calls = 0
+        replacement_epoch = None
+        real_publish = catalog.publish_manifest
+
+        async def commit_handoff_then_lose_response(*args, **kwargs):
+            nonlocal publish_calls, replacement_epoch
+            publish_calls += 1
+            result = await real_publish(*args, **kwargs)
+            if publish_calls == 1:
+                replacement_epoch = await catalog.acquire_fence(
+                    str(world.world_id),
+                    "replacement-writer",
+                )
+                raise RuntimeError("committed response lost during writer handoff")
+            return result
+
+        monkeypatch.setattr(catalog, "publish_manifest", commit_handoff_then_lose_response)
+
+        assert await container.application.step(world.world_id, RunConfig()) == 1
+
+        assert replacement_epoch == original_epoch + 1
+        assert publish_calls == 1
+        assert world.tick == 1
+        assert not world.has_prepared_tick_commit
+        (manifest,) = await catalog.list_manifests(
+            str(world.world_id),
+            str(world.run_id),
+        )
+        (applied,) = await container.command_scheduler.records(world.world_id)
+        assert applied.status == "APPLIED"
+        assert applied.applied_tick == 0
+        assert applied.commit_token == manifest.commit_token
+        assert not world.commit_coordinator.is_command_staged(0, str(command.id))
+
+        with pytest.raises(StaleWriterError):
+            await container.application.step(world.world_id, RunConfig())
+
+        assert publish_calls == 2
+        assert world.tick == 1
+        assert world.last_committed_receipt is not None
+        assert world.last_committed_receipt.identity == (
+            str(world.world_id),
+            str(world.run_id),
+            0,
+            manifest.commit_token,
+        )
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_destroy_reconciles_ambiguous_prepared_command_before_cancellation(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    container = ServiceContainer(audit_storage_config=_audit_storage(tmp_path))
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    try:
+        world = await container.world_lifecycle.create_world(
+            WorldConfig(name="ambiguous-destroy"),
+            _storage(tmp_path, "ambiguous-destroy"),
+        )
+        command = Command(
+            type=CommandType.SPAWN,
+            payload={"entity_id": 51, "components": [DurableMarker(value=51)]},
+        )
+        await container.command_gateway.submit(ctx, world.world_id, command)
+        destroy_events: list[str] = []
+
+        async def record_destroy(_event: OnDestroy) -> None:
+            destroy_events.append("destroy")
+
+        await container.application.add_hook(world.world_id, OnDestroy, record_destroy)
+        record = await container.world_registry.storage_record(str(world.world_id))
+        assert record is not None
+        catalog = container.storage_service.get_control_catalog(record[0])
+
+        publish_attempts = 0
+        publish_failed = False
+        real_publish = catalog.publish_manifest
+
+        async def lose_pre_effect_response(*args, **kwargs):
+            nonlocal publish_attempts, publish_failed
+            publish_attempts += 1
+            if publish_attempts <= 2:
+                publish_failed = True
+                raise RuntimeError("manifest POST outcome was lost before effect")
+            return await real_publish(*args, **kwargs)
+
+        visibility_attempts_after_publish = 0
+        real_visible = catalog.visible_tokens
+
+        async def lose_first_reconciliation_read(*args, **kwargs):
+            nonlocal visibility_attempts_after_publish
+            if publish_failed:
+                visibility_attempts_after_publish += 1
+                if visibility_attempts_after_publish <= 2:
+                    raise RuntimeError("visibility response unavailable")
+            return await real_visible(*args, **kwargs)
+
+        monkeypatch.setattr(catalog, "publish_manifest", lose_pre_effect_response)
+        monkeypatch.setattr(catalog, "visible_tokens", lose_first_reconciliation_read)
+
+        with pytest.raises(AmbiguousTickCommitError):
+            await container.application.step(world.world_id, RunConfig())
+
+        (leased,) = await container.command_scheduler.records(world.world_id)
+        assert leased.status == "LEASED"
+        assert leased.applied_tick is None
+        assert leased.commit_token is None
+        assert world.has_prepared_tick_commit
+        assert await catalog.list_manifests(str(world.world_id), str(world.run_id)) == []
+
+        prepared_token = world._commit_ctx.commit_token  # noqa: SLF001 - exact retry oracle
+        with pytest.raises(AmbiguousTickCommitError):
+            await container.application.destroy_world(world.world_id)
+
+        (still_leased,) = await container.command_scheduler.records(world.world_id)
+        assert still_leased.status == "LEASED"
+        assert still_leased.applied_tick is None
+        assert still_leased.commit_token is None
+        assert world.has_prepared_tick_commit
+        assert world._commit_ctx.commit_token == prepared_token  # noqa: SLF001
+        assert await container.world_registry.contains(world.world_id)
+        catalog_world = await catalog.get_world(str(world.world_id))
+        assert catalog_world is not None and catalog_world.status == "active"
+        assert await catalog.list_manifests(str(world.world_id), str(world.run_id)) == []
+        assert destroy_events == []
+
+        await container.application.destroy_world(world.world_id)
+
+        (manifest,) = await catalog.list_manifests(
+            str(world.world_id),
+            str(world.run_id),
+        )
+        (applied,) = await container.command_scheduler.records(world.world_id)
+        assert applied.status == "APPLIED"
+        assert applied.applied_tick == 0
+        assert applied.commit_token == manifest.commit_token
+        assert publish_attempts == 3
+        assert world.tick == 1
+        assert not world.has_prepared_tick_commit
+        assert not await container.world_registry.contains(world.world_id)
+        assert destroy_events == ["destroy"]
+
+        audit_rows = (await container.audit_log.query(world_id=world.world_id)).to_pylist()
+        command_rows = [row for row in audit_rows if row["command_id"] == str(command.id)]
+        assert [row["status"] for row in command_rows] == ["queued", "applied"]
+        signature = world.entity2sig[51]
+        physical_rows = (
+            await world.updater.store.get_archetype_df(
+                signature,
+                str(world.world_id),
+                str(world.run_id),
+                ticks=[0],
+            )
+        ).to_pylist()
+        assert len(physical_rows) == 1
+        assert physical_rows[0]["commit_token"] == manifest.commit_token
     finally:
         await container.shutdown()
 

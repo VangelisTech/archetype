@@ -404,7 +404,10 @@ class iCommitCoordinator(Protocol):
     begin_tick mints the commit identity for a tick attempt; publish_tick
     CAS-publishes the manifest LAST, verifying the writer still holds the
     fence in the same transaction; visible_tokens answers the reader-side
-    allowlist (None: no manifests recorded — legacy world, nothing filtered).
+    allowlist. ``None`` means pre-coordination history with no writer fence;
+    once a fence exists, an absent manifest is the explicit empty mapping.
+    Callers reconciling a prepared publication therefore treat ``None`` as
+    non-authoritative rather than proof that the attempted write is absent.
     """
 
     async def begin_tick(self, tick: int) -> CommitContext: ...
@@ -414,6 +417,10 @@ class iCommitCoordinator(Protocol):
         ctx: CommitContext,
         sigs: list[ArchetypeSignature],
     ) -> None: ...
+    def acknowledge_published_tick(self, tick: int, ctx: CommitContext) -> None:
+        """Release local staging after authoritative exact-token confirmation."""
+        ...
+
     async def visible_tokens(
         self, world_id: str, run_id: str, ticks: list[int] | None = None
     ) -> dict[int, list[str]] | None: ...
@@ -574,6 +581,16 @@ class iAsyncWorld(Protocol):
     @property
     def run_id(self) -> UUID: ...
 
+    @property
+    def last_committed_receipt(self) -> CommittedTickReceipt | None:
+        """Latest locally completed receipt, including interrupted PostTick."""
+        ...
+
+    @property
+    def has_prepared_tick_commit(self) -> bool:
+        """Whether flushed frames await exact manifest reconciliation."""
+        ...
+
     tick: int
     next_entity_id: int
     entity2sig: dict[int, ArchetypeSignature]
@@ -590,6 +607,10 @@ class iAsyncWorld(Protocol):
 
     async def run(self, run_config: RunConfig, **input_kwargs) -> None: ...
     async def step(self, run_config: RunConfig, **input_kwargs) -> CommittedTickReceipt: ...
+    async def reconcile_prepared_tick(self) -> CommittedTickReceipt | None:
+        """Finish exact publication without admitting ordinary tick work."""
+        ...
+
     async def _compute_archetype(
         self, sig: ArchetypeSignature, run_config: RunConfig, **input_kwargs
     ) -> DataFrame: ...

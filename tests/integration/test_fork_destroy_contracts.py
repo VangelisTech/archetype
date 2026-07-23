@@ -23,6 +23,7 @@ from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.models import Command, CommandType
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.core.errors import AmbiguousTickCommitError
 from archetype.core.hooks import PostTick
 from archetype.world.query import get_lineage
 
@@ -100,6 +101,132 @@ async def test_spawn_then_fork_pending_mutation_transfer(tmp_path):
         assert source_df.count_rows() >= 1
         assert fork_df.count_rows() >= 1
     finally:
+        await c.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_fork_reconciles_exact_committed_source_before_snapshot(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    c = ServiceContainer()
+    storage = _storage(tmp_path)
+    try:
+        source = await c.world_lifecycle.create_world(WorldConfig(name="source"), storage)
+        await c.application.create_entity(source.world_id, [Tag(label="committed")])
+        catalog = c.storage_service.get_control_catalog(storage)
+        real_publish = catalog.publish_manifest
+        real_visible = catalog.visible_tokens
+        published = False
+        lose_visibility = True
+        publish_tokens: list[str] = []
+
+        async def commit_then_lose_response(*args, **kwargs):
+            nonlocal published
+            publish_tokens.append(str(kwargs["commit_token"]))
+            result = await real_publish(*args, **kwargs)
+            if not published:
+                published = True
+                raise RuntimeError("manifest committed but response was lost")
+            return result
+
+        async def lose_first_reconciliation_read(*args, **kwargs):
+            nonlocal lose_visibility
+            if published and lose_visibility:
+                lose_visibility = False
+                raise RuntimeError("visibility response unavailable")
+            return await real_visible(*args, **kwargs)
+
+        monkeypatch.setattr(catalog, "publish_manifest", commit_then_lose_response)
+        monkeypatch.setattr(catalog, "visible_tokens", lose_first_reconciliation_read)
+
+        with pytest.raises(AmbiguousTickCommitError):
+            await c.application.step(source.world_id, RunConfig())
+
+        fork = await c.world_lifecycle.fork_world(
+            source.world_id,
+            name="reconciled-fork",
+            storage_config=storage,
+        )
+
+        assert source.tick == 1
+        assert fork.tick == 1
+        assert fork.lineage[-1] == (
+            str(source.world_id),
+            str(source.run_id),
+            0,
+        )
+        assert publish_tokens == [publish_tokens[0], publish_tokens[0]]
+        assert not source.has_prepared_tick_commit
+        assert source.spawn_cache == {}
+        manifests = await catalog.list_manifests(
+            str(source.world_id),
+            str(source.run_id),
+        )
+        assert len(manifests) == 1
+        assert manifests[0].commit_token == publish_tokens[0]
+        signature = source.entity2sig[1]
+        physical_rows = (
+            await source.updater.store.get_archetype_df(
+                signature,
+                str(source.world_id),
+                str(source.run_id),
+                ticks=[0],
+            )
+        ).to_pylist()
+        assert len(physical_rows) == 1
+    finally:
+        await c.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_fork_registers_no_child_while_source_publish_is_unreadable(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    c = ServiceContainer()
+    storage = _storage(tmp_path)
+    catalog = None
+    real_publish = None
+    real_visible = None
+    try:
+        source = await c.world_lifecycle.create_world(WorldConfig(name="source"), storage)
+        await c.application.create_entity(source.world_id, [Tag(label="ambiguous")])
+        catalog = c.storage_service.get_control_catalog(storage)
+        real_publish = catalog.publish_manifest
+        real_visible = catalog.visible_tokens
+        publish_attempted = False
+
+        async def unreadable_publish(*args, **kwargs):
+            nonlocal publish_attempted
+            publish_attempted = True
+            raise RuntimeError("manifest response unavailable")
+
+        async def unreadable_visibility(*args, **kwargs):
+            if publish_attempted:
+                raise RuntimeError("visibility response unavailable")
+            return await real_visible(*args, **kwargs)
+
+        monkeypatch.setattr(catalog, "publish_manifest", unreadable_publish)
+        monkeypatch.setattr(catalog, "visible_tokens", unreadable_visibility)
+
+        with pytest.raises(AmbiguousTickCommitError):
+            await c.application.step(source.world_id, RunConfig())
+        with pytest.raises(AmbiguousTickCommitError):
+            await c.world_lifecycle.fork_world(
+                source.world_id,
+                name="must-not-register",
+                storage_config=storage,
+            )
+
+        assert source.tick == 0
+        assert source.has_prepared_tick_commit
+        assert [world.name for world in await c.world_registry.list_worlds()] == ["source"]
+        assert [record.name for record in await catalog.list_worlds()] == ["source"]
+    finally:
+        if catalog is not None and real_publish is not None and real_visible is not None:
+            monkeypatch.setattr(catalog, "publish_manifest", real_publish)
+            monkeypatch.setattr(catalog, "visible_tokens", real_visible)
         await c.shutdown()
 
 

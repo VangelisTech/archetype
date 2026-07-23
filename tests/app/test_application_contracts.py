@@ -18,9 +18,12 @@ from archetype.app.application.interfaces import iRuntimeApplication
 from archetype.app.application.service import RuntimeApplication
 from archetype.app.commands.interfaces import iCommandScheduler
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.core.interfaces import CommittedTickReceipt
 from archetype.storage.service import StorageService
 from archetype.world.lifecycle import WorldLifecycle
+from archetype.world.models import WorldInfo
 from archetype.world.registry import WorldRegistry
+from archetype.world.simulation import PostCommitProjectionError, RequiredProjector
 
 pytestmark = [
     pytest.mark.contract("runtime.lifecycle.single_flight_and_drain"),
@@ -168,6 +171,196 @@ async def test_destroy_waits_for_an_admitted_same_world_step(tmp_path):
         await destroy
         assert not await harness.registry.contains(str(info.world_id))
         assert harness.commands.cancellations == [str(info.world_id)]
+
+
+@pytest.mark.asyncio
+async def test_public_destroy_projects_pending_receipt_before_command_cancellation(
+    tmp_path,
+) -> None:
+    events: list[str] = []
+    attempts = 0
+
+    async def fail_twice(receipt) -> None:
+        nonlocal attempts
+        attempts += 1
+        events.append(f"project:{receipt.committed_tick}")
+        if attempts < 3:
+            raise RuntimeError("required projection unavailable")
+
+    storage_config = StorageConfig(
+        uri=str(tmp_path / "store"),
+        namespace="application-pending-destroy",
+    )
+    storage = StorageService()
+    registry = WorldRegistry()
+    projector = RequiredProjector(
+        consumer_name="test.application-pending-destroy",
+        project=fail_twice,
+    )
+    lifecycle = WorldLifecycle(
+        storage,
+        registry,
+        required_projector_factory=lambda _world_id: projector,
+    )
+    commands = _Commands(registry)
+    application = RuntimeApplication(
+        registry=registry,
+        lifecycle=lifecycle,
+        storage=storage,
+        commands=cast(iCommandScheduler, commands),
+    )
+    try:
+        info = await application.create_world(
+            WorldConfig(name="pending-destroy"),
+            storage_config,
+        )
+        await application.create_entity(info.world_id, [Value(number=7)])
+
+        with pytest.raises(PostCommitProjectionError):
+            await application.step(info.world_id, RunConfig())
+
+        pending = registry.pending_receipt(info.world_id)
+        assert pending is not None
+        with pytest.raises(PostCommitProjectionError):
+            await application.destroy_world(info.world_id)
+
+        assert registry.pending_receipt(info.world_id) is pending
+        assert commands.cancellations == []
+        assert events == ["project:0", "project:0"]
+        catalog = storage.get_control_catalog(storage_config)
+        record = await catalog.get_world(str(info.world_id))
+        assert record is not None and record.status == "active"
+
+        await application.destroy_world(info.world_id)
+
+        assert events == ["project:0", "project:0", "project:0"]
+        assert commands.cancellations == [str(info.world_id)]
+        assert not await registry.contains(str(info.world_id))
+        record = await catalog.get_world(str(info.world_id))
+        assert record is not None and record.status == "destroyed"
+    finally:
+        await application.stop_admission()
+        await storage.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_world_info_entrypoints_reconcile_every_locked_snapshot(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="application-info")
+    async with _application_harness() as harness:
+        first = await harness.application.create_world(WorldConfig(name="info-first"), storage)
+        second = await harness.application.create_world(WorldConfig(name="info-second"), storage)
+        recovered_ticks = {
+            str(first.world_id): 3,
+            str(second.world_id): 5,
+        }
+        reconciled: list[str] = []
+
+        async def reconcile(registry, world_id, world) -> bool:
+            assert registry is harness.registry
+            reconciled.append(str(world_id))
+            world.tick = recovered_ticks[str(world_id)]
+            return True
+
+        monkeypatch.setattr(
+            "archetype.world.simulation.reconcile_committed_work_locked",
+            reconcile,
+        )
+
+        info = await harness.application.get_world_info(first.world_id)
+        listed = await harness.application.list_worlds()
+
+        assert info.tick == 3
+        assert [(str(item.world_id), item.tick) for item in listed] == [
+            (str(first.world_id), 3),
+            (str(second.world_id), 5),
+        ]
+        assert reconciled == [
+            str(first.world_id),
+            str(first.world_id),
+            str(second.world_id),
+        ]
+
+        # Restore synthetic ticks before lifecycle teardown.
+        for world in await harness.registry.list_worlds():
+            world.tick = 0
+
+
+@pytest.mark.asyncio
+async def test_list_worlds_recovery_callback_can_enter_a_sibling_world(tmp_path) -> None:
+    storage_config = StorageConfig(
+        uri=str(tmp_path / "store"),
+        namespace="application-info-cross-world",
+    )
+    storage = StorageService()
+    registry = WorldRegistry()
+    application: RuntimeApplication | None = None
+    callback_info: list[WorldInfo] = []
+    sibling_id: str | None = None
+
+    async def project(receipt: CommittedTickReceipt) -> None:
+        del receipt
+        assert application is not None
+        assert sibling_id is not None
+        callback_info.append(await application.get_world_info(sibling_id))
+
+    lifecycle = WorldLifecycle(
+        storage,
+        registry,
+        required_projector_factory=lambda _world_id: RequiredProjector(
+            consumer_name="test.list-worlds-cross-world",
+            project=project,
+        ),
+    )
+    commands = _Commands(registry)
+    application = RuntimeApplication(
+        registry=registry,
+        lifecycle=lifecycle,
+        storage=storage,
+        commands=cast(iCommandScheduler, commands),
+    )
+    try:
+        first = await application.create_world(
+            WorldConfig(name="info-callback-source"),
+            storage_config,
+        )
+        second = await application.create_world(
+            WorldConfig(name="info-callback-target"),
+            storage_config,
+        )
+        sibling_id = str(second.world_id)
+        first_world = await registry.live_world(first.world_id)
+        assert first_world is not None
+        first_world.tick = 1
+        registry.retain_receipt(
+            first.world_id,
+            CommittedTickReceipt(
+                world_id=str(first.world_id),
+                run_id=str(first.run_id),
+                committed_tick=0,
+                visibility_token="manifest-0",
+                commands_applied=0,
+            ),
+        )
+
+        listed = await asyncio.wait_for(application.list_worlds(), timeout=1)
+
+        assert [(str(item.world_id), item.tick) for item in callback_info] == [
+            (str(second.world_id), 0)
+        ]
+        assert {str(item.world_id): item.tick for item in listed} == {
+            str(first.world_id): 1,
+            str(second.world_id): 0,
+        }
+        assert registry.pending_receipt(first.world_id) is None
+        first_world.tick = 0
+    finally:
+        for world in await registry.list_worlds():
+            await lifecycle.destroy_world(world.world_id)
+        await application.stop_admission()
+        await storage.shutdown()
 
 
 @pytest.mark.asyncio

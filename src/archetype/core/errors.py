@@ -33,6 +33,25 @@ from typing import Literal
 TickPhase = Literal["compute", "commit"]
 
 
+class AmbiguousTickCommitError(RuntimeError):
+    """A prepared tick's manifest outcome could not be read authoritatively.
+
+    The world retains the exact prepared commit identity and refuses to
+    recompute or re-append the tick. A later ``step`` retries publication with
+    that same identity.
+    """
+
+    public_detail = "Tick commit status is temporarily unavailable; retry the request"
+
+    def __init__(self, *, tick: int, commit_token: str) -> None:
+        self.tick = tick
+        self.commit_token = commit_token
+        super().__init__(
+            f"manifest outcome for prepared tick {tick} is ambiguous; "
+            "exact publication retry is required"
+        )
+
+
 @dataclass(frozen=True)
 class TickFailure:
     """One archetype table's original failure within a failed tick.

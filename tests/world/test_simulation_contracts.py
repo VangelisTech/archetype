@@ -12,11 +12,13 @@ import pytest
 
 from archetype.core.config import RunConfig
 from archetype.core.interfaces import CommittedTickReceipt
+from archetype.world.models import EpisodeConfig
 from archetype.world.simulation import (
     PostCommitProjectionError,
     RequiredProjector,
     retry_required_projection,
     run,
+    run_episode,
     step,
 )
 
@@ -31,11 +33,33 @@ class _World:
         self.tick = 0
         self._receipts = iter(receipts)
         self.steps = 0
+        self.entity2sig: dict[int, tuple[object, ...]] = {}
+        self._prepared_receipt: CommittedTickReceipt | None = None
+        self._last_committed_receipt: CommittedTickReceipt | None = None
 
     async def step(self, run_config: RunConfig, **kwargs: object) -> CommittedTickReceipt:
         del run_config, kwargs
         receipt = next(self._receipts)
         self.steps += 1
+        self.tick += 1
+        self._last_committed_receipt = receipt
+        return receipt
+
+    @property
+    def has_prepared_tick_commit(self) -> bool:
+        return self._prepared_receipt is not None
+
+    @property
+    def last_committed_receipt(self) -> CommittedTickReceipt | None:
+        return self._last_committed_receipt
+
+    async def reconcile_prepared_tick(self) -> CommittedTickReceipt | None:
+        receipt = self._prepared_receipt
+        if receipt is None:
+            return None
+        assert receipt.committed_tick == self.tick
+        self._prepared_receipt = None
+        self._last_committed_receipt = receipt
         self.tick += 1
         return receipt
 
@@ -178,6 +202,77 @@ async def test_run_retries_pending_receipt_without_replaying_tick() -> None:
     assert result.commands_applied == 1
     assert result.final_tick == 2
     assert registry.pending is None
+
+
+@pytest.mark.parametrize(
+    ("num_steps", "expected_steps", "expected_final_tick", "expected_projected"),
+    [
+        (0, 0, 1, [0]),
+        (1, 1, 2, [0, 1]),
+    ],
+)
+async def test_run_recovers_prepared_tick_before_counting_requested_steps(
+    num_steps: int,
+    expected_steps: int,
+    expected_final_tick: int,
+    expected_projected: list[int],
+) -> None:
+    world = _World([_receipt(1)])
+    world._prepared_receipt = _receipt(0)
+    projected: list[int] = []
+
+    async def project(receipt: CommittedTickReceipt) -> None:
+        projected.append(receipt.committed_tick)
+
+    registry = _Registry(
+        world,
+        projector=RequiredProjector(consumer_name="required", project=project),
+    )
+
+    result = await run(registry, world.world_id, RunConfig(num_steps=num_steps))
+
+    assert world.steps == expected_steps
+    assert result.ticks_completed == num_steps
+    assert result.commands_applied == num_steps
+    assert result.final_tick == expected_final_tick
+    assert projected == expected_projected
+    assert registry.pending is None
+
+
+@pytest.mark.parametrize(
+    ("max_steps", "expected_terminated", "expected_predicate_ticks"),
+    [
+        (0, False, []),
+        (1, True, [1]),
+    ],
+)
+async def test_episode_recovers_prepared_tick_before_boundary_and_termination(
+    max_steps: int,
+    expected_terminated: bool,
+    expected_predicate_ticks: list[int],
+) -> None:
+    world = _World([_receipt(1)])
+    world._prepared_receipt = _receipt(0)
+    predicate_ticks: list[int] = []
+
+    def terminate(value: _World) -> bool:
+        predicate_ticks.append(value.tick)
+        return True
+
+    registry = _Registry(world)
+    result = await run_episode(
+        registry,
+        object(),  # type: ignore[arg-type] - max_steps/predicate avoid storage reads
+        world.world_id,
+        EpisodeConfig(max_steps=max_steps, termination=terminate),
+    )
+
+    assert world.steps == 0
+    assert result.start_tick == 1
+    assert result.final_tick == 1
+    assert result.duration_steps == 0
+    assert result.terminated is expected_terminated
+    assert predicate_ticks == expected_predicate_ticks
 
 
 async def test_cleanup_retry_rejects_a_lease_for_another_world_before_entry() -> None:

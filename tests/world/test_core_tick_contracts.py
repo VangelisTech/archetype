@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -26,7 +27,8 @@ from archetype.core.aio import (
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, WorldConfig
-from archetype.core.hooks import HookRegistry, PreTick
+from archetype.core.errors import AmbiguousTickCommitError
+from archetype.core.hooks import HookRegistry, PostTick, PreTick
 from archetype.core.interfaces import CommitContext
 from archetype.core.resources import Resources
 
@@ -63,6 +65,7 @@ class _RecordingCoordinator:
         self.begin_ticks: list[int] = []
         self.manifests: list[_PublishedManifest] = []
         self.settled_command_ids: list[str] = []
+        self.acknowledged_ticks: list[tuple[int, str]] = []
         self._staged: dict[int, tuple[str, list[str]]] = {}
 
     def bind(self, world: AsyncWorld) -> None:
@@ -123,6 +126,136 @@ class _RecordingCoordinator:
         del world_id, run_id, ticks
         return None
 
+    def acknowledge_published_tick(self, tick: int, ctx: CommitContext) -> None:
+        self.acknowledged_ticks.append((tick, ctx.commit_token))
+        self._staged.pop(tick, None)
+
+
+class _CommittedResponseLossCoordinator(_RecordingCoordinator):
+    """Commit the first manifest, then lose only its caller response."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.publish_tokens: list[str] = []
+        self.settlement_effects = 0
+        self._lost_response = False
+
+    async def publish_tick(
+        self,
+        tick: int,
+        ctx: CommitContext,
+        sigs: list[tuple[type[Component], ...]],
+    ) -> None:
+        self.publish_tokens.append(ctx.commit_token)
+        existing = next((manifest for manifest in self.manifests if manifest.tick == tick), None)
+        if existing is not None:
+            if existing.commit_token != ctx.commit_token:
+                raise RuntimeError("published tick retried with a different commit identity")
+            self._staged.pop(tick, None)
+            return
+
+        signature_list = list(sigs)
+        staged = self._staged.get(tick, ("", []))
+        self.manifests.append(
+            _PublishedManifest(
+                world_id=self.world_id,
+                run_id=self.run_id,
+                tick=tick,
+                commit_token=ctx.commit_token,
+                writer_epoch=ctx.writer_epoch,
+                table_ids=tuple(Archetype.get_name(sig) for sig in signature_list),
+                command_ids=tuple(staged[1]),
+            )
+        )
+        self.settled_command_ids.extend(staged[1])
+        self.settlement_effects += 1
+        if not self._lost_response:
+            self._lost_response = True
+            raise RuntimeError("manifest committed but response was lost")
+
+    async def visible_tokens(
+        self,
+        world_id: str,
+        run_id: str,
+        ticks: list[int] | None = None,
+    ) -> dict[int, list[str]]:
+        del world_id, run_id
+        selected = set(ticks) if ticks is not None else None
+        return {
+            manifest.tick: [manifest.commit_token]
+            for manifest in self.manifests
+            if selected is None or manifest.tick in selected
+        }
+
+
+class _UnreadableResponseLossCoordinator(_CommittedResponseLossCoordinator):
+    def __init__(self) -> None:
+        super().__init__()
+        self._lose_visibility_response = True
+
+    async def visible_tokens(
+        self,
+        world_id: str,
+        run_id: str,
+        ticks: list[int] | None = None,
+    ) -> dict[int, list[str]]:
+        if self._lose_visibility_response and self.manifests:
+            self._lose_visibility_response = False
+            raise RuntimeError("visibility authority unavailable")
+        return await super().visible_tokens(world_id, run_id, ticks)
+
+
+class _CompetingHeadCoordinator(_RecordingCoordinator):
+    def __init__(self, *, legacy_none: bool = False) -> None:
+        super().__init__()
+        self.legacy_none = legacy_none
+        self.publish_tokens: list[str] = []
+        self.publish_attempted = False
+
+    async def publish_tick(
+        self,
+        tick: int,
+        ctx: CommitContext,
+        sigs: list[tuple[type[Component], ...]],
+    ) -> None:
+        del tick, sigs
+        self.publish_attempted = True
+        self.publish_tokens.append(ctx.commit_token)
+        raise RuntimeError("manifest publish response failed")
+
+    async def visible_tokens(
+        self,
+        world_id: str,
+        run_id: str,
+        ticks: list[int] | None = None,
+    ) -> dict[int, list[str]] | None:
+        del world_id, run_id, ticks
+        if not self.publish_attempted:
+            return {}
+        if self.legacy_none:
+            return None
+        return {0: ["competing-token"]}
+
+
+class _CancelledPublishCoordinator(_RecordingCoordinator):
+    def __init__(self) -> None:
+        super().__init__()
+        self.publish_started = asyncio.Event()
+        self.never_released = asyncio.Event()
+        self.publish_tokens: list[str] = []
+
+    async def publish_tick(
+        self,
+        tick: int,
+        ctx: CommitContext,
+        sigs: list[tuple[type[Component], ...]],
+    ) -> None:
+        self.publish_tokens.append(ctx.commit_token)
+        if len(self.publish_tokens) == 1:
+            self.publish_started.set()
+            await self.never_released.wait()
+        await super().publish_tick(tick, ctx, sigs)
+
 
 Materializer = Callable[[AsyncWorld, int], Awaitable[int]]
 
@@ -138,9 +271,11 @@ class _WorldHarness:
 async def _tick_world(
     tmp_path: Any,
     materializer: Materializer,
+    *,
+    coordinator: _RecordingCoordinator | None = None,
 ) -> AsyncIterator[_WorldHarness]:
     store = AsyncLancedbStore(str(tmp_path / "store"), namespace="tick-contract")
-    coordinator = _RecordingCoordinator()
+    coordinator = coordinator or _RecordingCoordinator()
     world = AsyncWorld(
         world_id="00000000-0000-7000-8000-000000000001",
         name="tick-contract",
@@ -256,6 +391,296 @@ async def test_materializer_infrastructure_failure_advances_and_settles_nothing(
         assert harness.coordinator.settled_command_ids == ["command-1"]
         assert [manifest.tick for manifest in harness.coordinator.manifests] == [0]
         assert signature not in harness.world.spawn_cache
+
+
+async def test_committed_response_loss_retries_exact_prepared_tick_without_recompute(
+    tmp_path,
+) -> None:
+    materializations = 0
+    coordinator = _CommittedResponseLossCoordinator()
+
+    async def materialize(world: AsyncWorld, target_tick: int) -> int:
+        nonlocal materializations
+        materializations += 1
+        assert target_tick == 0
+        if not world.commit_coordinator.is_command_staged(target_tick, "command-1"):
+            world.commit_coordinator.stage_command(target_tick, "worker-1", "command-1")
+        return 1
+
+    async with _tick_world(
+        tmp_path,
+        materialize,
+        coordinator=coordinator,
+    ) as harness:
+        await harness.world.create_entity([DueCommandMarker(value=12)])
+        signature = next(iter(harness.world.spawn_cache))
+
+        receipt = await harness.world.step(RunConfig())
+
+        assert materializations == 1, "a prepared tick cannot materialize commands twice"
+        assert coordinator.begin_ticks == [0], "one tick owns one stable commit identity"
+        assert coordinator.publish_tokens == [receipt.visibility_token]
+        assert coordinator.acknowledged_ticks == [(0, receipt.visibility_token)]
+        assert coordinator.settled_command_ids == ["command-1"]
+        assert coordinator.settlement_effects == 1
+        assert signature not in harness.world.spawn_cache
+        rows = (
+            await harness.store.get_archetype_df(
+                signature,
+                str(harness.world.world_id),
+                str(harness.world.run_id),
+                ticks=[0],
+            )
+        ).to_pylist()
+        assert len(rows) == 1, "publication retry must not append the prepared frame twice"
+
+
+async def test_unreadable_publish_outcome_blocks_mutation_until_exact_retry(
+    tmp_path,
+) -> None:
+    from archetype.world.mutation import _add_resource_locked
+
+    coordinator = _UnreadableResponseLossCoordinator()
+    post_tick_events: list[str] = []
+
+    async def no_commands(_world: AsyncWorld, _target_tick: int) -> int:
+        return 0
+
+    async def existing_post_tick(_event: PostTick) -> None:
+        post_tick_events.append("existing")
+
+    async def late_post_tick(_event: PostTick) -> None:
+        post_tick_events.append("late")
+
+    async with _tick_world(
+        tmp_path,
+        no_commands,
+        coordinator=coordinator,
+    ) as harness:
+        await harness.world.create_entity([DueCommandMarker(value=21)])
+        existing_handle = harness.world.add_hook(PostTick, existing_post_tick)
+        next_entity_id = harness.world.next_entity_id
+
+        with pytest.raises(AmbiguousTickCommitError) as raised:
+            await harness.world.step(RunConfig())
+
+        assert raised.value.tick == 0
+        assert harness.world.tick == 0
+        assert harness.world.has_prepared_tick_commit
+        with pytest.raises(RuntimeError, match="prepared tick"):
+            await harness.world.create_entity([DueCommandMarker(value=22)])
+        with pytest.raises(RuntimeError, match="prepared tick"):
+            harness.world.add_hook(PostTick, late_post_tick)
+        with pytest.raises(RuntimeError, match="prepared tick"):
+            harness.world.remove_hook(existing_handle)
+        with pytest.raises(RuntimeError, match="prepared tick"):
+            _add_resource_locked(harness.world, object())
+        assert harness.world.next_entity_id == next_entity_id
+
+        receipt = await harness.world.step(RunConfig())
+
+        assert receipt.committed_tick == 0
+        assert harness.world.tick == 1
+        assert not harness.world.has_prepared_tick_commit
+        assert coordinator.begin_ticks == [0]
+        assert coordinator.publish_tokens == [
+            receipt.visibility_token,
+            receipt.visibility_token,
+        ]
+        assert coordinator.settlement_effects == 1
+        assert post_tick_events == ["existing"]
+
+
+@pytest.mark.parametrize("legacy_none", [False, True])
+async def test_non_exact_manifest_state_stays_prepared_and_never_replays(
+    tmp_path,
+    legacy_none: bool,
+) -> None:
+    coordinator = _CompetingHeadCoordinator(legacy_none=legacy_none)
+    materializations = 0
+
+    async def no_commands(_world: AsyncWorld, _target_tick: int) -> int:
+        nonlocal materializations
+        materializations += 1
+        return 0
+
+    async with _tick_world(
+        tmp_path,
+        no_commands,
+        coordinator=coordinator,
+    ) as harness:
+        await harness.world.create_entity([DueCommandMarker(value=23)])
+        signature = next(iter(harness.world.spawn_cache))
+        expected_error = AmbiguousTickCommitError if legacy_none else RuntimeError
+
+        with pytest.raises(expected_error):
+            await harness.world.step(RunConfig())
+        with pytest.raises(expected_error):
+            await harness.world.step(RunConfig())
+
+        assert harness.world.tick == 0
+        assert harness.world.last_committed_receipt is None
+        assert harness.world.has_prepared_tick_commit
+        assert signature in harness.world.spawn_cache
+        assert materializations == 1
+        assert coordinator.begin_ticks == [0]
+        assert len(coordinator.publish_tokens) == 2
+        assert len(set(coordinator.publish_tokens)) == 1
+        with pytest.raises(RuntimeError, match="prepared tick"):
+            await harness.world.create_entity([DueCommandMarker(value=24)])
+        physical_rows = (
+            await harness.store.get_archetype_df(
+                signature,
+                str(harness.world.world_id),
+                str(harness.world.run_id),
+                ticks=[0],
+            )
+        ).to_pylist()
+        assert len(physical_rows) == 1
+
+
+async def test_cancellation_during_manifest_publish_retains_prepared_identity_only(
+    tmp_path,
+) -> None:
+    coordinator = _CancelledPublishCoordinator()
+    materializations = 0
+
+    async def materialize(world: AsyncWorld, target_tick: int) -> int:
+        nonlocal materializations
+        materializations += 1
+        if not world.commit_coordinator.is_command_staged(target_tick, "command-1"):
+            world.commit_coordinator.stage_command(target_tick, "worker-1", "command-1")
+        return 1
+
+    async with _tick_world(
+        tmp_path,
+        materialize,
+        coordinator=coordinator,
+    ) as harness:
+        await harness.world.create_entity([DueCommandMarker(value=25)])
+        signature = next(iter(harness.world.spawn_cache))
+        task = asyncio.create_task(harness.world.step(RunConfig()))
+        await coordinator.publish_started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert harness.world.tick == 0
+        assert harness.world.last_committed_receipt is None
+        assert harness.world.has_prepared_tick_commit
+        assert signature in harness.world.spawn_cache
+        assert coordinator.is_command_staged(0, "command-1")
+
+        receipt = await harness.world.step(RunConfig())
+
+        assert receipt.committed_tick == 0
+        assert receipt.visibility_token == coordinator.publish_tokens[0]
+        assert materializations == 1
+        assert coordinator.begin_ticks == [0]
+        assert coordinator.publish_tokens == [
+            receipt.visibility_token,
+            receipt.visibility_token,
+        ]
+        assert coordinator.settled_command_ids == ["command-1"]
+        assert signature not in harness.world.spawn_cache
+        physical_rows = (
+            await harness.store.get_archetype_df(
+                signature,
+                str(harness.world.world_id),
+                str(harness.world.run_id),
+                ticks=[0],
+            )
+        ).to_pylist()
+        assert len(physical_rows) == 1
+
+
+async def test_post_tick_cancellation_retains_committed_receipt_for_required_projection(
+    tmp_path,
+) -> None:
+    from archetype.world.registry import WorldRegistry
+    from archetype.world.simulation import RequiredProjector, step
+
+    hook_entered = asyncio.Event()
+    never_released = asyncio.Event()
+    projected = []
+    events: list[str] = []
+    materialized_ticks: list[int] = []
+
+    async def no_commands(_world: AsyncWorld, target_tick: int) -> int:
+        materialized_ticks.append(target_tick)
+        events.append(f"materialize:{target_tick}")
+        return 0
+
+    async def block_post_tick(_event: PostTick) -> None:
+        hook_entered.set()
+        await never_released.wait()
+
+    async def project(receipt) -> None:
+        projected.append(receipt)
+        events.append(f"project:{receipt.committed_tick}")
+
+    async with _tick_world(tmp_path, no_commands) as harness:
+        await harness.world.create_entity([DueCommandMarker(value=13)])
+        hook_handle = harness.world.hooks.add(PostTick, block_post_tick)
+        registry = WorldRegistry()
+        await registry.insert(
+            harness.world,
+            required_projector=RequiredProjector(
+                consumer_name="test.required-index",
+                project=project,
+            ),
+        )
+
+        task = asyncio.create_task(step(registry, harness.world.world_id, RunConfig()))
+        await hook_entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert harness.world.tick == 1
+        pending = registry.pending_receipt(harness.world.world_id)
+        assert pending is not None
+        assert pending is harness.world.last_committed_receipt
+        assert pending.committed_tick == 0
+        assert pending.visibility_token == harness.coordinator.manifests[0].commit_token
+        assert projected == []
+
+        harness.world.hooks.remove(hook_handle)
+        await step(registry, harness.world.world_id, RunConfig())
+
+        assert [receipt.committed_tick for receipt in projected] == [0, 1]
+        assert materialized_ticks == [0, 1]
+        assert events == [
+            "materialize:0",
+            "project:0",
+            "materialize:1",
+            "project:1",
+        ]
+        assert registry.pending_receipt(harness.world.world_id) is None
+
+
+async def test_post_tick_handler_self_cancellation_remains_advisory(tmp_path) -> None:
+    events: list[str] = []
+
+    async def no_commands(_world: AsyncWorld, _target_tick: int) -> int:
+        return 0
+
+    async def cancel_handler(_event: PostTick) -> None:
+        events.append("cancel")
+        raise asyncio.CancelledError("handler stopped itself")
+
+    async def later_handler(_event: PostTick) -> None:
+        events.append("later")
+
+    async with _tick_world(tmp_path, no_commands) as harness:
+        await harness.world.create_entity([DueCommandMarker(value=14)])
+        harness.world.hooks.add(PostTick, cancel_handler)
+        harness.world.hooks.add(PostTick, later_handler)
+
+        receipt = await harness.world.step(RunConfig())
+
+        assert receipt.committed_tick == 0
+        assert events == ["cancel", "later"]
 
 
 async def test_committed_receipt_is_frozen_and_manifest_bound(tmp_path) -> None:

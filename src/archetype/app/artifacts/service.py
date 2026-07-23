@@ -22,6 +22,7 @@ from archetype.ingestion.pipeline import (
     FileIngestionPipeline,
 )
 from archetype.storage.interfaces import iStorageService
+from archetype.world import simulation
 from archetype.world.interfaces import iWorldRegistry
 
 
@@ -173,6 +174,14 @@ class ArtifactService:
             raise RuntimeError(f"world {wid} has no recorded run; artifacts need a run key")
         if await self._world_registry.live_world(wid) is not None:
             async with self._world_registry.operation(wid) as world:
+                # Artifact occurrence identity includes the live tick. Resolve
+                # any prepared commit under the same world lock before
+                # stamping it, or propagate the reconciliation failure.
+                await simulation.reconcile_committed_work_locked(
+                    self._world_registry,
+                    wid,
+                    world,
+                )
                 tick = int(world.tick)
         else:
             tick = int(record.tick_head)

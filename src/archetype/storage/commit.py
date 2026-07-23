@@ -164,6 +164,21 @@ class CatalogCommitCoordinator:
         )
         self._staged_commands.pop(tick, None)
 
+    def acknowledge_published_tick(self, tick: int, ctx: CommitContext) -> None:
+        """Release local staging after an authoritative exact-token read.
+
+        The manifest transaction already settled the command IDs. This method
+        performs no catalog write, so a later fence holder cannot prevent the
+        old world from finalizing its already-committed receipt.
+        """
+        if ctx.writer_epoch != self._identity.writer_epoch:
+            raise ValueError(
+                "commit coordinator writer epoch mismatch: "
+                f"bound to writer_epoch={self._identity.writer_epoch}; "
+                f"received writer_epoch={ctx.writer_epoch}"
+            )
+        self._staged_commands.pop(tick, None)
+
     async def visible_tokens(
         self, world_id: str, run_id: str, ticks: list[int] | None = None
     ) -> dict[int, list[str]] | None:

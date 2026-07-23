@@ -16,6 +16,8 @@
 
 ::: archetype.core.AsyncUpdateManager
 
+::: archetype.core.AmbiguousTickCommitError
+
 ::: archetype.core.TickExecutionError
 
 ::: archetype.core.TickFailure

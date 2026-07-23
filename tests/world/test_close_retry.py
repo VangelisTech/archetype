@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from archetype.core.config import RunConfig, StorageConfig
+from archetype.core.hooks import HookRegistry, OnDestroy
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -163,7 +164,73 @@ async def test_failed_cleanup_retains_exact_binding_and_retry_finishes_close() -
         assert live_sibling is sibling, "one world's failed close cannot poison its sibling"
 
 
-async def test_public_destroy_retries_pending_projection_before_durable_close() -> None:
+async def test_public_destroy_reconciles_prepared_commit_before_projection_and_status(
+    monkeypatch,
+) -> None:
+    lifecycle_module = import_module("archetype.world.lifecycle")
+    registry_module, simulation_module = _managed_api()
+    from archetype.core.interfaces import CommittedTickReceipt
+
+    events: list[str] = []
+
+    class _PreparedWorld(_ReceiptWorld):
+        def __init__(self) -> None:
+            super().__init__(
+                world_id="00000000-0000-7000-8000-000000000047",
+                name="prepared-destroy",
+                receipt_type=CommittedTickReceipt,
+            )
+            self.has_prepared_tick_commit = True
+            self.last_committed_receipt = None
+            self.hooks = HookRegistry()
+
+        async def reconcile_prepared_tick(self) -> CommittedTickReceipt:
+            events.append("publish:0")
+            self.has_prepared_tick_commit = False
+            self.tick = 1
+            receipt = CommittedTickReceipt(
+                world_id=self.world_id,
+                run_id=self.run_id,
+                committed_tick=0,
+                visibility_token="manifest-prepared-0",
+                commands_applied=1,
+            )
+            self.last_committed_receipt = receipt
+            return receipt
+
+    async def project(receipt: CommittedTickReceipt) -> None:
+        events.append(f"project:{receipt.committed_tick}")
+
+    async def on_destroy(_event: OnDestroy) -> None:
+        events.append("destroy")
+
+    world = _PreparedWorld()
+    world.hooks.add(OnDestroy, on_destroy)
+    storage_config = StorageConfig()
+    registry = registry_module.WorldRegistry()
+    await registry.insert(
+        world,
+        storage_config=storage_config,
+        required_projector=simulation_module.RequiredProjector(
+            consumer_name="test.prepared-destroy",
+            project=project,
+        ),
+    )
+    catalog = _DestroyCatalog(events)
+    lifecycle = lifecycle_module.WorldLifecycle(_DestroyStorage(catalog), registry)
+    monkeypatch.setattr(lifecycle_module, "AsyncWorld", _PreparedWorld)
+
+    await lifecycle.destroy_world(world.world_id)
+
+    assert events == ["publish:0", "project:0", "destroy", "status:destroyed"]
+    assert catalog.statuses == [(world.world_id, "destroyed")]
+    assert registry.pending_receipt(world.world_id) is None
+    assert not await registry.contains(world.world_id)
+
+
+async def test_public_destroy_retries_pending_projection_before_destruction_effects(
+    monkeypatch,
+) -> None:
     lifecycle_module = import_module("archetype.world.lifecycle")
     registry_module, simulation_module = _managed_api()
     from archetype.core.interfaces import CommittedTickReceipt
@@ -177,84 +244,49 @@ async def test_public_destroy_retries_pending_projection_before_durable_close() 
         if len(attempts) < 3:
             raise RuntimeError("projection unavailable")
 
+    async def on_destroy(_event: OnDestroy) -> None:
+        events.append("destroy")
+
     world = _ReceiptWorld(
-        world_id="00000000-0000-7000-8000-000000000045",
-        name="public-destroy",
+        world_id="00000000-0000-7000-8000-000000000048",
+        name="pending-destroy",
         receipt_type=CommittedTickReceipt,
     )
-    projector = simulation_module.RequiredProjector(
-        consumer_name="test.public-destroy",
-        project=fail_twice,
-    )
+    world.hooks = HookRegistry()
+    world.hooks.add(OnDestroy, on_destroy)
+    world.has_prepared_tick_commit = False
     storage_config = StorageConfig()
     registry = registry_module.WorldRegistry()
     await registry.insert(
         world,
         storage_config=storage_config,
-        required_projector=projector,
+        required_projector=simulation_module.RequiredProjector(
+            consumer_name="test.pending-destroy",
+            project=fail_twice,
+        ),
     )
     catalog = _DestroyCatalog(events)
     lifecycle = lifecycle_module.WorldLifecycle(_DestroyStorage(catalog), registry)
+    monkeypatch.setattr(lifecycle_module, "AsyncWorld", _ReceiptWorld)
 
-    with pytest.raises(simulation_module.PostCommitProjectionError) as committed:
+    with pytest.raises(simulation_module.PostCommitProjectionError):
         await simulation_module.step(registry, world.world_id, RunConfig())
-    receipt = committed.value.receipt
+    receipt = registry.pending_receipt(world.world_id)
+    assert receipt is not None
 
-    with pytest.raises(simulation_module.PostCommitProjectionError) as closing:
+    with pytest.raises(simulation_module.PostCommitProjectionError):
         await lifecycle.destroy_world(world.world_id)
 
-    assert closing.value.receipt is receipt
-    assert attempts == [receipt, receipt]
     assert registry.pending_receipt(world.world_id) is receipt
-    assert await registry.contains(world.world_id)
     assert catalog.statuses == []
     assert events == ["project:0", "project:0"]
-    with pytest.raises(RuntimeError, match="closing"):
-        async with registry.operation(world.world_id):
-            pytest.fail("a failed destroy retry must keep public admission closed")
+    assert await registry.contains(world.world_id)
 
     await lifecycle.destroy_world(world.world_id)
 
-    assert attempts == [receipt, receipt, receipt]
-    assert events == ["project:0", "project:0", "project:0", "status:destroyed"]
+    assert events == ["project:0", "project:0", "project:0", "destroy", "status:destroyed"]
     assert catalog.statuses == [(world.world_id, "destroyed")]
-    assert registry.pending_receipt(world.world_id) is None
     assert not await registry.contains(world.world_id)
-
-
-async def test_public_destroy_preserves_an_ambiguous_prepared_tick() -> None:
-    lifecycle_module = import_module("archetype.world.lifecycle")
-    registry_module, _simulation_module = _managed_api()
-    from archetype.core.interfaces import CommittedTickReceipt
-
-    events: list[str] = []
-    world = _ReceiptWorld(
-        world_id="00000000-0000-7000-8000-000000000047",
-        name="response-loss",
-        receipt_type=CommittedTickReceipt,
-    )
-    world.has_prepared_tick_commit = True
-    storage_config = StorageConfig()
-    registry = registry_module.WorldRegistry()
-    await registry.insert(world, storage_config=storage_config)
-    catalog = _DestroyCatalog(events)
-    lifecycle = lifecycle_module.WorldLifecycle(_DestroyStorage(catalog), registry)
-
-    with pytest.raises(RuntimeError, match="prepared tick commit awaiting exact publication"):
-        await lifecycle.destroy_world(world.world_id)
-
-    assert await registry.live_world(world.world_id) is world
-    assert world.has_prepared_tick_commit
-    assert catalog.statuses == []
-    assert events == []
-    with pytest.raises(RuntimeError, match="closing"):
-        async with registry.operation(world.world_id):
-            pytest.fail("ambiguous prepared state must remain strongly owned and closed")
-
-    with pytest.raises(RuntimeError, match="prepared tick commit awaiting exact publication"):
-        await lifecycle.destroy_world(world.world_id)
-    assert await registry.live_world(world.world_id) is world
-    assert catalog.statuses == []
 
 
 async def test_cleanup_lease_cannot_authorize_a_sibling_world() -> None:

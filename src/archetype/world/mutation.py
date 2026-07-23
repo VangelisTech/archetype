@@ -214,6 +214,11 @@ async def add_resource(
 
 def _add_resource_locked(world: AsyncWorld, resource: object) -> None:
     """Attach a live resource while the world lock is already held."""
+    if world.has_prepared_tick_commit:
+        raise RuntimeError(
+            "world has a prepared tick awaiting manifest reconciliation; "
+            "retry step before mutating it"
+        )
     world.resources.insert(resource)
 
 

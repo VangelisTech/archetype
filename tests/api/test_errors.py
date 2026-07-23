@@ -15,7 +15,7 @@ from archetype.api.errors import raise_api_error
 from archetype.app import errors as compatibility_errors
 from archetype.app.audit.service import AuditBackpressureError
 from archetype.app.redaction import SecretQuarantineError
-from archetype.core.errors import TickExecutionError, TickFailure
+from archetype.core.errors import AmbiguousTickCommitError, TickExecutionError, TickFailure
 from archetype.errors import (
     AvailabilityError,
     ConflictError,
@@ -88,6 +88,24 @@ def test_availability_contract_defaults_to_a_safe_public_detail() -> None:
 
     assert raised.value.status_code == 503
     assert raised.value.detail == "Service is temporarily unavailable"
+
+
+def test_ambiguous_tick_commit_is_public_and_maps_to_bounded_retry_signal() -> None:
+    import archetype
+
+    secret_token = "private-commit-token"
+    error = AmbiguousTickCommitError(tick=7, commit_token=secret_token)
+
+    assert archetype.AmbiguousTickCommitError is AmbiguousTickCommitError
+    assert isinstance(error, RuntimeError)
+    with pytest.raises(HTTPException) as raised:
+        raise_api_error(error)
+
+    assert raised.value.status_code == 503
+    assert raised.value.detail == (
+        "Tick commit status is temporarily unavailable; retry the request"
+    )
+    assert secret_token not in raised.value.detail
 
 
 def test_payload_rejection_contract_maps_to_safe_unprocessable_content() -> None:

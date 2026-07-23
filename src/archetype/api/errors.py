@@ -22,6 +22,7 @@ from typing import NoReturn
 from fastapi import HTTPException
 
 from archetype.app.gateway.auth.errors import GuardrailError
+from archetype.core.errors import AmbiguousTickCommitError
 from archetype.errors import (
     AvailabilityError,
     ConflictError,
@@ -42,6 +43,8 @@ def raise_api_error(exc: Exception, *, conflict: bool = False) -> NoReturn:
         raise HTTPException(status_code=404, detail=str(exc)) from None
     if isinstance(exc, ConflictError):
         raise HTTPException(status_code=409, detail=exc.public_detail) from None
+    if isinstance(exc, AmbiguousTickCommitError):
+        raise HTTPException(status_code=503, detail=exc.public_detail) from None
     if isinstance(exc, AvailabilityError):
         raise HTTPException(status_code=503, detail=exc.public_detail) from None
     if isinstance(exc, PayloadRejectedError):

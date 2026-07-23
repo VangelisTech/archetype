@@ -221,6 +221,15 @@ class HookRegistry:
             if mode == "blocking":
                 try:
                     await fn(event)
+                except asyncio.CancelledError:
+                    task = asyncio.current_task()
+                    if task is not None and task.cancelling():
+                        raise
+                    logger.warning(
+                        "Hook %s cancelled itself on %s",
+                        getattr(fn, "__qualname__", fn),
+                        type(event).__name__,
+                    )
                 except Exception as exc:
                     logger.warning(
                         "Hook %s failed on %s: %s",
