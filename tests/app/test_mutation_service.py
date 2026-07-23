@@ -1,7 +1,7 @@
 # Copyright 2025 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for MutationService — entity ID accuracy and mutation lifecycle."""
+"""Tests for world mutation behavior — entity ID accuracy and mutation lifecycle."""
 
 import inspect
 from unittest.mock import AsyncMock, MagicMock

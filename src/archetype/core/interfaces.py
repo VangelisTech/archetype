@@ -216,8 +216,8 @@ class iWorld(Protocol):
         3. Execute processors via System
         4. Persist results via Updater
 
-    Worlds are isolated - each has its own entity namespace and can
-    run in parallel via the WorldService.
+    Worlds are isolated - each has its own entity namespace and can run in
+    parallel under the world registry.
     """
 
     # ── State ownership (spec §229–§237) ────────────────────────────────────

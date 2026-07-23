@@ -149,7 +149,7 @@ async def test_post_fork_hook_isolation(tmp_path):
 @pytest.mark.asyncio
 async def test_destroy_storage_row_preservation(tmp_path):
     """Create world, spawn, step (rows in store). Destroy world.
-    Query the store directly via QueryService — rows still exist."""
+    Query the store directly through the world query family — rows still exist."""
     c = ServiceContainer()
     storage = _storage(tmp_path)
     try:

@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Contracts for the materialized QueryService benchmark family."""
+"""Contracts for the materialized world-query benchmark family."""
 
 from __future__ import annotations
 

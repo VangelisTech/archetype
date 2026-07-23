@@ -88,12 +88,12 @@ IDEMPOTENCY_CASES: tuple[IdempotencyCase, ...] = (
         task_id="idempotency.storage_pooling_and_shutdown",
     ),
     IdempotencyCase(
-        operation="`WorldService.create_world(world_id=X)`",
+        operation="`WorldLifecycle.create_world(world_id=X)`",
         expected_contract="Idempotent by explicit `world_id`",
         task_id="idempotency.world_lifecycle",
     ),
     IdempotencyCase(
-        operation="`WorldService.destroy_world(missing)`",
+        operation="`WorldLifecycle.destroy_world(missing)`",
         expected_contract="Safe no-op",
         task_id="idempotency.world_lifecycle",
     ),
@@ -198,7 +198,7 @@ IDEMPOTENCY_CASES: tuple[IdempotencyCase, ...] = (
         task_id="idempotency.query_archetype_repeatable",
     ),
     IdempotencyCase(
-        operation="`QueryService` fixed-state reads",
+        operation="Durable world fixed-state reads",
         expected_contract="Idempotent for fixed rows, history, and signature catalog",
         task_id="idempotency.fixed_reads",
     ),
@@ -1116,7 +1116,7 @@ def register(harness: EvalHarness) -> None:
         "idempotency.world_lifecycle",
         suite=SUITE,
         fn=task_world_lifecycle_idempotency,
-        desc="WorldService explicit-ID create and missing/double destroy idempotency.",
+        desc="WorldLifecycle explicit-ID create and missing/double destroy idempotency.",
     )
     harness.add(
         "idempotency.command_identity",

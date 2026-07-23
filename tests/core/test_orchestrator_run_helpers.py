@@ -6,8 +6,8 @@ from tests.conftest import make_world_harness
 
 
 @pytest.mark.asyncio
-async def test_world_service_run_world(tmp_path):
-    """Running a world through WorldService should work via direct world.run()."""
+async def test_managed_world_run_directly(tmp_path):
+    """Running a managed world should work via direct world.run()."""
     ws = make_world_harness()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")

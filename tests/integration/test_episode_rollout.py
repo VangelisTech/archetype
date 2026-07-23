@@ -4,7 +4,7 @@
 """
 Contract tests for the execution hierarchy: episode and rollout semantics.
 
-Tests SimulationService.run_episode and run_rollout through the ServiceContainer.
+Tests RuntimeApplication.run_episode and run_rollout through the ServiceContainer.
 Verifies termination predicates, fork isolation, registry cleanup, and result shapes.
 """
 

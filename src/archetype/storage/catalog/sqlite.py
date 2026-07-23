@@ -16,8 +16,8 @@
 
 The catalog makes world discovery, writer fencing, tick visibility, deferred
 commands, command settlement, evaluation execution leases, and the
-transactional outbox durable. The process-local registries in WorldService and
-the stores remain caches. Domain tables such as artifact indexes and evaluation
+transactional outbox durable. The process-local world registry and stores
+remain caches. Domain tables such as artifact indexes and evaluation
 results live in Iceberg instead of becoming control-catalog workflow state.
 
 Design rules (issue #272, design review 2026-07-14):

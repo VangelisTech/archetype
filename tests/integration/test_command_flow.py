@@ -4,7 +4,7 @@
 """
 Integration test: reserved spawn ID preservation through the command flow.
 
-Test that submit_spawn reserves an ID, and drain_and_apply uses that exact ID.
+Test that submit_spawn reserves an ID and scheduler materialization uses that exact ID.
 Flow: submit_spawn -> durable scheduler -> dispatcher -> entity materialized with reserved ID
 """
 

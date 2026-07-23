@@ -15,7 +15,7 @@
 """Dataframe-first evaluation over persisted component rows.
 
 ``EvaluationService`` does not own simulation, experiment lifecycle, or a durable
-scoring schema. It finds persisted rows through ``QueryService`` and runs
+scoring schema. It finds persisted rows through the world query family and runs
 caller-provided graders over Daft DataFrames.
 """
 
