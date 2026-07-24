@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 import subprocess
@@ -198,6 +199,30 @@ def test_commands_operational_receipt_is_required_from_source_and_wheel() -> Non
     assert source.group("body").count("--scenario dogfood.commands.local") == 1
     assert wheel.group("body").count("--scenario dogfood.commands.local") == 1
     assert "operational-commands" in verify_pr.group("dependencies").split()
+
+
+def test_commands_operational_oracle_does_not_import_pytest_modules() -> None:
+    """The standalone oracle must not collect a second copy of another test module."""
+
+    path = ROOT / "tests" / "integration" / "test_commands_operational.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    imported_modules = [
+        module
+        for node in ast.walk(tree)
+        for module in (
+            [alias.name for alias in node.names]
+            if isinstance(node, ast.Import)
+            else [node.module or ""]
+            if isinstance(node, ast.ImportFrom)
+            else []
+        )
+    ]
+
+    assert not [
+        module
+        for module in imported_modules
+        if any(part.startswith("test_") for part in module.split("."))
+    ]
 
 
 def test_operational_receipts_are_uploaded_even_when_a_scenario_fails() -> None:
