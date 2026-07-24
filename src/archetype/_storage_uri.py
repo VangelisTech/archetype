@@ -1,3 +1,6 @@
+# Copyright 2026 Vangelis Technologies Inc.
+# SPDX-License-Identifier: Apache-2.0
+
 """Canonical storage URI handling shared by stores and control catalogs."""
 
 from __future__ import annotations
