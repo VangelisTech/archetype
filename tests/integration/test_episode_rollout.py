@@ -459,11 +459,23 @@ class TestRollout:
                 storage,
             )
             commands = _queue_future_command_on_each_fork(container, monkeypatch)
+            catalog = container.storage_service.get_control_catalog(storage)
+            set_world_status = catalog.set_world_status
+            observed_before_destroy: list[tuple[str, str, str | None]] = []
+
+            async def observe_set_world_status(world_id: str, status: str) -> None:
+                if status == "destroyed" and world_id in commands:
+                    (record,) = await container.command_scheduler.records(world_id)
+                    observed_before_destroy.append(
+                        (world_id, record.status, record.last_error_code)
+                    )
+                await set_world_status(world_id, status)
 
             async def fail_episode(*args, **kwargs):
                 del args, kwargs
                 raise RuntimeError("episode failed")
 
+            monkeypatch.setattr(catalog, "set_world_status", observe_set_world_status)
             monkeypatch.setattr(simulation, "run_episode", fail_episode)
 
             with pytest.raises(RuntimeError, match="episode failed"):
@@ -477,11 +489,10 @@ class TestRollout:
                 )
 
             (fork_id,) = commands
+            assert observed_before_destroy == [(fork_id, "REJECTED", "world_destroyed")]
             (record,) = await container.command_scheduler.records(fork_id)
             assert record.status == "REJECTED"
-            durable_world = await container.storage_service.get_control_catalog(storage).get_world(
-                fork_id
-            )
+            durable_world = await catalog.get_world(fork_id)
             assert durable_world is not None and durable_world.status == "destroyed"
             assert not await container.world_registry.contains(fork_id)
         finally:
@@ -497,20 +508,30 @@ class TestRollout:
         container = ServiceContainer()
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         episode_entered = asyncio.Event()
-        release_episode = asyncio.Event()
         try:
             world = await container.world_lifecycle.create_world(
                 WorldConfig(name="cancelled-episode-cleanup"),
                 storage,
             )
             commands = _queue_future_command_on_each_fork(container, monkeypatch)
+            catalog = container.storage_service.get_control_catalog(storage)
+            set_world_status = catalog.set_world_status
+            observed_before_destroy: list[tuple[str, str, str | None]] = []
+
+            async def observe_set_world_status(world_id: str, status: str) -> None:
+                if status == "destroyed" and world_id in commands:
+                    (record,) = await container.command_scheduler.records(world_id)
+                    observed_before_destroy.append(
+                        (world_id, record.status, record.last_error_code)
+                    )
+                await set_world_status(world_id, status)
 
             async def block_episode(*args, **kwargs):
                 del args, kwargs
                 episode_entered.set()
-                await release_episode.wait()
-                raise AssertionError("cancelled episode resumed")
+                await asyncio.Event().wait()
 
+            monkeypatch.setattr(catalog, "set_world_status", observe_set_world_status)
             monkeypatch.setattr(simulation, "run_episode", block_episode)
             rollout = asyncio.create_task(
                 container.application.run_rollout(
@@ -524,19 +545,491 @@ class TestRollout:
             )
             await asyncio.wait_for(episode_entered.wait(), timeout=2)
             rollout.cancel()
+            rollout.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await rollout
+                await asyncio.wait_for(asyncio.shield(rollout), timeout=2)
 
             (fork_id,) = commands
+            assert observed_before_destroy == [(fork_id, "REJECTED", "world_destroyed")]
             (record,) = await container.command_scheduler.records(fork_id)
             assert record.status == "REJECTED"
+            durable_world = await catalog.get_world(fork_id)
+            assert durable_world is not None and durable_world.status == "destroyed"
+            assert not await container.world_registry.contains(fork_id)
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_sequential_cancellation_drains_owned_fork_before_stopping(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Cancellation during fork handoff closes it and starts no successor."""
+        container = ServiceContainer()
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        fork_created = asyncio.Event()
+        release_fork = asyncio.Event()
+        try:
+            world = await container.world_lifecycle.create_world(
+                WorldConfig(name="sequential-fork-handoff"),
+                storage,
+            )
+            commands = _queue_future_command_on_each_fork(container, monkeypatch)
+            fork_and_queue = container.world_lifecycle.fork_world
+
+            async def hold_fork_handoff(*args, **kwargs):
+                fork = await fork_and_queue(*args, **kwargs)
+                fork_created.set()
+                await release_fork.wait()
+                return fork
+
+            async def unexpected_episode(*_args, **_kwargs):
+                pytest.fail("a cancelled fork handoff must skip its episode")
+
+            monkeypatch.setattr(
+                container.world_lifecycle,
+                "fork_world",
+                hold_fork_handoff,
+            )
+            monkeypatch.setattr(simulation, "run_episode", unexpected_episode)
+            rollout = asyncio.create_task(
+                container.application.run_rollout(
+                    world.world_id,
+                    RolloutConfig(
+                        num_episodes=2,
+                        episode_config=EpisodeConfig(max_steps=0),
+                        destroy_forks_on_complete=True,
+                    ),
+                )
+            )
+
+            await asyncio.wait_for(fork_created.wait(), timeout=2)
+            rollout.cancel()
+            rollout.cancel()
+            await asyncio.sleep(0)
+            assert not rollout.done()
+
+            release_fork.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(asyncio.shield(rollout), timeout=2)
+
+            assert len(commands) == 1
+            ((fork_id, command),) = commands.items()
+            (record,) = await container.command_scheduler.records(fork_id)
+            assert record.command_id == str(command.id)
+            assert record.status == "REJECTED"
+            assert record.last_error_code == "world_destroyed"
+            assert not await container.world_registry.contains(fork_id)
+        finally:
+            release_fork.set()
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_parallel_immediate_cancellation_drains_unstarted_children(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Cancellation before child entry cannot strand the aggregate waiter."""
+        container = ServiceContainer()
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        create_task = asyncio.create_task
+        child_tasks: list[asyncio.Task[object]] = []
+        cancellation_injected = False
+        try:
+            world = await container.world_lifecycle.create_world(
+                WorldConfig(name="parallel-immediate-cancel"),
+                storage,
+            )
+
+            def create_and_cancel_parent(coro, *, name=None, context=None):
+                nonlocal cancellation_injected
+                task = create_task(coro, name=name, context=context)
+                if isinstance(name, str) and name.startswith("archetype-rollout:"):
+                    child_tasks.append(task)
+                    task.cancel()
+                    if not cancellation_injected:
+                        cancellation_injected = True
+                        parent = asyncio.current_task()
+                        assert parent is not None
+                        parent.cancel()
+                return task
+
+            monkeypatch.setattr(asyncio, "create_task", create_and_cancel_parent)
+            rollout = create_task(
+                container.application.run_rollout(
+                    world.world_id,
+                    RolloutConfig(
+                        num_episodes=2,
+                        parallel=True,
+                        episode_config=EpisodeConfig(max_steps=0),
+                        destroy_forks_on_complete=True,
+                    ),
+                )
+            )
+
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(asyncio.shield(rollout), timeout=2)
+
+            assert cancellation_injected
+            assert len(child_tasks) == 2
+            assert all(task.done() and task.cancelled() for task in child_tasks)
+            assert [item.name for item in await container.application.list_worlds()] == [
+                "parallel-immediate-cancel"
+            ]
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_parallel_failure_drains_sibling_teardown_before_admission(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A first child failure cannot outlive rollout-owned fork cleanup."""
+        container = ServiceContainer()
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        sibling_entered = asyncio.Event()
+        release_sibling = asyncio.Event()
+        failed_fork_destroyed = asyncio.Event()
+        failure = RuntimeError("first parallel episode failed")
+        episode_tasks: set[asyncio.Task[object]] = set()
+        failed_fork_id: str | None = None
+        original_run_episode = simulation.run_episode
+        try:
+            world = await container.world_lifecycle.create_world(
+                WorldConfig(name="parallel-failure-drain"),
+                storage,
+            )
+            commands = _queue_future_command_on_each_fork(container, monkeypatch)
+            catalog = container.storage_service.get_control_catalog(storage)
+            set_world_status = catalog.set_world_status
+            observed_before_destroy: list[tuple[str, str, str | None]] = []
+
+            async def observe_set_world_status(world_id: str, status: str) -> None:
+                if status == "destroyed" and world_id in commands:
+                    (record,) = await container.command_scheduler.records(world_id)
+                    observed_before_destroy.append(
+                        (world_id, record.status, record.last_error_code)
+                    )
+                    if world_id == failed_fork_id:
+                        failed_fork_destroyed.set()
+                await set_world_status(world_id, status)
+
+            async def fail_first_and_block_sibling(
+                registry,
+                storage_service,
+                fork_world_id,
+                config,
+                **input_kwargs,
+            ):
+                nonlocal failed_fork_id
+                task = asyncio.current_task()
+                assert task is not None
+                episode_tasks.add(task)
+                fork = await container.world_registry.live_world(fork_world_id)
+                assert fork is not None
+                if fork.name.endswith(":0"):
+                    failed_fork_id = str(fork_world_id)
+                    await sibling_entered.wait()
+                    raise failure
+                sibling_entered.set()
+                await release_sibling.wait()
+                return await original_run_episode(
+                    registry,
+                    storage_service,
+                    fork_world_id,
+                    config,
+                    **input_kwargs,
+                )
+
+            monkeypatch.setattr(catalog, "set_world_status", observe_set_world_status)
+            monkeypatch.setattr(
+                simulation,
+                "run_episode",
+                fail_first_and_block_sibling,
+            )
+            rollout = asyncio.create_task(
+                container.application.run_rollout(
+                    world.world_id,
+                    RolloutConfig(
+                        num_episodes=2,
+                        parallel=True,
+                        episode_config=EpisodeConfig(max_steps=0),
+                        destroy_forks_on_complete=True,
+                    ),
+                )
+            )
+
+            await asyncio.wait_for(failed_fork_destroyed.wait(), timeout=2)
+            assert not rollout.done()
+            stop = asyncio.create_task(container.application.stop_admission())
+            await asyncio.sleep(0)
+            assert not stop.done()
+
+            release_sibling.set()
+            with pytest.raises(RuntimeError) as raised:
+                await asyncio.wait_for(rollout, timeout=2)
+            assert raised.value is failure
+            await asyncio.wait_for(stop, timeout=2)
+
+            assert len(commands) == 2
+            assert len(observed_before_destroy) == 2
+            assert all(
+                (status, error_code) == ("REJECTED", "world_destroyed")
+                for _world_id, status, error_code in observed_before_destroy
+            )
+            for fork_id, command in commands.items():
+                (record,) = await container.command_scheduler.records(fork_id)
+                assert record.command_id == str(command.id)
+                assert record.status == "REJECTED"
+                assert not await container.world_registry.contains(fork_id)
+            assert len(episode_tasks) == 2
+            assert all(task.done() for task in episode_tasks)
+        finally:
+            release_sibling.set()
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_parallel_multiple_failures_keep_first_exception_primary(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Later failures remain available without replacing the prompt one."""
+        container = ServiceContainer()
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        primary_ready = asyncio.Event()
+        primary = RuntimeError("primary episode failure")
+        secondary = ValueError("secondary episode failure")
+        try:
+            world = await container.world_lifecycle.create_world(
+                WorldConfig(name="parallel-multiple-failures"),
+                storage,
+            )
+            commands = _queue_future_command_on_each_fork(container, monkeypatch)
+
+            async def fail_in_observed_order(
+                _registry,
+                _storage_service,
+                fork_world_id,
+                _config,
+                **_input_kwargs,
+            ):
+                fork = await container.world_registry.live_world(fork_world_id)
+                assert fork is not None
+                if fork.name.endswith(":0"):
+                    await primary_ready.wait()
+                    await asyncio.sleep(0)
+                    raise secondary
+                primary_ready.set()
+                raise primary
+
+            monkeypatch.setattr(
+                simulation,
+                "run_episode",
+                fail_in_observed_order,
+            )
+            with pytest.raises(RuntimeError) as raised:
+                await container.application.run_rollout(
+                    world.world_id,
+                    RolloutConfig(
+                        num_episodes=2,
+                        parallel=True,
+                        episode_config=EpisodeConfig(max_steps=0),
+                        destroy_forks_on_complete=True,
+                    ),
+                )
+
+            assert raised.value is primary
+            assert isinstance(raised.value.__cause__, BaseExceptionGroup)
+            assert raised.value.__cause__.exceptions == (secondary,)
+            assert len(commands) == 2
+            for fork_id in commands:
+                assert not await container.world_registry.contains(fork_id)
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_parallel_cancellation_waits_for_every_fork_teardown(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Repeated caller cancellation cannot interrupt child cleanup."""
+        container = ServiceContainer()
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        episodes_entered = asyncio.Event()
+        teardown_entered = asyncio.Event()
+        release_teardown = asyncio.Event()
+        episode_tasks: set[asyncio.Task[object]] = set()
+        fork_tasks: set[asyncio.Task[object]] = set()
+        teardown_tasks: set[asyncio.Task[object]] = set()
+        entered_ids: set[str] = set()
+        teardown_ids: set[str] = set()
+        try:
+            world = await container.world_lifecycle.create_world(
+                WorldConfig(name="parallel-cancellation-drain"),
+                storage,
+            )
+            commands = _queue_future_command_on_each_fork(container, monkeypatch)
+            fork_world = container.world_lifecycle.fork_world
+            catalog = container.storage_service.get_control_catalog(storage)
+            set_world_status = catalog.set_world_status
+            observed_before_destroy: list[tuple[str, str, str | None]] = []
+            destroy_world = container.application.destroy_world
+
+            async def track_fork(*args, **kwargs):
+                task = asyncio.current_task()
+                assert task is not None
+                fork_tasks.add(task)
+                return await fork_world(*args, **kwargs)
+
+            async def observe_set_world_status(world_id: str, status: str) -> None:
+                if status == "destroyed" and world_id in commands:
+                    (record,) = await container.command_scheduler.records(world_id)
+                    observed_before_destroy.append(
+                        (world_id, record.status, record.last_error_code)
+                    )
+                await set_world_status(world_id, status)
+
+            async def block_episode(
+                _registry,
+                _storage_service,
+                fork_world_id,
+                _config,
+                **_input_kwargs,
+            ):
+                task = asyncio.current_task()
+                assert task is not None
+                episode_tasks.add(task)
+                entered_ids.add(str(fork_world_id))
+                if len(entered_ids) == 2:
+                    episodes_entered.set()
+                await asyncio.Event().wait()
+
+            async def block_teardown(fork_world_id):
+                task = asyncio.current_task()
+                assert task is not None
+                teardown_tasks.add(task)
+                teardown_ids.add(str(fork_world_id))
+                if len(teardown_ids) == 2:
+                    teardown_entered.set()
+                await release_teardown.wait()
+                await destroy_world(fork_world_id)
+
+            monkeypatch.setattr(catalog, "set_world_status", observe_set_world_status)
+            monkeypatch.setattr(container.world_lifecycle, "fork_world", track_fork)
+            monkeypatch.setattr(simulation, "run_episode", block_episode)
+            monkeypatch.setattr(container.application, "destroy_world", block_teardown)
+            rollout = asyncio.create_task(
+                container.application.run_rollout(
+                    world.world_id,
+                    RolloutConfig(
+                        num_episodes=2,
+                        parallel=True,
+                        episode_config=EpisodeConfig(max_steps=0),
+                        destroy_forks_on_complete=True,
+                    ),
+                )
+            )
+
+            await asyncio.wait_for(episodes_entered.wait(), timeout=2)
+            rollout.cancel()
+            await asyncio.wait_for(teardown_entered.wait(), timeout=2)
+            assert not rollout.done()
+            stop = asyncio.create_task(container.application.stop_admission())
+            await asyncio.sleep(0)
+            assert not stop.done()
+            rollout.cancel()
+            rollout.cancel()
+            await asyncio.sleep(0)
+            assert not rollout.done()
+            release_teardown.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(asyncio.shield(rollout), timeout=2)
+            await asyncio.wait_for(stop, timeout=2)
+
+            assert set(commands) == teardown_ids
+            assert len(observed_before_destroy) == 2
+            assert all(
+                (status, error_code) == ("REJECTED", "world_destroyed")
+                for _world_id, status, error_code in observed_before_destroy
+            )
+            for fork_id in commands:
+                assert not await container.world_registry.contains(fork_id)
+            assert len(episode_tasks) == 2
+            assert all(task.done() for task in episode_tasks)
+            assert len(fork_tasks) == 2
+            assert all(task.done() for task in fork_tasks)
+            assert len(teardown_tasks) == 2
+            assert all(task.done() for task in teardown_tasks)
+        finally:
+            release_teardown.set()
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_parallel_teardown_failure_retains_fork_identity_for_retry(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A failed scheduler cleanup names the still-owned retry target."""
+        container = ServiceContainer()
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        failure = RuntimeError("scheduler cancellation failed")
+        try:
+            world = await container.world_lifecycle.create_world(
+                WorldConfig(name="parallel-teardown-retry"),
+                storage,
+            )
+            commands = _queue_future_command_on_each_fork(container, monkeypatch)
+            cancel_world = container.command_scheduler.cancel_world
+
+            async def fail_cancel_world(_world_id):
+                raise failure
+
+            monkeypatch.setattr(
+                container.command_scheduler,
+                "cancel_world",
+                fail_cancel_world,
+            )
+            with pytest.raises(RuntimeError) as raised:
+                await container.application.run_rollout(
+                    world.world_id,
+                    RolloutConfig(
+                        num_episodes=1,
+                        parallel=True,
+                        episode_config=EpisodeConfig(max_steps=0),
+                        destroy_forks_on_complete=True,
+                    ),
+                )
+            assert raised.value is failure
+
+            (fork_id,) = commands
+            assert any(
+                f"world_id={fork_id}" in note for note in getattr(raised.value, "__notes__", ())
+            )
+            (record,) = await container.command_scheduler.records(fork_id)
+            assert record.status == "PENDING"
+            assert await container.world_registry.contains(fork_id)
+
+            monkeypatch.setattr(
+                container.command_scheduler,
+                "cancel_world",
+                cancel_world,
+            )
+            await container.application.destroy_world(fork_id)
+            (record,) = await container.command_scheduler.records(fork_id)
+            assert record.status == "REJECTED"
+            assert record.last_error_code == "world_destroyed"
             durable_world = await container.storage_service.get_control_catalog(storage).get_world(
                 fork_id
             )
             assert durable_world is not None and durable_world.status == "destroyed"
             assert not await container.world_registry.contains(fork_id)
         finally:
-            release_episode.set()
             await container.shutdown()
 
     @pytest.mark.asyncio

@@ -100,8 +100,21 @@ class RolloutConfig(BaseModel):
 ```
 
 The world lifecycle creates each fork. Sequential rollouts await episodes in
-index order; parallel rollouts use `asyncio.gather` while each fork keeps its
-own exact-world lock. Results preserve index order.
+index order. Parallel rollouts keep each fork under its own exact-world lock
+and preserve result order, but the parent structurally drains every started
+episode before it returns or raises. One episode failure does not cancel
+siblings: bounded siblings finish naturally so cancellation cannot interrupt
+the transfer of a newly registered fork into rollout-owned teardown. The first
+observed failure remains the primary exception after the drain, with additional
+failures chained as a group.
+
+For either execution mode, caller cancellation follows the same boundary. The
+rollout cancels each started child once so episode work stops promptly, while
+shielding fork acquisition until the child owns the returned ID and shielding
+that fork's teardown to completion. Repeated cancellation cannot interrupt
+cleanup. Cancellation propagates only after every started child reaches its
+`finally` teardown, and a cancelled sequential rollout does not start its next
+episode.
 
 If `destroy_forks_on_complete` is true, application teardown runs in `finally`
 for each fork. It reconciles committed work, cancels unsettled durable commands,

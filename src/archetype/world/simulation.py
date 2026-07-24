@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from daft import DataType, col
 from uuid_utils import UUID
@@ -418,13 +418,34 @@ async def run_rollout(
     async with registry.operation(world_id) as base:
         base_name = base.name
 
+    async def _await_owned(
+        owned: asyncio.Future[Any],
+    ) -> tuple[Any, asyncio.CancelledError | None]:
+        """Drain private acquisition/cleanup work across caller cancellation."""
+
+        cancelled: asyncio.CancelledError | None = None
+        while True:
+            try:
+                return await asyncio.shield(owned), cancelled
+            except asyncio.CancelledError as exc:
+                if owned.cancelled():
+                    raise
+                cancelled = cancelled or exc
+                if owned.done():
+                    return owned.result(), cancelled
+
     async def _run_one(index: int) -> EpisodeResult:
-        fork = await fork_world(
-            world_id,
-            name=f"{base_name}:{config.name_prefix}:{index}",
+        fork_work = asyncio.ensure_future(
+            fork_world(
+                world_id,
+                name=f"{base_name}:{config.name_prefix}:{index}",
+            )
         )
+        fork, cancelled = await _await_owned(fork_work)
         fork_world_id = fork.world_id
         try:
+            if cancelled is not None:
+                raise cancelled
             return await run_episode(
                 registry,
                 storage,
@@ -434,14 +455,86 @@ async def run_rollout(
             )
         finally:
             if config.destroy_forks_on_complete:
-                await destroy_world(fork_world_id)
+                try:
+                    teardown = asyncio.ensure_future(destroy_world(fork_world_id))
+                    _, teardown_cancelled = await _await_owned(teardown)
+                except BaseException as exc:
+                    exc.add_note(f"rollout fork teardown failed for world_id={fork_world_id}")
+                    raise
+                if teardown_cancelled is not None:
+                    raise teardown_cancelled
+
+    async def _drain_started(indices: tuple[int, ...]) -> tuple[EpisodeResult, ...]:
+        """Drain exactly the started children without exposing cancellation."""
+
+        failures: list[BaseException] = []
+
+        async def _capture(index: int) -> EpisodeResult | BaseException:
+            try:
+                return await _run_one(index)
+            except BaseException as exc:
+                # Capture in observation order so the exception asyncio.gather
+                # would have propagated first remains the primary failure.
+                failures.append(exc)
+                return exc
+
+        tasks = tuple(
+            asyncio.create_task(
+                _capture(index),
+                name=f"archetype-rollout:{config.rollout_id}:{index}",
+            )
+            for index in indices
+        )
+        pending = asyncio.gather(*tasks, return_exceptions=True)
+        cancelled: asyncio.CancelledError | None = None
+        children_cancelled = False
+        while True:
+            try:
+                outcomes = await asyncio.shield(pending)
+                break
+            except asyncio.CancelledError as exc:
+                cancelled = cancelled or exc
+                if not children_cancelled:
+                    # Each child shields fork acquisition until it owns the
+                    # returned ID, then skips/interrupts the episode and drains
+                    # teardown. Repeated caller cancels must not re-cancel it.
+                    for task in tasks:
+                        task.cancel()
+                    children_cancelled = True
+
+        for outcome in outcomes:
+            if isinstance(outcome, BaseException) and all(
+                outcome is not failure for failure in failures
+            ):
+                failures.append(outcome)
+
+        if cancelled is not None:
+            substantive_failures = [
+                failure for failure in failures if not isinstance(failure, asyncio.CancelledError)
+            ]
+            if substantive_failures:
+                raise cancelled from BaseExceptionGroup(
+                    "rollout failures observed while the caller was cancelled",
+                    substantive_failures,
+                )
+            raise cancelled
+        if failures:
+            primary, *additional = failures
+            if additional:
+                raise primary from BaseExceptionGroup(
+                    "additional rollout failures",
+                    additional,
+                )
+            raise primary
+        return tuple(cast(EpisodeResult, outcome) for outcome in outcomes)
 
     if config.parallel:
-        results = tuple(
-            await asyncio.gather(*(_run_one(index) for index in range(config.num_episodes)))
-        )
+        results = await _drain_started(tuple(range(config.num_episodes)))
     else:
-        results = tuple([await _run_one(index) for index in range(config.num_episodes)])
+        ordered_results: list[EpisodeResult] = []
+        for index in range(config.num_episodes):
+            ordered_results.extend(await _drain_started((index,)))
+        results = tuple(ordered_results)
     return RolloutResult(
         rollout_id=config.rollout_id,
         base_world_id=world_id,
