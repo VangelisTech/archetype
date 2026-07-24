@@ -60,6 +60,50 @@ REQUIRED_CATEGORIES = (
     "telemetry-safety-and-cardinality",
 )
 
+# The parallel review matrix runs one detector job per lens. Every lens
+# reviews the full diff against its category subset; `merge` reassembles the
+# lens results into one full-coverage review. The partition invariant —
+# every required category assigned to exactly one lens — is enforced by
+# merge_lens_results, so a category added to REQUIRED_CATEGORIES without a
+# lens assignment fails the gate closed rather than silently going
+# unreviewed.
+LENSES: dict[str, tuple[str, ...]] = {
+    "daft-shape": (
+        "row-dropping",
+        "unguarded-llm-calls",
+        "monotonic-state",
+        "dag-breaking-collects",
+        "non-serializable-closures",
+        "with-column-vs-with-columns",
+        "deprecated-daft-apis",
+    ),
+    "state-lifecycle": (
+        "fork-ownership-mismatch",
+        "store-vs-live-reads",
+        "tick-boundary-violations",
+        "error-path-unwind",
+        "off-lifecycle-states",
+    ),
+    "contracts": (
+        "api-signature-mismatch",
+        "missing-type-key",
+        "private-api-coupling",
+        "wrong-return-values",
+        "dead-code-contracts",
+        "arrow-serialization-violations",
+    ),
+    "authority": (
+        "governance-bypass",
+        "fail-open-failure-paths",
+        "identity-keying-disagreement",
+        "substring-matching-on-structured-data",
+    ),
+    "observability": (
+        "observability-boundary-and-authority",
+        "telemetry-safety-and-cardinality",
+    ),
+}
+
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$")
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
@@ -275,10 +319,25 @@ def _exact_unique_strings(value: Any, expected: Sequence[str], label: str) -> li
     return sorted(items)
 
 
+def lens_categories(lens: str) -> tuple[str, ...]:
+    """Return the category subset one review lens is responsible for."""
+    if lens not in LENSES:
+        raise GateError(f"unknown review lens {lens!r}; expected one of {sorted(LENSES)}")
+    return LENSES[lens]
+
+
 def validate_result(
-    raw_result: Mapping[str, Any], scope: Mapping[str, Any], diff: str
+    raw_result: Mapping[str, Any],
+    scope: Mapping[str, Any],
+    diff: str,
+    *,
+    categories: Sequence[str] = REQUIRED_CATEGORIES,
 ) -> dict[str, Any]:
-    """Validate and normalize model output against the exact reviewed diff."""
+    """Validate and normalize model output against the exact reviewed diff.
+
+    ``categories`` narrows the required coverage to one lens's subset; the
+    default demands the full detector category list.
+    """
     head_sha = scope.get("head_sha")
     if raw_result.get("head_sha") != head_sha:
         raise GateError("review head_sha does not match the pull request head")
@@ -287,9 +346,9 @@ def validate_result(
     if any(not isinstance(item, str) for item in scoped_files):
         raise GateError("scope.files must contain only strings")
     files = _exact_unique_strings(raw_result.get("reviewed_files"), scoped_files, "reviewed_files")
-    categories = _exact_unique_strings(
+    reviewed_categories = _exact_unique_strings(
         raw_result.get("reviewed_categories"),
-        REQUIRED_CATEGORIES,
+        categories,
         "reviewed_categories",
     )
     summary = _text(raw_result.get("summary"), "summary", minimum=80)
@@ -331,7 +390,7 @@ def validate_result(
     for index, raw_finding in enumerate(findings):
         finding = _expect_mapping(raw_finding, f"findings[{index}]")
         category = finding.get("category")
-        if category not in REQUIRED_CATEGORIES:
+        if category not in categories:
             raise GateError(f"findings[{index}].category is not a reviewed category")
         path = finding.get("path")
         if path not in scoped_files:
@@ -372,10 +431,95 @@ def validate_result(
         "head_sha": head_sha,
         "summary": summary,
         "reviewed_files": files,
-        "reviewed_categories": categories,
+        "reviewed_categories": reviewed_categories,
         "review_context": normalized_context,
         "findings": normalized_findings,
     }
+
+
+def merge_lens_results(
+    lens_results: Mapping[str, Mapping[str, Any]], scope: Mapping[str, Any], diff: str
+) -> dict[str, Any]:
+    """Reassemble per-lens reviews into one full-coverage validated review.
+
+    Fails closed unless every lens is present, every lens result validates
+    against its own category subset, and the lens partition covers
+    REQUIRED_CATEGORIES exactly — so a category without a lens assignment,
+    or a missing lens artifact, blocks the merge rather than shrinking the
+    reviewed surface.
+    """
+    assigned = [category for categories in LENSES.values() for category in categories]
+    if len(assigned) != len(set(assigned)):
+        raise GateError("the lens partition assigns a category to more than one lens")
+    if set(assigned) != set(REQUIRED_CATEGORIES):
+        missing = sorted(set(REQUIRED_CATEGORIES) - set(assigned))
+        extra = sorted(set(assigned) - set(REQUIRED_CATEGORIES))
+        raise GateError(
+            f"the lens partition does not cover the required categories; "
+            f"missing={missing}, extra={extra}"
+        )
+    if set(lens_results) != set(LENSES):
+        missing = sorted(set(LENSES) - set(lens_results))
+        extra = sorted(set(lens_results) - set(LENSES))
+        raise GateError(
+            f"lens results do not match the lens partition; missing={missing}, extra={extra}"
+        )
+
+    merged_context: list[dict[str, Any]] = []
+    merged_findings: list[dict[str, Any]] = []
+    summaries: list[str] = []
+    seen: set[tuple[str, str, str, int]] = set()
+    for lens in LENSES:
+        validated = validate_result(lens_results[lens], scope, diff, categories=LENSES[lens])
+        summaries.append(f"[{lens}] {validated['summary']}")
+        for entry in validated["review_context"]:
+            merged_context.append({**entry, "area": f"{lens}: {entry['area']}"})
+        for finding in validated["findings"]:
+            key = (finding["category"], finding["path"], finding["side"], finding["line"])
+            if key in seen:
+                continue
+            seen.add(key)
+            merged_findings.append(finding)
+
+    merged = {
+        "head_sha": scope.get("head_sha"),
+        "summary": " ".join(summaries),
+        "reviewed_files": list(scope.get("files") or []),
+        "reviewed_categories": list(REQUIRED_CATEGORIES),
+        "review_context": merged_context,
+        "findings": merged_findings,
+    }
+    return validate_result(merged, scope, diff)
+
+
+def extract_structured_json(raw: str) -> dict[str, Any] | None:
+    """Best-effort extraction of one JSON object from free-form CLI output.
+
+    Non-constrained backends print the structured result inside a normal
+    model response (prose, code fences). Return the last standalone JSON
+    object — preferring one carrying ``head_sha`` — or None when the text
+    contains no parseable object; the validator supplies the bounded-retry
+    feedback either way.
+    """
+    decoder = json.JSONDecoder()
+    last_object: dict[str, Any] | None = None
+    last_bound: dict[str, Any] | None = None
+    index = 0
+    while True:
+        start = raw.find("{", index)
+        if start == -1:
+            break
+        try:
+            value, end = decoder.raw_decode(raw, start)
+        except ValueError:
+            index = start + 1
+            continue
+        index = end
+        if isinstance(value, dict):
+            last_object = value
+            if "head_sha" in value:
+                last_bound = value
+    return last_bound or last_object
 
 
 def retry_feedback(error: GateError) -> str:
@@ -397,7 +541,7 @@ def artifact_digest(result: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def result_schema() -> dict[str, Any]:
+def result_schema(categories: Sequence[str] = REQUIRED_CATEGORIES) -> dict[str, Any]:
     """Return the constrained-output schema used by Claude Code."""
     text = {"type": "string", "minLength": 1}
     return {
@@ -426,7 +570,7 @@ def result_schema() -> dict[str, Any]:
                 "items": {
                     "type": "object",
                     "properties": {
-                        "category": {"type": "string", "enum": list(REQUIRED_CATEGORIES)},
+                        "category": {"type": "string", "enum": list(categories)},
                         "title": {"type": "string", "minLength": 5},
                         "path": text,
                         "side": {"type": "string", "enum": ["LEFT", "RIGHT"]},
@@ -732,11 +876,16 @@ def _github_scope_command(args: argparse.Namespace) -> None:
     _write_json(args.scope, scope)
 
 
+def _selected_categories(args: argparse.Namespace) -> tuple[str, ...]:
+    lens = getattr(args, "lens", None)
+    return lens_categories(lens) if lens else REQUIRED_CATEGORIES
+
+
 def _validated_result(args: argparse.Namespace) -> dict[str, Any]:
     scope = _expect_mapping(_load_json(args.scope), "scope")
     raw_result = _expect_mapping(_load_json(args.result), "result")
     diff = args.diff.read_text(encoding="utf-8")
-    return validate_result(raw_result, scope, diff)
+    return validate_result(raw_result, scope, diff, categories=_selected_categories(args))
 
 
 def _normalize_command(args: argparse.Namespace) -> None:
@@ -800,8 +949,41 @@ def _verify_command(args: argparse.Namespace) -> None:
     )
 
 
-def _schema_command(_args: argparse.Namespace) -> None:
-    print(json.dumps(result_schema(), separators=(",", ":")))
+def _merge_command(args: argparse.Namespace) -> None:
+    scope = _expect_mapping(_load_json(args.scope), "scope")
+    diff = args.diff.read_text(encoding="utf-8")
+    lens_results: dict[str, Mapping[str, Any]] = {}
+    for lens in LENSES:
+        result_path = args.results_dir / f"{lens}.json"
+        if not result_path.is_file():
+            raise GateError(f"missing validated lens result: {result_path}")
+        lens_results[lens] = _expect_mapping(_load_json(result_path), f"lens result {lens}")
+    merged = merge_lens_results(lens_results, scope, diff)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(args.output, merged)
+
+
+def _extract_command(args: argparse.Namespace) -> None:
+    """Write the extracted JSON object, or pass the raw text through.
+
+    Never fails on unparseable model output: the passthrough feeds the
+    attempt validator, which turns it into bounded-retry feedback.
+    """
+    raw = args.raw.read_text(encoding="utf-8")
+    extracted = extract_structured_json(raw)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    if extracted is None:
+        args.output.write_text(raw, encoding="utf-8")
+    else:
+        _write_json(args.output, extracted)
+
+
+def _lens_categories_command(args: argparse.Namespace) -> None:
+    print(", ".join(lens_categories(args.lens)))
+
+
+def _schema_command(args: argparse.Namespace) -> None:
+    print(json.dumps(result_schema(_selected_categories(args)), separators=(",", ":")))
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -809,7 +991,28 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     schema = subparsers.add_parser("schema", help="print the constrained-output JSON schema")
+    schema.add_argument("--lens", default=None)
     schema.set_defaults(handler=_schema_command)
+
+    lens_list = subparsers.add_parser("lens-categories", help="print one lens's category subset")
+    lens_list.add_argument("--lens", required=True)
+    lens_list.set_defaults(handler=_lens_categories_command)
+
+    extract = subparsers.add_parser(
+        "extract", help="extract a structured JSON object from raw model output"
+    )
+    extract.add_argument("--raw", type=Path, required=True)
+    extract.add_argument("--output", type=Path, required=True)
+    extract.set_defaults(handler=_extract_command)
+
+    merge = subparsers.add_parser(
+        "merge", help="merge validated per-lens results into one full-coverage review"
+    )
+    merge.add_argument("--scope", type=Path, required=True)
+    merge.add_argument("--diff", type=Path, required=True)
+    merge.add_argument("--results-dir", type=Path, required=True)
+    merge.add_argument("--output", type=Path, required=True)
+    merge.set_defaults(handler=_merge_command)
 
     scope = subparsers.add_parser("scope", help="materialize the exact PR review scope")
     scope.add_argument("--base", required=True)
@@ -839,6 +1042,7 @@ def _parser() -> argparse.ArgumentParser:
     normalize.add_argument("--diff", type=Path, required=True)
     normalize.add_argument("--result", type=Path, required=True)
     normalize.add_argument("--output", type=Path, required=True)
+    normalize.add_argument("--lens", default=None)
     normalize.set_defaults(handler=_normalize_command)
 
     attempt = subparsers.add_parser(
@@ -851,6 +1055,7 @@ def _parser() -> argparse.ArgumentParser:
     attempt.add_argument("--output", type=Path, required=True)
     attempt.add_argument("--feedback", type=Path, required=True)
     attempt.add_argument("--github-output", type=Path, required=True)
+    attempt.add_argument("--lens", default=None)
     attempt.set_defaults(handler=_attempt_command)
 
     prepare = subparsers.add_parser("prepare", help="validate and render structured output")

@@ -61,6 +61,13 @@ only paths from `.footgun-review-scope.json`. Name any protected-base files used
 as implementation evidence in the assessment prose instead. Never substitute
 schema examples or placeholder paths/categories for the authoritative scope.
 
+Deterministic CI reviews these categories as parallel lens jobs, each
+covering a subset and each on its own backend; the lens partition lives in
+`scripts/footgun_review_gate.py` (`LENSES`), and the merge fails closed if a
+category below is not assigned to exactly one lens. When a CI prompt names a
+lens, report findings only in that lens's categories. Local and interactive
+runs review all categories in one pass.
+
 ### Footgun categories
 
 #### Row dropping
