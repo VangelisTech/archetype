@@ -495,6 +495,14 @@ and Catalog-table operations belong to `StorageService`. A bounded app
 `StorageService.materialize()`, and the conversion still needs its specific
 `lazy_audit.toml` reason.
 
+Entries are keyed by ``(path, symbol, expr, method)``. ``symbol`` is the dotted
+path of the enclosing def/class (``<module>`` at file scope) and ``expr`` is the
+normalized source of the audited attribute access. Adding an unrelated line
+above the call does not invalidate the entry; changing what is materialized
+does. Run ``python scripts/check_lazy_audit.py --list`` to read the current key
+for every site, and paste the emitted ``[[entries]]`` block when the audit
+reports a new one.
+
 See ``lazy_audit.toml`` for the authoritative policy header and
 ``tests/scripts/test_check_lazy_audit.py`` for positive/negative coverage.
 

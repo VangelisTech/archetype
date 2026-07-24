@@ -22,8 +22,18 @@ Every such reference inside ``src/`` is a contract exception against
 Archetype's lazy execution model. This includes bound callables such as
 ``await blocking(frame.collect)``. This script enumerates production sites and
 gates them against ``lazy_audit.toml``. New, undocumented sites cause a
-non-zero exit; stale entries (allowlisted lines that no longer hold a
-matching call) are also surfaced so the audit stays honest under refactors.
+non-zero exit; stale entries (allowlisted keys that no longer hold a matching
+call) are also surfaced so the audit stays honest under refactors.
+
+**Entry keying**
+
+An entry is keyed by ``(path, symbol, expr, method)`` — never by line number.
+``symbol`` is the dotted path of the enclosing def/class (``<module>`` at file
+scope) and ``expr`` is ``ast.unparse`` of the audited attribute access. An
+unrelated edit above the call cannot invalidate an entry, and neither can
+reformatting the call, because both inputs are structural. Editing the audited
+expression or moving it to another symbol *does* invalidate the entry, which is
+the review the audit exists to force.
 
 **UDF-boundary exemption (sanctioned pattern)**
 
@@ -72,21 +82,35 @@ SELF_RELATIVE = "scripts/check_lazy_audit.py"
 _MATERIALIZATION_METHODS = frozenset({"collect", "to_pylist"})
 
 
+MODULE_SCOPE = "<module>"
+
+
 @dataclass(frozen=True)
 class Site:
     path: str
     line: int
     method: str
     snippet: str
+    symbol: str = MODULE_SCOPE
+    expr: str = ""
     sanctioned: bool = False  # True → udf-boundary, no allowlist entry needed
+
+    @property
+    def key(self) -> tuple[str, str, str, str]:
+        return (self.path, self.symbol, self.expr, self.method)
 
 
 @dataclass(frozen=True)
 class Entry:
     path: str
-    line: int
+    symbol: str
+    expr: str
     method: str
     reason: str
+
+    @property
+    def key(self) -> tuple[str, str, str, str]:
+        return (self.path, self.symbol, self.expr, self.method)
 
 
 def _project_root() -> Path:
@@ -169,15 +193,38 @@ def _collect_batch_udf_param_lines(source: str) -> dict[int, frozenset[str]]:
     return line_to_params
 
 
+def _symbol_scopes(tree: ast.Module) -> dict[int, str]:
+    """Map each line to the dotted symbol path of its innermost def/class.
+
+    Lines outside any definition map to ``<module>``. This is what makes an
+    allowlist entry survive a line shift: the entry names the enclosing symbol,
+    not the offset of the call inside the file.
+    """
+    scopes: dict[int, str] = {}
+
+    def walk(parent: ast.AST, prefix: str) -> None:
+        for child in ast.iter_child_nodes(parent):
+            if not isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                walk(child, prefix)
+                continue
+            qualified = f"{prefix}.{child.name}" if prefix else child.name
+            for line in range(child.lineno, (child.end_lineno or child.lineno) + 1):
+                scopes[line] = qualified
+            walk(child, qualified)
+
+    walk(tree, "")
+    return scopes
+
+
 def _scan_file(path: Path, rel: str) -> list[Site]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return []
+    # A file we cannot read must not read as "no materialization sites here".
+    # Silently returning [] is how an audit reports clean without auditing.
+    text = path.read_text(encoding="utf-8")
 
     tree = ast.parse(text)
 
     batch_line_params = _collect_batch_udf_param_lines(text)
+    symbol_scopes = _symbol_scopes(tree)
     lines = text.splitlines()
     sites: list[Site] = []
     seen: set[tuple[int, str]] = set()
@@ -205,6 +252,10 @@ def _scan_file(path: Path, rel: str) -> list[Site]:
                 line=method_line,
                 method=method,
                 snippet=lines[method_line - 1].lstrip(),
+                symbol=symbol_scopes.get(node.lineno, MODULE_SCOPE),
+                # ast.unparse normalizes formatting, so reflowing the call does
+                # not change the key; editing the expression itself does.
+                expr=ast.unparse(node),
                 sanctioned=sanctioned,
             )
         )
@@ -236,11 +287,18 @@ def load_allowlist(root: Path) -> tuple[list[Entry], str | None]:
     raw_entries = data.get("entries", [])
     out: list[Entry] = []
     for raw in raw_entries:
+        if "line" in raw:
+            return [], (
+                f"entry still keyed by line number in {ALLOWLIST_FILENAME}: {raw!r}. "
+                "Entries are keyed by (path, symbol, expr, method); rerun "
+                "scripts/check_lazy_audit.py --list to regenerate."
+            )
         try:
             out.append(
                 Entry(
                     path=str(raw["path"]),
-                    line=int(raw["line"]),
+                    symbol=str(raw["symbol"]),
+                    expr=str(raw["expr"]),
                     method=str(raw["method"]),
                     reason=str(raw.get("reason", "")).strip(),
                 )
@@ -341,7 +399,7 @@ def main() -> int:
     if "--list" in sys.argv:
         for s in sites:
             tag = " [udf-boundary]" if s.sanctioned else ""
-            print(f"{s.path}:{s.line}  .{s.method}(){tag}  {s.snippet}")
+            print(f"{s.path}:{s.line}  {s.symbol}  .{s.method}(){tag}  {s.expr}")
         return 0
 
     allow, allow_err = load_allowlist(root)
@@ -355,16 +413,16 @@ def main() -> int:
     audited_sites = [s for s in sites if not s.sanctioned]
     sanctioned_sites = [s for s in sites if s.sanctioned]
 
-    site_keys = {(s.path, s.line, s.method): s for s in audited_sites}
-    allow_keys = {(e.path, e.line, e.method): e for e in allow}
+    site_keys = {s.key: s for s in audited_sites}
+    allow_keys = {e.key: e for e in allow}
 
     new_sites = [site_keys[k] for k in site_keys.keys() - allow_keys.keys()]
     stale_entries = [allow_keys[k] for k in allow_keys.keys() - site_keys.keys()]
     weak_reasons = [e for e in allow if not _reason_is_substantive(e.reason)]
 
     new_sites.sort(key=lambda s: (s.path, s.line))
-    stale_entries.sort(key=lambda e: (e.path, e.line))
-    weak_reasons.sort(key=lambda e: (e.path, e.line))
+    stale_entries.sort(key=lambda e: (e.path, e.symbol, e.expr))
+    weak_reasons.sort(key=lambda e: (e.path, e.symbol, e.expr))
 
     # Always print sanctioned summary for visibility.
     if sanctioned_sites:
@@ -380,20 +438,30 @@ def main() -> int:
     print(STERN_HEADER, file=sys.stderr)
 
     if new_sites:
-        rendered = [f"{s.path}:{s.line}  .{s.method}()  {s.snippet}" for s in new_sites]
+        rendered = [
+            f"{s.path}:{s.line}  {s.symbol}  .{s.method}()  {s.expr}\n"
+            f'    [[entries]]\n    path = "{s.path}"\n    symbol = "{s.symbol}"\n'
+            f'    expr = "{s.expr}"\n    method = "{s.method}"\n    reason = "..."'
+            for s in new_sites
+        ]
         sys.stderr.write(_format_section("New, undocumented materialization points:", rendered))
 
     if stale_entries:
-        rendered = [f"{e.path}:{e.line}  .{e.method}()  reason={e.reason!r}" for e in stale_entries]
+        rendered = [
+            f"{e.path}  {e.symbol}  .{e.method}()  {e.expr}  reason={e.reason!r}"
+            for e in stale_entries
+        ]
         sys.stderr.write(
             _format_section(
-                "Stale allowlist entries (line no longer holds a matching call):",
+                "Stale allowlist entries (no matching call for this symbol/expression):",
                 rendered,
             )
         )
 
     if weak_reasons:
-        rendered = [f"{e.path}:{e.line}  .{e.method}()  reason={e.reason!r}" for e in weak_reasons]
+        rendered = [
+            f"{e.path}  {e.symbol}  .{e.method}()  reason={e.reason!r}" for e in weak_reasons
+        ]
         sys.stderr.write(
             _format_section(
                 "Allowlist entries with unjustified reasons (rejected at review):",
