@@ -6,8 +6,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
-from typing import TYPE_CHECKING
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Literal
 
 from archetype._obs import instrument
 from archetype.app.application.interfaces import iRuntimeApplication
@@ -15,7 +15,12 @@ from archetype.app.gateway._pr3_commands_bridge import (
     preauthorize_pr3_bridge_actor_call,
 )
 from archetype.app.models import Command, deferred_operation
-from archetype.commands.models import DeferredItem, DurableOptions, GetAuditHistory
+from archetype.commands.models import (
+    AccessSummary,
+    DeferredItem,
+    DurableOptions,
+    GetAuditHistory,
+)
 from archetype.errors import WorldNotFoundError
 from archetype.world.errors import WorldClosingError
 from archetype.world.models import (
@@ -89,12 +94,14 @@ class CommandGateway:
         application: iRuntimeApplication,
         dispatcher: CommandDispatcher,
         policy: Policy,
+        record_access: Callable[[AccessSummary], Awaitable[None]],
         *,
         target_tick_for_world: Callable[[object], int] | None = None,
     ) -> None:
         self._application = application
         self._dispatcher = dispatcher
         self._policy = policy
+        self._record_access = record_access
         self._target_tick_for_world = target_tick_for_world
 
     def _world_target_tick(self, world_id: object) -> int:
@@ -102,7 +109,33 @@ class CommandGateway:
             raise RuntimeError("temporary bridge calls require an explicit target-tick resolver")
         return self._target_tick_for_world(world_id)
 
-    def _authorize_bridge_world(
+    async def _record_bridge_access(
+        self,
+        actor: ActorCtx,
+        *,
+        operation: str,
+        world_id: object,
+        decision: Literal["allowed", "denied"],
+        outcome: Literal["succeeded", "failed", "denied", "rejected", "queued"],
+    ) -> None:
+        """Write bounded bridge evidence without replacing the primary result."""
+        record_access = getattr(self, "_record_access", None)
+        if record_access is None:
+            return
+        try:
+            evidence = AccessSummary(
+                operation=operation,
+                actor_id=str(actor.id),
+                world_id=str(world_id),
+                decision=decision,
+                outcome=outcome,
+                metadata={},
+            )
+            await record_access(evidence)
+        except Exception:
+            return
+
+    async def _authorize_bridge_world(
         self,
         actor: ActorCtx,
         *,
@@ -122,13 +155,60 @@ class CommandGateway:
             if not durable:
                 raise
             target_tick = _DURABLE_TARGET_TICK
-        self._policy.authorize(
+        try:
+            self._policy.authorize(
+                actor,
+                permission=operation,
+                world_id=world_id,
+                target_tick=target_tick,
+                token_cost=token_cost,
+            )
+        except Exception:
+            await self._record_bridge_access(
+                actor,
+                operation=operation,
+                world_id=world_id,
+                decision="denied",
+                outcome="denied",
+            )
+            raise
+
+    async def _run_bridge_world(
+        self,
+        actor: ActorCtx,
+        *,
+        operation: str,
+        world_id: object,
+        token_cost: int,
+        durable: bool,
+        effect: Callable[[], Awaitable[object]],
+    ):
+        await self._authorize_bridge_world(
             actor,
-            permission=operation,
+            operation=operation,
             world_id=world_id,
-            target_tick=target_tick,
             token_cost=token_cost,
+            durable=durable,
         )
+        try:
+            result = await effect()
+        except Exception:
+            await self._record_bridge_access(
+                actor,
+                operation=operation,
+                world_id=world_id,
+                decision="allowed",
+                outcome="failed",
+            )
+            raise
+        await self._record_bridge_access(
+            actor,
+            operation=operation,
+            world_id=world_id,
+            decision="allowed",
+            outcome="succeeded",
+        )
+        return result
 
     # Mutations ------------------------------------------------------
 
@@ -322,20 +402,20 @@ class CommandGateway:
         lab_world_id=None,
         on_iteration=None,
     ):
-        self._authorize_bridge_world(
+        return await self._run_bridge_world(
             ctx,
             operation="autoresearch",
             world_id=world_id,
             token_cost=200 * max(int(config.max_iterations), 1),
             durable=False,
-        )
-        return await self._application.autoresearch(
-            world_id,
-            config,
-            evaluator,
-            prepare_candidate=prepare_candidate,
-            lab_world_id=lab_world_id,
-            on_iteration=on_iteration,
+            effect=lambda: self._application.autoresearch(
+                world_id,
+                config,
+                evaluator,
+                prepare_candidate=prepare_candidate,
+                lab_world_id=lab_world_id,
+                on_iteration=on_iteration,
+            ),
         )
 
     # Queries --------------------------------------------------------
@@ -447,39 +527,41 @@ class CommandGateway:
     # Artifacts and evaluation --------------------------------------
 
     async def ingest_artifacts(self, ctx, world_id, sources, *, storage_config=None):
-        self._authorize_bridge_world(
+        return await self._run_bridge_world(
             ctx,
             operation="ingest_artifacts",
             world_id=world_id,
             token_cost=10,
             durable=False,
-        )
-        return await self._application.ingest_artifacts(
-            world_id, sources, storage_config=storage_config
+            effect=lambda: self._application.ingest_artifacts(
+                world_id,
+                sources,
+                storage_config=storage_config,
+            ),
         )
 
     async def query_artifacts(self, ctx, world_id, *, storage_config=None):
-        self._authorize_bridge_world(
+        return await self._run_bridge_world(
             ctx,
             operation="query_artifacts",
             world_id=world_id,
             token_cost=5,
             durable=True,
-        )
-        return await self._application.query_artifacts(
-            world_id,
-            storage_config=storage_config,
+            effect=lambda: self._application.query_artifacts(
+                world_id,
+                storage_config=storage_config,
+            ),
         )
 
     async def evaluate(self, ctx, world_id, components, **kwargs):
-        self._authorize_bridge_world(
+        return await self._run_bridge_world(
             ctx,
             operation="evaluate",
             world_id=world_id,
             token_cost=10,
             durable=True,
+            effect=lambda: self._application.evaluate(world_id, components, **kwargs),
         )
-        return await self._application.evaluate(world_id, components, **kwargs)
 
     # Deferred command acceptance ----------------------------------
 
