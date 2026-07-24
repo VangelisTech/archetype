@@ -78,6 +78,7 @@ operations = [
   "interfaces.iCommandGateway.ingest_artifacts",
   "interfaces.iCommandGateway.query_artifacts",
   "interfaces.iCommandGateway.evaluate",
+  "_pr3_commands_bridge._PurePolicy.preauthorize",
 ]
 signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome"]
@@ -124,13 +125,3 @@ evidence = [
   "tests/app/test_gateway_delegation.py",
 ]
 span_names = ["gateway.get_world_info"]
-
-[[legacy]]
-rule = "raw_exception_logging"
-path = "src/archetype/app/gateway/service.py"
-qualified_scope = "archetype.app.gateway.service.CommandGateway._emit"
-target = "log:warning:'audit emission failed':exception"
-owner = "gateway"
-issue = 515
-reason = "The gateway audit sidecar warning currently includes raw exception details pending ingress observability remediation."
-expiry_condition = "Remove when #515 emits a bounded audit-failure diagnostic without exception content."
