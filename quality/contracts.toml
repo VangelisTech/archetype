@@ -150,9 +150,9 @@ section = "R4 — Async context manager is canonical"
 owner = "runtime"
 risk = "high"
 pytest = [
-  "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_runtime_shutdown_retries_mission_handles_before_container",
+  "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_runtime_shutdown_retries_workflow_owners_before_dependencies",
   "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_failed_mission_cleanup_still_drains_admitted_world_work",
-  "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_cleanup_capability_does_not_admit_a_sibling_world",
+  "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_workflow_cleanup_cannot_admit_a_sibling_world",
   "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_concurrent_runtime_shutdown_is_single_flight",
   "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_cancelled_runtime_shutdown_retains_cleanup_for_retry",
   "tests/integration/test_agent_mission_service.py::test_runtime_shutdown_retries_failed_mission_cleanup_before_finalization",
@@ -205,8 +205,8 @@ owner = "commands"
 risk = "high"
 pytest = [
   "tests/commands/test_durable_runtime_contracts.py",
-  "tests/integration/test_command_flow.py::test_submit_spawn_reserved_id_survives_drain",
-  "tests/integration/test_command_flow.py::test_command_materializer_infrastructure_failure_fails_tick_before_settlement",
+  "tests/integration/test_command_flow.py::test_deferred_spawn_reserved_id_survives_drain",
+  "tests/integration/test_command_flow.py::test_materializer_failure_fails_tick_before_settlement",
 ]
 static = []
 evals = ["command_pipeline", "unhandled_command_noop"]

@@ -61,6 +61,53 @@ def _headings(path: Path) -> set[str]:
     return headings
 
 
+def _defined_test_nodes(path: Path) -> set[str]:
+    """Return every ``Class::function`` / ``function`` node defined in a test module.
+
+    Raises ``OSError``/``SyntaxError`` to the caller rather than returning an
+    empty set: an unreadable oracle module must fail the audit loudly instead of
+    silently reporting that no node ids resolve.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    nodes: set[str] = set()
+
+    def walk(parent: ast.AST, prefix: str) -> None:
+        for child in ast.iter_child_nodes(parent):
+            if not isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                continue
+            qualified = f"{prefix}::{child.name}" if prefix else child.name
+            nodes.add(qualified)
+            walk(child, qualified)
+
+    walk(tree, "")
+    return nodes
+
+
+def _pytest_oracle_error(root: Path, nodeid: str) -> str | None:
+    """Resolve a pytest oracle to a real file and, when given, a real node.
+
+    ``tests/x.py`` only proves the module exists. ``tests/x.py::Klass::test_y``
+    additionally names a symbol, and the registry is only an oracle if that
+    symbol is still defined — a rename on the test side must fail here rather
+    than leave the contract claiming coverage that no longer runs.
+    """
+    module, separator, node_path = nodeid.partition("::")
+    path = root / module
+    if not path.is_file():
+        return f"missing pytest oracle {nodeid!r}"
+    if not separator:
+        return None
+    # Drop pytest's parametrization suffix: only the defining symbol is static.
+    stem = node_path.split("[", 1)[0]
+    try:
+        defined = _defined_test_nodes(path)
+    except (OSError, SyntaxError) as exc:
+        return f"unparsable pytest oracle module {module!r}: {exc}"
+    if stem not in defined:
+        return f"missing pytest oracle node {nodeid!r} (no such test in {module})"
+    return None
+
+
 def _marker_contract_ids(root: Path) -> list[tuple[Path, int, str]]:
     found: list[tuple[Path, int, str]] = []
     tests = root / "tests"
@@ -176,8 +223,12 @@ def validate_contracts(
                 errors.append(f"{label}: {field} must be an array")
 
         for nodeid in row.get("pytest", []):
-            if not isinstance(nodeid, str) or not (root / nodeid.split("::", 1)[0]).is_file():
+            if not isinstance(nodeid, str):
                 errors.append(f"{label}: missing pytest oracle {nodeid!r}")
+                continue
+            oracle_error = _pytest_oracle_error(root, nodeid)
+            if oracle_error is not None:
+                errors.append(f"{label}: {oracle_error}")
         for script in row.get("static", []):
             if not isinstance(script, str) or not (root / script).is_file():
                 errors.append(f"{label}: missing static oracle {script!r}")

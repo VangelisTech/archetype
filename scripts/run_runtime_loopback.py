@@ -77,7 +77,7 @@ def _run_cli(
     *arguments: str,
     env: dict[str, str],
     cwd: Path,
-    tracked_pids: list[int],
+    tracked_groups: list[int],
 ) -> str:
     process = subprocess.Popen(
         [_cli_entrypoint(), *arguments],
@@ -86,8 +86,9 @@ def _run_cli(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        start_new_session=True,
     )
-    tracked_pids.append(process.pid)
+    tracked_groups.append(process.pid)
     try:
         stdout, _stderr = process.communicate(timeout=120)
     except subprocess.TimeoutExpired:
@@ -103,7 +104,7 @@ def _run_cli_failure(
     *arguments: str,
     env: dict[str, str],
     cwd: Path,
-    tracked_pids: list[int],
+    tracked_groups: list[int],
 ) -> str:
     process = subprocess.Popen(
         [_cli_entrypoint(), *arguments],
@@ -112,8 +113,9 @@ def _run_cli_failure(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        start_new_session=True,
     )
-    tracked_pids.append(process.pid)
+    tracked_groups.append(process.pid)
     try:
         stdout, stderr = process.communicate(timeout=120)
     except subprocess.TimeoutExpired:
@@ -125,12 +127,61 @@ def _run_cli_failure(
     return f"{stdout}\n{stderr}".strip()
 
 
-def _pid_is_reaped(pid: int) -> bool:
+_PROCESS_EXIT_GRACE_SECONDS = 5.0
+
+
+def _process_group_alive(process_group: int) -> bool:
+    """Report whether any member of ``process_group`` still exists.
+
+    ``os.killpg(pgid, 0)`` is the portable liveness probe: it raises
+    ``ProcessLookupError`` only when the whole group is gone. This is the same
+    seam ``scripts/run_operational_scenarios.py`` uses.
+    """
     try:
-        os.waitpid(pid, os.WNOHANG)
-    except ChildProcessError:
+        os.killpg(process_group, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # A surviving member we cannot signal is still a surviving member.
         return True
-    return False
+    return True
+
+
+def _wait_for_process_group_exit(process_group: int, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _process_group_alive(process_group):
+            return True
+        time.sleep(0.05)
+    return not _process_group_alive(process_group)
+
+
+def _surviving_process_groups(process_groups: list[int]) -> int:
+    """Count groups that outlive their leader, terminating what remains.
+
+    A leaked provider child is *not* a direct child of this process, so
+    ``os.waitpid`` cannot see it — it raises ``ChildProcessError`` for any pid
+    that is not an unreaped direct child, which reads as "reaped". Every
+    launched process here is reaped before cleanup is scored, so a pid-based
+    probe is structurally incapable of reporting a leak. Process-group liveness
+    is the property that actually distinguishes clean teardown from a leak.
+    """
+    survivors = 0
+    for process_group in process_groups:
+        if _wait_for_process_group_exit(process_group, _PROCESS_EXIT_GRACE_SECONDS):
+            continue
+        survivors += 1
+        # Leave the machine clean even though the receipt records the debt.
+        try:
+            os.killpg(process_group, signal.SIGTERM)
+        except (PermissionError, ProcessLookupError):
+            pass
+        if not _wait_for_process_group_exit(process_group, _PROCESS_EXIT_GRACE_SECONDS):
+            try:
+                os.killpg(process_group, signal.SIGKILL)
+            except (PermissionError, ProcessLookupError):
+                pass
+    return survivors
 
 
 def _uuid_from(output: str, *, label: str) -> str:
@@ -193,14 +244,14 @@ def run_runtime_loopback(workspace: Path) -> dict[str, object]:
     port_closed = False
     port: int | None = None
     route_evidence: dict[str, object] = {}
-    tracked_pids: list[int] = []
+    tracked_groups: list[int] = []
 
     def cli(*arguments: str) -> str:
         return _run_cli(
             *arguments,
             env=env,
             cwd=workspace,
-            tracked_pids=tracked_pids,
+            tracked_groups=tracked_groups,
         )
 
     def rejected_cli(*arguments: str) -> str:
@@ -208,7 +259,7 @@ def run_runtime_loopback(workspace: Path) -> dict[str, object]:
             *arguments,
             env=env,
             cwd=workspace,
-            tracked_pids=tracked_pids,
+            tracked_groups=tracked_groups,
         )
 
     stdout_path = server_logs / "stdout.log"
@@ -230,8 +281,9 @@ def run_runtime_loopback(workspace: Path) -> dict[str, object]:
                     stdout=stdout,
                     stderr=stderr,
                     text=True,
+                    start_new_session=True,
                 )
-                tracked_pids.append(server.pid)
+                tracked_groups.append(server.pid)
                 base_url, port = _wait_for_server(server, stdout_path, stderr_path)
 
                 created = cli(
@@ -446,7 +498,7 @@ def run_runtime_loopback(workspace: Path) -> dict[str, object]:
                             break
                         time.sleep(0.05)
 
-    unreaped_children = sum(not _pid_is_reaped(pid) for pid in tracked_pids)
+    unreaped_children = _surviving_process_groups(tracked_groups)
     if not server_reaped or not server_graceful or not port_closed or unreaped_children:
         raise RuntimeError(
             "shipped API loopback cleanup invariant failed "
