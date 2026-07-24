@@ -3,52 +3,54 @@
 **Document type:** Normative.
 **Scope:** `src/archetype/runtime/` — the trusted Python scripting boundary.
 
-Ordinary runtime/world operations depend on the actor-free
-`iRuntimeApplication` port. They never depend on the command gateway or
-authorization models. Agent Missions follows the same boundary: its specialized
-runtime handle receives an `iMissionService` workflow through
-`iRuntimeApplication`, while the container selects the concrete service.
+Ordinary runtime/world operations construct exact family operation models and
+enter the process-owned `CommandDispatcher` through `apply()` or `defer()`.
+They never import authentication or actor models. Agent Missions follows the
+same boundary: its specialized handle dispatches exact mission operations, and
+the wiring root constructs the internal workflow only inside its pre-reserved
+resource owner.
 
 ## 1. Purpose
 
 `ArchetypeRuntime` is the primary supported Python API. It:
 
-1. owns one internal `ServiceContainer` and its actor-free
-   `RuntimeApplication`;
-2. owns lazy world handles and process lifetime;
+1. owns one explicit `RuntimeResources` process graph;
+2. creates lazy, strongly registered world and workflow handles;
 3. provides ergonomic async and sync scripting semantics; and
-4. delegates canonical world operations to `iRuntimeApplication`.
+4. sends canonical exact operations through the shared `CommandDispatcher`.
 
 The runtime is a trusted in-process boundary. Possession of the runtime grants
 the host the capabilities it was constructed with; it does not fabricate a
-default administrator or simulate RBAC. Untrusted callers use
-`CommandGateway` through an ingress adapter.
+default administrator or simulate RBAC. Untrusted callers authenticate at an
+ingress adapter, which enters the same dispatcher through actor-aware methods.
 
 ## 2. Hard requirements
 
-### R1 — Application-port-only execution
+### R1 — Exact-operation dispatcher execution
 
 Ordinary runtime modules may import only:
 
-- the `app.application` port and boundary-safe models;
+- the commands dispatcher contract and exact family operation models;
 - supported cross-boundary component/configuration/result types; and
-- the internal container from runtime composition code only.
+- `RuntimeResources` lifetime state.
 
-They may not import `app.gateway`, `app.auth`, concrete family services,
-  command schedulers, ledgers, backend clients, or API modules.
+They may not import API authentication, concrete family services, command
+schedulers, ledgers, backend clients, or API modules. Concrete construction is
+late-bound through `archetype.wiring`.
 
 ### R2 — Handles hold identity, never live capabilities
 
-`RuntimeWorld` holds its runtime/application reference, configuration, local
+`RuntimeWorld` holds its runtime/resources reference, configuration, local
 lifecycle state, and a `world_id` after activation. It never holds an
-`AsyncWorld`, concrete app service, backend client, or container reference.
+`AsyncWorld`, concrete app service, backend client, or wiring graph.
 
 ### R3 — Runtime is actor-free
 
 `ArchetypeRuntime`, `RuntimeWorld`, and their sync variants do not accept or
 retain `ActorCtx`. The supported runtime surface has no `as_actor()` operation.
-Role testing and multi-tenant embedding exercise `CommandGateway` through
-focused security fixtures or an authorized host adapter.
+Role testing and multi-tenant embedding exercise
+`CommandDispatcher.apply_as()`/`defer_as()` through focused security fixtures
+or an authenticated host adapter.
 
 Trusted deferred submissions persist an explicit local origin. They do not
 record a fictional authorization decision.
@@ -63,21 +65,20 @@ async with ArchetypeRuntime() as runtime:
 Shutdown must:
 
 1. stop admitting new runtime and handle operations;
-2. wait for every already-admitted world operation;
-3. close handles without destroying attached or runtime-owned durable worlds;
-4. call `container.shutdown()` only after admitted work drains;
+2. wait for every already-admitted operation;
+3. join supervised tasks;
+4. close workflow and world handles without destroying durable attached state;
 5. attempt every independent cleanup step in the current phase and aggregate
    failures; and
 6. be idempotent.
 
-Shutdown phases preserve cleanup dependencies. Runtime-owned mission handles
-are attempted first. If any mission cleanup fails, the runtime rejects public
-work, drains every operation admitted before shutdown, and retains cleanup
-authority only for the exact mission world being reconciled. It does not close
-world handles or finalize the shared container. A later, serialized
-`shutdown()` call retries every retained mission cleanup. World-handle and
-container finalization begin only after that phase succeeds; calls after
-successful finalization are no-ops.
+`RuntimeResources` executes the exact phase order `admission`,
+`supervised-tasks`, `workflow-handles`, `world-handles`, `audit`, `storage`.
+If a phase fails, the runtime rejects public work and retains only the failed
+owners plus their dependencies. A later serialized `shutdown()` retries that
+phase before advancing. `RuntimeShutdownError` reports the phase and ordered
+owner-labelled original causes. Calls after successful finalization are
+no-ops.
 
 ### R5 — Sync parity
 
@@ -98,18 +99,18 @@ world = runtime.world(
 )
 ```
 
-The call captures configuration but does not create a world. The first
-operation single-flights activation through `iRuntimeApplication`. Processors,
-resources, and hooks are installed in declared order. A failed activation must
-clean up any partially created live world and remain retryable when the failure
-is transient.
+The call captures configuration and synchronously reserves a world-handle owner
+but performs no backend I/O. The first operation single-flights activation
+through the dispatcher. Processors, resources, and hooks are installed in
+declared order. A failed activation must clean up any partially created live
+world and remain retryable when the failure is transient.
 
 ### R7 — Per-world operation serialization
 
-All application operations that target the same live world are serialized by
-the application layer, regardless of which runtime handle or API request
-originated them. A handle-local lock may improve ergonomics but is not the
-concurrency authority. Different worlds may proceed concurrently.
+All operations that target the same live world are serialized by
+`WorldRegistry`, regardless of which runtime handle or API request originated
+them. A handle-local lock may improve ergonomics but is not the concurrency
+authority. Different worlds may proceed concurrently.
 
 ### R8 — Runtime and world lifetimes are distinct
 
@@ -125,7 +126,7 @@ not delete append-only durable rows.
 
 The runtime receives immutable information snapshots, identifiers, typed
 receipts, supported result/configuration models, and explicitly specified
-DataFrames. It never receives a live world, service, registry, container,
+DataFrames. It never receives a live world, service, registry, wiring graph,
 credential, or backend client.
 
 ### R10 — Storage and cache coercion
@@ -136,18 +137,18 @@ accepted at the scripting boundary. A string or path becomes
 
 ### R11 — Evaluation and research
 
-`world.grade(...)` delegates to the application evaluation workflow. The
-workflow owns snapshot pinning, grader execution, outcome validation, and
-durable receipts where requested. The runtime does not compose world query
-functions or `EvaluationService` itself.
+`world.grade(...)` dispatches an exact evaluation operation. The registered
+evaluation workflow owns snapshot pinning, grader execution, outcome
+validation, and durable receipts where requested. The runtime does not compose
+world query functions or `EvaluationService` itself.
 
-`world.autoresearch(...)` delegates to the research-family workflow. Callback
+`world.autoresearch(...)` dispatches to the research-family handler. Callback
 execution must not hold a runtime handle lock that would deadlock reentrant
 runtime operations.
 
 `runtime.evaluate_physical_task(...)` and
-`runtime.sweep_physical_instructions(...)` delegate typed requests to the
-physical-AI application workflow. The runtime does not install processors,
+`runtime.sweep_physical_instructions(...)` dispatch typed requests to the
+registered physical-AI handler. The runtime does not install processors,
 reset provider state, spawn trial entities, run episodes, or collect terminal
 rows itself. Returned reports carry the durable world/run identity from which
 their values were derived. The sync runtime exposes the same operations.
@@ -184,7 +185,7 @@ session and turn rows for the current run.
 
 `ArtifactSource`, `ArtifactRef`, and `ArtifactStoreConfig` are the supported
 top-level file contracts. Nothing here promotes `IngestionService`,
-`ArtifactService`, their ports, or the service container to public API.
+`ArtifactService`, their ports, or process wiring to public API.
 
 ### R13 — Observability is host-configured and quiet by default
 
@@ -219,12 +220,12 @@ result or exception.
 
 Supported callables may accept `ArchetypeRuntime`, handles, configuration,
 components, callbacks, and safe models. They may not require callers to pass a
-concrete service or `ServiceContainer`. Repository checks enforce this rule.
+concrete service or `RuntimeResources`. Repository checks enforce this rule.
 
 ### R15 — Multiple runtimes
 
-A process may hold multiple runtimes. Each owns its container unless an
-explicit internal host composition injects one. Cross-runtime live-handle
+A process may hold multiple runtimes. Each owns its `RuntimeResources` unless
+an explicit internal host composition injects one. Cross-runtime live-handle
 transfer is out of scope; durable identity and storage coordinates are the
 interchange boundary.
 
@@ -246,17 +247,18 @@ identity-bound receipt. Blocking findings become the next author dispatch's
 durable repair input. Reviewer outages do not consume author dispatches;
 exhausted review budget raises while leaving the task pending review.
 
-The handle owns the specialized mission-world lifetime. Closing it closes the
-sandbox resource and its world handle; closing it does not close the parent
-runtime. A terminal run closes that mission's provider session. The runtime
-tracks live mission handles and closes them before its remaining world handles,
-so runtime shutdown remains the outer process boundary even after a failed or
-abandoned mission.
+The handle owns a strongly registered workflow reservation. Its first submit
+constructs and binds the internal mission service exactly once; run and restore
+resolve that same owner without a parallel service registry. Closing the handle
+joins supervised critic work and closes sandbox resources plus its exact
+mission-world cleanup without closing the parent runtime. A failed cleanup
+retains the facade, service, world, and dependencies for retry. Workflow
+handles close before ordinary world handles during runtime teardown.
 
-`RuntimeMissions` obtains its internal `iMissionService` through
-`iRuntimeApplication`; it neither imports the concrete service nor receives the
-container. V1 is still async-only, so sync parity under R5 remains a hardening
-gap. See
+`RuntimeMissions` imports no concrete application service. It dispatches
+`SubmitMission`, `RunMission`, and `RestoreMissionSandbox`; wiring constructs
+the handler-side service with the same reservation. V1 is still async-only, so
+sync parity under R5 remains a hardening gap. See
 [Agent Missions V1, current hardening gaps](agent-missions.md#current-hardening-gaps).
 
 ## 3. Canonical surface
