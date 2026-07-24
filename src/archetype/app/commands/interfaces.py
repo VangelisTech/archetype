@@ -5,12 +5,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Any, Protocol, runtime_checkable
 
 from uuid_utils import UUID
 
 from archetype.app.models import Command
-from archetype.storage.catalog import CommandRecord, OutboxRecord
+from archetype.core.aio import AsyncWorld
+from archetype.storage.catalog import CommandRecord, ControlCatalog, OutboxRecord
+
+RequireLiveWorld = Callable[[Any], Awaitable[None]]
+ResolveControlCatalog = Callable[[Any], Awaitable[ControlCatalog]]
+ListCatalogWorldIds = Callable[[], Awaitable[list[str]]]
+ReserveEntityIds = Callable[[Any, int], Awaitable[list[int]]]
 
 
 @runtime_checkable
@@ -19,7 +26,7 @@ class iCommandScheduler(Protocol):
 
     @staticmethod
     def validate_deferred(command: Command) -> None: ...
-    def require_world(self, world_id: Any) -> None: ...
+    async def require_world(self, world_id: Any) -> None: ...
     async def admit(
         self,
         world_id: Any,
@@ -46,7 +53,7 @@ class iCommandScheduler(Protocol):
         principal_id: str | UUID | None = None,
         origin: str = "local",
     ) -> tuple[int, Command]: ...
-    async def drain_and_apply(self, world_id: Any, tick: int) -> list[Command]: ...
+    async def materialize(self, world: AsyncWorld, tick: int) -> int: ...
     async def pending_count(self, world_id: Any) -> int: ...
     async def records(
         self, world_id: Any, *, status: str | None = None, limit: int = 100

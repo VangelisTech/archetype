@@ -22,6 +22,7 @@ from archetype.app.artifacts.service import scan_sources
 from archetype.app.container import ServiceContainer
 from archetype.artifacts.contracts import ArtifactSource, ArtifactStoreConfig
 from archetype.core.config import StorageBackend, StorageConfig, WorldConfig
+from archetype.core.errors import AmbiguousTickCommitError
 from archetype.ingestion import (
     ARTIFACT_AUDIO,
     ARTIFACT_DIFF,
@@ -32,6 +33,7 @@ from archetype.ingestion import (
     ARTIFACT_VIDEO,
     FileIngestionPipeline,
 )
+from archetype.world import simulation
 
 _PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+XfBvAAAAAElFTkSuQmCC"
@@ -47,7 +49,7 @@ def _storage(tmp_path: Path) -> StorageConfig:
 
 
 async def _world(container: ServiceContainer, storage: StorageConfig):
-    return await container.world_service.create_world(WorldConfig(name="w"), storage)
+    return await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
 
 
 def _write_audio(path: Path) -> None:
@@ -168,6 +170,57 @@ async def test_text_file_gets_uuidv7_common_index_and_content_address(tmp_path):
         catalog = store_handle.session.current_catalog()
         assert catalog.has_table("ns.artifact_files")
         assert not catalog.has_table("ns.artifact_images")
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ingest_recovers_live_tick_identity_or_fails_before_artifact_writes(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    container = ServiceContainer(
+        artifact_store_config=ArtifactStoreConfig.local(tmp_path / "artifact-store")
+    )
+    try:
+        storage = _storage(tmp_path)
+        world = await _world(container, storage)
+        source = tmp_path / "prepared.txt"
+        source.write_text("prepared evidence")
+        attempts = 0
+
+        async def reconcile(registry, world_id, locked_world) -> bool:
+            nonlocal attempts
+            attempts += 1
+            assert registry is container.world_registry
+            assert str(world_id) == str(world.world_id)
+            assert locked_world is world
+            if attempts == 1:
+                raise AmbiguousTickCommitError(tick=0, commit_token="prepared-token")
+            locked_world.tick = 1
+            return True
+
+        monkeypatch.setattr(simulation, "reconcile_committed_work_locked", reconcile)
+
+        with pytest.raises(AmbiguousTickCommitError):
+            await container.artifact_service.ingest(
+                str(world.world_id),
+                ArtifactSource(source_uri=str(source)),
+            )
+
+        store_handle = await container.storage_service.get_or_create_store(storage)
+        assert not store_handle.session.current_catalog().has_table("ns.artifact_files")
+
+        await container.artifact_service.ingest(
+            str(world.world_id),
+            ArtifactSource(source_uri=str(source)),
+        )
+        rows = (
+            (await container.artifact_service.index(str(world.world_id))).select("tick").to_pylist()
+        )
+
+        assert rows == [{"tick": 1}]
+        world.tick = 0
     finally:
         await container.shutdown()
 

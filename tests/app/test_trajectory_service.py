@@ -27,7 +27,9 @@ async def test_service_filters_one_persisted_trajectory_table(tmp_path) -> None:
     try:
         assert isinstance(container.trajectory_service, TrajectoryService)
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="trajectory")
-        world = await container.world_service.create_world(WorldConfig(name="trajectory"), storage)
+        world = await container.world_lifecycle.create_world(
+            WorldConfig(name="trajectory"), storage
+        )
         await world.create_entity(
             [
                 Trajectory(
@@ -55,7 +57,7 @@ async def test_service_filters_one_persisted_trajectory_table(tmp_path) -> None:
             ]
         )
 
-        run = await container.simulation_service.run(world.world_id, RunConfig(num_steps=1))
+        run = await container.application.run(world.world_id, RunConfig(num_steps=1))
         frame = await container.trajectory_service.query(
             Trajectory,
             world_id=str(world.world_id),
@@ -74,11 +76,11 @@ async def test_service_composes_query_with_evaluation_graders(tmp_path) -> None:
     container = ServiceContainer()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="rewards")
-        world = await container.world_service.create_world(WorldConfig(name="rewards"), storage)
+        world = await container.world_lifecycle.create_world(WorldConfig(name="rewards"), storage)
         await world.create_entity([TrajectoryReward(trajectory_id="traj-a", seq=0, reward=0.25)])
         await world.create_entity([TrajectoryReward(trajectory_id="traj-a", seq=1, reward=1.0)])
         await world.create_entity([TrajectoryReward(trajectory_id="traj-b", seq=0, reward=-1.0)])
-        run = await container.simulation_service.run(world.world_id, RunConfig(num_steps=1))
+        run = await container.application.run(world.world_id, RunConfig(num_steps=1))
 
         def grade_total_reward(frame: DataFrame) -> list[GraderResult]:
             rows = _rows(frame)

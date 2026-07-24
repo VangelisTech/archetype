@@ -9,6 +9,7 @@ operations = [
   "interfaces.iAuditLog.flush",
   "interfaces.iAuditLog.project_outbox",
   "interfaces.iAuditLog.query",
+  "interfaces.iAuditLog.get_command_history",
   "interfaces.iAuditLog.shutdown",
 ]
 signals = ["log_only"]

@@ -1,24 +1,25 @@
 # Copyright 2025 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for service container, command service, simulation service, world service."""
+"""Tests for the application composition root and managed-world capabilities."""
 
 import asyncio
 
 import pytest
 from uuid_utils import uuid7
 
+import archetype.app.gateway.auth.guard as guard
+from archetype.app.application.service import RuntimeApplication
 from archetype.app.commands.service import CommandScheduler
 from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.app.gateway.service import CommandGateway
-from archetype.app.query.service import QueryService
-from archetype.app.world.service import WorldService
-from archetype.app.world.simulation import SimulationService
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.storage.service import StorageService
-from tests.conftest import make_world_service
+from archetype.world.lifecycle import WorldLifecycle
+from archetype.world.registry import WorldRegistry
+from tests.conftest import make_world_harness
 
 
 class _ListWorldsPos(Component):
@@ -27,10 +28,10 @@ class _ListWorldsPos(Component):
 
 @pytest.fixture(autouse=True)
 def _reset_quotas():
-    reset_tick_counters()
+    guard._tick_counters.clear()
     reset_daily_tokens()
     yield
-    reset_tick_counters()
+    guard._tick_counters.clear()
     reset_daily_tokens()
 
 
@@ -39,10 +40,10 @@ class TestServiceContainer:
         container = ServiceContainer()
         assert isinstance(container.storage_service, StorageService)
         assert isinstance(container.command_scheduler, CommandScheduler)
-        assert isinstance(container.world_service, WorldService)
+        assert isinstance(container.world_registry, WorldRegistry)
+        assert isinstance(container.world_lifecycle, WorldLifecycle)
         assert isinstance(container.command_gateway, CommandGateway)
-        assert isinstance(container.simulation_service, SimulationService)
-        assert isinstance(container.query_service, QueryService)
+        assert isinstance(container.application, RuntimeApplication)
 
     @pytest.mark.asyncio
     async def test_containers_borrow_shared_storage_service(self):
@@ -88,17 +89,17 @@ class TestServiceContainer:
         async def shutdown_audit():
             calls.append("audit")
 
-        async def shutdown_worlds():
-            calls.append("worlds")
+        async def shutdown_storage():
+            calls.append("storage")
 
         monkeypatch.setattr(container.application, "stop_admission", fail_admission)
         monkeypatch.setattr(container.audit_log, "shutdown", shutdown_audit)
-        monkeypatch.setattr(container.world_service, "shutdown", shutdown_worlds)
+        monkeypatch.setattr(container.storage_service, "shutdown", shutdown_storage)
 
         with pytest.raises(ExceptionGroup, match="failed for 1 step") as captured:
             await container.shutdown()
 
-        assert calls == ["admission", "audit", "worlds"]
+        assert calls == ["admission", "audit", "storage"]
         assert len(captured.value.exceptions) == 1
         assert "admission close failed" in str(captured.value.exceptions[0])
 
@@ -114,30 +115,30 @@ class TestServiceContainer:
         async def shutdown_audit():
             calls.append("audit")
 
-        async def shutdown_worlds():
-            calls.append("worlds")
+        async def shutdown_storage():
+            calls.append("storage")
 
         monkeypatch.setattr(container.application, "stop_admission", cancel_admission)
         monkeypatch.setattr(container.audit_log, "shutdown", shutdown_audit)
-        monkeypatch.setattr(container.world_service, "shutdown", shutdown_worlds)
+        monkeypatch.setattr(container.storage_service, "shutdown", shutdown_storage)
 
         with pytest.raises(BaseExceptionGroup, match="failed for 1 step") as captured:
             await container.shutdown()
 
-        assert calls == ["admission", "audit", "worlds"]
+        assert calls == ["admission", "audit", "storage"]
         assert len(captured.value.exceptions) == 1
         assert isinstance(captured.value.exceptions[0], asyncio.CancelledError)
 
 
-class TestSimulationService:
+class TestApplicationSimulation:
     @pytest.mark.asyncio
     async def test_step(self, tmp_path):
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+            world = await container.world_lifecycle.create_world(WorldConfig(name="test"), storage)
 
-            result = await container.simulation_service.step(world.world_id, RunConfig())
+            result = await container.application.step(world.world_id, RunConfig())
             assert result == 0
         finally:
             await container.shutdown()
@@ -147,9 +148,9 @@ class TestSimulationService:
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+            world = await container.world_lifecycle.create_world(WorldConfig(name="test"), storage)
 
-            result = await container.simulation_service.run(world.world_id, RunConfig(num_steps=3))
+            result = await container.application.run(world.world_id, RunConfig(num_steps=3))
             assert result.ticks_completed == 3
             assert result.world_id == world.world_id
         finally:
@@ -160,22 +161,22 @@ class TestSimulationService:
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+            world = await container.world_lifecycle.create_world(WorldConfig(name="test"), storage)
 
             with pytest.raises(TypeError):
-                await container.simulation_service.step(world.world_id)  # type: ignore[call-arg]
+                await container.application.step(world.world_id)  # ty: ignore[missing-argument]
         finally:
             await container.shutdown()
 
 
-class TestWorldService:
+class TestWorldLifecycleAndRegistry:
     @pytest.mark.asyncio
     async def test_create_and_list(self, tmp_path):
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(WorldConfig(name="w1"), storage)
-            worlds = container.world_service.list_worlds()
+            world = await container.world_lifecycle.create_world(WorldConfig(name="w1"), storage)
+            worlds = await container.world_registry.list_worlds()
             assert len(worlds) == 1
             assert worlds[0].world_id == world.world_id
         finally:
@@ -189,15 +190,18 @@ class TestWorldService:
             original = StorageConfig(uri=str(tmp_path / "original"), namespace="first")
             replacement = StorageConfig(uri=str(tmp_path / "replacement"), namespace="second")
 
-            first = await container.world_service.create_world(
+            first = await container.world_lifecycle.create_world(
                 WorldConfig(world_id=world_id, name="original"), original
             )
-            repeated = await container.world_service.create_world(
+            repeated = await container.world_lifecycle.create_world(
                 WorldConfig(world_id=world_id, name="replacement"), replacement
             )
 
             assert repeated is first
-            assert container.world_service.storage_record(world_id) == (original, None)
+            assert await container.world_registry.storage_record(str(world_id)) == (
+                original,
+                None,
+            )
         finally:
             await container.shutdown()
 
@@ -220,10 +224,10 @@ class TestWorldService:
         monkeypatch.setattr(catalog, "register_world", blocked_register)
         config = WorldConfig(world_id=uuid7(), name="single-flight-create")
         try:
-            first = asyncio.create_task(container.world_service.create_world(config, storage))
+            first = asyncio.create_task(container.world_lifecycle.create_world(config, storage))
             await asyncio.wait_for(register_started.wait(), timeout=2)
 
-            retry = asyncio.create_task(container.world_service.create_world(config, storage))
+            retry = asyncio.create_task(container.world_lifecycle.create_world(config, storage))
             await asyncio.sleep(0)
             returned_before_registration = retry.done()
 
@@ -242,8 +246,11 @@ class TestWorldService:
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(WorldConfig(name="alpha"), storage)
-            found = container.world_service.get_world_by_name("alpha")
+            world = await container.world_lifecycle.create_world(WorldConfig(name="alpha"), storage)
+            found = await container.world_registry.live_world(
+                await container.world_registry.world_id_for_name("alpha")
+            )
+            assert found is not None
             assert found.world_id == world.world_id
         finally:
             await container.shutdown()
@@ -253,20 +260,21 @@ class TestWorldService:
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            base = await container.world_service.create_world(
+            base = await container.world_lifecycle.create_world(
                 WorldConfig(name="duplicate"), storage
             )
 
             with pytest.raises(ValueError, match="duplicate"):
-                await container.world_service.fork_world(
+                await container.world_lifecycle.fork_world(
                     base.world_id,
                     name="duplicate",
                     storage_config=storage,
                 )
 
-            assert container.world_service.get_world_by_name("duplicate") is base
-            assert container.world_service.list_worlds() == [base]
-            assert len(await container.world_service.discover_worlds(storage)) == 1
+            duplicate_id = await container.world_registry.world_id_for_name("duplicate")
+            assert await container.world_registry.live_world(duplicate_id) is base
+            assert await container.world_registry.list_worlds() == [base]
+            assert len(await container.world_lifecycle.discover_worlds(storage)) == 1
         finally:
             await container.shutdown()
 
@@ -276,11 +284,13 @@ class TestWorldService:
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(WorldConfig(name="counted"), storage)
+            world = await container.world_lifecycle.create_world(
+                WorldConfig(name="counted"), storage
+            )
             for i in range(5):
                 await world.create_entity([_ListWorldsPos(x=i)])
 
-            worlds = container.world_service.list_worlds()
+            worlds = await container.world_registry.list_worlds()
             assert len(worlds) == 1
             assert len(worlds[0].entity2sig) == 5
         finally:
@@ -289,31 +299,31 @@ class TestWorldService:
     @pytest.mark.asyncio
     async def test_create_world_with_explicit_none_world_id_generates_uuid(self, tmp_path):
         """create_world with explicit world_id=None produces a real UUID."""
-        ws = make_world_service()
+        ws = make_world_harness()
         try:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await ws.create_world(WorldConfig(name="t", world_id=None), storage)
+            world = await ws.lifecycle.create_world(WorldConfig(name="t", world_id=None), storage)
 
             assert world.world_id is not None, (
                 "WorldConfig(world_id=None) produced world_id=None — "
                 "create_world's local fresh uuid7 was dead code"
             )
             # Round-trip lookup by the returned UUID must succeed.
-            assert ws.get_world(world.world_id) is world
-            assert None not in ws._orchestrator._registry._worlds
+            assert await ws.registry.live_world(str(world.world_id)) is world
+            assert all(item.world_id is not None for item in await ws.registry.list_worlds())
         finally:
-            await ws.shutdown()
+            await ws.close()
 
     @pytest.mark.asyncio
     async def test_two_worlds_with_explicit_none_ids_do_not_collide(self, tmp_path):
         """Two creates with world_id=None produce distinct worlds."""
-        ws = make_world_service()
+        ws = make_world_harness()
         try:
-            w1 = await ws.create_world(
+            w1 = await ws.lifecycle.create_world(
                 WorldConfig(name="a", world_id=None),
                 StorageConfig(uri=str(tmp_path / "s1"), namespace="ns"),
             )
-            w2 = await ws.create_world(
+            w2 = await ws.lifecycle.create_world(
                 WorldConfig(name="b", world_id=None),
                 StorageConfig(uri=str(tmp_path / "s2"), namespace="ns"),
             )
@@ -323,13 +333,12 @@ class TestWorldService:
             assert w1.world_id != w2.world_id, (
                 "two WorldConfig(world_id=None) calls collapsed to the same id"
             )
-            assert len(ws._orchestrator._registry._worlds) == 2, (
-                f"expected two distinct worlds, got {len(ws._orchestrator._registry._worlds)} entries"
-            )
-            assert ws.get_world(w1.world_id) is w1
-            assert ws.get_world(w2.world_id) is w2
+            worlds = await ws.registry.list_worlds()
+            assert len(worlds) == 2, f"expected two distinct worlds, got {len(worlds)} entries"
+            assert await ws.registry.live_world(str(w1.world_id)) is w1
+            assert await ws.registry.live_world(str(w2.world_id)) is w2
         finally:
-            await ws.shutdown()
+            await ws.close()
 
     @pytest.mark.asyncio
     async def test_create_world_does_not_mutate_caller_config(self, tmp_path):
@@ -338,12 +347,12 @@ class TestWorldService:
         The fix resolves ``world_id`` locally and threads it to the factory
         via ``model_copy``, leaving the caller's config object untouched.
         """
-        ws = make_world_service()
+        ws = make_world_harness()
         try:
             original = WorldConfig(name="immutable", world_id=None)
             assert original.world_id is None
 
-            await ws.create_world(
+            await ws.lifecycle.create_world(
                 original,
                 StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
             )
@@ -351,4 +360,4 @@ class TestWorldService:
             # The caller's config must still reflect what they passed in.
             assert original.world_id is None
         finally:
-            await ws.shutdown()
+            await ws.close()

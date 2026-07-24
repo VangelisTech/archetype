@@ -432,8 +432,8 @@ def _is_public_api_decorated(
 def _owner_param_violation(param: ast.arg, policy: PublicApiPolicy) -> bool:
     """Match whole annotation tokens plus configured owner-shaped names.
 
-    Tokenizing avoids substring hits (``SimulationServiceConfig`` is not
-    ``SimulationService``). A parameter-name rule remains the backstop for
+    Tokenizing avoids substring hits (``ArtifactServiceConfig`` is not
+    ``ArtifactService``). A parameter-name rule remains the backstop for
     import aliases, whose type token cannot be resolved without import walking.
     """
 

@@ -85,10 +85,6 @@ class CacheConfig(BaseModel):
 class RunConfig(BaseModel):
     """Configure one bounded sequence of world ticks."""
 
-    run_id: str | JsonUUID = Field(
-        default_factory=uuid.uuid7,
-        description="Stable identifier for this run, generated when omitted.",
-    )
     num_steps: int = Field(default=1, ge=0, description="Number of ticks to execute.")
     debug: bool = Field(default=False, description="Emit per-tick diagnostic panels.")
     show_rows: int = Field(
@@ -99,7 +95,7 @@ class RunConfig(BaseModel):
         default=None, description="Optional metadata recorded with the run."
     )
 
-    model_config = dict(frozen=True, arbitrary_types_allowed=True)
+    model_config = dict(frozen=True, arbitrary_types_allowed=True, extra="forbid")
 
     # Named constructors to reduce call-site verbosity for common scenarios
     @classmethod
@@ -149,7 +145,6 @@ class WorldConfig(BaseModel):
         description="Unique identifier for the world. Auto-generated if omitted.",
     )
     name: str | None = Field(default=None, description="Human-readable alias for the world")
-    run_id: str | None = Field(default=None, description="Active run identifier")
     tick: int = Field(default=0, description="Current simulation tick")
     next_entity_id: int = Field(default=1, description="Next entity ID to assign")
     entity2sig: dict[int, tuple] = Field(
@@ -173,4 +168,4 @@ class WorldConfig(BaseModel):
         ),
     )
 
-    model_config = dict(arbitrary_types_allowed=True)
+    model_config = dict(arbitrary_types_allowed=True, extra="forbid")

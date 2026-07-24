@@ -502,25 +502,23 @@ Run one episode. Requires operator or admin.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `episode_id` | string \| string | No | — | Stable identifier for this episode. |
+| `episode_id` | string \| string | No | — | Episode Id |
 | `run_config` | object | No | — | Configure one bounded sequence of world ticks. |
-| `max_steps` | integer | No | `1000` | Maximum ticks before stopping. |
-| `terminal_component` | any \| null | No | — | Component type used for structural or value termination. |
-| `terminal_field` | string \| null | No | — | Boolean field tested on the terminal component. |
-| `terminal_all` | boolean | No | `true` | Require every matching entity when testing a field. |
-| `termination` | any \| null | No | — | Optional callable termination predicate. |
+| `max_steps` | integer | No | `1000` | Max Steps |
+| `terminal_field` | string \| null | No | — | Terminal Field |
+| `terminal_all` | boolean | No | `true` | Terminal All |
 
 **Response** (`200`):
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `episode_id` | string \| string | Yes | — | Episode identifier. |
-| `world_id` | string \| string | Yes | — | Forked world used by the episode. |
-| `run_id` | string \| string \| null | No | — | Episode run identifier. |
-| `start_tick` | integer | No | `0` | World tick at episode start. |
-| `final_tick` | integer | No | `0` | World tick at episode completion. |
-| `terminated` | boolean | No | `false` | Whether a termination condition stopped the episode. |
-| `duration_steps` | integer | No | `0` | Number of ticks executed. |
+| `episode_id` | string \| string | Yes | — | Episode Id |
+| `world_id` | string \| string | Yes | — | World Id |
+| `run_id` | string \| string | Yes | — | Run Id |
+| `start_tick` | integer | No | `0` | Start Tick |
+| `final_tick` | integer | No | `0` | Final Tick |
+| `terminated` | boolean | No | `false` | Terminated |
+| `duration_steps` | integer | No | `0` | Duration Steps |
 
 **Error codes:** `422`
 
@@ -544,22 +542,22 @@ Run a rollout. Requires operator or admin; emits one rollout audit row.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `rollout_id` | string \| string | No | — | Stable identifier for this rollout. |
-| `episode_config` | object | No | — | Configure a bounded simulation episode. An episode stops at `max_steps`, when `termination` returns true, or when its terminal component condition is satisfied. Supplying only `terminal_component` stops on component presence. Adding `terminal_field` instead tests that boolean field; `terminal_all` chooses whether every or any matching entity must satisfy it. |
-| `num_episodes` | integer | No | `1` | Number of episode forks to run. |
-| `parallel` | boolean | No | `false` | Run episode forks concurrently. |
-| `name_prefix` | string | No | `"ep"` | Name prefix for episode worlds. |
-| `destroy_forks_on_complete` | boolean | No | `false` | Destroy live episode worlds after collecting results. |
+| `rollout_id` | string \| string | No | — | Rollout Id |
+| `episode_config` | object | No | — | Configure a bounded episode on one live world. |
+| `num_episodes` | integer | No | `1` | Num Episodes |
+| `parallel` | boolean | No | `false` | Parallel |
+| `name_prefix` | string | No | `"ep"` | Name Prefix |
+| `destroy_forks_on_complete` | boolean | No | `false` | Destroy Forks On Complete |
 
 **Response** (`200`):
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `rollout_id` | string \| string | Yes | — | Rollout identifier. |
-| `base_world_id` | string \| string | Yes | — | World forked for each episode. |
-| `episodes` | array[EpisodeResult] | No | — | Results in episode order. |
-| `num_episodes` | integer | No | `0` | Number of completed episodes. |
-| `total_duration_steps` | integer | No | `0` | Total ticks executed across all episodes. |
+| `rollout_id` | string \| string | Yes | — | Rollout Id |
+| `base_world_id` | string \| string | Yes | — | Base World Id |
+| `episodes` | array[EpisodeResult] | No | `[]` | Episodes |
+| `num_episodes` | integer | No | `0` | Num Episodes |
+| `total_duration_steps` | integer | No | `0` | Total Duration Steps |
 
 **Error codes:** `422`
 
@@ -670,10 +668,10 @@ Create a world. Requires admin.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `world_id` | string \| string | Yes | — | Durable world identifier. |
-| `name` | string \| null | No | — | Human-readable world name. |
-| `tick` | integer | No | `0` | Next tick to execute. |
-| `run_id` | string \| string \| null | No | — | Identifier of the active or most recent run. |
+| `world_id` | string \| string | Yes | — | World Id |
+| `name` | string \| null | No | — | Name |
+| `tick` | integer | No | `0` | Tick |
+| `run_id` | string \| string | Yes | — | Run Id |
 
 **Error codes:** `422`
 
@@ -718,10 +716,10 @@ Get world metadata. Requires viewer, player, operator, or admin.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `world_id` | string \| string | Yes | — | Durable world identifier. |
-| `name` | string \| null | No | — | Human-readable world name. |
-| `tick` | integer | No | `0` | Next tick to execute. |
-| `run_id` | string \| string \| null | No | — | Identifier of the active or most recent run. |
+| `world_id` | string \| string | Yes | — | World Id |
+| `name` | string \| null | No | — | Name |
+| `tick` | integer | No | `0` | Tick |
+| `run_id` | string \| string | Yes | — | Run Id |
 
 **Error codes:** `422`
 
@@ -753,10 +751,10 @@ Fork a world. Requires operator or admin.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `world_id` | string \| string | Yes | — | Durable world identifier. |
-| `name` | string \| null | No | — | Human-readable world name. |
-| `tick` | integer | No | `0` | Next tick to execute. |
-| `run_id` | string \| string \| null | No | — | Identifier of the active or most recent run. |
+| `world_id` | string \| string | Yes | — | World Id |
+| `name` | string \| null | No | — | Name |
+| `tick` | integer | No | `0` | Tick |
+| `run_id` | string \| string | Yes | — | Run Id |
 
 **Error codes:** `422`
 

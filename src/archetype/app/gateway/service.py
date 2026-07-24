@@ -13,47 +13,139 @@ from __future__ import annotations
 import json
 import logging
 import math
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from archetype._obs import instrument
 from archetype.app.application.interfaces import iRuntimeApplication
 from archetype.app.audit.interfaces import iAuditLog
 from archetype.app.audit.models import make_audit_row
-from archetype.app.gateway.auth.guard import guardrail_allow, guardrail_check, guardrail_commit
+from archetype.app.gateway.auth.guard import (
+    guardrail_allow,
+    guardrail_authorize,
+    guardrail_check,
+    guardrail_commit,
+)
 from archetype.app.models import Command, CommandType
+from archetype.errors import WorldNotFoundError
+from archetype.world.errors import WorldClosingError
 
 if TYPE_CHECKING:
     from archetype.app.gateway.auth.models import ActorCtx
 
 logger = logging.getLogger(__name__)
 
+_APPLICATION_QUOTA_SCOPE = "__application__"
+_APPLICATION_TARGET_TICK = 0
+_DURABLE_TARGET_TICK = 0
+
 
 class CommandGateway:
-    """Authenticate/authorize one untrusted call, then delegate it."""
+    """Authenticate/authorize one untrusted call, then delegate it.
+
+    Live world calls resolve their quota coordinate through the explicitly
+    injected ``target_tick_for_world`` snapshot. Durable reads and idempotent
+    deletion remain valid without an available live target and use the explicit
+    ``(world_id, 0)`` coordinate when the target is missing or explicitly
+    closing. Other resolver failures propagate. Deferred calls use the durable
+    command's scheduled tick and never consult the resolver.
+    """
 
     def __init__(
         self,
         application: iRuntimeApplication,
         audit: iAuditLog | None = None,
+        *,
+        target_tick_for_world: Callable[[object], int] | None = None,
     ) -> None:
         self._application = application
         self._audit = audit
+        self._target_tick_for_world = target_tick_for_world
 
     @staticmethod
-    def _gate(command: Command, ctx: ActorCtx) -> None:
-        guardrail_allow(command, ctx)
+    def _gate(
+        command: Command,
+        ctx: ActorCtx,
+        *,
+        world_id: object,
+        target_tick: int,
+    ) -> None:
+        guardrail_allow(
+            command,
+            ctx,
+            world_id=world_id,
+            target_tick=target_tick,
+        )
 
     @staticmethod
-    def _gate_batch(commands: list[Command], ctx: ActorCtx) -> None:
+    def _gate_batch(commands: list[Command], ctx: ActorCtx, *, world_id: object) -> None:
+        normalized_world_id = str(world_id)
+        projected_counts: dict[int, int] = {}
         projected_tokens = 0
-        for index, command in enumerate(commands):
+        for command in commands:
+            projected_count = projected_counts.get(command.tick, 0)
             projected_tokens += guardrail_check(
                 command,
                 ctx,
-                projected_count=index,
+                world_id=normalized_world_id,
+                target_tick=command.tick,
+                projected_count=projected_count,
                 projected_tokens=projected_tokens,
             )
-        guardrail_commit(ctx, count=len(commands), tokens=projected_tokens)
+            projected_counts[command.tick] = projected_count + 1
+        guardrail_commit(
+            ctx,
+            tick_counts={
+                (normalized_world_id, target_tick): count
+                for target_tick, count in projected_counts.items()
+            },
+            tokens=projected_tokens,
+        )
+
+    def _world_target_tick(self, world_id: object) -> int:
+        if self._target_tick_for_world is None:
+            raise RuntimeError(
+                "direct world gateway calls require an explicit target_tick_for_world resolver"
+            )
+        return self._target_tick_for_world(world_id)
+
+    def _gate_world(self, command: Command, ctx: ActorCtx, world_id: object) -> None:
+        guardrail_authorize(command, ctx)
+        self._gate(
+            command,
+            ctx,
+            world_id=world_id,
+            target_tick=self._world_target_tick(world_id),
+        )
+
+    def _gate_durable_world(self, command: Command, ctx: ActorCtx, world_id: object) -> None:
+        """Gate a world-scoped operation that remains valid without a live target.
+
+        Tick zero is the deterministic unavailable-live-world quota coordinate.
+        A missing binding and the world family's explicit closing state both
+        use it. Sharing it with a live world's initial tick is intentionally
+        conservative and avoids an ambient quota reset or an unscoped
+        application-wide bucket. Arbitrary resolver failures still fail closed.
+        """
+        guardrail_authorize(command, ctx)
+        try:
+            target_tick = self._world_target_tick(world_id)
+        except (KeyError, WorldClosingError, WorldNotFoundError):
+            target_tick = _DURABLE_TARGET_TICK
+        self._gate(
+            command,
+            ctx,
+            world_id=world_id,
+            target_tick=target_tick,
+        )
+
+    def _gate_application(self, command: Command, ctx: ActorCtx) -> None:
+        self._gate(
+            command,
+            ctx,
+            world_id=_APPLICATION_QUOTA_SCOPE,
+            target_tick=_APPLICATION_TARGET_TICK,
+        )
 
     async def _emit(
         self,
@@ -88,25 +180,25 @@ class CommandGateway:
 
     @instrument("gateway.create_entity")
     async def create_entity(self, ctx, world_id, components):
-        self._gate(Command(type=CommandType.SPAWN), ctx)
+        self._gate_world(Command(type=CommandType.SPAWN), ctx, world_id)
         result = await self._application.create_entity(world_id, components)
         await self._emit(ctx, "spawn", world_id)
         return result
 
     async def create_entities(self, ctx, world_id, entities):
-        self._gate(Command(type=CommandType.SPAWN), ctx)
+        self._gate_world(Command(type=CommandType.SPAWN), ctx, world_id)
         result = await self._application.create_entities(world_id, entities)
         await self._emit(
             ctx, "spawn_batch", world_id, payload_json=json.dumps({"count": len(entities)})
         )
         return result
 
-    def reserve_entity_ids(self, ctx, world_id, n):
-        self._gate(Command(type=CommandType.SPAWN), ctx)
-        return self._application.reserve_entity_ids(world_id, n)
+    async def reserve_entity_ids(self, ctx, world_id, n):
+        self._gate_world(Command(type=CommandType.SPAWN), ctx, world_id)
+        return await self._application.reserve_entity_ids(world_id, n)
 
     async def spawn_with_reserved_id(self, ctx, world_id, entity_id, components):
-        self._gate(Command(type=CommandType.SPAWN), ctx)
+        self._gate_world(Command(type=CommandType.SPAWN), ctx, world_id)
         await self._application.spawn_with_reserved_id(world_id, entity_id, components)
         await self._emit(
             ctx,
@@ -116,32 +208,32 @@ class CommandGateway:
         )
 
     async def remove_entity(self, ctx, world_id, entity_id):
-        self._gate(Command(type=CommandType.DESPAWN), ctx)
+        self._gate_world(Command(type=CommandType.DESPAWN), ctx, world_id)
         await self._application.remove_entity(world_id, entity_id)
         await self._emit(ctx, "despawn", world_id)
 
     async def update_entity(self, ctx, world_id, entity_id, components):
-        self._gate(Command(type=CommandType.UPDATE), ctx)
+        self._gate_world(Command(type=CommandType.UPDATE), ctx, world_id)
         await self._application.update_entity(world_id, entity_id, components)
         await self._emit(ctx, "update", world_id)
 
     async def add_components(self, ctx, world_id, entity_id, components):
-        self._gate(Command(type=CommandType.ADD_COMPONENT), ctx)
+        self._gate_world(Command(type=CommandType.ADD_COMPONENT), ctx, world_id)
         await self._application.add_components(world_id, entity_id, components)
         await self._emit(ctx, "add_component", world_id)
 
     async def remove_components(self, ctx, world_id, entity_id, component_types):
-        self._gate(Command(type=CommandType.REMOVE_COMPONENT), ctx)
+        self._gate_world(Command(type=CommandType.REMOVE_COMPONENT), ctx, world_id)
         await self._application.remove_components(world_id, entity_id, component_types)
         await self._emit(ctx, "remove_component", world_id)
 
     async def add_processor(self, ctx, world_id, processor):
-        self._gate(Command(type=CommandType.ADD_PROCESSOR), ctx)
+        self._gate_world(Command(type=CommandType.ADD_PROCESSOR), ctx, world_id)
         await self._application.add_processor(world_id, processor)
         await self._emit(ctx, "add_processor", world_id)
 
     async def remove_processor(self, ctx, world_id, proc_type):
-        self._gate(Command(type=CommandType.REMOVE_PROCESSOR), ctx)
+        self._gate_world(Command(type=CommandType.REMOVE_PROCESSOR), ctx, world_id)
         await self._application.remove_processor(world_id, proc_type)
         await self._emit(ctx, "remove_processor", world_id)
 
@@ -149,7 +241,7 @@ class CommandGateway:
 
     @instrument("gateway.create_world")
     async def create_world(self, ctx, config, storage_config=None, cache_config=None):
-        self._gate(Command(type=CommandType.CREATE_WORLD), ctx)
+        self._gate_application(Command(type=CommandType.CREATE_WORLD), ctx)
         info = await self._application.create_world(config, storage_config, cache_config)
         await self._emit(ctx, "create_world", info.world_id)
         return info
@@ -163,7 +255,7 @@ class CommandGateway:
         storage_config=None,
         cache_config=None,
     ):
-        self._gate(Command(type=CommandType.FORK_WORLD), ctx)
+        self._gate_world(Command(type=CommandType.FORK_WORLD), ctx, source_world_id)
         info = await self._application.fork_world(
             source_world_id,
             name,
@@ -174,37 +266,37 @@ class CommandGateway:
         return info
 
     async def destroy_world(self, ctx, world_id):
-        self._gate(Command(type=CommandType.DESTROY_WORLD), ctx)
+        self._gate_durable_world(Command(type=CommandType.DESTROY_WORLD), ctx, world_id)
         await self._application.destroy_world(world_id)
         await self._emit(ctx, "destroy_world", world_id)
 
     @instrument("gateway.get_world_info")
     async def get_world_info(self, ctx, world_id):
-        self._gate(Command(type=CommandType.GET_WORLD_INFO), ctx)
+        self._gate_world(Command(type=CommandType.GET_WORLD_INFO), ctx, world_id)
         info = await self._application.get_world_info(world_id)
         await self._emit(ctx, "get_world_info", world_id)
         return info
 
     async def list_worlds(self, ctx):
-        self._gate(Command(type=CommandType.LIST_WORLDS), ctx)
+        self._gate_application(Command(type=CommandType.LIST_WORLDS), ctx)
         infos = await self._application.list_worlds()
         await self._emit(ctx, "list_worlds")
         return infos
 
     async def discover_worlds(self, ctx, storage_config):
-        self._gate(Command(type=CommandType.LIST_WORLDS), ctx)
+        self._gate_application(Command(type=CommandType.LIST_WORLDS), ctx)
         infos = await self._application.discover_worlds(storage_config)
         await self._emit(ctx, "discover_worlds")
         return infos
 
     async def open_world_readonly(self, ctx, storage_config, world_id):
-        self._gate(Command(type=CommandType.GET_WORLD_INFO), ctx)
+        self._gate_durable_world(Command(type=CommandType.GET_WORLD_INFO), ctx, world_id)
         info = await self._application.open_world_readonly(storage_config, world_id)
         await self._emit(ctx, "open_world_readonly", world_id)
         return info
 
     async def resume_world(self, ctx, storage_config, world_id):
-        self._gate(Command(type=CommandType.CREATE_WORLD), ctx)
+        self._gate_durable_world(Command(type=CommandType.CREATE_WORLD), ctx, world_id)
         info = await self._application.resume_world(storage_config, world_id)
         await self._emit(ctx, "resume_world", world_id)
         return info
@@ -212,19 +304,19 @@ class CommandGateway:
     # Simulation and workflows --------------------------------------
 
     async def step(self, ctx, world_id, run_config, **input_kwargs):
-        self._gate(Command(type=CommandType.STEP), ctx)
+        self._gate_world(Command(type=CommandType.STEP), ctx, world_id)
         result = await self._application.step(world_id, run_config, **input_kwargs)
         await self._emit(ctx, "step", world_id)
         return result
 
     async def run(self, ctx, world_id, run_config, **input_kwargs):
-        self._gate(Command(type=CommandType.RUN), ctx)
+        self._gate_world(Command(type=CommandType.RUN), ctx, world_id)
         result = await self._application.run(world_id, run_config, **input_kwargs)
         await self._emit(ctx, "run", world_id)
         return result
 
     async def run_episode(self, ctx, world_id, config, **input_kwargs):
-        self._gate(Command(type=CommandType.RUN_EPISODE), ctx)
+        self._gate_world(Command(type=CommandType.RUN_EPISODE), ctx, world_id)
         result = await self._application.run_episode(world_id, config, **input_kwargs)
         await self._emit(
             ctx,
@@ -244,7 +336,7 @@ class CommandGateway:
         return result
 
     async def run_rollout(self, ctx, world_id, config, **input_kwargs):
-        self._gate(Command(type=CommandType.RUN_ROLLOUT), ctx)
+        self._gate_world(Command(type=CommandType.RUN_ROLLOUT), ctx, world_id)
         result = await self._application.run_rollout(world_id, config, **input_kwargs)
         await self._emit(
             ctx,
@@ -271,7 +363,7 @@ class CommandGateway:
         lab_world_id=None,
         on_iteration=None,
     ):
-        self._gate(
+        self._gate_world(
             Command(
                 type=CommandType.AUTORESEARCH,
                 payload={
@@ -280,6 +372,7 @@ class CommandGateway:
                 },
             ),
             ctx,
+            world_id,
         )
         result = await self._application.autoresearch(
             world_id,
@@ -323,7 +416,7 @@ class CommandGateway:
         ticks=None,
         entity_ids=None,
     ):
-        self._gate(Command(type=CommandType.QUERY_WORLD), ctx)
+        self._gate_durable_world(Command(type=CommandType.QUERY_WORLD), ctx, world_id)
         result = await self._application.query_components(
             components,
             world_id,
@@ -347,7 +440,7 @@ class CommandGateway:
         entity_ids=None,
         components=None,
     ):
-        self._gate(Command(type=CommandType.QUERY_WORLD), ctx)
+        self._gate_durable_world(Command(type=CommandType.QUERY_WORLD), ctx, world_id)
         result = await self._application.query_archetype(
             sig,
             world_id,
@@ -361,13 +454,19 @@ class CommandGateway:
         return result
 
     async def list_signatures(self, ctx, storage_config=None, *, world_id=None):
-        self._gate(Command(type=CommandType.LIST_SIGNATURES), ctx)
+        if world_id is None:
+            self._gate_application(Command(type=CommandType.LIST_SIGNATURES), ctx)
+        else:
+            self._gate_durable_world(Command(type=CommandType.LIST_SIGNATURES), ctx, world_id)
         result = await self._application.list_signatures(storage_config, world_id=world_id)
         await self._emit(ctx, "list_signatures", world_id)
         return result
 
     async def get_audit_history(self, ctx, world_id=None, **filters):
-        self._gate(Command(type=CommandType.GET_AUDIT_HISTORY), ctx)
+        if world_id is None:
+            self._gate_application(Command(type=CommandType.GET_AUDIT_HISTORY), ctx)
+        else:
+            self._gate_durable_world(Command(type=CommandType.GET_AUDIT_HISTORY), ctx, world_id)
         result = await self._application.get_audit_history(world_id, **filters)
         await self._emit(ctx, "get_audit_history", world_id)
         return result
@@ -375,36 +474,36 @@ class CommandGateway:
     # World wiring/introspection ------------------------------------
 
     async def add_resource(self, ctx, world_id, resource):
-        self._gate(Command(type=CommandType.ADD_RESOURCE), ctx)
+        self._gate_world(Command(type=CommandType.ADD_RESOURCE), ctx, world_id)
         result = await self._application.add_resource(world_id, resource)
         await self._emit(ctx, "add_resource", world_id)
         return result
 
     async def add_hook(self, ctx, world_id, event_type, fn, *, mode="blocking"):
-        self._gate(Command(type=CommandType.ADD_HOOK), ctx)
+        self._gate_world(Command(type=CommandType.ADD_HOOK), ctx, world_id)
         result = await self._application.add_hook(world_id, event_type, fn, mode=mode)
         await self._emit(ctx, "add_hook", world_id)
         return result
 
     async def remove_hook(self, ctx, world_id, handle):
-        self._gate(Command(type=CommandType.REMOVE_HOOK), ctx)
+        self._gate_world(Command(type=CommandType.REMOVE_HOOK), ctx, world_id)
         await self._application.remove_hook(world_id, handle)
         await self._emit(ctx, "remove_hook", world_id)
 
     async def list_processors(self, ctx, world_id):
-        self._gate(Command(type=CommandType.LIST_PROCESSORS), ctx)
+        self._gate_world(Command(type=CommandType.LIST_PROCESSORS), ctx, world_id)
         result = await self._application.list_processors(world_id)
         await self._emit(ctx, "list_processors", world_id)
         return result
 
     async def list_hooks(self, ctx, world_id):
-        self._gate(Command(type=CommandType.LIST_HOOKS), ctx)
+        self._gate_world(Command(type=CommandType.LIST_HOOKS), ctx, world_id)
         result = await self._application.list_hooks(world_id)
         await self._emit(ctx, "list_hooks", world_id)
         return result
 
     async def list_resources(self, ctx, world_id):
-        self._gate(Command(type=CommandType.LIST_RESOURCES), ctx)
+        self._gate_world(Command(type=CommandType.LIST_RESOURCES), ctx, world_id)
         result = await self._application.list_resources(world_id)
         await self._emit(ctx, "list_resources", world_id)
         return result
@@ -412,7 +511,7 @@ class CommandGateway:
     # Artifacts and evaluation --------------------------------------
 
     async def ingest_artifacts(self, ctx, world_id, sources, *, storage_config=None):
-        self._gate(Command(type=CommandType.INGEST_ARTIFACTS), ctx)
+        self._gate_world(Command(type=CommandType.INGEST_ARTIFACTS), ctx, world_id)
         result = await self._application.ingest_artifacts(
             world_id, sources, storage_config=storage_config
         )
@@ -420,13 +519,13 @@ class CommandGateway:
         return result
 
     async def query_artifacts(self, ctx, world_id, *, storage_config=None):
-        self._gate(Command(type=CommandType.QUERY_WORLD), ctx)
+        self._gate_durable_world(Command(type=CommandType.QUERY_WORLD), ctx, world_id)
         result = await self._application.query_artifacts(world_id, storage_config=storage_config)
         await self._emit(ctx, "query_artifacts", world_id)
         return result
 
     async def evaluate(self, ctx, world_id, components, **kwargs):
-        self._gate(Command(type=CommandType.EVALUATE), ctx)
+        self._gate_durable_world(Command(type=CommandType.EVALUATE), ctx, world_id)
         result = await self._application.evaluate(world_id, components, **kwargs)
         await self._emit(
             ctx,
@@ -445,9 +544,15 @@ class CommandGateway:
     # Deferred command acceptance ----------------------------------
 
     async def submit(self, ctx, world_id, command):
-        self._application.require_world(world_id)
+        guardrail_authorize(command, ctx)
+        await self._application.require_world(world_id)
         self._application.validate_deferred_command(command)
-        self._gate(command, ctx)
+        self._gate(
+            command,
+            ctx,
+            world_id=world_id,
+            target_tick=command.tick,
+        )
         command_id = await self._application.submit(
             world_id,
             command,
@@ -457,10 +562,14 @@ class CommandGateway:
         return command_id
 
     async def submit_batch(self, ctx, world_id, commands):
-        self._application.require_world(world_id)
+        if not commands:
+            raise ValueError("commands must not be empty")
+        for command in commands:
+            guardrail_authorize(command, ctx)
+        await self._application.require_world(world_id)
         for command in commands:
             self._application.validate_deferred_command(command)
-        self._gate_batch(commands, ctx)
+        self._gate_batch(commands, ctx, world_id=world_id)
         return await self._application.submit_batch(
             world_id,
             commands,
@@ -469,8 +578,15 @@ class CommandGateway:
         )
 
     async def submit_spawn(self, ctx, world_id, components, *, tick=0, priority=0):
-        self._application.require_world(world_id)
-        self._gate(Command(type=CommandType.SPAWN), ctx)
+        command = Command(type=CommandType.SPAWN)
+        guardrail_authorize(command, ctx)
+        await self._application.require_world(world_id)
+        self._gate(
+            command,
+            ctx,
+            world_id=world_id,
+            target_tick=tick,
+        )
         entity_id, command = await self._application.submit_spawn(
             world_id,
             components,

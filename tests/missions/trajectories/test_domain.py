@@ -5,7 +5,7 @@
 
 import pyarrow as pa
 
-from archetype.app.models import Command, CommandType, EpisodeResult
+from archetype.app.models import Command, CommandType
 from archetype.core.component import Component
 from archetype.missions.trajectories import (
     Trajectory,
@@ -23,6 +23,7 @@ from archetype.missions.trajectories import (
     trajectory_from_episode_result,
     turns_to_components,
 )
+from archetype.world.models import EpisodeResult
 
 
 def test_turn_authoring_helper_round_trips_optional_fields() -> None:
@@ -103,6 +104,7 @@ def test_trajectory_from_episode_result_records_header_fields() -> None:
     episode = EpisodeResult(
         episode_id="episode-1",
         world_id="world-1",
+        run_id="run-1",
         final_tick=3,
         terminated=True,
         duration_steps=3,

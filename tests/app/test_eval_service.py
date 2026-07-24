@@ -11,10 +11,10 @@ from daft import DataFrame, col
 
 from archetype.app.container import ServiceContainer
 from archetype.app.evaluation.service import EvaluationService
-from archetype.app.models import EpisodeConfig
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.world.models import EpisodeConfig
 
 
 class Score(Component):
@@ -47,11 +47,11 @@ async def test_evaluation_service_queries_explicit_component_window(tmp_path):
     container = ServiceContainer()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="eval")
-        world = await container.world_service.create_world(WorldConfig(name="scores"), storage)
+        world = await container.world_lifecycle.create_world(WorldConfig(name="scores"), storage)
         await world.add_processor(IncrementScore())
         await world.create_entity([Score(value=1)])
 
-        run = await container.simulation_service.run(world.world_id, RunConfig(num_steps=3))
+        run = await container.application.run(world.world_id, RunConfig(num_steps=3))
         df = await container.evaluation_service.query_components(
             [Score],
             world_id=world.world_id,
@@ -71,12 +71,12 @@ async def test_evaluation_service_queries_episode_dataframe(tmp_path):
     container = ServiceContainer()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="eval_episode")
-        world = await container.world_service.create_world(WorldConfig(name="episode"), storage)
+        world = await container.world_lifecycle.create_world(WorldConfig(name="episode"), storage)
         await world.add_processor(IncrementScore())
         await world.create_entity([Score(value=5)])
-        await container.simulation_service.run(world.world_id, RunConfig(num_steps=1))
+        await container.application.run(world.world_id, RunConfig(num_steps=1))
 
-        episode = await container.simulation_service.run_episode(
+        episode = await container.application.run_episode(
             world.world_id,
             EpisodeConfig(max_steps=2),
         )

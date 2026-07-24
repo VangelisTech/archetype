@@ -1,60 +1,79 @@
 # World Lifecycle
 
 **Document type:** Normative.
-**Scope:** `iWorldService`, fork semantics, destroy semantics, info-class downgrade. Append-only invariant.
+**Scope:** `iWorldRegistry`, `iWorldLifecycle`, fork, discovery, resume, close,
+and boundary-safe world information.
 
 ## 1. Append-only is non-negotiable
 
-Archetype's storage and audit layers are append-only. There is no method on `iAsyncStore` or `iAuditLog` that deletes data. Ever.
+Closing a world releases live process ownership. It does not delete persisted
+ECS rows, lineage, command records, or audit evidence. Append-only history is
+load-bearing for durable reads, time travel, fork lineage, and crash recovery.
+Cache eviction is not data deletion.
 
-The verb "drop" does not appear in either protocol. The verb "delete" does not appear in either protocol. Implementation code MUST NOT issue `DELETE` statements against archetype tables or the audit table.
-
-This invariant is load-bearing for time-travel queries, audit integrity, fork persistence, and the `destroy_world` semantics defined below. It is the second-most important invariant in the system, after single-gate enforcement.
-
-(Caveat: `AsyncCachedStore` may evict from its in-memory cache. That is cache eviction, not data deletion. The persisted layer underneath is untouched.)
+Physical visibility and scans belong to `archetype.storage`; interpretation of
+those rows as ECS liveness, signatures, lineage, ticks, and entity-ID state
+belongs to `archetype.world`.
 
 ## 2. World lifecycle operations
 
-Three operations on `iWorldService`, plus their gated proxies on `iCommandGateway`:
+`WorldRegistry` and `WorldLifecycle` split state ownership from lifecycle
+behavior:
 
-| Operation | What it does |
+| Owner | Responsibility |
 |---|---|
-| `create_world` | Establish new world identity. Storage allocated. |
-| `fork_world` | Create a derivative world from a snapshot of source's current state. |
-| `destroy_world` | In-memory cleanup. Storage and audit rows are NEVER touched. |
+| `WorldRegistry` | Strong live ownership, name and storage-coordinate indexes, activation serialization, exact-world locks, close leases, projector bindings, retained receipts |
+| `WorldLifecycle` | Create, fork, durable discovery, readonly cold open, fenced mutable resume, retryable close |
+
+The family-owned protocols are `iWorldRegistry` and `iWorldLifecycle`.
+Application code depends on those ports; only the composition root constructs
+the concrete owners.
+
+Operations on one live world serialize through `registry.operation(world_id)`.
+Different world IDs may progress concurrently. Multi-world operations acquire
+sorted IDs and release them in reverse order. No ambient reentrancy or
+task-inherited cleanup authority exists.
+
+Lifecycle idempotency is exact:
+
+- create with an already-live explicit `world_id` returns that binding;
+- a duplicate name or conflicting durable registration fails without leaving a
+  hidden live world;
+- destroying an absent live world is a no-op; and
+- failed close retains the exact world, close lease, aliases, and dependencies
+  for a later serialized retry.
 
 ## 3. `create_world`
 
 ```python
-# iWorldService (returns iWorld; internal use)
 async def create_world(
     config: WorldConfig,
     storage_config: StorageConfig | None = None,
     cache_config: CacheConfig | None = None,
     system: iAsyncSystem | None = None,
-) -> iWorld: ...
-
-# iCommandGateway (returns WorldInfo; downgrade at gate boundary)
-async def create_world(
-    ctx: ActorCtx,
-    config: WorldConfig,
-    storage_config: StorageConfig | None = None,
-    cache_config: CacheConfig | None = None,
-) -> WorldInfo: ...
+) -> AsyncWorld: ...
 ```
 
-`WorldConfig` is serializable: `world_id`, `run_id`, `name`, `tick`, `next_entity_id`, dictionaries for `entity2sig`, `spawn_cache`, `despawn_cache`, plus `lineage` (fork ancestry read segments, see §4.6). NOTHING ELSE.
+Creation:
 
-Processors, resources, and hooks are arbitrary Python objects; they do NOT go
-in `WorldConfig`. Trusted scripts wire them through dedicated `RuntimeWorld`
-methods; untrusted adapters use the corresponding gateway methods:
+1. serializes activation for the exact `world_id`;
+2. validates the live ID and name indexes;
+3. resolves the storage backend through `iStorageService`;
+4. registers an active durable world with a fresh immutable UUIDv7 `run_id`;
+5. acquires a writer fence;
+6. binds a commit coordinator to world, run, and writer epoch;
+7. calls the module-level `build_world(...)` constructor with the scheduler
+   materializer and optional system; and
+8. inserts the world, storage coordinates, and optional required projector into
+   `WorldRegistry`.
 
-- `world.add_processor(processor)` / `iCommandGateway.add_processor(...)`
-- `world.add_resource(resource)` / `iCommandGateway.add_resource(...)`
-- `world.add_hook(event_type, fn)` / `iCommandGateway.add_hook(...)`
+If durable activation fails after registration, lifecycle marks the incomplete
+record non-active and propagates the failure. A rejected activation is never
+reachable through the live registry.
 
-Each untrusted gateway call has one authorization decision and one access-audit
-attempt. Trusted runtime calls do not fabricate either.
+Processors, resources, and hooks are live Python capabilities and are not
+durable configuration. Trusted callers attach them after creation; untrusted
+callers use authorized gateway operations.
 
 ## 4. `fork_world`
 
@@ -64,254 +83,136 @@ async def fork_world(
     name: str | None = None,
     storage_config: StorageConfig | None = None,
     cache_config: CacheConfig | None = None,
-) -> iWorld: ...
+) -> AsyncWorld: ...
 ```
 
-Fork creates a new world from a snapshot of the source's current state.
+Fork holds the source's exact-world lock while taking its snapshot. The fork
+receives fresh UUIDv7 world and run identities and a fresh writer fence,
+command-materializer binding, commit coordinator, lock, and required-projector
+binding.
 
-### 4.1 — Generated fresh in the fork
+Before selecting that snapshot, the source retries any retained required
+projection and reconciles any prepared publication under its exact identity.
+The resulting receipt is projected before the fork boundary is selected. If
+publication remains ambiguous, fork fails without registering a child; it
+never branches from stale live tick/caches while a newer manifest may already
+be durable.
 
-| Field | Value |
-|---|---|
-| `world_id` | new `uuid7()` |
-| `name` | from caller |
-| `run_id` | new `uuid7()` — fork starts a new run lineage |
+It snapshots:
 
-### 4.2 — Copied from source (deep snapshot at fork time)
+- the current tick and next entity ID;
+- the entity-to-signature directory;
+- pending spawn and despawn caches;
+- the flattened durable lineage; and
+- the current processor and hook registrations.
 
-| Field | Reason |
-|---|---|
-| `tick` | fork inherits source's current tick — no temporal reset |
-| `next_entity_id` | preserves entity-id space alignment for cross-fork comparison |
-| `entity2sig` (dict) | the entities exist in the fork; mapping must be independent |
-| `spawn_cache` (dict) | pending spawns at fork moment carry over to the fork |
-| `despawn_cache` (dict) | same reason |
-| hooks registry | hook registrations at fork moment carry over; new registrations on either side don't propagate |
+Resources are intentionally shared with the source. Processor instances and
+hook callables are process-local capabilities; the fork receives the current
+registrations but later registration changes do not propagate.
 
-Pending mutation transfer is the critical detail. If a user spawns an entity then immediately forks before the next step materializes the spawn, the fork inherits the pending spawn. Source and fork both see the entity on their next tick; the entity diverges from there.
+By default source and fork share the physical store and rows remain partitioned
+by world/run identity. The fork does not copy materialized rows. Instead,
+ascending `(world_id, run_id, up_to_tick)` lineage segments select immutable
+ancestor history before the fork point and fork-owned rows after it. Lineage is
+persisted at fork time, so durable query and resume do not require the ancestor
+to remain live.
 
-### 4.3 — Shared between source and fork (same Python instance)
-
-| Field | Reason |
-|---|---|
-| `resources` | resources are typically clients / connections / handles. Source and fork share the same `Resources` instance. |
-| `processors` (in `system`) | the system holds processor instances. Forks share the same processor instances. |
-
-### 4.4 — Implication of resource sharing
-
-A `NATSConnection` in `source.resources` is the SAME `NATSConnection` in `fork.resources`. State mutations on the resource are visible to both. Stateful resources (live connections) need user-side awareness.
-
-For users who want isolated resources per fork, they instantiate new resource instances explicitly. A future API may add `fork_world(..., new_resources=[...])`; not in v1 scope.
-
-### 4.5 — Storage
-
-The fork writes to the same physical store as the source by default, with rows partitioned by `world_id`. The optional `storage_config` argument allows the fork to write to a different store entirely.
-
-Routing a fork to a different store severs read lineage (§ 4.6): ancestor
-segments name rows in the source's store, and the fork's reads only see its
-own store. A cross-store fork therefore starts from transferred pending
-state (un-materialized spawns/despawns), not from the source's persisted
-history. Forking with an explicit `storage_config` on a stepped source logs
-a warning for this reason. Same-store forks — the default — get full
-history continuation.
-
-### 4.6 — Read lineage (copy-on-write history)
-
-A fork does not copy the source's materialized rows. Instead it carries a `lineage` — an ascending list of `(world_id, run_id, up_to_tick)` segments: the source's own lineage plus, if the source has stepped, one segment covering the source's rows for ticks `0..tick-1`.
-
-Reads resolve per tick: a tick at or below a segment's `up_to_tick` reads from that ancestor's run; later ticks read from the fork's own run. Because the store is append-only, ancestor rows are immutable history — a parent that keeps running (or is destroyed) after the fork never affects the fork's view, and rows the parent writes after the fork point are excluded from the fork's history.
-
-Consequences:
-
-- Forking stays O(metadata) regardless of world size.
-- A fork of a stepped world is immediately queryable, and its first step processes the parent's last tick as input — state continues across the fork point.
-- Lineage flattens across generations: a fork of a fork reads base history, mid-fork history, and its own rows through one segment list.
-- Lineage is durable. At fork time the full ancestor chain is appended to the store as `WorldLineage` rows under the fork's `(world_id, run_id)` (negative entity ids — metadata, never live entities). The store is append-only, so provenance is never compromised: gated reads resolve ancestry for destroyed worlds by loading the persisted chain (`QueryService.get_lineage`). Live worlds resolve from memory; the persisted rows are the fallback and the system of record.
-
-Contract tests: `tests/integration/test_fork_destroy_contracts.py` (§8 fork lineage, §9 persisted lineage / dead-world ancestry).
-
-### 4.7 — Audit emission
-
-`iCommandGateway.fork_world` emits one audit row with:
-
-- `command_type = "fork_world"`
-- `payload_json = {"source_world_id": ..., "fork_world_id": ..., "name": ..., "tick_at_fork": ...}`
-
-See [Audit Log](audit-log.md) for the audit row schema.
+An explicit different storage configuration cannot read ancestor rows from the
+source store. Such a fork carries only its transferred process-local snapshot
+and pending mutations into that storage authority.
 
 ## 5. `destroy_world`
 
-In-memory cleanup. Drops the live `iWorld` instance from the registry. Persisted storage and audit rows are NEVER touched.
+Application destroy starts by obtaining a sticky `WorldCleanupLease`. New
+public operations reject once close has begun with the family-owned
+`WorldClosingError`. The synchronous target-tick snapshot emits the same typed
+state so the gateway can place authorized durable-world calls in the explicit
+tick-zero quota bucket without catching unrelated resolver failures. That quota
+fallback does not grant live operation authority. Under the exact cleanup
+lease, `RuntimeApplication`:
 
-```python
-# iWorldService
-async def destroy_world(world_id: str | UUID) -> None: ...
+1. retries any already-retained required-projector receipt;
+2. reconciles any prepared tick publication under its exact commit identity
+   and retains/projects the resulting receipt;
+3. cancels only the remaining unsettled commands; and
+4. delegates to `WorldLifecycle.destroy_world(...)`, which fires advisory
+   `OnDestroy`, marks the durable world record destroyed, and releases registry
+   ownership only after cleanup succeeds.
 
-# iCommandGateway (orchestrates cross-service cleanup)
-async def destroy_world(ctx: ActorCtx, world_id: str | UUID) -> None: ...
-```
+If any cleanup step fails, the entry stays strongly reachable and closing. The
+same lease authorizes a later retry against that exact entry; it cannot
+authorize a sibling or replacement world. Aliases and locks disappear only
+after `finish_close`. A successfully completed advisory `OnDestroy` dispatch
+is checkpointed on that exact cleanup lease before the durable status write;
+if a later status write fails, returns an ambiguous response, or is cancelled,
+the retry repeats only the idempotent durable write and does not emit
+`OnDestroy` again. Cancellation while the hook dispatch itself is still
+running does not checkpoint completion and remains retryable. Required
+projection or prepared-commit reconciliation failure produces no command
+cancellation, `OnDestroy`, or durable destroyed status. A pending
+required-projector receipt also prevents final release until it is
+acknowledged.
 
-### 5.1 — Authorized application destroy, in order
-
-1. `CommandGateway` authorizes the call, then delegates.
-2. `RuntimeApplication` takes the per-world operation lock, waiting for an
-   in-flight step or mutation to finish.
-3. `iCommandScheduler.cancel_world(world_id)` terminally rejects unsettled
-   durable commands and appends their outbox events.
-4. `iWorldService.destroy_world(world_id)` fires `OnDestroy`, removes the live
-   world, and marks its durable catalog record destroyed.
-5. `CommandGateway` attempts one access-audit row for the destroy call.
-
-### 5.2 — `iWorldService.destroy_world` steps
-
-1. Resolve world from registry; return early if absent (idempotent).
-2. Fire `OnDestroy` via the world's hook bus.
-3. Remove from `WorldRegistry`.
-
-`iWorldService.destroy_world` is the lifecycle primitive. Cross-family command
-cancellation and operation serialization belong to `RuntimeApplication`; the
-gateway only authorizes and delegates.
-
-### 5.3 — What destroy_world is NOT
-
-- It does NOT delete the world's persisted rows from `iAsyncStore`. Time-travel queries against the destroyed world remain valid forever.
-- It does NOT delete audit rows. `iAuditLog.query(world_id=...)` returns the destroyed world's rows.
-- It does NOT delete storage files. The `StorageService` keeps files associated with the destroyed world's data.
-
-### 5.4 — `OnDestroy` event
-
-Defined in `core/hooks.py`:
-
-```python
-@dataclass(frozen=True, slots=True)
-class OnDestroy(HookEvent):
-    """Fires before in-memory world cleanup begins.
-    Handlers MAY read final world state but MUST NOT submit commands."""
-    world_id: UUID
-```
-
-Read-only by convention; no enforcement in v1.
-
-### 5.5 — Idempotency
-
-Destroying an unknown world_id is a no-op, not an error. Repeated calls to `destroy_world(world_id)` after the first succeed silently.
+Destroy never removes persisted rows, lineage, command history, audit history,
+or storage files. Destroyed worlds remain durably queryable but are not
+resumable.
 
 ## 6. `resume_world` (fenced mutable cold resume)
 
-Added by issue #273 on top of the atomic-visibility contract
-([Atomic Visibility](atomic-visibility.md)).
+The family primitive is
+`iWorldLifecycle.open_world_mutable(storage_config, world_id)`. The gateway
+names its boundary-safe proxy `resume_world`; the runtime returns a lazy
+`RuntimeWorld` handle.
 
-```python
-# iWorldService (returns AsyncWorld; internal use)
-async def open_world_mutable(
-    storage_config: StorageConfig,
-    world_id: str | UUID,
-) -> AsyncWorld: ...
+Mutable resume reconstructs a writer in a process that shares only durable
+storage with the previous writer:
 
-# iCommandGateway (returns WorldInfo; downgrade at gate boundary)
-async def resume_world(
-    ctx: ActorCtx,
-    storage_config: StorageConfig,
-    world_id: str | UUID,
-) -> WorldInfo: ...
+- preflight physical visibility before acquiring a fence;
+- acquire the next writer epoch;
+- repeat an authoritative scan after fencing;
+- derive liveness and signature ownership using latest-wins and same-tick
+  active-wins rules;
+- resolve component classes by durable schema fingerprint and table identity;
+- restore persisted lineage;
+- derive the next tick from the published manifest, never unpublished rows;
+- derive `next_entity_id` from visible rows and durable reservations;
+- restore the catalog's immutable UUIDv7 `run_id`; and
+- bind a new commit coordinator and command materializer.
 
-# ArchetypeRuntime (returns a RuntimeWorld handle)
-world = await runtime.resume(world_id, storage=...)
-```
+The preflight avoids fencing a world that is already known to be
+unreconstructable. Once the fence is acquired, any failure is
+operator-visible: the prior writer is stale and the caller must correct the
+cause before retrying.
 
-Resume reconstructs a live, writable world from durable state in a process
-that shares nothing with the previous writer but the storage config:
+Resume refuses unknown, destroyed, already-live, corrupt-lineage, missing-run,
+and unresolved-or-schema-drifted worlds. It never guesses. Processors,
+resources, and hooks are code rather than rows and must be reattached by the
+caller.
 
-- **Tick** — the last manifest tick + 1, never from artifact claims or rows:
-  neither a visible artifact nor a crashed attempt's unpublished rows may
-  advance the simulation head.
-- **Entity directory** — the latest visible row per entity across every
-  catalog table decides its archetype and liveness; `next_entity_id`
-  resumes past the highest id ever seen (ids are never reused). The
-  inventory reads through the open-never-create seam on base columns, so
-  classes are demanded only for archetypes with LIVE entities.
-- **Component classes** — resolved by the stored schema fingerprint, not by
-  name alone: same-named classes from different modules cannot be confused,
-  and a definition that drifted since the rows were written is refused.
-  Identity is the schema.
-- **Lineage** — restored from the persisted ancestor chain; a fork record
-  whose lineage rows are missing is detectable corruption and refuses.
-- **Fence** — acquired last (epoch + 1): the previous writer's next publish
-  fails closed with `StaleWriterError`.
+When a required projector is configured, resume reconstructs the manifest-head
+`CommittedTickReceipt` and retains it for idempotent acknowledgment before a
+new tick is admitted.
 
-Resume preflights reconstruction before fencing, then repeats it against the
-authoritative post-fence snapshot. If state changed between those reads and
-the second reconstruction fails, the new fence has already made the previous
-writer stale; the failure is logged as an operator-visible orphaned-writer
-condition and the caller must retry after correcting the reconstruction error.
+Readonly cold open is separate:
+`iWorldLifecycle.open_world_readonly(...)` returns durable `WorldInfo` without
+acquiring a writer fence or constructing a live world.
 
-Resume fails loudly rather than reconstructing unfaithfully: unrecorded
-worlds (`KeyError`), destroyed worlds (queryable, never resumable), worlds
-already live in this process, missing or drifted component classes, and
-corrupt fork records all refuse with the cause named.
+## 7. Boundary-safe information
 
-**Code is not rows.** Processors, resources, and hooks are never restored
-and never claimed to be. The caller reattaches them after resume; until
-then the world steps as a pure ledger-advancing simulation. Gated as
-`CREATE_WORLD` — resuming creates a live writer, the same authority class
-as creating one.
-
-## 7. `WorldInfo` and the info-class downgrade
-
-The gate downgrades live objects to immutable info classes before returning to user code. This is what enforces "the runtime never holds an `iWorld`."
-
-### 6.1 — `WorldInfo`
+Lifecycle primitives may return an internal `AsyncWorld`. Neither
+`RuntimeApplication`, `CommandGateway`, `ArchetypeRuntime`, nor the REST layer
+returns that capability. They downgrade it to frozen values such as:
 
 ```python
 class WorldInfo(BaseModel):
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
-
     world_id: UUID
-    name: str | None = None
+    name: str | None
     tick: int
-    run_id: UUID | None = None
+    run_id: UUID
 ```
 
-Returned by `create_world`, `fork_world`, `get_world_info`. Field access is sync; the round-trip to fetch is async (gated).
-
-`WorldInfo` is NOT the same shape as `WorldConfig`. `WorldConfig` carries pending caches and entity mappings (large at scale); `WorldInfo` is identity + current tick only.
-
-### 6.2 — Other info classes
-
-Defined in `app/models.py`:
-
-```python
-class ProcessorInfo(BaseModel):
-    model_config = ConfigDict(frozen=True)
-    qualname: str
-    priority: int
-    components: tuple[str, ...]   # component class qualnames
-
-class HookInfo(BaseModel):
-    model_config = ConfigDict(frozen=True)
-    event_type: str               # HookEvent subclass qualname
-    handler_qualname: str
-    mode: str                     # "blocking" | "spawn"
-    handle_id: int                # internal HookHandle id
-
-class ResourceInfo(BaseModel):
-    model_config = ConfigDict(frozen=True)
-    qualname: str                 # resource class qualname
-    # Resources are type-keyed in the underlying container;
-    # qualname is sufficient identity. No second field.
-```
-
-### 6.3 — Downgrade points
-
-| Internal return | Gate return |
-|---|---|
-| `iWorldService.create_world → iWorld` | `iCommandGateway.create_world → WorldInfo` |
-| `iWorldService.fork_world → iWorld` | `iCommandGateway.fork_world → WorldInfo` |
-| `iWorldService.list_processors → list[iAsyncProcessor]` | `iCommandGateway.list_processors → list[ProcessorInfo]` |
-| `iWorldService.list_hooks → list[HookHandle]` | `iCommandGateway.list_hooks → list[HookInfo]` |
-| `iWorldService.list_resources → list[object]` | `iCommandGateway.list_resources → list[ResourceInfo]` |
-
-The downgrade happens at the gate's return statement. Live objects (iWorld, iAsyncProcessor instances, callables, user resources) never escape past the gate.
+Processor, hook, and resource listings similarly return `ProcessorInfo`,
+`HookInfo`, and `ResourceInfo`, never live instances or callables.
 
 ## 8. Permissions
 
@@ -325,24 +226,8 @@ The downgrade happens at the gate's return statement. Live objects (iWorld, iAsy
 | `list_hooks` | ✓ | ✓ | ✓ | ✓ |
 | `list_resources` | ✓ | ✓ | ✓ | ✓ |
 
-`fork_world` and `destroy_world` are operator-permitted because operators routinely fork (rollouts) and destroy (cleanup), and neither operation deletes persisted data.
+## 9. Executable contracts
 
-## 9. Tests
-
-Critical:
-
-- `destroy_world`: storage row count for the world is unchanged before/after (verify via `QueryService.query_archetype`).
-- `destroy_world`: audit row count for the world is unchanged before/after (verify via `AuditLog.query(world_id=...)`).
-- `fork_world`: spawn-then-fork → entity exists in BOTH source's next tick AND fork's first tick.
-- `fork_world`: source.resources is fork.resources (identity check).
-- `fork_world`: hook registered on source post-fork does NOT fire on fork.
-- `destroy_world` is idempotent on unknown ids.
-- `destroy_world` waits on `op_lock` for in-flight `step()` to complete.
-- `iAsyncStore` protocol has no `drop_*` / `delete_*` method. (Reflective check.)
-- `iAuditLog` protocol has no `drop_*` / `delete_*` method. (Reflective check.)
-
-## 10. Out of scope
-
-- Per-resource forking semantics (isolated resources per fork). v1: shared.
-- Per-world storage migration after creation. v1: storage_config at creation time only.
-- Snapshot export / world serialization to disk. v1: forks are the only supported "save" mechanism.
+Focused create/fork/resume/fence/close behavior lives under `tests/world/`.
+Cross-boundary lifecycle and persistence behavior remains under
+`tests/integration/`, `tests/app/`, and `tests/api/`.

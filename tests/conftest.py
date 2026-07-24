@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 
 import pytest
 
@@ -13,9 +14,10 @@ import pytest
 # sets it, but a test module may `import daft` before importing archetype.)
 os.environ.setdefault("DO_NOT_TRACK", "1")
 
-from archetype.app.world.service import WorldService  # noqa: E402
 from archetype.core.config import StorageBackend, StorageConfig  # noqa: E402
 from archetype.storage.service import StorageService  # noqa: E402
+from archetype.world.lifecycle import WorldLifecycle  # noqa: E402
+from archetype.world.registry import WorldRegistry  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -37,6 +39,24 @@ def make_storage_service() -> StorageService:
     return StorageService()
 
 
-def make_world_service(**kwargs) -> WorldService:
-    """Create a properly wired WorldService for tests."""
-    return WorldService(StorageService(), **kwargs)
+@dataclass(frozen=True, slots=True)
+class WorldHarness:
+    """Canonical world-family composition for focused implementation tests."""
+
+    storage: StorageService
+    registry: WorldRegistry
+    lifecycle: WorldLifecycle
+
+    async def close(self) -> None:
+        await self.storage.shutdown()
+
+
+def make_world_harness() -> WorldHarness:
+    """Construct storage, registry, and lifecycle without application delegates."""
+    storage = StorageService()
+    registry = WorldRegistry()
+    return WorldHarness(
+        storage=storage,
+        registry=registry,
+        lifecycle=WorldLifecycle(storage, registry),
+    )

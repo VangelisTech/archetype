@@ -268,35 +268,38 @@ manifest and root/child policy.
 `StorageService` resolves and pools an `iAsyncStore`. It is the canonical
 physical authority for terminal Daft execution and app-owned table
 registration, schema alignment, reads, writes, and optimistic-commit retry.
-`WorldService` owns the world factory and live registry. A world composes one
-querier, updater, system, resource registry, and hook registry. The querier and
-updater consume the same store. A live world is an internal capability and
-never crosses an application, gateway, runtime, API, or CLI boundary.
+`WorldRegistry` owns live world identity, storage coordinates, exact-world
+locks, close leases, required-projector bindings, and retained committed
+receipts. `WorldLifecycle` owns construction, discovery, resume, fork, and
+close. The module-level world mutation, simulation, query, and handler
+operations are stateless behavior over those owners. A live world is an
+internal capability and never crosses an application, gateway, runtime, API,
+or CLI boundary.
 
 | Consumer/family | Responsibility | Allowed app dependencies |
 |---|---|---|
 | Storage | Store and session lifetime; control authority; physical visibility; commit coordination; generic world/run envelope; terminal Daft execution; app-table registration, schema, read/write, and retry | None |
-| World lifecycle | Create, lookup, fork, resume, destroy, live registry | Storage port |
-| Mutation | Mutate a resolved live world | World port |
-| Simulation | Step, run, episode, rollout, and bounded terminal-condition reduction | World and storage ports plus named command-drain and quota-reset callables |
-| Query | Persisted ECS reads, durable discovery, and compatibility history reads | Storage and audit ports |
+| World registry/lifecycle | Live ownership, exact-world synchronization, create, discovery, readonly open, fenced resume, fork, and retryable close | Storage port |
+| World mutation | Module functions that mutate a world under its exact registry lease | World-registry port |
+| World simulation | Module functions for step, stable committed receipts, required projection, run, episode, and rollout | World-registry and storage ports; construction-injected command materializer |
+| Durable world reads | Module functions for persisted ECS state, lineage, and signature discovery without a live world | Storage port |
 | Redaction | Provider-neutral secret scanning, deterministic text redaction, safe receipts and quarantine | None |
 | Ingestion | Select live storage configuration and delegate typed publication | Storage and world-coordinate ports |
 | Artifacts | File discovery, metadata scans, immutable content-addressed objects, and common/media indexes | Ingestion, storage and world-coordinate ports |
 | Evaluation | Snapshot pinning, grader contracts, grading, evidence and durable results | Query, ingestion, storage and world-coordinate ports |
-| Commands | Durable admission, order, leasing, dispatch, retry, settlement and dead letters | Control catalog plus world and mutation ports |
+| Commands | Durable admission, order, leasing, lock-held materialization, retry, settlement and dead letters | Control catalog plus exact world handlers |
 | Audit | Transactional journal/outbox and analytical projection | Storage or control-authority ports |
-| Research | Multi-run research workflows and bounded persisted-control reads | World, simulation, and storage ports plus explicit evaluator callbacks |
-| Physical AI | Batched evaluation and instruction-sweep workflows with typed terminal reports | World, mutation, simulation, evaluation, and storage ports |
+| Research | Multi-run research workflows and bounded persisted-control reads | World registry/lifecycle and storage ports plus world simulation functions and explicit evaluator callbacks |
+| Physical AI | Batched evaluation and instruction-sweep workflows with typed terminal reports | World registry/lifecycle, evaluation, and storage ports plus world mutation/simulation functions |
 | Missions | Graph materialization, tick/external-I/O composition, terminal projection, transcript ingestion, and trajectory query/evaluation composition. Family processors retain transition authority; trajectory evidence cannot advance tasks. | Consumes a structural mission world, family-owned sandbox resource, artifact/ingestion/redaction ports for transcripts, and query/evaluation ports for trajectory reads. |
 | RuntimeApplication | Canonical actor-free application facade and per-world operation serialization | Approved family workflow ports only |
 | CommandGateway | Authorization, safe downgrade, access-audit notification, delegation | RuntimeApplication port, authorizer, audit-journal port |
 | ServiceContainer | Concrete construction, ownership, and callback wiring | Every concrete implementation it constructs |
 
-Mutation and simulation are siblings over WorldService. Query intentionally
-reads storage without requiring a live world. Evaluation owns the product
-evaluation transaction; the gateway never pins snapshots, invokes graders, or
-persists evaluation receipts.
+World mutation and simulation functions share the registry's exact-world
+authority. Durable world query intentionally reads storage without requiring a
+live world. Evaluation owns the product evaluation transaction; the gateway
+never pins snapshots, invokes graders, or persists evaluation receipts.
 
 ## 6. Gateway and trust-boundary policy
 
@@ -457,9 +460,10 @@ reviewed family.
 ## 9. Runtime callbacks and cycles
 
 Object wiring may contain named callbacks without creating reverse static
-imports. Simulation currently consumes command-drain and quota-reset callables.
-The container injects them; SimulationService does not import the concrete
-commands dispatcher, gateway, or auth implementation.
+imports. `AsyncWorld` consumes a core-owned `CommandMaterializer` callable.
+`WorldLifecycle` receives the scheduler method at composition and wires it
+fresh into create, resume, and fork. The world family does not import the
+concrete scheduler, gateway, or auth implementation.
 
 Every callback cycle requires a named port, owning wiring root, defined ordering
 and failure behavior, and an explicit architecture-policy entry.
@@ -574,9 +578,10 @@ coherent ingress roots. The existing footgun reviewer complements this
 deterministic audit with semantic observability review.
 
 Other deliberately retained implementation seams are documented rather than
-hidden: `QueryService` uses `iAuditLog` for compatibility history reads, and
-the root `app/models.py` holds cross-family boundary models. Changing either is
-a separate contract/model-ownership decision, not undocumented drift.
+hidden: audit/application history remains an `iAuditLog` concern, while
+durable ECS reads belong to `archetype.world.query`; the root `app/models.py`
+holds cross-family boundary models. Changing that model ownership is a
+separate contract decision, not undocumented drift.
 
 ## 13. Accepted v0.5 target architecture
 

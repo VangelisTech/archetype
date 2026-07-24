@@ -133,7 +133,7 @@ sequenceDiagram
     participant Physical as PhysicalAIService
     participant Providers as Env + Policy Providers
     participant World as World + Processors
-    participant Simulation as SimulationService
+    participant Simulation as world.simulation
     participant Evaluation as EvaluationService
 
     Host->>Runtime: evaluate request + env/policy providers
@@ -171,7 +171,8 @@ sequenceDiagram
 The separation is intentional:
 
 - Components and processors decide per-tick state transitions.
-- `SimulationService` owns episode execution and value-based termination.
+- `archetype.world.simulation` owns episode execution and value-based
+  termination.
 - `PhysicalAIService` owns the multi-service workflow but no component schema.
 - External simulator and model implementations own provider resources, not ECS
   transition authority.

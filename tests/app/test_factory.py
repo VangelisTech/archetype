@@ -1,20 +1,20 @@
 # Copyright 2025 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for WorldFactory assembly logic via WorldService."""
+"""Tests for managed world assembly through ``WorldLifecycle``."""
 
 import pytest
 
-from archetype.app.world.service import WorldService
 from archetype.core.aio import AsyncSystem, AsyncWorld
 from archetype.core.config import CacheConfig, StorageConfig, WorldConfig
 from archetype.storage.service import StorageService, _resolve_uri
+from archetype.world.lifecycle import WorldLifecycle
+from archetype.world.registry import WorldRegistry
 
 
-def _make_orchestrator(tmp_path):
+def _make_lifecycle():
     ss = StorageService()
-    orch = WorldService(ss)
-    return orch, ss
+    return WorldLifecycle(ss, WorldRegistry()), ss
 
 
 def test_resolve_file_uri_uses_filesystem_path(tmp_path):
@@ -52,9 +52,9 @@ async def test_equivalent_file_uri_shares_store_and_catalog(tmp_path):
 class TestWorldFactory:
     @pytest.mark.asyncio
     async def test_creates_async_world(self, tmp_path):
-        orch, ss = _make_orchestrator(tmp_path)
+        lifecycle, ss = _make_lifecycle()
         try:
-            world = await orch.create_world(
+            world = await lifecycle.create_world(
                 WorldConfig(name="f1"),
                 StorageConfig(uri=str(tmp_path / "s"), namespace="ns"),
             )
@@ -64,9 +64,9 @@ class TestWorldFactory:
 
     @pytest.mark.asyncio
     async def test_world_has_querier_and_updater(self, tmp_path):
-        orch, ss = _make_orchestrator(tmp_path)
+        lifecycle, ss = _make_lifecycle()
         try:
-            world = await orch.create_world(
+            world = await lifecycle.create_world(
                 WorldConfig(name="f2"),
                 StorageConfig(uri=str(tmp_path / "s"), namespace="ns"),
             )
@@ -78,9 +78,9 @@ class TestWorldFactory:
 
     @pytest.mark.asyncio
     async def test_default_system_is_async(self, tmp_path):
-        orch, ss = _make_orchestrator(tmp_path)
+        lifecycle, ss = _make_lifecycle()
         try:
-            world = await orch.create_world(
+            world = await lifecycle.create_world(
                 WorldConfig(name="f3"),
                 StorageConfig(uri=str(tmp_path / "s"), namespace="ns"),
             )
@@ -91,10 +91,10 @@ class TestWorldFactory:
 
     @pytest.mark.asyncio
     async def test_custom_system_is_used(self, tmp_path):
-        orch, ss = _make_orchestrator(tmp_path)
+        lifecycle, ss = _make_lifecycle()
         custom = AsyncSystem()
         try:
-            world = await orch.create_world(
+            world = await lifecycle.create_world(
                 WorldConfig(name="f4"),
                 StorageConfig(uri=str(tmp_path / "s"), namespace="ns"),
                 system=custom,
@@ -108,10 +108,10 @@ class TestWorldFactory:
     async def test_world_id_from_config(self, tmp_path):
         from uuid_utils import uuid7
 
-        orch, ss = _make_orchestrator(tmp_path)
+        lifecycle, ss = _make_lifecycle()
         wid = uuid7()
         try:
-            world = await orch.create_world(
+            world = await lifecycle.create_world(
                 WorldConfig(name="f5", world_id=wid),
                 StorageConfig(uri=str(tmp_path / "s"), namespace="ns"),
             )
@@ -123,9 +123,9 @@ class TestWorldFactory:
     async def test_cache_config_wraps_store(self, tmp_path):
         from archetype.core.aio import AsyncCachedStore
 
-        orch, ss = _make_orchestrator(tmp_path)
+        lifecycle, ss = _make_lifecycle()
         try:
-            world = await orch.create_world(
+            world = await lifecycle.create_world(
                 WorldConfig(name="f6"),
                 StorageConfig(uri=str(tmp_path / "s"), namespace="ns"),
                 CacheConfig(),

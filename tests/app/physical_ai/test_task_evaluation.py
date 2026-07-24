@@ -16,17 +16,18 @@ orchestration that the in-process LIBERO client will run unchanged:
 3. **Graded from raw ``ManipStatus`` by the eval service**, and the numbers
    match an independent in-Python sim of the same policy+env (so there is no
    ``EvalTrialResult`` summary to drift — E1).
-4. **B1+B2 exercised end-to-end**: ``run_episode`` resets the RBAC quota each
-   tick and terminates on the value-based "all done" contract.
+4. **B1+B2 exercised end-to-end**: ``run_episode`` advances target-tick quota
+   scope and terminates on the value-based "all done" contract.
 """
 
 from __future__ import annotations
 
 import pytest
 
+import archetype.app.gateway.auth.guard as guard
 from archetype import ArchetypeRuntime, PhysicalTaskEvalConfig
 from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.core.config import StorageConfig
 from archetype.physical_ai.manipulation import ManipStatus, ManipTask, ScriptedReachEnv
 from archetype.physical_ai.policy import ScriptedReachPolicy
@@ -47,10 +48,10 @@ TARGETS = {
 
 @pytest.fixture(autouse=True)
 def _reset_quotas():
-    reset_tick_counters()
+    guard._tick_counters.clear()
     reset_daily_tokens()
     yield
-    reset_tick_counters()
+    guard._tick_counters.clear()
     reset_daily_tokens()
 
 

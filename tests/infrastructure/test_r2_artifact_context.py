@@ -362,7 +362,7 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
                 io_config=storage.io_config,
             ),
         )
-        world = await container.world_service.create_world(
+        world = await container.world_lifecycle.create_world(
             WorldConfig(name="r2-artifact-context"), storage
         )
         references = await container.artifact_service.ingest(

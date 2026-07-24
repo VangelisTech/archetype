@@ -14,10 +14,10 @@ from uuid_utils import uuid7
 from archetype import ArchetypeRuntime, AutoResearchConfig, EvaluationResult
 from archetype.app.gateway.auth.errors import GuardrailError
 from archetype.app.gateway.auth.models import ActorCtx
-from archetype.app.models import EpisodeConfig
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
 from archetype.research import Run, RunStatus
+from archetype.world.models import EpisodeConfig
 
 TARGET = 3.0
 

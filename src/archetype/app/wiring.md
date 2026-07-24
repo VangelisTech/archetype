@@ -10,28 +10,26 @@ Arrows below mean consumer to dependency.
 
 | Consumer | Injected dependencies |
 |---|---|
-| `WorldService` | `iStorageService` |
+| `WorldRegistry` | none; owns live world identity, exact-world locks, and close leases |
+| `CommandScheduler` | live-world admission, control-catalog resolution, catalog-world listing, and ID reservation callables |
+| `WorldLifecycle` | `StorageService`, `WorldRegistry`, and `CommandScheduler.materialize` |
 | `AuditLog` | `iStorageService` |
-| `QueryService` | `iStorageService`, `iAuditLog` (history compatibility) |
-| `IngestionService` | `iStorageService`, `iWorldService` |
-| `ArtifactService` | `iStorageService`, `iWorldService`, `iIngestionService` |
-| `TranscriptIngestionService` | `iArtifactService`, `iIngestionService`, `iRedactionService`, `iStorageService`, `iWorldService` |
-| `EvaluationService` | `iQueryService`, `iIngestionService`, `iStorageService`, `iWorldService` |
-| `MutationService` | `iWorldService` |
-| `SimulationService` | `iWorldService`, `iStorageService`, injected callbacks |
-| `PhysicalAIService` | `iWorldService`, `iMutationService`, `iSimulationService`, `iEvaluationService`, `iStorageService` |
-| `CommandScheduler` | `iWorldService`, `iMutationService` |
-| `AutoResearchService` | `iWorldService`, `iSimulationService`, `iStorageService` |
-| `RuntimeApplication` | family ports above |
-| `CommandGateway` | `iRuntimeApplication`, `iAuditLog` |
+| `IngestionService` | `iStorageService`, `WorldRegistry` |
+| `ArtifactService` | `iStorageService`, `WorldRegistry`, `iIngestionService` |
+| `TranscriptIngestionService` | `iArtifactService`, `iIngestionService`, `iRedactionService`, `iStorageService`, `WorldRegistry` |
+| `EvaluationService` | `iIngestionService`, `StorageService`, `WorldRegistry`; durable reads call `archetype.world.query` |
+| `TrajectoryService` | `StorageService`, `iEvaluationService`; durable reads call `archetype.world.query` |
+| `PhysicalAIService` | `WorldRegistry`, `WorldLifecycle`, `iEvaluationService`, `StorageService` |
+| `AutoResearchService` | `WorldRegistry`, `WorldLifecycle`, `StorageService` |
+| `RuntimeApplication` | `WorldRegistry`, `WorldLifecycle`, `StorageService`, scheduler, and optional app workflow ports |
+| `CommandGateway` | `iRuntimeApplication`, `iAuditLog`, and a target-tick resolver |
 
 `ServiceContainer` constructs the concrete graph and exposes
-`application` and `command_gateway`. It injects:
-
-- `RuntimeApplication.drain_and_apply` into `SimulationService`; and
-- the quota reset callback into `SimulationService`.
-
-It also wires the scheduler outbox reader/acknowledger into `AuditLog`.
+`application` and `command_gateway`. It binds
+`CommandScheduler.materialize(AsyncWorld, tick)` into `WorldLifecycle` at
+construction, so due commands run inside the already-held world operation
+lease. It also wires the scheduler outbox reader/acknowledger into `AuditLog`.
+There is no command-drain or quota-reset setter.
 
 ## Core world composition
 
@@ -42,10 +40,12 @@ AsyncWorld
   -> AsyncSystem
   -> Resources
   -> HookRegistry
+  -> construction-bound CommandMaterializer
 ```
 
-Mutation and simulation are siblings over `WorldService`. `QueryService`
-bypasses the live registry and reads persisted state through storage.
+World mutation and simulation functions acquire exact leases from
+`WorldRegistry`. Durable world queries bypass live locking and read persisted
+state through `StorageService`.
 
 ## Enforcement
 

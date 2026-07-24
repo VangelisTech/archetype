@@ -3,10 +3,10 @@
 
 """Poison command regression suite: adversarial command handling.
 
-Verifies that malformed, invalid, or unhandled commands are swallowed
-gracefully by ``drain_and_apply`` without corrupting world state or
-blocking valid commands in the same tick.  These are regression
-guardrails — they must never fail.
+Verifies that malformed, invalid, or unhandled commands are isolated during
+exact-world tick materialization without corrupting world state or blocking
+valid commands in the same tick. These are regression guardrails — they must
+never fail.
 """
 
 from __future__ import annotations
@@ -17,9 +17,10 @@ import tempfile
 from uuid_utils import uuid7
 
 from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.models import Command, CommandType
+from archetype.core.aio import AsyncWorld
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from evals.graders import exact_match, state_check
@@ -43,6 +44,18 @@ class _PoisonTag(Component):
     label: str = ""
 
 
+async def _create_live_world(
+    container: ServiceContainer,
+    config: WorldConfig,
+    storage: StorageConfig,
+) -> AsyncWorld:
+    info = await container.application.create_world(config, storage)
+    world = await container.world_registry.live_world(str(info.world_id))
+    if not isinstance(world, AsyncWorld):
+        raise RuntimeError(f"world {info.world_id} was not activated")
+    return world
+
+
 # ---------------------------------------------------------------------------
 # Task 1: poison command in a batch doesn't block valid commands
 # ---------------------------------------------------------------------------
@@ -54,16 +67,13 @@ def task_poison_in_batch() -> list[GraderResult]:
 
 
 async def _task_poison_in_batch() -> list[GraderResult]:
-    reset_tick_counters()
     reset_daily_tokens()
 
     with tempfile.TemporaryDirectory() as tmp:
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=f"{tmp}/store", namespace="poison")
-            world = await container.world_service.create_world(
-                WorldConfig(name="poison-batch"), storage
-            )
+            world = await _create_live_world(container, WorldConfig(name="poison-batch"), storage)
             ctx = ActorCtx(id=uuid7(), roles={"admin"})
             wid = str(world.world_id)
             rc = RunConfig()
@@ -101,10 +111,10 @@ async def _task_poison_in_batch() -> list[GraderResult]:
                 ),
             )
 
-            await container.simulation_service.step(world.world_id, rc)
+            await container.application.step(world.world_id, rc)
 
-            entity_count = len(world._entity2sig)
-            signatures = {frozenset(sig) for sig in set(world._entity2sig.values())}
+            entity_count = len(world.entity2sig)
+            signatures = {frozenset(sig) for sig in set(world.entity2sig.values())}
 
             return [
                 exact_match(entity_count, 2, name="valid_commands_applied"),
@@ -131,16 +141,13 @@ def task_missing_payload_keys() -> list[GraderResult]:
 
 
 async def _task_missing_payload_keys() -> list[GraderResult]:
-    reset_tick_counters()
     reset_daily_tokens()
 
     with tempfile.TemporaryDirectory() as tmp:
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=f"{tmp}/store", namespace="poison")
-            world = await container.world_service.create_world(
-                WorldConfig(name="missing-keys"), storage
-            )
+            world = await _create_live_world(container, WorldConfig(name="missing-keys"), storage)
             ctx = ActorCtx(id=uuid7(), roles={"admin"})
             wid = str(world.world_id)
             rc = RunConfig()
@@ -170,13 +177,13 @@ async def _task_missing_payload_keys() -> list[GraderResult]:
                 ),
             )
 
-            await container.simulation_service.step(world.world_id, rc)
+            await container.application.step(world.world_id, rc)
 
             return [
                 state_check(
                     {
-                        "no_entities_created": len(world._entity2sig) == 0,
-                        "no_archetypes": len(world._entity2sig) == 0,
+                        "no_entities_created": len(world.entity2sig) == 0,
+                        "no_archetypes": len(world.entity2sig) == 0,
                     },
                     name="world_unchanged",
                 ),
@@ -196,16 +203,13 @@ def task_unknown_component_type() -> list[GraderResult]:
 
 
 async def _task_unknown_component_type() -> list[GraderResult]:
-    reset_tick_counters()
     reset_daily_tokens()
 
     with tempfile.TemporaryDirectory() as tmp:
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=f"{tmp}/store", namespace="poison")
-            world = await container.world_service.create_world(
-                WorldConfig(name="unknown-type"), storage
-            )
+            world = await _create_live_world(container, WorldConfig(name="unknown-type"), storage)
             ctx = ActorCtx(id=uuid7(), roles={"admin"})
             wid = str(world.world_id)
             rc = RunConfig()
@@ -225,13 +229,12 @@ async def _task_unknown_component_type() -> list[GraderResult]:
                     },
                 ),
             )
-            await container.simulation_service.step(world.world_id, rc)
+            await container.application.step(world.world_id, rc)
 
-            entity_id = next(iter(world._entity2sig))
-            original_sig = frozenset(world._entity2sig[entity_id])
+            entity_id = next(iter(world.entity2sig))
+            original_sig = frozenset(world.entity2sig[entity_id])
 
             # Try to remove a nonexistent component type
-            reset_tick_counters()
             reset_daily_tokens()
             await container.command_gateway.submit(
                 ctx,
@@ -245,15 +248,15 @@ async def _task_unknown_component_type() -> list[GraderResult]:
                     },
                 ),
             )
-            await container.simulation_service.step(world.world_id, rc)
+            await container.application.step(world.world_id, rc)
 
-            current_sig = frozenset(world._entity2sig[entity_id])
+            current_sig = frozenset(world.entity2sig[entity_id])
 
             return [
                 state_check(
                     {
                         "signature_preserved": current_sig == original_sig,
-                        "entity_still_exists": entity_id in world._entity2sig,
+                        "entity_still_exists": entity_id in world.entity2sig,
                     },
                     name="entity_intact",
                 ),
@@ -273,15 +276,14 @@ def task_despawn_nonexistent_entity() -> list[GraderResult]:
 
 
 async def _task_despawn_nonexistent_entity() -> list[GraderResult]:
-    reset_tick_counters()
     reset_daily_tokens()
 
     with tempfile.TemporaryDirectory() as tmp:
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=f"{tmp}/store", namespace="poison")
-            world = await container.world_service.create_world(
-                WorldConfig(name="despawn-missing"), storage
+            world = await _create_live_world(
+                container, WorldConfig(name="despawn-missing"), storage
             )
             ctx = ActorCtx(id=uuid7(), roles={"admin"})
             wid = str(world.world_id)
@@ -297,12 +299,11 @@ async def _task_despawn_nonexistent_entity() -> list[GraderResult]:
                     payload={"components": [_PoisonPos(x=1, y=1).to_payload()]},
                 ),
             )
-            await container.simulation_service.step(world.world_id, rc)
+            await container.application.step(world.world_id, rc)
 
-            entity_count_before = len(world._entity2sig)
+            entity_count_before = len(world.entity2sig)
 
             # Despawn a nonexistent entity
-            reset_tick_counters()
             reset_daily_tokens()
             await container.command_gateway.submit(
                 ctx,
@@ -313,14 +314,14 @@ async def _task_despawn_nonexistent_entity() -> list[GraderResult]:
                     payload={"entity_id": 99999},
                 ),
             )
-            await container.simulation_service.step(world.world_id, rc)
+            await container.application.step(world.world_id, rc)
 
             return [
                 state_check(
                     {
-                        "entity_count_unchanged": len(world._entity2sig) == entity_count_before,
+                        "entity_count_unchanged": len(world.entity2sig) == entity_count_before,
                         "real_entity_intact": any(
-                            eid in world._entity2sig for eid in world._entity2sig
+                            eid in world.entity2sig for eid in world.entity2sig
                         ),
                     },
                     name="world_intact",
@@ -341,16 +342,13 @@ def task_unhandled_command_noop() -> list[GraderResult]:
 
 
 async def _task_unhandled_command_noop() -> list[GraderResult]:
-    reset_tick_counters()
     reset_daily_tokens()
 
     with tempfile.TemporaryDirectory() as tmp:
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=f"{tmp}/store", namespace="poison")
-            world = await container.world_service.create_world(
-                WorldConfig(name="noop-cmds"), storage
-            )
+            world = await _create_live_world(container, WorldConfig(name="noop-cmds"), storage)
             ctx = ActorCtx(id=uuid7(), roles={"admin"})
             wid = str(world.world_id)
             rc = RunConfig()
@@ -362,7 +360,7 @@ async def _task_unhandled_command_noop() -> list[GraderResult]:
                     Command(type=cmd_type, tick=0, payload={"data": "test"}),
                 )
 
-            await container.simulation_service.step(world.world_id, rc)
+            await container.application.step(world.world_id, rc)
 
             pending = await container.command_scheduler.pending_count(wid)
 
@@ -370,8 +368,8 @@ async def _task_unhandled_command_noop() -> list[GraderResult]:
                 state_check(
                     {
                         "all_dequeued": pending == 0,
-                        "no_entities_created": len(world._entity2sig) == 0,
-                        "no_archetypes": len(world._entity2sig) == 0,
+                        "no_entities_created": len(world.entity2sig) == 0,
+                        "no_archetypes": len(world.entity2sig) == 0,
                     },
                     name="clean_noop",
                 ),

@@ -14,9 +14,10 @@ from archetype.api.deps import get_actor_ctx, set_container
 from archetype.app.container import ServiceContainer
 from archetype.app.gateway.auth import guard
 from archetype.app.gateway.auth.errors import GuardrailError
-from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
-from archetype.app.models import Command, CommandType, EpisodeConfig, RolloutConfig
+from archetype.app.gateway.auth.guard import reset_daily_tokens
+from archetype.app.models import Command, CommandType
 from archetype.core.config import RunConfig
+from archetype.world.models import EpisodeConfig, RolloutConfig
 
 pytest.importorskip("httpx", reason="httpx required for API tests")
 
@@ -33,10 +34,10 @@ class QueryRouteMetric104(Component):
 
 @pytest.fixture(autouse=True)
 def _reset_quotas():
-    reset_tick_counters()
+    guard._tick_counters.clear()
     reset_daily_tokens()
     yield
-    reset_tick_counters()
+    guard._tick_counters.clear()
     reset_daily_tokens()
 
 
@@ -696,9 +697,19 @@ async def test_development_principal_identity_is_stable_across_requests(monkeypa
     second = await get_actor_ctx("Bearer player")
 
     assert first.id == second.id
-    guard.guardrail_allow(Command(type=CommandType.CUSTOM), first)
+    guard.guardrail_allow(
+        Command(type=CommandType.CUSTOM),
+        first,
+        world_id="world",
+        target_tick=0,
+    )
     with pytest.raises(GuardrailError):
-        guard.guardrail_allow(Command(type=CommandType.CUSTOM), second)
+        guard.guardrail_allow(
+            Command(type=CommandType.CUSTOM),
+            second,
+            world_id="world",
+            target_tick=0,
+        )
 
 
 @pytest.mark.parametrize(

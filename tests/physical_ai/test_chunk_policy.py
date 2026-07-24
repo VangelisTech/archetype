@@ -44,7 +44,7 @@ from archetype.physical_ai.policy import (
     PolicyActionProcessor,
     PolicyClientSpec,
 )
-from tests.conftest import make_world_service
+from tests.conftest import make_world_harness
 
 # ---------------------------------------------------------------------------
 # FakeChunkPolicy
@@ -118,12 +118,12 @@ TICKS = CHUNK_LEN * 3  # 3 full chunks worth of ticks
 
 
 async def _build_world(tmp_path, policy, env):
-    ws = make_world_service()
+    ws = make_world_harness()
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="chunk")
     system = AsyncSystem()
     await system.add_processor(PolicyActionProcessor(policy))
     await system.add_processor(EnvStepProcessor(env))
-    world = await ws.create_world(
+    world = await ws.lifecycle.create_world(
         WorldConfig(name="chunk-test"), storage_config=storage, system=system
     )
     return ws, world
@@ -278,7 +278,7 @@ async def test_chunk_cadence_provenance_strict_equality(tmp_path):
             # (Done envs: fewer refreshes, already verified by done-freeze above)
 
     finally:
-        await ws.shutdown()
+        await ws.close()
 
 
 # ---------------------------------------------------------------------------
@@ -294,13 +294,13 @@ async def test_done_rows_freeze_action_and_no_refresh(tmp_path):
     env = ScriptedReachEnv(targets=targets, tolerance=0.1)
     policy = FakeChunkPolicy(chunk_len=CHUNK_LEN)
 
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="freeze")
         system = AsyncSystem()
         await system.add_processor(PolicyActionProcessor(policy))
         await system.add_processor(EnvStepProcessor(env))
-        world = await ws.create_world(
+        world = await ws.lifecycle.create_world(
             WorldConfig(name="freeze-test"), storage_config=storage, system=system
         )
 
@@ -345,7 +345,7 @@ async def test_done_rows_freeze_action_and_no_refresh(tmp_path):
         )
 
     finally:
-        await ws.shutdown()
+        await ws.close()
 
 
 # ---------------------------------------------------------------------------
@@ -411,20 +411,20 @@ async def test_resources_spec_produces_identical_results(tmp_path):
     env_a = ScriptedReachEnv(targets=TARGETS, tolerance=0.02)
     policy_a = FakeChunkPolicy(chunk_len=CHUNK_LEN)
 
-    ws_a = make_world_service()
+    ws_a = make_world_harness()
     try:
         storage_a = StorageConfig(uri=str(tmp_path / "store_a"), namespace="spec_a")
         system_a = AsyncSystem()
         await system_a.add_processor(PolicyActionProcessor(policy_a))
         await system_a.add_processor(EnvStepProcessor(env_a))
-        world_a = await ws_a.create_world(
+        world_a = await ws_a.lifecycle.create_world(
             WorldConfig(name="spec-inject-a"), storage_config=storage_a, system=system_a
         )
         eids_a = await _spawn_envs(world_a, env_a, TARGETS)
         await world_a.run(RunConfig(num_steps=TICKS_SPEC))
         history_a = await _fetch_history(world_a, TICKS_SPEC)
     finally:
-        await ws_a.shutdown()
+        await ws_a.close()
 
     # --- World B: Resources-spec construction via production processors ---
     # env_b and policy_b are fresh instances of the same types as world A.
@@ -434,14 +434,14 @@ async def test_resources_spec_produces_identical_results(tmp_path):
     env_b = ScriptedReachEnv(targets=TARGETS, tolerance=0.02)
     policy_b = FakeChunkPolicy(chunk_len=CHUNK_LEN)
 
-    ws_b = make_world_service()
+    ws_b = make_world_harness()
     try:
         storage_b = StorageConfig(uri=str(tmp_path / "store_b"), namespace="spec_b")
         system_b = AsyncSystem()
         # Production processors — no test-only variants.
         await system_b.add_processor(PolicyActionProcessor())
         await system_b.add_processor(EnvStepProcessor())
-        world_b = await ws_b.create_world(
+        world_b = await ws_b.lifecycle.create_world(
             WorldConfig(name="spec-inject-b"), storage_config=storage_b, system=system_b
         )
         # Register specs under their base types so the production require()
@@ -452,7 +452,7 @@ async def test_resources_spec_produces_identical_results(tmp_path):
         await world_b.run(RunConfig(num_steps=TICKS_SPEC))
         history_b = await _fetch_history(world_b, TICKS_SPEC)
     finally:
-        await ws_b.shutdown()
+        await ws_b.close()
 
     # --- Assert identical ledger rows ---
     # Map env_key → (eid_a, eid_b) for comparison.

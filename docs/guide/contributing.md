@@ -214,9 +214,9 @@ test that needs to be written.
 
 Good examples:
 
-- "Make `SimulationService.run()` preserve one logical `run_id` across the full run and add regression coverage."
+- "Make managed world `run()` preserve one logical `run_id` across the full run and add regression coverage."
 - "Document `RuntimeWorld`'s world-local shutdown contract and add smoke tests."
-- "Fix `QueryService` so it either implements real reads or is clearly documented as provisional."
+- "Fix durable world query so it either implements real reads or is clearly documented as provisional."
 
 Do not force a contract card onto a spelling fix. Use it when implementation
 choices, public behavior, or architectural ownership could reasonably diverge.
@@ -246,7 +246,7 @@ make eval-capability  # blocking architectural capability evidence
 make verify-pr        # local equivalent of the required PR profile
 make verify-release   # installed-artifact release profile
 make bench            # record one local ECS microbenchmark report
-make bench-query      # record materialized QueryService latency
+make bench-query      # record materialized durable-world read latency
 make docs
 ```
 

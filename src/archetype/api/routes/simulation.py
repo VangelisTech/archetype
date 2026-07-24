@@ -28,7 +28,7 @@ from archetype.api.models import (
 )
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.gateway.interfaces import iCommandGateway
-from archetype.app.models import EpisodeResult, RolloutResult
+from archetype.world.models import EpisodeResult, RolloutResult
 
 router = APIRouter(prefix="/worlds/{world_id}", tags=["simulation"])
 

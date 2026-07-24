@@ -22,7 +22,7 @@ from archetype.api.errors import raise_api_error
 from archetype.api.models import CreateWorldRequest, ForkWorldRequest
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.gateway.interfaces import iCommandGateway
-from archetype.app.models import WorldInfo
+from archetype.world.models import WorldInfo
 
 router = APIRouter(prefix="/worlds", tags=["worlds"])
 
@@ -60,6 +60,7 @@ async def get_world(
 ):
     """Get world metadata. Requires viewer, player, operator, or admin."""
     try:
+        UUID(world_id)
         return await cs.get_world_info(ctx, world_id)
     except Exception as exc:
         raise_api_error(exc)

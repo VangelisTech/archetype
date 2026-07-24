@@ -38,26 +38,36 @@ It does not know about:
 
 The app layer adds those concerns.
 
-## WorldFactory Boundary
+## World family boundary
 
-`WorldFactory` is where the store resolved by `WorldService` is composed into
-core. It gives that same store to `AsyncQueryManager` and
-`AsyncUpdateManager`, constructs the system, resources, and hooks, and returns
-an `AsyncWorld`.
+`archetype.world` owns managed world state and behavior. `WorldRegistry` owns
+live identities, storage coordinates, exact-world locks, close leases, and
+unacknowledged post-commit receipts. `WorldLifecycle` constructs, discovers,
+resumes, forks, and closes worlds through `iStorageService`. The module-level
+mutation, simulation, query, and handler functions remain stateless family
+behavior over those two state owners.
 
-The factory constructs. The core executes.
+`build_world(...)` is the single module-level construction seam into core. It
+wires the shared store, query/update managers, system, resources, hooks,
+construction-injected command materializer, and optional required projector.
 
 ## Services
 
-**WorldService** manages live world identity, lookup, fork, destroy, hooks, resources, and processor listings. Internal callers receive live `iWorld` objects; the gate downgrades user-visible returns to info classes.
+**WorldRegistry** serializes every live mutation and execution against one
+exact world while allowing different worlds to progress concurrently.
 
-**MutationService** applies entity, component, and processor mutations after authorization has happened at the gate.
+**WorldLifecycle** owns create, discover, cold-open, mutable resume, fork, and
+retryable close. Internal lifecycle operations may return `AsyncWorld`; the
+application and gateway boundaries return immutable `WorldInfo`.
 
-**SimulationService** owns step, run, episode, and rollout. Rollout-internal forks are implementation details; the gated rollout call is the audit unit.
+**World mutation and simulation functions** stage entity/component/processor
+changes and execute step, run, episode, and rollout under the registry lease.
+Rollout-internal forks remain implementation details; the gated rollout call
+is the audit unit.
 
-**QueryService** is the internal storage-backed read path. It has no `ActorCtx`;
-trusted reads enter through RuntimeApplication and untrusted reads first pass
-CommandGateway.
+**World query functions** are the storage-backed read path. They have no
+`ActorCtx` and do not require a live world. Trusted reads enter through
+`RuntimeApplication`; untrusted reads first pass `CommandGateway`.
 
 **CommandLedger/Dispatcher** durably admits, orders, leases, applies, retries,
 and settles tick-deferred commands. It does not own RBAC.
@@ -103,9 +113,9 @@ Tick-deferred operation:
 RuntimeApplication or authorized gateway
   -> CommandScheduler.admit
   -> CommandLedger
-  -> SimulationService.step
+  -> AsyncWorld construction-injected materializer
   -> CommandDispatcher
-  -> MutationService + tick settlement
+  -> lock-held world mutation + tick settlement
 ```
 
 See [Data Flow](data-flow.md) for details.
@@ -119,12 +129,12 @@ authorized before delegation:
 1. Runtime handle or authorized API route
    -> RuntimeApplication.create_world(WorldConfig(...), storage, cache)
 
-2. RuntimeApplication -> WorldService.create_world(...)
+2. RuntimeApplication -> iWorldLifecycle.create_world(...)
 
-3. WorldService / WorldFactory
-   -> StorageService.get_or_create_store(...)
-   -> AsyncWorld(...)
-   -> register world by id/name
+3. WorldLifecycle / build_world(...)
+   -> iStorageService backend triplet
+   -> AsyncWorld(..., materialize_commands=...)
+   -> WorldRegistry.insert(...)
 
 4. RuntimeApplication -> return WorldInfo
 ```
@@ -144,7 +154,9 @@ See [API Layer](api-layer.md).
 
 ## Source Reference
 
-- Factory: `src/archetype/app/world/service.py`
+- World state and behavior: `src/archetype/world/`
 - Container: `src/archetype/app/container.py`
 - Service protocols: `src/archetype/app/<family>/interfaces.py`
+- World ports: `src/archetype/world/interfaces.py`
+- Storage port: `src/archetype/storage/interfaces.py`
 - Core interfaces: `src/archetype/core/interfaces.py`

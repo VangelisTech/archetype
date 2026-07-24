@@ -14,10 +14,11 @@ from archetype.app.evaluation.interfaces import (
     TrajectoryGrader,
     iEvaluationService,
 )
-from archetype.app.query.interfaces import iQueryService
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
 from archetype.missions.trajectories import TrajectorySelection, filter_trajectory_rows
+from archetype.storage.interfaces import iStorageService
+from archetype.world import query
 
 
 class TrajectoryService:
@@ -25,10 +26,10 @@ class TrajectoryService:
 
     def __init__(
         self,
-        query_service: iQueryService,
+        storage_service: iStorageService,
         evaluation_service: iEvaluationService,
     ) -> None:
-        self._query_service = query_service
+        self._storage = storage_service
         self._evaluation_service = evaluation_service
 
     async def query(
@@ -44,7 +45,8 @@ class TrajectoryService:
         lineage: list[tuple[str, str, int]] | None = None,
     ) -> DataFrame:
         """Return a lazily filtered persisted trajectory component table."""
-        frame = await self._query_service.query_components(
+        frame = await query.query_components(
+            self._storage,
             [component],
             world_id=world_id,
             run_id=run_id,

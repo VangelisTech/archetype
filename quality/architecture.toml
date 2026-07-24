@@ -10,19 +10,17 @@ types = [
   "CommandScheduler",
   "EvaluationService",
   "IngestionService",
-  "MutationService",
   "MissionService",
   "PhysicalAIService",
-  "QueryService",
   "RedactionService",
   "RuntimeApplication",
   "SandboxService",
   "ServiceContainer",
-  "SimulationService",
   "StorageService",
   "TranscriptIngestionService",
   "TrajectoryService",
-  "WorldService",
+  "WorldLifecycle",
+  "WorldRegistry",
 ]
 composition_roots = [
   "archetype.app.container",
@@ -83,30 +81,10 @@ forbidden = [
 # This is the executable dependency DAG represented by the container wiring.
 
 [[family_rule]]
-name = "world-family"
-consumer = "archetype.app.world"
-allowed_app = [
-  "archetype.app.world",
-  "archetype.app.storage.interfaces",
-  "archetype.app.models",
-]
-
-[[family_rule]]
 name = "audit-family"
 consumer = "archetype.app.audit"
 allowed_app = [
   "archetype.app.audit",
-  "archetype.app.storage.interfaces",
-  "archetype.app.models",
-]
-
-[[family_rule]]
-name = "query-family"
-consumer = "archetype.app.query"
-allowed_app = [
-  "archetype.app.query",
-  "archetype.app.storage.interfaces",
-  "archetype.app.audit.interfaces",
   "archetype.app.models",
 ]
 
@@ -116,8 +94,6 @@ consumer = "archetype.app.artifacts"
 allowed_app = [
   "archetype.app.artifacts",
   "archetype.app.ingestion.interfaces",
-  "archetype.app.storage.interfaces",
-  "archetype.app.world.interfaces",
 ]
 
 [[family_rule]]
@@ -125,8 +101,6 @@ name = "ingestion-family"
 consumer = "archetype.app.ingestion"
 allowed_app = [
   "archetype.app.ingestion",
-  "archetype.app.storage.interfaces",
-  "archetype.app.world.interfaces",
 ]
 
 [[family_rule]]
@@ -142,10 +116,6 @@ consumer = "archetype.app.evaluation"
 allowed_app = [
   "archetype.app.evaluation",
   "archetype.app.ingestion.interfaces",
-  "archetype.app.query.interfaces",
-  "archetype.app.storage.interfaces",
-  "archetype.app.world.interfaces",
-  "archetype.app.models",
 ]
 
 [[family_rule]]
@@ -156,11 +126,8 @@ allowed_app = [
   "archetype.app.artifacts.interfaces",
   "archetype.app.evaluation.interfaces",
   "archetype.app.ingestion.interfaces",
-  "archetype.app.query.interfaces",
   "archetype.app.redaction.interfaces",
   "archetype.app.redaction.models",
-  "archetype.app.storage.interfaces",
-  "archetype.app.world.interfaces",
 ]
 
 [[family_rule]]
@@ -168,9 +135,6 @@ name = "research-family"
 consumer = "archetype.app.research"
 allowed_app = [
   "archetype.app.research",
-  "archetype.app.storage.interfaces",
-  "archetype.app.world.interfaces",
-  "archetype.app.models",
 ]
 
 [[family_rule]]
@@ -179,9 +143,6 @@ consumer = "archetype.app.physical_ai"
 allowed_app = [
   "archetype.app.physical_ai",
   "archetype.app.evaluation.interfaces",
-  "archetype.app.storage.interfaces",
-  "archetype.app.world.interfaces",
-  "archetype.app.models",
 ]
 
 [[family_rule]]
@@ -189,7 +150,6 @@ name = "command-family"
 consumer = "archetype.app.commands"
 allowed_app = [
   "archetype.app.commands",
-  "archetype.app.world.interfaces",
   "archetype.app.models",
 ]
 
@@ -204,9 +164,7 @@ allowed_app = [
   "archetype.app.evaluation.interfaces",
   "archetype.app.missions.interfaces",
   "archetype.app.physical_ai.interfaces",
-  "archetype.app.query.interfaces",
   "archetype.app.research.interfaces",
-  "archetype.app.world.interfaces",
   "archetype.app.models",
 ]
 
@@ -222,45 +180,10 @@ allowed_app = [
 ]
 
 [[module_rule]]
-module = "archetype.app.world.service"
-allowed_interfaces = [
-  "archetype.app.storage.interfaces.iStorageService",
-  "archetype.core.interfaces.iAsyncStore",
-  "archetype.core.interfaces.iAsyncSystem",
-]
-allowed_app = [
-  "archetype.app.models",
-]
-
-[[module_rule]]
-module = "archetype.app.world.mutation"
-allowed_interfaces = ["archetype.app.world.interfaces.iWorldService"]
-allowed_app = []
-
-[[module_rule]]
-module = "archetype.app.world.simulation"
-allowed_interfaces = [
-  "archetype.app.storage.interfaces.iStorageService",
-  "archetype.app.world.interfaces.iWorldService",
-]
-allowed_app = ["archetype.app.models"]
-
-[[module_rule]]
-module = "archetype.app.query.service"
-allowed_interfaces = [
-  "archetype.app.audit.interfaces.iAuditLog",
-  "archetype.app.storage.interfaces.iStorageService",
-  "archetype.core.interfaces.ArchetypeSignature",
-]
-allowed_app = [
-  "archetype.app.models",
-]
-
-[[module_rule]]
 module = "archetype.app.ingestion.service"
 allowed_interfaces = [
-  "archetype.app.storage.interfaces.iStorageService",
-  "archetype.app.world.interfaces.iWorldService",
+  "archetype.storage.interfaces.iStorageService",
+  "archetype.world.interfaces.iWorldRegistry",
 ]
 allowed_app = []
 
@@ -268,8 +191,8 @@ allowed_app = []
 module = "archetype.app.artifacts.service"
 allowed_interfaces = [
   "archetype.app.ingestion.interfaces.iIngestionService",
-  "archetype.app.storage.interfaces.iStorageService",
-  "archetype.app.world.interfaces.iWorldService",
+  "archetype.storage.interfaces.iStorageService",
+  "archetype.world.interfaces.iWorldRegistry",
 ]
 allowed_app = []
 
@@ -286,13 +209,10 @@ allowed_interfaces = [
   "archetype.app.evaluation.interfaces.GraderOutput",
   "archetype.app.evaluation.interfaces.TrajectoryGrader",
   "archetype.app.ingestion.interfaces.iIngestionService",
-  "archetype.app.query.interfaces.iQueryService",
-  "archetype.app.storage.interfaces.iStorageService",
-  "archetype.app.world.interfaces.iWorldService",
+  "archetype.storage.interfaces.iStorageService",
+  "archetype.world.interfaces.iWorldRegistry",
 ]
-allowed_app = [
-  "archetype.app.models",
-]
+allowed_app = []
 
 [[module_rule]]
 module = "archetype.app.missions.service"
@@ -307,7 +227,7 @@ allowed_interfaces = [
   "archetype.app.evaluation.interfaces.GraderOutput",
   "archetype.app.evaluation.interfaces.TrajectoryGrader",
   "archetype.app.evaluation.interfaces.iEvaluationService",
-  "archetype.app.query.interfaces.iQueryService",
+  "archetype.storage.interfaces.iStorageService",
 ]
 allowed_app = []
 
@@ -317,8 +237,8 @@ allowed_interfaces = [
   "archetype.app.artifacts.interfaces.iArtifactService",
   "archetype.app.ingestion.interfaces.iIngestionService",
   "archetype.app.redaction.interfaces.iRedactionService",
-  "archetype.app.storage.interfaces.iStorageService",
-  "archetype.app.world.interfaces.iWorldService",
+  "archetype.storage.interfaces.iStorageService",
+  "archetype.world.interfaces.iWorldRegistry",
 ]
 allowed_app = [
   "archetype.app.redaction.models",
@@ -328,40 +248,33 @@ allowed_app = [
 module = "archetype.app.physical_ai.service"
 allowed_interfaces = [
   "archetype.app.evaluation.interfaces.iEvaluationService",
-  "archetype.app.storage.interfaces.iStorageService",
-  "archetype.app.world.interfaces.iMutationService",
-  "archetype.app.world.interfaces.iSimulationService",
-  "archetype.app.world.interfaces.iWorldService",
+  "archetype.storage.interfaces.iStorageService",
+  "archetype.world.interfaces.iWorldLifecycle",
+  "archetype.world.interfaces.iWorldRegistry",
 ]
-allowed_app = [
-  "archetype.app.models",
-]
+allowed_app = []
 
 [[module_rule]]
 module = "archetype.app.research.service"
 allowed_interfaces = [
-  "archetype.app.storage.interfaces.iStorageService",
-  "archetype.app.world.interfaces.iSimulationService",
-  "archetype.app.world.interfaces.iWorldService",
+  "archetype.storage.interfaces.iStorageService",
+  "archetype.world.interfaces.iWorldLifecycle",
+  "archetype.world.interfaces.iWorldRegistry",
 ]
 allowed_app = [
   "archetype.app.research.contracts",
-  "archetype.app.models",
 ]
 
 [[module_rule]]
 module = "archetype.app.audit.service"
-allowed_interfaces = ["archetype.app.storage.interfaces.iStorageService"]
+allowed_interfaces = ["archetype.storage.interfaces.iStorageService"]
 allowed_app = [
   "archetype.app.models",
 ]
 
 [[module_rule]]
 module = "archetype.app.commands.service"
-allowed_interfaces = [
-  "archetype.app.world.interfaces.iMutationService",
-  "archetype.app.world.interfaces.iWorldService",
-]
+allowed_interfaces = []
 allowed_app = [
   "archetype.app.models",
 ]
@@ -377,11 +290,10 @@ allowed_interfaces = [
   "archetype.app.missions.interfaces.iTranscriptIngestionService",
   "archetype.app.missions.interfaces.iTrajectoryService",
   "archetype.app.physical_ai.interfaces.iPhysicalAIService",
-  "archetype.app.query.interfaces.iQueryService",
   "archetype.app.research.interfaces.iResearchService",
-  "archetype.app.world.interfaces.iMutationService",
-  "archetype.app.world.interfaces.iSimulationService",
-  "archetype.app.world.interfaces.iWorldService",
+  "archetype.storage.interfaces.iStorageService",
+  "archetype.world.interfaces.iWorldLifecycle",
+  "archetype.world.interfaces.iWorldRegistry",
 ]
 allowed_app = ["archetype.app.models"]
 

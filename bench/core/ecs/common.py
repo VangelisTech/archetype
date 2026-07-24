@@ -6,13 +6,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from archetype.app.world.service import WorldService
-from archetype.core.aio import AsyncSystem
+from archetype.core.aio import AsyncSystem, AsyncWorld
 from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
 from archetype.storage.service import StorageService
+from archetype.world.lifecycle import WorldLifecycle
+from archetype.world.registry import WorldRegistry
 
 __all__ = [
     "BenchResult",
+    "BenchWorldHarness",
     "CacheConfig",
     "RunConfig",
     "StorageConfig",
@@ -47,28 +49,52 @@ class BenchResult:
         return total / self.elapsed_s if self.elapsed_s > 0 else 0.0
 
 
+@dataclass
+class BenchWorldHarness:
+    """Own the canonical low-level world resources used by core benchmarks."""
+
+    storage: StorageService
+    registry: WorldRegistry
+    lifecycle: WorldLifecycle
+
+    @classmethod
+    def create(cls) -> BenchWorldHarness:
+        storage = StorageService()
+        registry = WorldRegistry()
+        return cls(
+            storage=storage,
+            registry=registry,
+            lifecycle=WorldLifecycle(storage, registry),
+        )
+
+    async def shutdown(self) -> None:
+        for world in await self.registry.list_worlds():
+            await self.lifecycle.destroy_world(world.world_id)
+        await self.storage.shutdown()
+
+
 async def make_world(
     name: str,
     system: AsyncSystem | None = None,
     storage: StorageConfig | None = None,
     cache_config: CacheConfig | None = None,
-    orchestrator: WorldService | None = None,
-) -> tuple[object, WorldService]:
+    harness: BenchWorldHarness | None = None,
+) -> tuple[AsyncWorld, BenchWorldHarness]:
     """
     Create a world for a given (storage, cache) configuration.
 
-    - Accepts an optional existing orchestrator so suites can reuse a single orchestrator across many runs
-      (this shares the StorageService and reduces setup overhead).
+    - Accepts an optional existing harness so suites can reuse one canonical
+      registry/lifecycle/storage graph across many runs.
     - Defaults to a sane local StorageConfig if none is provided.
     """
-    orch = orchestrator or WorldService(StorageService())
-    world = await orch.create_world(
+    worlds = harness or BenchWorldHarness.create()
+    world = await worlds.lifecycle.create_world(
         config=WorldConfig(name=name),
         storage_config=storage or _default_storage(),
         cache_config=cache_config,
         system=system or AsyncSystem(),
     )
-    return world, orch
+    return world, worlds
 
 
 class Timer:

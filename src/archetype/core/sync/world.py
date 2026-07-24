@@ -19,7 +19,7 @@ import daft
 import pyarrow as pa
 from daft import DataFrame, col
 from daft.functions import when
-from uuid_utils import uuid7
+from uuid_utils import UUID, uuid7
 
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
@@ -38,6 +38,7 @@ from archetype.core.hooks import (
 )
 from archetype.core.interfaces import (
     ArchetypeSignature,
+    CommittedTickReceipt,
     iProcessor,
     iQueryManager,
     iResourceContainer,
@@ -52,6 +53,13 @@ logger = getLogger(__name__)
 _HookEventT = TypeVar("_HookEventT", bound=HookEvent)
 
 
+def _validated_run_id(run_id: UUID | str | None) -> UUID:
+    candidate = uuid7() if run_id is None else UUID(str(run_id))
+    if candidate.version != 7:
+        raise ValueError(f"run_id must be a UUIDv7 value, got version {candidate.version}")
+    return candidate
+
+
 class SyncWorld(iWorld):
     def __init__(
         self,
@@ -63,7 +71,7 @@ class SyncWorld(iWorld):
         system: iSystem,
         resources: iResourceContainer,
         hooks: iSyncHookBus,
-        run_id: str | None = None,
+        run_id: UUID | str | None = None,
         tick: int = 0,
         next_entity_id: int = 1,
         entity2sig: dict[int, ArchetypeSignature] | None = None,
@@ -85,32 +93,29 @@ class SyncWorld(iWorld):
         self.hooks = hooks  # Hooks: typed lifecycle callbacks
 
         # State
-        self.run_id = run_id or str(uuid7())
+        self._run_id = _validated_run_id(run_id)
         self.tick = tick
         self.next_entity_id = next_entity_id
         self.entity2sig = entity2sig if entity2sig is not None else {}
         self.spawn_cache = spawn_cache if spawn_cache is not None else {}
         self.despawn_cache = despawn_cache if despawn_cache is not None else {}
 
-    def run(self, run_config: RunConfig, **input_kwargs):
+    @property
+    def run_id(self) -> UUID:
+        """Immutable UUIDv7 identity of this world's durable run."""
+        return self._run_id
+
+    def run(self, run_config: RunConfig, **input_kwargs) -> None:
         """
         Runs the world for the given run configuration.
         """
-        # Pin run_id on first invocation; subsequent calls keep the existing
-        # run_id so cross-step reads/writes remain continuous.
-        if self.run_id is None:
-            self.run_id = str(run_config.run_id)
         for _ in range(run_config.num_steps):
             self.step(run_config, **input_kwargs)
 
-    def step(self, run_config: RunConfig, **input_kwargs) -> None:
+    def step(self, run_config: RunConfig, **input_kwargs) -> CommittedTickReceipt:
         """
         Executes one full simulation tick.
         """
-        # Ensure run_id is set for entity creation during step
-        if self.run_id is None:
-            self.run_id = str(run_config.run_id)
-
         self.hooks.fire(PreTick(world_id=self.world_id, tick=self.tick))
 
         sigs = sorted(self.active_signatures, key=Archetype.get_name)
@@ -148,6 +153,13 @@ class SyncWorld(iWorld):
         self.tick += 1
 
         self.hooks.fire(PostTick(world_id=self.world_id, tick=self.tick, results=results))
+        return CommittedTickReceipt(
+            world_id=str(self.world_id),
+            run_id=str(self.run_id),
+            committed_tick=self.tick - 1,
+            visibility_token=None,
+            commands_applied=0,
+        )
 
     def _compute_archetype(
         self, sig: ArchetypeSignature, run_config: RunConfig, **input_kwargs
@@ -325,7 +337,7 @@ class SyncWorld(iWorld):
                 "entity_id": entity_id,
                 "tick": self.tick,
                 "world_id": str(self.world_id),
-                "run_id": self.run_id or "",  # Placeholder; updater stamps correct run_id
+                "run_id": str(self.run_id),
                 "is_active": True,
             }
         )
@@ -414,7 +426,7 @@ class SyncWorld(iWorld):
         sig = Archetype.sig_from_components(components)
         self.entity2sig[entity_id] = sig
         row_dict = Archetype.to_row_dict(
-            entity_id, self.tick, components, self.world_id, self.run_id
+            entity_id, self.tick, components, self.world_id, str(self.run_id)
         )
         self.spawn_cache.setdefault(sig, []).append(row_dict)
         self.hooks.fire(
@@ -535,7 +547,7 @@ class SyncWorld(iWorld):
             entity_ids=entity_ids,
             components=components,
             run_config=run_config,
-            run_id=self.run_id,
+            run_id=str(self.run_id),
         )
 
     def execute(
@@ -558,7 +570,13 @@ class SyncWorld(iWorld):
         tick: int | None = None,
     ) -> DataFrame:
         """Update the store with the given archetypes. Returns the stamped DataFrame."""
-        return self.updater.update(df, sig, tick or self.tick, str(self.world_id), self.run_id)
+        return self.updater.update(
+            df,
+            sig,
+            tick or self.tick,
+            str(self.world_id),
+            str(self.run_id),
+        )
 
     # -------------------------------------------------------------------------
     # Hooks: Typed lifecycle callbacks for observability

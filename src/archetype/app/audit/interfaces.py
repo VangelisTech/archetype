@@ -11,7 +11,7 @@ from typing import Protocol, runtime_checkable
 from daft import DataFrame
 from uuid_utils import UUID
 
-from archetype.app.models import AuditRow
+from archetype.app.models import AuditRow, Command
 from archetype.storage.catalog import OutboxRecord
 
 
@@ -37,4 +37,9 @@ class iAuditLog(Protocol):
         status: str | None = None,
         limit: int | None = None,
     ) -> DataFrame: ...
+    async def get_command_history(
+        self,
+        world_id: str | UUID,
+        limit: int = 100,
+    ) -> list[Command]: ...
     async def shutdown(self) -> None: ...

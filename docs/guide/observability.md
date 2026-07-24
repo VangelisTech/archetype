@@ -194,9 +194,9 @@ signal boundary.
 | CLI and API | `serve` and worker lifespan configure the host; imports and `create_app()` remain inert | HTTP result and gateway/domain result |
 | Gateway | Child spans for the three currently decorated operations; #515 owns a coherent ingress-root design | RBAC decision, typed application result, and access-audit evidence |
 | RuntimeApplication | No direct signal yet; lower owning family remains visible | Typed family result/exception |
-| Commands | No direct signal yet | Durable command ledger and settlement |
-| World lifecycle, mutation, simulation | Existing query/update scopes without execution-attribution claims; materialize/execute names are legacy pending #518/#519 | Tick manifest, world record, and typed result/exception |
-| Storage and query | No direct signal yet | Store/catalog state and returned frame |
+| Commands | No direct signal yet | Durable command ledger and manifest-coupled settlement |
+| World registry, lifecycle, mutation, simulation, and durable reads | Existing query/update scopes without execution-attribution claims; materialize/execute names are legacy pending #518/#519 | Tick manifest, world record, retained committed receipt, and typed result/exception |
+| Storage | No direct signal yet | Store/catalog state and returned frame |
 | Redaction | No direct signal; safe rule IDs may be carried by approved callers | Redaction receipt or quarantine exception |
 | Artifacts | Child spans for publish, upload, and index | Publication row, object/index state, and publish receipt |
 | Evaluation and research | No direct signal yet | Snapshot-pinned evaluation/research receipts |
@@ -205,18 +205,26 @@ signal boundary.
 | Physical-AI workflow, providers, and pure search | No direct signal yet | Persisted evaluation rows and report for the workflow; provider state and returned values at provider boundaries; returned proposals for pure search |
 
 The machine authority is one independently owned manifest per family under
-`quality/observability/<family>.toml`. The required universe is every callable
-member — method, async method, or property — of every `Protocol` declared
-under either a registered `src/archetype/<family>/` package or the temporary
-`src/archetype/app/<family>/` compatibility layout, not only protocols
-co-located in `interfaces.py`. During migration, two definitions may not
-collapse to the same family-relative operation name; compatibility modules
-re-export the owning definition instead. Every callable member has exactly one
-disposition row in its owning family manifest. Rows use exact qualified names;
-wildcards, method ranges, and inherited blanket dispositions are forbidden. A
-family may add an exact workflow row for an instrumented internal operation
-that is not a protocol member; there is no reverse requirement that every safe
-internal emitter have a workflow row.
+`quality/observability/<family>.toml`. The required universe begins with every
+callable member — method, async method, or property — of every `Protocol`
+declared under either a registered `src/archetype/<family>/` package or the
+temporary `src/archetype/app/<family>/` compatibility layout, not only
+protocols co-located in `interfaces.py`.
+
+A family manifest may also register an exact `concrete_operation_surface` for
+a reviewed state owner or a `module_operation_surface` for family-owned public
+functions. Registration discovers the complete public callable surface from
+source; missing, phantom, overlapping, cross-owner, unknown, or empty surfaces
+fail closed.
+
+During migration, two definitions may not collapse to the same family-relative
+operation name; compatibility modules re-export the owning definition instead.
+Every discovered operation has exactly one disposition row in its owning
+family manifest. Rows use exact qualified names; wildcards, method ranges, and
+inherited blanket dispositions are forbidden. A family may add an exact
+workflow row for an instrumented internal operation that is not a discovered
+operation; there is no reverse requirement that every safe internal emitter
+have a workflow row.
 
 Each row declares plural signals and outcomes, its authoritative durable or
 typed evidence when one exists, and only the fixed names, fields, and bounded

@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Materialized QueryService latency benchmarks.
+"""Materialized runtime-application query latency benchmarks.
 
 The workload measures four distinct read shapes against one durable world:
 latest-tick exact-signature, historical-tick exact-signature, component union
@@ -21,8 +21,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from archetype.app.application.interfaces import iRuntimeApplication
 from archetype.app.container import ServiceContainer
-from archetype.app.query.service import QueryService
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
 from bench.core.report import build_report, capture_environment, write_report
@@ -116,7 +116,7 @@ async def _setup_fixture(
     storage: StorageConfig,
     config: QueryBenchmarkConfig,
 ) -> QueryFixture:
-    info = await container.world_service.create_world(
+    info = await container.application.create_world(
         WorldConfig(name="query-latency-benchmark"),
         storage,
     )
@@ -133,12 +133,12 @@ async def _setup_fixture(
         ],
     ]
     entity_ids = [
-        await container.mutation_service.create_entities(info.world_id, group) for group in groups
+        await container.application.create_entities(info.world_id, group) for group in groups
     ]
     if any(len(ids) != count for ids in entity_ids):
         raise RuntimeError("query benchmark setup did not create its fixtures")
 
-    run = await container.simulation_service.run(
+    run = await container.application.run(
         info.world_id,
         RunConfig.benchmark(steps=config.history_ticks),
     )
@@ -154,7 +154,7 @@ async def _setup_fixture(
 
 
 async def _execute_case(
-    queries: QueryService,
+    queries: iRuntimeApplication,
     storage: StorageConfig,
     fixture: QueryFixture,
     case: QueryCase,
@@ -183,7 +183,7 @@ async def _execute_case(
 
 
 async def _measure_case(
-    queries: QueryService,
+    queries: iRuntimeApplication,
     storage: StorageConfig,
     fixture: QueryFixture,
     case: QueryCase,
@@ -242,7 +242,7 @@ async def run_query_benchmarks(
     try:
         fixture = await _setup_fixture(container, storage, config)
         return [
-            await _measure_case(container.query_service, storage, fixture, case, config)
+            await _measure_case(container.application, storage, fixture, case, config)
             for case in _query_cases(fixture)
         ]
     finally:
@@ -265,7 +265,7 @@ def build_query_report(
             "workload": "query-latency-v1",
             "archetype_count": _ARCHETYPE_COUNT,
             "storage_backend": storage.backend.value,
-            "query_path": "QueryService",
+            "query_path": "RuntimeApplication",
             "materialization": "collect-count-rows",
         },
         environment=capture_environment(runner_id=runner_id),
@@ -283,7 +283,9 @@ def _int_at_least(minimum: int) -> Callable[[str], int]:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run materialized QueryService benchmarks")
+    parser = argparse.ArgumentParser(
+        description="Run materialized runtime-application query benchmarks"
+    )
     parser.add_argument("--entities-per-archetype", type=_int_at_least(1), default=100)
     parser.add_argument("--history-ticks", type=_int_at_least(2), default=3)
     parser.add_argument("--repetitions", type=_int_at_least(1), default=5)

@@ -4,7 +4,7 @@
 """
 Integration test: reserved spawn ID preservation through the command flow.
 
-Test that submit_spawn reserves an ID, and drain_and_apply uses that exact ID.
+Test that submit_spawn reserves an ID and scheduler materialization uses that exact ID.
 Flow: submit_spawn -> durable scheduler -> dispatcher -> entity materialized with reserved ID
 """
 
@@ -14,7 +14,7 @@ from uuid_utils import uuid7
 from archetype.app.container import ServiceContainer
 from archetype.app.gateway.auth import guard as guard_state
 from archetype.app.gateway.auth.errors import GuardrailError
-from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.models import Command, CommandType
 from archetype.core.component import Component
@@ -43,10 +43,10 @@ class CommandFlowMarker(Component):
 
 @pytest.fixture(autouse=True)
 def _reset_quotas():
-    reset_tick_counters()
+    guard_state._tick_counters.clear()
     reset_daily_tokens()
     yield
-    reset_tick_counters()
+    guard_state._tick_counters.clear()
     reset_daily_tokens()
 
 
@@ -55,7 +55,7 @@ async def test_submit_spawn_reserved_id_survives_drain(tmp_path):
     c = ServiceContainer()
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        world = await c.world_service.create_world(
+        world = await c.world_lifecycle.create_world(
             WorldConfig(name="flow"), StorageConfig(uri=str(tmp_path / "store"))
         )
         # Reserve an entity ID via submit_spawn
@@ -63,7 +63,7 @@ async def test_submit_spawn_reserved_id_survives_drain(tmp_path):
             ctx, world.world_id, [CommandFlowMarker(tag="reserved")], tick=0
         )
         # Tick-boundary dispatch and manifest settlement are one application path.
-        applied = await c.simulation_service.step(world.world_id, RunConfig())
+        applied = await c.application.step(world.world_id, RunConfig())
         assert applied == 1
         # The due command is staged before the world snapshots active
         # signatures, so a brand-new signature is persisted in this same tick.
@@ -83,7 +83,7 @@ async def test_command_materializer_infrastructure_failure_fails_tick_before_set
     c = ServiceContainer()
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        world = await c.world_service.create_world(
+        world = await c.world_lifecycle.create_world(
             WorldConfig(name="materializer-failure"),
             StorageConfig(uri=str(tmp_path / "store")),
         )
@@ -93,26 +93,22 @@ async def test_command_materializer_infrastructure_failure_fails_tick_before_set
             [CommandFlowMarker(tag="retry")],
             tick=0,
         )
-        real_drain = c.simulation_service._drain_commands
+        real_materialize = world._materialize_commands
 
-        async def unavailable_materializer(world_id, tick):
+        async def unavailable_materializer(world, tick):
             raise RuntimeError("command materializer unavailable")
 
-        monkeypatch.setattr(
-            c.simulation_service,
-            "_drain_commands",
-            unavailable_materializer,
-        )
+        monkeypatch.setattr(world, "_materialize_commands", unavailable_materializer)
         with pytest.raises(RuntimeError, match="command materializer unavailable"):
-            await c.simulation_service.step(world.world_id, RunConfig())
+            await c.application.step(world.world_id, RunConfig())
 
         assert world.tick == 0
         (pending,) = await c.command_scheduler.records(world.world_id)
         assert pending.status == "PENDING"
         assert world.entity2sig == {}
 
-        monkeypatch.setattr(c.simulation_service, "_drain_commands", real_drain)
-        assert await c.simulation_service.step(world.world_id, RunConfig()) == 1
+        monkeypatch.setattr(world, "_materialize_commands", real_materialize)
+        assert await c.application.step(world.world_id, RunConfig()) == 1
         (applied,) = await c.command_scheduler.records(world.world_id)
         assert applied.status == "APPLIED"
         assert applied.applied_tick == 0
@@ -126,7 +122,7 @@ async def test_replayed_reserved_spawn_is_not_applied_twice(tmp_path):
     c = ServiceContainer()
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        world = await c.world_service.create_world(
+        world = await c.world_lifecycle.create_world(
             WorldConfig(name="spawn-replay"),
             StorageConfig(uri=str(tmp_path / "store")),
         )
@@ -147,7 +143,7 @@ async def test_replayed_reserved_spawn_is_not_applied_twice(tmp_path):
         )
         await c.command_gateway.submit_batch(ctx, world.world_id, [first, replay])
 
-        applied = await c.simulation_service.step(world.world_id, RunConfig())
+        applied = await c.application.step(world.world_id, RunConfig())
 
         assert applied == 1
         records = await c.command_scheduler.records(world.world_id)
@@ -165,9 +161,9 @@ async def test_queued_update_is_applied_during_drain(tmp_path):
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="updates")
     try:
-        world = await c.world_service.create_world(WorldConfig(name="updates"), storage)
+        world = await c.world_lifecycle.create_world(WorldConfig(name="updates"), storage)
         entity_id = await world.create_entity([CommandFlowMarker(tag="before")])
-        await c.simulation_service.step(world.world_id, RunConfig())
+        await c.application.step(world.world_id, RunConfig())
 
         await c.command_gateway.submit(
             ctx,
@@ -180,7 +176,7 @@ async def test_queued_update_is_applied_during_drain(tmp_path):
                 },
             ),
         )
-        applied = await c.simulation_service.step(world.world_id, RunConfig())
+        applied = await c.application.step(world.world_id, RunConfig())
         assert applied == 1
         rows = (await world.get_components([CommandFlowMarker])).to_pylist()
         assert rows[0][f"{CommandFlowMarker.get_prefix()}tag"] == "after"
@@ -237,7 +233,7 @@ async def test_direct_only_commands_cannot_enter_tick_deferred_scheduler(tmp_pat
     c = ServiceContainer()
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        world = await c.world_service.create_world(
+        world = await c.world_lifecycle.create_world(
             WorldConfig(name="lifecycle-submit"),
             StorageConfig(uri=str(tmp_path / "store")),
         )
@@ -257,7 +253,7 @@ async def test_lifecycle_command_rejects_entire_submit_batch(tmp_path):
     c = ServiceContainer()
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        world = await c.world_service.create_world(
+        world = await c.world_lifecycle.create_world(
             WorldConfig(name="lifecycle-batch"),
             StorageConfig(uri=str(tmp_path / "store")),
         )
@@ -281,7 +277,7 @@ async def test_rejected_submit_batch_does_not_debit_quota(tmp_path):
     c = ServiceContainer()
     ctx = ActorCtx(id=uuid7(), roles={"player"})
     try:
-        world = await c.world_service.create_world(
+        world = await c.world_lifecycle.create_world(
             WorldConfig(name="batch-quota"),
             StorageConfig(uri=str(tmp_path / "store")),
         )
@@ -308,11 +304,10 @@ async def test_run_result_run_id_round_trips_to_query(tmp_path):
 
     RunResult.run_id MUST match the run_id stamped on persisted rows so
     callers can round-trip the value back into a query and find the data
-    they just wrote. Previously RunResult returned RunConfig.run_id while
-    AsyncWorld stamped its construction-time uuid; the two diverged and the
-    round-trip lost data.
+    they just wrote. Run configuration cannot select identity; the immutable
+    world UUID is the single value used for both persistence and the result.
     """
-    from uuid_utils import UUID, uuid7
+    from uuid_utils import uuid7
 
     c = ServiceContainer()
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
@@ -321,10 +316,11 @@ async def test_run_result_run_id_round_trips_to_query(tmp_path):
         info = await c.command_gateway.create_world(ctx, WorldConfig(name="r"), storage)
         await c.command_gateway.create_entity(ctx, info.world_id, [CommandFlowMarker(tag="x")])
 
-        rc = RunConfig(run_id=str(uuid7()), num_steps=1)
+        rc = RunConfig(num_steps=1)
         result = await c.command_gateway.run(ctx, info.world_id, rc)
 
-        world = c.world_service.get_world(UUID(str(info.world_id)))
+        world = await c.world_registry.live_world(str(info.world_id))
+        assert world is not None
         assert str(result.run_id) == str(world.run_id)
 
         df = await c.command_gateway.query_components(
@@ -351,12 +347,12 @@ async def test_submit_to_destroyed_world_rejected(tmp_path):
     c = ServiceContainer()
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        world = await c.world_service.create_world(
+        world = await c.world_lifecycle.create_world(
             WorldConfig(name="ephemeral"),
             StorageConfig(uri=str(tmp_path / "store")),
         )
         wid = world.world_id
-        await c.world_service.destroy_world(wid)
+        await c.world_lifecycle.destroy_world(wid)
 
         with pytest.raises(WorldNotFoundError):
             await c.command_gateway.submit(
@@ -373,7 +369,7 @@ async def test_consecutive_runs_share_world_run_id(tmp_path):
     stable across steps. World run_id stays stable across consecutive run
     calls so cross-run reads/writes remain continuous in append-only storage.
     """
-    from uuid_utils import UUID, uuid7
+    from uuid_utils import uuid7
 
     c = ServiceContainer()
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
@@ -382,19 +378,16 @@ async def test_consecutive_runs_share_world_run_id(tmp_path):
         info = await c.command_gateway.create_world(ctx, WorldConfig(name="r2"), storage)
         await c.command_gateway.create_entity(ctx, info.world_id, [CommandFlowMarker(tag="x")])
 
-        result_a = await c.command_gateway.run(
-            ctx, info.world_id, RunConfig(run_id=str(uuid7()), num_steps=1)
-        )
-        result_b = await c.command_gateway.run(
-            ctx, info.world_id, RunConfig(run_id=str(uuid7()), num_steps=1)
-        )
+        result_a = await c.command_gateway.run(ctx, info.world_id, RunConfig(num_steps=1))
+        result_b = await c.command_gateway.run(ctx, info.world_id, RunConfig(num_steps=1))
 
         assert str(result_a.run_id) == str(result_b.run_id), (
             "Consecutive runs reported different run_ids; the world's active "
             "run_id must stay stable across runs for append-only state continuity."
         )
 
-        world = c.world_service.get_world(UUID(str(info.world_id)))
+        world = await c.world_registry.live_world(str(info.world_id))
+        assert world is not None
         df = await c.command_gateway.query_components(
             ctx,
             [CommandFlowMarker],

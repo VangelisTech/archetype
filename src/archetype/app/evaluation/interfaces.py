@@ -11,9 +11,9 @@ from typing import Any, Protocol, runtime_checkable
 from daft import DataFrame
 from uuid_utils import UUID
 
-from archetype.app.models import EpisodeResult
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
+from archetype.world.models import EpisodeResult
 
 GraderOutput = object
 GraderReturn = GraderOutput | Sequence[GraderOutput]

@@ -7,8 +7,8 @@ Archetype uses Pydantic models for all configuration. There are four config type
 `RunConfig` describes one bounded sequence of ticks. A normal world already
 owns an active `run_id` when it is constructed; execution keeps that identity
 across ticks and repeated calls so its append-only history stays continuous.
-The config's generated `run_id` is a call-level candidate retained for
-lower-level compatibility, not a request to rename an active world.
+The config contains execution policy only and cannot select or rename durable
+world identity.
 
 ```python
 from archetype.core.config import RunConfig
@@ -21,14 +21,13 @@ await world.run(config=config)
 
 - A new world mints its active `run_id`; mutable resume restores it, and a fork
   mints a fresh identity for its new lineage.
-- A `RunConfig` carries one candidate `run_id`, but execution does not replace
-  an active world's identity with it. `RunResult.run_id` reports the identity
-  actually stamped on durable rows.
-- `SimulationService.step()` and the lower-level `AsyncWorld.step()` require an
-  explicit `RunConfig`. `RuntimeWorld.step()` creates the ordinary one-step
-  config when the public caller omits it.
-- `SimulationService.run()` and the world implementations thread the caller's
-  `RunConfig` into every internal `step()` call.
+- `world.run_id` is immutable construction state. `RunResult.run_id` reports
+  that same identity, which is the value stamped on durable rows.
+- The world family's managed `step()` and the lower-level `AsyncWorld.step()`
+  require an explicit `RunConfig`. `RuntimeWorld.step()` creates the ordinary
+  one-step config when the public caller omits it.
+- The world family's `run()` function threads the caller's `RunConfig` into
+  every internal step.
 - `EpisodeConfig` wraps `RunConfig` with termination semantics.
 - `RolloutConfig` wraps `EpisodeConfig` with fork-and-aggregate semantics.
 
@@ -36,7 +35,6 @@ await world.run(config=config)
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `run_id` | `str \| UUID` | auto (uuid7) | Call-level candidate; the world's active identity remains authoritative |
 | `num_steps` | `int` | `1` | Number of ticks to execute |
 | `debug` | `bool` | `False` | Emit per-tick diagnostic panels |
 | `show_rows` | `int` | `8` | Maximum rows in each debug snapshot; `0` disables snapshots |
@@ -73,7 +71,9 @@ config = RunConfig.benchmark(
 
 ## WorldConfig
 
-Identifies a world instance. Runtime/API callers create worlds through `iCommandGateway.create_world(...)`; lower-level internal callers use `WorldService.create_world()`.
+Identifies a world instance. Runtime/API callers create worlds through
+`iCommandGateway.create_world(...)`; internal composition calls the
+family-owned `iWorldLifecycle.create_world(...)` port.
 
 ```python
 from archetype.core.config import WorldConfig
@@ -88,7 +88,9 @@ config = WorldConfig(name="my-sim")
 
 ## StorageConfig
 
-Configures the persistence backend. Runtime/API callers pass it through the gate; lower-level services pass it to `WorldService.create_world()` and `StorageService.get_or_create_store()`.
+Configures the persistence backend. Runtime/API callers pass it through the
+gate; internal lifecycle code passes it to `StorageService` through the
+family-owned `iStorageService` port.
 
 ```python
 from archetype.core.config import StorageConfig, StorageBackend
@@ -162,4 +164,4 @@ See [Execution Hierarchy](execution-hierarchy.md).
 ## Source Reference
 
 - RunConfig, WorldConfig, StorageConfig, CacheConfig: `src/archetype/core/config.py`
-- EpisodeConfig, RolloutConfig: `src/archetype/app/models.py`
+- EpisodeConfig, RolloutConfig: `src/archetype/world/models.py`

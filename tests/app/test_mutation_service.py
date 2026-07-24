@@ -1,7 +1,7 @@
 # Copyright 2025 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for MutationService — entity ID accuracy and mutation lifecycle."""
+"""Tests for world mutation behavior — entity ID accuracy and mutation lifecycle."""
 
 import inspect
 from unittest.mock import AsyncMock, MagicMock
@@ -58,18 +58,16 @@ async def test_create_entity_returns_accurate_id(tmp_path):
     container = ServiceContainer()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        world = await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
 
-        eid = await container.mutation_service.create_entity(
-            world.world_id, [Position(x=1.0, y=2.0)]
-        )
+        eid = await container.application.create_entity(world.world_id, [Position(x=1.0, y=2.0)])
 
         # ID is registered immediately
         assert eid in world.entity2sig
         assert world.entity2sig[eid] is not None
 
         # After step, the entity is queryable in the store
-        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+        await container.application.step(world.world_id, RunConfig(num_steps=1))
 
         df = await world.get_components([Position])
         rows = df.collect().to_pylist()
@@ -85,8 +83,8 @@ async def test_create_entity_ids_are_sequential_and_unique(tmp_path):
     container = ServiceContainer()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
-        ms = container.mutation_service
+        world = await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
+        ms = container.application
 
         ids = []
         for i in range(5):
@@ -107,16 +105,16 @@ async def test_remove_entity_despawns_after_step(tmp_path):
     container = ServiceContainer()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
-        ms = container.mutation_service
+        world = await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
+        ms = container.application
 
         eid = await ms.create_entity(world.world_id, [Position(x=1.0)])
-        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+        await container.application.step(world.world_id, RunConfig(num_steps=1))
 
         await ms.remove_entity(world.world_id, eid)
         assert eid not in world.entity2sig
 
-        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+        await container.application.step(world.world_id, RunConfig(num_steps=1))
 
         df = await world.get_components([Position])
         rows = df.collect().to_pylist()
@@ -132,11 +130,11 @@ async def test_add_components_widens_archetype(tmp_path):
     container = ServiceContainer()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
-        ms = container.mutation_service
+        world = await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
+        ms = container.application
 
         eid = await ms.create_entity(world.world_id, [Position(x=1.0)])
-        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+        await container.application.step(world.world_id, RunConfig(num_steps=1))
 
         old_sig = world.entity2sig[eid]
         await ms.add_components(world.world_id, eid, [Velocity(vx=5.0)])
@@ -154,11 +152,11 @@ async def test_remove_components_narrows_archetype(tmp_path):
     container = ServiceContainer()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
-        ms = container.mutation_service
+        world = await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
+        ms = container.application
 
         eid = await ms.create_entity(world.world_id, [Position(x=1.0), Velocity(vx=5.0)])
-        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+        await container.application.step(world.world_id, RunConfig(num_steps=1))
 
         await ms.remove_components(world.world_id, eid, [Velocity])
         sig = world.entity2sig[eid]
@@ -186,8 +184,8 @@ async def test_add_and_remove_processor(tmp_path):
     container = ServiceContainer()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
-        ms = container.mutation_service
+        world = await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
+        ms = container.application
 
         proc = NoopProcessor()
         await ms.add_processor(world.world_id, proc)
@@ -210,12 +208,12 @@ async def test_entity_commands_coerce_string_entity_ids(tmp_path):
     container = ServiceContainer()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        world = await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
         ctx = ActorCtx(id=uuid7(), roles={"admin"})
         cs = container.command_gateway
 
-        eid = await container.mutation_service.create_entity(world.world_id, [Position(x=1.0)])
-        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+        eid = await container.application.create_entity(world.world_id, [Position(x=1.0)])
+        await container.application.step(world.world_id, RunConfig(num_steps=1))
 
         await cs.submit(
             ctx,
@@ -225,7 +223,7 @@ async def test_entity_commands_coerce_string_entity_ids(tmp_path):
                 payload={"entity_id": str(eid), "components": [Velocity(vx=3.0)]},
             ),
         )
-        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+        await container.application.step(world.world_id, RunConfig(num_steps=1))
         rows = (await world.get_components([Velocity])).collect().to_pylist()
         assert eid in [r["entity_id"] for r in rows]
 
@@ -237,7 +235,7 @@ async def test_entity_commands_coerce_string_entity_ids(tmp_path):
                 payload={"entity_id": str(eid), "component_types": [Velocity]},
             ),
         )
-        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+        await container.application.step(world.world_id, RunConfig(num_steps=1))
         rows = (await world.get_components([Velocity])).collect().to_pylist()
         assert eid not in [r["entity_id"] for r in rows]
 
@@ -246,7 +244,7 @@ async def test_entity_commands_coerce_string_entity_ids(tmp_path):
             world.world_id,
             Command(type=CommandType.DESPAWN, payload={"entity_id": str(eid)}),
         )
-        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+        await container.application.step(world.world_id, RunConfig(num_steps=1))
         assert eid not in world.entity2sig
     finally:
         await container.shutdown()
@@ -254,30 +252,33 @@ async def test_entity_commands_coerce_string_entity_ids(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("command_type", "payload", "mutation_method"),
+    ("command_type", "payload"),
     [
-        (CommandType.UPDATE, {"components": [Position(x=2.0)]}, "update_entity"),
-        (CommandType.DESPAWN, {}, "remove_entity"),
-        (CommandType.ADD_COMPONENT, {"components": [Velocity()]}, "add_components"),
+        (CommandType.UPDATE, {"components": [Position(x=2.0)]}),
+        (CommandType.DESPAWN, {}),
+        (CommandType.ADD_COMPONENT, {"components": [Velocity()]}),
         (
             CommandType.REMOVE_COMPONENT,
             {"component_types": [Velocity]},
-            "remove_components",
         ),
     ],
 )
-async def test_entity_commands_reject_fractional_ids(command_type, payload, mutation_method):
-    mutations = MagicMock()
-    mutation = AsyncMock()
-    setattr(mutations, mutation_method, mutation)
-    scheduler = CommandScheduler(MagicMock(), mutations)
+async def test_entity_commands_reject_fractional_ids(command_type, payload):
+    scheduler = CommandScheduler(
+        require_live_world=AsyncMock(),
+        resolve_control_catalog=AsyncMock(),
+        list_catalog_world_ids=AsyncMock(return_value=[]),
+        reserve_entity_ids=AsyncMock(),
+    )
+    world = MagicMock()
+    world.world_id = "world"
     command = Command(
         type=command_type,
         payload={"entity_id": 1.9, **payload},
     )
     with pytest.raises(TypeError, match="entity_id must be an integer"):
-        await scheduler._apply("world", command)
-    mutation.assert_not_awaited()
+        await scheduler._apply(world, command)
+    assert world.method_calls == []
 
 
 @pytest.mark.asyncio
@@ -290,10 +291,10 @@ async def test_scheduled_update_is_applied(tmp_path):
     container = ServiceContainer()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        world = await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
         ctx = ActorCtx(id=uuid7(), roles={"admin"})
-        eid = await container.mutation_service.create_entity(world.world_id, [Position(x=1.0)])
-        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+        eid = await container.application.create_entity(world.world_id, [Position(x=1.0)])
+        await container.application.step(world.world_id, RunConfig(num_steps=1))
 
         await container.command_gateway.submit(
             ctx,
@@ -303,7 +304,7 @@ async def test_scheduled_update_is_applied(tmp_path):
                 payload={"entity_id": str(eid), "components": [Position(x=99.0)]},
             ),
         )
-        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+        await container.application.step(world.world_id, RunConfig(num_steps=1))
 
         rows = (await world.get_components([Position])).collect().to_pylist()
         row = next(r for r in rows if r["entity_id"] == eid)
@@ -323,11 +324,11 @@ async def test_same_drain_update_then_add_component_keeps_updated_state(tmp_path
     container = ServiceContainer()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        world = await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
         ctx = ActorCtx(id=uuid7(), roles={"admin"})
         cs = container.command_gateway
-        eid = await container.mutation_service.create_entity(world.world_id, [Position(x=1.0)])
-        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+        eid = await container.application.create_entity(world.world_id, [Position(x=1.0)])
+        await container.application.step(world.world_id, RunConfig(num_steps=1))
 
         await cs.submit(
             ctx,
@@ -345,7 +346,7 @@ async def test_same_drain_update_then_add_component_keeps_updated_state(tmp_path
                 payload={"entity_id": str(eid), "components": [Velocity(vx=5.0)]},
             ),
         )
-        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+        await container.application.step(world.world_id, RunConfig(num_steps=1))
 
         rows = (await world.get_components([Position, Velocity])).collect().to_pylist()
         row = next(r for r in rows if r["entity_id"] == eid)

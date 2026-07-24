@@ -47,6 +47,7 @@ __all__ = [
     "ArchetypeSignature",
     "Resources",
     # Step failure contract
+    "AmbiguousTickCommitError",
     "TickExecutionError",
     "TickFailure",
     # Processor (with alias)
@@ -128,6 +129,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "ArchetypeSignature": ("archetype.core", "ArchetypeSignature"),
     "Resources": ("archetype.core", "Resources"),
     # Step failure contract (issue #444)
+    "AmbiguousTickCommitError": ("archetype.core", "AmbiguousTickCommitError"),
     "TickExecutionError": ("archetype.core", "TickExecutionError"),
     "TickFailure": ("archetype.core", "TickFailure"),
     # Processors (and aliases)
@@ -170,12 +172,12 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "run_sync": ("archetype.runtime", "run_sync"),
     "configure_session": ("archetype.runtime", "configure_session"),
     # Runtime configuration and result types
-    "WorldInfo": ("archetype.app.models", "WorldInfo"),
-    "RunResult": ("archetype.app.models", "RunResult"),
-    "EpisodeConfig": ("archetype.app.models", "EpisodeConfig"),
-    "EpisodeResult": ("archetype.app.models", "EpisodeResult"),
-    "RolloutConfig": ("archetype.app.models", "RolloutConfig"),
-    "RolloutResult": ("archetype.app.models", "RolloutResult"),
+    "WorldInfo": ("archetype.world.models", "WorldInfo"),
+    "RunResult": ("archetype.world.models", "RunResult"),
+    "EpisodeConfig": ("archetype.world.models", "EpisodeConfig"),
+    "EpisodeResult": ("archetype.world.models", "EpisodeResult"),
+    "RolloutConfig": ("archetype.world.models", "RolloutConfig"),
+    "RolloutResult": ("archetype.world.models", "RolloutResult"),
     "ArtifactRef": ("archetype.artifacts.contracts", "ArtifactRef"),
     "ArtifactContext": ("archetype.artifacts.contracts", "ArtifactContext"),
     "ArtifactSource": ("archetype.artifacts.contracts", "ArtifactSource"),

@@ -180,52 +180,52 @@ class TestCreateWorldUnwind:
         acquisition (path/namespace resolution) after the orchestrator inserted
         the world must unwind the registry — no live orphan world."""
         from archetype.core.config import WorldConfig
-        from tests.conftest import make_world_service
+        from tests.conftest import make_world_harness
 
-        ws = make_world_service()
+        ws = make_world_harness()
         try:
 
             def boom(storage_config):
                 raise ValueError("catalog path rejected")
 
-            monkeypatch.setattr(ws._storage_service, "get_control_catalog", boom)
+            monkeypatch.setattr(ws.storage, "get_control_catalog", boom)
             config = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
 
             with pytest.raises(ValueError, match="catalog path rejected"):
-                await ws.create_world(WorldConfig(name="orphan"), config)
+                await ws.lifecycle.create_world(WorldConfig(name="orphan"), config)
 
-            assert ws.list_worlds() == [], (
+            assert await ws.registry.list_worlds() == [], (
                 "failed create left a live, mutable world in the registry"
             )
         finally:
-            await ws.shutdown()
+            await ws.close()
 
     @pytest.mark.asyncio
     async def test_catalog_failure_unwinds_fork_registry(self, tmp_path, monkeypatch):
         """fork_world shares create_world's unwind contract: a raise from
         catalog acquisition must not leave the fork live in the registry."""
         from archetype.core.config import WorldConfig
-        from tests.conftest import make_world_service
+        from tests.conftest import make_world_harness
 
-        ws = make_world_service()
+        ws = make_world_harness()
         try:
             config = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            source = await ws.create_world(WorldConfig(name="source"), config)
+            source = await ws.lifecycle.create_world(WorldConfig(name="source"), config)
 
             def boom(storage_config):
                 raise ValueError("catalog path rejected")
 
-            monkeypatch.setattr(ws._storage_service, "get_control_catalog", boom)
+            monkeypatch.setattr(ws.storage, "get_control_catalog", boom)
 
             with pytest.raises(ValueError, match="catalog path rejected"):
-                await ws.fork_world(source.world_id)
+                await ws.lifecycle.fork_world(source.world_id)
 
-            live = {str(w.world_id) for w in ws.list_worlds()}
+            live = {str(w.world_id) for w in await ws.registry.list_worlds()}
             assert live == {str(source.world_id)}, (
                 "failed fork left a live, mutable world in the registry"
             )
         finally:
-            await ws.shutdown()
+            await ws.close()
 
 
 class TestApiSurface:

@@ -10,11 +10,12 @@ import time
 import daft
 import pytest
 
-from archetype.app.world.service import WorldService
 from archetype.core.component import Component
 from archetype.core.config import CacheConfig, RunConfig, StorageBackend, StorageConfig, WorldConfig
 from archetype.storage.service import StorageService
 from archetype.storage.session import configure_session
+from archetype.world.lifecycle import WorldLifecycle
+from archetype.world.registry import WorldRegistry
 
 
 class Position(Component):
@@ -67,7 +68,7 @@ async def test_terminal_materializations_share_one_execution_lane(monkeypatch):
 @pytest.mark.asyncio
 async def test_cached_tick_can_reenter_gate_during_threshold_flush(tmp_path):
     storage_service = StorageService()
-    worlds = WorldService(storage_service)
+    worlds = WorldLifecycle(storage_service, WorldRegistry())
     try:
         world = await worlds.create_world(
             WorldConfig(name="cached"),

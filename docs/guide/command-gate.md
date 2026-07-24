@@ -27,6 +27,11 @@ async def <method>(self, ctx: ActorCtx, *args, **kwargs):
 The gate's contract:
 
 - `ctx` is checked against `COMMANDS_BY_ROLE` before any work happens. Empty intersection raises `GuardrailError`.
+- World-scoped quota coordinates are resolved only after authorization. Durable
+  world operations use the live target tick when available and the explicit
+  `(world_id, 0)` bucket when the live binding is missing or raises the
+  family-owned `WorldClosingError`. Other resolver failures propagate without
+  quota, application, or audit effects.
 - Work is delegated to the actor-free application port; the gateway does not
   compose domain services or own command/audit storage.
 - One access event is emitted per admitted or rejected external call. Domain
@@ -34,8 +39,15 @@ The gate's contract:
   outcomes.
 
 Nothing below the gateway knows about `ActorCtx`.
-`iWorldService.create_world(config, ...)` takes no ctx. Authorization is the
+`iWorldLifecycle.create_world(config, ...)` takes no ctx. Authorization is the
 gateway's job alone.
+
+The durable-world quota rule applies uniformly to `destroy_world`,
+`open_world_readonly`, `resume_world`, `query_components`, `query_archetype`,
+world-scoped `list_signatures`, world-scoped `get_audit_history`,
+`query_artifacts`, and `evaluate`. The fallback selects only a quota bucket; it
+does not grant a live operation lease or suppress lifecycle errors raised later
+by the actor-free application workflow.
 
 ## 2. The four-role model
 

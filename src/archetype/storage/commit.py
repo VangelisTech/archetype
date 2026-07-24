@@ -48,10 +48,14 @@ class CatalogCommitCoordinator:
     the steady-state cost stays one manifest transaction per tick.
     """
 
-    def __init__(self, catalog: ControlCatalog, *, epoch: int) -> None:
+    def __init__(
+        self,
+        catalog: ControlCatalog,
+        *,
+        identity: CommitCoordinatorIdentity,
+    ) -> None:
         self._catalog = catalog
-        self._epoch = epoch
-        self._identity: CommitCoordinatorIdentity | None = None
+        self._identity = identity
         self._registered: set[str] = set()
         self._staged_commands: dict[int, tuple[str, list[str]]] = {}
 
@@ -64,42 +68,36 @@ class CatalogCommitCoordinator:
         writer_epoch: int,
     ) -> Self:
         """Construct a coordinator pinned to one world, run, and writer epoch."""
-        coordinator = cls(catalog, epoch=writer_epoch)
-        coordinator._identity = CommitCoordinatorIdentity(
-            world_id=world_id,
-            run_id=run_id,
-            writer_epoch=writer_epoch,
+        return cls(
+            catalog,
+            identity=CommitCoordinatorIdentity(
+                world_id=world_id,
+                run_id=run_id,
+                writer_epoch=writer_epoch,
+            ),
         )
-        return coordinator
 
     @property
     def epoch(self) -> int:
-        return self._epoch
+        return self._identity.writer_epoch
 
     @property
     def writer_epoch(self) -> int:
         """Return the fenced writer epoch used for every begun tick."""
-        return self._epoch
+        return self._identity.writer_epoch
 
     @property
-    def identity(self) -> CommitCoordinatorIdentity | None:
-        """Return the bound identity, or ``None`` for a legacy coordinator."""
+    def identity(self) -> CommitCoordinatorIdentity:
+        """Return the immutable world, run, and writer identity."""
         return self._identity
 
-    def _validate_identity(self, world_id: str, run_id: str) -> None:
-        identity = self._identity
-        if identity is None:
-            return
-        if (world_id, run_id) != (identity.world_id, identity.run_id):
-            raise ValueError(
-                "commit coordinator identity mismatch: "
-                f"bound to world_id={identity.world_id!r}, run_id={identity.run_id!r}; "
-                f"received world_id={world_id!r}, run_id={run_id!r}"
-            )
-
-    async def begin_tick(self, world_id: str, run_id: str, tick: int) -> CommitContext:
-        self._validate_identity(world_id, run_id)
-        return CommitContext(commit_token=uuid7().hex, writer_epoch=self._epoch)
+    async def begin_tick(self, tick: int) -> CommitContext:
+        """Mint a commit context for this coordinator's bound identity."""
+        del tick
+        return CommitContext(
+            commit_token=uuid7().hex,
+            writer_epoch=self._identity.writer_epoch,
+        )
 
     def stage_command(self, tick: int, owner: str, command_id: str) -> None:
         """Attach an in-memory staged mutation to its future manifest commit."""
@@ -117,17 +115,15 @@ class CatalogCommitCoordinator:
 
     async def publish_tick(
         self,
-        world_id: str,
-        run_id: str,
         tick: int,
         ctx: CommitContext,
         sigs: list[ArchetypeSignature],
     ) -> None:
-        self._validate_identity(world_id, run_id)
-        if self._identity is not None and ctx.writer_epoch != self._identity.writer_epoch:
+        identity = self._identity
+        if ctx.writer_epoch != identity.writer_epoch:
             raise ValueError(
                 "commit coordinator writer epoch mismatch: "
-                f"bound to writer_epoch={self._identity.writer_epoch}; "
+                f"bound to writer_epoch={identity.writer_epoch}; "
                 f"received writer_epoch={ctx.writer_epoch}"
             )
 
@@ -157,8 +153,8 @@ class CatalogCommitCoordinator:
         staged = self._staged_commands.get(tick)
         owner, command_ids = staged if staged is not None else (None, [])
         await self._catalog.publish_manifest(
-            world_id,
-            run_id,
+            identity.world_id,
+            identity.run_id,
             tick,
             commit_token=ctx.commit_token,
             writer_epoch=ctx.writer_epoch,
@@ -166,6 +162,21 @@ class CatalogCommitCoordinator:
             command_ids=command_ids,
             lease_owner=owner,
         )
+        self._staged_commands.pop(tick, None)
+
+    def acknowledge_published_tick(self, tick: int, ctx: CommitContext) -> None:
+        """Release local staging after an authoritative exact-token read.
+
+        The manifest transaction already settled the command IDs. This method
+        performs no catalog write, so a later fence holder cannot prevent the
+        old world from finalizing its already-committed receipt.
+        """
+        if ctx.writer_epoch != self._identity.writer_epoch:
+            raise ValueError(
+                "commit coordinator writer epoch mismatch: "
+                f"bound to writer_epoch={self._identity.writer_epoch}; "
+                f"received writer_epoch={ctx.writer_epoch}"
+            )
         self._staged_commands.pop(tick, None)
 
     async def visible_tokens(

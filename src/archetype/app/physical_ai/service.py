@@ -19,13 +19,6 @@ from daft import DataFrame, col
 from uuid_utils import uuid7
 
 from archetype.app.evaluation.interfaces import iEvaluationService
-from archetype.app.models import EpisodeConfig
-from archetype.app.storage.interfaces import iStorageService
-from archetype.app.world.interfaces import (
-    iMutationService,
-    iSimulationService,
-    iWorldService,
-)
 from archetype.core.component import Component
 from archetype.core.config import WorldConfig
 from archetype.physical_ai.contracts import (
@@ -48,6 +41,10 @@ from archetype.physical_ai.manipulation import (
     ManipTask,
 )
 from archetype.physical_ai.policy import PolicyActionProcessor, PolicyClient
+from archetype.storage.interfaces import iStorageService
+from archetype.world import mutation, simulation
+from archetype.world.interfaces import iWorldLifecycle, iWorldRegistry
+from archetype.world.models import EpisodeConfig
 
 
 def _instruction_for(env_client: EnvClient, fallback: str) -> str:
@@ -119,15 +116,13 @@ class PhysicalAIService:
 
     def __init__(
         self,
-        world_service: iWorldService,
-        mutation_service: iMutationService,
-        simulation_service: iSimulationService,
+        world_registry: iWorldRegistry,
+        world_lifecycle: iWorldLifecycle,
         evaluation_service: iEvaluationService,
         storage_service: iStorageService,
     ) -> None:
-        self._worlds = world_service
-        self._mutations = mutation_service
-        self._simulation = simulation_service
+        self._world_registry = world_registry
+        self._world_lifecycle = world_lifecycle
         self._evaluations = evaluation_service
         self._storage = storage_service
 
@@ -140,19 +135,23 @@ class PhysicalAIService:
     ) -> PhysicalTaskEvalReport:
         """Evaluate one instruction across a batch of trial entities."""
 
-        world = await self._worlds.create_world(
+        world = await self._world_lifecycle.create_world(
             WorldConfig(name=f"physical-eval:{config.suite}:t{config.task_id}:{uuid7()}"),
             config.storage,
         )
         world_id = world.world_id
         if policy_client is not None:
-            await self._mutations.add_processor(world_id, PolicyActionProcessor(policy_client))
+            await mutation.add_processor(
+                self._world_registry,
+                world_id,
+                PolicyActionProcessor(policy_client),
+            )
         env_processor = (
             FramedEnvStepProcessor(env_client)
             if config.with_frames
             else EnvStepProcessor(env_client)
         )
-        await self._mutations.add_processor(world_id, env_processor)
+        await mutation.add_processor(self._world_registry, world_id, env_processor)
         _reset_policy(policy_client)
 
         instruction = _instruction_for(env_client, config.instruction)
@@ -174,8 +173,10 @@ class PhysicalAIService:
             )
             trial_coordinates.append((trial_idx, seed))
 
-        entity_ids = await self._mutations.create_entities(world_id, entities)
-        episode = await self._simulation.run_episode(
+        entity_ids = await mutation.create_entities(self._world_registry, world_id, entities)
+        episode = await simulation.run_episode(
+            self._world_registry,
+            self._storage,
             world_id,
             EpisodeConfig(
                 max_steps=config.max_steps,
@@ -231,18 +232,22 @@ class PhysicalAIService:
         """Evaluate variants on paired seeds in one persisted world."""
 
         variants = list(dict.fromkeys(config.variants))
-        world = await self._worlds.create_world(
+        world = await self._world_lifecycle.create_world(
             WorldConfig(name=f"physical-sweep:{config.suite}:t{config.task_id}:{uuid7()}"),
             config.storage,
         )
         world_id = world.world_id
-        await self._mutations.add_processor(world_id, PolicyActionProcessor(policy_client))
+        await mutation.add_processor(
+            self._world_registry,
+            world_id,
+            PolicyActionProcessor(policy_client),
+        )
         env_processor = (
             FramedEnvStepProcessor(env_client)
             if config.with_frames
             else EnvStepProcessor(env_client)
         )
-        await self._mutations.add_processor(world_id, env_processor)
+        await mutation.add_processor(self._world_registry, world_id, env_processor)
         _reset_policy(policy_client)
 
         entities: list[list[Component]] = []
@@ -264,8 +269,10 @@ class PhysicalAIService:
                 )
                 env_key += 1
 
-        await self._mutations.create_entities(world_id, entities)
-        episode = await self._simulation.run_episode(
+        await mutation.create_entities(self._world_registry, world_id, entities)
+        episode = await simulation.run_episode(
+            self._world_registry,
+            self._storage,
             world_id,
             EpisodeConfig(
                 max_steps=config.max_steps,

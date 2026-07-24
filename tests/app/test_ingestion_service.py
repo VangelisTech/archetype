@@ -28,7 +28,7 @@ async def test_append_registers_table_in_active_daft_catalog(tmp_path):
     container = ServiceContainer()
     try:
         storage = _storage(tmp_path)
-        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        world = await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
 
         rows_written = await container.ingestion_service.append(
             str(world.world_id),
@@ -61,7 +61,7 @@ async def test_registered_table_is_queryable_from_fresh_application(tmp_path, mo
     storage = _storage(tmp_path)
     writer = ServiceContainer()
     try:
-        world = await writer.world_service.create_world(WorldConfig(name="w"), storage)
+        world = await writer.world_lifecycle.create_world(WorldConfig(name="w"), storage)
         world_id = str(world.world_id)
         run_id = str(world.run_id)
         await writer.ingestion_service.append(
@@ -97,7 +97,7 @@ async def test_append_is_idempotent_by_declared_key(tmp_path):
     container = ServiceContainer()
     try:
         storage = _storage(tmp_path)
-        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        world = await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
         rows = daft.from_pydict({"reading_id": ["r1"], "value": [21.5]})
 
         first = await container.ingestion_service.append(
@@ -118,7 +118,7 @@ async def test_registered_table_rejects_schema_drift(tmp_path):
     container = ServiceContainer()
     try:
         storage = _storage(tmp_path)
-        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        world = await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
         await container.ingestion_service.append(
             str(world.world_id),
             READINGS,

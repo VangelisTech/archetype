@@ -16,8 +16,8 @@
 
 The catalog makes world discovery, writer fencing, tick visibility, deferred
 commands, command settlement, evaluation execution leases, and the
-transactional outbox durable. The process-local registries in WorldService and
-the stores remain caches. Domain tables such as artifact indexes and evaluation
+transactional outbox durable. The process-local world registry and stores
+remain caches. Domain tables such as artifact indexes and evaluation
 results live in Iceberg instead of becoming control-catalog workflow state.
 
 Design rules (issue #272, design review 2026-07-14):
@@ -324,16 +324,6 @@ class SqliteControlCatalog:
                         world_id=world_id,
                         reason=f"world transitioned to {status}",
                     )
-
-        await self._run(_set)
-
-    async def set_world_run(self, world_id: str, run_id: str) -> None:
-        """Track the world's current run (manifests own the tick head)."""
-
-        def _set() -> None:
-            conn = self._connect_sync()
-            with conn:
-                conn.execute("UPDATE worlds SET run_id=? WHERE world_id=?", (run_id, world_id))
 
         await self._run(_set)
 

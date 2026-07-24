@@ -16,8 +16,9 @@ import weakref
 
 import pytest
 
+import archetype.app.gateway.auth.guard as guard
 from archetype import ArchetypeRuntime, Component
-from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.core.aio import AsyncProcessor
 from archetype.core.config import StorageConfig
 from archetype.core.errors import TickExecutionError
@@ -48,10 +49,10 @@ class FailPosWith(AsyncProcessor):
 
 @pytest.fixture(autouse=True)
 def _reset_quotas():
-    reset_tick_counters()
+    guard._tick_counters.clear()
     reset_daily_tokens()
     yield
-    reset_tick_counters()
+    guard._tick_counters.clear()
     reset_daily_tokens()
 
 
@@ -114,7 +115,7 @@ class TestSingleFlightActivation:
                 await world.spawn(Pos())
 
             assert not world._state.initialized
-            assert runtime._container.world_service.list_worlds() == []
+            assert await runtime._container.world_registry.list_worlds() == []
 
             # Replace the invalid processor as well as the transient failure;
             # retry must perform one clean activation rather than collide with

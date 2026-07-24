@@ -115,6 +115,14 @@ class ProbeService:
         return None
 """
 
+MODULE_OPERATIONS = """
+async def dispatch() -> None:
+    return None
+
+def _helper() -> None:
+    return None
+"""
+
 MANIFEST = """
 version = 1
 owner = "probe"
@@ -283,6 +291,20 @@ def _with_concrete_service_surface(
     return _replace_once(manifest, "operations = [\n", "operations = [\n" + encoded)
 
 
+def _with_module_operation_surface(
+    *,
+    surface: str = "archetype.probe.operations",
+    operations: tuple[str, ...] = ("operations.dispatch",),
+) -> str:
+    manifest = _replace_once(
+        MANIFEST,
+        'family = "probe"\n',
+        (f'family = "probe"\n\n[[module_operation_surface]]\nqualified_scope = "{surface}"\n'),
+    )
+    encoded = "".join(f'  "{operation}",\n' for operation in operations)
+    return _replace_once(manifest, "operations = [\n", "operations = [\n" + encoded)
+
+
 def _write_concrete_service_fixture(
     root: Path,
     manifest: str,
@@ -295,6 +317,17 @@ def _write_concrete_service_fixture(
     if reviewed_name is not None:
         _review_concrete_service(root, reviewed_name)
     _write_source_module(root, "probe/service.py", CONCRETE_SERVICE)
+
+
+def _write_module_operation_fixture(
+    root: Path,
+    manifest: str,
+    *,
+    source: str = MODULE_OPERATIONS,
+) -> None:
+    _write_fixture(root, manifest=manifest)
+    _register_top_level_family(root, "probe")
+    _write_source_module(root, "probe/operations.py", source)
 
 
 def _with_metric_claims(manifest: str, metric_name: str, labels: tuple[str, ...]) -> str:
@@ -486,6 +519,60 @@ def test_unregistered_top_level_protocol_is_not_a_family_operation(
     assert result.ok, result.violations + result.policy_errors
     assert result.protocols_scanned == 2
     assert result.operations_scanned == 3
+
+
+def test_registered_module_functions_can_own_an_exact_operation_surface(
+    tmp_path: Path,
+) -> None:
+    _write_module_operation_fixture(tmp_path, _with_module_operation_surface())
+
+    result = _audit(tmp_path)
+
+    assert result.ok, result.violations + result.policy_errors
+    assert result.protocols_scanned == 2
+    assert result.operations_scanned == 4
+
+
+@pytest.mark.parametrize(
+    ("manifest", "source", "expected_error"),
+    [
+        (
+            _with_module_operation_surface(operations=()),
+            MODULE_OPERATIONS,
+            "missing disposition for probe:operations.dispatch",
+        ),
+        (
+            _with_module_operation_surface(
+                operations=("operations.dispatch", "operations.missing")
+            ),
+            MODULE_OPERATIONS,
+            "phantom disposition for probe:operations.missing",
+        ),
+        (
+            _with_module_operation_surface(surface="archetype.probe.missing"),
+            MODULE_OPERATIONS,
+            "references unknown module operation surface",
+        ),
+        (
+            _with_module_operation_surface(),
+            "def _helper() -> None:\n    return None\n",
+            "surface has no public operations",
+        ),
+    ],
+    ids=["missing", "phantom", "unknown-module", "empty-public-surface"],
+)
+def test_module_operation_surfaces_fail_closed(
+    tmp_path: Path,
+    manifest: str,
+    source: str,
+    expected_error: str,
+) -> None:
+    _write_module_operation_fixture(tmp_path, manifest, source=source)
+
+    result = _audit(tmp_path)
+
+    _assert_rejected(result)
+    assert any(expected_error in error for error in result.policy_errors)
 
 
 def test_reviewed_concrete_service_can_own_an_exact_operation_surface(

@@ -66,7 +66,6 @@ operations = [
   "interfaces.iRuntimeApplication.submit",
   "interfaces.iRuntimeApplication.submit_batch",
   "interfaces.iRuntimeApplication.submit_spawn",
-  "interfaces.iRuntimeApplication.drain_and_apply",
 ]
 signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]

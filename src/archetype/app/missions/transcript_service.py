@@ -19,8 +19,6 @@ from archetype.app.artifacts.interfaces import iArtifactService
 from archetype.app.ingestion.interfaces import iIngestionService
 from archetype.app.redaction.interfaces import iRedactionService
 from archetype.app.redaction.models import RedactionReceipt
-from archetype.app.storage.interfaces import iStorageService
-from archetype.app.world.interfaces import iWorldService
 from archetype.artifacts.contracts import ArtifactSource
 from archetype.core.config import StorageBackend, StorageConfig
 from archetype.missions.trajectories import (
@@ -30,6 +28,8 @@ from archetype.missions.trajectories import (
     TranscriptIngestionResult,
     parse_claude_transcript,
 )
+from archetype.storage.interfaces import iStorageService
+from archetype.world.interfaces import iWorldRegistry
 
 _TRANSCRIPT_ROWS = CLAUDE_TRANSCRIPT_TABLE
 
@@ -204,13 +204,13 @@ class TranscriptIngestionService:
         ingestion_service: iIngestionService,
         redaction_service: iRedactionService,
         storage_service: iStorageService,
-        world_service: iWorldService,
+        world_registry: iWorldRegistry,
     ) -> None:
         self._artifacts = artifact_service
         self._ingestion = ingestion_service
         self._redaction = redaction_service
         self._storage = storage_service
-        self._worlds = world_service
+        self._world_registry = world_registry
 
     async def ingest(
         self,
@@ -221,7 +221,7 @@ class TranscriptIngestionService:
     ) -> TranscriptIngestionResult:
         """Scan, parse, sanitize, and index one Claude JSONL source."""
 
-        effective = self._resolve_storage(world_id, storage_config)
+        effective = await self._resolve_storage(world_id, storage_config)
         if effective.backend != StorageBackend.ICEBERG:
             raise ValueError("transcript ingestion requires StorageBackend.ICEBERG")
 
@@ -319,12 +319,12 @@ class TranscriptIngestionService:
             raise RuntimeError(f"world {world_id} has no recorded run")
         return str(record.run_id)
 
-    def _resolve_storage(
+    async def _resolve_storage(
         self,
         world_id: str,
         storage_config: StorageConfig | None,
     ) -> StorageConfig:
         if storage_config is not None:
             return storage_config
-        live = self._worlds.storage_record(world_id)
+        live = await self._world_registry.storage_record(world_id)
         return live[0] if live is not None else StorageConfig()

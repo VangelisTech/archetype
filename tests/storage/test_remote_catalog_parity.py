@@ -153,6 +153,29 @@ async def test_worker_requires_bearer_token(worker_url):
     assert response.status_code == 401
 
 
+async def test_worker_rejects_run_identity_patch_atomically(worker_url):
+    import httpx
+
+    namespace = f"immutable-run-{uuid.uuid4().hex[:12]}"
+    headers = {"authorization": f"Bearer {WORKER_TOKEN}"}
+    world = _world("immutable-world")
+    async with httpx.AsyncClient(base_url=worker_url, headers=headers) as client:
+        registered = await client.post(f"/ns/{namespace}/worlds", json=world.__dict__)
+        assert registered.status_code == 200
+
+        rejected = await client.patch(
+            f"/ns/{namespace}/worlds/{world.world_id}",
+            json={"run_id": "replacement-run", "status": "destroyed"},
+        )
+        assert rejected.status_code == 422
+        assert rejected.json()["error"] == "immutable_identity"
+
+        fetched = await client.get(f"/ns/{namespace}/worlds/{world.world_id}")
+        assert fetched.status_code == 200
+        assert fetched.json()["run_id"] == world.run_id
+        assert fetched.json()["status"] == world.status
+
+
 async def test_world_registration_parity(tmp_path, worker_url):
     for catalog in await _both(tmp_path, worker_url):
         await catalog.register_world(_world())
@@ -177,12 +200,11 @@ async def test_world_unicode_identity_parity(tmp_path, worker_url):
             assert (await catalog.get_world(world_id)).world_id == world_id
 
             await catalog.set_world_status(world_id, "destroyed")
-            await catalog.set_world_run(world_id, "rün-雪")
 
             record = await catalog.get_world(world_id)
             assert record is not None
             assert record.status == "destroyed"
-            assert record.run_id == "rün-雪"
+            assert record.run_id == "r1"
             assert [world.world_id for world in await catalog.list_worlds()] == [world_id]
         finally:
             await catalog.close()
@@ -471,11 +493,11 @@ async def test_service_stack_runs_against_remote_catalog(tmp_path, worker_url, m
             namespace="ns",
             backend=StorageBackend.ICEBERG,
         )
-        world = await c.world_service.create_world(WorldConfig(name="remote-w"), storage)
+        world = await c.world_lifecycle.create_world(WorldConfig(name="remote-w"), storage)
         assert world.commit_coordinator is not None
-        await c.mutation_service.create_entity(world.world_id, [Probe(value=1.0)])
-        await c.simulation_service.step(world.world_id, RunConfig())
-        await c.simulation_service.step(world.world_id, RunConfig())
+        await c.application.create_entity(world.world_id, [Probe(value=1.0)])
+        await c.application.step(world.world_id, RunConfig())
+        await c.application.step(world.world_id, RunConfig())
         wid, rid = str(world.world_id), str(world.run_id)
 
         output = tmp_path / "remote-artifact.txt"
@@ -505,9 +527,9 @@ async def test_service_stack_runs_against_remote_catalog(tmp_path, worker_url, m
         await c.shutdown()
         fresh = ServiceContainer()
         try:
-            infos = await fresh.world_service.discover_worlds(storage)
+            infos = await fresh.world_lifecycle.discover_worlds(storage)
             assert wid in [str(i.world_id) for i in infos]
-            df = await fresh.query_service.query_components([Probe], wid, rid, storage)
+            df = await fresh.application.query_components([Probe], wid, rid, storage)
             rows = df.to_pylist()
             assert {r["tick"] for r in rows} >= {0, 1}, "stepped history visible cold"
             artifacts = await fresh.artifact_service.index(wid, storage_config=storage)

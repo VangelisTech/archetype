@@ -161,7 +161,8 @@ head." Contract tests: `tests/app/test_autoresearch_ledger.py`.
 This service does not generate candidates, mutate Git, merge or promote a
 winner, coordinate messages, or provide exactly-once/concurrent attempt
 claims. `lab_world_id` reattaches a world already registered with the current
-`WorldService`; it does not reconstruct a destroyed process's world catalog.
+`WorldRegistry`; it does not cold-open a world that is absent from the current
+process.
 Those are outer orchestration concerns. A float comparison and a
 `BranchHead` update mean only that this caller's configured evaluator selected
 a better recorded result.

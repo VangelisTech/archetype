@@ -16,6 +16,7 @@ from evals.suites import idempotency
 from evals.suites.idempotency.process import (
     _wait_for_markers,
     run_process_evaluation_replay,
+    task_process_writer_fence_race,
 )
 
 pytestmark = [pytest.mark.process, pytest.mark.slow]
@@ -101,5 +102,11 @@ def test_process_readiness_failure_reports_child_stderr(tmp_path) -> None:
 
 def test_process_evaluation_replay_serializes_external_grader() -> None:
     results = run_process_evaluation_replay()
+
+    assert all(result.passed for result in results), results
+
+
+def test_process_writer_fence_race_classifies_reconciled_loser_as_stale() -> None:
+    results = task_process_writer_fence_race()
 
     assert all(result.passed for result in results), results

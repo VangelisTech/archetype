@@ -140,7 +140,8 @@ relation is deliberately generalized in `archetype.prefabs`.
 
 ## The Biome pattern being translated
 
-Biome's [`buildings.flecs`](https://github.com/SanderMertens/biome/blob/main/etc/scenes/config/buildings.flecs)
+Biome's archived
+[`buildings.flecs`](https://github.com/SanderMertens/biome/blob/29b7f0e126c81568ba61946c1eb46d921abe8aa2/etc/scenes/config/buildings.flecs)
 shows the composition directly.  `PoweredBuilding` supplies common state;
 `Drill` composes it with a drill emitter and adds `Building`, `StorageDesc`,
 `Storage`, `Miner`, `Power`, `Recipe`, and rendering components.  The

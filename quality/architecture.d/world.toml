@@ -1,0 +1,46 @@
+# Architecture policy fragment: world.
+# Merged into quality/architecture.toml by scripts/check_architecture.py;
+# fragments may declare only rule/exception arrays, never scalar policy.
+
+[[top_level_family_rule]]
+name = "world-domain-family"
+consumer = "archetype.world"
+allowed_families = ["archetype.storage"]
+
+# Canonical world coordination is concrete, but it consumes only lower-layer
+# core interfaces and the reviewed storage family. Keeping these permissions
+# exact prevents composition work from recreating an application dependency.
+
+[[module_rule]]
+module = "archetype.world.lifecycle"
+allowed_interfaces = [
+  "archetype.core.interfaces.CommittedTickReceipt",
+  "archetype.core.interfaces.iAsyncStore",
+  "archetype.core.interfaces.iAsyncSystem",
+  "archetype.core.interfaces.iCommitCoordinator",
+  "archetype.world.interfaces.iWorldRegistry",
+]
+allowed_app = []
+
+[[module_rule]]
+module = "archetype.world.registry"
+allowed_interfaces = []
+allowed_app = []
+
+[[module_rule]]
+module = "archetype.world.query"
+allowed_interfaces = [
+  "archetype.core.interfaces.ArchetypeSignature",
+  "archetype.core.interfaces.iAsyncStore",
+  "archetype.storage.interfaces.iStorageService",
+]
+allowed_app = []
+
+[[module_rule]]
+module = "archetype.world.simulation"
+allowed_interfaces = [
+  "archetype.core.interfaces.CommittedTickReceipt",
+  "archetype.storage.interfaces.iStorageService",
+  "archetype.world.interfaces.iWorldRegistry",
+]
+allowed_app = []
