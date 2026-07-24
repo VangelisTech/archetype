@@ -51,6 +51,11 @@ jobs:
       # existed). Skips: merge groups (synthetic commits carry no coverage
       # signal, and a Codecov hiccup must not block the queue) and fork PRs
       # (GitHub withholds secrets there, so the upload can only fail).
+      #
+      # What Codecov then does with the upload — the `project` and `patch`
+      # status targets, and why they mirror the 70% `fail_under` floor rather
+      # than the default `auto` — is configured and argued in
+      # `.github/codecov.yml`.
       - name: Upload coverage to Codecov
         if: >-
           matrix.python-version == '3.12' &&
