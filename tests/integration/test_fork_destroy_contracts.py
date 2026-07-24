@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from tests._runtime import build_test_runtime
 from uuid_utils import uuid7
 
 from archetype.commands.dispatch import CommandDispatcher
@@ -49,6 +48,7 @@ from archetype.world.models import (
 )
 from archetype.world.query import get_lineage
 from archetype.world.registry import WorldRegistry
+from tests._runtime import build_test_runtime
 
 _TEARDOWN_SENTINEL_ENTITY_ID = 2_147_483_647
 
