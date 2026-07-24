@@ -86,7 +86,7 @@ jobs:
             Inputs to read:
             - docs/reports/2026-03-28-security-program-review.md
             - current ingress and authorization code under src/archetype/app/gateway/auth/, src/archetype/app/gateway/, and src/archetype/api/
-            - security-relevant durability boundaries under src/archetype/app/commands/, src/archetype/app/storage/, src/archetype/app/audit/, src/archetype/app/artifacts/, and src/archetype/app/container.py
+            - security-relevant durability and audit boundaries under src/archetype/commands/, src/archetype/app/storage/, src/archetype/app/artifacts/, and src/archetype/app/container.py
             - the pinned execution-environment inventory at src/archetype/app/sandboxes/versions.toml
             - dependency evidence under .github/security-artifacts/, including the pinned-artifact OSV scan
 

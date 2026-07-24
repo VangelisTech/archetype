@@ -3,17 +3,21 @@
 # SPDX-License-Identifier: Apache-2.0
 """Gate-surface coverage audit (deterministic).
 
-Two checks that keep the command gate's claim-vs-effect surface honest:
+Three checks keep the command gate's claim-vs-effect surface honest:
 
-1. **Command disposition manifest** — every ``CommandType`` member is
-   classified below, and ``CommandScheduler._apply``'s match arms equal the
-   tick-deferred set exactly. A new enum member without a classification, or
-   a dispatcher arm drifting from the manifest, fails this audit. This is the
-   static guard for the accepted-then-dropped class (issues #178/#368): a
-   command admitted to durable scheduling must have an explicit disposition;
-   every other command is a direct application operation.
+1. **Exact registry coverage** — the composition root must register every
+   ``WORLD_OPERATION_TYPES`` model and ``GetAuditHistory`` exactly once, with
+   no unreviewed extra model. Durable eligibility must equal
+   ``PORTABLE_TICK_OPERATION_TYPES`` exactly. This is the static guard for the
+   accepted-then-dropped class (issues #178/#368): reachability and durability
+   are properties of one exact model registration, never an enum side table.
 
-2. **API error taxonomy** — every exception class defined in the application
+2. **Registry-driven scheduler** — the canonical scheduler must contain
+   neither a ``CommandType`` reference nor a ``match`` statement. Durable
+   materialization resolves the registered exact model and invokes its
+   registered materializer.
+
+3. **API error taxonomy** — every exception class defined in the application
    or canonical storage authority must be mapped by
    ``api.errors.raise_api_error`` to a non-500 branch (issue #180:
    ``WorldNotFoundError`` extended ``LookupError``, missed the ``KeyError``
@@ -30,116 +34,147 @@ import builtins
 import importlib
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parents[1]
-COMMAND_SERVICE = ROOT / "src/archetype/app/commands/service.py"
+COMMAND_SCHEDULER = ROOT / "src/archetype/commands/scheduler.py"
 API_ERRORS = ROOT / "src/archetype/api/errors.py"
 
-# ── Check 1 manifest ─────────────────────────────────────────────────────────
-# Every CommandType member must appear in exactly one bucket. Reclassifying a
-# type is a contract decision: update the manifest in the same PR as the code.
-
-# Tick-deferred commands: durable admission accepts them and _apply MUST have
-# an explicit arm. MESSAGE, CUSTOM, and QUERY_WORLD are data/no-op envelopes,
-# but naming them here makes that behavior deliberate rather than fallthrough.
-DEFERRED_DISPATCHED = {
-    "SPAWN",
-    "DESPAWN",
-    "UPDATE",
-    "ADD_COMPONENT",
-    "REMOVE_COMPONENT",
-    "MESSAGE",
-    "CUSTOM",
-    "QUERY_WORLD",
-}
-
-# Direct-gated operations (CommandGateway exposes an explicit method; the
-# scheduler is not their application path).
-DIRECT_ONLY = {
-    "INGEST_ARTIFACTS",
-    "EVALUATE",
-    "CREATE_WORLD",
-    "DESTROY_WORLD",
-    "FORK_WORLD",
-    "STEP",
-    "RUN",
-    "RUN_ROLLOUT",
-    "RUN_EPISODE",
-    "AUTORESEARCH",
-    "GET_WORLD_INFO",
-    "GET_AUDIT_HISTORY",
-    "LIST_SIGNATURES",
-    "LIST_WORLDS",
-    "LIST_PROCESSORS",
-    "LIST_HOOKS",
-    "LIST_RESOURCES",
-    "ADD_PROCESSOR",
-    "REMOVE_PROCESSOR",
-    "ADD_RESOURCE",
-    "ADD_HOOK",
-    "REMOVE_HOOK",
-}
+# ── Check 1: exact operation registry ────────────────────────────────────────
 
 
-def _drain_case_arms(path: Path) -> set[str]:
-    """CommandType names matched by ``case`` arms inside ``_apply``."""
-    tree = ast.parse(path.read_text(), filename=str(path))
-    arms: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_apply":
-            for inner in ast.walk(node):
-                if not isinstance(inner, ast.Match):
-                    continue
-                for case in inner.cases:
-                    for pattern in ast.walk(case.pattern):
-                        if not isinstance(pattern, ast.MatchValue) or not isinstance(
-                            pattern.value, ast.Attribute
-                        ):
-                            continue
-                        value = pattern.value
-                        if isinstance(value.value, ast.Name) and value.value.id == "CommandType":
-                            arms.add(value.attr)
-    return arms
+async def _unreachable_handler(*_args: object, **_kwargs: object) -> None:
+    """Satisfy composition binding without executing any application effect."""
+    raise AssertionError("gate coverage only inspects operation registrations")
 
 
-def check_command_dispositions() -> list[str]:
-    from archetype.app.models import CommandType
+def _composed_registry() -> Any:
+    """Build the real container registry without constructing runtime services."""
+    from archetype.app.container import _register_operations
+    from archetype.commands.registry import OperationRegistry
+
+    lifecycle = SimpleNamespace(
+        create_world=_unreachable_handler,
+        discover_worlds=_unreachable_handler,
+        open_world_readonly=_unreachable_handler,
+        open_world_mutable=_unreachable_handler,
+    )
+    registry = OperationRegistry()
+    register_operations = cast("Any", _register_operations)
+    register_operations(
+        registry,
+        worlds=object(),
+        lifecycle=lifecycle,
+        storage=object(),
+        audit=object(),
+        fork_world=_unreachable_handler,
+        destroy_world=_unreachable_handler,
+    )
+    return registry
+
+
+def _model_label(model: type[Any]) -> str:
+    return f"{model.__module__}.{model.__qualname__}"
+
+
+def check_registry_coverage() -> list[str]:
+    """Require one exact registration and one exact durable disposition."""
+    from archetype.commands.models import GetAuditHistory
+    from archetype.world.models import (
+        PORTABLE_TICK_OPERATION_TYPES,
+        WORLD_OPERATION_TYPES,
+    )
 
     problems: list[str] = []
-    members = set(CommandType.__members__)
-    classified = DEFERRED_DISPATCHED | DIRECT_ONLY
+    registry = _composed_registry()
+    specs = registry.specs
+    expected_models = (*WORLD_OPERATION_TYPES, GetAuditHistory)
+    actual_models = tuple(spec.model for spec in specs)
+    expected_set = set(expected_models)
+    actual_set = set(actual_models)
 
-    overlap = DEFERRED_DISPATCHED & DIRECT_ONLY
-    if overlap:
-        problems.append(f"manifest buckets overlap: {sorted(overlap)}")
+    if len(actual_models) != len(actual_set):
+        problems.append("operation registry contains a duplicate exact model registration")
 
-    unclassified = members - classified
-    if unclassified:
+    missing = expected_set - actual_set
+    if missing:
         problems.append(
-            "CommandType members with no disposition (classify them in "
-            f"scripts/check_gate_coverage.py): {sorted(unclassified)}"
+            "operation registry is missing exact models: "
+            + ", ".join(sorted(_model_label(model) for model in missing))
         )
-    phantom = classified - members
-    if phantom:
-        problems.append(f"manifest names non-existent CommandType members: {sorted(phantom)}")
-
-    arms = _drain_case_arms(COMMAND_SERVICE)
-    missing_arms = DEFERRED_DISPATCHED - arms
-    if missing_arms:
+    unexpected = actual_set - expected_set
+    if unexpected:
         problems.append(
-            "applied-in-drain commands with NO _apply arm (accepted-then-"
-            f"dropped at drain): {sorted(missing_arms)}"
+            "operation registry contains unreviewed models: "
+            + ", ".join(sorted(_model_label(model) for model in unexpected))
         )
-    surprise_arms = arms - DEFERRED_DISPATCHED
-    if surprise_arms:
+    if actual_set == expected_set and actual_models != expected_models:
+        problems.append("operation registry order differs from WORLD_OPERATION_TYPES + audit")
+
+    for spec in specs:
+        operation_field = spec.model.model_fields.get("operation")
+        expected_name = operation_field.default if operation_field is not None else None
+        if spec.name != expected_name:
+            problems.append(
+                f"registration {spec.name!r} does not match exact model "
+                f"{_model_label(spec.model)} discriminator {expected_name!r}"
+            )
+
+    expected_durable = set(PORTABLE_TICK_OPERATION_TYPES)
+    actual_durable = {spec.model for spec in specs if spec.durable is not None}
+    missing_durable = expected_durable - actual_durable
+    if missing_durable:
         problems.append(
-            "_apply handles commands the manifest does not classify as "
-            f"tick-deferred (update the manifest): {sorted(surprise_arms)}"
+            "portable models missing durable registration: "
+            + ", ".join(sorted(_model_label(model) for model in missing_durable))
+        )
+    unexpected_durable = actual_durable - expected_durable
+    if unexpected_durable:
+        problems.append(
+            "direct-only models have durable registration: "
+            + ", ".join(sorted(_model_label(model) for model in unexpected_durable))
         )
     return problems
 
 
-# ── Check 2: error taxonomy ──────────────────────────────────────────────────
+# ── Check 2: registry-driven scheduler ───────────────────────────────────────
+
+
+def check_scheduler_dispatch_shape() -> list[str]:
+    """Reject reintroduction of enum or structural-match dispatch."""
+    tree = ast.parse(
+        COMMAND_SCHEDULER.read_text(encoding="utf-8"),
+        filename=str(COMMAND_SCHEDULER),
+    )
+    problems: list[str] = []
+    command_type_lines = sorted(
+        {
+            node.lineno
+            for node in ast.walk(tree)
+            if (
+                isinstance(node, ast.Name | ast.Attribute)
+                and (node.id if isinstance(node, ast.Name) else node.attr) == "CommandType"
+            )
+            or (isinstance(node, ast.alias) and node.name.rsplit(".", 1)[-1] == "CommandType")
+        }
+    )
+    if command_type_lines:
+        problems.append(
+            "canonical scheduler references CommandType at lines "
+            + ", ".join(str(line) for line in command_type_lines)
+        )
+
+    match_lines = sorted(node.lineno for node in ast.walk(tree) if isinstance(node, ast.Match))
+    if match_lines:
+        problems.append(
+            "canonical scheduler contains match dispatch at lines "
+            + ", ".join(str(line) for line in match_lines)
+        )
+    return problems
+
+
+# ── Check 3: error taxonomy ──────────────────────────────────────────────────
 # The whole archetype.app package and the canonical storage authority are
 # walked for Exception subclasses. A hardcoded module list would fail open the
 # moment errors are defined elsewhere within either governed surface (footgun
@@ -238,15 +273,16 @@ def check_error_taxonomy() -> list[str]:
 
 def main() -> int:
     sys.path.insert(0, str(ROOT / "src"))
-    problems = check_command_dispositions() + check_error_taxonomy()
+    problems = check_registry_coverage() + check_scheduler_dispatch_shape() + check_error_taxonomy()
     if problems:
         print("Gate coverage audit FAILED:")
         for problem in problems:
             print(f"  - {problem}")
         print(
-            "\nEvery CommandType needs a disposition (durable dispatcher arm or "
-            "direct application operation), and every app-layer error needs a non-500 HTTP "
-            "mapping. See the manifest in this script."
+            "\nEvery reachable operation needs one exact registration, durable "
+            "eligibility must equal the portable world-model set, scheduler dispatch "
+            "must stay registry-driven, and every app-layer error needs a non-500 "
+            "HTTP mapping."
         )
         return 1
     print("Gate coverage audit passed")
