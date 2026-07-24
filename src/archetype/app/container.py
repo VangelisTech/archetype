@@ -299,6 +299,7 @@ class ServiceContainer:
         audit_storage_config: StorageConfig | None = None,
         artifact_store_config: ArtifactStoreConfig | None = None,
         redaction_service: iRedactionService | None = None,
+        required_projector_factory: Callable[[str], Any | None] | None = None,
     ):
         if storage_service is not None and storage_service.has_injected_session:
             if audit_storage_config is None:
@@ -357,6 +358,7 @@ class ServiceContainer:
             self.storage_service,
             self.world_registry,
             materialize_commands=self.command_scheduler.materialize,
+            required_projector_factory=required_projector_factory,
         )
 
         self.audit_log = AuditLog(
