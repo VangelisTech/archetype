@@ -70,7 +70,7 @@ def test_from_dict_without_type_key_raises_clearly():
 
     Regression test for #90: previously, missing 'type' produced a generic
     ``Component`` instance with no fields, so SPAWN commands submitted via
-    ``CommandGateway`` landed in the wrong archetype.
+    actor-aware dispatcher entry landed in the wrong archetype.
     """
     import pytest
 
