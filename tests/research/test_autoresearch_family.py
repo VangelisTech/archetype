@@ -12,6 +12,7 @@ import subprocess
 import sys
 from dataclasses import fields
 from pathlib import Path
+from typing import get_type_hints
 
 from archetype.missions import Candidate
 from archetype.research import contracts, models
@@ -24,7 +25,7 @@ from archetype.research.models import (
     Evaluator,
     ResearchCandidateContext,
 )
-from archetype.world.models import EpisodeConfig
+from archetype.world.models import EpisodeConfig, RolloutResult
 
 _RESEARCH_ROOT = Path("src/archetype/research")
 _LEDGER_SOURCE_MANIFEST = Path("tests/research/fixtures") / "autoresearch_ledger_core_v0.json"
@@ -71,6 +72,12 @@ def test_models_are_canonical_and_compatibility_exports_are_object_identical() -
 def test_callback_contracts_are_structural_protocols() -> None:
     assert getattr(Evaluator, "_is_protocol", False)
     assert getattr(CandidatePreparer, "_is_protocol", False)
+
+
+def test_public_research_signature_annotations_resolve() -> None:
+    assert get_type_hints(AutoResearchConfig)["episode_config"] is EpisodeConfig
+    assert get_type_hints(models.IterationResult)["rollout"] is RolloutResult
+    assert get_type_hints(Evaluator.__call__)["rollout"] is RolloutResult
 
 
 def test_models_import_without_core_world_or_dataframe_stacks() -> None:
