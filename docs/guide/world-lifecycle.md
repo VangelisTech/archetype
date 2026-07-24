@@ -124,8 +124,12 @@ and pending mutations into that storage authority.
 ## 5. `destroy_world`
 
 Application destroy starts by obtaining a sticky `WorldCleanupLease`. New
-public operations reject once close has begun. Under that exact lease,
-`RuntimeApplication`:
+public operations reject once close has begun with the family-owned
+`WorldClosingError`. The synchronous target-tick snapshot emits the same typed
+state so the gateway can place authorized durable-world calls in the explicit
+tick-zero quota bucket without catching unrelated resolver failures. That quota
+fallback does not grant live operation authority. Under the exact cleanup
+lease, `RuntimeApplication`:
 
 1. retries any already-retained required-projector receipt;
 2. reconciles any prepared tick publication under its exact commit identity

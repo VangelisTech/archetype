@@ -23,6 +23,7 @@ from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.gateway.service import CommandGateway
 from archetype.app.models import Command, CommandType
 from archetype.errors import WorldNotFoundError
+from archetype.world.registry import WorldRegistry
 
 pytestmark = pytest.mark.asyncio
 
@@ -41,6 +42,54 @@ def _application() -> AsyncMock:
     application.require_world = AsyncMock()
     application.validate_deferred_command = Mock()
     return application
+
+
+_DURABLE_WORLD_ROUTES = [
+    pytest.param("destroy_world", CommandType.DESTROY_WORLD, id="destroy"),
+    pytest.param("open_world_readonly", CommandType.GET_WORLD_INFO, id="readonly-open"),
+    pytest.param("resume_world", CommandType.CREATE_WORLD, id="resume"),
+    pytest.param("query_components", CommandType.QUERY_WORLD, id="component-query"),
+    pytest.param("query_archetype", CommandType.QUERY_WORLD, id="archetype-query"),
+    pytest.param("list_signatures", CommandType.LIST_SIGNATURES, id="signatures"),
+    pytest.param("get_audit_history", CommandType.GET_AUDIT_HISTORY, id="audit"),
+    pytest.param("query_artifacts", CommandType.QUERY_WORLD, id="artifacts"),
+    pytest.param("evaluate", CommandType.EVALUATE, id="evaluation"),
+]
+
+
+async def _invoke_durable_world_route(
+    gateway: CommandGateway,
+    route: str,
+    ctx: ActorCtx,
+    *,
+    world_id: str,
+    storage: object,
+) -> None:
+    if route == "destroy_world":
+        await gateway.destroy_world(ctx, world_id)
+    elif route == "open_world_readonly":
+        await gateway.open_world_readonly(ctx, storage, world_id)
+    elif route == "resume_world":
+        await gateway.resume_world(ctx, storage, world_id)
+    elif route == "query_components":
+        await gateway.query_components(ctx, [], world_id, "run-id", storage)
+    elif route == "query_archetype":
+        await gateway.query_archetype(ctx, "signature", world_id, "run-id", storage)
+    elif route == "list_signatures":
+        await gateway.list_signatures(ctx, storage, world_id=world_id)
+    elif route == "get_audit_history":
+        await gateway.get_audit_history(ctx, world_id)
+    elif route == "query_artifacts":
+        await gateway.query_artifacts(ctx, world_id, storage_config=storage)
+    elif route == "evaluate":
+        await gateway.evaluate(
+            ctx,
+            world_id,
+            [],
+            contract=SimpleNamespace(grader_id="grader"),
+        )
+    else:
+        raise AssertionError(f"unknown durable route {route}")
 
 
 async def test_direct_calls_are_scoped_by_resolved_world_and_target_tick(monkeypatch):
@@ -138,43 +187,156 @@ async def test_authorized_world_call_resolves_and_debits_once():
     }
 
 
-async def test_cold_durable_operations_share_explicit_world_tick_zero():
+@pytest.mark.parametrize(("route", "command_type"), _DURABLE_WORLD_ROUTES)
+async def test_closing_durable_operations_debit_tick_zero_before_delegation(
+    route,
+    command_type,
+):
     application = _application()
-    application.evaluate.return_value = SimpleNamespace(outcome="pass")
+    audit = AsyncMock()
+    registry = WorldRegistry()
+    world = SimpleNamespace(world_id="closing-world", name="closing", tick=13)
+    await registry.insert(world)
+    await registry.begin_close(world.world_id)
+    target_tick_for_world = Mock(wraps=registry.target_tick)
+    gateway = CommandGateway(
+        application,
+        audit=audit,
+        target_tick_for_world=target_tick_for_world,
+    )
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    expected_ticks = {(ctx.id, world.world_id, 0): 1}
+    expected_tokens = guard.estimate_token_cost(Command(type=command_type))
+
+    async def assert_gated_before_delegation(*_args, **_kwargs):
+        assert guard._tick_counters == expected_ticks
+        assert guard._daily_tokens == {ctx.id: expected_tokens}
+        return SimpleNamespace(outcome="pass")
+
+    application_route = getattr(application, route)
+    application_route.side_effect = assert_gated_before_delegation
+
+    await _invoke_durable_world_route(
+        gateway,
+        route,
+        ctx,
+        world_id=world.world_id,
+        storage=object(),
+    )
+
+    target_tick_for_world.assert_called_once_with(world.world_id)
+    assert application_route.await_count == 1
+    audit.record.assert_awaited_once()
+    assert guard._tick_counters == expected_ticks
+    assert guard._daily_tokens == {ctx.id: expected_tokens}
+
+
+@pytest.mark.parametrize(("route", "command_type"), _DURABLE_WORLD_ROUTES)
+async def test_cold_durable_operations_share_explicit_world_tick_zero(
+    route,
+    command_type,
+):
+    application = _application()
+    audit = AsyncMock()
 
     def missing_live_world(_world_id):
         raise KeyError("not live")
 
+    target_tick_for_world = Mock(side_effect=missing_live_world)
     gateway = CommandGateway(
         application,
-        target_tick_for_world=missing_live_world,
+        audit=audit,
+        target_tick_for_world=target_tick_for_world,
     )
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     storage = object()
     world_id = "cold-world"
+    expected_ticks = {(ctx.id, world_id, 0): 1}
+    expected_tokens = guard.estimate_token_cost(Command(type=command_type))
 
-    await gateway.open_world_readonly(ctx, storage, world_id)
-    await gateway.resume_world(ctx, storage, world_id)
-    await gateway.get_audit_history(ctx, world_id)
-    await gateway.query_artifacts(ctx, world_id, storage_config=storage)
-    await gateway.evaluate(
+    async def assert_gated_before_delegation(*_args, **_kwargs):
+        assert guard._tick_counters == expected_ticks
+        assert guard._daily_tokens == {ctx.id: expected_tokens}
+        return SimpleNamespace(outcome="pass")
+
+    application_route = getattr(application, route)
+    application_route.side_effect = assert_gated_before_delegation
+
+    await _invoke_durable_world_route(
+        gateway,
+        route,
         ctx,
-        world_id,
-        [],
-        contract=SimpleNamespace(grader_id="grader"),
+        world_id=world_id,
+        storage=storage,
     )
-    await gateway.destroy_world(ctx, world_id)
 
-    assert guard._tick_counters == {(ctx.id, world_id, 0): 6}
-    application.open_world_readonly.assert_awaited_once_with(storage, world_id)
-    application.resume_world.assert_awaited_once_with(storage, world_id)
-    application.get_audit_history.assert_awaited_once_with(world_id)
-    application.query_artifacts.assert_awaited_once_with(
-        world_id,
-        storage_config=storage,
+    target_tick_for_world.assert_called_once_with(world_id)
+    assert application_route.await_count == 1
+    audit.record.assert_awaited_once()
+    assert guard._tick_counters == expected_ticks
+    assert guard._daily_tokens == {ctx.id: expected_tokens}
+
+
+@pytest.mark.parametrize(("route", "_command_type"), _DURABLE_WORLD_ROUTES)
+async def test_durable_operations_propagate_unrelated_resolver_runtime_errors(
+    route,
+    _command_type,
+):
+    application = _application()
+    audit = AsyncMock()
+    target_tick_for_world = Mock(side_effect=RuntimeError("resolver misconfigured"))
+    gateway = CommandGateway(
+        application,
+        audit=audit,
+        target_tick_for_world=target_tick_for_world,
     )
-    application.evaluate.assert_awaited_once()
-    application.destroy_world.assert_awaited_once_with(world_id)
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+
+    with pytest.raises(RuntimeError, match="resolver misconfigured"):
+        await _invoke_durable_world_route(
+            gateway,
+            route,
+            ctx,
+            world_id="world-a",
+            storage=object(),
+        )
+
+    target_tick_for_world.assert_called_once_with("world-a")
+    getattr(application, route).assert_not_awaited()
+    audit.record.assert_not_awaited()
+    assert guard._tick_counters == {}
+    assert guard._daily_tokens == {}
+
+
+@pytest.mark.parametrize(("route", "_command_type"), _DURABLE_WORLD_ROUTES)
+async def test_unauthorized_durable_operations_stop_before_resolver(
+    route,
+    _command_type,
+):
+    application = _application()
+    audit = AsyncMock()
+    target_tick_for_world = Mock(side_effect=AssertionError("resolver must not run"))
+    gateway = CommandGateway(
+        application,
+        audit=audit,
+        target_tick_for_world=target_tick_for_world,
+    )
+    ctx = ActorCtx(id=uuid7(), roles=set())
+
+    with pytest.raises(GuardrailError, match="cannot execute"):
+        await _invoke_durable_world_route(
+            gateway,
+            route,
+            ctx,
+            world_id="secret-world",
+            storage=object(),
+        )
+
+    target_tick_for_world.assert_not_called()
+    getattr(application, route).assert_not_awaited()
+    audit.record.assert_not_awaited()
+    assert guard._tick_counters == {}
+    assert guard._daily_tokens == {}
 
 
 async def test_deferred_commands_use_their_actual_scheduled_target_tick(monkeypatch):

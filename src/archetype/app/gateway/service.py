@@ -28,6 +28,7 @@ from archetype.app.gateway.auth.guard import (
 )
 from archetype.app.models import Command, CommandType
 from archetype.errors import WorldNotFoundError
+from archetype.world.errors import WorldClosingError
 
 if TYPE_CHECKING:
     from archetype.app.gateway.auth.models import ActorCtx
@@ -44,9 +45,10 @@ class CommandGateway:
 
     Live world calls resolve their quota coordinate through the explicitly
     injected ``target_tick_for_world`` snapshot. Durable reads and idempotent
-    deletion remain valid without a live world and use the explicit
-    ``(world_id, 0)`` coordinate when no live target exists. Deferred calls use
-    the durable command's scheduled tick and never consult the resolver.
+    deletion remain valid without an available live target and use the explicit
+    ``(world_id, 0)`` coordinate when the target is missing or explicitly
+    closing. Other resolver failures propagate. Deferred calls use the durable
+    command's scheduled tick and never consult the resolver.
     """
 
     def __init__(
@@ -119,14 +121,16 @@ class CommandGateway:
     def _gate_durable_world(self, command: Command, ctx: ActorCtx, world_id: object) -> None:
         """Gate a world-scoped operation that remains valid without a live target.
 
-        Tick zero is the deterministic cold-world quota coordinate. Sharing it
-        with a live world's initial tick is intentionally conservative and
-        avoids an ambient quota reset or an unscoped application-wide bucket.
+        Tick zero is the deterministic unavailable-live-world quota coordinate.
+        A missing binding and the world family's explicit closing state both
+        use it. Sharing it with a live world's initial tick is intentionally
+        conservative and avoids an ambient quota reset or an unscoped
+        application-wide bucket. Arbitrary resolver failures still fail closed.
         """
         guardrail_authorize(command, ctx)
         try:
             target_tick = self._world_target_tick(world_id)
-        except (KeyError, WorldNotFoundError):
+        except (KeyError, WorldClosingError, WorldNotFoundError):
             target_tick = _DURABLE_TARGET_TICK
         self._gate(
             command,

@@ -12,6 +12,8 @@ from typing import Any
 
 import pytest
 
+from archetype.world.errors import WorldClosingError
+
 pytestmark = [
     pytest.mark.asyncio,
     pytest.mark.contract("world.tick.atomic_visibility"),
@@ -147,7 +149,7 @@ async def test_target_tick_snapshot_rejects_sticky_close() -> None:
 
     assert registry.target_tick(first.world_id) == 4
     lease = await registry.begin_close(first.world_id)
-    with pytest.raises(RuntimeError, match="closing"):
+    with pytest.raises(WorldClosingError, match="closing"):
         registry.target_tick(first.world_id)
 
     await registry.finish_close(lease)

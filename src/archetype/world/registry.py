@@ -14,6 +14,7 @@ from typing import Any
 from uuid_utils import UUID
 
 from archetype.core.config import CacheConfig, StorageConfig
+from archetype.world.errors import WorldClosingError
 
 
 @dataclass(slots=True, eq=False)
@@ -248,7 +249,7 @@ class WorldRegistry:
 
         entry = self._entry_unlocked(str(world_id))
         if entry.cleanup_lease is not None:
-            raise RuntimeError(f"world {entry.world_id} is closing")
+            raise WorldClosingError(entry.world_id)
         return int(entry.world.tick)
 
     @asynccontextmanager
@@ -259,14 +260,14 @@ class WorldRegistry:
         async with self._registry_lock:
             entry = self._entry_locked(key)
             if entry.cleanup_lease is not None:
-                raise RuntimeError(f"world {key} is closing")
+                raise WorldClosingError(key)
 
         await entry.lock.acquire()
         try:
             async with self._registry_lock:
                 self._validate_current_entry_locked(entry)
                 if entry.cleanup_lease is not None:
-                    raise RuntimeError(f"world {key} is closing")
+                    raise WorldClosingError(key)
             yield entry.world
         finally:
             entry.lock.release()
@@ -283,7 +284,7 @@ class WorldRegistry:
             entries = [self._entry_locked(world_id) for world_id in ordered_ids]
             closing = [entry.world_id for entry in entries if entry.cleanup_lease is not None]
             if closing:
-                raise RuntimeError(f"world {closing[0]} is closing")
+                raise WorldClosingError(closing[0])
 
         acquired: list[_RegistryEntry] = []
         try:
@@ -295,7 +296,7 @@ class WorldRegistry:
                 for entry in entries:
                     self._validate_current_entry_locked(entry)
                     if entry.cleanup_lease is not None:
-                        raise RuntimeError(f"world {entry.world_id} is closing")
+                        raise WorldClosingError(entry.world_id)
             yield {entry.world_id: entry.world for entry in entries}
         finally:
             for entry in reversed(acquired):
