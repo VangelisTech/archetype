@@ -244,7 +244,10 @@ def _process_group_alive(process_group: int) -> bool:
 def _signal_process_group(process_group: int, requested_signal: signal.Signals) -> None:
     try:
         os.killpg(process_group, requested_signal)
-    except ProcessLookupError:
+    except (PermissionError, ProcessLookupError):
+        # Darwin rejects a group-wide signal when any remaining member is not
+        # signalable. The bounded liveness poll still has to prove ESRCH; a
+        # persistent permission denial is therefore reported as cleanup debt.
         pass
 
 
