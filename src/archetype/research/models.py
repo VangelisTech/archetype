@@ -9,13 +9,38 @@ import json
 import math
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    ForwardRef,
+    Literal,
+    Protocol,
+    runtime_checkable,
+)
 
 from pydantic import BaseModel, ConfigDict, InstanceOf
 from uuid_utils import UUID
 
 if TYPE_CHECKING:
     from archetype.world.models import EpisodeConfig, RolloutResult
+else:
+
+    class _WorldTypeNamespace:
+        """Resolve world-owned public annotations only when introspected."""
+
+        __slots__ = ()
+
+        def __getattr__(self, name: str) -> Any:
+            if name not in {"EpisodeConfig", "RolloutResult"}:
+                raise AttributeError(name)
+            from archetype.world import models as world_models
+
+            return getattr(world_models, name)
+
+    _world_types = _WorldTypeNamespace()
+    EpisodeConfig = ForwardRef("_world_types.EpisodeConfig")
+    RolloutResult = ForwardRef("_world_types.RolloutResult")
 
 
 def _default_episode_config() -> EpisodeConfig:
