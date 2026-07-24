@@ -26,9 +26,9 @@ from __future__ import annotations
 import pytest
 
 from archetype import ArchetypeRuntime, InstructionSweepConfig
-from archetype.app.container import ServiceContainer
 from archetype.core.config import StorageConfig
 from archetype.physical_ai.manipulation import ManipStatus, ManipTask, ScriptedReachEnv
+from archetype.physical_ai.models import SweepPhysicalInstructions
 from archetype.physical_ai.optimization import (
     TemplatePerturbation,
     optimize_instruction,
@@ -37,6 +37,8 @@ from archetype.physical_ai.policy import (
     InstructionConditionedReachPolicy,
     instruction_quality,
 )
+from archetype.world.models import ComponentTypeRef, QueryComponents
+from tests._runtime import build_test_runtime
 
 # Proportional-controller params shared by the policy and the replay oracle.
 GAIN = 0.6
@@ -114,7 +116,8 @@ async def test_instruction_sweep_grades_success_rate_per_variant(tmp_path):
     """V variants in ONE control-plane world, graded per variant from the
     persisted ledger, matching an independent replay exactly — and every
     trajectory addressable by the single ``(world_id, run_id)``."""
-    container = ServiceContainer()
+    resources = build_test_runtime(tmp_path)
+    dispatcher = resources.dispatcher
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="isweep")
     targets = _targets()
     try:
@@ -125,17 +128,19 @@ async def test_instruction_sweep_grades_success_rate_per_variant(tmp_path):
         # qualities: 0, 1/3, 2/3, 1  ->  graded success-rates.
         variants = ["", "reach", "reach red", "reach red block"]
 
-        report = await container.application.sweep_physical_instructions(
-            InstructionSweepConfig(
-                suite="scripted",
-                task_id=TASK_ID,
-                variants=tuple(variants),
-                seeds_per_variant=SEEDS,
-                max_steps=MAX_STEPS,
-                storage=storage,
-            ),
-            env_client=env,
-            policy_client=policy,
+        report = await dispatcher.apply(
+            SweepPhysicalInstructions(
+                config=InstructionSweepConfig(
+                    suite="scripted",
+                    task_id=TASK_ID,
+                    variants=tuple(variants),
+                    seeds_per_variant=SEEDS,
+                    max_steps=MAX_STEPS,
+                    storage=storage,
+                ),
+                env_client=env,
+                policy_client=policy,
+            )
         )
 
         assert [o.instruction for o in report.variants] == variants
@@ -154,13 +159,20 @@ async def test_instruction_sweep_grades_success_rate_per_variant(tmp_path):
         assert report.best is not None and report.best.instruction == "reach red block"
 
         # A2 addressability: every trial persists under one (world_id, run_id).
-        df = await container.application.query_components(
-            [ManipStatus, ManipTask], report.world_id, report.run_id, storage
+        df = await dispatcher.apply(
+            QueryComponents(
+                components=tuple(
+                    ComponentTypeRef.from_type(component) for component in (ManipStatus, ManipTask)
+                ),
+                world_id=report.world_id,
+                run_id=report.run_id,
+                storage_config=storage,
+            )
         )
         rows = df.collect().to_pylist()
         assert len({r["entity_id"] for r in rows}) == len(variants) * SEEDS
     finally:
-        await container.shutdown()
+        await resources.aclose()
 
 
 @pytest.mark.asyncio
@@ -168,7 +180,8 @@ async def test_optimize_instruction_climbs_from_vague_to_precise(tmp_path):
     """The self-improving loop: start from a useless instruction (0% success),
     mutate-and-evaluate on the real batched eval each round, and climb to full
     success — gradually, against the success-rate metric itself."""
-    container = ServiceContainer()
+    resources = build_test_runtime(tmp_path)
+    dispatcher = resources.dispatcher
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="iopt")
     targets = _targets()
     try:
@@ -178,17 +191,19 @@ async def test_optimize_instruction_climbs_from_vague_to_precise(tmp_path):
         )
 
         async def evaluate(instructions: list[str]) -> dict[str, float]:
-            report = await container.application.sweep_physical_instructions(
-                InstructionSweepConfig(
-                    suite="scripted",
-                    task_id=TASK_ID,
-                    variants=tuple(instructions),
-                    seeds_per_variant=SEEDS,
-                    max_steps=MAX_STEPS,
-                    storage=storage,
-                ),
-                env_client=env,
-                policy_client=policy,
+            report = await dispatcher.apply(
+                SweepPhysicalInstructions(
+                    config=InstructionSweepConfig(
+                        suite="scripted",
+                        task_id=TASK_ID,
+                        variants=tuple(instructions),
+                        seeds_per_variant=SEEDS,
+                        max_steps=MAX_STEPS,
+                        storage=storage,
+                    ),
+                    env_client=env,
+                    policy_client=policy,
+                )
             )
             return report.scores
 
@@ -215,7 +230,7 @@ async def test_optimize_instruction_climbs_from_vague_to_precise(tmp_path):
         assert instruction_quality(result.best_instruction, REQUIRED) >= 2 / 3
         assert result.best_instruction.split(), "the optimized instruction is non-empty"
     finally:
-        await container.shutdown()
+        await resources.aclose()
 
 
 @pytest.mark.asyncio
@@ -224,7 +239,8 @@ async def test_sweep_is_paired_and_position_invariant(tmp_path):
     sits in the candidate list — variants are graded on the SAME paired
     init-states (slot-keyed seeds), not on disjoint position-keyed ones. This is
     the A/B-pairing the thesis depends on; locks seed = task*1000 + seed_slot."""
-    container = ServiceContainer()
+    resources = build_test_runtime(tmp_path)
+    dispatcher = resources.dispatcher
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ipair")
     targets = _targets()
     try:
@@ -234,17 +250,19 @@ async def test_sweep_is_paired_and_position_invariant(tmp_path):
         )
 
         async def sweep(variants):
-            report = await container.application.sweep_physical_instructions(
-                InstructionSweepConfig(
-                    suite="scripted",
-                    task_id=TASK_ID,
-                    variants=tuple(variants),
-                    seeds_per_variant=SEEDS,
-                    max_steps=MAX_STEPS,
-                    storage=storage,
-                ),
-                env_client=env,
-                policy_client=policy,
+            report = await dispatcher.apply(
+                SweepPhysicalInstructions(
+                    config=InstructionSweepConfig(
+                        suite="scripted",
+                        task_id=TASK_ID,
+                        variants=tuple(variants),
+                        seeds_per_variant=SEEDS,
+                        max_steps=MAX_STEPS,
+                        storage=storage,
+                    ),
+                    env_client=env,
+                    policy_client=policy,
+                )
             )
             return report.scores
 
@@ -256,7 +274,7 @@ async def test_sweep_is_paired_and_position_invariant(tmp_path):
                 f"{forward[instruction]} vs {reversed_[instruction]}"
             )
     finally:
-        await container.shutdown()
+        await resources.aclose()
 
 
 @pytest.mark.asyncio
@@ -264,7 +282,8 @@ async def test_sweep_resets_policy_state_between_runs(tmp_path):
     """The sweep must drop a stateful policy's per-env buffers at
     each sweep boundary, so a reused env_key never replays a prior sweep's
     recurrent state (the VlaJepaPolicyClient chunk-leak). Locks the reset() call."""
-    container = ServiceContainer()
+    resources = build_test_runtime(tmp_path)
+    dispatcher = resources.dispatcher
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ireset")
     targets = _targets()
 
@@ -280,21 +299,23 @@ async def test_sweep_resets_policy_state_between_runs(tmp_path):
             targets=targets, required_keywords=REQUIRED, gain=GAIN, max_step=MAX_STEP
         )
         for _ in range(2):
-            await container.application.sweep_physical_instructions(
-                InstructionSweepConfig(
-                    suite="scripted",
-                    task_id=TASK_ID,
-                    variants=("reach red",),
-                    seeds_per_variant=SEEDS,
-                    max_steps=MAX_STEPS,
-                    storage=storage,
-                ),
-                env_client=env,
-                policy_client=policy,
+            await dispatcher.apply(
+                SweepPhysicalInstructions(
+                    config=InstructionSweepConfig(
+                        suite="scripted",
+                        task_id=TASK_ID,
+                        variants=("reach red",),
+                        seeds_per_variant=SEEDS,
+                        max_steps=MAX_STEPS,
+                        storage=storage,
+                    ),
+                    env_client=env,
+                    policy_client=policy,
+                )
             )
         assert _SpyPolicy.resets == 2, "each sweep must reset the policy's per-env state"
     finally:
-        await container.shutdown()
+        await resources.aclose()
 
 
 @pytest.mark.asyncio
