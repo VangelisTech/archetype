@@ -377,6 +377,14 @@ examples-smoke: examples-local
 OPERATIONAL_BUILD_COMMAND ?= $(MAKE) --no-print-directory build
 OPERATIONAL_DIST_DIR ?= dist
 OPERATIONAL_WHEEL_RESULTS ?= operational-results.json
+OPERATIONAL_COMMANDS_RESULTS ?= operational-commands-source-results.json
+
+.PHONY: operational-commands
+operational-commands:
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
+		--mode source --cadence pr --max-tier 1 --require-run \
+		--scenario dogfood.commands.local \
+		--out "$(OPERATIONAL_COMMANDS_RESULTS)"
 
 .PHONY: operational-wheel
 operational-wheel:
@@ -398,6 +406,7 @@ operational-wheel:
 			--scenario example.06_trajectory_analysis \
 			--scenario example.10_autoresearch \
 			--scenario example.14_physical_ai \
+			--scenario dogfood.commands.local \
 			--scenario dogfood.agent_mission.scripted \
 			--wheel "$$wheel" --out "$(OPERATIONAL_WHEEL_RESULTS)" || runner_status=$$?; \
 		if [ "$$build_status" -ne 0 ]; then \
@@ -419,7 +428,7 @@ operational-external:
 		--out operational-external-results.json
 
 .PHONY: verify-pr
-verify-pr: static test-cov eval-conformance eval-capability package-smoke examples-smoke operational-wheel docs
+verify-pr: static test-cov eval-conformance eval-capability package-smoke examples-smoke operational-commands operational-wheel docs
 	@echo "PR verification profile passed"
 
 .PHONY: verify-full

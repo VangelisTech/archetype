@@ -154,6 +154,52 @@ def test_example_smoke_keeps_the_coding_agent_authoring_check_credential_free() 
     assert "pr" in mission["required_cadence"]
 
 
+def test_commands_operational_receipt_is_required_from_source_and_wheel() -> None:
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    with OPERATIONAL_SCENARIOS.open("rb") as stream:
+        scenarios = tomllib.load(stream)["scenario"]
+    commands = next(row for row in scenarios if row["id"] == "dogfood.commands.local")
+
+    assert commands["owner"] == "commands"
+    assert commands["source_command"] == [
+        "pytest",
+        "-q",
+        "tests/integration/test_commands_operational.py",
+    ]
+    assert commands["semantic_oracle"] == {
+        "kind": "pytest",
+        "ref": "tests/integration/test_commands_operational.py",
+    }
+    assert commands["tier"] == 1
+    assert commands["applicability"] == ["source", "wheel"]
+    assert commands["prerequisites"] == []
+    assert commands["missing_prerequisite"] == "fail"
+    assert commands["contracts"] == [
+        "gateway.authorization.rbac",
+        "commands.identity.idempotent",
+        "commands.settlement.atomic",
+        "commands.failure.preserves_progress",
+    ]
+
+    source = re.search(
+        r"^operational-commands:\n(?P<body>(?:\t.*\n)+)",
+        makefile,
+        re.MULTILINE,
+    )
+    wheel = re.search(
+        r"^operational-wheel:\n(?P<body>(?:\t.*\n)+)",
+        makefile,
+        re.MULTILINE,
+    )
+    verify_pr = re.search(r"^verify-pr:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE)
+    assert source is not None
+    assert wheel is not None
+    assert verify_pr is not None
+    assert source.group("body").count("--scenario dogfood.commands.local") == 1
+    assert wheel.group("body").count("--scenario dogfood.commands.local") == 1
+    assert "operational-commands" in verify_pr.group("dependencies").split()
+
+
 def test_operational_receipts_are_uploaded_even_when_a_scenario_fails() -> None:
     workflow = QUALITY_WORKFLOW.read_text(encoding="utf-8")
     evals = _job(workflow, "evals")
