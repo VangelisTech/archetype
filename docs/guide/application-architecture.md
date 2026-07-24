@@ -43,10 +43,12 @@ or CLI boundary; it does not assemble the internal service graph.
 
 ## 3. Canonical application paths
 
-`RuntimeApplication` is the actor-free application facade. It exposes canonical
-ID-oriented product operations and delegates each workflow to its owning
-family. It owns no transport, authentication, authorization, storage backend,
-grader implementation, or durable queue state.
+`RuntimeApplication` is the actor-free application adapter. Its world methods
+construct exact family operation models and enter the commands-owned dispatcher
+through trusted modes; workflows that have not yet moved to top-level
+registrations delegate through their owning application-family ports. It owns
+no transport, authentication, authorization, storage backend, grader
+implementation, or durable queue state.
 
 Trusted local scripts use it through the ergonomic runtime:
 
@@ -54,8 +56,8 @@ Trusted local scripts use it through the ergonomic runtime:
 application code
   -> ArchetypeRuntime / RuntimeWorld
   -> RuntimeApplication
-  -> app-family ports
-  -> core
+  -> CommandDispatcher.apply / defer
+  -> registered family handler
 ```
 
 Untrusted callers use an authorized server boundary:
@@ -65,23 +67,24 @@ CLI or remote client
   -> REST API over HTTP
   -> authentication adapter
   -> CommandGateway(ActorCtx)
-  -> RuntimeApplication
-  -> app-family ports
-  -> core
+  -> CommandDispatcher.apply_as / defer_as
+  -> the same registered family handler
 ```
 
 The CLI is an HTTP client except for the server-startup entrypoint. It does not
 authorize calls or import application/runtime implementation code. FastAPI
 translates transport models and authenticates principals. `CommandGateway`
-authorizes; it does not translate HTTP or implement domain workflows.
+constructs exact operations and delegates actor-aware entry; it does not
+translate HTTP, own authorization policy, or implement domain workflows.
 
 Other untrusted ingress, including MCP tools, sandboxed agents, or multi-tenant
 embeddings, uses the same gateway even when HTTP is not involved.
 
 The concrete `ArchetypeRuntime` is not a dependency of `archetype.app`.
-`RuntimeApplication` is the lower actor-free seam shared by runtime and gateway,
-so scripting-only handles, sync wrappers, callbacks, and local lifetime do not
-leak into the server.
+`RuntimeApplication` and `CommandGateway` are parallel trusted and actor-aware
+adapters over the same commands dispatcher and family models. Scripting-only
+handles, sync wrappers, callbacks, and local lifetime therefore do not leak
+into the server.
 
 ## 4. Package direction and family layout
 
@@ -163,17 +166,15 @@ The current authority layout is:
 src/archetype/
   errors.py          stable shared boundary-error bases
   storage/           physical rows, catalogs, commits, scans and app tables
+  world/             lifecycle, mutation, simulation, query and exact operation models
+  commands/          registry, policy, dispatch, durable scheduling and audit projection
   app/
-    application/     RuntimeApplication, its port, and boundary-safe models
-    world/           world lifecycle, mutation, and simulation
-    query/           persisted ECS read paths
+    application/     actor-free RuntimeApplication adapter and workflow composition
     ingestion/       live storage selection and typed-ingestion bridge
     artifacts/       file discovery, immutable object storage and media indexes
     redaction/       pre-durability secret scanning, receipts and quarantine
     evaluation/      grading orchestration, snapshot pinning and receipt writes
-    commands/        durable ledger, scheduling, dispatch, settlement
-    gateway/         authorization policy boundary
-    audit/           journals, outboxes, projections
+    gateway/         transport-shaped actor-aware adapter
     research/        autoresearch and multi-run research workflows
     missions/        mission graph and external-I/O composition
     physical_ai/     batched evaluation and instruction-sweep workflow
@@ -212,8 +213,10 @@ application code -> archetype.runtime
 CLI              -> REST API over HTTP
 runtime          -> app.application contracts and safe models
 API              -> app.gateway contracts, safe models, and app errors
-gateway          -> app.application port plus auth/audit ports
+application/gateway adapters -> commands dispatcher plus family models/contracts
 app families     -> top-level family contracts, approved app-family ports, core
+commands         -> storage and world
+world            -> storage
 top-level family -> core and explicitly declared lower top-level families
 core             -> foundation and third-party libraries only
 ```
@@ -287,13 +290,12 @@ or CLI boundary.
 | Ingestion | Select live storage configuration and delegate typed publication | Storage and world-coordinate ports |
 | Artifacts | File discovery, metadata scans, immutable content-addressed objects, and common/media indexes | Ingestion, storage and world-coordinate ports |
 | Evaluation | Snapshot pinning, grader contracts, grading, evidence and durable results | Query, ingestion, storage and world-coordinate ports |
-| Commands | Durable admission, order, leasing, lock-held materialization, retry, settlement and dead letters | Control catalog plus exact world handlers |
-| Audit | Transactional journal/outbox and analytical projection | Storage or control-authority ports |
+| Commands | Exact registration, authorization policy, governed direct/deferred entry, durable admission, order, leasing, lock-held materialization, retry, settlement, dead letters, transactional outbox and analytical audit projection | Storage/control catalog plus exact world handlers |
 | Research | Multi-run research workflows and bounded persisted-control reads | World registry/lifecycle and storage ports plus world simulation functions and explicit evaluator callbacks |
 | Physical AI | Batched evaluation and instruction-sweep workflows with typed terminal reports | World registry/lifecycle, evaluation, and storage ports plus world mutation/simulation functions |
 | Missions | Graph materialization, tick/external-I/O composition, terminal projection, transcript ingestion, and trajectory query/evaluation composition. Family processors retain transition authority; trajectory evidence cannot advance tasks. | Consumes a structural mission world, family-owned sandbox resource, artifact/ingestion/redaction ports for transcripts, and query/evaluation ports for trajectory reads. |
-| RuntimeApplication | Canonical actor-free application facade and per-world operation serialization | Approved family workflow ports only |
-| CommandGateway | Authorization, safe downgrade, access-audit notification, delegation | RuntimeApplication port, authorizer, audit-journal port |
+| RuntimeApplication | Actor-free adapter that constructs exact family operations and composes the still-application-owned workflows | Commands dispatcher plus approved family workflow ports |
+| CommandGateway | Transport-shaped actor-aware adapter that constructs the same exact operations and delegates governed entry | Commands dispatcher/policy plus the temporary bounded PR-3 workflow bridge |
 | ServiceContainer | Concrete construction, ownership, and callback wiring | Every concrete implementation it constructs |
 
 World mutation and simulation functions share the registry's exact-world
@@ -303,27 +305,28 @@ never pins snapshots, invokes graders, or persists evaluation receipts.
 
 ## 6. Gateway and trust-boundary policy
 
-The authorized boundary names are `CommandGateway` and `iCommandGateway`.
+The actor-aware boundary names are `CommandGateway` and `iCommandGateway`.
 
 The gateway:
 
 1. accepts an authenticated `ActorCtx`;
-2. authorizes the requested operation and applicable resource/cost effects;
-3. delegates to `RuntimeApplication`;
-4. emits access-decision evidence through the audit port; and
-5. returns a boundary-safe result.
+2. constructs the exact family operation model;
+3. enters the commands-owned dispatcher through an actor-aware mode; and
+4. returns a boundary-safe result.
 
-The gateway owns no worlds, services, command queue, grading workflow,
-ingestion transaction, durable result, or audit storage. It is stateless policy
-machinery over injected ports.
+The commands-owned `Policy` and `CommandDispatcher` perform authorization,
+quota debit, admission, handler dispatch, and bounded advisory access evidence.
+The gateway owns no policy counter, worlds, services, command queue, grading
+workflow, ingestion transaction, durable result, or audit storage.
 
-`ActorCtx` does not cross below the gateway. When an admitted operation needs
-durable provenance, the gateway converts the principal into an immutable
-application-owned admission record. Trusted local operations use an explicit
-local origin rather than fabricating an admin authorization event.
+`ActorCtx` crosses the gateway only into commands-owned policy/dispatch
+machinery; it never reaches a registered family handler. When an admitted
+operation needs durable provenance, commands snapshot the principal into its
+immutable admission record. Trusted local operations use an explicit local
+origin rather than fabricating an admin authorization event.
 
 Authentication belongs to the ingress adapter. Authorization belongs to the
-gateway. The CLI merely transports credentials.
+commands policy/dispatcher. The CLI merely transports credentials.
 
 ## 7. Commands, commits, artifacts, and audit
 
@@ -359,10 +362,11 @@ dispatch/review observation seams as described in
 in section 13 is the accepted v0.5 target for those seams, not a claim about
 the current implementation.
 
-The durable scheduler/dispatcher belongs to the commands family, not to the gateway. Both
-trusted runtime operations and authorized remote admission may use it. The
-gateway authorizes remote admission and delegates; simulation invokes a named
-commands-family drain callback at the tick boundary.
+The durable scheduler/dispatcher belongs to the commands family, not to the
+gateway. Both trusted runtime operations and actor-aware remote admission may
+use it. The gateway constructs and delegates the exact operation; the
+commands dispatcher authorizes actor-aware admission. Simulation invokes a
+named commands-family drain callback at the tick boundary.
 
 `StorageService` owns the catalog-derived world/run envelope, extends
 caller-keyed conditional keys with that identity, and owns `daft.Catalog`
@@ -502,7 +506,8 @@ Together, the repository's architecture and observability checkers must:
   contracts without treating that path as public-API promotion;
 - reject direct `Component` subclasses anywhere under `archetype.app`;
 - enforce the existing outer-package and application-family dependency rules;
-- confine `ActorCtx` to gateway/auth code and approved adapter construction;
+- confine commands-owned `ActorCtx` to policy/dispatch, gateway compatibility,
+  and approved adapter construction;
 - restrict concrete cross-family construction to `container.py`;
 - reject concrete-service inheritance;
 - reserve application-owned terminal Daft, Iceberg, and catalog-table
@@ -522,11 +527,12 @@ repository without rejection tests is not an executable architecture contract.
 
 ## 12. Current enforcement state
 
-The family packages, actor-free application facade, authorized gateway,
-durable command scheduler, local/remote control authority, artifact and
-evaluation ownership, and co-located protocols are implemented. Runtime calls
-do not fabricate `ActorCtx`; API routes depend on `iCommandGateway`; concrete
-services and the container are not top-level exports.
+The family packages, actor-free application adapter, actor-aware gateway,
+commands-owned registry/policy/dispatcher/scheduler/audit projection,
+local/remote control authority, artifact and evaluation ownership, and
+co-located protocols are implemented. Runtime calls do not fabricate
+`ActorCtx`; API routes depend on `iCommandGateway`; concrete services and the
+container are not top-level exports.
 
 Agent Missions V1 is implemented under `archetype.missions`,
 `archetype.app.missions.service`, and `archetype.runtime.missions`. The
@@ -537,8 +543,9 @@ resources within the mission family.
 
 `quality/architecture.toml` contains the scalar policy and application-family
 DAG. Per-family fragments under `quality/architecture.d/` register the
-top-level dispositions for `artifacts`, `evaluation`, `graph`, `missions`,
-`physical_ai`, `projections`, `research`, and `storage`.
+top-level dispositions for `artifacts`, `commands`, `evaluation`, `graph`,
+`ingestion`, `missions`, `physical_ai`, `projections`, `research`, `storage`,
+and `world`.
 `scripts/check_architecture.py` enforces their package direction, protocol
 imports, concrete construction, concrete inheritance, and persistent
 Component placement.
@@ -577,11 +584,12 @@ three existing gateway decorators remain children, and Issue #515 owns
 coherent ingress roots. The existing footgun reviewer complements this
 deterministic audit with semantic observability review.
 
-Other deliberately retained implementation seams are documented rather than
-hidden: audit/application history remains an `iAuditLog` concern, while
-durable ECS reads belong to `archetype.world.query`; the root `app/models.py`
-holds cross-family boundary models. Changing that model ownership is a
-separate contract decision, not undocumented drift.
+Other deliberately retained compatibility seams are documented rather than
+hidden. Durable ECS reads belong to `archetype.world.query`; audit history is
+the commands-owned `GetAuditHistory`/`AuditLog` projection. The root
+`app/models.py` contains only the finite legacy command envelope and its
+six-operation translator, while `app.gateway.auth.models` re-exports the
+commands-owned `ActorCtx` for ingress compatibility.
 
 ## 13. Accepted v0.5 target architecture
 
