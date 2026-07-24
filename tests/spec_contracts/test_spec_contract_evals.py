@@ -23,7 +23,7 @@ def _runtime_import_result(tmp_path, monkeypatch, source_text):
 
     return next(
         result
-        for result in spec_contracts.task_runtime_gate_only_boundary()
+        for result in spec_contracts.task_runtime_dispatcher_boundary()
         if result.grader_name == "runtime_app_imports"
     )
 

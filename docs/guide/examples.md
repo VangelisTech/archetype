@@ -38,7 +38,7 @@ from trusted scripting; the dispatcher-policy and API tests cover role policy.
 
 **What it demonstrates:**
 
-- **SPAWN / DESPAWN / UPDATE** through the runtime application surface
+- **SPAWN / DESPAWN / UPDATE** through the runtime world surface
 - **ADD_COMPONENT / REMOVE_COMPONENT** with archetype migration at tick boundaries
 - **ADD_PROCESSOR** to inject a `MovementProcessor` at runtime
 - **FORK** while preserving runtime ownership and independent world identity

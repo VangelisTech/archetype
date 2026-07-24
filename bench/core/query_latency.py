@@ -246,7 +246,7 @@ def _assert_row_count(case: QueryCase, observed: int) -> None:
 
 
 def _audit_storage_for(storage: StorageConfig) -> StorageConfig:
-    """Derive the CommandGateway audit store without changing the measured backend."""
+    """Derive the dispatcher audit store without changing the measured backend."""
     return storage.model_copy(
         update={
             "namespace": f"{storage.namespace}__audit",

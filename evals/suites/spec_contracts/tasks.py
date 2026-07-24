@@ -70,14 +70,18 @@ SPEC_CASES: tuple[SpecCase, ...] = (
     SpecCase(
         spec_id="runtime.R1",
         source="runtime.md",
-        anchors=("R1", "`app.application` port", "internal container"),
-        task_id="spec.runtime_gate_only_boundary",
+        anchors=(
+            "R1",
+            "Exact-operation dispatcher execution",
+            "`RuntimeResources` lifetime state",
+        ),
+        task_id="spec.runtime_dispatcher_boundary",
     ),
     SpecCase(
         spec_id="runtime.R2",
         source="runtime.md",
-        anchors=("R2", "`world_id` after activation", "concrete app service"),
-        task_id="spec.runtime_gate_only_boundary",
+        anchors=("R2", "never live capabilities", "`world_id` after activation"),
+        task_id="spec.runtime_dispatcher_boundary",
     ),
     SpecCase(
         spec_id="command-gate.3",
@@ -93,7 +97,7 @@ SPEC_CASES: tuple[SpecCase, ...] = (
             "Pure role denial happens before",
             "access evidence",
         ),
-        task_id="spec.command_gateway_gate_map",
+        task_id="spec.dispatcher_gate_map",
     ),
     SpecCase(
         spec_id="world-lifecycle.7",
@@ -415,8 +419,8 @@ def task_role_permission_matrix() -> list[GraderResult]:
     ]
 
 
-def task_runtime_gate_only_boundary() -> list[GraderResult]:
-    """Runtime depends on the application port and stores no live world refs."""
+def task_runtime_dispatcher_boundary() -> list[GraderResult]:
+    """Runtime uses exact dispatcher/resources seams and stores no live world refs."""
     runtime_dir = SRC / "runtime"
     import_checks: dict[str, bool] = {}
     world_ref_checks: dict[str, bool] = {}
@@ -460,7 +464,7 @@ def task_runtime_gate_only_boundary() -> list[GraderResult]:
     ]
 
 
-def task_command_gateway_gate_map() -> list[GraderResult]:
+def task_dispatcher_gate_map() -> list[GraderResult]:
     """Exact registrations keep policy, actor entry, and durability aligned."""
     expected_permissions = {
         model_name: permission
@@ -745,16 +749,16 @@ def register(harness: EvalHarness) -> None:
         desc="Role permissions match command-gate.md exactly.",
     )
     harness.add(
-        "spec.runtime_gate_only_boundary",
+        "spec.runtime_dispatcher_boundary",
         suite=SUITE,
-        fn=task_runtime_gate_only_boundary,
-        desc="Runtime depends on RuntimeApplication-facing ports and stores no live world refs.",
+        fn=task_runtime_dispatcher_boundary,
+        desc="Runtime uses exact dispatcher/resources seams and stores no live world refs.",
     )
     harness.add(
-        "spec.command_gateway_gate_map",
+        "spec.dispatcher_gate_map",
         suite=SUITE,
-        fn=task_command_gateway_gate_map,
-        desc="CommandGateway public methods use the documented gate and audit shape.",
+        fn=task_dispatcher_gate_map,
+        desc="Dispatcher actor-aware methods use the documented policy and audit shape.",
     )
     harness.add(
         "spec.append_only_protocols",

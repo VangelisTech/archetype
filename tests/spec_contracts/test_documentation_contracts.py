@@ -50,8 +50,10 @@ def test_trusted_runtime_example_keeps_rbac_at_the_adapter_boundary() -> None:
     world_mutations = guide.split("## 2. Fork for Counterfactuals", maxsplit=1)[0]
 
     assert "actor-free `ArchetypeRuntime`" in world_mutations
-    assert "does not construct\nan `ActorCtx`" in world_mutations
-    assert "pass through `CommandGateway`" in world_mutations
+    assert "trusted dispatcher\nentry" in world_mutations
+    assert "does not construct an `ActorCtx`" in world_mutations
+    assert "untrusted-adapter permission matrix" in world_mutations
+    assert "CommandGateway" not in world_mutations
     assert "Runtime operations in this example" in world_mutations
     assert "Gated operations in this example" not in world_mutations
 
