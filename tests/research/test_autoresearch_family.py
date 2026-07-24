@@ -14,6 +14,8 @@ from dataclasses import fields
 from pathlib import Path
 from typing import get_type_hints
 
+from pydantic import TypeAdapter
+
 from archetype.missions import Candidate
 from archetype.research import contracts, models
 from archetype.research.handlers import _config_identity
@@ -78,6 +80,8 @@ def test_public_research_signature_annotations_resolve() -> None:
     assert get_type_hints(AutoResearchConfig)["episode_config"] is EpisodeConfig
     assert get_type_hints(models.IterationResult)["rollout"] is RolloutResult
     assert get_type_hints(Evaluator.__call__)["rollout"] is RolloutResult
+    assert "episode_config" in TypeAdapter(AutoResearchConfig).json_schema()["properties"]
+    assert "rollout" in TypeAdapter(models.IterationResult).json_schema()["properties"]
 
 
 def test_models_import_without_core_world_or_dataframe_stacks() -> None:
