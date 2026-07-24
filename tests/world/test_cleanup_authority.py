@@ -271,3 +271,46 @@ async def test_cleanup_retry_reconciles_receipt_before_finish_close() -> None:
     assert await registry.contains(sibling.world_id)
     async with registry.operation(sibling.world_id) as live_sibling:
         assert live_sibling is sibling
+
+
+async def test_cleanup_finish_requires_exact_unsettled_command_cancellation() -> None:
+    from archetype.core.interfaces import CommittedTickReceipt
+    from archetype.world.registry import WorldRegistry
+    from archetype.world.simulation import reconcile_committed_work_locked
+
+    WorldCleanup = _cleanup_type()
+    events: list[str] = []
+    world = _CleanupWorld(
+        "00000000-0000-7000-8000-0000000000a1",
+        "command-cleanup",
+        CommittedTickReceipt,
+    )
+    registry = WorldRegistry()
+    await registry.insert(world)
+    lease = await registry.begin_close(world.world_id)
+    lifecycle = _Lifecycle(
+        registry,
+        reconcile_committed_work_locked,
+        events,
+    )
+
+    async def cancel_unsettled(world_id: object) -> int:
+        events.append(f"cancel:{world_id}")
+        return 2
+
+    cleanup = WorldCleanup(
+        registry=registry,
+        lifecycle=lifecycle,
+        world_id=world.world_id,
+        lease=lease,
+        cancel_unsettled=cancel_unsettled,
+    )
+
+    await cleanup.finish()
+
+    assert events == [
+        f"cancel:{world.world_id}",
+        "destroy:reconcile",
+        "destroy:finish",
+    ]
+    assert not await registry.contains(world.world_id)
