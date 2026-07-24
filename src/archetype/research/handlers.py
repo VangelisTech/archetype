@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from pydantic_core import to_jsonable_python
-from uuid_utils import UUID
+from uuid_utils import UUID, uuid7
 
 from archetype.core.config import RunConfig, WorldConfig
 from archetype.research.components import BranchHead, Experiment, Result, Run, RunStatus
@@ -266,17 +266,23 @@ async def _run_autoresearch(
 
     initial_score = incumbent_score
     iterations: list[IterationResult] = []
+    invocation_token = str(uuid7()) if not config.record_to_ledger else None
 
     for i in range(start_iteration, start_iteration + config.max_iterations):
         run_id = f"{config.experiment_id}:iter{i}"
         # The display name is intentionally not experiment identity. Derive
         # fork names from the stable id so unrelated experiments may share it.
+        name_prefix = f"autoresearch:{config.experiment_id}:iter{i}"
+        if invocation_token is not None:
+            name_prefix = (
+                f"autoresearch:{config.experiment_id}:invocation:{invocation_token}:iter{i}"
+            )
         rollout_config = RolloutConfig(
             episode_config=config.episode_config,
             num_episodes=config.num_episodes,
             parallel=config.parallel,
             destroy_forks_on_complete=config.destroy_forks_on_complete,
-            name_prefix=f"autoresearch:{config.experiment_id}:iter{i}",
+            name_prefix=name_prefix,
         )
 
         started_at_ms = int(time.time() * 1000)

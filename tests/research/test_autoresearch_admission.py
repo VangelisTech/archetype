@@ -47,6 +47,7 @@ def _config(
     *,
     experiment_name: str | None = None,
     record_to_ledger: bool = True,
+    destroy_forks_on_complete: bool = False,
 ) -> AutoResearchConfig:
     return AutoResearchConfig(
         experiment_name=experiment_name or experiment_id,
@@ -57,6 +58,7 @@ def _config(
         num_episodes=1,
         max_iterations=1,
         record_to_ledger=record_to_ledger,
+        destroy_forks_on_complete=destroy_forks_on_complete,
     )
 
 
@@ -285,13 +287,18 @@ async def test_cancellation_releases_experiment_admission_for_resume(tmp_path) -
 async def test_record_to_ledger_false_bypasses_keyed_admission(tmp_path) -> None:
     resources = build_test_runtime(tmp_path)
     dispatcher = resources.dispatcher
-    handler = _family_handler(dispatcher)
+    admissions = _TrackingAdmissions()
+    handler = _family_handler(dispatcher, admissions)
     release = asyncio.Event()
     entered = [asyncio.Event(), asyncio.Event()]
     tasks: list[asyncio.Task[Any]] = []
     try:
         base = await _base_world(dispatcher, tmp_path, "ephemeral-experiment-base")
-        config = _config("ephemeral-experiment", record_to_ledger=False)
+        config = _config(
+            "ephemeral-experiment",
+            record_to_ledger=False,
+            destroy_forks_on_complete=True,
+        )
 
         def candidate(index: int) -> Callable[[Any], Any]:
             async def prepare(_context: Any) -> None:
@@ -318,6 +325,18 @@ async def test_record_to_ledger_false_bypasses_keyed_admission(tmp_path) -> None
             timeout=5,
         )
         assert all(not task.done() for task in tasks)
+        assert admissions.attempts == 0
+
+        release.set()
+        results = await asyncio.gather(*tasks)
+        assert [result.iterations[0].iteration for result in results] == [0, 0]
+        fork_ids = [str(result.iterations[0].rollout.episodes[0].world_id) for result in results]
+        assert len(set(fork_ids)) == 2
+        world_registry = dispatcher._registry.resolve_name("step").handler.args[0]
+        assert [await world_registry.contains(fork_id) for fork_id in fork_ids] == [
+            False,
+            False,
+        ]
     finally:
         for task in tasks:
             task.cancel()
