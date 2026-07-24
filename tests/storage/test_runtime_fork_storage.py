@@ -18,12 +18,17 @@ that replaces None with a default before the service ever sees it.
 
 from __future__ import annotations
 
+from functools import partial
+
 import pytest
 from daft import DataFrame, col
 
 from archetype import ArchetypeRuntime, AsyncProcessor, Component
 from archetype.core.config import StorageConfig
+from archetype.storage.service import StorageService
+from archetype.world.models import ComponentTypeRef, QueryComponents
 from archetype.world.query import get_lineage
+from archetype.world.registry import WorldRegistry
 
 
 class Meter(Component):
@@ -40,6 +45,36 @@ class Inc(AsyncProcessor):
 
 def _storage(tmp_path) -> StorageConfig:
     return StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+
+
+def _query_owners(runtime: ArchetypeRuntime) -> tuple[WorldRegistry, StorageService]:
+    """Return the true owners bound into the exact query operation."""
+
+    handler = runtime._resources.dispatcher._registry.resolve_name("query_components").handler
+    assert isinstance(handler, partial)
+    assert len(handler.args) == 2
+    registry, storage = handler.args
+    assert isinstance(registry, WorldRegistry)
+    assert isinstance(storage, StorageService)
+    return registry, storage
+
+
+async def _query_exact(
+    runtime: ArchetypeRuntime,
+    component: type[Component],
+    *,
+    world_id: object,
+    run_id: object,
+    storage_config: StorageConfig | None = None,
+):
+    return await runtime._resources.dispatcher.apply(
+        QueryComponents(
+            components=(ComponentTypeRef.from_type(component),),
+            world_id=world_id,
+            run_id=run_id,
+            storage_config=storage_config,
+        )
+    )
 
 
 @pytest.mark.asyncio
@@ -93,22 +128,22 @@ async def test_runtime_fork_writes_land_in_source_store(tmp_path):
         fork = await world.fork("fork")
         await fork.step()
 
-        container = rt._container
-        fork_world = await container.world_registry.live_world(str(fork.world_id))
-        assert fork_world is not None
+        fork_info = await fork.info()
         rows_in_source_store = (
-            await container.application.query_components(
-                [Meter],
-                world_id=str(fork.world_id),
-                run_id=str(fork_world.run_id),
+            await _query_exact(
+                rt,
+                Meter,
+                world_id=fork.world_id,
+                run_id=fork_info.run_id,
                 storage_config=storage,
             )
         ).count_rows()
         with pytest.raises(KeyError, match="not recorded in catalog"):
-            await container.application.query_components(
-                [Meter],
-                world_id=str(fork.world_id),
-                run_id=str(fork_world.run_id),
+            await _query_exact(
+                rt,
+                Meter,
+                world_id=fork.world_id,
+                run_id=fork_info.run_id,
                 storage_config=StorageConfig(),
             )
         assert rows_in_source_store >= 1
@@ -140,17 +175,17 @@ async def test_runtime_fork_explicit_storage_override_still_wins(tmp_path, caplo
         await fork.spawn(Meter(value=10.0))
         await fork.step()
 
-        container = rt._container
-        fork_world = await container.world_registry.live_world(str(fork.world_id))
-        assert fork_world is not None
-        record = await container.world_registry.storage_record(str(fork.world_id))
+        fork_info = await fork.info()
+        registry, _storage_service = _query_owners(rt)
+        record = await registry.storage_record(str(fork.world_id))
         assert record is not None
         assert record[0].uri == fork_storage.uri
         rows = (
-            await container.application.query_components(
-                [Meter],
-                world_id=str(fork.world_id),
-                run_id=str(fork_world.run_id),
+            await _query_exact(
+                rt,
+                Meter,
+                world_id=fork.world_id,
+                run_id=fork_info.run_id,
                 storage_config=fork_storage,
             )
         ).count_rows()
@@ -168,15 +203,16 @@ async def test_fork_lineage_persisted_under_fork_run_id(tmp_path):
         await world.step()
 
         fork = await world.fork("fork")
-        container = rt._container
-        fork_world = await container.world_registry.live_world(str(fork.world_id))
+        fork_info = await fork.info()
+        registry, storage_service = _query_owners(rt)
+        fork_world = await registry.live_world(str(fork.world_id))
         assert fork_world is not None
-        assert fork_world.run_id, "fork must mint its run_id at fork time"
+        assert fork_info.run_id, "fork must mint its run_id at fork time"
 
         recovered = await get_lineage(
-            container.storage_service,
+            storage_service,
             str(fork.world_id),
-            str(fork_world.run_id),
+            str(fork_info.run_id),
             storage_config=storage,
         )
         assert recovered == list(fork_world.lineage)
@@ -184,8 +220,8 @@ async def test_fork_lineage_persisted_under_fork_run_id(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_application_query_resolves_world_storage_without_config(tmp_path):
-    """The application knows where a world's rows live: a read with no
+async def test_dispatcher_query_resolves_world_storage_without_config(tmp_path):
+    """The dispatcher knows where a world's rows live: a read with no
     storage_config resolves the world's recorded store."""
     storage = _storage(tmp_path)
     async with ArchetypeRuntime() as rt:
@@ -193,13 +229,12 @@ async def test_application_query_resolves_world_storage_without_config(tmp_path)
         await world.spawn(Meter(value=0.0))
         await world.step()
 
-        container = rt._container
-        live = await container.world_registry.live_world(str(world.world_id))
-        assert live is not None
-        df = await container.application.query_components(
-            [Meter],
-            str(world.world_id),
-            str(live.run_id),
-            # no storage_config: the gate must find the rows anyway
+        info = await world.info()
+        df = await _query_exact(
+            rt,
+            Meter,
+            world_id=world.world_id,
+            run_id=info.run_id,
+            # No storage config: the exact query must find the rows anyway.
         )
         assert df.count_rows() >= 1

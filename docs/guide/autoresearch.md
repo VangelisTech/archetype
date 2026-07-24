@@ -25,13 +25,12 @@ async with ArchetypeRuntime() as runtime:
 ```
 
 `examples/10_autoresearch.py` is the full runnable version. The runtime path is
-the supported interface; `ServiceContainer.autoresearch_service` is an internal
-implementation seam used by focused repository tests. There is no REST route
-for AutoResearch. The temporary untrusted `iCommandGateway.autoresearch`
-surface uses the finite PR-3 workflow bridge: commands-owned `Policy` applies
-the explicit `autoresearch` permission and quota before the bridge delegates
-to `RuntimeApplication`. The bridge attempts one bounded advisory access event
-for the loop; that evidence is not workflow authority.
+the supported interface; `AutoResearchService` is an internal implementation
+seam used by focused repository tests. Process wiring registers
+`archetype.research.models.AutoResearch`, and the runtime enters it through
+trusted `CommandDispatcher.apply`. There is no REST route for AutoResearch;
+the registration's actor-aware availability is explicit and does not create a
+second transport contract.
 
 ## What's Implemented
 
@@ -105,17 +104,7 @@ storage:
   before resume
 
 ```python
-from archetype.app.research.contracts import AutoResearchConfig, EvaluationResult
-
-
-async def prepare_candidate(context):
-    candidate = await container.application.fork_world(
-        context.base_world_id,
-        name=f"candidate-{context.iteration}",
-    )
-    # Apply this iteration's candidate changes to the fork here.
-    return candidate.world_id
-
+from archetype import ArchetypeRuntime, AutoResearchConfig, EvaluationResult
 
 def evaluate(rollout):
     return EvaluationResult(
@@ -132,28 +121,31 @@ config = AutoResearchConfig(
     rollout_contract_id="candidate-rollout-v1",
     max_iterations=10,
 )
-result = await container.autoresearch_service.run(
-    base_world_id,
-    config,
-    evaluator=evaluate,
-    prepare_candidate=prepare_candidate,
-)
 
-lab = await container.application.get_world_info(result.lab_world_id)
-heads = await container.application.query_archetype(
-    (BranchHead,),
-    lab.world_id,
-    lab.run_id,
-    ticks=[t],
-)  # head at any tick
+async with ArchetypeRuntime() as runtime:
+    base = runtime.attach(base_world_id)
 
-# Explicitly reattach the same registered lab instead of relying on name lookup.
-resumed = await container.autoresearch_service.run(
-    base_world_id,
-    config,
-    evaluator=evaluate,
-    lab_world_id=result.lab_world_id,
-)
+    async def prepare_candidate(context):
+        source = runtime.attach(context.base_world_id)
+        candidate = await source.fork(name=f"candidate-{context.iteration}")
+        # Apply this iteration's candidate changes to the fork here.
+        return candidate.world_id
+
+    result = await base.autoresearch(
+        config,
+        evaluate,
+        prepare_candidate=prepare_candidate,
+    )
+
+    lab = runtime.attach(result.lab_world_id)
+    heads = await lab.query(BranchHead)  # append-only head history
+
+    # Explicitly reattach the same lab instead of relying on name lookup.
+    resumed = await base.autoresearch(
+        config,
+        evaluate,
+        lab_world_id=result.lab_world_id,
+    )
 ```
 
 `prepare_candidate` receives a `CandidateContext` with deterministic

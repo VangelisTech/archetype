@@ -10,11 +10,11 @@ import pytest
 
 from archetype import __version__
 from archetype.api.app import create_app
-from archetype.api.deps import get_actor_ctx, set_container
-from archetype.app.container import ServiceContainer
+from archetype.api.deps import get_actor_ctx
+from archetype.commands.dispatch import CommandDispatcher
 from archetype.commands.policy import Policy
 from archetype.core.config import RunConfig
-from archetype.world.models import EpisodeConfig, RolloutConfig
+from archetype.world.models import EpisodeConfig, ListSignatures, RolloutConfig
 
 pytest.importorskip("httpx", reason="httpx required for API tests")
 
@@ -30,13 +30,11 @@ class QueryRouteMetric104(Component):
 
 
 @pytest.fixture
-def client():
-    container = ServiceContainer()
-    set_container(container)
+def client(tmp_path, monkeypatch):
+    monkeypatch.setenv("ARCHETYPE_CATALOG_DIR", str(tmp_path / "catalogs"))
     app = create_app()
     with TestClient(app) as c:
         yield c
-    set_container(None)
 
 
 class TestRootRoute:
@@ -194,6 +192,32 @@ class TestCommandRoutes:
         assert resp.status_code == 200
         assert resp.json()["type"] == "spawn"
 
+    def test_submit_command_rejects_caller_reserved_spawn_before_admission(
+        self,
+        client,
+        tmp_path,
+    ):
+        create_resp = client.post(
+            "/worlds",
+            json={"name": "reserved_cmd", "storage_uri": str(tmp_path / "store")},
+        )
+        world_id = create_resp.json()["world_id"]
+
+        resp = client.post(
+            f"/worlds/{world_id}/commands",
+            json={
+                "type": "spawn",
+                "payload": {"entity_id": 41, "components": []},
+            },
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == (
+            "spawn payload cannot supply entity_id; deferred spawn reservations are scheduler-owned"
+        )
+        history = client.get(f"/worlds/{world_id}/commands").json()
+        assert {row.get("type") for row in history}.isdisjoint({"spawn", "spawn_reserved"})
+
     def test_submit_unknown_world_is_not_found(self, client):
         resp = client.post(
             "/worlds/00000000-0000-0000-0000-000000000000/commands",
@@ -213,7 +237,7 @@ class TestCommandRoutes:
             json={"type": "nonexistent_type", "payload": {}},
         )
         assert resp.status_code == 400
-        assert "not a valid CommandType" in resp.json()["detail"]
+        assert "not a registered command operation" in resp.json()["detail"]
 
     def test_submit_batch(self, client, tmp_path):
         create_resp = client.post(
@@ -235,6 +259,37 @@ class TestCommandRoutes:
         ids = resp.json()["command_ids"]
         assert len(ids) == 2
         assert all(isinstance(i, str) for i in ids)
+
+    def test_submit_batch_rejects_caller_reserved_spawn_atomically(
+        self,
+        client,
+        tmp_path,
+    ):
+        create_resp = client.post(
+            "/worlds",
+            json={"name": "reserved_batch", "storage_uri": str(tmp_path / "store")},
+        )
+        world_id = create_resp.json()["world_id"]
+
+        resp = client.post(
+            f"/worlds/{world_id}/commands/batch",
+            json={
+                "commands": [
+                    {"type": "spawn", "payload": {"components": []}},
+                    {
+                        "type": "spawn",
+                        "payload": {"entity_id": "42", "components": []},
+                    },
+                ]
+            },
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == (
+            "spawn payload cannot supply entity_id; deferred spawn reservations are scheduler-owned"
+        )
+        history = client.get(f"/worlds/{world_id}/commands").json()
+        assert {row.get("type") for row in history}.isdisjoint({"spawn", "spawn_reserved"})
 
     def test_submit_batch_invalid_type(self, client, tmp_path):
         create_resp = client.post(
@@ -553,16 +608,16 @@ class TestQueryRoutes:
         expected_uri,
         expected_namespace,
     ):
-        from archetype.app.gateway.service import CommandGateway
         from archetype.core.config import StorageConfig
 
         captured = {}
 
-        async def list_signatures(_self, _ctx, storage_config):
-            captured["config"] = storage_config
+        async def apply_as(_self, _ctx, operation):
+            assert type(operation) is ListSignatures
+            captured["config"] = operation.storage_config
             return []
 
-        monkeypatch.setattr(CommandGateway, "list_signatures", list_signatures)
+        monkeypatch.setattr(CommandDispatcher, "apply_as", apply_as)
         assert client.get(f"/signatures?{query}").status_code == 200
 
         defaults = StorageConfig()

@@ -55,28 +55,36 @@ the same world converge on exactly one row: identical re-registration is a
 no-op; a differing record for the same `world_id` raises
 `CatalogConflictError`.
 
-## 3. Gated discovery API
+## 3. Governed discovery operations
 
-Two read-gated operations on `iCommandGateway`:
+Two exact read operations share trusted and actor-aware dispatcher entry:
 
 ```python
-async def discover_worlds(
-    ctx: ActorCtx, storage_config: StorageConfig
-) -> list[WorldInfo]: ...
+worlds = await dispatcher.apply_as(
+    ctx,
+    DiscoverWorlds(storage_config=storage_config),
+)
 
-async def open_world_readonly(
-    ctx: ActorCtx, storage_config: StorageConfig, world_id: str | UUID
-) -> WorldInfo: ...
+info = await dispatcher.apply_as(
+    ctx,
+    OpenWorldReadonly(
+        storage_config=storage_config,
+        world_id=world_id,
+    ),
+)
 ```
 
-- `discover_worlds` is gated as `LIST_WORLDS`. Unlike `list_worlds` (live
+- `discover_worlds` requires the registered `discover_worlds` permission.
+  Unlike `list_worlds` (live
   process registry), it answers from the catalog: a fresh process sees every
   world ever registered against that storage identity, including destroyed
   ones.
-- `open_world_readonly` is gated as `GET_WORLD_INFO`. It returns the world's
+- `open_world_readonly` requires the registered `open_world_readonly`
+  permission. It returns the world's
   durable descriptor as the existing `WorldInfo` boundary type and raises
   `KeyError` for unrecorded worlds. It never constructs a live mutable
-  world — that is `resume_world` (gated as `CREATE_WORLD`; see
+  world — that is `ResumeWorld` (registered with the `resume_world`
+  permission; see
   [World Lifecycle](world-lifecycle.md) § Resume).
 - Both discovery operations retain the resolved world-to-storage coordinates
   for dependent read services. In particular, audit projection can discover
@@ -103,13 +111,12 @@ for every component the writing process defined.
 
 ```python
 # Process B, sharing nothing with the writer but the storage config:
-infos = await container.command_gateway.discover_worlds(ctx, storage_config)
-info = infos[0]
-assert info.run_id is not None
-df = await container.command_gateway.query_components(
-    ctx, [Score], world_id=str(info.world_id), run_id=str(info.run_id),
-    storage_config=storage_config,
-)
+async with ArchetypeRuntime() as runtime:
+    infos = await runtime.discover(storage_config)
+    info = infos[0]
+    assert info.run_id is not None
+    cold = runtime.attach(info.world_id, storage=storage_config)
+    df = await cold.query(Score)
 ```
 
 `list_signatures` uses the same authority split: it unions the store's

@@ -40,7 +40,7 @@ REQUIRED_CATEGORIES = (
     "missing-type-key",
     "private-api-coupling",
     "monotonic-state",
-    "shared-mutable-state-across-forks",
+    "fork-ownership-mismatch",
     "store-vs-live-reads",
     "governance-bypass",
     "dead-code-contracts",

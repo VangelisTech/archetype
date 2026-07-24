@@ -35,11 +35,13 @@ and `pr-gate.yml`).
 | Supported family value contracts | `archetype.<family>.contracts` or another specifically named family module |
 | Capability-scoped resources and provider adapters implementing a family-owned protocol | A named subpackage of `archetype.<family>` |
 | Durable authority, cross-family orchestration, internal service ports, and concrete application services | `archetype.app.<family>` |
-| Transport, authentication, application facade, and composition | `archetype.api`, `archetype.app.gateway`, `archetype.app.application`, and `archetype.app.container` |
+| Transport and authentication | `archetype.api` |
+| Concrete composition and process lifetime | `archetype.wiring` and `archetype.runtime_resources` |
 
 Top-level domain families depend inward on core and only explicitly declared
-lower family contracts. They never import app, runtime, API, or CLI packages;
-application authority may consume their contracts in the other direction.
+lower family contracts. They never import app, runtime, runtime-resources,
+wiring, API, or CLI packages; application authority may consume their
+contracts in the other direction.
 Every first-party top-level package or module is classified explicitly, and the
 declared family graph must remain acyclic. Importing a root-facade name has the
 same architectural disposition as importing its owning module. Package

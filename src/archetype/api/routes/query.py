@@ -19,14 +19,28 @@ from typing import Any
 from daft import DataFrame
 from fastapi import APIRouter, Depends, Query
 
-from archetype.api.deps import get_actor_ctx, get_command_gateway
+from archetype.api.deps import get_actor_ctx, get_dispatcher
 from archetype.api.errors import raise_api_error
 from archetype.api.models import QueryCountResponse, dataframe_to_rows, hydrate_component_types
 from archetype.api.query_filter import parse_where
-from archetype.app.gateway.auth.models import ActorCtx
-from archetype.app.gateway.interfaces import iCommandGateway
+from archetype.commands.dispatch import CommandDispatcher
+from archetype.commands.models import ActorCtx, GetAuditHistory
+from archetype.core.component import Component
 from archetype.core.config import StorageConfig
-from archetype.world.models import HookInfo, ProcessorInfo, ResourceInfo
+from archetype.world.models import (
+    ComponentTypeRef,
+    GetWorldInfo,
+    HookInfo,
+    ListHooks,
+    ListProcessors,
+    ListResources,
+    ListSignatures,
+    ListWorldSignatures,
+    ProcessorInfo,
+    QueryArchetype,
+    QueryComponents,
+    ResourceInfo,
+)
 
 router = APIRouter(tags=["query"])
 
@@ -56,39 +70,55 @@ def _tick_range(value: str | None) -> tuple[int, int] | None:
     return start, end
 
 
+def _component_refs(
+    component_types: list[type[Component]] | tuple[type[Component], ...],
+) -> tuple[ComponentTypeRef, ...]:
+    return tuple(ComponentTypeRef.from_type(component_type) for component_type in component_types)
+
+
 async def _query_all_state(
-    cs: iCommandGateway,
+    dispatcher: CommandDispatcher,
     ctx: ActorCtx,
     world_id: str,
     *,
     tick: int | None = None,
     entity_ids: list[int] | None = None,
 ) -> list[dict[str, Any]]:
-    query_world_id, run_id = await _query_ids(cs, ctx, world_id)
+    query_world_id, run_id = await _query_ids(dispatcher, ctx, world_id)
     rows: list[dict[str, Any]] = []
-    for sig in await cs.list_signatures(ctx, world_id=world_id):
-        df = await cs.query_archetype(
+    signatures = await dispatcher.apply_as(
+        ctx,
+        ListWorldSignatures(world_id=world_id),
+    )
+    for signature in signatures:
+        df = await dispatcher.apply_as(
             ctx,
-            sig,
-            query_world_id,
-            run_id,
-            ticks=[tick] if tick is not None else None,
-            entity_ids=entity_ids,
+            QueryArchetype(
+                signature=_component_refs(signature),
+                world_id=query_world_id,
+                run_id=run_id,
+                ticks=(tick,) if tick is not None else None,
+                entity_ids=tuple(entity_ids) if entity_ids is not None else None,
+            ),
         )
         rows.extend(dataframe_to_rows(df))
     return rows
 
 
-async def _query_ids(cs: iCommandGateway, ctx: ActorCtx, world_id: str) -> tuple[str, str]:
+async def _query_ids(
+    dispatcher: CommandDispatcher,
+    ctx: ActorCtx,
+    world_id: str,
+) -> tuple[str, str]:
     try:
-        info = await cs.get_world_info(ctx, world_id)
+        info = await dispatcher.apply_as(ctx, GetWorldInfo(world_id=world_id))
     except KeyError:
         return str(world_id), ""
     return str(info.world_id), str(info.run_id or "")
 
 
 async def _query_components_frame(
-    cs: iCommandGateway,
+    dispatcher: CommandDispatcher,
     ctx: ActorCtx,
     world_id: str,
     *,
@@ -98,20 +128,22 @@ async def _query_components_frame(
 ) -> DataFrame | None:
     if not component_names:
         return None
-    query_world_id, run_id = await _query_ids(cs, ctx, world_id)
+    query_world_id, run_id = await _query_ids(dispatcher, ctx, world_id)
     component_types = hydrate_component_types(component_names)
-    return await cs.query_components(
+    return await dispatcher.apply_as(
         ctx,
-        component_types,
-        query_world_id,
-        run_id,
-        ticks=[tick] if tick is not None else None,
-        entity_ids=entity_ids,
+        QueryComponents(
+            components=_component_refs(component_types),
+            world_id=query_world_id,
+            run_id=run_id,
+            ticks=(tick,) if tick is not None else None,
+            entity_ids=tuple(entity_ids) if entity_ids is not None else None,
+        ),
     )
 
 
 async def _query_components(
-    cs: iCommandGateway,
+    dispatcher: CommandDispatcher,
     ctx: ActorCtx,
     world_id: str,
     *,
@@ -120,7 +152,7 @@ async def _query_components(
     entity_ids: list[int] | None = None,
 ) -> list[dict[str, Any]]:
     frame = await _query_components_frame(
-        cs,
+        dispatcher,
         ctx,
         world_id,
         component_names=component_names,
@@ -136,7 +168,7 @@ async def get_world_state(
     tick: int | None = None,
     entity_ids: str | None = None,
     components: str | None = None,
-    cs: iCommandGateway = Depends(get_command_gateway),
+    dispatcher: CommandDispatcher = Depends(get_dispatcher),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Read world state rows by component filter. Requires viewer, player, operator, or admin."""
@@ -144,14 +176,14 @@ async def get_world_state(
         component_names = _split_csv(components)
         if not component_names:
             return await _query_all_state(
-                cs,
+                dispatcher,
                 ctx,
                 world_id,
                 tick=tick,
                 entity_ids=_entity_ids(entity_ids),
             )
         return await _query_components(
-            cs,
+            dispatcher,
             ctx,
             world_id,
             component_names=component_names,
@@ -168,7 +200,7 @@ async def get_entity(
     entity_id: int,
     tick: int | None = None,
     components: str = Query("", description="Comma-separated component type names to project"),
-    cs: iCommandGateway = Depends(get_command_gateway),
+    dispatcher: CommandDispatcher = Depends(get_dispatcher),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Read one entity by component filter. Requires viewer, player, operator, or admin."""
@@ -176,14 +208,14 @@ async def get_entity(
         component_names = _split_csv(components)
         if not component_names:
             return await _query_all_state(
-                cs,
+                dispatcher,
                 ctx,
                 world_id,
                 tick=tick,
                 entity_ids=[entity_id],
             )
         return await _query_components(
-            cs,
+            dispatcher,
             ctx,
             world_id,
             component_names=component_names,
@@ -216,7 +248,7 @@ async def get_components(
         None,
         description="One column comparison, for example score__value > 0.5; requires types",
     ),
-    cs: iCommandGateway = Depends(get_command_gateway),
+    dispatcher: CommandDispatcher = Depends(get_dispatcher),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Read entities containing component types. Requires viewer, player, operator, or admin."""
@@ -229,7 +261,7 @@ async def get_components(
             raise ValueError("show, count, and where require at least one component type")
 
         frame = await _query_components_frame(
-            cs,
+            dispatcher,
             ctx,
             world_id,
             component_names=component_names,
@@ -264,18 +296,20 @@ async def get_audit_history(
     tick_range: str | None = Query(None, description="Comma-separated inclusive start,end"),
     actor_id: str | None = None,
     idempotency_key: str | None = None,
-    cs: iCommandGateway = Depends(get_command_gateway),
+    dispatcher: CommandDispatcher = Depends(get_dispatcher),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Read audit history. Requires viewer, player, operator, or admin."""
     try:
-        df = await cs.get_audit_history(
+        df = await dispatcher.apply_as(
             ctx,
-            world_id,
-            tick_range=_tick_range(tick_range),
-            actor_id=actor_id,
-            idempotency_key=idempotency_key,
-            limit=limit,
+            GetAuditHistory(
+                world_id=world_id,
+                tick_range=_tick_range(tick_range),
+                actor_id=actor_id,
+                idempotency_key=idempotency_key,
+                limit=limit,
+            ),
         )
         rows = dataframe_to_rows(df)
         for row in rows:
@@ -288,12 +322,15 @@ async def get_audit_history(
 @router.get("/worlds/{world_id}/processors", response_model=list[ProcessorInfo])
 async def list_processors(
     world_id: str,
-    cs: iCommandGateway = Depends(get_command_gateway),
+    dispatcher: CommandDispatcher = Depends(get_dispatcher),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """List deployment-configured processors. Requires viewer, player, operator, or admin."""
     try:
-        return await cs.list_processors(ctx, world_id)
+        return await dispatcher.apply_as(
+            ctx,
+            ListProcessors(world_id=world_id),
+        )
     except Exception as exc:
         raise_api_error(exc)
 
@@ -301,12 +338,15 @@ async def list_processors(
 @router.get("/worlds/{world_id}/hooks", response_model=list[HookInfo])
 async def list_hooks(
     world_id: str,
-    cs: iCommandGateway = Depends(get_command_gateway),
+    dispatcher: CommandDispatcher = Depends(get_dispatcher),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """List deployment-configured hooks. Requires viewer, player, operator, or admin."""
     try:
-        return await cs.list_hooks(ctx, world_id)
+        return await dispatcher.apply_as(
+            ctx,
+            ListHooks(world_id=world_id),
+        )
     except Exception as exc:
         raise_api_error(exc)
 
@@ -314,12 +354,15 @@ async def list_hooks(
 @router.get("/worlds/{world_id}/resources", response_model=list[ResourceInfo])
 async def list_resources(
     world_id: str,
-    cs: iCommandGateway = Depends(get_command_gateway),
+    dispatcher: CommandDispatcher = Depends(get_dispatcher),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """List deployment-configured resources. Requires viewer, player, operator, or admin."""
     try:
-        return await cs.list_resources(ctx, world_id)
+        return await dispatcher.apply_as(
+            ctx,
+            ListResources(world_id=world_id),
+        )
     except Exception as exc:
         raise_api_error(exc)
 
@@ -328,7 +371,7 @@ async def list_resources(
 async def list_signatures(
     storage_uri: str | None = None,
     namespace: str | None = None,
-    cs: iCommandGateway = Depends(get_command_gateway),
+    dispatcher: CommandDispatcher = Depends(get_dispatcher),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """List persisted archetype signatures. Requires viewer, player, operator, or admin."""
@@ -342,6 +385,10 @@ async def list_signatures(
                 uri=storage_uri or defaults.uri,
                 namespace=namespace or defaults.namespace,
             )
-        return [str(sig) for sig in await cs.list_signatures(ctx, storage_config)]
+        signatures = await dispatcher.apply_as(
+            ctx,
+            ListSignatures(storage_config=storage_config),
+        )
+        return [str(signature) for signature in signatures]
     except Exception as exc:
         raise_api_error(exc)

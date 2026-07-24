@@ -48,9 +48,10 @@ await world.remove_components(car_id, Velocity)
 await world.despawn(car_id)
 ```
 
-All of these calls go through the actor-free `RuntimeApplication` facade. A
+All of these calls construct exact models and use trusted dispatcher entry. A
 local runtime is a trusted capability and does not invent an admin actor.
-Untrusted or role-scoped access belongs at the REST/`CommandGateway` boundary.
+Untrusted or role-scoped access belongs at the authenticated REST boundary,
+which uses actor-aware dispatcher entry.
 
 ## Run ticks
 

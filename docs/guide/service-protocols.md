@@ -26,7 +26,7 @@ remains complete; they are not application ports.
 Application protocols are internal dependency boundaries unless a focused
 specification explicitly promotes one. Importability does not make them public.
 Their value types may live in a supported top-level domain family without
-promoting the protocol, its implementation, or the service container. Port
+promoting the protocol, its implementation, or process wiring. Port
 ownership and value-contract ownership are separate decisions.
 
 Every active protocol has:
@@ -47,30 +47,17 @@ Protocols are co-located with their family. There is no root
 Arrows point from consumer to dependency:
 
 ```text
-ArchetypeRuntime -> iRuntimeApplication -> commands.CommandDispatcher
-FastAPI -> iCommandGateway -> commands.CommandDispatcher
-temporary workflow bridge: iCommandGateway -> iRuntimeApplication
-
-iRuntimeApplication
-  -> iWorldRegistry + iWorldLifecycle + iStorageService
-  -> world.mutation + world.simulation + world.query
-  -> commands.CommandDispatcher
-  -> application-owned world-command cancellation capability
-  -> iArtifactService
-  -> iTranscriptIngestionService
-  -> iEvaluationService
-  -> iResearchService
-  -> iMissionService
-  -> iPhysicalAIService
+ArchetypeRuntime -> commands.CommandDispatcher.apply / defer
+FastAPI + ActorCtx -> commands.CommandDispatcher.apply_as / defer_as
+commands.CommandDispatcher -> OperationRegistry -> exact family handler
 
 iEvaluationService
   -> iIngestionService + iStorageService + iWorldRegistry
-iRedactionService -> no lower application family
 iIngestionService  -> iStorageService + iWorldRegistry
 iArtifactService   -> iIngestionService + iStorageService + iWorldRegistry
 iTranscriptIngestionService
   -> iArtifactService + iIngestionService
-  -> iRedactionService + iStorageService + iWorldRegistry
+  -> redaction structural port + iStorageService + iWorldRegistry
 iWorldLifecycle    -> iWorldRegistry + iStorageService
 CommandDispatcher  -> OperationRegistry + Policy + CommandScheduler
                    -> AuditLog.record_access
@@ -83,7 +70,8 @@ iPhysicalAIService
   -> iEvaluationService + iStorageService
 AuditLog           -> iStorageService + CommandScheduler outbox callbacks
 
-RuntimeMissions -> iRuntimeApplication -> iMissionService
+RuntimeMissions -> CommandDispatcher -> registered mission handler
+registered mission handler -> reservation-owned iMissionService
 iMissionService
   -> missions.SandboxService -> missions.SandboxBackend
   -> missions.CodingAgentHarness -> missions.SandboxSession
@@ -91,27 +79,27 @@ iMissionService
                             -> missions.SandboxSession
 ```
 
-`ServiceContainer` selects concrete implementations across families. Agent
-Missions reaches its container-selected workflow through the actor-free
-application facade.
+`archetype.wiring` selects concrete implementations, registers exact handlers,
+and returns `RuntimeResources`. Agent Missions reaches its workflow only
+through those handlers and its exact pre-reserved owner.
 
 ## 3. Active mapping
 
 | Port | Implementation | Principal consumers | Responsibility |
 |---|---|---|---|
-| `iRuntimeApplication` | `RuntimeApplication` | runtime; temporary `CommandGateway` workflow bridges | Actor-free facade adapter into registered commands plus remaining staged app workflows |
-| `iCommandGateway` | `CommandGateway` | FastAPI and other untrusted adapters | Transport adapter into actor-aware commands plus a finite temporary workflow bridge |
-| `iStorageService` | `StorageService` | world, commands, application, ingestion, artifacts, evaluation, transcripts, research, physical AI | Store/session lifetime, control authority, physical visibility, world/run row envelope, terminal Daft execution, and app-table catalog/read/write/retry authority |
-| `iWorldRegistry` | `WorldRegistry` | lifecycle, mutation, simulation, ingestion, artifacts, evaluation, transcripts, research, physical AI, application | Live identity, storage coordinates, exact-world synchronization, retryable close ownership, and committed-receipt retention |
-| `iWorldLifecycle` | `WorldLifecycle` | application, research, physical AI | Managed construction, durable discovery, readonly open, fenced mutable resume, fork, and close |
+| `iStorageService` | `StorageService` | world, commands, ingestion, artifacts, evaluation, transcripts, research, physical AI | Store/session lifetime, control authority, physical visibility, world/run row envelope, terminal Daft execution, and app-table catalog/read/write/retry authority |
+| `iWorldRegistry` | `WorldRegistry` | lifecycle, mutation, simulation, ingestion, artifacts, evaluation, transcripts, research, physical AI | Live identity, storage coordinates, exact-world synchronization, retryable close ownership, and committed-receipt retention |
+| `iWorldLifecycle` | `WorldLifecycle` | wiring, research, physical AI | Managed construction, durable discovery, readonly open, fenced mutable resume, fork, and close |
+| `iWorldCleanup` | `WorldCleanup` | reservation-owned mission cleanup | Exact-world, close-lease-bound retained updates, teardown staging, commit, and finish |
 | `iIngestionService` | `IngestionService` | artifacts, transcripts, evaluation | Select live storage configuration and delegate typed row publication |
-| `iArtifactService` | `ArtifactService` | application, transcript ingestion | Discover and scan files, persist content-addressed objects, publish typed media indexes, then expose the common file index |
-| `iTranscriptIngestionService` | `TranscriptIngestionService` | application | Snapshot and redact a coding-agent transcript, ingest the sanitized file, and append normalized mission rows |
-| `iRedactionService` | `RedactionService` | transcript ingestion; future telemetry/proxy adapters | Provider-neutral pre-durability scanning, deterministic text redaction, safe receipts, and quarantine |
-| `iEvaluationService` | `EvaluationService` | application, physical AI | Pin persisted world state, lease grader execution through the shared control authority, and append one typed evaluation result |
-| `iResearchService` | `AutoResearchService` | application | Multi-run autoresearch workflow and research ledger; rollout forks use the injected application teardown path |
-| `iMissionService` | `MissionService` | application, `RuntimeMissions` | Materialize task graphs, own the batteries-included world bundle, drain committed author and critic intents into external work, stage factual observations, and project terminal results |
-| `iPhysicalAIService` | `PhysicalAIService` | application | Create batched evaluation worlds, install physical processors, run episodes, and derive typed reports from persisted state |
+| `iArtifactService` | `ArtifactService` | registered artifact handlers, transcript ingestion | Discover and scan files, persist content-addressed objects, publish typed media indexes, then expose the common file index |
+| `iTranscriptIngestionService` | `TranscriptIngestionService` | registered transcript handlers | Snapshot and redact a coding-agent transcript, ingest the sanitized file, and append normalized mission rows |
+| Structural `MissionRedactor` / `TranscriptRedactor` | canonical `archetype.redaction.RedactionService` | mission execution and transcript ingestion | Provider-neutral pre-durability scanning, deterministic redaction, safe receipts, and quarantine |
+| `iEvaluationService` | `EvaluationService` | registered evaluation handlers, physical AI | Pin persisted world state, lease grader execution through the shared control authority, and append one typed evaluation result |
+| `iResearchService` | `AutoResearchService` | registered research handler | Multi-run autoresearch workflow and research ledger; rollout forks use the injected teardown path |
+| `iMissionService` | `MissionService` | registered mission handlers | Materialize task graphs, own the batteries-included world bundle, drain committed author and critic intents into external work, stage factual observations, and project terminal results |
+| `iTrajectoryService` | `TrajectoryService` | registered trajectory query/grade handlers | Compose durable episode selection with evaluation graders without creating a second trajectory authority |
+| `iPhysicalAIService` | `PhysicalAIService` | registered physical-AI handlers | Create batched evaluation worlds, install physical processors, run episodes, and derive typed reports from persisted state |
 | Family resource service `missions.SandboxService` | `missions.SandboxService` | `MissionService` | Select a configured backend and acquire, reuse, close, and shut down mission-keyed sessions; no task-transition authority |
 | Family resource port `missions.SandboxBackend` | configured Apple Container, Docker, or Modal adapter | `missions.SandboxService` | Create or restore provider-owned isolated sessions |
 | Family resource port `missions.SandboxSession` | provider session adapter | `CodingAgentHarness`, `CriticHarness`, `missions.SandboxService` | Expose capability, process, status, checkpoint, and close operations for one live sandbox |
@@ -122,32 +110,25 @@ application facade.
 | Component | Principal consumers | Responsibility |
 |---|---|---|
 | `OperationRegistry` | `CommandDispatcher`, `CommandScheduler`, composition root | Exact model/name registration, handler metadata, and optional durable decoder/materializer |
-| `CommandDispatcher` | `RuntimeApplication`, `CommandGateway` | Trusted and actor-aware direct/durable entry, admission lifetime, policy order, and bounded evidence |
-| `Policy` | `CommandDispatcher`; finite temporary gateway bridge | Pure role preauthorization plus instance-owned world/tick and daily-token quotas |
-| `CommandScheduler` | `CommandDispatcher`, world materializer, container-provided destroy cancellation capability | Canonical durable admission, reservation, leasing, retry, settlement staging, cancellation, and outbox access |
-| `AuditLog` | `CommandDispatcher`, registered `GetAuditHistory`, container shutdown | Bounded access rows and transactional command-outbox projection into analytical storage |
+| `CommandDispatcher` | runtime and API adapters | Trusted and actor-aware direct/durable entry, admission lifetime, policy order, and bounded evidence |
+| `Policy` | `CommandDispatcher` | Pure role preauthorization plus instance-owned world/tick and daily-token quotas |
+| `CommandScheduler` | `CommandDispatcher`, world materializer, wiring-provided destroy callback | Canonical durable admission, reservation, leasing, retry, settlement staging, cancellation, and outbox access |
+| `AuditLog` | `CommandDispatcher`, registered `GetAuditHistory`, `RuntimeResources` shutdown | Bounded access rows and transactional command-outbox projection into analytical storage |
 
 ## 4. Boundary rules
 
-### Runtime application
+### Runtime and API adapters
 
-`iRuntimeApplication` is consumed by the trusted runtime and by the finite
-temporary gateway bridge for workflows not yet registered. Its world/audit
-methods construct exact family models and enter trusted dispatcher methods. It
-exposes ID-oriented operations and boundary-safe results, never concrete
-services, the container, or live worlds. Runtime-only ergonomics and lazy
-handle state remain in `archetype.runtime`; HTTP parsing remains in
-`archetype.api`.
+Runtime methods construct exact family models and enter
+`CommandDispatcher.apply()` or durable variants. They expose boundary-safe
+results, never concrete services, process wiring, or live worlds. Runtime-only
+ergonomics and lazy handle state remain in `archetype.runtime`.
 
-### Command gateway
-
-Every `iCommandGateway` operation accepts `ActorCtx`. Registered world/audit
-methods construct the exact family model and enter `CommandDispatcher.apply_as`
-or its durable variants; the commands-owned dispatcher and `Policy` perform
-authorization, quota admission, and bounded evidence. A finite temporary
-bridge delegates the remaining staged workflows after commands-owned policy.
-The gateway has no tick-drain method and owns no policy counters, world,
-command ledger, audit log, grader, artifact ingestion, or storage.
+API routes parse transport, authenticate `ActorCtx`, construct the same exact
+models, and enter `CommandDispatcher.apply_as()` or durable variants. The
+commands-owned dispatcher and `Policy` perform authorization, quota admission,
+and bounded evidence. Routes own no policy counters, world, command ledger,
+audit log, grader, artifact ingestion, or storage.
 
 ### World ports and operation surfaces
 
@@ -158,7 +139,7 @@ externally operable adapters are public module functions in
 `archetype.world.{mutation,simulation,query,handlers}` rather than
 single-implementation service protocols.
 
-Simulation imports neither commands nor gateway. Lifecycle receives the
+Simulation imports neither commands nor API. Lifecycle receives the
 scheduler materializer as a construction callable and wires it into every
 managed world. Bounded episode termination reduces a lazy frame through
 `iStorageService` before the scalar enters Python control flow.
@@ -170,8 +151,9 @@ durable control-catalog authority beneath it. The scheduler admits exact
 portable models, leases them in ledger order, invokes the registered lock-held
 materializer, and stages successful IDs. Tick publication performs terminal
 applied settlement. Neither is an application-family protocol.
-`RuntimeApplication` receives only a narrow cancellation callable for
-application-owned destroy; it does not import or retain the concrete scheduler.
+Wiring supplies only narrow materialization, cancellation, and teardown
+callbacks to lower owners; those families do not import or retain the concrete
+scheduler.
 `iIngestionService` owns the general typed-ingestion policy boundary: it
 selects the live storage configuration and delegates typed publication. It has
 no knowledge of files, media, transcripts, or graders. `iStorageService` owns
@@ -193,9 +175,10 @@ scanner policy.
 
 `iTranscriptIngestionService` is a composition port, not another storage
 authority. Its implementation snapshots and redacts through
-`iRedactionService`, parses with the pure missions-family adapter, ingests the
-sanitized snapshot through `iArtifactService`, and appends normalized rows
-through `iIngestionService`. Raw narrative never crosses a durability boundary.
+the canonical `RedactionService` through a narrow structural port, parses with
+the pure missions-family adapter, ingests the sanitized snapshot through
+`iArtifactService`, and appends normalized rows through `iIngestionService`.
+Raw narrative never crosses a durability boundary.
 Each ingestion is a new artifact occurrence; normalized row identity is scoped
 to that source artifact. Commands-owned `AuditLog` is an analytical
 projection/read component, not the authority for command outcome.
@@ -258,13 +241,13 @@ dependent tasks, and roll terminal task states up to the mission. Reviewer
 infrastructure failure consumes only its bounded review budget and leaves the
 candidate pending.
 
-`ServiceContainer` takes the backend configured by `AgentMissionConfig`,
-constructs `SandboxService` around it, passes that service to
-`MissionService`, and injects the concrete mission-service factory into
-`RuntimeApplication`.
-`RuntimeMissions` supplies only its runtime-owned world factory and supported
-configuration, then consumes the returned port. No Component, processor,
-relation, harness value, or sandbox implementation moves into `app`.
+The registered submit handler takes the backend configured by
+`AgentMissionConfig`, constructs `SandboxService`, and constructs
+`MissionService` once inside the pre-reserved workflow owner. It injects that
+owner for critic supervision plus a narrow exact-world cleanup factory.
+`RuntimeMissions` supplies only supported configuration and exact operations;
+it never receives the service. No Component, processor, relation, harness
+value, or sandbox implementation moves into `app`.
 
 See [Agent Missions V1](agent-missions.md).
 
@@ -277,10 +260,10 @@ implementation composes world lifecycle, entity/processor mutation, episode
 execution, persisted evaluation reads, and storage-admitted terminal report
 projection; it does not own those authorities.
 
-`RuntimeApplication` is the only consumer exposed to the runtime. The
-application service has no public constructor contract, accepts no gateway or
-actor context, and emits no parallel summary Component. It returns typed
-reports carrying the authoritative `(world_id, run_id)` coordinates. The
+The registered dispatcher handlers are the only path exposed to the runtime.
+The application service has no public constructor contract, accepts no actor
+context, and emits no parallel summary Component. It returns typed reports
+carrying the authoritative `(world_id, run_id)` coordinates. The
 credential-free contract tests prove paired seeds, complete denominators,
 policy reset, runtime/sync parity, and ledger addressability.
 
@@ -302,9 +285,9 @@ live there while application families retain workflow meaning.
 
 An internal app protocol may therefore accept or return a top-level family
 value. The protocol still lives in `archetype.app.<family>.interfaces`, its
-concrete service remains internal, and `ServiceContainer` remains unsupported.
-The top-level family never imports that port in return. Public classification
-is explicit and is not inferred from either side of the annotation.
+concrete service and process wiring remain internal. The top-level family
+never imports that port in return. Public classification is explicit and is
+not inferred from either side of the annotation.
 
 The artifacts family owns the supported `ArtifactSource`, `ArtifactRef`, and
 `ArtifactStoreConfig` file contracts. `archetype.ingestion` owns one reusable
@@ -327,14 +310,14 @@ evaluation ports.
 The physical-AI split completed #589: typed request/report values and pure
 optimization live under `archetype.physical_ai`, while
 `iPhysicalAIService` composes world, mutation, simulation, evaluation, and
-storage ports under `archetype.app.physical_ai`. The root `app/models.py`
-boundary-model split remains owned by #560.
+storage ports under `archetype.app.physical_ai`. The former root application
+command-envelope boundary was removed by the v0.5 dispatcher migration.
 
 The root policy and its `quality/architecture.d/` fragments currently carry no
 migration exceptions; no wildcard compatibility package is implied.
 Redaction, audit, command, world, and other authority-specific models remain
-with their app owners unless a focused specification classifies an individual
-value as a reusable family contract.
+with their owning families unless a focused specification classifies an
+individual value as a reusable family contract.
 
 The V1 mission split is the implemented example: Components, processors,
 relations, authoring and coding-harness values, and sandbox resources live under
@@ -343,25 +326,24 @@ composition live under `archetype.app.missions`.
 
 ## 6. Construction and shutdown
 
-`ServiceContainer` in `app/container.py` is the sole concrete cross-family
-wiring root. It exposes:
+`archetype.wiring.build_runtime_resources()` is the sole concrete cross-family
+composition transaction. It builds:
 
 ```text
-application:      iRuntimeApplication
-command_gateway:  iCommandGateway
-application.agent_mission_service(...):
-  iMissionService
+OperationRegistry + Policy + CommandScheduler + CommandDispatcher
+WorldRegistry + WorldLifecycle + AuditLog + StorageService
+application-family services + registered exact handlers
+RuntimeResources
 ```
 
-Runtime consumes `application`; API dependency injection consumes
-`command_gateway`. The container injects the concrete
-mission factory into `RuntimeApplication`; the runtime implementation consumes
-only `iRuntimeApplication` and the returned `iMissionService`. Neither the
-concrete service nor the container is exposed to mission authors.
+Runtime retains `RuntimeResources`; API lifespan retains the same process
+owner and dependency injection exposes only its dispatcher. Mission handlers
+construct and resolve `iMissionService` inside the exact workflow reservation.
+Neither concrete services nor process wiring are exposed to mission authors.
 
-Shutdown stops new application admission, closes retained sandbox handles,
-flushes the audit projection, then closes container-owned world/storage
-resources.
+Shutdown stops and drains dispatcher admission, joins supervised work, closes
+workflow then world handles, flushes the audit projection, and finally closes
+owned storage. Failed phases retain exact ownership for retry.
 
 ## 7. Executable enforcement
 

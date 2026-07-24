@@ -46,10 +46,12 @@ Agents in `.claude/agents/` are invoked autonomously — by CI, by other agents,
 ## Top-level API
 
 `ArchetypeRuntime` is the recommended entry point for scripts and beginner
-docs. `ServiceContainer`, concrete services, and `CommandGateway` are internal
-and are not top-level exports. The script boundary is
-`async with ArchetypeRuntime()` or `with ArchetypeRuntime.sync()`; process and
-world lifetimes remain separate. See `docs/guide/runtime.md`.
+docs. `RuntimeResources`, concrete services, and `archetype.wiring` are
+internal and are not top-level exports. The script boundary is
+`async with ArchetypeRuntime()` or `with ArchetypeRuntime.sync()`; runtime
+handles construct exact family operations and enter the process-owned
+`CommandDispatcher`. Process and world lifetimes remain separate. See
+`docs/guide/runtime.md`.
 
 Examples must run in CI. LLM-backed examples need explicit credential gating or graceful degradation when keys are missing.
 

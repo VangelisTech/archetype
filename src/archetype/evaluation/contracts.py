@@ -24,14 +24,28 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import TYPE_CHECKING, Any
 
 from pydantic_core import to_jsonable_python
+
+if TYPE_CHECKING:
+    from daft import DataFrame
+else:
+    # Callback contracts stay importable without loading the Daft/Arrow stack.
+    DataFrame = Any
 
 _RECEIPT_DIGEST_DOMAIN = "archetype.receipt.v1"
 
 OUTCOME_STATUSES = frozenset({"pass", "fail", "invalid", "inconclusive"})
+
+# PR-5 repoints application consumers to these family-owned callback values and
+# deletes the narrow compatibility exports in app.evaluation.interfaces.
+GraderOutput = object
+GraderReturn = GraderOutput | Sequence[GraderOutput]
+TrajectoryGrader = Callable[[DataFrame], GraderReturn | Awaitable[GraderReturn]]
 
 
 def _require_text(value: str, field_name: str) -> None:

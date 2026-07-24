@@ -8,11 +8,11 @@ from typing import Any, cast
 from daft import DataFrame, Expression, col
 from fastapi import APIRouter, Depends
 
-from archetype.api.deps import get_actor_ctx, get_command_gateway
+from archetype.api.deps import get_actor_ctx, get_dispatcher
 from archetype.api.errors import raise_api_error
 from archetype.api.models import dataframe_to_rows
-from archetype.app.gateway.auth.models import ActorCtx
-from archetype.app.gateway.interfaces import iCommandGateway
+from archetype.commands.dispatch import CommandDispatcher
+from archetype.commands.models import ActorCtx
 from archetype.core.component import Component
 from archetype.missions.components import (
     AgentExecution,
@@ -26,6 +26,7 @@ from archetype.missions.components import (
     ValidationResult,
 )
 from archetype.missions.relations import DependsOn, Guards, PartOfMission
+from archetype.world.models import ComponentTypeRef, GetWorldInfo, QueryComponents
 
 router = APIRouter(tags=["missions"])
 
@@ -33,7 +34,7 @@ _TASK_TYPES: list[type[Component]] = [Task, TaskState, TaskDispatch, TaskPolicy]
 
 
 async def _components_frame(
-    cs: iCommandGateway,
+    dispatcher: CommandDispatcher,
     ctx: ActorCtx,
     world_id: str,
     component_types: list[type[Component]],
@@ -41,17 +42,21 @@ async def _components_frame(
     entity_ids: list[int] | None = None,
 ) -> DataFrame | None:
     try:
-        info = await cs.get_world_info(ctx, world_id)
+        info = await dispatcher.apply_as(ctx, GetWorldInfo(world_id=world_id))
         query_world_id, run_id = str(info.world_id), str(info.run_id or "")
     except KeyError:
         query_world_id, run_id = str(world_id), ""
     try:
-        return await cs.query_components(
+        return await dispatcher.apply_as(
             ctx,
-            component_types,
-            query_world_id,
-            run_id,
-            entity_ids=entity_ids,
+            QueryComponents(
+                components=tuple(
+                    ComponentTypeRef.from_type(component_type) for component_type in component_types
+                ),
+                world_id=query_world_id,
+                run_id=run_id,
+                entity_ids=tuple(entity_ids) if entity_ids is not None else None,
+            ),
         )
     except KeyError:
         # A world that has never spawned this component table is a normal
@@ -78,12 +83,17 @@ def _edge_rows(
 @router.get("/worlds/{world_id}/missions", response_model=list[dict[str, Any]])
 async def list_missions(
     world_id: str,
-    cs: iCommandGateway = Depends(get_command_gateway),
+    dispatcher: CommandDispatcher = Depends(get_dispatcher),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """List mission entities with their current rollup state. Requires viewer or above."""
     try:
-        frame = await _components_frame(cs, ctx, world_id, [Mission, MissionState])
+        frame = await _components_frame(
+            dispatcher,
+            ctx,
+            world_id,
+            [Mission, MissionState],
+        )
         return [] if frame is None else dataframe_to_rows(frame)
     except Exception as exc:
         raise_api_error(exc)
@@ -96,12 +106,17 @@ async def list_missions(
 async def get_mission_tasks(
     world_id: str,
     mission_id: int,
-    cs: iCommandGateway = Depends(get_command_gateway),
+    dispatcher: CommandDispatcher = Depends(get_dispatcher),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Project one mission's task DAG: task rows plus DependsOn edges. Requires viewer or above."""
     try:
-        membership = await _components_frame(cs, ctx, world_id, [PartOfMission])
+        membership = await _components_frame(
+            dispatcher,
+            ctx,
+            world_id,
+            [PartOfMission],
+        )
         edges = _edge_rows(
             membership,
             PartOfMission,
@@ -111,15 +126,23 @@ async def get_mission_tasks(
         if not task_ids:
             return {"mission_id": mission_id, "tasks": [], "depends_on": []}
 
-        task_frame = await _components_frame(cs, ctx, world_id, _TASK_TYPES, entity_ids=task_ids)
-        dependency_frame = await _components_frame(cs, ctx, world_id, [DependsOn])
+        task_frame = await _components_frame(
+            dispatcher,
+            ctx,
+            world_id,
+            _TASK_TYPES,
+            entity_ids=task_ids,
+        )
+        dependency_frame = await _components_frame(
+            dispatcher,
+            ctx,
+            world_id,
+            [DependsOn],
+        )
         depends_on = _edge_rows(
             dependency_frame,
             DependsOn,
-            where=cast(
-                Expression,
-                col(f"{DependsOn.get_prefix()}source").is_in(task_ids),
-            ),
+            where=col(f"{DependsOn.get_prefix()}source").is_in(task_ids),
         )
         return {
             "mission_id": mission_id,
@@ -134,18 +157,29 @@ async def get_mission_tasks(
 async def get_task_card(
     world_id: str,
     task_id: int,
-    cs: iCommandGateway = Depends(get_command_gateway),
+    dispatcher: CommandDispatcher = Depends(get_dispatcher),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Project one task card: task state, guarding validators, executions, and
     validation results. Requires viewer or above."""
     try:
-        task_frame = await _components_frame(cs, ctx, world_id, _TASK_TYPES, entity_ids=[task_id])
+        task_frame = await _components_frame(
+            dispatcher,
+            ctx,
+            world_id,
+            _TASK_TYPES,
+            entity_ids=[task_id],
+        )
         task_rows = [] if task_frame is None else dataframe_to_rows(task_frame)
         if not task_rows:
             raise KeyError(f"task {task_id} not found")
 
-        guard_frame = await _components_frame(cs, ctx, world_id, [Guards])
+        guard_frame = await _components_frame(
+            dispatcher,
+            ctx,
+            world_id,
+            [Guards],
+        )
         guard_edges = _edge_rows(
             guard_frame,
             Guards,
@@ -155,13 +189,22 @@ async def get_task_card(
         validators: list[dict[str, Any]] = []
         if validator_ids:
             validator_frame = await _components_frame(
-                cs, ctx, world_id, [TaskValidator], entity_ids=validator_ids
+                dispatcher,
+                ctx,
+                world_id,
+                [TaskValidator],
+                entity_ids=validator_ids,
             )
             if validator_frame is not None:
                 validators = dataframe_to_rows(validator_frame)
 
         executions: list[dict[str, Any]] = []
-        execution_frame = await _components_frame(cs, ctx, world_id, [AgentExecution])
+        execution_frame = await _components_frame(
+            dispatcher,
+            ctx,
+            world_id,
+            [AgentExecution],
+        )
         if execution_frame is not None:
             executions = dataframe_to_rows(
                 execution_frame.where(
@@ -173,7 +216,12 @@ async def get_task_card(
             )
 
         validations: list[dict[str, Any]] = []
-        validation_frame = await _components_frame(cs, ctx, world_id, [ValidationResult])
+        validation_frame = await _components_frame(
+            dispatcher,
+            ctx,
+            world_id,
+            [ValidationResult],
+        )
         if validation_frame is not None:
             validations = dataframe_to_rows(
                 validation_frame.where(

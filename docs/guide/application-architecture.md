@@ -33,29 +33,22 @@ rejects fragments that declare anything else or duplicate a rule name.
 | Components, processors, resources, configuration, and runtime result models | Supported extension/signature surface | May cross the runtime boundary where explicitly documented |
 | REST and CLI behavior | Supported adapter surfaces | Preserve approved application semantics through the authorized server path |
 | Concrete classes under `archetype.app` | Internal | No direct compatibility promise |
-| `ServiceContainer` | Internal wiring root | Construction and ownership mechanism, not an application API |
+| `archetype.wiring` | Internal composition root | Sole concrete cross-family construction transaction |
+| `RuntimeResources` | Internal process owner | Admission drain, supervised work, handle lifetime, audit, and storage teardown |
 | App-family protocols | Internal architecture ports by default | Enforce dependencies and substitutability inside the repository |
 | Core engine types retained at top level | Compatibility or extension surface | Classification is owned by API Stability |
 
-Concrete app services and `ServiceContainer` are absent from the top-level
-export surface. External code receives capabilities through the runtime, REST,
-or CLI boundary; it does not assemble the internal service graph.
+Concrete app services, `RuntimeResources`, and wiring helpers are absent from
+the top-level export surface. External code receives capabilities through the
+runtime, REST, or CLI boundary; it does not assemble the internal graph.
 
 ## 3. Canonical application paths
 
-`RuntimeApplication` is the actor-free application adapter. Its world methods
-construct exact family operation models and enter the commands-owned dispatcher
-through trusted modes; workflows that have not yet moved to top-level
-registrations delegate through their owning application-family ports. It owns
-no transport, authentication, authorization, storage backend, grader
-implementation, or durable queue state.
-
-Trusted local scripts use it through the ergonomic runtime:
+Trusted local scripts enter through the ergonomic runtime:
 
 ```text
 application code
   -> ArchetypeRuntime / RuntimeWorld
-  -> RuntimeApplication
   -> CommandDispatcher.apply / defer
   -> registered family handler
 ```
@@ -66,25 +59,25 @@ Untrusted callers use an authorized server boundary:
 CLI or remote client
   -> REST API over HTTP
   -> authentication adapter
-  -> CommandGateway(ActorCtx)
+  -> ActorCtx
   -> CommandDispatcher.apply_as / defer_as
   -> the same registered family handler
 ```
 
 The CLI is an HTTP client except for the server-startup entrypoint. It does not
 authorize calls or import application/runtime implementation code. FastAPI
-translates transport models and authenticates principals. `CommandGateway`
-constructs exact operations and delegates actor-aware entry; it does not
-translate HTTP, own authorization policy, or implement domain workflows.
+translates transport models, authenticates principals, constructs exact
+operations, and delegates actor-aware entry. It does not own authorization
+policy or implement domain workflows.
 
 Other untrusted ingress, including MCP tools, sandboxed agents, or multi-tenant
-embeddings, uses the same gateway even when HTTP is not involved.
+embeddings, must authenticate an `ActorCtx` and use the same actor-aware
+dispatcher methods even when HTTP is not involved.
 
 The concrete `ArchetypeRuntime` is not a dependency of `archetype.app`.
-`RuntimeApplication` and `CommandGateway` are parallel trusted and actor-aware
-adapters over the same commands dispatcher and family models. Scripting-only
-handles, sync wrappers, callbacks, and local lifetime therefore do not leak
-into the server.
+Runtime and API are parallel trusted and actor-aware adapters over the same
+commands dispatcher and family models. Scripting-only handles, sync wrappers,
+callbacks, and local lifetime therefore do not leak into the server.
 
 ## 4. Package direction and family layout
 
@@ -97,7 +90,8 @@ Repository package ownership is normative:
 | Capability-scoped resources and provider adapters implementing a family-owned protocol | A named subpackage of `archetype.<family>` |
 | Physical storage, control catalogs, commit coordination, and generic durable world/run envelopes | `archetype.storage` |
 | Application workflow authority, cross-family orchestration, internal service ports, and concrete application services | `archetype.app.<family>` |
-| Transport, authentication, application facade, and composition | `archetype.api`, `archetype.app.gateway`, `archetype.app.application`, and `archetype.app.container` |
+| Transport and authentication | `archetype.api` |
+| Process composition and lifetime | `archetype.wiring` and `archetype.runtime_resources` |
 
 A top-level domain-family package owns reusable ECS state and pure domain
 behavior. It may depend on `archetype.core`, itself, third-party libraries, and
@@ -105,7 +99,7 @@ only reviewed lower top-level family contracts declared in the merged
 architecture policy. It must not import `archetype.app`,
 `archetype.runtime`, `archetype.api`, or `archetype.cli`, and it does not
 configure process-global providers or exporters, storage backends, process
-hosts, or the service container. The application layer may import a registered top-level
+hosts, or wiring. The application layer may import a registered top-level
 family contract; the reverse edge is forbidden. Undeclared top-level
 family-to-family dependencies are denied. Every first-party package or module
 directly beneath `archetype` is classified as reserved infrastructure or
@@ -143,8 +137,8 @@ A `Component` is persistent ECS schema even though its implementation uses
 Pydantic. It is not an application DTO and does not belong anywhere under
 `archetype.app`. Conversely, a top-level path does not automatically make a
 symbol public. Supported names remain an explicit classification owned by
-[API Stability](api-stability.md); concrete services and `ServiceContainer`
-remain internal.
+[API Stability](api-stability.md); concrete services and process wiring remain
+internal.
 
 The `archetype.missions` family consumes the lower `archetype.graph` family,
 as declared in `quality/architecture.d/missions.toml`. It owns mission/task Components,
@@ -168,17 +162,16 @@ src/archetype/
   storage/           physical rows, catalogs, commits, scans and app tables
   world/             lifecycle, mutation, simulation, query and exact operation models
   commands/          registry, policy, dispatch, durable scheduling and audit projection
+  redaction/         canonical pre-durability scanning, receipts and quarantine
   app/
-    application/     actor-free RuntimeApplication adapter and workflow composition
     ingestion/       live storage selection and typed-ingestion bridge
     artifacts/       file discovery, immutable object storage and media indexes
-    redaction/       pre-durability secret scanning, receipts and quarantine
     evaluation/      grading orchestration, snapshot pinning and receipt writes
-    gateway/         transport-shaped actor-aware adapter
     research/        autoresearch and multi-run research workflows
     missions/        mission graph and external-I/O composition
     physical_ai/     batched evaluation and instruction-sweep workflow
-    container.py     sole concrete cross-family wiring root
+  runtime_resources.py explicit process-lifetime owner
+  wiring.py          sole concrete cross-family composition root
 ```
 
 The mission-adjacent cleanup direction is recorded in
@@ -211,14 +204,14 @@ The allowed outer-package direction is:
 ```text
 application code -> archetype.runtime
 CLI              -> REST API over HTTP
-runtime          -> app.application contracts and safe models
-API              -> app.gateway contracts, safe models, and app errors
-application/gateway adapters -> commands dispatcher plus family models/contracts
+runtime          -> commands dispatcher plus family models/contracts
+API              -> commands dispatcher, auth models, family models, app errors
 app families     -> top-level family contracts, approved app-family ports, core
 commands         -> storage and world
 world            -> storage
 top-level family -> core and explicitly declared lower top-level families
 core             -> foundation and third-party libraries only
+wiring           -> every concrete implementation it composes
 ```
 
 Forbidden reverse edges include:
@@ -228,8 +221,8 @@ Forbidden reverse edges include:
 - a top-level family importing another registered family without a declared
   lower-family edge;
 - app importing runtime, API, or CLI;
-- runtime importing gateway, auth, concrete app services, or API;
-- API routes importing `RuntimeApplication` or concrete app services;
+- runtime importing API auth, concrete app services, or API modules;
+- API routes importing concrete app services or process wiring;
 - CLI command implementations bypassing HTTP.
 
 The proposed graph-family design in
@@ -276,7 +269,7 @@ locks, close leases, required-projector bindings, and retained committed
 receipts. `WorldLifecycle` owns construction, discovery, resume, fork, and
 close. The module-level world mutation, simulation, query, and handler
 operations are stateless behavior over those owners. A live world is an
-internal capability and never crosses an application, gateway, runtime, API,
+internal capability and never crosses an application-service, runtime, API,
 or CLI boundary.
 
 | Consumer/family | Responsibility | Allowed app dependencies |
@@ -294,20 +287,19 @@ or CLI boundary.
 | Research | Multi-run research workflows and bounded persisted-control reads | World registry/lifecycle and storage ports plus world simulation functions and explicit evaluator callbacks |
 | Physical AI | Batched evaluation and instruction-sweep workflows with typed terminal reports | World registry/lifecycle, evaluation, and storage ports plus world mutation/simulation functions |
 | Missions | Graph materialization, tick/external-I/O composition, terminal projection, transcript ingestion, and trajectory query/evaluation composition. Family processors retain transition authority; trajectory evidence cannot advance tasks. | Consumes a structural mission world, family-owned sandbox resource, artifact/ingestion/redaction ports for transcripts, and query/evaluation ports for trajectory reads. |
-| RuntimeApplication | Actor-free adapter that constructs exact family operations and composes the still-application-owned workflows | Commands dispatcher plus approved family workflow ports |
-| CommandGateway | Transport-shaped actor-aware adapter that constructs the same exact operations and delegates governed entry | Commands dispatcher/policy plus the temporary bounded PR-3 workflow bridge |
-| ServiceContainer | Concrete construction, ownership, and callback wiring | Every concrete implementation it constructs |
+| Runtime/API adapters | Construct exact family operations and select trusted or actor-aware dispatcher entry | Commands dispatcher plus family models |
+| `RuntimeResources` | Process admission, supervised work, handle ownership, and phased retryable teardown | Dispatcher, audit projection, storage, and registered owners |
+| `archetype.wiring` | Concrete construction, registration, and callback wiring | Every concrete implementation it constructs |
 
 World mutation and simulation functions share the registry's exact-world
 authority. Durable world query intentionally reads storage without requiring a
-live world. Evaluation owns the product evaluation transaction; the gateway
+live world. Evaluation owns the product evaluation transaction; API transport
 never pins snapshots, invokes graders, or persists evaluation receipts.
 
-## 6. Gateway and trust-boundary policy
+## 6. Dispatcher and trust-boundary policy
 
-The actor-aware boundary names are `CommandGateway` and `iCommandGateway`.
-
-The gateway:
+The actor-aware boundary is `CommandDispatcher.apply_as()` or `defer_as()`.
+An ingress adapter:
 
 1. accepts an authenticated `ActorCtx`;
 2. constructs the exact family operation model;
@@ -316,10 +308,10 @@ The gateway:
 
 The commands-owned `Policy` and `CommandDispatcher` perform authorization,
 quota debit, admission, handler dispatch, and bounded advisory access evidence.
-The gateway owns no policy counter, worlds, services, command queue, grading
+The ingress adapter owns no policy counter, worlds, services, command queue, grading
 workflow, ingestion transaction, durable result, or audit storage.
 
-`ActorCtx` crosses the gateway only into commands-owned policy/dispatch
+`ActorCtx` crosses ingress only into commands-owned policy/dispatch
 machinery; it never reaches a registered family handler. When an admitted
 operation needs durable provenance, commands snapshot the principal into its
 immutable admission record. Trusted local operations use an explicit local
@@ -356,17 +348,16 @@ green work from acceptance: successful revision-bound validators plus
 publication create an immutable candidate, and an independent critic reviews
 that exact candidate in a distinct sandbox. Blocking findings become durable
 repair input; missing, stale, malformed, wrong-head, or same-author evidence
-cannot accept. The current mission service crosses its committed
-dispatch/review observation seams as described in
+cannot accept. The mission service crosses its committed dispatch/review
+observation seams as described in
 [Agent Missions V1](agent-missions.md). The required committed-tick projector
-in section 13 is the accepted v0.5 target for those seams, not a claim about
-the current implementation.
+in section 13 is the current retryable seam for those intents.
 
-The durable scheduler/dispatcher belongs to the commands family, not to the
-gateway. Both trusted runtime operations and actor-aware remote admission may
-use it. The gateway constructs and delegates the exact operation; the
-commands dispatcher authorizes actor-aware admission. Simulation invokes a
-named commands-family drain callback at the tick boundary.
+The durable scheduler/dispatcher belongs to the commands family. Both trusted
+runtime operations and actor-aware remote admission use it. Runtime or API
+constructs and delegates the exact operation; the dispatcher authorizes
+actor-aware admission. Simulation invokes a named commands-family materializer
+callback at the tick boundary.
 
 `StorageService` owns the catalog-derived world/run envelope, extends
 caller-keyed conditional keys with that identity, and owns `daft.Catalog`
@@ -436,24 +427,28 @@ on a protocol when substitution is intentional. Prefer a narrow callable or
 data port for one interaction. Unused or incomplete protocols are completed,
 narrowed, or removed.
 
-`app/container.py` is the only app module allowed to import concrete
-implementations across families. It constructs both outward application paths:
+`archetype.wiring` is the only module allowed to import concrete
+implementations across families. It constructs one process graph:
 
 ```text
-container.application -> RuntimeApplication
-container.command_gateway -> CommandGateway
-container -> RuntimeApplication.agent_mission_service -> iMissionService
+build_runtime_resources(...)
+  -> OperationRegistry + Policy + CommandScheduler + CommandDispatcher
+  -> WorldRegistry + WorldLifecycle + AuditLog + StorageService
+  -> application-family services
+  -> RuntimeResources
 ```
 
-Runtime and API lifespan code may construct or receive the internal container,
-but ordinary runtime and route modules consume only their approved port.
+Runtime construction and API lifespan code may call the wiring transaction.
+Ordinary runtime and route modules retain only `RuntimeResources` or its
+dispatcher, never the concrete service graph.
 
-For Agent Missions V1, the container injects the concrete `MissionService`
-factory into `RuntimeApplication`. `RuntimeMissions` supplies a runtime-owned
-world factory and supported mission configuration, then consumes only the
-returned `iMissionService` port. The app service installs the built-in
-processor/resource bundle and owns mission-world lifecycle; the runtime handle
-does not import or construct a concrete app service.
+For Agent Missions V1, wiring registers exact submit/run/restore handlers. The
+submit handler constructs `MissionService` exactly once inside the facade's
+pre-reserved workflow owner, injects that same owner for supervised tasks, and
+creates exact-world cleanup authority only after close begins. The app service
+installs the built-in processor/resource bundle and owns mission-world
+orchestration; the runtime handle neither imports nor retains the concrete
+service.
 
 Concrete services compose collaborators and never inherit another concrete
 service. Intentional inheritance is limited to components, processors,
@@ -467,7 +462,7 @@ Object wiring may contain named callbacks without creating reverse static
 imports. `AsyncWorld` consumes a core-owned `CommandMaterializer` callable.
 `WorldLifecycle` receives the scheduler method at composition and wires it
 fresh into create, resume, and fork. The world family does not import the
-concrete scheduler, gateway, or auth implementation.
+concrete scheduler, dispatcher policy, or auth implementation.
 
 Every callback cycle requires a named port, owning wiring root, defined ordering
 and failure behavior, and an explicit architecture-policy entry.
@@ -506,14 +501,15 @@ Together, the repository's architecture and observability checkers must:
   contracts without treating that path as public-API promotion;
 - reject direct `Component` subclasses anywhere under `archetype.app`;
 - enforce the existing outer-package and application-family dependency rules;
-- confine commands-owned `ActorCtx` to policy/dispatch, gateway compatibility,
-  and approved adapter construction;
-- restrict concrete cross-family construction to `container.py`;
+- confine commands-owned `ActorCtx` to policy/dispatch and approved adapter
+  construction;
+- restrict concrete cross-family construction to `archetype.wiring`;
 - reject concrete-service inheritance;
 - reserve application-owned terminal Daft, Iceberg, and catalog-table
   operations to `StorageService`, while allowing only storage-materialized
   frames to cross into bounded Python control flow;
-- reject live-world, container, backend-client, and concrete-service leaks;
+- reject live-world, runtime-resource, backend-client, and concrete-service
+  leaks;
 - verify active protocol consumer/implementation mappings;
 - confine provider/exporter and logging configuration to explicit process-host
   callables and require one exact observation disposition for every callable
@@ -527,12 +523,12 @@ repository without rejection tests is not an executable architecture contract.
 
 ## 12. Current enforcement state
 
-The family packages, actor-free application adapter, actor-aware gateway,
-commands-owned registry/policy/dispatcher/scheduler/audit projection,
-local/remote control authority, artifact and evaluation ownership, and
+The family packages, commands-owned
+registry/policy/dispatcher/scheduler/audit projection, local/remote control
+authority, artifact and evaluation ownership, `RuntimeResources`, and
 co-located protocols are implemented. Runtime calls do not fabricate
-`ActorCtx`; API routes depend on `iCommandGateway`; concrete services and the
-container are not top-level exports.
+`ActorCtx`; API routes depend directly on the lifespan-owned dispatcher;
+concrete services and process wiring are not top-level exports.
 
 Agent Missions V1 is implemented under `archetype.missions`,
 `archetype.app.missions.service`, and `archetype.runtime.missions`. The
@@ -543,9 +539,9 @@ resources within the mission family.
 
 `quality/architecture.toml` contains the scalar policy and application-family
 DAG. Per-family fragments under `quality/architecture.d/` register the
-top-level dispositions for `artifacts`, `commands`, `evaluation`, `graph`,
-`ingestion`, `missions`, `physical_ai`, `projections`, `research`, `storage`,
-and `world`.
+top-level dispositions for `artifacts`, `commands`, `episodes`, `evaluation`,
+`graph`, `ingestion`, `missions`, `physical_ai`, `projections`, `redaction`,
+`research`, `storage`, and `world`.
 `scripts/check_architecture.py` enforces their package direction, protocol
 imports, concrete construction, concrete inheritance, and persistent
 Component placement.
@@ -566,48 +562,44 @@ digests live in `archetype.evaluation.contracts`, and
 while importing those domain definitions inward.
 
 The research, trajectory, physical-AI, physical-workflow, ontology, HTN, and
-transcript stages have landed. The physical workflow is reachable only through
-`RuntimeApplication` and `ArchetypeRuntime`; its former raw-service bridges and
-all six Issue #589 architecture exceptions are gone. Transcript ingestion is
-reachable through the runtime and writes only sanitized narrative to typed
-rows linked to the common artifact occurrence. It does not implicitly spawn
-mission Components. The provisional `archetype.experiments` package and its two unsafe
-logging exceptions are gone. The architecture manifest currently has no owned
-migration exceptions.
+transcript stages have landed. Physical workflows are reachable through exact
+dispatcher operations exposed by `ArchetypeRuntime`; their former raw-service
+bridges and all six Issue #589 architecture exceptions are gone. Transcript
+ingestion is reachable through a trusted runtime operation and writes only
+sanitized narrative to typed rows linked to the common artifact occurrence;
+its PR4 registration is not actor-aware. It does not implicitly spawn mission
+Components. The provisional
+`archetype.experiments` package and its two unsafe logging exceptions are gone.
+The architecture manifest currently has no owned migration exceptions.
 
 Independent manifests under `quality/observability/` declare each family's
 operation dispositions. `scripts/check_observability.py` enforces their exact
 coverage, source-backed positive signal claims, and the vendor-neutral
 signal/configuration boundary without a live collector. It validates root
-syntax and exclusivity but does not invent call graphs or runtime topology: the
-three existing gateway decorators remain children, and Issue #515 owns
-coherent ingress roots. The existing footgun reviewer complements this
-deterministic audit with semantic observability review.
+syntax and exclusivity but does not invent call graphs or runtime topology.
+The existing footgun reviewer complements this deterministic audit with
+semantic observability review.
 
-Other deliberately retained compatibility seams are documented rather than
-hidden. Durable ECS reads belong to `archetype.world.query`; audit history is
-the commands-owned `GetAuditHistory`/`AuditLog` projection. The root
-`app/models.py` contains only the finite legacy command envelope and its
-six-operation translator, while `app.gateway.auth.models` re-exports the
-commands-owned `ActorCtx` for ingress compatibility.
+Durable ECS reads belong to `archetype.world.query`; audit history is the
+commands-owned `GetAuditHistory`/`AuditLog` projection. `ActorCtx` and exact
+operation models live with the commands or owning family. There is no generic
+command envelope, facade bridge, or compatibility auth re-export.
 
 ## 13. Accepted v0.5 target architecture
 
-This section is the ratified migration contract for v0.5. It is normative
-before the moves begin, but it does not claim that the package tree described
-here is already implemented. Section 12 remains the description of the current
-tree. Each migration slice must move its policy, focused specification, and
-executable oracles atomically; an intermediate package location is not
-authority to invent a different dependency.
+This section records the ratified v0.5 architecture and its status after PR4.
+The dispatcher, exact-operation, composition, and runtime-resource ownership
+described here are current. Later behavioral migrations are explicitly marked
+as targets and do not override their current focused specifications. Every
+move must update policy, focused specifications, and executable oracles
+atomically.
 
-The target removes the mirrored application-facade stack. Families own
-behavior, a substantive command dispatcher governs top-level entry, the
-durable scheduler owns queue and settlement machinery, worlds own ECS state and
-tick execution, and one explicit runtime resource owner owns process lifetime.
-Runtime, API, and CLI remain thin supported surfaces rather than alternate
+Families own behavior. Commands validate. Dispatcher governs entry. Scheduler owns durability. World owns state/tick/run identity. RuntimeResources owns lifetime.
+
+Runtime, API, and CLI are thin supported surfaces rather than alternate
 implementations of family workflows.
 
-### Target family dependency graph
+### Current family dependency graph
 
 All arrows point from consumer to dependency. `core` has no top-level-family
 dependency. `errors` is the exact common-family module; `runtime`, `api`,
@@ -618,31 +610,26 @@ dependency. `errors` is the exact common-family module; `runtime`, `api`,
 | `storage` | none |
 | `world` | `storage` |
 | `commands` | `storage`, `world` |
-| `artifacts` | `storage` |
+| `artifacts` | none |
 | `redaction` | none |
-| `evaluation` | `storage`, `world` |
-| `research` | `storage`, `world` |
-| `physical_ai` | `storage`, `world`, `evaluation` |
-| `episodes` | `storage`, `world`, `artifacts`, `redaction`, `evaluation` |
+| `evaluation` | none |
+| `research` | `world` |
+| `physical_ai` | none |
+| `episodes` | `artifacts`, `evaluation` |
 | `graph` | none |
-| `missions` | `storage`, `world`, `graph`, `artifacts`, `episodes`, `redaction` |
-| `views` | `storage`, `world`, `graph` |
+| `ingestion` | none |
+| `missions` | `artifacts`, `episodes`, `graph` |
+| `projections` | `graph` |
 
 Every family may also import `archetype.core`, stable shared boundary-error
-bases from `archetype.errors`, itself, and third-party libraries. The `views`
-row freezes the initial generic read-model disposition; another domain-family
-edge requires the normal same-change documentation, policy, and cycle review.
-Family command models do not import `commands`. `wiring.py` registers
+bases from `archetype.errors`, itself, and third-party libraries. Another
+domain-family edge requires the normal same-change documentation, policy, and
+cycle review. Family operation models do not import `commands`. `wiring.py` registers
 model/handler pairs and is the sole concrete cross-family composition root.
-`runtime` and `api` consume commands plus the family models and views they
+`runtime` and `api` consume commands plus the family models and projections they
 expose; CLI remains an HTTP client except for server startup.
 
-PR-1 creates `errors.py`, classifies it through the exact
-`common_family_imports` policy, and retains `app.errors` only as an
-identity-preserving transition shim. `wiring` remains a reserved target
-surface until its owning slice.
-
-The target package ownership is:
+The current package ownership is:
 
 ```text
 src/archetype/
@@ -659,20 +646,23 @@ src/archetype/
   episodes/
   missions/
   redaction/
-  views/
+  projections/
+  app/           internal cross-family workflow services and ports
   runtime/
   api/
   cli/
+  runtime_resources.py
   wiring.py      constructs and returns RuntimeResources
 ```
 
-`archetype.app` is deleted after the owning-family moves. The
-single-implementation `RuntimeApplication`, `CommandGateway`, mutation and
-service mirrors, and their facade protocols do not survive as compatibility
-layers. Genuine resource/provider protocols and stateful owners do survive.
-Internal `archetype.app.*` paths have no v0.5 compatibility promise.
+Historical note (superseded): before PR4, the design used
+`RuntimeApplication`, `CommandGateway`, `ServiceContainer`, a generic command
+envelope, and facade protocols. The refactor deleted those mirrors rather than
+retaining compatibility layers. Internal application-family workflow services,
+genuine resource/provider protocols, and stateful owners remain; their
+`archetype.app.*` paths still have no public compatibility promise.
 
-### Target execution and durability boundaries
+### Execution and durability boundaries
 
 `AsyncWorld.step()` receives a construction-supplied command materializer.
 Before `PreTick` and before discovering active signatures, it materializes
@@ -704,7 +694,7 @@ projection may be retried without rerunning the tick. Public `PostTick`
 observers cannot suppress or acknowledge it. Mission-specific dispatch and
 review intent are consumers of this seam, not special hook semantics.
 
-### Target lifetime and workflow ownership
+### Lifetime and workflow ownership
 
 `wiring.py` returns `RuntimeResources`, the explicit owner of the dispatcher,
 scheduler, registry, storage, audit projection, shared policies, supervised
@@ -725,7 +715,7 @@ for it; work arriving after admission closes cannot create a handle, task, or
 provider effect. Internal cleanup uses an exact-world, non-inheritable
 capability and cannot reopen public admission or operate on a sibling world.
 
-The target boundary reports an incomplete shutdown as
+The runtime-resource boundary reports an incomplete shutdown as
 `RuntimeShutdownError` from `archetype.errors`. It identifies the failed
 dependency phase and retains the non-empty ordered causes from every
 independent cleanup attempted in that phase. Cancellation during cleanup is
@@ -752,30 +742,33 @@ are first-class recovery/evidence references, but their existence has no
 implicit acceptance authority. Only an explicit typed policy may require
 their publication for a transition.
 
-Persistent behavioral evidence converges on `episode_id`. A trajectory is a
-derived learning-facing DataFrame selected from episode evidence and has no
-persistent identity. The run ID and episode-schema changes are intentional
-pre-1.0 v0.5 migrations rather than silent compatibility aliases.
+Remaining target after PR4: persistent behavioral evidence converges on
+`episode_id`. A trajectory becomes a derived learning-facing DataFrame
+selected from episode evidence and has no persistent identity. Until its
+owning migration lands, the persistent trajectory contract in
+[Mission Trajectories](trajectories.md) remains current. The episode-schema
+change is an intentional pre-1.0 v0.5 migration rather than a silent
+compatibility alias.
 
-### Migration oracle ownership
+### v0.5 migration oracle status
 
-The accepted target is made executable slice by slice. PR-0 freezes the final
-family-DAG fixture and records the current baseline oracles. The owning slice
-must replace or extend those oracles before changing behavior:
+The v0.5 migration is made executable slice by slice. This table preserves
+the review decomposition and distinguishes the shipped PR4 substrate from
+remaining work; a current test must exercise the claimed owner and failure
+boundary rather than relying on a pre-refactor baseline.
 
-| Contract | Current baseline evidence | Target owner |
+| Contract | Executable evidence | Status after PR4 |
 |---|---|---|
-| command materialization and manifest-coupled settlement | command-flow and durable-command integration contracts | world/commands slices |
-| lock and shutdown admission | runtime lifecycle and admitted-work race contracts | world/runtime-resources slices |
-| UUIDv7 run identity and fork/resume continuity | command-flow, fork-storage, and world-resume contracts | world slice |
-| episode identity and trajectory derivation | episode-rollout and trajectory-domain contracts | episodes slice |
-| stable task base, immutable candidate, exact-head critic | coding-agent, critic, mission-service, and capability-eval contracts | missions slice |
-| sandbox cleanup and retryable phased teardown | sandbox-service, runtime-contract, and mission-service race contracts | runtime-resources and missions slices |
-| committed required projection and provider reconciliation | target contract in this section; new failpoint oracles land with the generic seam and mission consumer | world and missions slices |
+| command materialization and manifest-coupled settlement | command-flow and durable-command integration contracts | Landed in world/commands |
+| lock and shutdown admission | runtime lifecycle and admitted-work race contracts | Landed in world/runtime resources |
+| UUIDv7 run identity and fork/resume continuity | command-flow, fork-storage, and world-resume contracts | Landed in world |
+| episode identity and trajectory derivation | episode-rollout and trajectory-domain contracts | Remaining episodes migration |
+| stable task base, immutable candidate, exact-head critic | coding-agent, critic, mission-service, and capability-eval contracts | Current preservation baseline; owning missions move remains |
+| sandbox cleanup and retryable phased teardown | sandbox-service, runtime-contract, and mission-service race contracts | PR4 lifetime ownership landed; owning missions move remains |
+| committed required projection and provider reconciliation | generic seam and mission-consumer failpoint contracts | Generic world seam landed; mission consumer remains a later slice |
 
-No row permits a target implementation to claim completion from an old
-baseline test alone. The final oracle must exercise the target owner and
-failure boundary.
+No row permits an implementation to claim completion from an old baseline test
+alone.
 
 ## 14. Change discipline
 

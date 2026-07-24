@@ -16,7 +16,7 @@
 
 from fastapi import APIRouter, Depends, Response, status
 
-from archetype.api.deps import get_actor_ctx, get_command_gateway
+from archetype.api.deps import get_actor_ctx, get_dispatcher
 from archetype.api.errors import raise_api_error
 from archetype.api.models import (
     ComponentsRequest,
@@ -25,8 +25,17 @@ from archetype.api.models import (
     hydrate_component_types,
     hydrate_components,
 )
-from archetype.app.gateway.auth.models import ActorCtx
-from archetype.app.gateway.interfaces import iCommandGateway
+from archetype.commands.dispatch import CommandDispatcher
+from archetype.commands.models import ActorCtx
+from archetype.world.models import (
+    AddComponents,
+    ComponentTypeRef,
+    ComponentValue,
+    Despawn,
+    RemoveComponents,
+    Spawn,
+    Update,
+)
 
 router = APIRouter(prefix="/worlds/{world_id}/entities", tags=["entities"])
 
@@ -35,12 +44,16 @@ router = APIRouter(prefix="/worlds/{world_id}/entities", tags=["entities"])
 async def create_entity(
     world_id: str,
     req: ComponentsRequest,
-    cs: iCommandGateway = Depends(get_command_gateway),
+    dispatcher: CommandDispatcher = Depends(get_dispatcher),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Create an entity. Requires player, operator, or admin."""
     try:
-        entity_id = await cs.create_entity(ctx, world_id, hydrate_components(req.components))
+        operation = Spawn.from_components(
+            world_id=world_id,
+            components=hydrate_components(req.components),
+        )
+        entity_id = await dispatcher.apply_as(ctx, operation)
         return EntityResponse(entity_id=entity_id)
     except Exception as exc:
         raise_api_error(exc)
@@ -50,12 +63,15 @@ async def create_entity(
 async def remove_entity(
     world_id: str,
     entity_id: int,
-    cs: iCommandGateway = Depends(get_command_gateway),
+    dispatcher: CommandDispatcher = Depends(get_dispatcher),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Remove an entity. Requires player, operator, or admin."""
     try:
-        await cs.remove_entity(ctx, world_id, entity_id)
+        await dispatcher.apply_as(
+            ctx,
+            Despawn(world_id=world_id, entity_id=entity_id),
+        )
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except Exception as exc:
         raise_api_error(exc)
@@ -66,12 +82,20 @@ async def update_entity(
     world_id: str,
     entity_id: int,
     req: ComponentsRequest,
-    cs: iCommandGateway = Depends(get_command_gateway),
+    dispatcher: CommandDispatcher = Depends(get_dispatcher),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Overlay component values on an entity. Requires player, operator, or admin."""
     try:
-        await cs.update_entity(ctx, world_id, entity_id, hydrate_components(req.components))
+        components = hydrate_components(req.components)
+        await dispatcher.apply_as(
+            ctx,
+            Update(
+                world_id=world_id,
+                entity_id=entity_id,
+                components=tuple(ComponentValue.from_component(value) for value in components),
+            ),
+        )
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except Exception as exc:
         raise_api_error(exc)
@@ -82,12 +106,20 @@ async def add_components(
     world_id: str,
     entity_id: int,
     req: ComponentsRequest,
-    cs: iCommandGateway = Depends(get_command_gateway),
+    dispatcher: CommandDispatcher = Depends(get_dispatcher),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Extend an entity with components. Requires operator or admin."""
     try:
-        await cs.add_components(ctx, world_id, entity_id, hydrate_components(req.components))
+        components = hydrate_components(req.components)
+        await dispatcher.apply_as(
+            ctx,
+            AddComponents(
+                world_id=world_id,
+                entity_id=entity_id,
+                components=tuple(ComponentValue.from_component(value) for value in components),
+            ),
+        )
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except Exception as exc:
         raise_api_error(exc)
@@ -98,13 +130,22 @@ async def remove_components(
     world_id: str,
     entity_id: int,
     req: ComponentTypesRequest,
-    cs: iCommandGateway = Depends(get_command_gateway),
+    dispatcher: CommandDispatcher = Depends(get_dispatcher),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Remove component types from an entity. Requires operator or admin."""
     try:
         component_types = hydrate_component_types(req.component_types)
-        await cs.remove_components(ctx, world_id, entity_id, component_types)
+        await dispatcher.apply_as(
+            ctx,
+            RemoveComponents(
+                world_id=world_id,
+                entity_id=entity_id,
+                component_types=tuple(
+                    ComponentTypeRef.from_type(component_type) for component_type in component_types
+                ),
+            ),
+        )
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except Exception as exc:
         raise_api_error(exc)

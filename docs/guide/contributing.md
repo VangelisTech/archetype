@@ -21,14 +21,16 @@ Package location states architectural ownership before any symbol is exported:
 | Capability-scoped resources and provider adapters implementing a family-owned protocol | A named subpackage of `archetype.<family>` |
 | Physical storage, control catalogs, commit coordination, and generic durable world/run envelopes | `archetype.storage` |
 | Application workflow authority, cross-family orchestration, internal service ports, and concrete application services | `archetype.app.<family>` |
-| Transport, authentication, application facade, and composition | `archetype.api`, `archetype.app.gateway`, `archetype.app.application`, and `archetype.app.container` |
+| Transport and authentication | `archetype.api` |
+| Concrete composition and process lifetime | `archetype.wiring` and `archetype.runtime_resources` |
 
 A top-level family may depend on `archetype.core`, itself, third-party
 libraries, and only reviewed lower top-level family contracts declared in
 the root `quality/architecture.toml` policy and per-family fragments under
 `quality/architecture.d/`. It never imports `archetype.app`,
-`archetype.runtime`, `archetype.api`, or `archetype.cli`. The application layer
-may consume top-level family contracts; the reverse edge is forbidden.
+`archetype.runtime`, `archetype.runtime_resources`, `archetype.wiring`,
+`archetype.api`, or `archetype.cli`. The application layer may consume
+top-level family contracts; the reverse edge is forbidden.
 Every first-party top-level package or module must be classified as reserved
 infrastructure or registered as a family with one exact dependency
 disposition. The complete family graph is acyclic, and root-facade imports are
@@ -206,8 +208,8 @@ Required validation:
 Documentation affected:
 ```
 
-Keep each field concrete. "Owning layer: app/gateway" is useful; "backend" is
-not. "Invariants at risk: rejected commands must not debit quota or enter the
+Keep each field concrete. "Owning layer: commands dispatcher" is useful;
+"backend" is not. "Invariants at risk: rejected commands must not debit quota or enter the
 durable scheduler" gives a reviewer something to verify. Empty fields are
 useful signals too: if no executable oracle exists, the issue has identified a
 test that needs to be written.
@@ -290,8 +292,8 @@ Keep the work narrow and contract-driven.
 - Add or update a regression test before or alongside the fix.
 - Prefer service-layer changes over core changes when both could solve the same
   problem.
-- Do not bypass `iCommandGateway`, runtime, or world lifecycle semantics just to make
-  a wrapper API feel shorter.
+- Do not bypass actor-aware dispatcher entry, runtime, or world lifecycle
+  semantics just to make a wrapper API feel shorter.
 - Do not introduce `coder` or `maintainer` in new docs or examples; use the four-role model in [Command Gate](command-gate.md).
 - If a proposed ergonomic change weakens a contract, document the tradeoff and
   get agreement before implementing it.

@@ -26,13 +26,13 @@
 
 [[entries]]
 path = "src/archetype/api/models.py"
-line = 34
+line = 33
 method = "collect"
 reason = "HTTP JSON response boundary: FastAPI must receive concrete row dictionaries for response encoding; a Daft lazy DataFrame cannot be represented as JSON without executing the query."
 
 [[entries]]
 path = "src/archetype/api/models.py"
-line = 34
+line = 33
 method = "to_pylist"
 reason = "HTTP JSON response boundary: convert the already-collected Daft result into row dictionaries for FastAPI's JSON encoder at the terminal REST boundary."
 
@@ -110,7 +110,7 @@ reason = "Bounded control-plane history extract: StorageService has already admi
 
 [[entries]]
 path = "src/archetype/world/simulation.py"
-line = 312
+line = 315
 method = "to_pylist"
 reason = "Episode-termination boundary: StorageService admits and materializes the one-row (n_done, n_total) reduction before its all/any values enter Python control flow to stop the episode loop."
 

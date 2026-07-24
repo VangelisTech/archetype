@@ -821,7 +821,7 @@ def test_gateway_workflow_may_declare_an_ingress_root(tmp_path: Path) -> None:
     _write_fixture(tmp_path)
     _write_source_module(
         tmp_path,
-        "app/gateway/service.py",
+        "gateway.py",
         """
 from archetype import _obs
 
@@ -836,7 +836,7 @@ owner = "gateway"
 
 [[workflow]]
 id = "gateway.ingress"
-qualified_scope = "archetype.app.gateway.service.ingress"
+qualified_scope = "archetype.gateway.ingress"
 signals = ["root"]
 outcomes = ["propagated_failure"]
 authority = "The typed gateway result remains authoritative."
@@ -1292,7 +1292,7 @@ def test_cross_owner_emission_workflow_reference_is_rejected(tmp_path: Path) -> 
     _write_fixture(tmp_path, manifest=manifest)
     _write_source_module(
         tmp_path,
-        "app/gateway/service.py",
+        "gateway.py",
         """
 from archetype import _obs
 
@@ -1307,7 +1307,7 @@ owner = "gateway"
 
 [[workflow]]
 id = "gateway.ingress"
-qualified_scope = "archetype.app.gateway.service.ingress"
+qualified_scope = "archetype.gateway.ingress"
 signals = ["root"]
 outcomes = ["propagated_failure"]
 authority = "The typed gateway result remains authoritative."

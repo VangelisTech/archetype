@@ -25,33 +25,29 @@ That distinction is intentional:
 - `RuntimeWorld` is the trusted public script surface. Its entity and processor
   mutations (`spawn`, `despawn`, `update`, `add_components`,
   `remove_components`, `add_processor`, `remove_processor`) route through the
-  actor-free `iRuntimeApplication` adapter.
+  trusted `CommandDispatcher`.
 - Runtime handles never accept or retain `ActorCtx`. For untrusted adapters,
-  commands-owned `Policy` and `CommandDispatcher` perform RBAC after
-  `CommandGateway` constructs the exact operation.
+  API authentication constructs the actor and commands-owned `Policy` and
+  `CommandDispatcher` perform RBAC.
 - `AsyncWorld` remains the direct engine API. Calling it directly may bypass
   command-gate semantics, which is appropriate for engine and service-layer code.
 
 The runtime keeps handle construction declarative through
 `runtime.world(...)`, `runtime.attach(...)`, and `runtime.resume(...)`.
 World activation, resource attachment, hook registration, mutations, reads,
-simulation, fork, and destroy all go through `iRuntimeApplication`.
+simulation, fork, and destroy all use exact registered operations.
 
 The rest of this page describes the engine-level `AsyncWorld` behavior that
 those runtime calls ultimately drive.
 
-Lower-level via the service layer:
+The supported runtime can expose the resulting durable identity:
 
 ```python
-from archetype.core.config import WorldConfig
-from archetype.app.container import ServiceContainer
+from archetype import ArchetypeRuntime
 
-container = ServiceContainer()
-try:
-    info = await container.application.create_world(WorldConfig(name="my-sim"))
+async with ArchetypeRuntime() as runtime:
+    info = await runtime.world("my-sim").info()
     print(info.world_id)
-finally:
-    await container.shutdown()
 ```
 
 Direct construction is core-internal / advanced:
@@ -291,7 +287,7 @@ The world family's `fork_world()` lifecycle operation creates a new world from
 a snapshot of an existing one.
 
 The runtime surface is `await world.fork(name="branch-A")`, which calls the
-actor-free application facade and returns a new handle owned by the same
+exact trusted `ForkWorld` operation and returns a new handle owned by the same
 runtime.
 
 ### What's Cloned

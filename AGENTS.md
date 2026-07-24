@@ -13,13 +13,15 @@ Choose the owning package before adding a type or behavior:
 | Capability-scoped resources and provider adapters implementing a family-owned protocol | A named subpackage of `archetype.<family>` |
 | Physical storage, control catalogs, commit coordination, and generic durable world/run envelopes | `archetype.storage` |
 | Application workflow authority, cross-family orchestration, internal service ports, and concrete application services | `archetype.app.<family>` |
-| Transport, authentication, application facade, and composition | `archetype.api`, `archetype.app.gateway`, `archetype.app.application`, and `archetype.app.container` |
+| Transport and authentication | `archetype.api` |
+| Concrete composition and process lifetime | `archetype.wiring` and `archetype.runtime_resources` |
 
 Top-level families may import `archetype.core`, themselves, third-party
 libraries, and only lower top-level family contracts declared in
 `quality/architecture.toml` and the family fragments under
-`quality/architecture.d/`. They never import `app`, `runtime`, `api`, or `cli`;
-application families may consume their contracts in the other direction. Use
+`quality/architecture.d/`. They never import `app`, `runtime`,
+`runtime_resources`, `wiring`, `api`, or `cli`; application families may
+consume their contracts in the other direction. Use
 `components.py`, `processors.py`, `contracts.py`,
 `transitions.py`, `interfaces.py`, and `service.py` according to those semantic
 roles. Every first-party top-level package or module must be classified as
@@ -29,8 +31,8 @@ Package placement never makes a symbol public by itself.
 
 `archetype.storage` is the reviewed physical-substrate family: it owns storage
 execution, control-catalog implementations and records, physical visibility,
-commit coordination, and the generic durable world/run envelope. Application
-families consume that substrate through the staged `iStorageService` port and
+commit coordination, and the generic durable world/run envelope. Workflow
+families consume that substrate through the narrow `iStorageService` port and
 retain the meaning and orchestration of their workflows.
 
 A reviewed family may own a capability-scoped resource adapter without gaining
@@ -49,16 +51,18 @@ archetype/
 │   ├── commands/       # Registry, policy, dispatch, scheduling + audit projection
 │   ├── <family>/       # Reusable ECS/domain state and pure behavior
 │   ├── app/            # Internal application families
-│   │   ├── application/ #   Actor-free RuntimeApplication adapter
-│   │   ├── gateway/     #   Actor-aware CommandGateway transport adapter
 │   │   ├── ingestion/   #   Live-storage selection + typed publication
 │   │   ├── artifacts/   #   File source policy + typed index publication
 │   │   ├── evaluation/  #   Grading + receipts
 │   │   ├── research/    #   Autoresearch workflows
-│   │   └── container.py #   Sole concrete composition root
+│   │   ├── missions/    #   Coding-agent workflow authority
+│   │   └── physical_ai/ #   Physical-evaluation workflow authority
+│   ├── redaction/      # Canonical pre-durability redaction family
 │   ├── api/            # FastAPI REST layer
 │   ├── cli/            # Typer CLI (thin HTTP client)
-│   └── runtime/        # Top-level runtime over the service layer
+│   ├── runtime/        # Supported trusted scripting handles
+│   ├── runtime_resources.py # Explicit process-lifetime owner
+│   └── wiring.py       # Sole concrete cross-family composition root
 ├── examples/
 ├── tests/
 └── LEARNINGS.md        # Daft patterns and architectural notes
@@ -76,7 +80,10 @@ archetype/
 
 ## Top-level runtime (recommended)
 
-`ArchetypeRuntime` is the recommended entry point for scripts and beginner docs. Process lifetime and world lifetime are separate concerns: the runtime owns the shared container; `world()` handles are lazy and world-local. See `docs/guide/runtime.md` for the full runtime contract.
+`ArchetypeRuntime` is the recommended entry point for scripts and beginner
+docs. Process lifetime and world lifetime are separate concerns: the runtime
+owns one `RuntimeResources`; `world()` handles are lazy and world-local. See
+`docs/guide/runtime.md` for the full runtime contract.
 
 ```python
 import asyncio
@@ -94,48 +101,35 @@ asyncio.run(main())
 
 Sync scripts use `with ArchetypeRuntime.sync() as runtime:` instead.
 
-## Inspecting the service layer (internal)
+## Inspecting process wiring (maintainers only)
 
-`ServiceContainer` and concrete services are internal implementation
-machinery, not supported application APIs. Focused implementation tests and
-repository wiring code may use them. Application code and examples use
-`ArchetypeRuntime`; untrusted hosts use the REST/API gateway boundary.
+Concrete services and `archetype.wiring` are internal implementation
+machinery, not supported application APIs. Application code and examples use
+`ArchetypeRuntime`; untrusted hosts use REST/API authentication followed by
+the same `CommandDispatcher`.
 
-The container exposes actor-free `application` and authorized
-`command_gateway` ports. The runtime consumes only `application`; FastAPI
-consumes only `iCommandGateway`. `ActorCtx` is an ingress/gateway concept and
-never belongs on a runtime handle.
+`build_runtime_resources()` is the single concrete composition transaction.
+It returns the process owner; it does not expose parallel trusted or
+actor-aware adapters. Maintainer diagnostics may inspect that owner narrowly:
 
 ```python
 import asyncio
-from archetype.app.container import ServiceContainer
-from archetype.app.models import Command, CommandType
-from archetype.app.gateway.auth.models import ActorCtx
-from archetype.core.config import WorldConfig, StorageConfig, RunConfig
-from uuid_utils import uuid7
+from archetype.wiring import RuntimeBootstrapConfig, build_runtime_resources
 
 async def main():
-    container = ServiceContainer()
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
-    info = await container.command_gateway.create_world(
-        ctx,
-        WorldConfig(name="experiment"),
-        StorageConfig(),
-    )
-
-    cmd = Command(type=CommandType.SPAWN, payload={"components": []})
-    await container.command_gateway.submit(ctx, info.world_id, cmd)
-
-    result = await container.command_gateway.run(
-        ctx,
-        info.world_id,
-        RunConfig(num_steps=10),
-    )
-    print(f"Completed {result.ticks_completed} ticks")
-    await container.shutdown()
+    resources = build_runtime_resources(RuntimeBootstrapConfig.from_env())
+    try:
+        dispatcher = resources.dispatcher
+        print(type(dispatcher).__name__)
+    finally:
+        await resources.aclose()
 
 asyncio.run(main())
 ```
+
+Trusted runtime handles call `dispatcher.apply()` or `defer()`. FastAPI
+authenticates an `ActorCtx` from `archetype.commands.models`, then calls
+`apply_as()` or `defer_as()`. Family handlers never receive the actor.
 
 ## LLM-powered processors
 
@@ -202,14 +196,10 @@ changed before resolving them.
 ## Application flow
 
 ```text
-Trusted script → ArchetypeRuntime → RuntimeApplication adapter
-                                     → CommandDispatcher.apply / defer
+Trusted script → ArchetypeRuntime / RuntimeWorld
+                 → CommandDispatcher.apply / defer
 
-CLI → API authentication → CommandGateway adapter
-                             → CommandDispatcher.apply_as / defer_as
-
-temporary staged workflow → CommandGateway → RuntimeApplication
-                                            → app-family capability
+CLI → API authentication → CommandDispatcher.apply_as / defer_as
 
 CommandDispatcher → exact OperationRegistry handler or CommandScheduler
 
@@ -231,12 +221,11 @@ preceding row; no unknown permission is inferred from a role name.
 
 ## Change-safety quick reference
 
-- Keep dependencies pointing downward: runtime → actor-free application adapter
-  → commands; API → gateway adapter → commands; commands → world/storage; world
-  → storage. The gateway reaches the application adapter only through the
-  finite temporary workflow bridge. CLI is an HTTP client of API. Do not leak
-  `AsyncWorld`, the container, backend clients, or concrete services across
-  either boundary.
+- Keep dependencies pointing downward: runtime/API → commands and exact family
+  operation models; commands → world/storage; world → storage. `wiring.py` is
+  the only concrete cross-family composition root. CLI is an HTTP client of
+  API. Do not leak `AsyncWorld`, `RuntimeResources`, backend clients, or
+  concrete services across either supported boundary.
 - Treat `src/archetype/core/` as invariant-owned. Prefer an app or runtime
   extension when it can meet the requirement; discuss any core behavior change
   before implementing it.
@@ -256,7 +245,7 @@ preceding row; no unknown permission is inferred from a role name.
   do not consume staged mutations or advance the tick until durable visibility
   is published. Failed ticks must remain retryable.
 - Keep runtime and world lifetimes distinct. Handles are lazy and actor-free;
-  world shutdown is local, while runtime teardown owns shared services.
+  world shutdown is local, while `RuntimeResources` owns phased shared teardown.
 - When changing behavior, update the focused contract test (and the
   specification if the contract itself changes), not only a happy-path test.
 
@@ -311,8 +300,8 @@ change, and report the exact validation that ran. See
 | `docs/guide/command-gate.md` | Roles, permissions, and audit gate |
 | `LEARNINGS.md` | Daft patterns, UDF rules, data-centric principle |
 | `src/archetype/runtime/` | `ArchetypeRuntime` — recommended top-level API |
-| `src/archetype/app/container.py` | Service wiring |
-| `src/archetype/app/gateway/service.py` | Authorized ingress gateway |
+| `src/archetype/wiring.py` | Sole concrete composition transaction |
+| `src/archetype/runtime_resources.py` | Process lifetime, admission drain, and phased cleanup |
 | `src/archetype/commands/dispatch.py` | Governed direct and deferred command entry |
 | `src/archetype/commands/scheduler.py` | Durable scheduler and materializer |
 | `src/archetype/storage/service.py` | Daft execution and durable storage authority |

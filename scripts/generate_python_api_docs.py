@@ -160,17 +160,6 @@ PAGES: tuple[ReferencePage, ...] = (
         ),
     ),
     ReferencePage(
-        "commands",
-        "Command models",
-        "Integration API",
-        "Typed command envelopes for supported host adapters. Scheduling, authorization, "
-        "and concrete application services remain internal.",
-        (
-            "Command",
-            "CommandType",
-        ),
-    ),
-    ReferencePage(
         "core",
         "Core engine",
         "Extension API",
@@ -231,7 +220,7 @@ SUPPLEMENTAL: dict[str, tuple[str, str]] = {
         "archetype.artifacts",
         "synthesize_artifact_context",
     ),
-    "ActorCtx": ("archetype.app.gateway.auth", "ActorCtx"),
+    "ActorCtx": ("archetype.commands.models", "ActorCtx"),
     "HookEvent": ("archetype.core.hooks", "HookEvent"),
     "HookHandle": ("archetype.core.hooks", "HookHandle"),
     "HookInfo": ("archetype.world.models", "HookInfo"),

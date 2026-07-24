@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import Any, Protocol
 
 import daft
 from daft import DataFrame
@@ -17,8 +18,6 @@ from pydantic import JsonValue
 
 from archetype.app.artifacts.interfaces import iArtifactService
 from archetype.app.ingestion.interfaces import iIngestionService
-from archetype.app.redaction.interfaces import iRedactionService
-from archetype.app.redaction.models import RedactionReceipt
 from archetype.artifacts.contracts import ArtifactSource
 from archetype.core.config import StorageBackend, StorageConfig
 from archetype.missions.trajectories import (
@@ -28,10 +27,39 @@ from archetype.missions.trajectories import (
     TranscriptIngestionResult,
     parse_claude_transcript,
 )
+from archetype.redaction import (
+    RedactedFile,
+    RedactedRecord,
+    RedactionReceipt,
+)
 from archetype.storage.interfaces import iStorageService
 from archetype.world.interfaces import iWorldRegistry
 
 _TRANSCRIPT_ROWS = CLAUDE_TRANSCRIPT_TABLE
+
+
+class TranscriptRedactor(Protocol):
+    """Exact stateless-redaction capability consumed by transcript ingestion."""
+
+    @property
+    def policy_id(self) -> str: ...
+
+    def redact_record(
+        self,
+        value: Mapping[str, JsonValue],
+        *,
+        scope: str,
+    ) -> RedactedRecord: ...
+
+    def assert_safe_metadata(self, value: str, *, field: str) -> RedactionReceipt: ...
+
+    def sanitize_file(
+        self,
+        source: Path,
+        destination: Path,
+        *,
+        logical_path: str,
+    ) -> RedactedFile: ...
 
 
 def _canonical_digest(value: dict[str, Any]) -> str:
@@ -64,7 +92,7 @@ def _receipt_columns(prefix: str, receipt: RedactionReceipt) -> dict[str, Any]:
 
 def _normalize_session(
     session: LoadedSession,
-    redaction: iRedactionService,
+    redaction: TranscriptRedactor,
 ) -> tuple[list[dict[str, Any]], tuple[RedactionReceipt, ...]]:
     header = redaction.redact_record(
         {
@@ -202,7 +230,7 @@ class TranscriptIngestionService:
         self,
         artifact_service: iArtifactService,
         ingestion_service: iIngestionService,
-        redaction_service: iRedactionService,
+        redaction_service: TranscriptRedactor,
         storage_service: iStorageService,
         world_registry: iWorldRegistry,
     ) -> None:

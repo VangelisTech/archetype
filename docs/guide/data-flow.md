@@ -1,18 +1,16 @@
 # Data Flow
 
 World state has separate read and write facades in core, while the application
-layer adds actor-free product semantics and an optional authorization boundary
-for untrusted access.
+layer adds product workflow semantics and the API authenticates untrusted
+access.
 
 The important boundary is:
 
-- App families and `iRuntimeApplication` do not know about `ActorCtx`.
-- `iCommandGateway` is the temporary transport adapter for untrusted calls. It
-  constructs exact operation models and enters actor-aware dispatcher methods.
-- Trusted runtime calls `iRuntimeApplication`, which constructs the same models
-  and enters actor-free dispatcher methods.
-- A finite gateway-to-application bridge remains only for staged workflows
-  whose family registrations land in the next refactor wave.
+- App families and registered handlers do not know about `ActorCtx`.
+- API routes authenticate an actor, construct exact operation models, and
+  enter actor-aware dispatcher methods.
+- Trusted runtime handles construct the same models and enter actor-free
+  dispatcher methods.
 
 ## Core Read/Write Split
 
@@ -35,7 +33,7 @@ Trusted runtime:
 
 ```text
 RuntimeWorld
-    -> iRuntimeApplication adapter
+    -> construct exact family operation
     -> CommandDispatcher.apply(exact operation)
     -> OperationRegistry handler
     -> safe result
@@ -46,7 +44,7 @@ Untrusted adapter:
 ```text
 API / untrusted caller
     |
-iCommandGateway.<method>(ctx, ...)
+authenticate ActorCtx
     |
 construct exact family operation
     |
@@ -77,7 +75,7 @@ When a caller wants work applied at a tick boundary, the commands family durably
 admits it. An untrusted caller is authorized before admission:
 
 ```text
-RuntimeApplication or iCommandGateway compatibility adapter
+Runtime or authenticated API adapter
     |
 CommandDispatcher.defer / defer_as(exact operation, DurableOptions)
     |
@@ -138,15 +136,16 @@ events to Iceberg; scheduler/control-catalog outbox progress exposes the
 projection watermark. Command-ledger history is operational truth; audit
 history is the analytical projection.
 
-`RuntimeWorld.history(...)` reads through RuntimeApplication. API history reads
-authorize through the gateway. Both adapters construct the registered
+`RuntimeWorld.history(...)` uses trusted dispatcher entry. API history reads
+authorize through actor-aware entry. Both adapters construct the registered
 `GetAuditHistory` operation and reach the same commands-owned projection.
 
 See [Audit Log](audit-log.md).
 
 ## Source Reference
 
-- Gateway: `src/archetype/app/gateway/service.py`
+- Runtime adapter: `src/archetype/runtime/`
+- Actor-aware transport: `src/archetype/api/`
 - Governed dispatcher and durable scheduler: `src/archetype/commands/`
 - Managed simulation: `src/archetype/world/simulation.py`
 - Durable world reads: `src/archetype/world/query.py`

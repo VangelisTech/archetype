@@ -23,19 +23,30 @@ os.environ.setdefault("LOGFIRE_IGNORE_NO_CONFIG", "1")
 
 from uuid_utils import uuid7
 
-from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.models import ActorCtx
+from archetype.commands.models import ActorCtx
 from archetype.commands.policy import PERMISSIONS_BY_ROLE
 from archetype.core.config import StorageConfig, WorldConfig
 from archetype.core.hooks import PreTick
 from archetype.world.models import (
+    PORTABLE_TICK_OPERATION_TYPES,
+    AddHook,
+    AddProcessor,
+    AddResource,
+    CreateWorld,
+    ForkWorld,
+    GetWorldInfo,
     HookInfo,
+    ListHooks,
+    ListProcessors,
+    ListResources,
+    ListWorlds,
     ProcessorInfo,
     ResourceInfo,
     WorldInfo,
 )
 from evals.graders import exact_match, state_check
 from evals.harness import EvalHarness
+from evals.infra.runtime import isolated_eval_process
 from evals.types import GraderResult
 
 SUITE = "spec"
@@ -59,14 +70,18 @@ SPEC_CASES: tuple[SpecCase, ...] = (
     SpecCase(
         spec_id="runtime.R1",
         source="runtime.md",
-        anchors=("R1", "`app.application` port", "internal container"),
-        task_id="spec.runtime_gate_only_boundary",
+        anchors=(
+            "R1",
+            "Exact-operation dispatcher execution",
+            "`RuntimeResources` lifetime state",
+        ),
+        task_id="spec.runtime_dispatcher_boundary",
     ),
     SpecCase(
         spec_id="runtime.R2",
         source="runtime.md",
-        anchors=("R2", "`world_id` after activation", "concrete app service"),
-        task_id="spec.runtime_gate_only_boundary",
+        anchors=("R2", "never live capabilities", "`world_id` after activation"),
+        task_id="spec.runtime_dispatcher_boundary",
     ),
     SpecCase(
         spec_id="command-gate.3",
@@ -82,7 +97,7 @@ SPEC_CASES: tuple[SpecCase, ...] = (
             "Pure role denial happens before",
             "access evidence",
         ),
-        task_id="spec.command_gateway_gate_map",
+        task_id="spec.dispatcher_gate_map",
     ),
     SpecCase(
         spec_id="world-lifecycle.7",
@@ -136,13 +151,7 @@ _RUNTIME_TYPE_ONLY_APP_IMPORTS = frozenset(
         "archetype.app.research.contracts",
     }
 )
-_RUNTIME_ALLOWED_APP_IMPORTS = _RUNTIME_TYPE_ONLY_APP_IMPORTS | frozenset(
-    {
-        "archetype.app.application.interfaces",
-        "archetype.app.container",
-        "archetype.app.models",
-    }
-)
+_RUNTIME_ALLOWED_APP_IMPORTS = _RUNTIME_TYPE_ONLY_APP_IMPORTS
 
 _EXPECTED_ROLE_MATRIX: dict[str, frozenset[str]] = {
     "viewer": frozenset(
@@ -295,18 +304,38 @@ _COMMAND_GATE_MAP: dict[str, tuple[tuple[str, str], ...]] = {
     "list_resources": (("ListResources", "list_resources"),),
 }
 
-_BRIDGE_GATE_MAP = {
-    "autoresearch": "autoresearch",
-    "ingest_artifacts": "ingest_artifacts",
-    "query_artifacts": "query_artifacts",
-    "evaluate": "evaluate",
-}
+_ACTOR_AWARE_PULL_FORWARD = frozenset(
+    {
+        "AutoResearch",
+        "Evaluate",
+        "IngestArtifacts",
+        "QueryArtifacts",
+    }
+)
+_PULL_FORWARD_MODELS = frozenset(
+    {
+        "AutoResearch",
+        "Evaluate",
+        "EvaluatePhysicalTask",
+        "GradeTrajectory",
+        "IngestArtifacts",
+        "IngestClaudeTranscript",
+        "QueryArtifacts",
+        "QueryTrajectory",
+        "QueryTranscriptRows",
+        "RestoreMissionSandbox",
+        "RunGraders",
+        "RunMission",
+        "SubmitMission",
+        "SweepPhysicalInstructions",
+    }
+)
 
-_DEFERRED_GATE_MAP = {
-    "submit": "defer_as",
-    "submit_batch": "defer_batch_as",
-    "submit_spawn": "defer_spawn_as",
-}
+_DEFERRED_DISPATCHER_ENTRIES = (
+    "defer_as",
+    "defer_batch_as",
+    "defer_spawn_as",
+)
 
 
 def _python_files(path: Path) -> list[Path]:
@@ -352,14 +381,6 @@ def _runtime_app_import_is_allowed(
     )
 
 
-def _called_attr_name(call: ast.Call) -> str | None:
-    if isinstance(call.func, ast.Attribute):
-        return call.func.attr
-    if isinstance(call.func, ast.Name):
-        return call.func.id
-    return None
-
-
 def task_spec_manifest_traceability() -> list[GraderResult]:
     """Every spec eval cites a normative source and anchor text."""
     checks: dict[str, bool] = {}
@@ -398,8 +419,8 @@ def task_role_permission_matrix() -> list[GraderResult]:
     ]
 
 
-def task_runtime_gate_only_boundary() -> list[GraderResult]:
-    """Runtime depends on the application port and stores no live world refs."""
+def task_runtime_dispatcher_boundary() -> list[GraderResult]:
+    """Runtime uses exact dispatcher/resources seams and stores no live world refs."""
     runtime_dir = SRC / "runtime"
     import_checks: dict[str, bool] = {}
     world_ref_checks: dict[str, bool] = {}
@@ -443,86 +464,52 @@ def task_runtime_gate_only_boundary() -> list[GraderResult]:
     ]
 
 
-def task_command_gateway_gate_map() -> list[GraderResult]:
-    """Gateway methods construct exact models and enter the shared dispatcher."""
-    path = SRC / "app" / "gateway" / "service.py"
-    tree = ast.parse(path.read_text(), filename=str(path))
-    functions = {
-        node.name: node
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+def task_dispatcher_gate_map() -> list[GraderResult]:
+    """Exact registrations keep policy, actor entry, and durability aligned."""
+    expected_permissions = {
+        model_name: permission
+        for expected_models in _COMMAND_GATE_MAP.values()
+        for model_name, permission in expected_models
     }
-    container = ServiceContainer()
-    try:
-        registered_permissions = {
-            spec.model.__name__: spec.permission for spec in container.operation_registry.specs
-        }
-    finally:
-        asyncio.run(container.shutdown())
 
-    checks: dict[str, bool] = {}
-    for method, expected_models in _COMMAND_GATE_MAP.items():
-        node = functions.get(method)
-        checks[f"{method}:exists"] = node is not None
-        if node is None:
-            continue
+    with tempfile.TemporaryDirectory() as tmp:
+        process = isolated_eval_process(tmp)
+        try:
+            specs = {spec.model.__name__: spec for spec in process.registry.specs}
+            durable_models = {
+                spec.model for spec in process.registry.specs if spec.durable is not None
+            }
+            checks: dict[str, bool] = {
+                "portable_models_are_exact_durable_set": durable_models
+                == set(PORTABLE_TICK_OPERATION_TYPES),
+                "actor_aware_pull_forwards_are_exact": {
+                    model_name
+                    for model_name in _PULL_FORWARD_MODELS
+                    if model_name in specs and specs[model_name].untrusted
+                }
+                == _ACTOR_AWARE_PULL_FORWARD,
+                "internal_reservation_ops_are_not_untrusted": all(
+                    not specs[name].untrusted for name in ("ReserveEntityIds", "SpawnReserved")
+                ),
+                "trusted_dispatch_entry_exists": callable(
+                    getattr(process.dispatcher, "apply", None)
+                ),
+                "actor_dispatch_entry_exists": callable(
+                    getattr(process.dispatcher, "apply_as", None)
+                ),
+            }
+            for entry in _DEFERRED_DISPATCHER_ENTRIES:
+                checks[f"dispatcher:{entry}"] = callable(getattr(process.dispatcher, entry, None))
+            for model_name, permission in expected_permissions.items():
+                spec = specs.get(model_name)
+                checks[f"{model_name}:registered"] = spec is not None
+                checks[f"{model_name}:permission"] = (
+                    spec is not None and spec.permission == permission
+                )
+        finally:
+            asyncio.run(process.aclose())
 
-        calls = [call for call in ast.walk(node) if isinstance(call, ast.Call)]
-        constructed_models: set[str] = set()
-        for call in calls:
-            if isinstance(call.func, ast.Name):
-                constructed_models.add(call.func.id)
-            elif (
-                isinstance(call.func, ast.Attribute)
-                and isinstance(call.func.value, ast.Name)
-                and call.func.attr.startswith("from_")
-            ):
-                constructed_models.add(call.func.value.id)
-        called_methods = {name for call in calls if (name := _called_attr_name(call)) is not None}
-        checks[f"{method}:dispatcher_entry"] = "apply_as" in called_methods
-        for model_name, permission in expected_models:
-            checks[f"{method}:constructs:{model_name}"] = model_name in constructed_models
-            checks[f"{method}:registered_permission:{model_name}"] = (
-                registered_permissions.get(model_name) == permission
-            )
-        checks[f"{method}:no_legacy_gate_or_emit"] = not (
-            {"_gate", "_gate_batch", "_emit", "guardrail_allow"} & called_methods
-        )
-
-    for method, operation in _BRIDGE_GATE_MAP.items():
-        node = functions.get(method)
-        checks[f"{method}:exists"] = node is not None
-        if node is None:
-            continue
-        calls = [call for call in ast.walk(node) if isinstance(call, ast.Call)]
-        bridge_calls = [call for call in calls if _called_attr_name(call) == "_run_bridge_world"]
-        checks[f"{method}:bridge_entry"] = len(bridge_calls) == 1
-        checks[f"{method}:exact_bridge_permission"] = any(
-            any(
-                keyword.arg == "operation"
-                and isinstance(keyword.value, ast.Constant)
-                and keyword.value.value == operation
-                for keyword in call.keywords
-            )
-            for call in bridge_calls
-        )
-
-    for method, dispatcher_entry in _DEFERRED_GATE_MAP.items():
-        node = functions.get(method)
-        checks[f"{method}:exists"] = node is not None
-        if node is None:
-            continue
-        called_methods = {
-            name
-            for call in ast.walk(node)
-            if isinstance(call, ast.Call) and (name := _called_attr_name(call)) is not None
-        }
-        checks[f"{method}:dispatcher_entry"] = dispatcher_entry in called_methods
-        checks[f"{method}:no_legacy_gate_or_emit"] = not (
-            {"_gate", "_gate_batch", "_emit", "guardrail_allow"} & called_methods
-        )
-
-    return [state_check(checks, name="command_gateway_dispatch_shape")]
+    return [state_check(checks, name="canonical_dispatch_shape")]
 
 
 def task_append_only_protocols() -> list[GraderResult]:
@@ -554,50 +541,69 @@ def task_info_class_downgrades() -> list[GraderResult]:
 async def _task_info_class_downgrades() -> list[GraderResult]:
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     with tempfile.TemporaryDirectory() as tmp:
-        container = ServiceContainer()
+        process = isolated_eval_process(tmp)
         try:
-            created = await container.command_gateway.create_world(
+            created = await process.dispatcher.apply_as(
                 ctx,
-                WorldConfig(name="spec-info"),
-                StorageConfig(uri=f"{tmp}/store", namespace="spec_info"),
+                CreateWorld(
+                    config=WorldConfig(name="spec-info"),
+                    storage_config=StorageConfig(
+                        uri=f"{tmp}/store",
+                        namespace="spec_info",
+                    ),
+                ),
             )
-            await container.command_gateway.add_processor(
+            await process.dispatcher.apply_as(
                 ctx,
-                created.world_id,
-                _FakeProcessor(),
+                AddProcessor(
+                    world_id=created.world_id,
+                    processor=_FakeProcessor(),
+                ),
             )
-            await container.command_gateway.add_resource(
+            await process.dispatcher.apply_as(
                 ctx,
-                created.world_id,
-                _FakeResource(),
+                AddResource(
+                    world_id=created.world_id,
+                    resource=_FakeResource(),
+                ),
             )
-            await container.command_gateway.add_hook(
+            await process.dispatcher.apply_as(
                 ctx,
-                created.world_id,
-                PreTick,
-                _fake_handler,
+                AddHook(
+                    world_id=created.world_id,
+                    event_type=PreTick,
+                    handler=_fake_handler,
+                ),
             )
-            forked = await container.command_gateway.fork_world(
+            forked = await process.dispatcher.apply_as(
                 ctx,
-                created.world_id,
-                "spec-fork",
+                ForkWorld(
+                    source_world_id=created.world_id,
+                    name="spec-fork",
+                ),
             )
-            fetched = await container.command_gateway.get_world_info(
+            fetched = await process.dispatcher.apply_as(
                 ctx,
-                created.world_id,
+                GetWorldInfo(world_id=created.world_id),
             )
-            worlds = await container.command_gateway.list_worlds(ctx)
-            processors = await container.command_gateway.list_processors(
+            worlds = await process.dispatcher.apply_as(
                 ctx,
-                created.world_id,
+                ListWorlds(),
             )
-            hooks = await container.command_gateway.list_hooks(ctx, created.world_id)
-            resources = await container.command_gateway.list_resources(
+            processors = await process.dispatcher.apply_as(
                 ctx,
-                created.world_id,
+                ListProcessors(world_id=created.world_id),
+            )
+            hooks = await process.dispatcher.apply_as(
+                ctx,
+                ListHooks(world_id=created.world_id),
+            )
+            resources = await process.dispatcher.apply_as(
+                ctx,
+                ListResources(world_id=created.world_id),
             )
         finally:
-            await container.shutdown()
+            await process.aclose()
 
     info_values = [created, forked, fetched, *worlds, *processors, *hooks, *resources]
     type_checks = {
@@ -743,16 +749,16 @@ def register(harness: EvalHarness) -> None:
         desc="Role permissions match command-gate.md exactly.",
     )
     harness.add(
-        "spec.runtime_gate_only_boundary",
+        "spec.runtime_dispatcher_boundary",
         suite=SUITE,
-        fn=task_runtime_gate_only_boundary,
-        desc="Runtime depends on RuntimeApplication-facing ports and stores no live world refs.",
+        fn=task_runtime_dispatcher_boundary,
+        desc="Runtime uses exact dispatcher/resources seams and stores no live world refs.",
     )
     harness.add(
-        "spec.command_gateway_gate_map",
+        "spec.dispatcher_gate_map",
         suite=SUITE,
-        fn=task_command_gateway_gate_map,
-        desc="CommandGateway public methods use the documented gate and audit shape.",
+        fn=task_dispatcher_gate_map,
+        desc="Dispatcher actor-aware methods use the documented policy and audit shape.",
     )
     harness.add(
         "spec.append_only_protocols",

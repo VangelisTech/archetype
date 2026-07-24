@@ -21,9 +21,10 @@ from pyiceberg.catalog.sql import SqlCatalog
 from uuid_utils import UUID, uuid7
 
 from archetype import ArchetypeRuntime, Component
-from archetype.app.container import ServiceContainer
 from archetype.artifacts import ArtifactSource, ArtifactStoreConfig
+from archetype.artifacts.models import IngestArtifacts, QueryArtifacts
 from archetype.core.config import StorageBackend, StorageConfig, WorldConfig
+from archetype.episodes.models import IngestClaudeTranscript, QueryTranscriptRows
 from archetype.ingestion import (
     ARTIFACT_AUDIO,
     ARTIFACT_DIFF,
@@ -35,6 +36,8 @@ from archetype.ingestion import (
 )
 from archetype.missions.trajectories import CLAUDE_TRANSCRIPT_TABLE, ClaudeTranscriptSource
 from archetype.storage.service import StorageService
+from archetype.world.models import CreateWorld
+from tests._runtime import build_test_runtime
 
 ACCESS_KEY_ID = os.environ.get("R2_ACCESS_KEY_ID")
 SECRET_ACCESS_KEY = os.environ.get("R2_SECRET_ACCESS_KEY")
@@ -349,12 +352,13 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
     catalog = _catalog(catalog_path, warehouse)
     catalog.create_namespace(namespace)
     storage_service: StorageService | None = None
-    container: ServiceContainer | None = None
+    resources = None
     cold_storage: StorageService | None = None
-    cold: ServiceContainer | None = None
+    cold_resources = None
     try:
         storage_service = StorageService(_session(catalog, namespace))
-        container = ServiceContainer(
+        resources = build_test_runtime(
+            tmp_path,
             storage_service=storage_service,
             audit_storage_config=storage,
             artifact_store_config=ArtifactStoreConfig(
@@ -362,65 +366,90 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
                 io_config=storage.io_config,
             ),
         )
-        world = await container.world_lifecycle.create_world(
-            WorldConfig(name="r2-artifact-context"), storage
+        dispatcher = resources.dispatcher
+        world = await dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name="r2-artifact-context"),
+                storage_config=storage,
+            )
         )
-        references = await container.artifact_service.ingest(
-            str(world.world_id),
-            [
-                ArtifactSource(
-                    source_uri=f"{_HF}/README.md",
-                    logical_path="context/daft-samples.md",
-                ),
-                ArtifactSource(
-                    source_uri=(
-                        f"{_HF}/audio/"
-                        "Build_Scalable_Batch_Inference_Pipelines_in_3_Lines_"
-                        "Daft_GPT_vLLM.mp3"
+        references = await dispatcher.apply(
+            IngestArtifacts(
+                world_id=world.world_id,
+                sources=(
+                    ArtifactSource(
+                        source_uri=f"{_HF}/README.md",
+                        logical_path="context/daft-samples.md",
                     ),
-                    logical_path="context/talk.mp3",
-                ),
-                ArtifactSource(
-                    source_uri=(
-                        f"{_HF}/videos/"
-                        "Build_Scalable_Batch_Inference_Pipelines_in_3_Lines_"
-                        "Daft_GPT_vLLM.mp4"
+                    ArtifactSource(
+                        source_uri=(
+                            f"{_HF}/audio/"
+                            "Build_Scalable_Batch_Inference_Pipelines_in_3_Lines_"
+                            "Daft_GPT_vLLM.mp3"
+                        ),
+                        logical_path="context/talk.mp3",
                     ),
-                    logical_path="context/talk.mp4",
+                    ArtifactSource(
+                        source_uri=(
+                            f"{_HF}/videos/"
+                            "Build_Scalable_Batch_Inference_Pipelines_in_3_Lines_"
+                            "Daft_GPT_vLLM.mp4"
+                        ),
+                        logical_path="context/talk.mp4",
+                    ),
+                    ArtifactSource(
+                        source_uri=f"{_HF}/papers/2102.04074v1.pdf",
+                        logical_path="context/paper.pdf",
+                    ),
+                    ArtifactSource(
+                        source_uri=str(markdown),
+                        logical_path="context/mission.md",
+                    ),
+                    ArtifactSource(
+                        source_uri=str(code),
+                        logical_path="context/pipeline.py",
+                    ),
+                    ArtifactSource(
+                        source_uri=str(patch),
+                        logical_path="context/change.patch",
+                    ),
+                    ArtifactSource(
+                        source_uri=str(image),
+                        logical_path="context/pixel.png",
+                    ),
                 ),
-                ArtifactSource(
-                    source_uri=f"{_HF}/papers/2102.04074v1.pdf",
-                    logical_path="context/paper.pdf",
-                ),
-                ArtifactSource(source_uri=str(markdown), logical_path="context/mission.md"),
-                ArtifactSource(source_uri=str(code), logical_path="context/pipeline.py"),
-                ArtifactSource(source_uri=str(patch), logical_path="context/change.patch"),
-                ArtifactSource(source_uri=str(image), logical_path="context/pixel.png"),
-            ],
+                storage_config=storage,
+            )
         )
 
         assert len(references) == 8
         assert all(reference.uri.startswith(object_root) for reference in references)
-        transcript_result = await container.transcript_ingestion_service.ingest(
-            str(world.world_id),
-            ClaudeTranscriptSource(path=transcript, mission_id="r2-context-dogfood"),
-            storage_config=storage,
+        transcript_result = await dispatcher.apply(
+            IngestClaudeTranscript(
+                world_id=world.world_id,
+                source=ClaudeTranscriptSource(
+                    path=transcript,
+                    mission_id="r2-context-dogfood",
+                ),
+                storage_config=storage,
+            )
         )
         assert transcript_result.rows_written == 3
         assert transcript_result.artifact.uri.startswith(object_root)
         world_id = str(world.world_id)
         run_id = str(world.run_id)
-        await container.shutdown()
+        await resources.aclose()
         await storage_service.shutdown()
-        container = None
+        resources = None
         storage_service = None
 
-        # A fresh catalog instance and application graph must discover and
+        # A fresh catalog instance and runtime graph must discover and
         # query every populated R2-backed table. No process-local Daft
         # registration from the writer may be required for the cold path.
         cold_catalog = _catalog(catalog_path, warehouse)
         cold_storage = StorageService(_session(cold_catalog, namespace))
-        cold = ServiceContainer(
+        cold_resources = build_test_runtime(
+            tmp_path,
             storage_service=cold_storage,
             audit_storage_config=storage,
             artifact_store_config=ArtifactStoreConfig(
@@ -428,8 +457,16 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
                 io_config=storage.io_config,
             ),
         )
+        cold_dispatcher = cold_resources.dispatcher
         common_rows = (
-            (await cold.application.query_artifacts(world_id, storage_config=storage))
+            (
+                await cold_dispatcher.apply(
+                    QueryArtifacts(
+                        world_id=world_id,
+                        storage_config=storage,
+                    )
+                )
+            )
             .select(
                 "world_id",
                 "run_id",
@@ -467,7 +504,13 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
             assert len(row["xxhash3_64"]) == 16
 
         image_rows = (
-            (await cold.ingestion_service.read(world_id, ARTIFACT_IMAGES, storage_config=storage))
+            (
+                await cold_storage.read_world_rows(
+                    storage,
+                    world_id,
+                    ARTIFACT_IMAGES,
+                )
+            )
             .select("artifact_id", "width", "height", "format", "mode")
             .to_pylist()
         )
@@ -477,7 +520,13 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
         assert common_by_id[image_row["artifact_id"]]["logical_path"] == "context/pixel.png"
 
         audio_rows = (
-            (await cold.ingestion_service.read(world_id, ARTIFACT_AUDIO, storage_config=storage))
+            (
+                await cold_storage.read_world_rows(
+                    storage,
+                    world_id,
+                    ARTIFACT_AUDIO,
+                )
+            )
             .select("artifact_id", "sample_rate", "duration_seconds")
             .to_pylist()
         )
@@ -487,7 +536,13 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
         assert common_by_id[audio["artifact_id"]]["logical_path"] == "context/talk.mp3"
 
         video_rows = (
-            (await cold.ingestion_service.read(world_id, ARTIFACT_VIDEO, storage_config=storage))
+            (
+                await cold_storage.read_world_rows(
+                    storage,
+                    world_id,
+                    ARTIFACT_VIDEO,
+                )
+            )
             .select("artifact_id", "width", "height", "duration_seconds")
             .to_pylist()
         )
@@ -498,7 +553,13 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
         assert common_by_id[video["artifact_id"]]["logical_path"] == "context/talk.mp4"
 
         pdf_rows = (
-            (await cold.ingestion_service.read(world_id, ARTIFACT_PDF, storage_config=storage))
+            (
+                await cold_storage.read_world_rows(
+                    storage,
+                    world_id,
+                    ARTIFACT_PDF,
+                )
+            )
             .select("artifact_id", "page_count")
             .to_pylist()
         )
@@ -507,7 +568,13 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
         assert common_by_id[pdf["artifact_id"]]["logical_path"] == "context/paper.pdf"
 
         text_rows = (
-            (await cold.ingestion_service.read(world_id, ARTIFACT_TEXT, storage_config=storage))
+            (
+                await cold_storage.read_world_rows(
+                    storage,
+                    world_id,
+                    ARTIFACT_TEXT,
+                )
+            )
             .select("artifact_id", "language")
             .to_pylist()
         )
@@ -527,7 +594,13 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
         }
 
         diff_rows = (
-            (await cold.ingestion_service.read(world_id, ARTIFACT_DIFF, storage_config=storage))
+            (
+                await cold_storage.read_world_rows(
+                    storage,
+                    world_id,
+                    ARTIFACT_DIFF,
+                )
+            )
             .select("artifact_id", "file_count", "hunk_count", "additions")
             .to_pylist()
         )
@@ -539,7 +612,14 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
         assert patch_common["media_family"] == "text"
 
         transcript_rows = (
-            (await cold.application.query_transcript_rows(world_id, storage_config=storage))
+            (
+                await cold_dispatcher.apply(
+                    QueryTranscriptRows(
+                        world_id=world_id,
+                        storage_config=storage,
+                    )
+                )
+            )
             .select("source_artifact_id", "mission_id", "row_kind", "seq", "role", "content")
             .to_pylist()
         )
@@ -578,12 +658,12 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
         }
         assert set(cold_counts).issubset({name for _, name in cold_catalog.list_tables(namespace)})
     finally:
-        if cold is not None:
-            await cold.shutdown()
+        if cold_resources is not None:
+            await cold_resources.aclose()
         if cold_storage is not None:
             await cold_storage.shutdown()
-        if container is not None:
-            await container.shutdown()
+        if resources is not None:
+            await resources.aclose()
         if storage_service is not None:
             await storage_service.shutdown()
 

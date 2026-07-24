@@ -9,20 +9,29 @@ import subprocess
 import sys
 import textwrap
 import time
+from functools import partial
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import daft
 import pyarrow as pa
 import pytest
 from uuid_utils import uuid7
 
-from archetype.app.container import ServiceContainer
 from archetype.app.evaluation import service as evaluation_module
-from archetype.app.gateway.auth.models import ActorCtx
+from archetype.commands.dispatch import CommandDispatcher
+from archetype.commands.models import ActorCtx
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
 from archetype.evaluation.components import EvalReceipt
 from archetype.evaluation.contracts import GraderContract, Outcome, subject_digest
+from archetype.evaluation.models import Evaluate
+from archetype.runtime_resources import RuntimeResources
+from archetype.storage.config import ControlCatalogConfig
+from archetype.storage.service import StorageService
+from archetype.world.models import CreateWorld, Spawn, Step
+from tests._runtime import build_test_runtime
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -59,10 +68,70 @@ def _contract(**overrides) -> GraderContract:
     return GraderContract(**base)
 
 
-async def _seeded_world(container: ServiceContainer, storage):
-    world = await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
-    await container.application.create_entity(world.world_id, [Telemetry(reading=0.8)])
-    await container.application.step(world.world_id, RunConfig())
+def _storage_service(tmp_path: Path) -> StorageService:
+    return StorageService(
+        control_catalog_config=ControlCatalogConfig(
+            catalog_dir=tmp_path / "control-catalogs",
+        )
+    )
+
+
+def _runtime(
+    tmp_path: Path,
+    *,
+    storage_service: StorageService | None = None,
+) -> tuple[RuntimeResources, StorageService]:
+    storage = storage_service or _storage_service(tmp_path)
+    return build_test_runtime(tmp_path, storage_service=storage), storage
+
+
+async def _shutdown(resources: RuntimeResources, storage: StorageService) -> None:
+    await resources.aclose()
+    await storage.shutdown()
+
+
+def _evaluation_service(dispatcher: CommandDispatcher) -> evaluation_module.EvaluationService:
+    handler = dispatcher._registry.resolve_name("evaluate").handler
+    assert isinstance(handler, partial)
+    assert handler.args
+    service = handler.args[0]
+    assert isinstance(service, evaluation_module.EvaluationService)
+    return service
+
+
+def _evaluate(
+    world_id: object,
+    components: list[type[Component]],
+    *,
+    contract: Any,
+    grader: Any,
+    evaluation_id: str,
+    storage_config: StorageConfig | None = None,
+) -> Evaluate:
+    return Evaluate(
+        world_id=world_id,
+        components=tuple(components),
+        contract=contract,
+        grader=grader,
+        evaluation_id=evaluation_id,
+        storage_config=storage_config,
+    )
+
+
+async def _seeded_world(dispatcher: CommandDispatcher, storage: StorageConfig):
+    world = await dispatcher.apply(
+        CreateWorld(
+            config=WorldConfig(name="w"),
+            storage_config=storage,
+        )
+    )
+    await dispatcher.apply(
+        Spawn.from_components(
+            world_id=world.world_id,
+            components=[Telemetry(reading=0.8)],
+        )
+    )
+    await dispatcher.apply(Step(world_id=world.world_id, run_config=RunConfig()))
     return world
 
 
@@ -76,61 +145,71 @@ def _counting_grader(calls: list[int], outcome: Outcome):
 
 
 async def _results(
-    container: ServiceContainer,
+    storage_service: StorageService,
     world_id: str,
-    storage_config: StorageConfig | None = None,
+    storage_config: StorageConfig,
 ):
-    return await container.ingestion_service.read(
-        world_id,
+    return await storage_service.read_world_rows(
+        storage_config,
+        str(world_id),
         _EVALUATION_RESULTS,
-        storage_config=storage_config,
     )
 
 
 async def test_replay_returns_persisted_result_without_regrading(tmp_path):
-    container = ServiceContainer()
+    resources, storage_service = _runtime(tmp_path)
+    dispatcher = resources.dispatcher
     try:
-        world = await _seeded_world(container, _storage(tmp_path))
+        storage = _storage(tmp_path)
+        world = await _seeded_world(dispatcher, storage)
         calls: list[int] = []
         grader = _counting_grader(calls, Outcome(status="pass", score=0.8))
 
-        first = await container.command_gateway.evaluate(
+        first = await dispatcher.apply_as(
             _ctx(),
-            world.world_id,
-            [Telemetry],
-            contract=_contract(),
-            grader=grader,
-            evaluation_id="trial-1",
+            _evaluate(
+                world.world_id,
+                [Telemetry],
+                contract=_contract(),
+                grader=grader,
+                evaluation_id="trial-1",
+            ),
         )
-        replay = await container.command_gateway.evaluate(
+        replay = await dispatcher.apply_as(
             _ctx(),
-            world.world_id,
-            [Telemetry],
-            contract=_contract(),
-            grader=grader,
-            evaluation_id="trial-1",
+            _evaluate(
+                world.world_id,
+                [Telemetry],
+                contract=_contract(),
+                grader=grader,
+                evaluation_id="trial-1",
+            ),
         )
 
         assert replay == first
         assert calls == [1]
-        rows = (await _results(container, str(world.world_id))).to_pylist()
+        rows = (await _results(storage_service, str(world.world_id), storage)).to_pylist()
         assert len(rows) == 1
         assert rows[0]["outcome"] == "pass"
         assert rows[0]["evaluation_id"] == "trial-1"
     finally:
-        await container.shutdown()
+        await _shutdown(resources, storage_service)
 
 
 async def test_concurrent_service_graphs_run_paid_grader_once(tmp_path):
-    """Two independent containers converge through the durable catalog lease."""
+    """Two independent process graphs converge through the durable catalog lease."""
     storage = _storage(tmp_path)
-    first_container = ServiceContainer()
-    second_container = ServiceContainer()
+    first_storage = _storage_service(tmp_path)
+    second_storage = _storage_service(tmp_path)
+    first_resources, _ = _runtime(tmp_path, storage_service=first_storage)
+    second_resources, _ = _runtime(tmp_path, storage_service=second_storage)
+    first_dispatcher = first_resources.dispatcher
+    second_dispatcher = second_resources.dispatcher
     first_task = None
     second_task = None
     release_grader = asyncio.Event()
     try:
-        world = await _seeded_world(first_container, storage)
+        world = await _seeded_world(first_dispatcher, storage)
         grader_started = asyncio.Event()
         calls: list[int] = []
 
@@ -142,24 +221,28 @@ async def test_concurrent_service_graphs_run_paid_grader_once(tmp_path):
             return Outcome(status="pass", score=0.8)
 
         first_task = asyncio.create_task(
-            first_container.command_gateway.evaluate(
+            first_dispatcher.apply_as(
                 _ctx(),
-                world.world_id,
-                [Telemetry],
-                contract=_contract(),
-                grader=grader,
-                evaluation_id="concurrent-paid-grade",
+                _evaluate(
+                    world.world_id,
+                    [Telemetry],
+                    contract=_contract(),
+                    grader=grader,
+                    evaluation_id="concurrent-paid-grade",
+                ),
             )
         )
         await asyncio.wait_for(grader_started.wait(), timeout=30)
         second_task = asyncio.create_task(
-            second_container.application.evaluate(
-                world.world_id,
-                [Telemetry],
-                contract=_contract(),
-                grader=grader,
-                evaluation_id="concurrent-paid-grade",
-                storage_config=storage,
+            second_dispatcher.apply(
+                _evaluate(
+                    world.world_id,
+                    [Telemetry],
+                    contract=_contract(),
+                    grader=grader,
+                    evaluation_id="concurrent-paid-grade",
+                    storage_config=storage,
+                )
             )
         )
 
@@ -171,7 +254,7 @@ async def test_concurrent_service_graphs_run_paid_grader_once(tmp_path):
         first, second = await asyncio.gather(first_task, second_task)
         assert first == second
         assert calls == [1]
-        assert len((await _results(first_container, str(world.world_id))).to_pylist()) == 1
+        assert len((await _results(first_storage, str(world.world_id), storage)).to_pylist()) == 1
     finally:
         release_grader.set()
         pending = [
@@ -181,17 +264,19 @@ async def test_concurrent_service_graphs_run_paid_grader_once(tmp_path):
             task.cancel()
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
-        await second_container.shutdown()
-        await first_container.shutdown()
+        await _shutdown(second_resources, second_storage)
+        await _shutdown(first_resources, first_storage)
 
 
 async def test_expired_owner_with_persisted_result_recovers_without_regrading(tmp_path):
-    container = ServiceContainer()
+    resources, storage_service = _runtime(tmp_path)
+    dispatcher = resources.dispatcher
+    evaluation_service = _evaluation_service(dispatcher)
     try:
         storage = _storage(tmp_path)
-        world = await _seeded_world(container, storage)
+        world = await _seeded_world(dispatcher, storage)
         wid = str(world.world_id)
-        snapshot = await container.evaluation_service._snapshot(wid, storage)
+        snapshot = await evaluation_service._snapshot(wid, storage)
         contract = _contract()
         subject = subject_digest(
             wid,
@@ -200,7 +285,7 @@ async def test_expired_owner_with_persisted_result_recovers_without_regrading(tm
             snapshot_tokens=list(snapshot.head_tokens),
             component_names=[Telemetry.__name__],
         )
-        catalog = container.storage_service.get_control_catalog(storage)
+        catalog = storage_service.get_control_catalog(storage)
         await catalog.lease_evaluation(
             wid,
             snapshot.run_id,
@@ -220,7 +305,8 @@ async def test_expired_owner_with_persisted_result_recovers_without_regrading(tm
             graded_at_ms=int(time.time() * 1000),
             evidence_json="{}",
         )
-        await container.ingestion_service.append(
+        await storage_service.append_world_rows(
+            storage,
             wid,
             evaluation_module._EVALUATION_RESULTS,
             daft.from_arrow(
@@ -230,7 +316,6 @@ async def test_expired_owner_with_persisted_result_recovers_without_regrading(tm
                 )
             ),
             key_columns=("evaluation_id",),
-            storage_config=storage,
         )
         await asyncio.sleep(0.02)
         calls: list[int] = []
@@ -239,14 +324,16 @@ async def test_expired_owner_with_persisted_result_recovers_without_regrading(tm
             calls.append(1)
             return Outcome(status="fail")
 
-        recovered = await container.command_gateway.evaluate(
+        recovered = await dispatcher.apply_as(
             _ctx(),
-            wid,
-            [Telemetry],
-            contract=contract,
-            grader=must_not_grade,
-            evaluation_id="append-before-crash",
-            storage_config=storage,
+            _evaluate(
+                wid,
+                [Telemetry],
+                contract=contract,
+                grader=must_not_grade,
+                evaluation_id="append-before-crash",
+                storage_config=storage,
+            ),
         )
 
         assert recovered == persisted
@@ -261,7 +348,7 @@ async def test_expired_owner_with_persisted_result_recovers_without_regrading(tm
         )
         assert complete.status == "COMPLETE" and not complete.acquired
     finally:
-        await container.shutdown()
+        await _shutdown(resources, storage_service)
 
 
 async def test_evaluation_heartbeat_renews_and_detects_lost_owner(monkeypatch):
@@ -309,11 +396,12 @@ async def test_evaluation_heartbeat_renews_and_detects_lost_owner(monkeypatch):
 
 
 async def test_failed_lease_release_does_not_mask_grader_failure(tmp_path, monkeypatch, caplog):
-    container = ServiceContainer()
+    resources, storage_service = _runtime(tmp_path)
+    dispatcher = resources.dispatcher
     try:
         storage = _storage(tmp_path)
-        world = await _seeded_world(container, storage)
-        catalog = container.storage_service.get_control_catalog(storage)
+        world = await _seeded_world(dispatcher, storage)
+        catalog = storage_service.get_control_catalog(storage)
 
         async def fail_release(*_args, **_kwargs):
             raise RuntimeError("release transport failed")
@@ -324,19 +412,21 @@ async def test_failed_lease_release_does_not_mask_grader_failure(tmp_path, monke
         monkeypatch.setattr(catalog, "release_evaluation", fail_release)
         with caplog.at_level("WARNING", logger=evaluation_module.__name__):
             with pytest.raises(ValueError, match="grader failed"):
-                await container.command_gateway.evaluate(
+                await dispatcher.apply_as(
                     _ctx(),
-                    world.world_id,
-                    [Telemetry],
-                    contract=_contract(),
-                    grader=fail_grader,
-                    evaluation_id="failed-release-preserves-grader-error",
+                    _evaluate(
+                        world.world_id,
+                        [Telemetry],
+                        contract=_contract(),
+                        grader=fail_grader,
+                        evaluation_id="failed-release-preserves-grader-error",
+                    ),
                 )
 
         assert "failed to release durable evaluation lease" in caplog.text
         assert "release transport failed" not in caplog.text
     finally:
-        await container.shutdown()
+        await _shutdown(resources, storage_service)
 
 
 async def containerless_heartbeat(catalog, lease, *, stop, lost):
@@ -351,98 +441,112 @@ async def containerless_heartbeat(catalog, lease, *, stop, lost):
 
 
 async def test_grader_reads_captured_snapshot_when_world_advances(tmp_path, monkeypatch):
-    container = ServiceContainer()
+    resources, storage_service = _runtime(tmp_path)
+    dispatcher = resources.dispatcher
+    evaluation_service = _evaluation_service(dispatcher)
     try:
-        world = await _seeded_world(container, _storage(tmp_path))
-        original_snapshot = container.evaluation_service._snapshot
+        world = await _seeded_world(dispatcher, _storage(tmp_path))
+        original_snapshot = evaluation_service._snapshot
 
         async def capture_then_advance(*args, **kwargs):
             snapshot = await original_snapshot(*args, **kwargs)
-            await container.application.step(world.world_id, RunConfig())
+            await dispatcher.apply(Step(world_id=world.world_id, run_config=RunConfig()))
             return snapshot
 
-        monkeypatch.setattr(container.evaluation_service, "_snapshot", capture_then_advance)
+        monkeypatch.setattr(evaluation_service, "_snapshot", capture_then_advance)
         graded_ticks: list[int] = []
 
         def grader(df):
             graded_ticks.extend(int(row["tick"]) for row in df.to_pylist())
             return Outcome(status="pass", score=1.0)
 
-        await container.command_gateway.evaluate(
+        await dispatcher.apply_as(
             _ctx(),
-            world.world_id,
-            [Telemetry],
-            contract=_contract(),
-            grader=grader,
-            evaluation_id="pinned-while-advancing",
+            _evaluate(
+                world.world_id,
+                [Telemetry],
+                contract=_contract(),
+                grader=grader,
+                evaluation_id="pinned-while-advancing",
+            ),
         )
 
         assert graded_ticks == [0]
     finally:
-        await container.shutdown()
+        await _shutdown(resources, storage_service)
 
 
 async def test_distinct_trials_record_distinct_results(tmp_path):
-    container = ServiceContainer()
+    resources, storage_service = _runtime(tmp_path)
+    dispatcher = resources.dispatcher
     try:
-        world = await _seeded_world(container, _storage(tmp_path))
+        storage = _storage(tmp_path)
+        world = await _seeded_world(dispatcher, storage)
         calls: list[int] = []
 
         for index, status in enumerate(("pass", "fail")):
-            await container.command_gateway.evaluate(
+            await dispatcher.apply_as(
                 _ctx(),
-                world.world_id,
-                [Telemetry],
-                contract=_contract(),
-                grader=_counting_grader(calls, Outcome(status=status)),
-                evaluation_id=f"trial-{index}",
+                _evaluate(
+                    world.world_id,
+                    [Telemetry],
+                    contract=_contract(),
+                    grader=_counting_grader(calls, Outcome(status=status)),
+                    evaluation_id=f"trial-{index}",
+                ),
             )
 
         assert len(calls) == 2
         outcomes = sorted(
-            row["outcome"] for row in (await _results(container, str(world.world_id))).to_pylist()
+            row["outcome"]
+            for row in (await _results(storage_service, str(world.world_id), storage)).to_pylist()
         )
         assert outcomes == ["fail", "pass"]
     finally:
-        await container.shutdown()
+        await _shutdown(resources, storage_service)
 
 
 async def test_same_id_with_different_contract_conflicts(tmp_path):
-    container = ServiceContainer()
+    resources, storage_service = _runtime(tmp_path)
+    dispatcher = resources.dispatcher
     try:
-        world = await _seeded_world(container, _storage(tmp_path))
+        world = await _seeded_world(dispatcher, _storage(tmp_path))
         grader = _counting_grader([], Outcome(status="pass"))
 
-        await container.command_gateway.evaluate(
+        await dispatcher.apply_as(
             _ctx(),
-            world.world_id,
-            [Telemetry],
-            contract=_contract(),
-            grader=grader,
-            evaluation_id="trial-x",
-        )
-        with pytest.raises(ValueError, match="different subject or grader contract"):
-            await container.command_gateway.evaluate(
-                _ctx(),
+            _evaluate(
                 world.world_id,
                 [Telemetry],
-                contract=_contract(implementation_version="2026.08.01"),
+                contract=_contract(),
                 grader=grader,
                 evaluation_id="trial-x",
+            ),
+        )
+        with pytest.raises(ValueError, match="different subject or grader contract"):
+            await dispatcher.apply_as(
+                _ctx(),
+                _evaluate(
+                    world.world_id,
+                    [Telemetry],
+                    contract=_contract(implementation_version="2026.08.01"),
+                    grader=grader,
+                    evaluation_id="trial-x",
+                ),
             )
     finally:
-        await container.shutdown()
+        await _shutdown(resources, storage_service)
 
 
 async def test_fail_closed_inputs(tmp_path):
-    container = ServiceContainer()
+    resources, storage_service = _runtime(tmp_path)
+    dispatcher = resources.dispatcher
     try:
         storage = _storage(tmp_path)
-        world = await _seeded_world(container, storage)
+        world = await _seeded_world(dispatcher, storage)
 
         with pytest.raises(ValueError, match="GraderContract"):
-            await container.command_gateway.evaluate(
-                _ctx(),
+            _evaluate(
                 world.world_id,
                 [Telemetry],
                 contract=None,
@@ -450,52 +554,64 @@ async def test_fail_closed_inputs(tmp_path):
                 evaluation_id="t",
             )
         with pytest.raises(ValueError, match="typed Outcome"):
-            await container.command_gateway.evaluate(
+            await dispatcher.apply_as(
                 _ctx(),
-                world.world_id,
-                [Telemetry],
-                contract=_contract(),
-                grader=lambda df: 0.9,
-                evaluation_id="t2",
+                _evaluate(
+                    world.world_id,
+                    [Telemetry],
+                    contract=_contract(),
+                    grader=lambda df: 0.9,
+                    evaluation_id="t2",
+                ),
             )
 
-        bare = await container.world_lifecycle.create_world(WorldConfig(name="unstepped"), storage)
+        bare = await dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name="unstepped"),
+                storage_config=storage,
+            )
+        )
         with pytest.raises(RuntimeError, match="no published visibility"):
-            await container.command_gateway.evaluate(
+            await dispatcher.apply_as(
                 _ctx(),
-                bare.world_id,
-                [Telemetry],
-                contract=_contract(),
-                grader=lambda df: Outcome(status="pass"),
-                evaluation_id="t3",
+                _evaluate(
+                    bare.world_id,
+                    [Telemetry],
+                    contract=_contract(),
+                    grader=lambda df: Outcome(status="pass"),
+                    evaluation_id="t3",
+                ),
             )
         with pytest.raises(ValueError):
             Outcome(status="maybe")
         with pytest.raises(ValueError):
             Outcome(status="pass", score=float("inf"))
     finally:
-        await container.shutdown()
+        await _shutdown(resources, storage_service)
 
 
 async def test_result_is_attributable_to_pinned_snapshot(tmp_path):
-    container = ServiceContainer()
+    resources, storage_service = _runtime(tmp_path)
+    dispatcher = resources.dispatcher
     try:
         storage = _storage(tmp_path)
-        world = await _seeded_world(container, storage)
+        world = await _seeded_world(dispatcher, storage)
         wid, rid = str(world.world_id), str(world.run_id)
         contract = _contract()
 
-        await container.command_gateway.evaluate(
+        await dispatcher.apply_as(
             _ctx(),
-            wid,
-            [Telemetry],
-            contract=contract,
-            grader=lambda df: Outcome(status="pass", score=0.8),
-            evaluation_id="attrib",
+            _evaluate(
+                wid,
+                [Telemetry],
+                contract=contract,
+                grader=lambda df: Outcome(status="pass", score=0.8),
+                evaluation_id="attrib",
+            ),
         )
-        row = (await _results(container, wid)).to_pylist()[0]
+        row = (await _results(storage_service, wid, storage)).to_pylist()[0]
 
-        catalog = container.storage_service.get_control_catalog(storage)
+        catalog = storage_service.get_control_catalog(storage)
         manifests = await catalog.list_manifests(wid, rid)
         head = max(manifest.tick for manifest in manifests)
         recomputed = subject_digest(
@@ -510,43 +626,66 @@ async def test_result_is_attributable_to_pinned_snapshot(tmp_path):
         assert row["subject_digest"] == recomputed
         assert row["contract_digest"] == contract.digest()
     finally:
-        await container.shutdown()
+        await _shutdown(resources, storage_service)
 
 
 async def test_cold_process_can_grade_persisted_world(tmp_path):
     script = textwrap.dedent(
         """
         import asyncio, json, sys
+        from pathlib import Path
 
-        from archetype.app.container import ServiceContainer
         from archetype.core.component import Component
         from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
+        from archetype.storage.config import ControlCatalogConfig
+        from archetype.wiring import RuntimeBootstrapConfig, build_runtime_resources
+        from archetype.world.models import CreateWorld, Spawn, Step
 
         class Telemetry(Component):
             reading: float = 0.0
 
-        async def main(uri):
-            c = ServiceContainer()
+        async def main(uri, control_dir):
+            resources = build_runtime_resources(
+                RuntimeBootstrapConfig(
+                    control_catalog_config=ControlCatalogConfig(
+                        catalog_dir=Path(control_dir),
+                    )
+                )
+            )
+            dispatcher = resources.dispatcher
             try:
                 storage = StorageConfig(
                     uri=uri,
                     namespace="ns",
                     backend=StorageBackend.ICEBERG,
                 )
-                world = await c.world_lifecycle.create_world(WorldConfig(name="gpu"), storage)
-                await c.application.create_entity(world.world_id, [Telemetry(reading=0.9)])
+                world = await dispatcher.apply(
+                    CreateWorld(
+                        config=WorldConfig(name="gpu"),
+                        storage_config=storage,
+                    )
+                )
+                await dispatcher.apply(
+                    Spawn.from_components(
+                        world_id=world.world_id,
+                        components=[Telemetry(reading=0.9)],
+                    )
+                )
                 for _ in range(3):
-                    await c.application.step(world.world_id, RunConfig())
+                    await dispatcher.apply(
+                        Step(world_id=world.world_id, run_config=RunConfig())
+                    )
                 print(json.dumps({"world_id": str(world.world_id), "run_id": str(world.run_id)}))
             finally:
-                await c.shutdown()
+                await resources.aclose()
 
-        asyncio.run(main(sys.argv[1]))
+        asyncio.run(main(sys.argv[1], sys.argv[2]))
         """
     )
     uri = str(tmp_path / "store")
+    control_dir = str(tmp_path / "control-catalogs")
     process = subprocess.run(
-        [sys.executable, "-c", script, uri],
+        [sys.executable, "-c", script, uri, control_dir],
         capture_output=True,
         text=True,
         timeout=180,
@@ -554,26 +693,30 @@ async def test_cold_process_can_grade_persisted_world(tmp_path):
     assert process.returncode == 0, process.stderr
     info = json.loads(process.stdout.strip().splitlines()[-1])
 
-    cold = ServiceContainer()
+    resources, storage_service = _runtime(tmp_path)
+    dispatcher = resources.dispatcher
     try:
         storage = StorageConfig(
             uri=uri,
             namespace="ns",
             backend=StorageBackend.ICEBERG,
         )
-        result = await cold.application.evaluate(
-            info["world_id"],
-            [Telemetry],
-            contract=_contract(),
-            grader=lambda df: Outcome(
-                status="pass", score=float(df.to_pylist()[-1]["telemetry__reading"])
+        result = await dispatcher.apply(
+            _evaluate(
+                info["world_id"],
+                [Telemetry],
+                contract=_contract(),
+                grader=lambda df: Outcome(
+                    status="pass",
+                    score=float(df.to_pylist()[-1]["telemetry__reading"]),
+                ),
+                evaluation_id="cold-grade-1",
+                storage_config=storage,
             ),
-            evaluation_id="cold-grade-1",
-            storage_config=storage,
         )
         assert result.outcome == "pass"
-        rows = (await _results(cold, info["world_id"], storage)).to_pylist()
+        rows = (await _results(storage_service, info["world_id"], storage)).to_pylist()
         assert len(rows) == 1
         assert rows[0]["outcome"] == "pass"
     finally:
-        await cold.shutdown()
+        await _shutdown(resources, storage_service)

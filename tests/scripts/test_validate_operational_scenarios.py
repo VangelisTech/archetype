@@ -254,6 +254,36 @@ def test_example_rows_claim_only_the_behavior_their_receipts_exercise() -> None:
         assert row["artifact_schema"] == "archetype.operational-results/v1"
 
 
+def test_runtime_loopback_is_required_source_and_wheel_dogfood() -> None:
+    rows = {row["id"]: row for row in load_scenarios()}
+    loopback = rows["dogfood.runtime.loopback"]
+
+    assert loopback["kind"] == "dogfood"
+    assert loopback["owner"] == "runtime"
+    assert loopback["owner_paths"] == [
+        "src/archetype/runtime",
+        "src/archetype/runtime_resources.py",
+        "src/archetype/wiring.py",
+        "src/archetype/api",
+        "src/archetype/commands",
+    ]
+    assert loopback["tier"] == 1
+    assert loopback["applicability"] == ["source", "wheel"]
+    assert loopback["prerequisites"] == []
+    assert loopback["missing_prerequisite"] == "fail"
+    assert loopback["contracts"] == [
+        "runtime.trust.actor_free",
+        "runtime.lifecycle.single_flight_and_drain",
+        "runtime.lifecycle.retryable_teardown",
+        "gateway.authorization.rbac",
+        "world.fork.lineage",
+    ]
+    assert loopback["cleanup_policy"] == "isolated"
+    assert loopback["artifact_policy"] == "receipt"
+    assert loopback["artifact_schema"] == "archetype.operational-results/v1"
+    assert loopback["required_cadence"] == ["pr", "main", "release"]
+
+
 def test_operational_audit_runs_in_the_pr_static_profile() -> None:
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
     lint = re.search(r"^lint:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE)

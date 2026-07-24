@@ -39,16 +39,21 @@ components = (Agent, Position)  # runs on entities with both Agent AND Position
 ### 4. Access shared state via Resources
 
 ```python
-async def process(self, df: DataFrame, **kwargs) -> DataFrame:
-    resources: Resources = kwargs.get("resources", Resources())
+async def process(
+    self,
+    df: DataFrame,
+    *,
+    resources: Resources,
+    **kwargs,
+) -> DataFrame:
     config = resources.require(MyConfig)    # raises if missing
-    broker = resources.get(CommandBroker)   # None if missing
+    cache = resources.get(MyCache)          # None if missing
 ```
 
 Resources are injected into `world.resources` before running:
 ```python
 world.resources.insert(MyConfig(...))
-world.resources.insert(CommandBroker())
+world.resources.insert(MyCache(...))
 ```
 
 ### 5. Use `daft.functions.prompt()` for LLM calls
@@ -91,14 +96,17 @@ Processors execute in priority order within a tick (lower first):
 | 30-39 | Post-processing, scoring |
 | 40+ | Cleanup, persistence |
 
-### 8. Messages are tick-boundary consistent
+### 8. Message delivery is application composition
 
-Messages enqueued at tick N are realized at tick N+1:
+Archetype has no framework message envelope or delivery policy. Define
+application-owned Components and resources, then make processor priority
+express the causal boundary. For example, a realization processor can drain an
+application mailbox before a later producer deposits new work; deposits from
+tick N are then realized at tick N+1.
 
-```python
-cmd = Command(type=CommandType.MESSAGE, tick=tick, payload={...})
-await broker.enqueue(world_id, cmd)  # delivered NEXT tick
-```
+Do not treat that delay as a framework guarantee. It belongs to the
+application's processors, priorities, and synchronization policy. See
+`examples/04_messaging.py`.
 
 ### 9. Column references use the component prefix
 

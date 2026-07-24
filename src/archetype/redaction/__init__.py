@@ -3,8 +3,7 @@
 
 """Shared pre-durability secret scanning and redaction authority."""
 
-from archetype.app.redaction.interfaces import iRedactionService
-from archetype.app.redaction.models import (
+from archetype.redaction.models import (
     RedactedFile,
     RedactedRecord,
     RedactedText,
@@ -12,7 +11,7 @@ from archetype.app.redaction.models import (
     RedactionReceipt,
     SecretQuarantineError,
 )
-from archetype.app.redaction.service import RedactionService
+from archetype.redaction.service import RedactionService
 
 __all__ = [
     "RedactedFile",
@@ -22,5 +21,4 @@ __all__ = [
     "RedactionReceipt",
     "RedactionService",
     "SecretQuarantineError",
-    "iRedactionService",
 ]

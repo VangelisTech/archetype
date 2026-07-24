@@ -5,13 +5,13 @@
 
 from __future__ import annotations
 
+from importlib.util import find_spec
 from typing import Literal, get_args, get_origin
 
 import pytest
 from pydantic import Field, ValidationError
 
 import archetype
-from archetype.app import models as app_models
 from archetype.core.component import Component
 from archetype.world.handlers import WORLD_OPERATION_HANDLERS
 from archetype.world.models import (
@@ -76,7 +76,7 @@ def test_world_values_have_one_canonical_owner() -> None:
     )
 
     assert {value.__module__ for value in world_values} == {"archetype.world.models"}
-    assert all(not hasattr(app_models, value.__name__) for value in world_values)
+    assert find_spec("archetype.app.models") is None
 
     for value in world_values[:6]:
         assert getattr(archetype, value.__name__) is value

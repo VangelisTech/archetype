@@ -7,16 +7,15 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from daft import DataFrame
 
-from archetype.app.redaction.interfaces import iRedactionService
 from archetype.core.component import Component
-from archetype.core.config import StorageConfig
+from archetype.core.config import RunConfig, StorageConfig
 from archetype.core.hooks import PostTick
 from archetype.graph import GraphView
 from archetype.missions.coding_agents.contracts import (
@@ -105,6 +104,7 @@ from archetype.missions.transitions import (
     CriticExecutionStatus,
     MissionStatus,
 )
+from archetype.redaction import RedactedText, RedactionReceipt
 
 
 @dataclass(frozen=True)
@@ -142,6 +142,12 @@ class _PendingCriticClosure:
 class MissionWorld(Protocol):
     """Structural runtime-world surface required by the application service."""
 
+    @property
+    def active_world_id(self) -> object | None:
+        """Return the durable identity without activating a lazy world."""
+
+        ...
+
     async def reserve_ids(self, n: int) -> list[int]: ...
 
     async def spawn_reserved(self, entity_id: int, *components: Component) -> None: ...
@@ -166,6 +172,54 @@ class MissionWorldInfo(Protocol):
     tick: int
 
 
+class MissionTaskOwner(Protocol):
+    """Minimal supervised-task capability supplied by process composition."""
+
+    def spawn[T](
+        self,
+        factory: Callable[[], Coroutine[Any, Any, T]],
+        *,
+        label: str,
+    ) -> asyncio.Task[T]: ...
+
+
+class MissionRedactor(Protocol):
+    """Exact stateless-redaction capability consumed by mission execution."""
+
+    @property
+    def policy_id(self) -> str: ...
+
+    def redact_text(self, value: str, *, scope: str) -> RedactedText: ...
+
+    def assert_safe_metadata(self, value: str, *, field: str) -> RedactionReceipt: ...
+
+
+class MissionCleanup(Protocol):
+    """Exact-world mutation authority available only after close starts."""
+
+    @property
+    def world_id(self) -> str: ...
+
+    async def stage_teardown(self, components: list[Component]) -> int: ...
+
+    async def update_retained(
+        self,
+        entity_id: int,
+        components: list[Component],
+    ) -> None: ...
+
+    async def commit(
+        self,
+        run_config: RunConfig,
+        **input_kwargs: Any,
+    ) -> int: ...
+
+    async def finish(self) -> None: ...
+
+
+type MissionCleanupFactory = Callable[[object], Awaitable[MissionCleanup]]
+
+
 class MissionService:
     """Materialize task graphs and compose committed ticks with external I/O."""
 
@@ -176,7 +230,9 @@ class MissionService:
         name: str,
         config: AgentMissionConfig,
         sandbox_service: SandboxServiceProtocol,
-        redaction_service: iRedactionService,
+        redaction_service: MissionRedactor,
+        task_owner: MissionTaskOwner,
+        cleanup_factory: MissionCleanupFactory,
         storage: str | Path | StorageConfig | None = None,
     ) -> None:
         view = GraphView()
@@ -203,6 +259,11 @@ class MissionService:
         self._critic_outbox = critic_outbox
         self._sandboxes = sandbox_service
         self._redaction_service = redaction_service
+        self._task_owner = task_owner
+        self._cleanup_factory = cleanup_factory
+        self._cleanup: MissionCleanup | None = None
+        self._mission_cleanup_complete = False
+        self._closed = False
         self._sandbox_provider = config.sandbox_backend.name
         self._sandbox_environment = config.sandbox_environment
         self._workspace = config.workspace
@@ -513,30 +574,47 @@ class MissionService:
         )
 
     async def close(self) -> None:
-        failures: list[BaseException] = []
-        sandbox_failure: BaseException | None = None
-        if self._critic_prewarms:
-            await asyncio.gather(
-                *tuple(self._critic_prewarms.values()),
-                return_exceptions=True,
-            )
-        try:
-            await self._sandboxes.shutdown()
-        except BaseException as exc:
-            sandbox_failure = exc
-            failures.append(exc)
+        if self._closed:
+            return
+        cleanup = await self._exact_cleanup()
+        if not self._mission_cleanup_complete:
+            failures: list[BaseException] = []
+            sandbox_failure: BaseException | None = None
+            if self._critic_prewarms:
+                await asyncio.gather(
+                    *tuple(self._critic_prewarms.values()),
+                    return_exceptions=True,
+                )
+            try:
+                await self._sandboxes.shutdown()
+            except BaseException as exc:
+                sandbox_failure = exc
+                failures.append(exc)
 
-        try:
-            await self._reconcile_sandboxes_after_shutdown(sandbox_failure)
-        except BaseException as exc:
-            failures.append(exc)
+            if cleanup is not None:
+                try:
+                    await self._reconcile_sandboxes_after_shutdown(
+                        sandbox_failure,
+                        cleanup=cleanup,
+                    )
+                except BaseException as exc:
+                    failures.append(exc)
 
-        if failures:
-            raise BaseExceptionGroup(
-                f"Agent Missions shutdown failed for {len(failures)} operation(s)",
-                failures,
-            )
+            if failures:
+                raise BaseExceptionGroup(
+                    f"Agent Missions shutdown failed for {len(failures)} operation(s)",
+                    failures,
+                )
 
+            if cleanup is not None:
+                try:
+                    await cleanup.finish()
+                except BaseException as exc:
+                    raise BaseExceptionGroup(
+                        "Agent Missions shutdown failed for 1 operation(s)",
+                        [exc],
+                    ) from exc
+            self._mission_cleanup_complete = True
         try:
             await self._world.shutdown()
         except BaseException as exc:
@@ -544,6 +622,7 @@ class MissionService:
                 "Agent Missions shutdown failed for 1 operation(s)",
                 [exc],
             ) from exc
+        self._closed = True
 
     async def query(self, *components: type[Component]) -> DataFrame:
         """Query persisted mission state through the mission-world read path."""
@@ -555,6 +634,18 @@ class MissionService:
         """Return the mission world's durable identity."""
 
         return self._world.world_id
+
+    async def _exact_cleanup(self) -> MissionCleanup | None:
+        cleanup = self._cleanup
+        if cleanup is None:
+            world_id = self._world.active_world_id
+            if world_id is None:
+                return None
+            cleanup = await self._cleanup_factory(world_id)
+            if str(cleanup.world_id) != str(world_id):
+                raise ValueError("mission cleanup capability is bound to another world")
+            self._cleanup = cleanup
+        return cleanup
 
     async def _execute(
         self,
@@ -906,9 +997,9 @@ class MissionService:
             branch=request.branch,
             base_ref=request.base_ref,
         )
-        self._critic_prewarms[request.dispatch_id] = asyncio.create_task(
-            self._prewarm_critic(prewarm),
-            name=f"archetype-critic-prewarm-{request.dispatch_id[:12]}",
+        self._critic_prewarms[request.dispatch_id] = self._task_owner.spawn(
+            lambda: self._prewarm_critic(prewarm),
+            label="critic-prewarm",
         )
 
     def _start_review_prewarm(self, request: CandidateReviewRequest) -> None:
@@ -922,9 +1013,9 @@ class MissionService:
             branch=request.branch,
             base_ref=request.base_ref,
         )
-        self._critic_prewarms[request.dispatch_id] = asyncio.create_task(
-            self._prewarm_critic(prewarm),
-            name=f"archetype-critic-prewarm-{request.dispatch_id[:12]}",
+        self._critic_prewarms[request.dispatch_id] = self._task_owner.spawn(
+            lambda: self._prewarm_critic(prewarm),
+            label="critic-prewarm",
         )
 
     async def _prewarm_critic(
@@ -1414,6 +1505,8 @@ class MissionService:
     async def _reconcile_sandboxes_after_shutdown(
         self,
         shutdown_failure: BaseException | None,
+        *,
+        cleanup: MissionCleanup,
     ) -> None:
         if not self._mission_sandboxes and not self._critic_sandbox_context:
             return
@@ -1422,7 +1515,13 @@ class MissionService:
             key = SandboxKey(f"mission:{mission_id}")
             retained = self._sandboxes.session(key)
             if retained is None:
-                changed = await self._mark_sandbox_closed(sandbox_id) or changed
+                changed = (
+                    await self._mark_sandbox_closed(
+                        sandbox_id,
+                        cleanup=cleanup,
+                    )
+                    or changed
+                )
                 continue
             failure = shutdown_failure or RuntimeError("sandbox teardown remained incomplete")
             await self._record_sandbox_teardown_failure(
@@ -1430,6 +1529,7 @@ class MissionService:
                 sandbox_id,
                 retained,
                 failure,
+                cleanup=cleanup,
             )
             changed = True
         for sandbox_id, (
@@ -1443,7 +1543,13 @@ class MissionService:
                 continue
             retained = self._sandboxes.session(key)
             if retained is None:
-                changed = await self._mark_sandbox_closed(sandbox_id) or changed
+                changed = (
+                    await self._mark_sandbox_closed(
+                        sandbox_id,
+                        cleanup=cleanup,
+                    )
+                    or changed
+                )
                 continue
             failure = shutdown_failure or RuntimeError(
                 "critic sandbox teardown remained incomplete"
@@ -1452,22 +1558,25 @@ class MissionService:
                 sandbox_id,
                 SandboxStatus.ERRORED,
                 failure,
+                cleanup=cleanup,
             )
-            await self._world.spawn(
-                FrictionLog(
-                    task_id=task_id,
-                    dispatch_id=dispatch_id,
-                    kind="critic_sandbox_teardown",
-                    message=self._redact_and_tail(
-                        self._format_exception(failure),
-                        limit=4_000,
-                        scope=f"mission:{mission_id}:critic-teardown",
-                    ),
-                )
+            await cleanup.stage_teardown(
+                [
+                    FrictionLog(
+                        task_id=task_id,
+                        dispatch_id=dispatch_id,
+                        kind="critic_sandbox_teardown",
+                        message=self._redact_and_tail(
+                            self._format_exception(failure),
+                            limit=4_000,
+                            scope=f"mission:{mission_id}:critic-teardown",
+                        ),
+                    )
+                ]
             )
             changed = True
         if changed:
-            await self._world.step()
+            await cleanup.commit(RunConfig())
 
     async def _record_sandbox_teardown_failure(
         self,
@@ -1475,6 +1584,8 @@ class MissionService:
         sandbox_id: str,
         session: SandboxSession | None,
         exc: BaseException,
+        *,
+        cleanup: MissionCleanup | None = None,
     ) -> None:
         status = SandboxStatus.ERRORED
         if session is not None:
@@ -1485,24 +1596,39 @@ class MissionService:
             else:
                 if observed_status is not SandboxStatus.READY:
                     status = observed_status
-        await self._mark_sandbox_failed(sandbox_id, status, exc)
-        await self._world.spawn(
-            FrictionLog(
-                kind="sandbox_teardown",
-                message=self._redact_and_tail(
-                    self._format_exception(exc),
-                    limit=4_000,
-                    scope=f"mission:{mission_id}:sandbox-teardown",
-                ),
-            )
+        await self._mark_sandbox_failed(
+            sandbox_id,
+            status,
+            exc,
+            cleanup=cleanup,
         )
+        friction = FrictionLog(
+            kind="sandbox_teardown",
+            message=self._redact_and_tail(
+                self._format_exception(exc),
+                limit=4_000,
+                scope=f"mission:{mission_id}:sandbox-teardown",
+            ),
+        )
+        if cleanup is None:
+            await self._world.spawn(friction)
+        else:
+            await cleanup.stage_teardown([friction])
 
-    async def _mark_sandbox_closed(self, sandbox_id: str) -> bool:
+    async def _mark_sandbox_closed(
+        self,
+        sandbox_id: str,
+        *,
+        cleanup: MissionCleanup | None = None,
+    ) -> bool:
         entity_id, sandbox_state = self._sandbox_entities[sandbox_id]
         if sandbox_state.status == SandboxStatus.CLOSED.value:
             return False
         closed = sandbox_state.model_copy(update={"status": SandboxStatus.CLOSED.value})
-        await self._world.update(entity_id, closed)
+        if cleanup is None:
+            await self._world.update(entity_id, closed)
+        else:
+            await cleanup.update_retained(entity_id, [closed])
         self._sandbox_entities[sandbox_id] = (entity_id, closed)
         return True
 
@@ -1514,6 +1640,8 @@ class MissionService:
         sandbox_id: str,
         status: SandboxStatus,
         exc: BaseException,
+        *,
+        cleanup: MissionCleanup | None = None,
     ) -> None:
         entity_id, sandbox_state = self._sandbox_entities[sandbox_id]
         errored = sandbox_state.model_copy(
@@ -1526,7 +1654,10 @@ class MissionService:
                 ),
             }
         )
-        await self._world.update(entity_id, errored)
+        if cleanup is None:
+            await self._world.update(entity_id, errored)
+        else:
+            await cleanup.update_retained(entity_id, [errored])
         self._sandbox_entities[sandbox_id] = (entity_id, errored)
 
     @classmethod

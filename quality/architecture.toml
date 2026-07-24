@@ -6,16 +6,13 @@ types = [
   "ArtifactService",
   "AuditLog",
   "AutoResearchService",
-  "CommandGateway",
   "CommandScheduler",
   "EvaluationService",
   "IngestionService",
   "MissionService",
   "PhysicalAIService",
   "RedactionService",
-  "RuntimeApplication",
   "SandboxService",
-  "ServiceContainer",
   "StorageService",
   "TranscriptIngestionService",
   "TrajectoryService",
@@ -23,15 +20,15 @@ types = [
   "WorldRegistry",
 ]
 composition_roots = [
-  "archetype.app.container",
-  "archetype.api.deps",
-  "archetype.runtime.runtime",
+  "archetype.wiring",
 ]
 
 [top_level_family_policy]
 forbidden_outward = [
   "archetype.app",
   "archetype.runtime",
+  "archetype.runtime_resources",
+  "archetype.wiring",
   "archetype.api",
   "archetype.cli",
 ]
@@ -45,6 +42,8 @@ reserved_infrastructure = [
   "archetype.cli",
   "archetype.core",
   "archetype.runtime",
+  "archetype.runtime_resources",
+  "archetype.wiring",
 ]
 common_family_imports = ["archetype.errors"]
 
@@ -96,13 +95,6 @@ allowed_app = [
 ]
 
 [[family_rule]]
-name = "redaction-family"
-consumer = "archetype.app.redaction"
-allowed_app = [
-  "archetype.app.redaction",
-]
-
-[[family_rule]]
 name = "evaluation-family"
 consumer = "archetype.app.evaluation"
 allowed_app = [
@@ -118,8 +110,6 @@ allowed_app = [
   "archetype.app.artifacts.interfaces",
   "archetype.app.evaluation.interfaces",
   "archetype.app.ingestion.interfaces",
-  "archetype.app.redaction.interfaces",
-  "archetype.app.redaction.models",
 ]
 
 [[family_rule]]
@@ -135,28 +125,6 @@ consumer = "archetype.app.physical_ai"
 allowed_app = [
   "archetype.app.physical_ai",
   "archetype.app.evaluation.interfaces",
-]
-
-[[family_rule]]
-name = "application-family"
-consumer = "archetype.app.application"
-allowed_app = [
-  "archetype.app.application",
-  "archetype.app.artifacts.interfaces",
-  "archetype.app.evaluation.interfaces",
-  "archetype.app.missions.interfaces",
-  "archetype.app.physical_ai.interfaces",
-  "archetype.app.research.interfaces",
-  "archetype.app.models",
-]
-
-[[family_rule]]
-name = "gateway-family"
-consumer = "archetype.app.gateway"
-allowed_app = [
-  "archetype.app.gateway",
-  "archetype.app.application.interfaces",
-  "archetype.app.models",
 ]
 
 [[module_rule]]
@@ -177,17 +145,8 @@ allowed_interfaces = [
 allowed_app = []
 
 [[module_rule]]
-module = "archetype.app.redaction.service"
-allowed_interfaces = []
-allowed_app = [
-  "archetype.app.redaction.models",
-]
-
-[[module_rule]]
 module = "archetype.app.evaluation.service"
 allowed_interfaces = [
-  "archetype.app.evaluation.interfaces.GraderOutput",
-  "archetype.app.evaluation.interfaces.TrajectoryGrader",
   "archetype.app.ingestion.interfaces.iIngestionService",
   "archetype.storage.interfaces.iStorageService",
   "archetype.world.interfaces.iWorldRegistry",
@@ -196,16 +155,12 @@ allowed_app = []
 
 [[module_rule]]
 module = "archetype.app.missions.service"
-allowed_interfaces = [
-  "archetype.app.redaction.interfaces.iRedactionService",
-]
+allowed_interfaces = []
 allowed_app = []
 
 [[module_rule]]
 module = "archetype.app.missions.trajectory_service"
 allowed_interfaces = [
-  "archetype.app.evaluation.interfaces.GraderOutput",
-  "archetype.app.evaluation.interfaces.TrajectoryGrader",
   "archetype.app.evaluation.interfaces.iEvaluationService",
   "archetype.storage.interfaces.iStorageService",
 ]
@@ -216,13 +171,10 @@ module = "archetype.app.missions.transcript_service"
 allowed_interfaces = [
   "archetype.app.artifacts.interfaces.iArtifactService",
   "archetype.app.ingestion.interfaces.iIngestionService",
-  "archetype.app.redaction.interfaces.iRedactionService",
   "archetype.storage.interfaces.iStorageService",
   "archetype.world.interfaces.iWorldRegistry",
 ]
-allowed_app = [
-  "archetype.app.redaction.models",
-]
+allowed_app = []
 
 [[module_rule]]
 module = "archetype.app.physical_ai.service"
@@ -245,31 +197,5 @@ allowed_app = [
   "archetype.app.research.contracts",
 ]
 
-[[module_rule]]
-module = "archetype.app.application.service"
-allowed_interfaces = [
-  "archetype.app.artifacts.interfaces.iArtifactService",
-  "archetype.app.evaluation.interfaces.iEvaluationService",
-  "archetype.app.missions.interfaces.iMissionService",
-  "archetype.app.missions.interfaces.iTranscriptIngestionService",
-  "archetype.app.missions.interfaces.iTrajectoryService",
-  "archetype.app.physical_ai.interfaces.iPhysicalAIService",
-  "archetype.app.research.interfaces.iResearchService",
-  "archetype.storage.interfaces.iStorageService",
-  "archetype.world.interfaces.iWorldLifecycle",
-  "archetype.world.interfaces.iWorldRegistry",
-]
-allowed_app = ["archetype.app.models"]
-
-[[module_rule]]
-module = "archetype.app.gateway.service"
-allowed_interfaces = [
-  "archetype.app.application.interfaces.iRuntimeApplication",
-]
-allowed_app = [
-  "archetype.app.gateway._pr3_commands_bridge",
-  "archetype.app.gateway.auth.models",
-  "archetype.app.models",
-]
 # Exact migration edges. These preserve current behavior while the sequenced
 # family relocations move each definition once, without compatibility copies.

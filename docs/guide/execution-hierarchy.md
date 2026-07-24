@@ -1,8 +1,7 @@
 # Execution Hierarchy
 
 **Document type:** Normative.
-**Scope:** `archetype.world.simulation` and the gated proxies on
-`iCommandGateway`.
+**Scope:** `archetype.world.simulation` and exact dispatcher operations.
 
 ## 1. The four execution levels
 
@@ -17,10 +16,10 @@ Episodes do not fork. Rollouts do. A caller may run an episode on a base world
 or on a caller-created fork; the episode preserves that choice.
 
 The supported runtime usually exposes these operations through a
-`RuntimeWorld` handle. `RuntimeApplication` constructs the exact execution
-model and enters `CommandDispatcher.apply`; `iCommandGateway` constructs the
-same model and enters `CommandDispatcher.apply_as`. The registered handler then
-calls the module functions in `archetype.world.simulation`.
+`RuntimeWorld` handle. Runtime constructs the exact execution model and enters
+`CommandDispatcher.apply`; authenticated API routes construct the same model
+and enter `CommandDispatcher.apply_as`. The registered handler then calls the
+module functions in `archetype.world.simulation`.
 
 ## 2. Step and run
 
@@ -144,12 +143,11 @@ fork.
 
 ## 5. Gate proxies and permissions
 
-`iCommandGateway` exposes authorized `step`, `run`, `run_episode`, and
-`run_rollout` proxies. Each constructs one exact operation and enters the
-actor-aware dispatcher once. Commands-owned policy authorizes it, the registered
-world handler executes it, and bounded advisory access evidence records the
-result. Registered execution operations do not delegate through
-`iRuntimeApplication`.
+Authenticated API routes expose authorized `step`, `run`, `run_episode`, and
+`run_rollout` operations. Each constructs one exact model and enters the
+actor-aware dispatcher once. Commands-owned policy authorizes it, the
+registered world handler executes it, and bounded advisory access evidence
+records the result.
 
 | Method | viewer | player | operator | admin |
 |---|---|---|---|---|
@@ -159,6 +157,6 @@ result. Registered execution operations do not delegate through
 
 ## 6. Executable contracts
 
-Focused world execution behavior lives under `tests/world/`. Gateway
-authorization and safe-result behavior remain under `tests/app/` and
+Focused world execution behavior lives under `tests/world/`. Dispatcher
+authorization and API safe-result behavior remain under `tests/commands/` and
 `tests/api/`.

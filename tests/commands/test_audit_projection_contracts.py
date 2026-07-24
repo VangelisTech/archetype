@@ -9,14 +9,14 @@ from typing import Any, cast
 import pytest
 from uuid_utils import uuid7
 
-from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.models import ActorCtx
 from archetype.commands.audit import AuditBackpressureError, AuditLog
-from archetype.commands.models import AuditRow
+from archetype.commands.models import ActorCtx, AuditRow
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
 from archetype.storage.service import StorageService
 from archetype.storage.session import configure_session
+from archetype.world.models import CreateWorld, Despawn, Spawn, Step
+from tests._runtime import build_test_runtime
 
 
 class APos(Component):
@@ -86,86 +86,121 @@ async def test_command_gate_keeps_audit_backpressure_advisory(
     tmp_path,
     monkeypatch,
 ):
-    container = ServiceContainer(audit_storage_config=_storage(tmp_path, "advisory"))
+    resources = build_test_runtime(
+        tmp_path,
+        audit_storage_config=_storage(tmp_path, "advisory"),
+    )
+    dispatcher = resources.dispatcher
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
 
     async def reject_record(_row):
         raise AuditBackpressureError("bounded audit batch is full")
 
-    monkeypatch.setattr(container.audit_log, "record", reject_record)
+    monkeypatch.setattr(dispatcher, "_record_access", reject_record)
     try:
-        world = await container.command_gateway.create_world(
+        world = await dispatcher.apply_as(
             ctx,
-            WorldConfig(name="applied-despite-audit-backpressure"),
-            StorageConfig(uri=str(tmp_path / "world")),
+            CreateWorld(
+                config=WorldConfig(name="applied-despite-audit-backpressure"),
+                storage_config=StorageConfig(uri=str(tmp_path / "world")),
+            ),
         )
 
         assert world.name == "applied-despite-audit-backpressure"
     finally:
-        await container.shutdown()
+        await resources.aclose()
 
 
 @pytest.mark.asyncio
 async def test_injected_session_requires_and_enforces_audit_identity(tmp_path):
     storage = _storage(tmp_path, namespace="managed")
     storage_service = StorageService(session=configure_session(storage))
-    container = None
+    resources = None
     try:
         with pytest.raises(ValueError, match="audit_storage_config is required"):
-            ServiceContainer(storage_service=storage_service)
+            build_test_runtime(tmp_path, storage_service=storage_service)
 
-        container = ServiceContainer(
+        resources = build_test_runtime(
+            tmp_path,
             storage_service=storage_service,
             audit_storage_config=storage,
         )
         ctx = ActorCtx(id=uuid7(), roles={"admin"})
-        await container.command_gateway.create_world(
+        await resources.dispatcher.apply_as(
             ctx,
-            WorldConfig(name="managed"),
-            storage,
+            CreateWorld(
+                config=WorldConfig(name="managed"),
+                storage_config=storage,
+            ),
         )
-        rows = (await container.audit_log.query()).to_pylist()
+        audit = resources.dispatcher._record_access.__self__
+        rows = (await audit.query()).to_pylist()
         assert [row["command_type"] for row in rows] == ["create_world"]
         assert rows[0]["world_id"] is None
 
         different = storage.model_copy(update={"uri": str(tmp_path / "other")})
         with pytest.raises(ValueError, match="configured for a different storage identity"):
-            await container.world_lifecycle.create_world(WorldConfig(name="other"), different)
+            await resources.dispatcher.apply(
+                CreateWorld(
+                    config=WorldConfig(name="other"),
+                    storage_config=different,
+                )
+            )
     finally:
-        if container is not None:
-            await container.shutdown()
+        if resources is not None:
+            await resources.aclose()
         await storage_service.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_gated_mutations_emit_exactly_one_audit_row(tmp_path):
-    c = ServiceContainer(audit_storage_config=_storage(tmp_path))
+    resources = build_test_runtime(
+        tmp_path,
+        audit_storage_config=_storage(tmp_path),
+    )
+    dispatcher = resources.dispatcher
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        world = await c.world_lifecycle.create_world(
-            WorldConfig(name="audit"), StorageConfig(uri=str(tmp_path / "world"))
+        world = await dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name="audit"),
+                storage_config=StorageConfig(uri=str(tmp_path / "world")),
+            )
         )
         wid = world.world_id
+        audit = dispatcher._record_access.__self__
 
-        before = (await c.audit_log.query()).count_rows()
-        entity_id = await c.command_gateway.create_entity(ctx, wid, [APos(x=1)])
-        rows = (await c.audit_log.query()).to_pylist()
+        before = (await audit.query()).count_rows()
+        entity_id = await dispatcher.apply_as(
+            ctx,
+            Spawn.from_components(
+                world_id=wid,
+                components=[APos(x=1)],
+            ),
+        )
+        rows = (await audit.query()).to_pylist()
         assert len(rows) == before + 1
         assert rows[-1]["command_type"] == "spawn"
 
         before = len(rows)
-        await c.command_gateway.step(ctx, wid, RunConfig())
-        rows = (await c.audit_log.query()).to_pylist()
+        await dispatcher.apply_as(
+            ctx,
+            Step(world_id=wid, run_config=RunConfig()),
+        )
+        rows = (await audit.query()).to_pylist()
         assert len(rows) == before + 1
         assert rows[-1]["command_type"] == "step"
 
         before = len(rows)
-        await c.command_gateway.remove_entity(ctx, wid, entity_id)
-        rows = (await c.audit_log.query()).to_pylist()
+        await dispatcher.apply_as(
+            ctx,
+            Despawn(world_id=wid, entity_id=entity_id),
+        )
+        rows = (await audit.query()).to_pylist()
         assert len(rows) == before + 1
         assert rows[-1]["command_type"] == "despawn"
     finally:
-        await c.shutdown()
+        await resources.aclose()
 
 
 @pytest.mark.asyncio

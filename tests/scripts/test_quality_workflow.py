@@ -12,6 +12,10 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+import pytest
+
+from scripts.run_operational_scenarios import run_scenarios
+
 ROOT = Path(__file__).resolve().parents[2]
 QUALITY_WORKFLOW = ROOT / ".github" / "workflows" / "python-tests.yml"
 AUTOMERGE_WORKFLOW = ROOT / ".github" / "workflows" / "automerge.yml"
@@ -199,6 +203,71 @@ def test_commands_operational_receipt_is_required_from_source_and_wheel() -> Non
     assert source.group("body").count("--scenario dogfood.commands.local") == 1
     assert wheel.group("body").count("--scenario dogfood.commands.local") == 1
     assert "operational-commands" in verify_pr.group("dependencies").split()
+
+
+def test_runtime_loopback_is_explicitly_required_from_source_and_wheel() -> None:
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    source = re.search(
+        r"^operational-runtime:\n(?P<body>(?:\t.*\n)+)",
+        makefile,
+        re.MULTILINE,
+    )
+    wheel = re.search(
+        r"^operational-wheel:\n(?P<body>(?:\t.*\n)+)",
+        makefile,
+        re.MULTILINE,
+    )
+    verify_pr = re.search(r"^verify-pr:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE)
+
+    assert source is not None
+    assert wheel is not None
+    assert verify_pr is not None
+    source_body = source.group("body")
+    wheel_body = wheel.group("body")
+    assert "--require-run" in source_body
+    assert "--require-run" in wheel_body
+    assert source_body.count("--scenario dogfood.runtime.loopback") == 1
+    assert wheel_body.count("--scenario dogfood.runtime.loopback") == 1
+    assert "operational-runtime" in verify_pr.group("dependencies").split()
+
+    packet_scenarios = (
+        "example.00_quickstart",
+        "example.01_world_mutations",
+        "example.02_fork_counterfactual",
+        "example.03_time_travel",
+        "example.10_autoresearch",
+        "example.14_physical_ai",
+        "dogfood.agent_mission.scripted",
+    )
+    for scenario_id in packet_scenarios:
+        assert wheel_body.count(f"--scenario {scenario_id}") == 1
+
+
+def test_required_operational_execution_cannot_accept_not_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    envelope, passed = run_scenarios(
+        root=ROOT,
+        registry=OPERATIONAL_SCENARIOS,
+        output=tmp_path / "required-not-run.json",
+        mode="source",
+        wheel=None,
+        cadence="release",
+        scenario_ids={"example.05_llm_agents"},
+        kind="example",
+        min_tier=6,
+        max_tier=6,
+        expected_revision=None,
+        require_clean=False,
+        require_run=True,
+    )
+
+    assert passed is False
+    assert envelope["outcome"] == "failed"
+    assert envelope["status_counts"] == {"passed": 0, "failed": 0, "not_run": 1}
 
 
 def test_commands_operational_oracle_does_not_import_pytest_modules() -> None:

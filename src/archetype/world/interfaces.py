@@ -12,7 +12,8 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid_utils import UUID
 
 from archetype.core.aio import AsyncWorld
-from archetype.core.config import CacheConfig, StorageConfig, WorldConfig
+from archetype.core.component import Component
+from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
 from archetype.core.interfaces import CommittedTickReceipt, iAsyncSystem
 
 if TYPE_CHECKING:
@@ -156,4 +157,28 @@ class iWorldLifecycle(Protocol):
     ) -> None: ...
 
 
-__all__ = ["iWorldLifecycle", "iWorldRegistry"]
+@runtime_checkable
+class iWorldCleanup(Protocol):
+    """Non-ambient cleanup authority for one exact closing world."""
+
+    @property
+    def world_id(self) -> str: ...
+
+    async def stage_teardown(self, components: list[Component]) -> int: ...
+
+    async def update_retained(
+        self,
+        entity_id: int,
+        components: list[Component],
+    ) -> None: ...
+
+    async def commit(
+        self,
+        run_config: RunConfig,
+        **input_kwargs: Any,
+    ) -> int: ...
+
+    async def finish(self) -> None: ...
+
+
+__all__ = ["iWorldCleanup", "iWorldLifecycle", "iWorldRegistry"]

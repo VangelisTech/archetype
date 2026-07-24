@@ -15,10 +15,10 @@ The current contract set is split across design docs and executable tests.
 | Contract source | Scope | Notes |
 |---|---|---|
 | `docs/guide/specification.md` | Umbrella contract overview | This page. Broad contracts plus links to focused specifications. |
-| [Runtime](runtime.md) | Trusted script boundary | `ArchetypeRuntime`, `RuntimeWorld`, sync parity, lifecycle, and actor-free application access. |
+| [Runtime](runtime.md) | Trusted script boundary | `ArchetypeRuntime`, `RuntimeWorld`, sync parity, exact-operation dispatch, and process lifetime. |
 | [Observability](observability.md) | Safe advisory signals | Vendor-neutral trace/metric vocabulary, bounded failure semantics, context, and process-host provider ownership. |
 | [Application Architecture](application-architecture.md) | Supported boundaries and dependency policy | Normative current ownership plus the accepted v0.5 target family DAG, composition, encapsulation, and lint inputs. |
-| [Service Protocols](service-protocols.md) | Internal application ports | Active family interfaces behind `iRuntimeApplication` and `iCommandGateway`. |
+| [Service Protocols](service-protocols.md) | Internal application ports | Active family interfaces composed by wiring and consumed by registered handlers. |
 | [Command Gate](command-gate.md) | Authorization and roles | Four-role model, permissions matrix, audit emission shape. |
 | [Execution Hierarchy](execution-hierarchy.md) | Step/run/episode/rollout | Simulation levels and rollout fork semantics. |
 | [World Lifecycle](world-lifecycle.md) | Create/fork/destroy | Append-only lifecycle, info-class downgrade, fork sharing/copy rules. |
@@ -106,7 +106,8 @@ implementation work must satisfy.
 | `Live snapshot` | The in-memory active DataFrame per signature for the latest completed tick |
 | `Mutation cache` | The staged spawn/despawn data applied at the next tick |
 | `World lifecycle command` | Create, destroy, or fork world operations |
-| `RuntimeApplication` | Actor-free facade adapter for the trusted runtime and the finite temporary gateway workflow bridge |
+| Exact operation | Frozen owning-family model resolved by `OperationRegistry` |
+| `RuntimeResources` | Explicit process owner for dispatcher admission, supervised work, handles, audit, and storage |
 | `Runtime` | Trusted scripting facade and process-lifetime owner |
 
 ## Layer Boundaries
@@ -115,15 +116,14 @@ Core execution is composed from a store-backed querier and updater, a system,
 and a world. Reusable families own product behavior. The top-level commands
 family owns exact operation registration, governed entry, policy, durable
 scheduling, and audit projection. The application layer owns cross-family
-workflow authority and temporary facade adapters.
+workflow authority behind registered handlers.
 
-Trusted Python scripts use `ArchetypeRuntime -> RuntimeApplication`, whose
-registered world/audit methods construct exact models and enter actor-free
-`CommandDispatcher` methods. Untrusted clients use `CLI/HTTP -> API
-authentication -> CommandGateway`; registered methods enter actor-aware
-dispatcher methods directly, while a finite temporary bridge reaches
-`RuntimeApplication` for staged workflows. The CLI is an HTTP client except
-for server startup. Lower packages never depend on their outer consumers.
+Trusted Python scripts use `ArchetypeRuntime -> CommandDispatcher.apply/defer`.
+Untrusted clients use `CLI/HTTP -> API authentication ->
+CommandDispatcher.apply_as/defer_as`. Both paths construct the same exact
+owning-family models; registered handlers never receive `ActorCtx`. The CLI is
+an HTTP client except for server startup. Lower packages never depend on their
+outer consumers.
 
 The complete allowed service edges, composition rules, and public/internal
 classification are normative in
@@ -454,21 +454,18 @@ downstream resource consumer outside the world lock.
 ## Application Layer Contracts
 
 [Application Architecture](application-architecture.md) owns service placement
-and dependency direction. Concrete services and `ServiceContainer` are internal
-implementation machinery. During the current migration,
-`CommandGateway : iCommandGateway` and
-`RuntimeApplication : iRuntimeApplication` are the actor-aware and actor-free
-adapters. The commands-owned `CommandDispatcher` and `Policy` are the policy
-boundary; the accepted v0.5 target removes the temporary adapters after their
-remaining workflow registrations land.
+and dependency direction. Concrete services, `RuntimeResources`, and
+`archetype.wiring` are internal implementation machinery. Runtime and API
+construct exact family models and select trusted or actor-aware dispatcher
+entry. The commands-owned `CommandDispatcher` and `Policy` are the policy
+boundary.
 
 ### Service error taxonomy
 
 - Public cross-family error contracts MUST live in `archetype.errors`.
-  `archetype.app.errors` is an identity-preserving compatibility re-export
-  until the application-facade teardown. Private implementations subclass the
-  canonical contracts; transport adapters MUST NOT import private
-  implementation modules to classify failures.
+  Private implementations subclass the canonical contracts; transport
+  adapters MUST NOT import private implementation modules to classify
+  failures.
 - The REST adapter maps `WorldNotFoundError` to HTTP 404, `ConflictError` to
   HTTP 409, and `AvailabilityError` to HTTP 503. Conflict and availability
   responses expose only the contract's client-safe `public_detail`; internal
@@ -508,8 +505,8 @@ remaining workflow registrations land.
 - Per-store credentials MUST NOT rely solely on process-global Daft planning
   config.
 - Control-catalog bootstrap MUST be captured once in an immutable
-  `ControlCatalogConfig`. `ServiceContainer` may call `from_env()` while
-  composing its owned service; ordinary storage/catalog operations MUST NOT
+  `ControlCatalogConfig`. `RuntimeBootstrapConfig.from_env()` may resolve it
+  once at the host boundary; ordinary storage/catalog operations MUST NOT
   reread ambient application configuration.
 - `pin_visibility()` MUST return an immutable world/run manifest-token
   snapshot. `scan_visible_world_rows()` MUST apply only physical world/run,
@@ -590,26 +587,22 @@ remaining workflow registrations land.
   MUST NOT fabricate an actor or authorization evidence; trusted durable
   admission records an explicit local origin.
 
-### Command gateway
+### Dispatcher ingress
 
-- `iCommandGateway` is the temporary transport ingress for untrusted
-  operations. Registered methods construct the exact family model and call
-  `CommandDispatcher.apply_as`, `defer_as`, or their batch/spawn variants.
-- `CommandDispatcher` and `Policy` are the policy enforcement point. The
-  gateway MUST NOT own role tables, quota counters, scheduler state, or audit
-  storage.
-- A finite temporary gateway bridge MAY delegate the remaining staged
-  workflows to `iRuntimeApplication`, but it MUST use the same commands-owned
-  policy and MUST NOT provide generic dispatch.
-- `submit()` and `submit_batch()` are compatibility tick-deferred APIs. They
-  translate the supported finite envelope to an exact family model plus
-  `DurableOptions`, preserve caller command ID/version, and durably admit work
-  for later materialization.
-- Generic deferred submission MUST accept only exact portable tick operations.
-  Legacy `MESSAGE`, `CUSTOM`, and `QUERY_WORLD` envelopes and every direct-only
-  operation MUST be rejected before quota debit, audit emission, or scheduler
-  persistence.
-- `submit_spawn()` is the special case that reserves a world-local entity ID
+- Trusted runtime adapters construct exact family models and call
+  `CommandDispatcher.apply`, `defer`, or their batch/spawn variants.
+- Untrusted adapters authenticate `ActorCtx`, construct the same exact models,
+  and call `apply_as`, `defer_as`, or their actor-aware batch/spawn variants.
+- `CommandDispatcher` and `Policy` are the policy enforcement point. Transport
+  MUST NOT own role tables, quota counters, scheduler state, or audit storage.
+- The HTTP `SubmitCommandRequest` shape is a finite transport compatibility
+  input. The route translates only the five portable mutation names to exact
+  world operation models plus `DurableOptions`; no generic application command
+  envelope crosses into production code.
+- Deferred submission MUST accept only exact portable tick operations.
+  Unknown names and every direct-only operation MUST be rejected before quota
+  debit, audit emission, or scheduler persistence.
+- Deferred spawn is the special case that reserves a world-local entity ID
   through `CommandScheduler`, transforms `Spawn` into the internal exact
   `SpawnReserved`, and returns the reserved identity honestly.
 - Reservation MUST be single-flight for one command identity; an identical
@@ -618,11 +611,10 @@ remaining workflow registrations land.
   admission, family effects, or evidence. After authorization, unknown or
   closing worlds MUST fail through the exact registry/catalog admission
   boundary rather than create a command row.
-- `CommandScheduler.materialize(actual_world, tick)` is the durable application
-  boundary at tick time; neither gateway nor dispatcher acquires that world
-  again, and the gateway has no drain method.
-- World lifecycle operations use direct gated methods such as `create_world`,
-  `fork_world`, and `destroy_world`.
+- `CommandScheduler.materialize(actual_world, tick)` is the durable boundary at
+  tick time; the dispatcher does not reacquire that world.
+- World lifecycle operations are exact direct models such as `CreateWorld`,
+  `ForkWorld`, and `DestroyWorld`.
 
 Leasing is non-destructive. Applied outcomes settle with tick visibility;
 retryable failures remain recoverable and exhausted failures become terminal.
@@ -664,11 +656,10 @@ retryable failures remain recoverable and exhausted failures become terminal.
 ### Durable world reads
 
 - `archetype.world.query` is the internal durable ECS read surface below the
-  application facade.
-- Trusted runtime reads go through `iRuntimeApplication`; untrusted reads go
-  through `iCommandGateway`. Both adapters construct the same exact registered
-  query model and enter the appropriate actor-free or actor-aware dispatcher
-  method.
+  supported adapters.
+- Trusted runtime and untrusted API adapters construct the same exact
+  registered query model and enter the appropriate actor-free or actor-aware
+  dispatcher method.
 - Archetype and component reads MUST resolve storage per call and query durable
   rows by `world_id` and `run_id`; they do not require the world to be live in
   the process registry.
@@ -688,19 +679,19 @@ retryable failures remain recoverable and exhausted failures become terminal.
   remain available through `CommandScheduler.records`/`history`; durable world
   query has no audit dependency.
 
-### ServiceContainer and runtime lifetime
+### RuntimeResources and process lifetime
 
-- `ServiceContainer` is the internal process-scoped wiring root and the only
-  app module that imports concrete implementations across families.
-- It exposes actor-free `application` and authorized `command_gateway`
-  adapters; composes one `OperationRegistry`, `Policy`, `CommandScheduler`,
-  `AuditLog`, and `CommandDispatcher`; and owns a `StorageService` it creates
-  while borrowing one supplied by a caller.
-- Container shutdown MUST be explicit and distinct from per-world removal.
-- Shutdown stops dispatcher admission, drains admitted operations, projects
-  known command outboxes and flushes `AuditLog`, then releases owned storage.
-  It attempts every configured phase and aggregates failures. Injected storage
-  remains caller-owned.
+- `archetype.wiring` is the internal process-scoped composition root and the
+  only module that imports concrete implementations across families.
+- It composes one `OperationRegistry`, `Policy`, `CommandScheduler`,
+  `AuditLog`, `CommandDispatcher`, world graph, and application service graph,
+  then returns one `RuntimeResources`.
+- Process shutdown MUST be explicit and distinct from per-world removal.
+- Shutdown stops and drains dispatcher admission, joins supervised work, then
+  closes workflow handles, world handles, audit, and owned storage in that
+  order. It attempts every owner in a phase, aggregates labelled original
+  causes, and retains only failed ownership plus dependencies for retry.
+  Injected storage remains caller-owned.
 
 ## Multi-World Contracts
 
@@ -722,7 +713,7 @@ retryable failures remain recoverable and exhausted failures become terminal.
 ### Purpose
 
 This section defines the minimum contracts for any top-level runtime API that
-wraps Archetype's service layer. These requirements exist to prevent a
+wraps Archetype's dispatcher and process resources. These requirements exist to prevent a
 convenience API from weakening the engine's concurrency guarantees, world
 lifecycle isolation, or gate-based command semantics.
 
@@ -736,7 +727,7 @@ These requirements apply to:
 
 - Any proposed top-level `World`, `Processor`, `Archetype`, `Runtime`, or
   `run_sync` runtime API
-- Any wrapper over the internal application gateway and service graph
+- Any wrapper over the internal dispatcher and resource graph
 - Any re-export change that alters the default public API surface
 
 These requirements do not authorize changes to `src/archetype/core/`, which
@@ -744,9 +735,9 @@ remains read-only unless separately approved.
 
 ### Core Principle
 
-Runtime wraps the service layer. Runtime does not bypass the service layer, weaken
-its guarantees, or silently change the semantics of commands, world identity,
-or execution.
+Runtime wraps exact dispatcher operations. Runtime does not bypass governed
+entry, weaken its guarantees, or silently change the semantics of commands,
+world identity, or execution.
 
 ### Concurrency Contract
 
@@ -761,6 +752,8 @@ Required behavior:
 - No implicit world creation during object construction
 - No mutation of process-global runtime state during object construction
 - No background task startup during object construction
+- A process-local owner reservation for the inert handle is allowed and
+  required for deterministic teardown.
 
 #### C2. Single-flight activation
 
@@ -805,9 +798,9 @@ Required behavior:
 - Calls queued behind an in-flight operation MAY fail with the runtime's closed
   error once shutdown has started; they have not yet been admitted.
 
-#### C5. Honest command return values
+#### C5. Honest operation return values
 
-Sugar methods must not claim stronger return semantics than the service layer
+Sugar methods must not claim stronger return semantics than the exact operation
 can provide.
 
 Required behavior:
@@ -856,13 +849,13 @@ Contract tests: `tests/core/test_same_tick_mutation_composition.py`.
 
 #### L1. Separate runtime lifetime from world lifetime
 
-The runtime/container lifetime and individual world lifetimes must be modeled as
+The runtime-resource lifetime and individual world lifetimes must be modeled as
 different scopes.
 
 Required behavior:
 
 - A process-scoped runtime must not be implicitly treated as world-scoped
-- A world wrapper must not own the entire container by default
+- A world wrapper must not own the entire process graph by default
 - Destroying or shutting down a world must not automatically tear down the
   runtime that may serve sibling worlds
 
@@ -944,8 +937,8 @@ runtime level, not implicitly at each world wrapper.
 
 Required behavior:
 
-- Entering a runtime context may create or attach the container
-- Exiting a runtime context may shut down the container
+- Entering a runtime context may create or attach `RuntimeResources`
+- Exiting a runtime context may close `RuntimeResources`
 - Exiting a world context must not tear down process-shared infrastructure
   unless the world context is explicitly defined as owning a dedicated runtime
 
@@ -979,10 +972,11 @@ Script ergonomics must not come from removing safety mechanisms.
 Required behavior:
 
 - Trusted runtime calls are actor-free and do not claim RBAC enforcement;
-  untrusted API calls must flow through `iCommandGateway`
+  untrusted API calls must authenticate and use actor-aware dispatcher entry
 - Access audit and domain outcome evidence must be attributed to their actual
   owning boundaries
-- Direct resource mutation must not be described as governed by the gateway or scheduler
+- Direct resource mutation must not be described as governed by transport or
+  the scheduler
 
 #### S6. Recommended runtime APIs should be mutation-complete
 
@@ -998,7 +992,7 @@ Required behavior:
 - The recommended runtime world handle SHOULD expose actor-free processor
   mutation verbs for `add_processor` and `remove_processor`
 - Runtime audit access such as audit history SHOULD remain available without
-  requiring direct container access
+  requiring direct process-wiring access
 
 #### S7. Declarative scaffolding must remain explicit
 
@@ -1009,9 +1003,9 @@ Required behavior:
 
 - World-handle construction is an immediate trusted runtime operation.
 - Activation, hook registration, resource attachment, mutation, simulation,
-  read, fork, and destroy operations flow through `iRuntimeApplication`.
-- Untrusted ingress performs the corresponding operation through
-  `iCommandGateway` first.
+  read, fork, and destroy operations flow through exact dispatcher operations.
+- Untrusted ingress authenticates, then performs the corresponding operation
+  through actor-aware dispatcher entry.
 
 ### Runtime Acceptance Criteria
 
@@ -1112,7 +1106,7 @@ behavior and an executable oracle.
 |---|---|---|---|
 | 1 | Resolved | Async and sync updater/store failures raise instead of returning a stamped-but-uncommitted frame. | `tests/core/test_async_store_updater_failures.py`; `tests/sync/test_sync_stack_contracts.py` |
 | 2 | Resolved | Compatibility tick-deferred submission translates exactly six portable mutation envelopes. Direct-only operations and legacy `MESSAGE`, `CUSTOM`, and `QUERY_WORLD` envelopes fail before quota debit, evidence, or durable admission. | `tests/integration/test_command_flow.py::test_direct_only_commands_cannot_enter_tick_deferred_scheduler`; Issues #368, #415, #418 |
-| 3 | Resolved | `CommandGateway.submit*` reject an unknown world with `WorldNotFoundError` without creating a durable command row. Pure role denial precedes world resolution and all effects; an authorized later failure may consume its instance-owned quota coordinate and emit bounded failed evidence. | `tests/integration/test_command_flow.py::test_submit_to_unknown_world_rejected`; `tests/commands/test_dispatch_policy_contracts.py` |
+| 3 | Resolved | Actor-aware `CommandDispatcher.defer*` rejects an unknown world with `WorldNotFoundError` without creating a durable command row. Pure role denial precedes world resolution and all effects; an authorized later failure may consume its instance-owned quota coordinate and emit bounded failed evidence. | `tests/integration/test_command_flow.py::test_submit_to_unknown_world_rejected`; `tests/commands/test_dispatch_policy_contracts.py` |
 | 4 | Resolved | Duplicate-name and catalog-registration failures leave no hidden live world. | `tests/core/test_orchestrator_errors_and_instrumentation.py`; `tests/app/test_durable_discovery.py::test_failed_catalog_registration_leaves_no_live_world` |
 | 5 | Resolved | Spawn, despawn, and component migration hooks fire from their public mutation paths with the documented queue-time semantics. | `tests/core/test_resources_hooks_messaging.py`; `tests/core/test_batch_spawn_contract.py`; `tests/sync/test_sync_world.py` |
 | 6 | Resolved | `archetype.world.query` performs durable archetype, component, lineage, and signature reads; command history comes from the commands-owned audit projection. | `tests/world/test_query_contracts.py`; `tests/world/test_atomic_visibility.py`; `tests/commands/test_audit_projection_contracts.py` |
@@ -1173,15 +1167,15 @@ prevents the user-facing API from collapsing three separate concerns:
    lifecycle boundaries
 
 The safe top-level abstraction is `ArchetypeRuntime`, not a world-scoped
-context manager. A world handle can be lazy, but the shared runtime/container
-needs an explicit boundary.
+context manager. A world handle can be lazy, but the shared runtime-resource
+graph needs an explicit boundary.
 
 ### Runtime Contracts
 
 - `spawn()` must reserve and return a real `entity_id` all the way through the
   chain. Returning a command ID is a contract violation.
-- World-handle construction must be pure: no I/O, no registration, no backend
-  allocation.
+- World-handle construction must perform no I/O or backend allocation.
+  Synchronous registration of its inert process-lifetime owner is required.
 - First activation must be single-flight. Concurrent first calls must produce
   exactly one backing world.
 - A world must never expose partially initialized state.
@@ -1226,9 +1220,10 @@ boundary.
 
 The recommended public API now lives at the runtime layer, so beginner docs
 and quickstarts must teach `ArchetypeRuntime`, not the lower-level service
-container. Maintainer docs can still explain `ServiceContainer`,
-`CommandGateway`, durable scheduler semantics, audit semantics, and raw ECS flows,
-but they MUST label concrete services and the container as internal.
+wiring. Maintainer docs can still explain `RuntimeResources`, concrete
+application services, durable scheduler semantics, audit semantics, and raw
+ECS flows, but they MUST label process wiring and concrete services as
+internal.
 
 Examples also need to be executed in CI. An example that "looks right" but is
 never run is not documentation; it is an unverified claim.

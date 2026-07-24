@@ -6,26 +6,50 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from collections.abc import Awaitable, Callable, Sequence
+from functools import wraps
+from typing import TYPE_CHECKING, Concatenate
 
 from daft import DataFrame
+from uuid_utils import uuid7
 
 from archetype.core.config import StorageConfig
 from archetype.missions.contracts import (
     AgentMissionConfig,
     AgentTask,
     MissionResult,
+    MissionSubmission,
     SubmittedMission,
 )
+from archetype.missions.models import (
+    RestoreMissionSandbox,
+    RunMission,
+    SubmitMission,
+)
 from archetype.missions.sandboxes import CheckpointRef, SandboxIdentity
-from archetype.runtime.world import RuntimeWorld, _runtime_cleanup_scope
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from archetype.core.component import Component
     from archetype.runtime.runtime import ArchetypeRuntime
+    from archetype.runtime_resources import OwnerReservation
+
+
+def _admitted_mission_operation[**P, R](
+    operation: Callable[Concatenate[RuntimeMissions, P], Awaitable[R]],
+) -> Callable[Concatenate[RuntimeMissions, P], Awaitable[R]]:
+    """Keep one complete public mission call inside process and local admission."""
+
+    @wraps(operation)
+    async def admitted(self: RuntimeMissions, *args: P.args, **kwargs: P.kwargs) -> R:
+        async with self._resources.admit_operation():
+            continuation = self._reservation.operation_admitted()
+            async with self._resources.admit_owner_operation(self._reservation):
+                self._ensure_open(continuation=continuation)
+                return await operation(self, *args, **kwargs)
+
+    return admitted
 
 
 class RuntimeMissions:
@@ -38,36 +62,34 @@ class RuntimeMissions:
         *,
         config: AgentMissionConfig,
         storage: str | Path | StorageConfig | None = None,
+        owner_id: str | None = None,
+        reservation: OwnerReservation | None = None,
     ) -> None:
         self._runtime = runtime
-
-        mission_world: RuntimeWorld | None = None
-
-        def world_factory(*args: Any, **kwargs: Any) -> RuntimeWorld:
-            nonlocal mission_world
-            mission_world = runtime.world(*args, **kwargs)
-            return mission_world
-
-        self._service = runtime._agent_mission_service(
-            world_factory=world_factory,
-            name=name,
-            config=config,
-            storage=storage,
+        self._resources = runtime._resources
+        self._dispatcher = self._resources.dispatcher
+        self._owner_id = owner_id or f"mission:{uuid7()}"
+        self._name = name
+        self._config = config
+        self._storage = storage
+        self._reservation = reservation or self._resources.reserve_owner(
+            self._owner_id,
+            phase="workflow-handles",
+            closed_message="Agent Missions handle is closed",
         )
-        if mission_world is None:
-            raise RuntimeError("Agent Missions service did not create its mission world")
-        self._world = mission_world
-        self._shutdown_lock = asyncio.Lock()
-        self._closed = False
+        self._operation_admission = self._reservation.operation_admission
+        self._close_lock = asyncio.Lock()
+        self._public_closing = False
+        self._public_closed = False
 
     async def __aenter__(self) -> RuntimeMissions:
-        if self._closed:
-            raise RuntimeError("Agent Missions handle is closed")
+        self._ensure_open()
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
         await self.close()
 
+    @_admitted_mission_operation
     async def submit(
         self,
         *,
@@ -77,22 +99,40 @@ class RuntimeMissions:
         name: str = "agent-mission",
         base_ref: str = "main",
     ) -> SubmittedMission:
-        return await self._service.submit(
-            repository=repository,
-            branch=branch,
-            tasks=tasks,
-            name=name,
-            base_ref=base_ref,
+        self._ensure_open()
+        return await self._dispatcher.apply(
+            SubmitMission(
+                owner_id=self._owner_id,
+                name=self._name,
+                config=self._config,
+                storage=self._storage,
+                submission=MissionSubmission(
+                    repository=repository,
+                    branch=branch,
+                    tasks=tuple(tasks),
+                    name=name,
+                    base_ref=base_ref,
+                ),
+            )
         )
 
+    @_admitted_mission_operation
     async def run(
         self,
         mission: SubmittedMission,
         *,
         max_ticks: int | None = None,
     ) -> MissionResult:
-        return await self._service.run(mission, max_ticks=max_ticks)
+        self._ensure_open()
+        return await self._dispatcher.apply(
+            RunMission(
+                owner_id=self._owner_id,
+                mission=mission,
+                max_ticks=max_ticks,
+            )
+        )
 
+    @_admitted_mission_operation
     async def restore_sandbox(
         self,
         mission: SubmittedMission,
@@ -100,34 +140,59 @@ class RuntimeMissions:
     ) -> SandboxIdentity:
         """Explicitly restore the mission's process-local sandbox before running."""
 
-        return await self._service.restore_sandbox(mission, checkpoint)
+        self._ensure_open()
+        return await self._dispatcher.apply(
+            RestoreMissionSandbox(
+                owner_id=self._owner_id,
+                mission=mission,
+                checkpoint=checkpoint,
+            )
+        )
 
     async def close(self) -> None:
+        if self._reservation.operation_admitted():
+            raise RuntimeError("Agent Missions handle cannot close from an admitted operation")
+        self._reservation.ensure_close_allowed()
         await self._shutdown_internal(from_runtime=False)
 
     async def _shutdown_internal(self, *, from_runtime: bool) -> None:
-        async with self._shutdown_lock:
-            if self._closed:
+        del from_runtime
+        self._reservation.request_operation_stop()
+        async with self._close_lock:
+            if self._public_closed or self._reservation_released():
+                self._public_closed = True
                 return
-            # Public and runtime callers share one exact cleanup capability.
-            # Keeping the parameter distinguishes the internal protocol while
-            # preventing that capability from admitting unrelated worlds.
-            _ = from_runtime
-            with _runtime_cleanup_scope(self._world._state):
-                await self._service.close()
-            self._closed = True
-            self._runtime._unregister_mission_handle(self)
+            self._public_closing = True
+            await self._reservation.aclose()
+            self._public_closed = True
 
+    @_admitted_mission_operation
     async def query(self, *components: type[Component]) -> DataFrame:
         """Query persisted mission state through the underlying world read path."""
 
-        return await self._service.query(*components)
+        self._ensure_open()
+        service = self._resources.owner(self._owner_id).require_bound()
+        return await service.query(*components)
 
     @property
     def world_id(self):
         """Return the activated world's durable identity."""
 
-        return self._service.world_id
+        self._ensure_open()
+        service = self._resources.owner(self._owner_id).require_bound()
+        return service.world_id
+
+    def _ensure_open(self, *, continuation: bool | None = None) -> None:
+        self._runtime._ensure_open()
+        if continuation is None:
+            continuation = self._reservation.operation_admitted()
+        if (
+            self._public_closing or self._public_closed or self._reservation_released()
+        ) and not continuation:
+            raise RuntimeError("Agent Missions handle is closed")
+
+    def _reservation_released(self) -> bool:
+        return self._reservation.released
 
 
 __all__ = ["RuntimeMissions"]

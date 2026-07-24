@@ -43,7 +43,7 @@ source_root = "src"
 
 [concrete_services]
 types = ["WorldService"]
-composition_roots = ["archetype.app.container"]
+composition_roots = ["archetype.wiring"]
 
 [[package_rule]]
 name = "app-outward"

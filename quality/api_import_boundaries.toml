@@ -2,14 +2,23 @@ version = 1
 
 [[import_surface]]
 name = "api-composition"
-targets = ["src/archetype/api/deps.py"]
-dependency_roots = ["archetype.app", "archetype.world"]
+targets = [
+  "src/archetype/api/app.py",
+  "src/archetype/api/deps.py",
+]
+dependency_roots = [
+  "archetype.app",
+  "archetype.commands",
+  "archetype.wiring",
+  "archetype.world",
+]
 allowed_dependencies = [
-  "archetype.app.container",
-  "archetype.app.gateway.auth.models",
-  "archetype.app.gateway.interfaces",
+  "archetype.commands.dispatch",
+  "archetype.commands.models",
+  "archetype.wiring",
 ]
 forbidden_dependencies = [
+  "archetype.commands.scheduler",
   "archetype.world.handlers",
   "archetype.world.interfaces",
   "archetype.world.lifecycle",
@@ -18,20 +27,26 @@ forbidden_dependencies = [
   "archetype.world.registry",
   "archetype.world.simulation",
 ]
-rationale = "API dependency composition may construct the container but may not consume concrete family services"
+rationale = "The ASGI lifespan may construct one RuntimeResources owner and expose only its dispatcher; dependencies may consume only command-owned boundary values"
 
 [[import_surface]]
 name = "api-routes"
 targets = ["src/archetype/api/routes/*.py"]
-dependency_roots = ["archetype.app", "archetype.world"]
+dependency_roots = [
+  "archetype.app",
+  "archetype.commands",
+  "archetype.missions",
+  "archetype.world",
+]
 allowed_dependencies = [
-  "archetype.app.gateway.auth.models",
-  "archetype.app.gateway.interfaces",
-  "archetype.app.models",
+  "archetype.commands.dispatch",
+  "archetype.commands.models",
+  "archetype.missions.components",
+  "archetype.missions.relations",
   "archetype.world.models",
 ]
 forbidden_dependencies = [
-  "archetype.app.container",
+  "archetype.commands.scheduler",
   "archetype.world.handlers",
   "archetype.world.interfaces",
   "archetype.world.lifecycle",
@@ -40,7 +55,7 @@ forbidden_dependencies = [
   "archetype.world.registry",
   "archetype.world.simulation",
 ]
-rationale = "API routes translate transport through the gateway and never construct or consume concrete app services"
+rationale = "API routes translate transport directly into exact family operations and enter only the actor-aware dispatcher boundary"
 
 [public_api]
 targets = ["src/archetype/**/*.py"]

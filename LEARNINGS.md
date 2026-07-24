@@ -286,13 +286,15 @@ There are two distinct concepts, unfortunately both historically called "resourc
 | **Resources** | `core/resources.py` | Type-safe DI container for processors |
 | **StorageService** | `storage/service.py` | Admits terminal Daft execution; owns app tables, store pools, and control catalogs |
 
-**StorageService** is internal application authority. `ServiceContainer` owns
-one and application services share it. It is the materialization point for
-Archetype-owned Daft plans: app code delegates terminal execution through
-`materialize`, and table producers use `read_table`, `append_table`, or
-`append_missing`. Table registration, typed schema comparison, Iceberg writes,
-and optimistic conflict retry remain beside that execution gate. It is never
-placed in a world's resource container.
+**StorageService** is the internal physical authority. The sole
+`archetype.wiring.build_runtime_resources()` transaction selects one for the
+process graph, injects it explicitly into application services, and gives its
+lifetime to `RuntimeResources` when the process owns it. It is the
+materialization point for Archetype-owned Daft plans: app code delegates
+terminal execution through `materialize`, and table producers use
+`read_table`, `append_table`, or `append_missing`. Table registration, typed
+schema comparison, Iceberg writes, and optimistic conflict retry remain beside
+that execution gate. It is never placed in a world's resource container.
 
 `StorageService` also owns the generic durable world/run envelope and extends
 conditional-append keys with that identity. `IngestionService` selects the
@@ -692,11 +694,11 @@ for entry in history:
 ## Process and Coordination Boundaries (Apr 2026, updated Jul 2026)
 
 One `ArchetypeRuntime` or `archetype serve` process owns its live world objects,
-service container, and event loop. Daft owns data-plane parallelism inside that
-process: it manages worker pools and executes lazy processor plans across rows
-and archetypes. Two server processes do not share an in-memory world registry,
-so a request that needs a particular live world must reach the process hosting
-that world.
+explicit `RuntimeResources` graph, and event loop. Daft owns data-plane
+parallelism inside that process: it manages worker pools and executes lazy
+processor plans across rows and archetypes. Two server processes do not share
+an in-memory world registry, so a request that needs a particular live world
+must reach the process hosting that world.
 
 That live-process boundary is not the durability boundary. Persisted worlds can
 be discovered and queried from a fresh process. Mutable cold resume reconstructs
@@ -711,8 +713,9 @@ deployment. See
 **Consequences:**
 
 - **The CLI is a thin HTTP client.** Every command except `serve` is an HTTP
-  call to a running server. The CLI does not instantiate its own
-  `ServiceContainer`, because that would create an unrelated live-world scope.
+  call to a running server. The CLI does not construct its own
+  `RuntimeResources` graph, because that would create an unrelated live-world
+  scope.
 - **Scale simulation work through Daft.** Adding an API process does not split
   one live world's in-memory execution. Multi-process discovery, cold reads,
   and fenced resume are control-plane capabilities, not a replacement for
@@ -725,13 +728,12 @@ deployment. See
   replace Iceberg conflict detection or turn the control catalog into a wrapper
   transaction around the data table.
 - **World lifecycle operations are registered direct calls.** The untrusted
-  `iCommandGateway` adapter constructs an exact lifecycle model and enters
+  API adapter constructs an exact lifecycle model and enters
   `CommandDispatcher.apply_as`; commands-owned `Policy` performs RBAC and the
-  dispatcher attempts bounded access evidence. Trusted runtime calls construct
-  the same model through `iRuntimeApplication` and enter
-  `CommandDispatcher.apply`. `CommandScheduler` durably owns only portable
-  tick-deferred operations; it is neither the lifecycle nor authorization
-  boundary.
+  dispatcher attempts bounded access evidence. Trusted runtime handles
+  construct the same model and enter `CommandDispatcher.apply`.
+  `CommandScheduler` durably owns only portable tick-deferred operations; it
+  is neither the lifecycle nor authorization boundary.
 
 **State across restarts:**
 
@@ -787,8 +789,9 @@ recipe before touching torch pins or arguing about a Modal split. Highlights
   LIBERO @ the pinned SHA fails at *import* on 1.5 — float 1.4.1's transitive
   pins to cp312 wheels instead, and keep `numpy<2`.
 - **Architecture:** one control-plane world + N trial entities batch-stepped via
-  `SimulationService.run_episode` (B1 quota reset + B2 all-done termination),
-  graded from raw `ManipStatus` by the eval service. No `EvalTrialResult` (E1).
+  the registered `RunEpisode` operation exposed by
+  `RuntimeWorld.run_episode` (B1 quota reset + B2 all-done termination), graded
+  from raw `ManipStatus` by the evaluation workflow. No `EvalTrialResult` (E1).
 
 ## GL Rendering Is Thread-Bound — Daft UDF Threads Go Blind (Jul 2026)
 

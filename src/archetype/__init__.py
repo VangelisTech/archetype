@@ -15,7 +15,8 @@
 """Dataframe-first simulations and agent workflows.
 
 `ArchetypeRuntime` is the recommended entry point for applications. Concrete
-services and the service container are internal and are not re-exported here.
+services, `RuntimeResources`, and process wiring are internal and are not
+re-exported here.
 
 Examples:
     >>> from archetype import ArchetypeRuntime
@@ -108,9 +109,6 @@ __all__ = [
     "InstructionSweepReport",
     "TrialOutcome",
     "VariantOutcome",
-    # Models
-    "Command",
-    "CommandType",
     # AutoResearch
     "AutoResearchConfig",
     "AutoResearchResult",
@@ -201,9 +199,6 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     ),
     "TrialOutcome": ("archetype.physical_ai.contracts", "TrialOutcome"),
     "VariantOutcome": ("archetype.physical_ai.contracts", "VariantOutcome"),
-    # Command models used by supported host adapters
-    "Command": ("archetype.app.models", "Command"),
-    "CommandType": ("archetype.app.models", "CommandType"),
     # AutoResearch
     "AutoResearchConfig": ("archetype.app.research.contracts", "AutoResearchConfig"),
     "AutoResearchResult": ("archetype.app.research.contracts", "AutoResearchResult"),

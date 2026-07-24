@@ -2,26 +2,32 @@
 
 The internal application layer composes workflows over the top-level world,
 commands, storage, and domain families. Concrete services and
-`ServiceContainer` are not supported application APIs. Use
+process wiring are not supported application APIs. Use
 `ArchetypeRuntime`, REST, or CLI.
 
 Normative dependency rules live in
 [Application Architecture](application-architecture.md); active ports live in
 [Service Protocols](service-protocols.md).
 
-## ServiceContainer
+## Process composition and lifetime
 
-`ServiceContainer` is the sole concrete cross-family composition root. It
-constructs two outward objects:
+`build_runtime_resources(RuntimeBootstrapConfig)` is the sole concrete
+cross-family composition transaction. It returns one `RuntimeResources`:
 
 ```text
-container.application      RuntimeApplication (trusted, actor-free)
-container.command_gateway  CommandGateway (authorized ingress)
+RuntimeResources
+  +-> CommandDispatcher
+  +-> supervised tasks
+  +-> workflow-handle owners
+  +-> world-handle owners
+  +-> AuditLog
+  +-> owned StorageService
 ```
 
 Construction is synchronous; stores and catalogs open lazily. Shutdown stops
-dispatcher admission, waits for admitted operations, projects known command
-outboxes, flushes `AuditLog`, and then releases container-owned storage.
+and drains dispatcher admission, joins supervised work, closes workflow and
+world handles, flushes `AuditLog`, and finally releases owned storage.
+Failures retain the necessary ownership graph for a retry.
 Per-world destroy is a separate lifecycle operation.
 
 ## Wiring overview
@@ -29,16 +35,13 @@ Per-world destroy is a separate lifecycle operation.
 Arrows mean consumer to dependency:
 
 ```text
-ArchetypeRuntime -> RuntimeApplication ----\
-                                            -> CommandDispatcher
-REST API -> CommandGateway ----------------/
-
-CommandGateway -- finite workflow bridge -> RuntimeApplication
+ArchetypeRuntime -> CommandDispatcher.apply / defer
+REST API -> authentication -> CommandDispatcher.apply_as / defer_as
 CommandDispatcher -> OperationRegistry
 CommandDispatcher -> registered family handler
 CommandDispatcher -> Policy + CommandScheduler + AuditLog.record_access
 
-ServiceContainer
+archetype.wiring
   +-> WorldRegistry + WorldLifecycle
   +-> CommandScheduler -> world.handlers.materialize_locked
   +-> AuditLog -> StorageService + scheduler outbox callbacks
@@ -49,9 +52,9 @@ ServiceContainer
   +-> PhysicalAIService -> evaluation/storage/world ports
 ```
 
-The container injects `CommandScheduler.materialize` when lifecycle constructs
+Wiring injects `CommandScheduler.materialize` when lifecycle constructs
 each managed `AsyncWorld`. Core owns only the callable shape; it never imports
-the commands family. The container also connects the scheduler's transactional
+the commands family. Wiring also connects the scheduler's transactional
 outbox to `AuditLog`'s analytical projection.
 
 ## Storage family
@@ -120,7 +123,7 @@ durable evaluation result through `iIngestionService`.
 
 `AutoResearchService` owns the multi-iteration rollout workflow and its durable
 research ledger. It depends on world registry/lifecycle and storage ports and
-calls world simulation functions. The container injects the application-owned
+calls world simulation functions. Wiring injects the application-owned
 world teardown callback so rollout forks follow committed-work reconciliation,
 durable command cancellation, then lifecycle close. Scoring remains an explicit
 callback contract.
@@ -149,31 +152,29 @@ the analytical projection can lag. Audit is not a parallel application family.
 
 See [Audit Log](audit-log.md).
 
-## RuntimeApplication
+## Trusted runtime entry
 
-`RuntimeApplication` is the temporary actor-free application facade. It
-constructs exact family models and enters trusted `CommandDispatcher` methods
-while delegating remaining staged workflows to their family ports. It does not
-own policy, queue state, or durable state.
+`ArchetypeRuntime` and its handles construct exact family models and enter
+trusted `CommandDispatcher.apply` or `defer` methods. They do not own policy,
+queue state, or durable state.
 
-Trusted local runtime calls terminate here. No `ActorCtx` is invented for local
-scripting.
+No `ActorCtx` is invented for local scripting.
 
-## CommandGateway
+## Actor-aware API entry
 
-`CommandGateway` is the temporary transport-shaped adapter for untrusted
-callers. It accepts `ActorCtx`, constructs exact family models, and enters the
-actor-aware `CommandDispatcher`. The commands-owned `Policy` and dispatcher
-perform RBAC, quota, admission, and bounded access evidence. The gateway does
-not own those mechanisms or persistence.
+FastAPI authenticates `ActorCtx`, constructs exact family models, and enters
+`CommandDispatcher.apply_as` or `defer_as`. The commands-owned `Policy` and
+dispatcher perform RBAC, quota, admission, and bounded access evidence. The
+transport does not own those mechanisms or persistence.
 
-FastAPI consumes `iCommandGateway`; the CLI remains an HTTP client.
+The CLI remains an HTTP client.
 
 ## Source reference
 
-- composition root: `src/archetype/app/container.py`
-- application facade: `src/archetype/app/application/`
-- gateway: `src/archetype/app/gateway/`
+- composition root: `src/archetype/wiring.py`
+- process lifetime: `src/archetype/runtime_resources.py`
+- trusted runtime: `src/archetype/runtime/`
+- actor-aware transport: `src/archetype/api/`
 - governed and durable commands: `src/archetype/commands/`
 - world family: `src/archetype/world/`
 - physical storage family: `src/archetype/storage/`

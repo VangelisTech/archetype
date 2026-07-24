@@ -1,25 +1,36 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Review regressions for temporary RuntimeApplication command bridges."""
+"""Review regressions for the canonical exact-operation boundary."""
 
 from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from types import SimpleNamespace
+from functools import partial
+from pathlib import Path
 from typing import Any, cast
-from unittest.mock import AsyncMock
 
 import pytest
 from daft import DataFrame
 from uuid_utils import uuid7
 
 from archetype import AsyncProcessor, Component
-from archetype.app.container import ServiceContainer
-from archetype.app.gateway._pr3_commands_bridge import PR3_BRIDGE_MODEL_LITERALS
-from archetype.app.gateway.auth.models import ActorCtx
+from archetype.commands.dispatch import CommandDispatcher
+from archetype.commands.models import ActorCtx
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.research.contracts import AutoResearchConfig
+from archetype.research.models import AutoResearch
+from archetype.world.lifecycle import WorldLifecycle
+from archetype.world.models import (
+    AddProcessor,
+    CreateWorld,
+    Run,
+    Spawn,
+    Step,
+)
+from archetype.world.registry import WorldRegistry
+from tests._runtime import build_test_runtime
 
 
 class ReviewValue(Component):
@@ -38,126 +49,78 @@ class CaptureInputs(AsyncProcessor):
 
 
 @asynccontextmanager
-async def _container_harness():
-    container = ServiceContainer()
+async def _runtime_harness(tmp_path: Path):
+    resources = build_test_runtime(tmp_path)
+    dispatcher = resources.dispatcher
+    step_handler = dispatcher._registry.resolve_name("step").handler  # noqa: SLF001
+    create_handler = dispatcher._registry.resolve_name("create_world").handler  # noqa: SLF001
+    assert isinstance(step_handler, partial)
+    assert isinstance(create_handler, partial)
+    registry = step_handler.args[0]
+    lifecycle = getattr(create_handler.args[0], "__self__", None)
+    assert isinstance(registry, WorldRegistry)
+    assert isinstance(lifecycle, WorldLifecycle)
     try:
-        yield container
+        yield resources
     finally:
-        for world in await container.world_registry.list_worlds():
-            await container.world_lifecycle.destroy_world(world.world_id)
-        await container.shutdown()
+        for world in await registry.list_worlds():
+            await lifecycle.destroy_world(world.world_id)
+        await resources.aclose()
 
 
-async def _call_temporary_bridge(application: Any, operation: str) -> None:
-    if operation == "autoresearch":
-        await application.autoresearch("world", object(), object())
-    elif operation == "evaluate_physical_task":
-        await application.evaluate_physical_task(object(), env_client=object())
-    elif operation == "sweep_physical_instructions":
-        await application.sweep_physical_instructions(
-            object(),
-            env_client=object(),
-            policy_client=object(),
-        )
-    elif operation == "ingest_artifacts":
-        await application.ingest_artifacts("world", ("source",))
-    elif operation == "ingest_claude_transcript":
-        await application.ingest_claude_transcript("world", object())
-    elif operation == "query_transcript_rows":
-        await application.query_transcript_rows("world")
-    elif operation == "query_artifacts":
-        await application.query_artifacts("world")
-    elif operation == "run_graders":
-        await application.run_graders(object(), (object(),))
-    elif operation == "evaluate":
-        await application.evaluate("world", ())
-    elif operation == "query_trajectory":
-        await application.query_trajectory(object(), "world", "run")
-    elif operation == "grade_trajectory":
-        await application.grade_trajectory(
-            object(),
-            "world",
-            "run",
-            graders=(object(),),
-        )
-    else:
-        raise AssertionError(f"unknown temporary bridge operation {operation!r}")
-
-
-_TEMPORARY_ASYNC_BRIDGES = (
-    "autoresearch",
-    "evaluate_physical_task",
-    "sweep_physical_instructions",
-    "ingest_artifacts",
-    "ingest_claude_transcript",
-    "query_transcript_rows",
-    "query_artifacts",
-    "run_graders",
-    "evaluate",
-    "query_trajectory",
-    "grade_trajectory",
-)
-_MISSION_SERVICE_BRIDGES = frozenset(
+_PULL_FORWARD_OPERATIONS = frozenset(
     {
-        "submit_mission",
-        "run_mission",
+        "autoresearch",
+        "evaluate",
+        "evaluate_physical_task",
+        "grade_trajectory",
+        "ingest_artifacts",
+        "ingest_claude_transcript",
+        "query_artifacts",
+        "query_trajectory",
+        "query_transcript_rows",
         "restore_mission_sandbox",
+        "run_graders",
+        "run_mission",
+        "submit_mission",
+        "sweep_physical_instructions",
     }
 )
 
 
-def test_temporary_application_bridge_inventory_is_exhaustive() -> None:
-    assert frozenset(_TEMPORARY_ASYNC_BRIDGES) == (
-        frozenset(PR3_BRIDGE_MODEL_LITERALS.values()) - _MISSION_SERVICE_BRIDGES
-    )
+@pytest.mark.asyncio
+async def test_pull_forward_inventory_is_canonical_and_direct_only(tmp_path: Path) -> None:
+    async with _runtime_harness(tmp_path) as resources:
+        registry = resources.dispatcher._registry  # noqa: SLF001 - exact registry oracle
+        specs = {spec.name: spec for spec in registry.specs}
+
+        assert _PULL_FORWARD_OPERATIONS <= specs.keys()
+        for operation in _PULL_FORWARD_OPERATIONS:
+            spec = specs[operation]
+            assert spec.model.__module__.startswith("archetype.")
+            assert ".app." not in spec.model.__module__
+            assert spec.trusted
+            assert spec.durable is None
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("operation", _TEMPORARY_ASYNC_BRIDGES)
-async def test_temporary_application_bridge_rejects_before_service_effect(
-    operation: str,
+async def test_stop_admission_then_wait_drained_joins_admitted_autoresearch(
+    tmp_path: Path,
 ) -> None:
-    async with _container_harness() as container:
-        application = cast(Any, container.application)
-        effects = [AsyncMock() for _ in range(11)]
-        application._research = SimpleNamespace(run=effects[0])
-        application._physical_ai = SimpleNamespace(
-            evaluate_task=effects[1],
-            sweep_instructions=effects[2],
+    async with _runtime_harness(tmp_path) as resources:
+        dispatcher = resources.dispatcher
+        info = await dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name="autoresearch-drain"),
+                storage_config=StorageConfig(
+                    uri=str(tmp_path / "autoresearch"),
+                    namespace="dispatcher-review-drain",
+                ),
+            )
         )
-        application._artifacts = SimpleNamespace(
-            ingest=effects[3],
-            index=effects[6],
-        )
-        application._transcripts = SimpleNamespace(
-            ingest=effects[4],
-            read=effects[5],
-        )
-        application._evaluations = SimpleNamespace(
-            run_graders=effects[7],
-            evaluate=effects[8],
-        )
-        application._trajectories = SimpleNamespace(
-            query=effects[9],
-            grade=effects[10],
-        )
-        application._resolve_storage = AsyncMock(return_value=None)
-        application._resolve_lineage = AsyncMock(return_value=None)
-
-        await application.stop_admission()
-
-        with pytest.raises(RuntimeError, match="not accepting work"):
-            await _call_temporary_bridge(application, operation)
-
-        assert all(effect.await_count == 0 for effect in effects)
-        application._resolve_storage.assert_not_awaited()
-        application._resolve_lineage.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_stop_admission_waits_for_admitted_autoresearch() -> None:
-    async with _container_harness() as container:
-        application = cast(Any, container.application)
+        handler = dispatcher._registry.resolve_name("autoresearch").handler  # noqa: SLF001
+        assert isinstance(handler, partial)
+        research = handler.args[0]
         entered = asyncio.Event()
         release = asyncio.Event()
         calls = 0
@@ -170,36 +133,73 @@ async def test_stop_admission_waits_for_admitted_autoresearch() -> None:
             await release.wait()
             return "finished"
 
-        application._research = SimpleNamespace(run=blocked_run)
-        operation = asyncio.create_task(application.autoresearch("world", object(), object()))
+        original_run = research.run
+        cast(Any, research).run = blocked_run
+        model = AutoResearch(
+            world_id=info.world_id,
+            config=AutoResearchConfig(
+                experiment_name="drain",
+                experiment_id="drain-v1",
+                evaluator_id="score-v1",
+                rollout_contract_id="rollout-v1",
+                num_episodes=1,
+                max_iterations=1,
+            ),
+            evaluator=lambda _rollout: 0.0,
+        )
+        operation = asyncio.create_task(dispatcher.apply(model))
         await asyncio.wait_for(entered.wait(), timeout=1)
 
-        stop = asyncio.create_task(application.stop_admission())
-        await asyncio.sleep(0)
+        drain: asyncio.Task[None] | None = None
+        try:
+            await dispatcher.stop_admission()
+            drain = asyncio.create_task(dispatcher.wait_drained())
+            await asyncio.sleep(0)
 
-        assert not stop.done()
-        with pytest.raises(RuntimeError, match="not accepting work"):
-            await application.autoresearch("world", object(), object())
-        assert calls == 1
+            assert not drain.done()
+            with pytest.raises(RuntimeError, match="not accepting work"):
+                await dispatcher.apply(model)
+            assert calls == 1
 
-        release.set()
-        assert await asyncio.wait_for(operation, timeout=1) == "finished"
-        await asyncio.wait_for(stop, timeout=1)
+            release.set()
+            assert await asyncio.wait_for(operation, timeout=1) == "finished"
+            await asyncio.wait_for(drain, timeout=1)
+        finally:
+            release.set()
+            if not operation.done():
+                await operation
+            if drain is not None and not drain.done():
+                await drain
+            cast(Any, research).run = original_run
 
 
 async def _invoke_simulation(
-    application: Any,
+    dispatcher: CommandDispatcher,
     operation: str,
     world_id: object,
+    actor: ActorCtx | None = None,
     **input_kwargs: Any,
 ) -> None:
     config = RunConfig(num_steps=1)
+    model: Step | Run
     if operation == "step":
-        await application.step(world_id, config, **input_kwargs)
+        model = Step(
+            world_id=world_id,
+            run_config=config,
+            input_kwargs=input_kwargs,
+        )
     elif operation == "run":
-        await application.run(world_id, config, **input_kwargs)
+        model = Run(
+            world_id=world_id,
+            run_config=config,
+            input_kwargs=input_kwargs,
+        )
     else:
         raise AssertionError(f"unknown simulation operation {operation!r}")
+    if actor is None:
+        await dispatcher.apply(model)
+    else:
+        await dispatcher.apply_as(actor, model)
 
 
 @pytest.mark.asyncio
@@ -208,22 +208,29 @@ async def test_trusted_direct_simulation_preserves_live_kwarg_identity(
     tmp_path,
     operation: str,
 ) -> None:
-    async with _container_harness() as container:
-        application = container.application
-        info = await application.create_world(
-            WorldConfig(name=f"live-{operation}"),
-            StorageConfig(
-                uri=str(tmp_path / operation),
-                namespace="application-review-live",
-            ),
+    async with _runtime_harness(tmp_path) as resources:
+        dispatcher = resources.dispatcher
+        info = await dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name=f"live-{operation}"),
+                storage_config=StorageConfig(
+                    uri=str(tmp_path / operation),
+                    namespace="dispatcher-review-live",
+                ),
+            )
         )
         processor = CaptureInputs()
-        await application.create_entity(info.world_id, [ReviewValue(value=1)])
-        await application.add_processor(info.world_id, processor)
+        await dispatcher.apply(
+            Spawn.from_components(
+                world_id=info.world_id,
+                components=[ReviewValue(value=1)],
+            )
+        )
+        await dispatcher.apply(AddProcessor(world_id=info.world_id, processor=processor))
         capability = object()
 
         await _invoke_simulation(
-            application,
+            dispatcher,
             operation,
             info.world_id,
             capability=capability,
@@ -239,22 +246,29 @@ async def test_trusted_direct_simulation_preserves_tuple_identity_and_shape(
     tmp_path,
     operation: str,
 ) -> None:
-    async with _container_harness() as container:
-        application = container.application
-        info = await application.create_world(
-            WorldConfig(name=f"tuple-{operation}"),
-            StorageConfig(
-                uri=str(tmp_path / operation),
-                namespace="application-review-tuple",
-            ),
+    async with _runtime_harness(tmp_path) as resources:
+        dispatcher = resources.dispatcher
+        info = await dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name=f"tuple-{operation}"),
+                storage_config=StorageConfig(
+                    uri=str(tmp_path / operation),
+                    namespace="dispatcher-review-tuple",
+                ),
+            )
         )
         processor = CaptureInputs()
-        await application.create_entity(info.world_id, [ReviewValue(value=1)])
-        await application.add_processor(info.world_id, processor)
+        await dispatcher.apply(
+            Spawn.from_components(
+                world_id=info.world_id,
+                components=[ReviewValue(value=1)],
+            )
+        )
+        await dispatcher.apply(AddProcessor(world_id=info.world_id, processor=processor))
         coordinates = ("outer", ("inner", 3))
 
         await _invoke_simulation(
-            application,
+            dispatcher,
             operation,
             info.world_id,
             coordinates=coordinates,
@@ -269,27 +283,39 @@ async def test_trusted_direct_simulation_preserves_tuple_identity_and_shape(
 async def test_actor_aware_step_preserves_live_inputs_through_registered_handler(
     tmp_path,
 ) -> None:
-    async with _container_harness() as container:
-        gateway = container.command_gateway
+    async with _runtime_harness(tmp_path) as resources:
+        dispatcher = resources.dispatcher
         actor = ActorCtx(id=uuid7(), roles={"admin"})
-        info = await gateway.create_world(
+        info = await dispatcher.apply_as(
             actor,
-            WorldConfig(name="actor-live-input"),
-            StorageConfig(
-                uri=str(tmp_path / "actor"),
-                namespace="application-review-actor",
+            CreateWorld(
+                config=WorldConfig(name="actor-live-input"),
+                storage_config=StorageConfig(
+                    uri=str(tmp_path / "actor"),
+                    namespace="dispatcher-review-actor",
+                ),
             ),
         )
         processor = CaptureInputs()
-        await gateway.create_entity(actor, info.world_id, [ReviewValue(value=1)])
-        await gateway.add_processor(actor, info.world_id, processor)
+        await dispatcher.apply_as(
+            actor,
+            Spawn.from_components(
+                world_id=info.world_id,
+                components=[ReviewValue(value=1)],
+            ),
+        )
+        await dispatcher.apply_as(
+            actor,
+            AddProcessor(world_id=info.world_id, processor=processor),
+        )
         capability = object()
         coordinates = ("outer", ("inner", 3))
 
-        await gateway.step(
-            actor,
+        await _invoke_simulation(
+            dispatcher,
+            "step",
             info.world_id,
-            RunConfig(),
+            actor=actor,
             capability=capability,
             coordinates=coordinates,
         )

@@ -23,7 +23,7 @@ from urllib.parse import parse_qsl, unquote, urlparse
 
 from pydantic import JsonValue
 
-from archetype.app.redaction.models import (
+from archetype.redaction.models import (
     RedactedFile,
     RedactedRecord,
     RedactedText,

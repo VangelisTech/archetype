@@ -152,9 +152,8 @@ class WorldLifecycle:
         self._registry = registry
         self._materialize_commands = materialize_commands
         self._required_projector_factory = required_projector_factory
-        # Creation previously relied on RuntimeApplication's process-wide
-        # lock. The lifecycle is the canonical direct operation dependency, so
-        # it must serialize the pre-registration name check itself.
+        # Lifecycle is the canonical direct operation dependency, so it
+        # serializes the pre-registration name check itself.
         self._create_lock = asyncio.Lock()
 
     def _required_projector(self, world_id: str) -> Any | None:

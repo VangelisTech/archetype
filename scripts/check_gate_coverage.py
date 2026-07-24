@@ -17,8 +17,8 @@ Three checks keep the command gate's claim-vs-effect surface honest:
    materialization resolves the registered exact model and invokes its
    registered materializer.
 
-3. **API error taxonomy** — every exception class defined in the application
-   or canonical storage authority must be mapped by
+3. **API error taxonomy** — every exception class defined in the application,
+   canonical storage authority, or a registered operation family must be mapped by
    ``api.errors.raise_api_error`` to a non-500 branch (issue #180:
    ``WorldNotFoundError`` extended ``LookupError``, missed the ``KeyError``
    branch, and fell through to the 500 fallback while tests stayed green).
@@ -30,11 +30,12 @@ message on any drift.
 from __future__ import annotations
 
 import ast
+import asyncio
 import builtins
 import importlib
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from tempfile import TemporaryDirectory
 from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,34 +45,24 @@ API_ERRORS = ROOT / "src/archetype/api/errors.py"
 # ── Check 1: exact operation registry ────────────────────────────────────────
 
 
-async def _unreachable_handler(*_args: object, **_kwargs: object) -> None:
-    """Satisfy composition binding without executing any application effect."""
-    raise AssertionError("gate coverage only inspects operation registrations")
-
-
 def _composed_registry() -> Any:
-    """Build the real container registry without constructing runtime services."""
-    from archetype.app.container import _register_operations
-    from archetype.commands.registry import OperationRegistry
+    """Build and close the real explicit process graph, retaining its registry."""
+    from archetype.storage.config import ControlCatalogConfig
+    from archetype.wiring import RuntimeBootstrapConfig, build_runtime_resources
 
-    lifecycle = SimpleNamespace(
-        create_world=_unreachable_handler,
-        discover_worlds=_unreachable_handler,
-        open_world_readonly=_unreachable_handler,
-        open_world_mutable=_unreachable_handler,
-    )
-    registry = OperationRegistry()
-    register_operations = cast("Any", _register_operations)
-    register_operations(
-        registry,
-        worlds=object(),
-        lifecycle=lifecycle,
-        storage=object(),
-        audit=object(),
-        fork_world=_unreachable_handler,
-        destroy_world=_unreachable_handler,
-    )
-    return registry
+    async def compose(catalog_dir: Path) -> Any:
+        resources = build_runtime_resources(
+            RuntimeBootstrapConfig(
+                control_catalog_config=ControlCatalogConfig(catalog_dir=catalog_dir),
+            )
+        )
+        try:
+            return cast("Any", resources.dispatcher)._registry
+        finally:
+            await resources.aclose()
+
+    with TemporaryDirectory(prefix="archetype-gate-coverage-") as temporary:
+        return asyncio.run(compose(Path(temporary)))
 
 
 def _model_label(model: type[Any]) -> str:
@@ -80,7 +71,25 @@ def _model_label(model: type[Any]) -> str:
 
 def check_registry_coverage() -> list[str]:
     """Require one exact registration and one exact durable disposition."""
+    from archetype.artifacts.models import IngestArtifacts, QueryArtifacts
     from archetype.commands.models import GetAuditHistory
+    from archetype.episodes.models import (
+        GradeTrajectory,
+        IngestClaudeTranscript,
+        QueryTrajectory,
+        QueryTranscriptRows,
+    )
+    from archetype.evaluation.models import Evaluate, RunGraders
+    from archetype.missions.models import (
+        RestoreMissionSandbox,
+        RunMission,
+        SubmitMission,
+    )
+    from archetype.physical_ai.models import (
+        EvaluatePhysicalTask,
+        SweepPhysicalInstructions,
+    )
+    from archetype.research.models import AutoResearch
     from archetype.world.models import (
         PORTABLE_TICK_OPERATION_TYPES,
         WORLD_OPERATION_TYPES,
@@ -89,7 +98,23 @@ def check_registry_coverage() -> list[str]:
     problems: list[str] = []
     registry = _composed_registry()
     specs = registry.specs
-    expected_models = (*WORLD_OPERATION_TYPES, GetAuditHistory)
+    pull_forward_models = (
+        IngestArtifacts,
+        QueryArtifacts,
+        RunGraders,
+        Evaluate,
+        AutoResearch,
+        EvaluatePhysicalTask,
+        SweepPhysicalInstructions,
+        IngestClaudeTranscript,
+        QueryTranscriptRows,
+        QueryTrajectory,
+        GradeTrajectory,
+        SubmitMission,
+        RunMission,
+        RestoreMissionSandbox,
+    )
+    expected_models = (*WORLD_OPERATION_TYPES, GetAuditHistory, *pull_forward_models)
     actual_models = tuple(spec.model for spec in specs)
     expected_set = set(expected_models)
     actual_set = set(actual_models)
@@ -110,7 +135,9 @@ def check_registry_coverage() -> list[str]:
             + ", ".join(sorted(_model_label(model) for model in unexpected))
         )
     if actual_set == expected_set and actual_models != expected_models:
-        problems.append("operation registry order differs from WORLD_OPERATION_TYPES + audit")
+        problems.append(
+            "operation registry order differs from world + audit + pull-forward inventory"
+        )
 
     for spec in specs:
         operation_field = spec.model.model_fields.get("operation")
@@ -175,12 +202,23 @@ def check_scheduler_dispatch_shape() -> list[str]:
 
 
 # ── Check 3: error taxonomy ──────────────────────────────────────────────────
-# The whole archetype.app package and the canonical storage authority are
-# walked for Exception subclasses. A hardcoded module list would fail open the
-# moment errors are defined elsewhere within either governed surface (footgun
-# review on PR #407: app/_catalog.py's four exceptions).
-
-ERROR_SURFACE_PACKAGES = ("archetype.app", "archetype.storage")
+# The complete registered-operation family inventory, application package, and
+# canonical storage authority are walked for Exception subclasses. A hardcoded
+# error-module list would fail open the moment a family defines an error beside
+# its behavior rather than in a conventional errors.py module.
+ERROR_SURFACE_PACKAGES = (
+    "archetype.app",
+    "archetype.artifacts",
+    "archetype.commands",
+    "archetype.episodes",
+    "archetype.evaluation",
+    "archetype.missions",
+    "archetype.physical_ai",
+    "archetype.redaction",
+    "archetype.research",
+    "archetype.storage",
+    "archetype.world",
+)
 
 # Exceptions that deliberately surface as HTTP 500 for now. Every entry needs
 # a rationale and an issue; a stale entry (class gone or now mapped) fails
@@ -188,6 +226,15 @@ ERROR_SURFACE_PACKAGES = ("archetype.app", "archetype.storage")
 INTENTIONAL_UNMAPPED = {
     "archetype.storage.catalog.records.CatalogSchemaMismatchError": (
         "integrity violation intentionally surfaces as 500; decision recorded in #413"
+    ),
+}
+
+# Private control-flow exceptions proven not to cross a registered handler
+# boundary. A stale or newly mapped entry fails the audit just like the
+# intentional-500 manifest.
+INTERNAL_ONLY_EXCEPTIONS = {
+    "archetype.missions.critics.harness._UnverifiableReview": (
+        "caught and normalized inside CriticHarness.review before the mission handler returns"
     ),
 }
 
@@ -252,22 +299,34 @@ def check_error_taxonomy() -> list[str]:
     for qualname, cls in sorted(owned_exceptions.items()):
         mapped = issubclass(cls, bases)
         declared = qualname in INTENTIONAL_UNMAPPED
-        if not mapped and not declared:
+        internal_only = qualname in INTERNAL_ONLY_EXCEPTIONS
+        if not mapped and not declared and not internal_only:
             problems.append(
                 f"{qualname} is not a subclass of any base raise_api_error maps — "
                 "it will surface as HTTP 500. Map it in src/archetype/api/errors.py, "
                 "subclass a mapped base, or declare it in INTENTIONAL_UNMAPPED "
-                "with a rationale and issue."
+                "with a rationale and issue. Use INTERNAL_ONLY_EXCEPTIONS only "
+                "when the exception is caught before every registered boundary."
             )
         elif mapped and declared:
             problems.append(
                 f"{qualname} is declared INTENTIONAL_UNMAPPED but is now mapped — "
                 "remove the stale manifest entry."
             )
+        elif mapped and internal_only:
+            problems.append(
+                f"{qualname} is declared INTERNAL_ONLY_EXCEPTIONS but is now mapped — "
+                "remove the stale internal-only entry."
+            )
 
     for qualname in INTENTIONAL_UNMAPPED:
         if qualname not in owned_exceptions:
             problems.append(f"INTENTIONAL_UNMAPPED names a class that no longer exists: {qualname}")
+    for qualname in INTERNAL_ONLY_EXCEPTIONS:
+        if qualname not in owned_exceptions:
+            problems.append(
+                f"INTERNAL_ONLY_EXCEPTIONS names a class that no longer exists: {qualname}"
+            )
     return problems
 
 
@@ -281,7 +340,7 @@ def main() -> int:
         print(
             "\nEvery reachable operation needs one exact registration, durable "
             "eligibility must equal the portable world-model set, scheduler dispatch "
-            "must stay registry-driven, and every app-layer error needs a non-500 "
+            "must stay registry-driven, and every API-facing family error needs a non-500 "
             "HTTP mapping."
         )
         return 1

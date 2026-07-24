@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Typed values for the pre-durability secret-redaction boundary."""
+"""Family-owned values for the pre-durability secret-redaction boundary."""
 
 from __future__ import annotations
 

@@ -17,6 +17,7 @@ from archetype.core.aio import AsyncWorld
 from archetype.core.component import Component
 from archetype.core.config import RunConfig
 from archetype.core.interfaces import CommittedTickReceipt
+from archetype.errors import AvailabilityError
 from archetype.storage.interfaces import iStorageService
 from archetype.world.models import (
     EpisodeConfig,
@@ -47,8 +48,10 @@ class RequiredProjector:
             raise ValueError("required projector consumer_name cannot be empty")
 
 
-class PostCommitProjectionError(RuntimeError):
+class PostCommitProjectionError(AvailabilityError):
     """A tick committed durably but its required projection did not finish."""
+
+    public_detail = "Required projection is temporarily unavailable; retry the request"
 
     def __init__(
         self,

@@ -4,7 +4,7 @@ description: How domain-specific behavior enters Archetype's exact operation reg
 ---
 
 Archetype does not treat an arbitrary JSON payload as executable behavior.
-The compatibility `CommandType.CUSTOM` envelope is rejected before durable
+The HTTP compatibility spelling `type="custom"` is rejected before durable
 admission. There is no built-in custom no-op that can be authorized, queued,
 and reported as applied without a domain effect.
 

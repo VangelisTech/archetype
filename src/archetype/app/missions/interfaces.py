@@ -10,9 +10,9 @@ from typing import Protocol, runtime_checkable
 
 from daft import DataFrame
 
-from archetype.app.evaluation.interfaces import GraderOutput, TrajectoryGrader
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
+from archetype.evaluation.contracts import GraderOutput, TrajectoryGrader
 from archetype.missions.contracts import AgentTask, MissionResult, SubmittedMission
 from archetype.missions.sandboxes import CheckpointRef, SandboxIdentity
 from archetype.missions.trajectories import (

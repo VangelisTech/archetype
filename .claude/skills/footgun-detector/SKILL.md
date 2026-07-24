@@ -70,10 +70,15 @@ Code that reduces the number of rows in a DataFrame representing world state. `d
 `daft.functions.prompt()` or LLM client calls applied to ALL rows when only a subset are relevant. If only sampled/active/filtered entities need LLM calls, the DataFrame must be split or filtered BEFORE the prompt call, not after.
 
 #### API signature mismatch
-Calling a function with wrong keyword arguments — especially `fork_world()`, `create_world()`, `WorldConfig()`, `Command()`, `ServiceContainer` methods. Check that kwargs match the actual function signature in the codebase.
+Calling a function or exact operation model with wrong keyword arguments —
+especially `ForkWorld`, `CreateWorld`, `WorldConfig`, `DurableOptions`, or
+`CommandDispatcher.apply*`/`defer*`. Check that kwargs match the actual
+signature in the codebase.
 
 #### Missing type key
-`Component.from_dict()` and SPAWN command payloads require a `"type"` key for subclass hydration. Dicts without `"type"` silently fail to reconstruct the correct Component subclass.
+Serialized component dictionaries passed to `Component.from_dict()` require a
+`"type"` key for subclass hydration. Dicts without `"type"` cannot reconstruct
+the correct Component subclass.
 
 #### Private API coupling
 Code outside `core/` accessing private attributes: `_live`, `_spawn_cache`, `_despawn_cache`, `_entity2sig`, `_next_entity_id`. Use the public API (`get_components()`, `spawn()`, `despawn()`).
@@ -81,14 +86,27 @@ Code outside `core/` accessing private attributes: `_live`, `_spawn_cache`, `_de
 #### Monotonic state
 Boolean or filter columns that AND onto existing state instead of recomputing from config each tick. This causes state to monotonically narrow (e.g., once `sampled=False`, always False). The fix: recompute predicates from source data each tick.
 
-#### Shared mutable state across forks
-Sharing a `ServiceContainer`, `CommandBroker`, `Resources`, or other stateful object between a parent world and its fork. Forks must get independent copies. Double-shutdown, cross-world mutation, and state leakage are the consequences.
+#### Fork ownership mismatch
+Sharing a live world, commit coordinator, required projector, or hook registry
+between a parent and fork. A managed fork has a distinct world/run,
+coordinator, projector, and hook registry while intentionally sharing the
+source's `Resources` container. Confusing those lifetimes causes cross-world
+mutation, incorrect visibility, or duplicate cleanup.
 
 #### Store vs live reads
-Querying the persistent store (LanceDB) when `_live` / `get_components()` has the correct in-memory data. After `fork_world`, pre-fork ticks resolve through the fork's `lineage` (ancestor world/run segments) — but only on lineage-aware paths (`AsyncWorld.query_archetype` / `get_components`, gated `QueryService` reads). Raw store queries by the fork's `(world_id, run_id)` alone still miss pre-fork history.
+Querying the persistent store when `_live` / `get_components()` has the correct
+in-memory data. After `fork_world`, pre-fork ticks resolve through the fork's
+`lineage` (ancestor world/run segments), but only on lineage-aware paths such
+as `AsyncWorld.query_archetype`, `get_components`, and
+`archetype.world.query`. Raw reads by the fork's `(world_id, run_id)` alone
+still miss pre-fork history.
 
 #### Governance bypass
-Mutating world state (spawn, despawn, modify entities) without going through `CommandService.submit()` / `CommandBroker`. Direct mutations skip RBAC checks, audit history, and serialized writes.
+Runtime or API code invoking lifecycle, mutation, simulation, or an application
+workflow directly instead of constructing its exact family operation and
+entering `CommandDispatcher`. This skips process admission and, at untrusted
+ingress, policy and bounded access evidence. Calls from the registered handler
+to the owning family behavior are the intended internal path.
 
 #### Dead code contracts
 Config fields, constructor parameters, or Component fields that are defined but never read or wired to behavior. These create false expectations (e.g., a `temperature` field that's ignored when building the LLM prompt).

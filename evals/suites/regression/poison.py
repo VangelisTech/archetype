@@ -16,14 +16,29 @@ import tempfile
 
 from uuid_utils import uuid7
 
-from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.models import ActorCtx
-from archetype.app.models import Command, CommandType
+from archetype.commands.models import ActorCtx, DeferredItem, DurableOptions
 from archetype.core.aio import AsyncWorld
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.world.models import (
+    ComponentTypeRef,
+    CreateWorld,
+    Despawn,
+    GetWorldInfo,
+    ListWorlds,
+    RemoveComponents,
+    Spawn,
+    Step,
+    Update,
+)
 from evals.graders import state_check
 from evals.harness import EvalHarness
+from evals.infra.runtime import (
+    EvalProcess,
+    component_refs,
+    component_values,
+    isolated_eval_process,
+)
 from evals.types import GraderResult
 
 SUITE = "regression"
@@ -44,12 +59,12 @@ class _PoisonTag(Component):
 
 
 async def _create_live_world(
-    container: ServiceContainer,
+    process: EvalProcess,
     config: WorldConfig,
     storage: StorageConfig,
 ) -> AsyncWorld:
-    info = await container.application.create_world(config, storage)
-    world = await container.world_registry.live_world(str(info.world_id))
+    info = await process.dispatcher.apply(CreateWorld(config=config, storage_config=storage))
+    world = await process.worlds.live_world(str(info.world_id))
     if not isinstance(world, AsyncWorld):
         raise RuntimeError(f"world {info.world_id} was not activated")
     return world
@@ -67,46 +82,52 @@ def task_poison_in_batch() -> list[GraderResult]:
 
 async def _task_poison_in_batch() -> list[GraderResult]:
     with tempfile.TemporaryDirectory() as tmp:
-        container = ServiceContainer()
+        process = isolated_eval_process(tmp)
         try:
             storage = StorageConfig(uri=f"{tmp}/store", namespace="poison")
-            world = await _create_live_world(container, WorldConfig(name="poison-batch"), storage)
+            world = await _create_live_world(
+                process,
+                WorldConfig(name="poison-batch"),
+                storage,
+            )
             ctx = ActorCtx(id=uuid7(), roles={"admin"})
             wid = str(world.world_id)
             rc = RunConfig()
 
-            valid_commands = [
-                Command(
-                    type=CommandType.SPAWN,
-                    tick=0,
-                    payload={"components": [_PoisonPos(x=1, y=1).to_payload()]},
+            valid_items = (
+                DeferredItem(
+                    Spawn.from_components(
+                        world_id=wid,
+                        components=[_PoisonPos(x=1, y=1)],
+                    ),
+                    DurableOptions(target_tick=0),
                 ),
-                Command(
-                    type=CommandType.SPAWN,
-                    tick=0,
-                    payload={"components": [_PoisonPos(x=3, y=3).to_payload()]},
+                DeferredItem(
+                    Spawn.from_components(
+                        world_id=wid,
+                        components=[_PoisonPos(x=3, y=3)],
+                    ),
+                    DurableOptions(target_tick=0),
                 ),
-            ]
-            poison = Command(
-                type=CommandType.SPAWN,
-                tick=0,
-                payload={"components": [_PoisonPos(x=2, y=2).model_dump()]},
+            )
+            direct_only_item = DeferredItem(
+                GetWorldInfo(world_id=wid),
+                DurableOptions(target_tick=0),
             )
 
             rejected_atomically = False
             try:
-                await container.command_gateway.submit_batch(
+                await process.dispatcher.defer_batch_as(
                     ctx,
-                    wid,
-                    [valid_commands[0], poison, valid_commands[1]],
+                    (valid_items[0], direct_only_item, valid_items[1]),
                 )
             except ValueError:
                 rejected_atomically = True
-            pending_after_rejection = await container.command_scheduler.pending_count(wid)
+            pending_after_rejection = await process.scheduler.pending_count(wid)
 
-            await container.command_gateway.submit_batch(ctx, wid, valid_commands)
+            await process.dispatcher.defer_batch_as(ctx, valid_items)
 
-            await container.application.step(world.world_id, rc)
+            await process.dispatcher.apply(Step(world_id=world.world_id, run_config=rc))
 
             entity_count = len(world.entity2sig)
             signatures = {frozenset(sig) for sig in set(world.entity2sig.values())}
@@ -129,7 +150,7 @@ async def _task_poison_in_batch() -> list[GraderResult]:
                 ),
             ]
         finally:
-            await container.shutdown()
+            await process.aclose()
 
 
 # ---------------------------------------------------------------------------
@@ -144,32 +165,41 @@ def task_missing_payload_keys() -> list[GraderResult]:
 
 async def _task_missing_payload_keys() -> list[GraderResult]:
     with tempfile.TemporaryDirectory() as tmp:
-        container = ServiceContainer()
+        process = isolated_eval_process(tmp)
         try:
             storage = StorageConfig(uri=f"{tmp}/store", namespace="poison")
-            world = await _create_live_world(container, WorldConfig(name="missing-keys"), storage)
-            ctx = ActorCtx(id=uuid7(), roles={"admin"})
+            world = await _create_live_world(
+                process,
+                WorldConfig(name="missing-keys"),
+                storage,
+            )
             wid = str(world.world_id)
             malformed = [
-                Command(type=CommandType.DESPAWN, tick=0, payload={}),
-                Command(
-                    type=CommandType.REMOVE_COMPONENT,
-                    tick=0,
-                    payload={"component_types": ["_PoisonPos"]},
+                (Despawn, {"operation": "despawn", "world_id": wid}),
+                (
+                    RemoveComponents,
+                    {
+                        "operation": "remove_components",
+                        "world_id": wid,
+                        "component_types": component_refs([_PoisonPos]),
+                    },
                 ),
-                Command(
-                    type=CommandType.UPDATE,
-                    tick=0,
-                    payload={"components": [_PoisonPos(x=9, y=9).to_payload()]},
+                (
+                    Update,
+                    {
+                        "operation": "update",
+                        "world_id": wid,
+                        "components": component_values([_PoisonPos(x=9, y=9)]),
+                    },
                 ),
             ]
             rejected = 0
-            for command in malformed:
+            for operation_type, payload in malformed:
                 try:
-                    await container.command_gateway.submit(ctx, wid, command)
+                    operation_type.model_validate(payload)
                 except (TypeError, ValueError):
                     rejected += 1
-            pending = await container.command_scheduler.pending_count(wid)
+            pending = await process.scheduler.pending_count(wid)
 
             return [
                 state_check(
@@ -183,7 +213,7 @@ async def _task_missing_payload_keys() -> list[GraderResult]:
                 ),
             ]
         finally:
-            await container.shutdown()
+            await process.aclose()
 
 
 # ---------------------------------------------------------------------------
@@ -198,30 +228,30 @@ def task_unknown_component_type() -> list[GraderResult]:
 
 async def _task_unknown_component_type() -> list[GraderResult]:
     with tempfile.TemporaryDirectory() as tmp:
-        container = ServiceContainer()
+        process = isolated_eval_process(tmp)
         try:
             storage = StorageConfig(uri=f"{tmp}/store", namespace="poison")
-            world = await _create_live_world(container, WorldConfig(name="unknown-type"), storage)
+            world = await _create_live_world(
+                process,
+                WorldConfig(name="unknown-type"),
+                storage,
+            )
             ctx = ActorCtx(id=uuid7(), roles={"admin"})
             wid = str(world.world_id)
             rc = RunConfig()
 
             # Spawn an entity with two components
-            await container.command_gateway.submit(
+            await process.dispatcher.apply_as(
                 ctx,
-                wid,
-                Command(
-                    type=CommandType.SPAWN,
-                    tick=0,
-                    payload={
-                        "components": [
-                            _PoisonPos(x=1, y=2).to_payload(),
-                            _PoisonTag(label="keep").to_payload(),
-                        ]
-                    },
+                Spawn.from_components(
+                    world_id=wid,
+                    components=[
+                        _PoisonPos(x=1, y=2),
+                        _PoisonTag(label="keep"),
+                    ],
                 ),
             )
-            await container.application.step(world.world_id, rc)
+            await process.dispatcher.apply(Step(world_id=world.world_id, run_config=rc))
 
             entity_id = next(iter(world.entity2sig))
             original_sig = frozenset(world.entity2sig[entity_id])
@@ -229,22 +259,23 @@ async def _task_unknown_component_type() -> list[GraderResult]:
             # Try to remove a nonexistent component type
             rejected = False
             try:
-                await container.command_gateway.submit(
+                await process.dispatcher.apply_as(
                     ctx,
-                    wid,
-                    Command(
-                        type=CommandType.REMOVE_COMPONENT,
-                        tick=1,
-                        payload={
-                            "entity_id": entity_id,
-                            "component_types": ["TotallyFakeComponent"],
-                        },
+                    RemoveComponents(
+                        world_id=wid,
+                        entity_id=entity_id,
+                        component_types=(
+                            ComponentTypeRef(
+                                type_name="TotallyFakeComponent",
+                                schema_fingerprint="0" * 64,
+                            ),
+                        ),
                     ),
                 )
             except ValueError:
                 rejected = True
-            pending = await container.command_scheduler.pending_count(wid)
-            await container.application.step(world.world_id, rc)
+            pending = await process.scheduler.pending_count(wid)
+            await process.dispatcher.apply(Step(world_id=world.world_id, run_config=rc))
 
             current_sig = frozenset(world.entity2sig[entity_id])
 
@@ -260,7 +291,7 @@ async def _task_unknown_component_type() -> list[GraderResult]:
                 ),
             ]
         finally:
-            await container.shutdown()
+            await process.aclose()
 
 
 # ---------------------------------------------------------------------------
@@ -275,41 +306,38 @@ def task_despawn_nonexistent_entity() -> list[GraderResult]:
 
 async def _task_despawn_nonexistent_entity() -> list[GraderResult]:
     with tempfile.TemporaryDirectory() as tmp:
-        container = ServiceContainer()
+        process = isolated_eval_process(tmp)
         try:
             storage = StorageConfig(uri=f"{tmp}/store", namespace="poison")
             world = await _create_live_world(
-                container, WorldConfig(name="despawn-missing"), storage
+                process,
+                WorldConfig(name="despawn-missing"),
+                storage,
             )
             ctx = ActorCtx(id=uuid7(), roles={"admin"})
             wid = str(world.world_id)
             rc = RunConfig()
 
             # Spawn a real entity
-            await container.command_gateway.submit(
+            await process.dispatcher.defer_as(
                 ctx,
-                wid,
-                Command(
-                    type=CommandType.SPAWN,
-                    tick=0,
-                    payload={"components": [_PoisonPos(x=1, y=1).to_payload()]},
+                Spawn.from_components(
+                    world_id=wid,
+                    components=[_PoisonPos(x=1, y=1)],
                 ),
+                DurableOptions(target_tick=0),
             )
-            await container.application.step(world.world_id, rc)
+            await process.dispatcher.apply(Step(world_id=world.world_id, run_config=rc))
 
             entity_count_before = len(world.entity2sig)
 
             # Despawn a nonexistent entity
-            await container.command_gateway.submit(
+            await process.dispatcher.defer_as(
                 ctx,
-                wid,
-                Command(
-                    type=CommandType.DESPAWN,
-                    tick=1,
-                    payload={"entity_id": 99999},
-                ),
+                Despawn(world_id=wid, entity_id=99999),
+                DurableOptions(target_tick=1),
             )
-            await container.application.step(world.world_id, rc)
+            await process.dispatcher.apply(Step(world_id=world.world_id, run_config=rc))
 
             return [
                 state_check(
@@ -323,7 +351,7 @@ async def _task_despawn_nonexistent_entity() -> list[GraderResult]:
                 ),
             ]
         finally:
-            await container.shutdown()
+            await process.aclose()
 
 
 # ---------------------------------------------------------------------------
@@ -332,31 +360,40 @@ async def _task_despawn_nonexistent_entity() -> list[GraderResult]:
 
 
 def task_unhandled_command_noop() -> list[GraderResult]:
-    """MESSAGE, QUERY_WORLD, and CUSTOM reject before portable admission."""
+    """Registered direct-only operations reject before portable admission."""
     return asyncio.run(_task_unhandled_command_noop())
 
 
 async def _task_unhandled_command_noop() -> list[GraderResult]:
     with tempfile.TemporaryDirectory() as tmp:
-        container = ServiceContainer()
+        process = isolated_eval_process(tmp)
         try:
             storage = StorageConfig(uri=f"{tmp}/store", namespace="poison")
-            world = await _create_live_world(container, WorldConfig(name="noop-cmds"), storage)
+            world = await _create_live_world(
+                process,
+                WorldConfig(name="direct-only"),
+                storage,
+            )
             ctx = ActorCtx(id=uuid7(), roles={"admin"})
             wid = str(world.world_id)
 
             rejected = 0
-            for cmd_type in (CommandType.MESSAGE, CommandType.QUERY_WORLD, CommandType.CUSTOM):
+            direct_only = (
+                GetWorldInfo(world_id=wid),
+                ListWorlds(),
+                CreateWorld(config=WorldConfig(name="must-not-admit")),
+            )
+            for operation in direct_only:
                 try:
-                    await container.command_gateway.submit(
+                    await process.dispatcher.defer_as(
                         ctx,
-                        wid,
-                        Command(type=cmd_type, tick=0, payload={"data": "test"}),
+                        operation,
+                        DurableOptions(target_tick=0),
                     )
                 except ValueError:
                     rejected += 1
 
-            pending = await container.command_scheduler.pending_count(wid)
+            pending = await process.scheduler.pending_count(wid)
 
             return [
                 state_check(
@@ -370,7 +407,7 @@ async def _task_unhandled_command_noop() -> list[GraderResult]:
                 ),
             ]
         finally:
-            await container.shutdown()
+            await process.aclose()
 
 
 # ---------------------------------------------------------------------------
@@ -408,5 +445,5 @@ def register(harness: EvalHarness) -> None:
         "unhandled_command_noop",
         suite=SUITE,
         fn=task_unhandled_command_noop,
-        desc="MESSAGE/QUERY_WORLD/CUSTOM reject before portable admission",
+        desc="Registered direct-only operations reject before portable admission",
     )

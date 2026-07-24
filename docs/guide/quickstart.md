@@ -1,6 +1,6 @@
 # Quickstart
 
-Use `ArchetypeRuntime` for a Python script. It creates the service container,
+Use `ArchetypeRuntime` for a Python script. It owns one process resource graph,
 then gives you a lazy handle for each world.
 
 For a copy-and-run version of this page, see

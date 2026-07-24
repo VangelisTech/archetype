@@ -25,10 +25,12 @@ from __future__ import annotations
 import pytest
 
 from archetype import ArchetypeRuntime, PhysicalTaskEvalConfig
-from archetype.app.container import ServiceContainer
 from archetype.core.config import StorageConfig
 from archetype.physical_ai.manipulation import ManipStatus, ManipTask, ScriptedReachEnv
+from archetype.physical_ai.models import EvaluatePhysicalTask
 from archetype.physical_ai.policy import ScriptedReachPolicy
+from archetype.world.models import ComponentTypeRef, QueryComponents
+from tests._runtime import build_test_runtime
 
 # Proportional-controller params shared by the policy, the env, and the replay.
 GAIN = 0.5
@@ -65,22 +67,25 @@ def _simulate(target: tuple[float, float, float], seed: int) -> tuple[bool, int]
 
 @pytest.mark.asyncio
 async def test_batched_control_plane_eval_is_addressable_and_graded(tmp_path):
-    container = ServiceContainer()
+    resources = build_test_runtime(tmp_path)
+    dispatcher = resources.dispatcher
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="evalrun")
     try:
         env = ScriptedReachEnv(targets=TARGETS, tolerance=TOL)
         policy = ScriptedReachPolicy(targets=TARGETS, gain=GAIN, max_step=MAX_STEP)
 
-        report = await container.application.evaluate_physical_task(
-            PhysicalTaskEvalConfig(
-                suite="scripted",
-                task_id=0,
-                trials=4,
-                max_steps=MAX_STEPS,
-                storage=storage,
-            ),
-            env_client=env,
-            policy_client=policy,
+        report = await dispatcher.apply(
+            EvaluatePhysicalTask(
+                config=PhysicalTaskEvalConfig(
+                    suite="scripted",
+                    task_id=0,
+                    trials=4,
+                    max_steps=MAX_STEPS,
+                    storage=storage,
+                ),
+                env_client=env,
+                policy_client=policy,
+            )
         )
 
         # Independent replay (seed = task_id*1000 + env_key = env_key for task 0).
@@ -99,13 +104,20 @@ async def test_batched_control_plane_eval_is_addressable_and_graded(tmp_path):
         assert report.world_id and report.run_id
 
         # A2: every trial's trajectory is addressable by the one (world_id, run_id).
-        df = await container.application.query_components(
-            [ManipStatus, ManipTask], report.world_id, report.run_id, storage
+        df = await dispatcher.apply(
+            QueryComponents(
+                components=tuple(
+                    ComponentTypeRef.from_type(component) for component in (ManipStatus, ManipTask)
+                ),
+                world_id=report.world_id,
+                run_id=report.run_id,
+                storage_config=storage,
+            )
         )
         rows = df.collect().to_pylist()
         assert len({r["entity_id"] for r in rows}) == 4, "all 4 trials must persist, none orphaned"
     finally:
-        await container.shutdown()
+        await resources.aclose()
 
 
 @pytest.mark.asyncio

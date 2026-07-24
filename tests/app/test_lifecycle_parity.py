@@ -10,12 +10,17 @@ multi-runtime isolation, sync/async surface parity, and viewer guardrails.
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 
 import pytest
 from daft import DataFrame, col
 
 from archetype import ArchetypeRuntime, AsyncProcessor, Component
 from archetype.core.config import StorageConfig
+from archetype.errors import RuntimeShutdownError
+from archetype.evaluation.models import RunGraders
+from archetype.research.contracts import AutoResearchConfig
+from archetype.research.models import AutoResearch
 from archetype.runtime import SyncRuntimeWorld
 from archetype.runtime.world import RuntimeWorld
 
@@ -48,9 +53,10 @@ class BlockingIncrement(AsyncProcessor):
 
 class TestShutdownErrorAggregation:
     @pytest.mark.asyncio
-    async def test_shutdown_destroys_healthy_world_and_raises_composite(self, tmp_path):
-        """When one world's shutdown raises, the runtime still destroys the
-        other world and then raises a composite RuntimeError."""
+    async def test_shutdown_closes_healthy_world_and_reports_failing_owner(
+        self, tmp_path, monkeypatch
+    ):
+        """A failed owner close does not prevent peer world handles from closing."""
         rt = ArchetypeRuntime()
         await rt.__aenter__()
 
@@ -64,18 +70,28 @@ class TestShutdownErrorAggregation:
         await world_a.spawn(LifecycleParityPos(x=1.0))
         await world_b.spawn(LifecycleParityPos(x=2.0))
 
-        # Monkeypatch world_a's _shutdown_internal to raise
+        healthy_shutdown = world_a._state.shutdown
 
-        async def exploding_shutdown(*, from_runtime: bool) -> None:
+        async def exploding_shutdown() -> None:
             raise RuntimeError("world-a kaboom")
 
-        world_a._shutdown_internal = exploding_shutdown
+        monkeypatch.setattr(world_a._state, "shutdown", exploding_shutdown)
+        try:
+            with pytest.raises(RuntimeShutdownError) as captured:
+                await rt.shutdown()
 
-        with pytest.raises(RuntimeError, match="1 error"):
+            failure = captured.value.failures[0]
+            assert captured.value.phase == "world-handles"
+            assert len(captured.value.failures) == 1
+            assert failure.owner == world_a._reservation.owner
+            assert isinstance(failure.cause, RuntimeError)
+            assert str(failure.cause) == "world-a kaboom"
+            assert world_b._state.closed
+            assert world_b._reservation.released
+            assert not world_a._reservation.released
+        finally:
+            monkeypatch.setattr(world_a._state, "shutdown", healthy_shutdown)
             await rt.shutdown()
-
-        # world_b should still have been shut down despite world_a's failure
-        assert world_b._state.closed
 
     @pytest.mark.asyncio
     async def test_shutdown_waits_for_in_flight_step(self, tmp_path):
@@ -122,9 +138,26 @@ class TestShutdownErrorAggregation:
             await release.wait()
             return "finished"
 
-        monkeypatch.setattr(world._app, "autoresearch", blocked_autoresearch)
-        operation = asyncio.create_task(world.autoresearch(object(), object()))
-        await entered.wait()
+        autoresearch = runtime._resources.dispatcher._registry.resolve_name("autoresearch")
+        assert autoresearch.model is AutoResearch
+        assert isinstance(autoresearch.handler, partial)
+        assert autoresearch.handler.args
+        monkeypatch.setattr(autoresearch.handler.args[0], "run", blocked_autoresearch)
+        operation = asyncio.create_task(
+            world.autoresearch(
+                AutoResearchConfig(
+                    experiment_name="lifecycle-parity",
+                    experiment_id="autoresearch-drain",
+                    evaluator_id="lifecycle-parity-evaluator",
+                    rollout_contract_id="lifecycle-parity-rollout",
+                    max_iterations=1,
+                    num_episodes=1,
+                    record_to_ledger=False,
+                ),
+                lambda _rollout: 0.0,
+            )
+        )
+        await asyncio.wait_for(entered.wait(), timeout=5)
         shutdown = asyncio.create_task(runtime.shutdown())
         await asyncio.sleep(0)
 
@@ -150,8 +183,14 @@ class TestShutdownErrorAggregation:
             await release.wait()
             return ["finished"]
 
-        monkeypatch.setattr(runtime._container.evaluation_service, "run_graders", blocked_graders)
-        operation = asyncio.create_task(world.grade(LifecycleParityPos, graders=[object()]))
+        run_graders = runtime._resources.dispatcher._registry.resolve_name("run_graders")
+        assert run_graders.model is RunGraders
+        assert isinstance(run_graders.handler, partial)
+        assert run_graders.handler.args
+        monkeypatch.setattr(run_graders.handler.args[0], "run_graders", blocked_graders)
+        operation = asyncio.create_task(
+            world.grade(LifecycleParityPos, graders=[lambda _frame: object()])
+        )
         await entered.wait()
         shutdown = asyncio.create_task(runtime.shutdown())
         await asyncio.sleep(0)

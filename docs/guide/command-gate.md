@@ -5,11 +5,9 @@
 `ActorCtx`, role authorization, quotas, and bounded access evidence.
 
 The top-level `archetype.commands` family is the policy and admission
-authority. During the v0.5 migration, `CommandGateway` remains a transport-
-shaped compatibility adapter and `RuntimeApplication` remains a trusted
-actor-free adapter. Both construct the same family operation models and enter
-the same `CommandDispatcher`; neither owns policy, counters, queue state, or
-audit storage.
+authority. Trusted runtime and authenticated API adapters construct the same
+family operation models and enter one `CommandDispatcher`; neither owns
+policy, counters, queue state, or audit storage.
 
 ## 1. The gate model
 
@@ -68,11 +66,11 @@ There is no MRO guessing or generic command-type fallback. Duplicate names and
 models fail construction. The registered permission—not a caller-selected
 envelope value—is the policy input.
 
-The current world surface contains all lifecycle, mutation, simulation,
-composition, and read models. `GetAuditHistory` is the commands-owned boundary
-read. Temporary artifact, evaluation, research, and mission bridge methods use
-the same commands-owned `Policy` while their family registrations land in
-their sequenced PRs; they do not recreate a second guard.
+The registry contains the exact world lifecycle, mutation, simulation,
+composition, and read models plus registered workflow-family models.
+`GetAuditHistory` is the commands-owned boundary read. Actor-aware
+availability is explicit per registration; trusted-only workflow operations
+cannot enter through untrusted transport.
 
 ## 3. Four roles and permissions
 
@@ -200,7 +198,7 @@ trusted Python runtime is actor-free and never calls an actor-aware entry point.
 
 The CLI sends credentials; it does not mint local roles. FastAPI or another
 host authenticates those credentials, constructs `ActorCtx`, and invokes the
-gateway adapter. An embedded host exposing capabilities to sandboxed or
+actor-aware dispatcher. An embedded host exposing capabilities to sandboxed or
 untrusted code must use the same actor-aware dispatcher boundary even without
 HTTP.
 

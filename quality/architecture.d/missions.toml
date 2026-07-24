@@ -5,7 +5,11 @@
 [[top_level_family_rule]]
 name = "missions-domain-family"
 consumer = "archetype.missions"
-allowed_families = ["archetype.artifacts", "archetype.graph"]
+allowed_families = [
+  "archetype.artifacts",
+  "archetype.episodes",
+  "archetype.graph",
+]
 
 [[module_rule]]
 module = "archetype.missions.sandboxes.service"

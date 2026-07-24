@@ -13,52 +13,16 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
+from archetype.episodes.contracts import ClaudeTranscriptSource
 from archetype.missions.trajectories.components import Trajectory
 from archetype.missions.trajectories.contracts import Turn
 
 _TRUNCATION_MARK = "…[truncated]"
 
 
-@dataclass(frozen=True)
-class ClaudeTranscriptSource:
-    """Local Claude JSONL source and its stable logical linkage."""
-
-    path: Path
-    mission_id: str = ""
-    project: str = ""
-    session_id: str = ""
-    max_content_chars: int = 4000
-    include_sidechains: bool = False
-
-    def __post_init__(self) -> None:
-        path = Path(self.path)
-        object.__setattr__(self, "path", path)
-        if path.suffix.lower() != ".jsonl":
-            raise ValueError("Claude transcript sources must use the .jsonl suffix")
-        if self.max_content_chars < 1:
-            raise ValueError("max_content_chars must be at least 1")
-        project = self.project.strip() or path.parent.name
-        session_id = self.session_id.strip() or path.stem
-        if not project or not session_id:
-            raise ValueError("Claude transcript source needs project and session identity")
-        object.__setattr__(self, "project", project)
-        object.__setattr__(self, "session_id", session_id)
-
-    @property
-    def source_uri(self) -> str:
-        """Canonical source identity without leaking a local filesystem path."""
-
-        return f"claude-session://{quote(self.project, safe='')}/{quote(self.session_id, safe='')}"
-
-    @property
-    def trajectory_id(self) -> str:
-        """Stable trajectory linkage for normalized rows and the lightweight index."""
-
-        return self.source_uri
+# PR-9 deletes this compatibility import after episode consumers repoint.
 
 
 @dataclass(frozen=True)

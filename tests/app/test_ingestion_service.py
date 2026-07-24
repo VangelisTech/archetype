@@ -8,8 +8,9 @@ from pathlib import Path
 import daft
 import pytest
 
-from archetype.app.container import ServiceContainer
+from archetype.app.ingestion.service import IngestionService
 from archetype.core.config import StorageBackend, StorageConfig, WorldConfig
+from tests.conftest import make_world_harness
 
 READINGS = "readings"
 
@@ -25,24 +26,23 @@ def _storage(tmp_path: Path) -> StorageConfig:
 @pytest.mark.contract("ingestion.envelope.append_selection")
 @pytest.mark.asyncio
 async def test_append_registers_table_in_active_daft_catalog(tmp_path):
-    container = ServiceContainer()
+    harness = make_world_harness()
+    ingestion = IngestionService(harness.storage, harness.registry)
     try:
         storage = _storage(tmp_path)
-        world = await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
+        world = await harness.lifecycle.create_world(WorldConfig(name="w"), storage)
 
-        rows_written = await container.ingestion_service.append(
+        rows_written = await ingestion.append(
             str(world.world_id),
             READINGS,
             daft.from_pydict({"reading_id": ["r1"], "value": [21.5]}),
             key_columns=("reading_id",),
         )
 
-        store = await container.storage_service.get_or_create_store(storage)
+        store = await harness.storage.get_or_create_store(storage)
         assert store.session.current_catalog().has_table("ns.readings")
         assert rows_written == 1
-        assert (
-            await container.ingestion_service.read(str(world.world_id), READINGS)
-        ).to_pylist() == [
+        assert (await ingestion.read(str(world.world_id), READINGS)).to_pylist() == [
             {
                 "world_id": str(world.world_id),
                 "run_id": str(world.run_id),
@@ -51,7 +51,7 @@ async def test_append_registers_table_in_active_daft_catalog(tmp_path):
             }
         ]
     finally:
-        await container.shutdown()
+        await harness.close()
 
 
 @pytest.mark.contract("ingestion.catalog.cold_roundtrip")
@@ -59,23 +59,25 @@ async def test_append_registers_table_in_active_daft_catalog(tmp_path):
 async def test_registered_table_is_queryable_from_fresh_application(tmp_path, monkeypatch):
     monkeypatch.setenv("ARCHETYPE_CATALOG_DIR", str(tmp_path / "control"))
     storage = _storage(tmp_path)
-    writer = ServiceContainer()
+    writer = make_world_harness()
+    writer_ingestion = IngestionService(writer.storage, writer.registry)
     try:
-        world = await writer.world_lifecycle.create_world(WorldConfig(name="w"), storage)
+        world = await writer.lifecycle.create_world(WorldConfig(name="w"), storage)
         world_id = str(world.world_id)
         run_id = str(world.run_id)
-        await writer.ingestion_service.append(
+        await writer_ingestion.append(
             world_id,
             READINGS,
             daft.from_pydict({"reading_id": ["r1"], "value": [21.5]}),
             key_columns=("reading_id",),
         )
     finally:
-        await writer.shutdown()
+        await writer.close()
 
-    reader = ServiceContainer()
+    reader = make_world_harness()
+    reader_ingestion = IngestionService(reader.storage, reader.registry)
     try:
-        rows = await reader.ingestion_service.read(
+        rows = await reader_ingestion.read(
             world_id,
             READINGS,
             storage_config=storage,
@@ -89,37 +91,39 @@ async def test_registered_table_is_queryable_from_fresh_application(tmp_path, mo
             }
         ]
     finally:
-        await reader.shutdown()
+        await reader.close()
 
 
 @pytest.mark.asyncio
 async def test_append_is_idempotent_by_declared_key(tmp_path):
-    container = ServiceContainer()
+    harness = make_world_harness()
+    ingestion = IngestionService(harness.storage, harness.registry)
     try:
         storage = _storage(tmp_path)
-        world = await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
+        world = await harness.lifecycle.create_world(WorldConfig(name="w"), storage)
         rows = daft.from_pydict({"reading_id": ["r1"], "value": [21.5]})
 
-        first = await container.ingestion_service.append(
+        first = await ingestion.append(
             str(world.world_id), READINGS, rows, key_columns=("reading_id",)
         )
-        retry = await container.ingestion_service.append(
+        retry = await ingestion.append(
             str(world.world_id), READINGS, rows, key_columns=("reading_id",)
         )
 
         assert first == 1
         assert retry == 0
     finally:
-        await container.shutdown()
+        await harness.close()
 
 
 @pytest.mark.asyncio
 async def test_registered_table_rejects_schema_drift(tmp_path):
-    container = ServiceContainer()
+    harness = make_world_harness()
+    ingestion = IngestionService(harness.storage, harness.registry)
     try:
         storage = _storage(tmp_path)
-        world = await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
-        await container.ingestion_service.append(
+        world = await harness.lifecycle.create_world(WorldConfig(name="w"), storage)
+        await ingestion.append(
             str(world.world_id),
             READINGS,
             daft.from_pydict({"reading_id": ["r1"], "value": [21.5]}),
@@ -127,27 +131,28 @@ async def test_registered_table_rejects_schema_drift(tmp_path):
         )
 
         with pytest.raises(ValueError, match="different typed schema"):
-            await container.ingestion_service.append(
+            await ingestion.append(
                 str(world.world_id),
                 READINGS,
                 daft.from_pydict({"reading_id": ["r2"], "value": ["hot"]}),
                 key_columns=("reading_id",),
             )
     finally:
-        await container.shutdown()
+        await harness.close()
 
 
 @pytest.mark.asyncio
 async def test_read_preserves_missing_world_error(tmp_path):
-    container = ServiceContainer()
+    harness = make_world_harness()
+    ingestion = IngestionService(harness.storage, harness.registry)
     try:
         storage = _storage(tmp_path)
 
         with pytest.raises(KeyError, match="world missing-world is not recorded"):
-            await container.ingestion_service.read(
+            await ingestion.read(
                 "missing-world",
                 READINGS,
                 storage_config=storage,
             )
     finally:
-        await container.shutdown()
+        await harness.close()

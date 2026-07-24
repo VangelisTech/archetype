@@ -72,7 +72,7 @@ config = RunConfig.benchmark(
 ## WorldConfig
 
 Identifies a world instance. Runtime/API callers create worlds through
-`iCommandGateway.create_world(...)`; internal composition calls the
+the exact registered `CreateWorld` operation; its handler calls the
 family-owned `iWorldLifecycle.create_world(...)` port.
 
 ```python
