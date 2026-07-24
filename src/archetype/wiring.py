@@ -416,7 +416,7 @@ async def _resolve_lineage(
     world_id: object,
     run_id: object,
     storage_config: StorageConfig | None,
-) -> list[str] | None:
+) -> list[tuple[str, str, int]] | None:
     try:
         async with worlds.operation(str(world_id)) as world:
             lineage = getattr(world, "lineage", None)
@@ -454,8 +454,8 @@ async def _handle_query_trajectory(
             storage_config,
         ),
         selection=operation.selection,
-        ticks=operation.ticks,
-        entity_ids=operation.entity_ids,
+        ticks=list(operation.ticks) if operation.ticks is not None else None,
+        entity_ids=(list(operation.entity_ids) if operation.entity_ids is not None else None),
     )
 
 
@@ -484,8 +484,8 @@ async def _handle_grade_trajectory(
             storage_config,
         ),
         selection=operation.selection,
-        ticks=operation.ticks,
-        entity_ids=operation.entity_ids,
+        ticks=list(operation.ticks) if operation.ticks is not None else None,
+        entity_ids=(list(operation.entity_ids) if operation.entity_ids is not None else None),
     )
 
 
@@ -518,7 +518,7 @@ async def _handle_submit_mission(
             return WorldCleanup(
                 registry=worlds,
                 lifecycle=lifecycle,
-                world_id=world_id,
+                world_id=str(world_id),
                 lease=lease,
             )
 
@@ -533,7 +533,7 @@ async def _handle_submit_mission(
             storage=operation.storage,
         )
 
-    service = cast(MissionService, await reservation.construct(construct))
+    service = await reservation.construct(construct)
     submission = operation.submission
     return await service.submit(
         repository=submission.repository,
@@ -859,7 +859,7 @@ def build_runtime_resources(config: RuntimeBootstrapConfig) -> RuntimeResources:
                 world,
             )
             await scheduler.cancel_world(world_id)
-        await lifecycle.destroy_world(world_id, lease=lease)
+        await lifecycle.destroy_world(str(world_id), lease=lease)
 
     async def fork_owned_world(*args: Any, **kwargs: Any) -> Any:
         return await lifecycle.fork_world(*args, **kwargs)
