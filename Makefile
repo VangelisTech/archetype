@@ -107,7 +107,7 @@ format:
 	@uv run ruff format $(RUFF_PATHS)
 
 .PHONY: lint
-lint: lazy-audit architecture-audit observability-audit version-inventory-audit python-api-audit api-boundary-audit idempotency-audit gate-coverage-audit operational-audit
+lint: lazy-audit architecture-audit observability-audit version-inventory-audit python-api-audit api-boundary-audit license-audit idempotency-audit gate-coverage-audit operational-audit
 	@uv run ruff check $(RUFF_PATHS)
 
 .PHONY: lint-fix
@@ -152,6 +152,13 @@ lazy-audit:
 .PHONY: api-boundary-audit
 api-boundary-audit:
 	@uv run python scripts/check_api_import_boundaries.py
+
+# Apache-2.0 license headers on every shipped source file. The pre-commit
+# hook alone was bypassable, which is how 142 of 199 files stayed red without
+# anyone noticing, so the gate also runs in the required `format` job.
+.PHONY: license-audit
+license-audit:
+	@uv run python scripts/check_license_headers.py --all
 
 .PHONY: python-api-audit
 python-api-audit:

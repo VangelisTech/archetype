@@ -12,6 +12,8 @@ correctly headered files under a green exit.
 import sys
 from pathlib import Path
 
+import pytest
+
 _SCRIPTS_DIR = Path(__file__).resolve().parent.parent.parent / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
@@ -109,3 +111,102 @@ def test_fix_run_that_repairs_everything_exits_green(tmp_path: Path, monkeypatch
 def test_empty_file_is_skipped_by_fix(tmp_path: Path) -> None:
     path = _write(tmp_path, "\n")
     assert not checker.add_license_header(path)
+
+
+# --- the gate must fail loudly, never silently ------------------------------
+#
+# A checker only protects what it actually inspects. Each case below is a way
+# the gate could report success while auditing nothing.
+
+
+def test_an_empty_audit_set_is_an_error(tmp_path: Path) -> None:
+    not_python = tmp_path / "README.md"
+    not_python.write_text("# not python\n", encoding="utf-8")
+
+    files, errors = checker.resolve_files([str(not_python)])
+
+    assert files == []
+    assert errors
+
+
+def test_a_run_that_audits_nothing_exits_red(tmp_path: Path, monkeypatch) -> None:
+    not_python = tmp_path / "README.md"
+    not_python.write_text("# not python\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["check_license_headers.py", str(not_python)])
+
+    assert checker.main() == 1
+
+
+def test_a_missing_source_root_is_an_error_not_an_empty_pass(tmp_path: Path, monkeypatch) -> None:
+    # No arguments means "audit src/". If that root is absent, the audit set is
+    # empty for a structural reason and must not read as success.
+    monkeypatch.setattr(checker, "__file__", str(tmp_path / "scripts" / "checker.py"))
+
+    files, errors = checker.resolve_files([])
+
+    assert files == []
+    assert any("source root does not exist" in message for message in errors)
+
+
+def test_a_nonexistent_path_is_an_error_not_a_missing_header(tmp_path: Path) -> None:
+    absent = tmp_path / "gone.py"
+
+    files, errors = checker.resolve_files([str(absent)])
+
+    assert files == []
+    assert any("path does not exist" in message for message in errors)
+
+
+def test_fix_cannot_launder_a_nonexistent_path_into_a_pass(tmp_path: Path, monkeypatch) -> None:
+    absent = tmp_path / "gone.py"
+    monkeypatch.setattr(sys, "argv", ["check_license_headers.py", "--fix", str(absent)])
+
+    assert checker.main() == 1
+    assert not absent.exists()
+
+
+def test_dot_github_is_audited_while_dot_git_is_skipped() -> None:
+    # ".git" as a substring also matches ".github", which silently exempted
+    # every workflow helper. Skip rules match whole path components.
+    assert not checker.should_skip_file(Path(".github/workflows/helper.py"))
+    assert checker.should_skip_file(Path(".git/hooks/helper.py"))
+    assert checker.should_skip_file(Path("src/archetype/__pycache__/mod.py"))
+
+
+def test_a_github_file_reaches_the_audit_set(tmp_path: Path) -> None:
+    scripts_dir = tmp_path / ".github" / "scripts"
+    scripts_dir.mkdir(parents=True)
+    helper = scripts_dir / "helper.py"
+    helper.write_text("x = 1\n", encoding="utf-8")
+
+    files, errors = checker.resolve_files([str(helper)])
+
+    assert files == [helper]
+    assert not errors
+
+
+def test_all_flag_is_the_explicit_spelling_of_the_tree_audit(monkeypatch) -> None:
+    # CI call sites say --all so whole-tree intent is visible in the command
+    # line, not implied by the absence of arguments.
+    monkeypatch.setattr(sys, "argv", ["check_license_headers.py", "--all"])
+    assert checker.main() == 0
+
+
+def test_all_flag_rejects_explicit_files(monkeypatch, tmp_path: Path) -> None:
+    path = _write(tmp_path, COMPACT_HEADER)
+    monkeypatch.setattr(sys, "argv", ["check_license_headers.py", "--all", str(path)])
+
+    with pytest.raises(SystemExit) as excinfo:
+        checker.main()
+    assert excinfo.value.code == 2
+
+
+def test_every_shipped_source_file_is_audited_and_licensed(monkeypatch) -> None:
+    """Regression lock: the state this checker failed to report for 142 files."""
+    files, errors = checker.resolve_files([])
+
+    assert not errors
+    assert files, "the default audit set must never resolve to nothing"
+
+    monkeypatch.setattr(sys, "argv", ["check_license_headers.py"])
+    assert checker.main() == 0
