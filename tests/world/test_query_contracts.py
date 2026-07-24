@@ -11,7 +11,9 @@ from pathlib import Path
 
 import pytest
 
+from archetype.core.archetype import Archetype
 from archetype.core.config import StorageConfig
+from archetype.core.lineage import LINEAGE_SIG
 from archetype.world import query
 
 
@@ -45,6 +47,155 @@ async def test_explicit_visibility_tokens_cannot_be_combined_with_lineage() -> N
             lineage=[("ancestor", "ancestor-run", 3)],
             visibility_tokens=["token"],
         )
+
+
+@pytest.mark.asyncio
+async def test_root_snapshot_never_reads_or_creates_lineage(monkeypatch) -> None:
+    @dataclass(frozen=True)
+    class _Record:
+        run_id: str = "root-run"
+        parent_world_id: None = None
+
+    @dataclass(frozen=True)
+    class _Visibility:
+        run_id: str = "root-run"
+        head_tick: int = 0
+        head_tokens: tuple[str, ...] = ("root-head",)
+        visibility_tokens: tuple[str, ...] = ("root-visible",)
+
+    class _Catalog:
+        async def get_world(self, world_id):
+            assert world_id == "root"
+            return _Record()
+
+    class _Storage:
+        def get_control_catalog(self, storage_config):
+            del storage_config
+            return _Catalog()
+
+        async def pin_visibility(self, *_args, **_kwargs):
+            return _Visibility()
+
+    async def unexpected_lineage_read(*_args, **_kwargs):
+        raise AssertionError("a root world must not probe lineage storage")
+
+    monkeypatch.setattr(query, "get_lineage", unexpected_lineage_read)
+
+    snapshot = await query.pin_query_snapshot(
+        _Storage(),  # type: ignore[arg-type]
+        "root",
+        storage_config=StorageConfig(),
+    )
+
+    assert (snapshot.world_id, snapshot.run_id) == ("root", "root-run")
+    assert (snapshot.head_tick, snapshot.head_tokens) == (0, ("root-head",))
+    assert snapshot.lineage == ()
+
+
+@pytest.mark.asyncio
+async def test_missing_lineage_table_is_an_open_never_create_read(monkeypatch) -> None:
+    class _Store:
+        def __init__(self) -> None:
+            self.table_ids: list[str] = []
+
+        async def get_existing_table_df(self, table_id, *_args, **_kwargs):
+            self.table_ids.append(table_id)
+            raise KeyError(table_id)
+
+        async def get_archetype_df(self, *_args, **_kwargs):
+            raise AssertionError("missing lineage must not use create-on-read")
+
+    store = _Store()
+
+    async def querier_for(*_args):
+        return StorageConfig(), store, object()
+
+    monkeypatch.setattr(query, "_querier_for", querier_for)
+
+    assert (
+        await query.get_lineage(
+            object(),  # type: ignore[arg-type]
+            "child",
+            "child-run",
+            StorageConfig(),
+        )
+        is None
+    )
+    assert store.table_ids == [
+        Archetype.get_name(LINEAGE_SIG),
+        Archetype.get_legacy_name(LINEAGE_SIG),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_existing_lineage_table_preserves_lineage_read(monkeypatch) -> None:
+    expected = [("parent", "parent-run", 4)]
+
+    class _Rows:
+        def to_pylist(self):
+            return [
+                {
+                    "worldlineage__parent_world_id": "parent",
+                    "worldlineage__parent_run_id": "parent-run",
+                    "worldlineage__up_to_tick": 4,
+                    "worldlineage__position": 0,
+                }
+            ]
+
+    class _Store:
+        async def get_existing_table_df(self, table_id, *_args, **_kwargs):
+            if table_id == Archetype.get_name(LINEAGE_SIG):
+                return _Rows()
+            raise KeyError(table_id)
+
+    store = _Store()
+
+    async def querier_for(*_args):
+        return StorageConfig(), store, object()
+
+    monkeypatch.setattr(query, "_querier_for", querier_for)
+
+    assert (
+        await query.get_lineage(
+            object(),  # type: ignore[arg-type]
+            "child",
+            "child-run",
+            StorageConfig(),
+        )
+        == expected
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_only_lineage_table_remains_readable(monkeypatch) -> None:
+    class _Rows:
+        def to_pylist(self):
+            return [
+                {
+                    "worldlineage__parent_world_id": "legacy-parent",
+                    "worldlineage__parent_run_id": "legacy-run",
+                    "worldlineage__up_to_tick": 2,
+                    "worldlineage__position": 0,
+                }
+            ]
+
+    class _Store:
+        async def get_existing_table_df(self, table_id, *_args, **_kwargs):
+            if table_id == Archetype.get_legacy_name(LINEAGE_SIG):
+                return _Rows()
+            raise KeyError(table_id)
+
+    async def querier_for(*_args):
+        return StorageConfig(), _Store(), object()
+
+    monkeypatch.setattr(query, "_querier_for", querier_for)
+
+    assert await query.get_lineage(
+        object(),  # type: ignore[arg-type]
+        "child",
+        "child-run",
+        StorageConfig(),
+    ) == [("legacy-parent", "legacy-run", 2)]
 
 
 @pytest.mark.asyncio

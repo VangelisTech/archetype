@@ -83,7 +83,9 @@ async def persist_lineage(
     ]
     schema = Archetype.get_archetype_schema(LINEAGE_SIG)
     df = daft.from_arrow(pa.Table.from_pylist(rows, schema=schema))
-    await store.append(LINEAGE_SIG, df)
+    receipt = await store.append(LINEAGE_SIG, df)
+    if not receipt.durable:
+        await store.flush()
 
 
 async def load_lineage(
@@ -97,12 +99,20 @@ async def load_lineage(
     Returns None when no lineage was recorded (root worlds, pre-lineage
     data). Works for destroyed worlds: the rows are append-only.
     """
-    df = await store.get_archetype_df(
-        sig=LINEAGE_SIG,
-        world_id=str(world_id),
-        run_id=str(run_id),
-    )
-    rows = df.to_pylist()
+    rows: list[dict] = []
+    for table_id in (
+        Archetype.get_name(LINEAGE_SIG),
+        Archetype.get_legacy_name(LINEAGE_SIG),
+    ):
+        try:
+            df = await store.get_existing_table_df(
+                table_id,
+                str(world_id),
+                str(run_id),
+            )
+        except KeyError:
+            continue
+        rows.extend(df.to_pylist())
     if not rows:
         return None
     rows.sort(key=lambda r: r["worldlineage__position"])

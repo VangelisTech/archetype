@@ -676,7 +676,9 @@ retryable failures remain recoverable and exhausted failures become terminal.
 - Coordinated reads MUST restrict results to catalog-published commit tokens.
 - Fork-aware reads MUST compose persisted lineage segments with the fork's own
   rows without requiring a live source world.
-- `get_lineage()` reads persisted ancestry. `list_signatures()` combines the
+- `get_lineage()` reads persisted ancestry through open-never-create physical
+  reads of both current and legacy lineage table identities; an absent optional
+  lineage projection MUST NOT create a table. `list_signatures()` combines the
   selected store's process-local registry with its durable control-catalog
   records, resolving imported component classes by schema fingerprint and
   exact durable table identity. Unresolvable historical records emit a warning

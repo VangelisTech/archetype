@@ -262,6 +262,30 @@ class AsyncCachedStore(iAsyncStore):
         inner = set(await self._inner.list_committed_signatures())
         return list(inner | self._committed_sigs)
 
+    async def get_existing_table_schema(self, table_id: str) -> pa.Schema:
+        """Delegate open-never-create physical discovery to durable storage."""
+        return await self._inner.get_existing_table_schema(table_id)
+
+    async def get_existing_table_df(
+        self,
+        table_id: str,
+        world_id: str,
+        run_id: str,
+        *,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+        active_only: bool = False,
+    ) -> DataFrame:
+        """Delegate physical reads; staged cache rows have no durable table identity."""
+        return await self._inner.get_existing_table_df(
+            table_id,
+            world_id,
+            run_id,
+            ticks=ticks,
+            entity_ids=entity_ids,
+            active_only=active_only,
+        )
+
     async def append(self, sig: ArchetypeSignature, df: DataFrame) -> AppendReceipt:
         """
         Cache driven append with built in flush logic to underlying storage (super) a table with a new dataframe.

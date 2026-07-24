@@ -117,8 +117,10 @@ async def pin_query_snapshot(
         visibility_tokens=current_visibility.visibility_tokens,
     )
 
-    lineage = await get_lineage(storage, wid, rid, effective)
     parent_world_id = str(record.parent_world_id) if record.parent_world_id else None
+    lineage = (
+        await get_lineage(storage, wid, rid, effective) if parent_world_id is not None else None
+    )
     if parent_world_id is not None:
         if not lineage:
             parent_record = await catalog.get_world(parent_world_id)

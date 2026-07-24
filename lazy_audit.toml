@@ -86,7 +86,7 @@ reason = "Cross-archetype entity migration (sync mirror of async_world): extract
 
 [[entries]]
 path = "src/archetype/core/lineage.py"
-line = 105
+line = 115
 method = "to_pylist"
 reason = "Lineage metadata extract: a fork's ancestor segments (bounded by fork depth, typically 1-3 rows) must become Python (world_id, run_id, up_to_tick) tuples because they route subsequent per-tick store queries; the routing decision cannot be expressed inside a single Daft plan."
 
