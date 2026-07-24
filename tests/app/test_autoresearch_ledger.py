@@ -12,17 +12,18 @@ experiment resumes from the last declared best.
 
 import asyncio
 import json
+from functools import partial
 from pathlib import Path
 
 import pytest
 from uuid_utils import UUID
 
-from archetype.app.research.contracts import AutoResearchConfig, EvaluationResult
 from archetype.commands.models import DurableOptions
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.research import BranchHead, Experiment, Result, Run, RunStatus
-from archetype.research.models import AutoResearch
+from archetype.research.handlers import AutoResearchAdmissions, handle_autoresearch
+from archetype.research.models import AutoResearch, AutoResearchConfig, EvaluationResult
 from archetype.storage.config import ControlCatalogConfig
 from archetype.storage.service import StorageService
 from archetype.world.models import (
@@ -96,6 +97,30 @@ def _research_service(dispatcher):
     return dispatcher._registry.resolve_name("autoresearch").handler.args[0]
 
 
+def _family_research_handler(dispatcher, *, isolated_admission: bool = False):
+    if not isolated_admission:
+        cached = getattr(dispatcher, "_test_research_family_handler", None)
+        if cached is not None:
+            return cached
+
+    registry = dispatcher._registry
+    worlds = registry.resolve_name("step").handler.args[0]
+    lifecycle = registry.resolve_name("create_world").handler.args[0].__self__
+    storage = registry.resolve_name("query_archetype").handler.args[1]
+    destroy_world = registry.resolve_name("destroy_world").handler.args[0]
+    handler = partial(
+        handle_autoresearch,
+        AutoResearchAdmissions(),
+        worlds,
+        lifecycle,
+        storage,
+        destroy_world,
+    )
+    if not isolated_admission:
+        dispatcher._test_research_family_handler = handler
+    return handler
+
+
 async def _base_world(dispatcher, tmp_path):
     base = await dispatcher.apply(
         CreateWorld(
@@ -133,8 +158,12 @@ async def _run_research(
     prepare_candidate=None,
     lab_world_id=None,
     on_iteration=None,
+    isolated_admission=False,
 ):
-    return await dispatcher.apply(
+    return await _family_research_handler(
+        dispatcher,
+        isolated_admission=isolated_admission,
+    )(
         AutoResearch(
             world_id=world_id,
             config=config,
@@ -748,6 +777,7 @@ async def test_resume_fails_closed_while_an_attempt_is_running(tmp_path):
                 config,
                 _scripted_evaluator([2.0]),
                 lab_world_id=lab.world_id,
+                isolated_admission=True,
             )
 
         release.set()
