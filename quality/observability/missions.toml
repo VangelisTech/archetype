@@ -17,6 +17,7 @@ operations = [
   "interfaces.iTranscriptIngestionService.ingest",
   "interfaces.iTranscriptIngestionService.read",
   "service.MissionWorld.info",
+  "service.MissionWorld.active_world_id",
   "service.MissionWorld.query",
   "service.MissionWorld.reserve_ids",
   "service.MissionWorld.spawn",

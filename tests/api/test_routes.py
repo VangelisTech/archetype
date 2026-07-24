@@ -211,7 +211,7 @@ class TestCommandRoutes:
             json={"type": "nonexistent_type", "payload": {}},
         )
         assert resp.status_code == 400
-        assert "not a valid CommandType" in resp.json()["detail"]
+        assert "not a registered command operation" in resp.json()["detail"]
 
     def test_submit_batch(self, client, tmp_path):
         create_resp = client.post(
