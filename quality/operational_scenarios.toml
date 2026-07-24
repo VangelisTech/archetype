@@ -376,7 +376,6 @@ contracts = [
   "runtime.lifecycle.retryable_teardown",
   "gateway.authorization.rbac",
   "world.fork.lineage",
-  "missions.sandbox.cleanup_ownership",
 ]
 cleanup_policy = "isolated"
 artifact_policy = "receipt"

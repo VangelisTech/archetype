@@ -27,4 +27,8 @@ def test_error_taxonomy_governs_registered_family_exceptions() -> None:
         "archetype.world.errors.WorldClosingError",
         "archetype.world.simulation.PostCommitProjectionError",
     } <= classes.keys()
+    assert set(checker.INTERNAL_ONLY_EXCEPTIONS) == {
+        "archetype.missions.critics.harness._UnverifiableReview",
+        "archetype.missions.sandboxes.contracts.SandboxTeardownError",
+    }
     assert checker.check_error_taxonomy() == []

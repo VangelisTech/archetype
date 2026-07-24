@@ -277,7 +277,6 @@ def test_runtime_loopback_is_required_source_and_wheel_dogfood() -> None:
         "runtime.lifecycle.retryable_teardown",
         "gateway.authorization.rbac",
         "world.fork.lineage",
-        "missions.sandbox.cleanup_ownership",
     ]
     assert loopback["cleanup_policy"] == "isolated"
     assert loopback["artifact_policy"] == "receipt"

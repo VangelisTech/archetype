@@ -124,7 +124,7 @@ def test_shipped_server_cli_receipt_is_complete_bounded_and_redacted(tmp_path: P
         },
         "routes": {
             "create": True,
-            "reserved_spawn": True,
+            "entity_spawn": True,
             "step": True,
             "run": True,
             "query": True,

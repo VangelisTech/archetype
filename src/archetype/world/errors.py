@@ -5,9 +5,13 @@
 
 from __future__ import annotations
 
+from archetype.errors import ConflictError
 
-class WorldClosingError(RuntimeError):
+
+class WorldClosingError(ConflictError):
     """Raised when a live world has entered its sticky close state."""
+
+    public_detail = "World is closing"
 
     def __init__(self, world_id: object) -> None:
         super().__init__(f"world {world_id} is closing")

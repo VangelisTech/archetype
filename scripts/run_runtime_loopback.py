@@ -413,7 +413,7 @@ def run_runtime_loopback(workspace: Path) -> dict[str, object]:
 
                 route_evidence = {
                     "create": True,
-                    "reserved_spawn": True,
+                    "entity_spawn": True,
                     "step": True,
                     "run": True,
                     "query": True,

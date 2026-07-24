@@ -229,6 +229,18 @@ INTENTIONAL_UNMAPPED = {
     ),
 }
 
+# Private control-flow exceptions proven not to cross a registered handler
+# boundary. A stale or newly mapped entry fails the audit just like the
+# intentional-500 manifest.
+INTERNAL_ONLY_EXCEPTIONS = {
+    "archetype.missions.critics.harness._UnverifiableReview": (
+        "caught and normalized inside CriticHarness.review before the mission handler returns"
+    ),
+    "archetype.missions.sandboxes.contracts.SandboxTeardownError": (
+        "caught by MissionService and converted to bounded durable sandbox evidence"
+    ),
+}
+
 
 def _mapped_exception_bases() -> tuple[type[BaseException], ...]:
     """Exception bases raise_api_error maps to non-500 statuses (AST-derived)."""
@@ -290,22 +302,34 @@ def check_error_taxonomy() -> list[str]:
     for qualname, cls in sorted(owned_exceptions.items()):
         mapped = issubclass(cls, bases)
         declared = qualname in INTENTIONAL_UNMAPPED
-        if not mapped and not declared:
+        internal_only = qualname in INTERNAL_ONLY_EXCEPTIONS
+        if not mapped and not declared and not internal_only:
             problems.append(
                 f"{qualname} is not a subclass of any base raise_api_error maps — "
                 "it will surface as HTTP 500. Map it in src/archetype/api/errors.py, "
                 "subclass a mapped base, or declare it in INTENTIONAL_UNMAPPED "
-                "with a rationale and issue."
+                "with a rationale and issue. Use INTERNAL_ONLY_EXCEPTIONS only "
+                "when the exception is caught before every registered boundary."
             )
         elif mapped and declared:
             problems.append(
                 f"{qualname} is declared INTENTIONAL_UNMAPPED but is now mapped — "
                 "remove the stale manifest entry."
             )
+        elif mapped and internal_only:
+            problems.append(
+                f"{qualname} is declared INTERNAL_ONLY_EXCEPTIONS but is now mapped — "
+                "remove the stale internal-only entry."
+            )
 
     for qualname in INTENTIONAL_UNMAPPED:
         if qualname not in owned_exceptions:
             problems.append(f"INTENTIONAL_UNMAPPED names a class that no longer exists: {qualname}")
+    for qualname in INTERNAL_ONLY_EXCEPTIONS:
+        if qualname not in owned_exceptions:
+            problems.append(
+                f"INTERNAL_ONLY_EXCEPTIONS names a class that no longer exists: {qualname}"
+            )
     return problems
 
 
@@ -319,7 +343,7 @@ def main() -> int:
         print(
             "\nEvery reachable operation needs one exact registration, durable "
             "eligibility must equal the portable world-model set, scheduler dispatch "
-            "must stay registry-driven, and every app-layer error needs a non-500 "
+            "must stay registry-driven, and every API-facing family error needs a non-500 "
             "HTTP mapping."
         )
         return 1
