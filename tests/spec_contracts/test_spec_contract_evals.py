@@ -85,14 +85,14 @@ def test_runtime_gate_uses_a_dotted_app_boundary(tmp_path, monkeypatch, source_t
 @pytest.mark.parametrize(
     "source_text",
     [
-        "import archetype.app.artifacts.service\n",
-        "from archetype.app.artifacts.service import ArtifactService\n",
+        "import archetype.app.missions.service\n",
+        "from archetype.app.missions.service import MissionService\n",
         "from typing import TYPE_CHECKING\n"
         "if TYPE_CHECKING:\n"
-        "    import archetype.app.artifacts.service\n",
+        "    import archetype.app.missions.service\n",
         "from typing import TYPE_CHECKING\n"
         "if TYPE_CHECKING:\n"
-        "    from archetype.app.artifacts.service import ArtifactService\n",
+        "    from archetype.app.missions.service import MissionService\n",
     ],
 )
 def test_runtime_gate_rejects_concrete_service_imports_even_when_type_only(
@@ -101,7 +101,7 @@ def test_runtime_gate_rejects_concrete_service_imports_even_when_type_only(
     result = _runtime_import_result(tmp_path, monkeypatch, source_text)
 
     assert result.passed is False
-    assert "archetype.app.artifacts.service" in result.details
+    assert "archetype.app.missions.service" in result.details
 
 
 @pytest.mark.parametrize(

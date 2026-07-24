@@ -216,9 +216,9 @@ ALIASES: dict[str, str] = {
 # These types are part of the public signature closure but are intentionally
 # namespaced rather than promoted to the top-level import surface.
 SUPPLEMENTAL: dict[str, tuple[str, str]] = {
-    "analyze_artifacts": ("archetype.artifacts", "analyze_artifacts"),
+    "analyze_artifacts": ("archetype.artifacts.context", "analyze_artifacts"),
     "synthesize_artifact_context": (
-        "archetype.artifacts",
+        "archetype.artifacts.context",
         "synthesize_artifact_context",
     ),
     "ActorCtx": ("archetype.commands.models", "ActorCtx"),

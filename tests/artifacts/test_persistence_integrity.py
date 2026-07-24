@@ -14,9 +14,8 @@ import pytest
 import xxhash
 from daft.file.file import BUFFER_COPY
 
-import archetype.ingestion.pipeline as pipeline_module
-from archetype.ingestion import FileIngestionPipeline
-from archetype.ingestion.pipeline import _persist_local_file
+import archetype.artifacts.pipeline as pipeline_module
+from archetype.artifacts.pipeline import FileIngestionPipeline, _persist_local_file
 
 
 class _TrackingStream(BytesIO):

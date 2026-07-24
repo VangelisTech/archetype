@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pure metadata parsers used by the file-ingestion Daft graph."""
+"""Pure metadata parsers used by the artifact-family Daft graph."""
 
 from __future__ import annotations
 
@@ -183,3 +183,11 @@ def scan_diff_metadata(stream: BinaryIO) -> dict[str, str | int]:
         "deletions": deletions,
         "binary_file_count": binary_files,
     }
+
+
+__all__ = [
+    "hash_file",
+    "scan_diff_metadata",
+    "scan_pdf_metadata",
+    "scan_text_metadata",
+]

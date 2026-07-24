@@ -22,7 +22,7 @@ from uuid_utils import uuid7
 
 import archetype.world.lifecycle as lifecycle_module
 from archetype.artifacts import ArtifactSource
-from archetype.artifacts.models import IngestArtifacts
+from archetype.artifacts.models import IngestArtifacts, QueryArtifacts
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
 from archetype.core.interfaces import StaleWriterError
@@ -272,14 +272,21 @@ async def test_artifact_index_does_not_advance_resume_tick(tmp_path):
                 storage_config=storage,
             )
         )
-        output = tmp_path / "before-first-step.txt"
-        output.write_text("artifact before the first tick")
-        await dispatcher.apply(
+        output = tmp_path / "artifact-after-first-step.txt"
+        output.write_text("artifact after the first tick")
+        await dispatcher.apply(Step(world_id=world.world_id, run_config=RunConfig()))
+        published_tick = (await _live_world(dispatcher, world.world_id)).tick
+        (reference,) = await dispatcher.apply(
             IngestArtifacts(
                 world_id=world.world_id,
                 sources=(ArtifactSource(source_uri=str(output)),),
+                storage_config=storage,
             )
         )
+        indexed = await dispatcher.apply(
+            QueryArtifacts(world_id=world.world_id, storage_config=storage)
+        )
+        assert [row["artifact_id"] for row in indexed.to_pylist()] == [reference.artifact_id]
         wid = str(world.world_id)
     finally:
         await resources.aclose()
@@ -290,7 +297,11 @@ async def test_artifact_index_does_not_advance_resume_tick(tmp_path):
     try:
         await fresh.apply(ResumeWorld(storage_config=storage, world_id=wid))
         resumed = await _live_world(fresh, wid)
-        assert resumed.tick == 0, "artifact indexes are durable but are not tick manifests"
+        assert resumed.tick == published_tick, (
+            "artifact index appends must not change the manifest-derived resume tick"
+        )
+        cold_index = await fresh.apply(QueryArtifacts(world_id=wid, storage_config=storage))
+        assert [row["artifact_id"] for row in cold_index.to_pylist()] == [reference.artifact_id]
     finally:
         await fresh_resources.aclose()
         await fresh_storage.shutdown()

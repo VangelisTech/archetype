@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 from uuid_utils import UUID, uuid7
 
 from archetype._logging import configure_host_observability
-from archetype.artifacts.contracts import ArtifactStoreConfig
+from archetype.artifacts.models import ArtifactStoreConfig
 from archetype.core.config import CacheConfig, StorageConfig
 from archetype.core.hooks import HookEvent
 from archetype.physical_ai.models import (
@@ -358,7 +358,9 @@ class ArchetypeRuntime:
         Args:
             world_id: Durable identity of the world to attach.
             name: Local name for the returned handle.
-            storage: Storage containing a cold world. Omit it for a live world.
+            storage: Storage containing the world. It may be omitted for
+                live-world capabilities; storage-addressed capabilities
+                require explicit coordinates.
         """
         self._ensure_open()
 

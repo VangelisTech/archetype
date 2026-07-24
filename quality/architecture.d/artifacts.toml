@@ -5,4 +5,4 @@
 [[top_level_family_rule]]
 name = "artifacts-domain-family"
 consumer = "archetype.artifacts"
-allowed_families = []
+allowed_families = ["archetype.storage"]

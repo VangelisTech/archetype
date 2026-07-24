@@ -443,6 +443,35 @@ artifact_schema = "archetype.operational-results/v1"
 required_cadence = ["pr", "main", "release"]
 
 [[scenario]]
+id = "dogfood.artifacts.local"
+kind = "dogfood"
+owner = "artifacts"
+owner_paths = [
+  "src/archetype/artifacts",
+  "src/archetype/runtime",
+  "src/archetype/wiring.py",
+  "tests/integration/test_artifacts_operational.py",
+]
+source_path = "tests/integration/test_artifacts_operational.py"
+source_command = ["pytest", "-q", "tests/integration/test_artifacts_operational.py"]
+required_extras = []
+tier = 1
+applicability = ["source", "wheel"]
+timeout_seconds = 180
+prerequisites = []
+missing_prerequisite = "fail"
+semantic_oracle = { kind = "pytest", ref = "tests/integration/test_artifacts_operational.py" }
+contracts = [
+  "ingestion.catalog.cold_roundtrip",
+  "artifacts.ingestion.occurrence_identity",
+  "artifacts.ingestion.common_visibility",
+]
+cleanup_policy = "isolated"
+artifact_policy = "receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["pr", "main", "release"]
+
+[[scenario]]
 id = "dogfood.agent_mission.scripted"
 kind = "dogfood"
 owner = "missions"
@@ -541,7 +570,7 @@ kind = "dogfood"
 owner = "storage"
 owner_paths = [
   "src/archetype/storage",
-  "src/archetype/app/artifacts",
+  "src/archetype/artifacts",
   "src/archetype/runtime",
   "tests/infrastructure",
 ]

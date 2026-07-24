@@ -289,6 +289,8 @@ def test_runtime_loopback_is_explicitly_required_from_source_and_wheel() -> None
         "example.03_time_travel",
         "example.10_autoresearch",
         "example.14_physical_ai",
+        "dogfood.evaluation.durable_receipt",
+        "dogfood.artifacts.local",
         "dogfood.agent_mission.scripted",
     )
     for scenario_id in packet_scenarios:

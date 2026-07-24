@@ -69,6 +69,9 @@ _DELETED_MODULES = (
     "archetype.app.application",
     "archetype.app.container",
     "archetype.app.gateway",
+    ".".join(("archetype", "app", "artifacts")),
+    ".".join(("archetype", "app", "ingestion")),
+    ".".join(("archetype", "ingestion")),
 )
 _SETTER_NAMES = frozenset(
     {
@@ -140,7 +143,7 @@ _PULL_FORWARD_SCOPES = {
     "evaluate": "durable_world",
     "evaluate_physical_task": "application",
     "grade_trajectory": "durable_world",
-    "ingest_artifacts": "live_world",
+    "ingest_artifacts": "durable_world",
     "ingest_claude_transcript": "live_world",
     "query_artifacts": "durable_world",
     "query_trajectory": "durable_world",
@@ -554,7 +557,6 @@ async def test_bootstrap_environment_is_resolved_once_before_family_construction
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from archetype.app.artifacts.service import ArtifactService
     from archetype.app.missions.trajectory_service import TrajectoryService
     from archetype.app.missions.transcript_service import TranscriptIngestionService
     from archetype.app.physical_ai.service import PhysicalAIService
@@ -578,7 +580,6 @@ async def test_bootstrap_environment_is_resolved_once_before_family_construction
         WorldLifecycle,
         AuditLog,
         Policy,
-        ArtifactService,
         TranscriptIngestionService,
         TrajectoryService,
         PhysicalAIService,
@@ -727,7 +728,7 @@ async def test_pull_forward_registration_has_exact_four_actor_aware_and_ten_trus
             assert spec.summarize(operation) == expected_summary
 
         assert specs["autoresearch"].quota_scope == "live_world"
-        assert specs["ingest_artifacts"].quota_scope == "live_world"
+        assert specs["ingest_artifacts"].quota_scope == "durable_world"
         assert specs["query_artifacts"].quota_scope == "durable_world"
         assert specs["evaluate"].quota_scope == "durable_world"
         assert (
@@ -753,12 +754,12 @@ async def test_pull_forward_handlers_translate_exact_values_without_recursive_di
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from archetype.app.artifacts.service import ArtifactService
     from archetype.app.missions.service import MissionService
     from archetype.app.missions.trajectory_service import TrajectoryService
     from archetype.app.missions.transcript_service import TranscriptIngestionService
     from archetype.app.physical_ai.service import PhysicalAIService
     from archetype.app.research.service import AutoResearchService
+    from archetype.artifacts import handlers as artifact_handlers
     from archetype.evaluation import handlers as evaluation_handlers
     from archetype.missions.sandboxes.service import SandboxService
     from archetype.world import query as world_query
@@ -781,8 +782,6 @@ async def test_pull_forward_handlers_translate_exact_values_without_recursive_di
         return handler
 
     method_bindings = (
-        (ArtifactService, "ingest", "ingest_artifacts"),
-        (ArtifactService, "index", "query_artifacts"),
         (AutoResearchService, "run", "autoresearch"),
         (PhysicalAIService, "evaluate_task", "evaluate_physical_task"),
         (PhysicalAIService, "sweep_instructions", "sweep_physical_instructions"),
@@ -796,6 +795,16 @@ async def test_pull_forward_handlers_translate_exact_values_without_recursive_di
     )
     for service_type, method_name, operation_name in method_bindings:
         monkeypatch.setattr(service_type, method_name, record(operation_name))
+    monkeypatch.setattr(
+        artifact_handlers,
+        "ingest_artifacts",
+        record_free("ingest_artifacts"),
+    )
+    monkeypatch.setattr(
+        artifact_handlers,
+        "query_artifacts",
+        record_free("query_artifacts"),
+    )
     monkeypatch.setattr(
         evaluation_handlers,
         "run_graders",
@@ -1016,9 +1025,14 @@ async def test_pull_forward_handlers_translate_exact_values_without_recursive_di
             assert set(calls) == _ACTOR_AWARE | _TRUSTED_ONLY
             assert all(len(calls[name]) == 1 for name in _ACTOR_AWARE | _TRUSTED_ONLY)
             assert calls["ingest_artifacts"] == [
-                ((world_id, (source,)), {"storage_config": storage})
+                (
+                    (resources._storage, operations["ingest_artifacts"]),
+                    {"store_config": None},
+                )
             ]
-            assert calls["query_artifacts"] == [((world_id,), {"storage_config": storage})]
+            assert calls["query_artifacts"] == [
+                ((resources._storage, operations["query_artifacts"]), {})
+            ]
             assert calls["run_graders"] == [((operations["run_graders"],), {})]
             assert calls["evaluate"] == [((resources._storage, operations["evaluate"]), {})]
             assert calls["autoresearch"] == [

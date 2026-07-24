@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""One readable lazy Daft graph for file discovery, storage, and metadata."""
+"""One readable lazy Daft graph for artifact discovery, storage, and metadata."""
 
 from __future__ import annotations
 
@@ -9,10 +9,11 @@ import hashlib
 import os
 import tempfile
 from datetime import UTC, datetime
+from glob import has_magic
 from io import BytesIO
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, cast
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 import daft
 import xxhash
@@ -38,7 +39,8 @@ from daft.functions import (
 from daft.io import IOConfig
 from uuid_utils import UUID
 
-from archetype.ingestion.scanners import (
+from archetype.artifacts.models import ArtifactSource
+from archetype.artifacts.scanners import (
     scan_diff_metadata,
     scan_pdf_metadata,
     scan_text_metadata,
@@ -284,7 +286,7 @@ def _diff_metadata(file: daft.File) -> dict[str, str | int]:
 class FileIngestionPipeline:
     """Compose the complete lazy file occurrence and metadata graph.
 
-    The application configures this object once per artifact submission. The
+    The handler configures this object once per artifact submission. The
     pipeline knows files and Daft only: it has no world, run, catalog, lock, or
     publication state.
     """
@@ -490,3 +492,46 @@ class FileIngestionPipeline:
             "sha256",
             "xxhash3_64",
         )
+
+
+def _is_pattern(source_uri: str) -> bool:
+    """Classify only URI path wildcards; signed-query ``?`` stays exact."""
+
+    parsed = urlsplit(source_uri)
+    return has_magic(parsed.path if parsed.scheme else source_uri)
+
+
+def scan_sources(
+    sources: tuple[ArtifactSource, ...],
+    pipeline: FileIngestionPipeline,
+) -> DataFrame:
+    """Compose declared sources into one uniformly typed lazy scan."""
+
+    # Daft 0.7's glob scan has no micro-partition when every pattern matches
+    # zero files, so materializing that otherwise valid empty graph fails
+    # before family-level required-source validation can run. A typed,
+    # zero-row exact scan is the concat identity and keeps discovery lazy.
+    frames = [pipeline.scan([], pattern=False).with_column("_source_index", lit(-1))]
+    for index, source in enumerate(sources):
+        frame = pipeline.scan(
+            source.source_uri,
+            pattern=_is_pattern(source.source_uri),
+            logical_path=source.logical_path,
+        ).with_column("_source_index", lit(index))
+        frames.append(frame)
+    return daft.concat(frames)
+
+
+__all__ = [
+    "ARTIFACT_AUDIO",
+    "ARTIFACT_DIFF",
+    "ARTIFACT_FILES",
+    "ARTIFACT_IMAGES",
+    "ARTIFACT_PDF",
+    "ARTIFACT_TEXT",
+    "ARTIFACT_VIDEO",
+    "FileIngestionPipeline",
+    "ingestion_time_for",
+    "media_family_for",
+    "scan_sources",
+]

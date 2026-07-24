@@ -1,7 +1,0 @@
-# Architecture policy fragment: ingestion.
-# Merged into quality/architecture.toml by scripts/check_architecture.py.
-
-[[top_level_family_rule]]
-name = "ingestion-domain-family"
-consumer = "archetype.ingestion"
-allowed_families = []

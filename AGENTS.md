@@ -50,10 +50,9 @@ archetype/
 │   ├── world/          # Managed lifecycle, state behavior, reads + operation models
 │   ├── commands/       # Registry, policy, dispatch, scheduling + audit projection
 │   ├── evaluation/     # Grading, snapshot views, leases + durable receipts
+│   ├── artifacts/      # File ingestion, content objects + typed/common indexes
 │   ├── <family>/       # Reusable ECS/domain state and pure behavior
 │   ├── app/            # Internal application families
-│   │   ├── ingestion/   #   Live-storage selection + typed publication
-│   │   ├── artifacts/   #   File source policy + typed index publication
 │   │   ├── research/    #   Autoresearch workflows
 │   │   ├── missions/    #   Coding-agent workflow authority
 │   │   └── physical_ai/ #   Physical-evaluation workflow authority
@@ -249,9 +248,9 @@ preceding row; no unknown permission is inferred from a role name.
   transactional control authority for world records, fences, commands, and
   manifests. Iceberg is the data authority for atomic table snapshots and
   optimistic multi-writer commits. `StorageService` resolves and stamps the
-  durable world/run envelope and selects plain versus key-conditional append;
-  `IngestionService` selects the live storage configuration and delegates typed
-  publication.
+  durable world/run envelope and selects plain versus key-conditional append.
+  Artifact handlers require explicit durable coordinates and delegate typed
+  publication directly to that substrate.
 - A tick is a commit boundary: compute all archetypes before persistence, and
   do not consume staged mutations or advance the tick until durable visibility
   is published. Failed ticks must remain retryable.
@@ -316,7 +315,7 @@ change, and report the exact validation that ran. See
 | `src/archetype/commands/dispatch.py` | Governed direct and deferred command entry |
 | `src/archetype/commands/scheduler.py` | Durable scheduler and materializer |
 | `src/archetype/storage/service.py` | Daft execution and durable storage authority |
-| `src/archetype/ingestion/pipeline.py` | Cohesive reusable file-ingestion graph |
+| `src/archetype/artifacts/pipeline.py` | Cohesive reusable file-ingestion graph |
 | `src/archetype/core/aio/async_world.py` | World runtime |
 | `tests/app/test_runtime_contracts.py` | Executable runtime contracts |
 | `tests/sync/test_sync_stack_contracts.py` | Executable sync engine contracts |

@@ -177,10 +177,10 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "EpisodeResult": ("archetype.world.models", "EpisodeResult"),
     "RolloutConfig": ("archetype.world.models", "RolloutConfig"),
     "RolloutResult": ("archetype.world.models", "RolloutResult"),
-    "ArtifactRef": ("archetype.artifacts.contracts", "ArtifactRef"),
-    "ArtifactContext": ("archetype.artifacts.contracts", "ArtifactContext"),
-    "ArtifactSource": ("archetype.artifacts.contracts", "ArtifactSource"),
-    "ArtifactStoreConfig": ("archetype.artifacts.contracts", "ArtifactStoreConfig"),
+    "ArtifactRef": ("archetype.artifacts.models", "ArtifactRef"),
+    "ArtifactContext": ("archetype.artifacts.models", "ArtifactContext"),
+    "ArtifactSource": ("archetype.artifacts.models", "ArtifactSource"),
+    "ArtifactStoreConfig": ("archetype.artifacts.models", "ArtifactStoreConfig"),
     # Physical-AI workflow values
     "PhysicalTaskEvalConfig": (
         "archetype.physical_ai.contracts",

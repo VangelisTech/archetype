@@ -383,9 +383,9 @@ profiles = ["pr", "main", "release"]
 id = "ingestion.envelope.append_selection"
 source = "docs/guide/artifacts.md"
 section = "5. Catalog and index contract"
-owner = "ingestion"
+owner = "artifacts"
 risk = "high"
-pytest = ["tests/app/test_ingestion_service.py"]
+pytest = ["tests/artifacts/test_storage_publication.py"]
 static = ["scripts/check_architecture.py", "scripts/check_lazy_audit.py"]
 evals = []
 benchmarks = []
@@ -395,10 +395,10 @@ profiles = ["pr", "main", "release"]
 id = "ingestion.catalog.cold_roundtrip"
 source = "docs/guide/artifacts.md"
 section = "5. Catalog and index contract"
-owner = "ingestion"
+owner = "artifacts"
 risk = "high"
 pytest = [
-  "tests/app/test_ingestion_service.py::test_registered_table_is_queryable_from_fresh_application",
+  "tests/artifacts/test_storage_publication.py::test_registered_table_is_queryable_from_fresh_application",
   "tests/infrastructure/test_r2_artifact_context.py::test_huggingface_context_pack_round_trips_through_cloudflare_r2",
 ]
 static = []
@@ -412,7 +412,7 @@ source = "docs/guide/artifacts.md"
 section = "4. Occurrence and content identity"
 owner = "artifacts"
 risk = "high"
-pytest = ["tests/app/test_artifact_ingestion.py"]
+pytest = ["tests/artifacts/test_ingestion_integration.py"]
 static = []
 evals = ["idempotency.artifact_occurrence_identity"]
 benchmarks = []
@@ -424,7 +424,7 @@ source = "docs/guide/artifacts.md"
 section = "7. Visibility and failure"
 owner = "artifacts"
 risk = "high"
-pytest = ["tests/app/test_artifact_ingestion.py"]
+pytest = ["tests/artifacts/test_ingestion_integration.py"]
 static = ["scripts/check_lazy_audit.py"]
 evals = []
 benchmarks = []

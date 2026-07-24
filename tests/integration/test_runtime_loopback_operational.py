@@ -25,8 +25,7 @@ from archetype import ArchetypeRuntime
 from archetype.api.app import create_app
 from archetype.api.deps import get_dispatcher
 from archetype.app.research.contracts import AutoResearchConfig
-from archetype.artifacts.contracts import ArtifactSource
-from archetype.artifacts.models import IngestArtifacts, QueryArtifacts
+from archetype.artifacts.models import ArtifactSource, IngestArtifacts, QueryArtifacts
 from archetype.commands.models import AccessSummary, ActorCtx, DeferredItem, DurableOptions
 from archetype.core.config import StorageConfig
 from archetype.episodes.models import (

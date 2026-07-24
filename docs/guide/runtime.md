@@ -194,18 +194,20 @@ their values were derived. The sync runtime exposes the same operations.
 `world.ingest_artifacts(*sources)` is the supported file-ingestion boundary.
 Each `ArtifactSource` names one exact file or Daft-readable glob and may supply
 an explicit portable logical path. Recursive discovery is expressed by the
-glob itself. The application scans metadata, computes SHA-256 and
-XXH3-64 in one pass, writes an immutable content-addressed object, publishes
-any media-specific index, and then publishes the common `artifact_files` row.
+glob itself. The artifacts-family handler receives the runtime's exact effective
+storage configuration, resolves the durable run and published tick head, scans
+metadata, computes SHA-256 and XXH3-64 in one pass, writes an immutable
+content-addressed object, publishes any media-specific index, and then
+publishes the common `artifact_files` row.
 It returns one `ArtifactRef` per occurrence. A repeated submission is a new
 UUIDv7 occurrence that may point to the same content object.
 
 `world.artifacts()` returns the current world's current-run common file index
 as a Daft DataFrame. Table registration, world/run envelope columns, schema
 checking, and Iceberg append semantics remain internal to the storage
-substrate reached through typed ingestion. The runtime neither inspects
-`daft.Catalog` nor exposes the concrete storage, ingestion, or artifact
-services.
+substrate reached through the artifacts-family view. The runtime neither
+inspects `daft.Catalog` nor exposes the storage service, family handlers, or
+process wiring.
 
 `world.ingest_claude_transcript(source)` is the recommended coding-agent
 transcript boundary. `ClaudeTranscriptSource` carries local input configuration
@@ -219,9 +221,15 @@ narrative Components, or coordinate those steps itself. Sync world handles
 expose the same operation. `world.transcript_rows()` returns the normalized
 session and turn rows for the current run.
 
+Artifact and transcript capabilities require the handle to retain explicit
+storage coordinates. A handle created with `runtime.attach(world_id)` without
+`storage=...` may still use live-world capabilities, but these storage-addressed
+methods reject before dispatch instead of recovering coordinates from
+process-local world state.
+
 `ArtifactSource`, `ArtifactRef`, and `ArtifactStoreConfig` are the supported
-top-level file contracts. Nothing here promotes `IngestionService`,
-`ArtifactService`, their ports, or process wiring to public API.
+top-level file contracts. Family-owned handlers and views, the storage port,
+and process wiring remain internal implementation surfaces.
 
 ### R13 — Observability is host-configured and quiet by default
 

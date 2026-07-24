@@ -1,9 +1,16 @@
 # Storage, ingestion, and artifact execution refactor
 
-**Status:** Implemented and dogfooded; ownership updated for the v0.5 storage-family relocation
+**Status:** Historical implementation record for #619; superseded by the
+v0.5 artifacts-family pull-forward in #651
 **Date:** 2026-07-21  
 **Tracking pull request:** #619
 **v0.5 follow-up:** #640
+
+This document preserves the topology implemented by #619. It does not describe
+the current package graph: `archetype.artifacts` now owns the pipeline,
+scanners, views, and free handlers over `StorageService`, and the former
+standalone ingestion package plus application artifact/ingestion facades have
+been removed. See [Artifacts and ingestion](../guide/artifacts.md).
 
 ## Objective
 

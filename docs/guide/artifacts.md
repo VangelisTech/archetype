@@ -10,39 +10,33 @@ machines, bundle receipts, or reconciler.
 The feature is split at the authority boundary:
 
 ```text
-archetype.ingestion
-  FileIngestionPipeline + stream scanners
-
-archetype.app.ingestion
-  live storage selection + typed-ingestion workflow bridge
-
-archetype.app.artifacts
-  source policy + pipeline configuration + typed index publication
+archetype.artifacts
+  values + FileIngestionPipeline + stream scanners
+  storage-backed views + exact free handlers
 
 archetype.storage
   Daft execution + Catalog table registration/read/write + Iceberg retry
+  durable world/run envelope + published-head authority
 
 archetype.app.missions
-  transcript-specific redaction, parsing, and normalized row ingestion
+  transcript-specific redaction, parsing, and normalized-row publication
 ```
 
-`archetype.ingestion` is reusable family code. Its cohesive
-`FileIngestionPipeline` keeps the lazy Daft graph for scan, persistence,
-reopening, and every common or specialized index together. Only pure metadata
-algorithms live separately in `scanners.py`; they stream where the format
-permits it. Neither module can choose
-a catalog, namespace, world, or run.
+The cohesive `archetype.artifacts.pipeline.FileIngestionPipeline` keeps the
+lazy Daft graph for scan, persistence, reopening, and every common or
+specialized index together. Only pure metadata algorithms live separately in
+`scanners.py`; they stream where the format permits it. The family-owned free
+handlers configure that graph and call the storage port with explicit durable
+coordinates. The family has reviewed dependencies on core and storage only; it
+owns no live world, run, control-catalog, or background-job authority.
 
-`IngestionService` selects the live storage configuration and delegates typed
-row publication. `StorageService` is the single substrate authority that owns
-the catalog-derived world/run envelope, extends conditional keys with that
+`StorageService` is the single substrate authority. It owns the
+catalog-derived world/run envelope, extends conditional keys with that
 identity, admits terminal Daft execution, registers and resolves tables in
 `daft.Catalog`, compares schemas, reads and writes Iceberg, and retries
-optimistic commit conflicts.
-
-`ArtifactService` is the one file-artifact service. It composes general
-ingestion; image, audio, video, PDF, and text handling are not separate
-application services.
+optimistic commit conflicts. Image, audio, video, PDF, text, and diff handling
+are branches of one artifact-family workflow, not separate application
+services.
 
 ## 2. Public file contract
 
@@ -61,6 +55,7 @@ storage = StorageConfig(
 
 async with ArchetypeRuntime() as runtime:
     world = runtime.world("software-factory", storage=storage)
+    await world.step()  # publish the durable head used for artifact attribution
     (diff,) = await world.ingest_artifacts(
         ArtifactSource(
             source_uri="./worktree/change.diff",
@@ -104,7 +99,7 @@ Collection patterns therefore require unique file names unless the caller
 submits the files separately with explicit logical paths.
 
 Two files in one ingestion may not resolve to the same logical path. The
-service fails before publishing either occurrence.
+handler fails before publishing either occurrence.
 
 ## 4. Occurrence and content identity
 
@@ -123,25 +118,28 @@ The common index can therefore contain several occurrence rows pointing at
 one object URI. Analysis can group by `sha256` for content identity or by
 `artifact_id` for workflow history without conflating the two.
 
-For a live world, artifact ingestion captures the occurrence tick under that
-world's exact operation lock after retrying any retained required projection
-and reconciling any prepared publication. If recovery remains ambiguous,
-ingestion fails before copying content or publishing an index row. The
-potentially slow file/object/index pipeline runs after releasing the world
-lock. A cold world uses its durable catalog head instead of process-local
-state.
+Every artifact operation carries an explicit `StorageConfig`. Before scanning
+or copying a source, the handler resolves the durable `WorldRecord`, requires
+its recorded `run_id`, reads the published manifest head, and verifies that it
+equals the record's `tick_head`. That published durable head supplies every
+occurrence tick. Process-local liveness and an uncommitted in-memory tick
+cannot move attribution forward, and the handler never acquires a live-world
+registry lock. Missing coordinates, a missing run, or an absent or mismatched
+published head fail before file or index effects.
 
 ## 5. Catalog and index contract
 
-`IngestionService.append()` accepts a stable table name, a typed Daft
-DataFrame, and optional `key_columns`. At the application boundary it:
+Artifact publication calls `StorageService.append_world_rows()` with a stable
+table name, a typed Daft DataFrame, and `artifact_id` as the conditional key.
+At the storage boundary that operation:
 
-1. resolves the world, current run, and storage configuration
+1. resolves the durable world and current run from the explicit storage
+   configuration
 2. rejects caller-supplied `world_id` or `run_id`
 3. verifies that every requested key column exists
 4. adds the `world_id` and `run_id` envelope
-5. delegates a plain append when `key_columns` is empty, or a conditional
-   append when keys are present
+5. performs a plain append when `key_columns` is empty, or a conditional append
+   when keys are present
 
 The conditional key is `("world_id", "run_id", *key_columns)`. It describes
 row identity for this append-only table view; it is not a global business key
@@ -165,15 +163,17 @@ The artifact common index is `artifact_files`, keyed by `artifact_id`:
 
 | Column | Purpose |
 |---|---|
-| `world_id`, `run_id` | Application-owned envelope |
+| `world_id`, `run_id` | Storage-owned durable envelope |
 | `artifact_id`, `ingested_at`, `tick` | Occurrence and world coordinates |
 | `source_uri`, `logical_path`, `object_uri` | Acquisition, workflow, and storage locations |
 | `size_bytes`, `mime_type`, `media_family` | Common file metadata |
 | `sha256`, `xxhash3_64` | Integrity and fast fingerprint |
 
-`world.artifacts()` returns the current run's common index. General ingestion
-and typed extension tables remain internal service-layer surfaces until a
-specific supported query API needs them.
+`world.artifacts()` returns the durable current run's common index. Typed
+extension tables remain internal artifact/storage surfaces until a specific
+supported query API needs them. Other families that publish durable typed rows
+define their own workflow meaning and call the same storage substrate; there
+is no generic ingestion facade.
 
 Reads may not depend on registration state held by the writer process. Given
 the same storage configuration and durable world record, a fresh application
@@ -252,11 +252,17 @@ verified object.
 ## 8. Transcript ingestion
 
 Coding-agent transcripts are a mission workflow, not an artifact backend.
-`TranscriptIngestionService` composes three capabilities:
+`TranscriptIngestionService` preserves this exact order:
 
-1. `RedactionService` snapshots and sanitizes the source before durability
-2. `ArtifactService` stores the sanitized JSONL file
-3. `IngestionService` appends normalized session and turn rows to
+1. `RedactionService` validates metadata and snapshots a sanitized file before
+   durability
+2. the missions parser reads only that sanitized copy
+3. the workflow redacts normalized session and turn rows
+4. it computes the sanitized file digest
+5. the artifact-family handler publishes the immutable object, typed indexes,
+   and common artifact row
+6. it verifies that the returned artifact SHA-256 equals the sanitized digest
+7. `StorageService` appends normalized rows to
    `coding_agent_transcript_rows`
 
 Every normalized row carries `source_artifact_id`, so queries can join the
@@ -265,9 +271,12 @@ component. `world.transcript_rows()` returns the current run's normalized
 session and turn rows. The original source digest may identify the input, while the
 artifact SHA-256 always describes the sanitized bytes actually stored.
 
-Quarantine and parse failures occur before artifact ingestion and publish
-nothing. Re-ingesting a valid transcript records another artifact occurrence
-and another keyed set of normalized rows.
+Quarantine, parse, and row-redaction failures occur before artifact
+publication and publish nothing. A digest mismatch occurs after the honest
+artifact boundary and therefore leaves the sanitized artifact visible but
+fails before any transcript row append. Re-ingesting a valid transcript
+records another artifact occurrence and another normalized row set scoped to
+that occurrence.
 
 ## 9. Evaluation results
 
@@ -309,10 +318,10 @@ unsupported containers, and unrewritable secret-bearing inputs are quarantined
 before any object or catalog row becomes durable.
 
 The common rule is simple: specialized workflows own pre-durability safety;
-`ArtifactService` owns exact file persistence and indexing;
-`IngestionService` selects the live storage configuration; and
-`StorageService` owns the world/run envelope, append choice, Catalog, and
-terminal Daft execution authority.
+the artifacts family owns exact file persistence and indexing; operation
+models carry explicit durable coordinates; and `StorageService` owns the
+world/run envelope, append choice, Catalog, and terminal Daft execution
+authority.
 
 ## 11. Task-anchored artifact context
 
@@ -320,6 +329,9 @@ terminal Daft execution authority.
 UUIDv7 `context_id` identifies the interpretation; artifact UUIDs continue to
 identify the individual ingestion occurrences. The contract does not create a
 second storage service or copy the files again.
+
+The world must already have a published durable head. For a fresh handle, call
+`await world.step()` before submitting the context's artifacts.
 
 ```python
 from daft.ai.provider import load_openai
@@ -426,7 +438,7 @@ occurrence identity and content durability while removing that orchestration:
 | `world.publish_artifact_bundle(...)` | `world.ingest_artifacts(...)` |
 | `world.artifact_bundles(...)` | `world.artifacts()` and typed artifact indexes |
 | `world.reconcile_artifact_bundles(...)` | removed; retry creates a new occurrence and reuses verified content |
-| generic `world.ingest_files(...)` / `world.write_artifacts(...)` | a reviewed application workflow composed from `IngestionService` |
+| generic `world.ingest_files(...)` / `world.write_artifacts(...)` | `world.ingest_artifacts(...)` for files, or an owning family workflow over `StorageService` for typed rows |
 | `world.publish(...)` for external component rows | `world.spawn(...)` for world state, or an owning application workflow for durable tabular data |
 | `TranscriptIngestionReceipt` | `TranscriptIngestionResult` linked to the sanitized `ArtifactRef` |
 

@@ -540,6 +540,7 @@ async def test_service_stack_runs_against_remote_catalog(tmp_path, worker_url, m
                         logical_path="results/remote-artifact.txt",
                     ),
                 ),
+                storage_config=storage,
             )
         )
         assert artifact.logical_path == "results/remote-artifact.txt"
