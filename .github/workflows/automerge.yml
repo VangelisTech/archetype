@@ -25,8 +25,12 @@
 # naming it in `on:` invalidates the whole file). Queue-readiness is
 # therefore re-evaluated on the signals Actions does deliver — a review
 # gate run completing, and any review being submitted, edited, or
-# dismissed. After resolving the last thread, re-run Deterministic Review
-# Gate or push to re-evaluate.
+# dismissed. After resolving the last thread, SUBMIT A REVIEW: it is the
+# only one of those that re-evaluates arming without re-reviewing the
+# head. Re-running Deterministic Review Gate also re-evaluates, but on a
+# head whose findings were all advisory the gate succeeds and republishes
+# those findings as fresh unresolved threads — straight back to
+# not-queue-ready. Pushing is fine: a new head earns a fresh review.
 #
 # Why the dequeue job exists: arming covers queue-ready → armed, but #646
 # lost the reverse transition. Two real findings arrived after

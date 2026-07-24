@@ -59,6 +59,14 @@ REQUIRED_CATEGORIES = (
     "observability-boundary-and-authority",
     "telemetry-safety-and-cardinality",
 )
+# Merge-gate severity tier. The skill rulebook defines the semantics and tests
+# derive this tuple from it: `blocking` findings fail `review-complete`;
+# `advisory` findings post as resolvable threads that gate queue-ready until
+# resolved, where a written disposition is a sanctioned resolution.
+SEVERITIES = (
+    "blocking",
+    "advisory",
+)
 
 # The parallel review matrix runs one detector job per lens. Every lens
 # reviews the full diff against its category subset; `merge` reassembles the
@@ -392,6 +400,9 @@ def validate_result(
         category = finding.get("category")
         if category not in categories:
             raise GateError(f"findings[{index}].category is not a reviewed category")
+        severity = finding.get("severity")
+        if severity not in SEVERITIES:
+            raise GateError(f"findings[{index}].severity must be one of {', '.join(SEVERITIES)}")
         path = finding.get("path")
         if path not in scoped_files:
             raise GateError(f"findings[{index}].path is outside the reviewed diff")
@@ -408,6 +419,7 @@ def validate_result(
         normalized_findings.append(
             {
                 "category": category,
+                "severity": severity,
                 "title": _text(finding.get("title"), f"findings[{index}].title", minimum=5),
                 "path": path,
                 "side": side,
@@ -466,9 +478,10 @@ def merge_lens_results(
         )
 
     merged_context: list[dict[str, Any]] = []
-    merged_findings: list[dict[str, Any]] = []
     summaries: list[str] = []
-    seen: set[tuple[str, str, str, int]] = set()
+    # Dedupe on the anchoring identity; when duplicates disagree on severity,
+    # the blocking one wins — a dedupe must never soften the gate.
+    findings_by_key: dict[tuple[str, str, str, int], dict[str, Any]] = {}
     for lens in LENSES:
         validated = validate_result(lens_results[lens], scope, diff, categories=LENSES[lens])
         summaries.append(f"[{lens}] {validated['summary']}")
@@ -476,10 +489,12 @@ def merge_lens_results(
             merged_context.append({**entry, "area": f"{lens}: {entry['area']}"})
         for finding in validated["findings"]:
             key = (finding["category"], finding["path"], finding["side"], finding["line"])
-            if key in seen:
-                continue
-            seen.add(key)
-            merged_findings.append(finding)
+            kept = findings_by_key.get(key)
+            if kept is None or (
+                kept["severity"] == "advisory" and finding["severity"] == "blocking"
+            ):
+                findings_by_key[key] = finding
+    merged_findings = list(findings_by_key.values())
 
     merged = {
         "head_sha": scope.get("head_sha"),
@@ -571,6 +586,7 @@ def result_schema(categories: Sequence[str] = REQUIRED_CATEGORIES) -> dict[str, 
                     "type": "object",
                     "properties": {
                         "category": {"type": "string", "enum": list(categories)},
+                        "severity": {"type": "string", "enum": list(SEVERITIES)},
                         "title": {"type": "string", "minLength": 5},
                         "path": text,
                         "side": {"type": "string", "enum": ["LEFT", "RIGHT"]},
@@ -581,6 +597,7 @@ def result_schema(categories: Sequence[str] = REQUIRED_CATEGORIES) -> dict[str, 
                     },
                     "required": [
                         "category",
+                        "severity",
                         "title",
                         "path",
                         "side",
@@ -671,7 +688,19 @@ def render_evidence(
     context = _expect_list(result.get("review_context"), "review_context")
     head_sha = str(result["head_sha"])
     finding_count = len(findings)
-    outcome = "no findings" if finding_count == 0 else f"{finding_count} finding(s)"
+    blocking_count = sum(
+        1
+        for finding in findings
+        if _expect_mapping(finding, "findings entry").get("severity") == "blocking"
+    )
+    outcome = (
+        "no findings"
+        if finding_count == 0
+        else (
+            f"{finding_count} finding(s) — "
+            f"{blocking_count} blocking, {finding_count - blocking_count} advisory"
+        )
+    )
     lines = [
         f"## Footgun review — {outcome}",
         "",
@@ -731,9 +760,17 @@ def render_evidence(
 
 
 def render_finding(finding: Mapping[str, Any], head_sha: str) -> str:
+    severity = str(finding["severity"])
+    disposition = (
+        "fix before merge"
+        if severity == "blocking"
+        else "fix, or resolve this thread with a written disposition"
+    )
     return "\n".join(
         [
             f"### {finding['category']}: {finding['title']}",
+            "",
+            f"**Severity:** {severity} — {disposition}",
             "",
             f"**What it does:** {finding['what_it_does']}",
             "",
@@ -915,6 +952,9 @@ def _prepare_command(args: argparse.Namespace) -> None:
     result = _validated_result(args)
     digest = artifact_digest(result)
     finding_count = len(result["findings"])
+    blocking_finding_count = sum(
+        1 for finding in result["findings"] if finding["severity"] == "blocking"
+    )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     _write_json(args.output_dir / "normalized.json", result)
@@ -933,6 +973,7 @@ def _prepare_command(args: argparse.Namespace) -> None:
         {
             "head_sha": str(result["head_sha"]),
             "finding_count": finding_count,
+            "blocking_finding_count": blocking_finding_count,
             "artifact_digest": digest,
         },
     )

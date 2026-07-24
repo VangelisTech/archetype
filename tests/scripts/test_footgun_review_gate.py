@@ -116,6 +116,7 @@ def _result(*, findings: list[dict] | None = None) -> dict:
 def _finding(**overrides) -> dict:
     finding = {
         "category": "fail-open-failure-paths",
+        "severity": "blocking",
         "title": "Validation silently fails open",
         "path": "old.py",
         "side": "RIGHT",
@@ -320,6 +321,118 @@ def test_result_fails_closed_when_completion_evidence_is_incomplete(mutation, me
 def test_finding_must_anchor_to_a_changed_line():
     with pytest.raises(GateError, match="not anchored"):
         validate_result(_result(findings=[_finding(line=2)]), _scope(), DIFF)
+
+
+def test_finding_requires_a_recognized_severity():
+    with pytest.raises(GateError, match="severity"):
+        validate_result(_result(findings=[_finding(severity="cosmetic")]), _scope(), DIFF)
+
+    missing = _finding()
+    del missing["severity"]
+    with pytest.raises(GateError, match="severity"):
+        validate_result(_result(findings=[missing]), _scope(), DIFF)
+
+
+def test_schema_requires_severity_on_findings():
+    finding_schema = gate.result_schema()["properties"]["findings"]["items"]
+
+    assert finding_schema["properties"]["severity"]["enum"] == list(gate.SEVERITIES)
+    assert "severity" in finding_schema["required"]
+
+
+def test_rendered_finding_carries_its_severity_disposition():
+    blocking = validate_result(_result(findings=[_finding()]), _scope(), DIFF)
+
+    assert "**Severity:** blocking — fix before merge" in gate.render_finding(
+        blocking["findings"][0], HEAD_SHA
+    )
+
+    advisory = validate_result(_result(findings=[_finding(severity="advisory")]), _scope(), DIFF)
+
+    assert (
+        "**Severity:** advisory — fix, or resolve this thread with a written disposition"
+        in gate.render_finding(advisory["findings"][0], HEAD_SHA)
+    )
+
+
+def test_prepare_reports_blocking_and_total_finding_counts(tmp_path):
+    advisory = _finding(
+        severity="advisory",
+        category="dead-code-contracts",
+        title="New assignment is never consumed",
+        path="new.py",
+        line=1,
+        what_it_does="The new module assigns a value that no caller reads.",
+        what_goes_wrong="Readers assume the field is wired to behavior when nothing consumes it.",
+        fix="Wire the value to its consumer or remove the assignment.",
+    )
+    result = _result(findings=[_finding(), advisory])
+    scope_path = tmp_path / "scope.json"
+    diff_path = tmp_path / "review.diff"
+    result_path = tmp_path / "result.json"
+    output_dir = tmp_path / "out"
+    github_output = tmp_path / "github-output.txt"
+    scope_path.write_text(json.dumps(_scope()), encoding="utf-8")
+    diff_path.write_text(DIFF, encoding="utf-8")
+    result_path.write_text(json.dumps(result), encoding="utf-8")
+
+    assert (
+        gate.main(
+            [
+                "prepare",
+                "--scope",
+                str(scope_path),
+                "--diff",
+                str(diff_path),
+                "--result",
+                str(result_path),
+                "--output-dir",
+                str(output_dir),
+                "--github-output",
+                str(github_output),
+            ]
+        )
+        == 0
+    )
+
+    outputs = github_output.read_text(encoding="utf-8")
+    assert "finding_count=2\n" in outputs
+    assert "blocking_finding_count=1\n" in outputs
+    evidence = (output_dir / "evidence.md").read_text(encoding="utf-8")
+    assert "2 finding(s) — 1 blocking, 1 advisory" in evidence
+
+
+def test_block_step_fires_only_on_blocking_findings():
+    bodies = dict(_review_workflow_steps())
+
+    assert (
+        "steps.prepare.outputs.blocking_finding_count != '0'" in bodies["Block merge on findings"]
+    )
+    # Advisory findings still publish as resolvable threads: the publish step
+    # keys on the total count, only the merge block keys on the blocking count.
+    assert (
+        "steps.prepare.outputs.finding_count != '0'"
+        in bodies["Publish findings as blocking review threads"]
+    )
+
+
+def _skill_severities() -> tuple[str, ...]:
+    skill = (
+        Path(__file__).resolve().parents[2] / ".claude" / "skills" / "footgun-detector" / "SKILL.md"
+    )
+    return tuple(
+        re.findall(r"^- \*\*([a-z]+)\*\* — ", skill.read_text(encoding="utf-8"), re.MULTILINE)
+    )
+
+
+def test_severities_track_the_skill_rulebook():
+    """The skill file is the single source of truth for the severity tier.
+
+    SEVERITIES is the merge gate's machine-readable copy of the severity
+    bullets in .claude/skills/footgun-detector/SKILL.md — same discipline as
+    the category slugs: drift between the rulebook and the gate fails here.
+    """
+    assert _skill_severities() == gate.SEVERITIES
 
 
 def test_finding_can_anchor_to_the_removed_side():
@@ -886,3 +999,14 @@ def test_workflow_matrix_names_every_lens_exactly_once():
     matrix_lenses = re.findall(r"- lens: ([a-z-]+)", workflow)
 
     assert sorted(matrix_lenses) == sorted(gate.LENSES)
+
+
+def test_merge_dedupe_never_softens_a_blocking_finding():
+    # Duplicate findings inside one lens that disagree on severity collapse
+    # to the blocking one — deduplication must never soften the gate.
+    lens_results = {lens: _lens_result(lens) for lens in gate.LENSES}
+    lens_results["authority"]["findings"] = [_finding(severity="advisory"), _finding()]
+
+    merged = gate.merge_lens_results(lens_results, _scope(), DIFF)
+
+    assert [finding["severity"] for finding in merged["findings"]] == ["blocking"]
