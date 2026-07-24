@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import TYPE_CHECKING
+import asyncio
+from collections.abc import Awaitable, Callable, Sequence
+from functools import wraps
+from typing import TYPE_CHECKING, Concatenate
 
 from daft import DataFrame
 from uuid_utils import uuid7
@@ -34,6 +36,22 @@ if TYPE_CHECKING:
     from archetype.runtime_resources import OwnerReservation
 
 
+def _admitted_mission_operation[**P, R](
+    operation: Callable[Concatenate[RuntimeMissions, P], Awaitable[R]],
+) -> Callable[Concatenate[RuntimeMissions, P], Awaitable[R]]:
+    """Keep one complete public mission call inside process and local admission."""
+
+    @wraps(operation)
+    async def admitted(self: RuntimeMissions, *args: P.args, **kwargs: P.kwargs) -> R:
+        async with self._resources.admit_operation():
+            continuation = self._reservation.operation_admitted()
+            async with self._resources.admit_owner_operation(self._reservation):
+                self._ensure_open(continuation=continuation)
+                return await operation(self, *args, **kwargs)
+
+    return admitted
+
+
 class RuntimeMissions:
     """Small authoring facade over one mission-capable world."""
 
@@ -57,7 +75,11 @@ class RuntimeMissions:
         self._reservation = reservation or self._resources.reserve_owner(
             self._owner_id,
             phase="workflow-handles",
+            closed_message="Agent Missions handle is closed",
         )
+        self._operation_admission = self._reservation.operation_admission
+        self._close_lock = asyncio.Lock()
+        self._public_closing = False
         self._public_closed = False
 
     async def __aenter__(self) -> RuntimeMissions:
@@ -67,6 +89,7 @@ class RuntimeMissions:
     async def __aexit__(self, *exc_info: object) -> None:
         await self.close()
 
+    @_admitted_mission_operation
     async def submit(
         self,
         *,
@@ -93,6 +116,7 @@ class RuntimeMissions:
             )
         )
 
+    @_admitted_mission_operation
     async def run(
         self,
         mission: SubmittedMission,
@@ -108,6 +132,7 @@ class RuntimeMissions:
             )
         )
 
+    @_admitted_mission_operation
     async def restore_sandbox(
         self,
         mission: SubmittedMission,
@@ -125,15 +150,23 @@ class RuntimeMissions:
         )
 
     async def close(self) -> None:
+        if self._reservation.operation_admitted():
+            raise RuntimeError("Agent Missions handle cannot close from an admitted operation")
+        self._reservation.ensure_close_allowed()
         await self._shutdown_internal(from_runtime=False)
 
     async def _shutdown_internal(self, *, from_runtime: bool) -> None:
-        if self._public_closed or self._reservation_released():
-            return
-        await self._reservation.aclose()
-        if not from_runtime:
+        del from_runtime
+        self._reservation.request_operation_stop()
+        async with self._close_lock:
+            if self._public_closed or self._reservation_released():
+                self._public_closed = True
+                return
+            self._public_closing = True
+            await self._reservation.aclose()
             self._public_closed = True
 
+    @_admitted_mission_operation
     async def query(self, *components: type[Component]) -> DataFrame:
         """Query persisted mission state through the underlying world read path."""
 
@@ -149,9 +182,13 @@ class RuntimeMissions:
         service = self._resources.owner(self._owner_id).require_bound()
         return service.world_id
 
-    def _ensure_open(self) -> None:
+    def _ensure_open(self, *, continuation: bool | None = None) -> None:
         self._runtime._ensure_open()
-        if self._public_closed or self._reservation_released():
+        if continuation is None:
+            continuation = self._reservation.operation_admitted()
+        if (
+            self._public_closing or self._public_closed or self._reservation_released()
+        ) and not continuation:
             raise RuntimeError("Agent Missions handle is closed")
 
     def _reservation_released(self) -> bool:

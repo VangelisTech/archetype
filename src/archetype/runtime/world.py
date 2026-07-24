@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from typing import TYPE_CHECKING, Any
+from collections.abc import Awaitable, Callable
+from functools import wraps
+from typing import TYPE_CHECKING, Any, Concatenate
 
 from uuid_utils import UUID
 
@@ -36,6 +38,7 @@ from archetype.episodes.models import (
 )
 from archetype.evaluation.models import Evaluate, RunGraders
 from archetype.research.models import AutoResearch
+from archetype.runtime_resources import OperationAdmission
 from archetype.world.models import (
     AddComponents,
     AddHook,
@@ -77,7 +80,7 @@ from archetype.world.models import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Sequence
     from typing import Protocol
 
     from daft import DataFrame
@@ -112,6 +115,26 @@ if TYPE_CHECKING:
 
 
 _FireMode = Any  # Literal["blocking", "spawn"] — kept loose for forward compat
+
+
+def _admitted_world_operation[**P, R](
+    operation: Callable[Concatenate[RuntimeWorld, P], Awaitable[R]],
+) -> Callable[Concatenate[RuntimeWorld, P], Awaitable[R]]:
+    """Keep one complete public handle call inside process and local admission."""
+
+    @wraps(operation)
+    async def admitted(self: RuntimeWorld, *args: P.args, **kwargs: P.kwargs) -> R:
+        async with self._state.runtime._resources.admit_operation():
+            continuation = self._operation_admission.admitted_by_current_task()
+            async with self._operation_admission.admit():
+                self._state.runtime._ensure_open()
+                if (
+                    self._state.destroying or self._state.closing or self._state.closed
+                ) and not continuation:
+                    raise RuntimeError("World handle is closed")
+                return await operation(self, *args, **kwargs)
+
+    return admitted
 
 
 def _clone_components(components: tuple[Component, ...]) -> list[Component]:
@@ -181,6 +204,7 @@ class _RuntimeWorldState:
         self.initialized: bool = world_id is not None
         self.init_lock = asyncio.Lock()
         self.close_lock = asyncio.Lock()
+        self.destroying = False
         self.closing = False
         self.closed = False
 
@@ -259,6 +283,7 @@ class RuntimeWorld:
     def __init__(self, *, state: _RuntimeWorldState, reservation: Any | None = None) -> None:
         self._state = state
         self._reservation = reservation
+        self._operation_admission = OperationAdmission(closed_message="World handle is closed")
 
     @property
     def _dispatcher(self):
@@ -266,14 +291,24 @@ class RuntimeWorld:
 
     async def _ensure_id(self) -> str | UUID:
         self._state.runtime._ensure_open()
-        if self._state.closing or self._state.closed:
+        if (
+            self._state.destroying or self._state.closing or self._state.closed
+        ) and not self._operation_admission.admitted_by_current_task():
             raise RuntimeError("World handle is closed")
         return await self._state.ensure_init()
 
     async def _close_owned(self) -> None:
         """Close callback retained by the process lifetime owner."""
 
+        await self._begin_local_close()
+        await self._operation_admission.wait_drained()
         await self._state.shutdown()
+
+    async def _begin_local_close(self) -> None:
+        """Reject late local calls before any potentially blocking owner join."""
+
+        self._state.closing = True
+        await self._operation_admission.stop_admission()
 
     # ── Properties (sync, no round-trip) ──────────────────────────────────
 
@@ -299,6 +334,7 @@ class RuntimeWorld:
 
     # ── Mutations ─────────────────────────────────────────────────────────
 
+    @_admitted_world_operation
     async def spawn(self, *components: Component) -> int:
         """Create an entity and return its reserved identifier."""
         wid = await self._ensure_id()
@@ -309,6 +345,7 @@ class RuntimeWorld:
             )
         )
 
+    @_admitted_world_operation
     async def ingest_artifacts(self, *sources: ArtifactSource) -> tuple[ArtifactRef, ...]:
         """Copy files into the artifact store and index their metadata."""
 
@@ -321,6 +358,7 @@ class RuntimeWorld:
             )
         )
 
+    @_admitted_world_operation
     async def ingest_claude_transcript(
         self,
         source: ClaudeTranscriptSource,
@@ -336,6 +374,7 @@ class RuntimeWorld:
             )
         )
 
+    @_admitted_world_operation
     async def transcript_rows(self) -> DataFrame:
         """Return normalized coding-agent transcript rows for this run."""
 
@@ -347,6 +386,7 @@ class RuntimeWorld:
             )
         )
 
+    @_admitted_world_operation
     async def spawn_many(self, entities: list[list[Component]]) -> list[int]:
         """Create several entities in one batch.
 
@@ -364,6 +404,7 @@ class RuntimeWorld:
             CreateEntities.from_entities(world_id=wid, entities=entities)
         )
 
+    @_admitted_world_operation
     async def spawn_batch(
         self, *components_or_count: Component | int, count: int | None = None
     ) -> list[int]:
@@ -388,6 +429,7 @@ class RuntimeWorld:
         entities = [_clone_components(components) for _ in range(batch_count)]
         return await self.spawn_many(entities)
 
+    @_admitted_world_operation
     async def reserve_ids(self, n: int) -> list[int]:
         """Reserve entity identifiers without creating entities.
 
@@ -404,6 +446,7 @@ class RuntimeWorld:
         wid = await self._ensure_id()
         return await self._dispatcher.apply(ReserveEntityIds(world_id=wid, count=n))
 
+    @_admitted_world_operation
     async def spawn_reserved(self, entity_id: int, *components: Component) -> None:
         """Create an entity with a previously reserved identifier.
 
@@ -423,11 +466,13 @@ class RuntimeWorld:
             )
         )
 
+    @_admitted_world_operation
     async def despawn(self, entity_id: int) -> None:
         """Remove an entity."""
         wid = await self._ensure_id()
         await self._dispatcher.apply(Despawn(world_id=wid, entity_id=entity_id))
 
+    @_admitted_world_operation
     async def update(self, entity_id: int, *components: Component) -> None:
         """Replace values on component types already held by an entity."""
         wid = await self._ensure_id()
@@ -439,6 +484,7 @@ class RuntimeWorld:
             )
         )
 
+    @_admitted_world_operation
     async def add_components(self, entity_id: int, *components: Component) -> None:
         """Add component types to an entity."""
         wid = await self._ensure_id()
@@ -450,6 +496,7 @@ class RuntimeWorld:
             )
         )
 
+    @_admitted_world_operation
     async def remove_components(self, entity_id: int, *component_types: type[Component]) -> None:
         """Remove component types from an entity."""
         wid = await self._ensure_id()
@@ -463,11 +510,13 @@ class RuntimeWorld:
             )
         )
 
+    @_admitted_world_operation
     async def add_processor(self, processor) -> None:
         """Install a processor on this world."""
         wid = await self._ensure_id()
         await self._dispatcher.apply(AddProcessor(world_id=wid, processor=processor))
 
+    @_admitted_world_operation
     async def remove_processor(self, proc_type) -> None:
         """Remove every installed processor of a type."""
         wid = await self._ensure_id()
@@ -475,12 +524,14 @@ class RuntimeWorld:
 
     # ── Simulation ────────────────────────────────────────────────────────
 
+    @_admitted_world_operation
     async def step(self, *, debug: bool = False, config: RunConfig | None = None, **kw) -> None:
         """Advance one tick."""
         wid = await self._ensure_id()
         rc = config or RunConfig(num_steps=1, debug=debug)
         await self._dispatcher.apply(Step(world_id=wid, run_config=rc, input_kwargs=kw))
 
+    @_admitted_world_operation
     async def run(
         self, steps: int = 1, *, debug: bool = False, config: RunConfig | None = None, **kw
     ) -> RunResult:
@@ -489,6 +540,7 @@ class RuntimeWorld:
         rc = config or RunConfig(num_steps=steps, debug=debug)
         return await self._dispatcher.apply(Run(world_id=wid, run_config=rc, input_kwargs=kw))
 
+    @_admitted_world_operation
     async def run_episode(self, config: EpisodeConfig, **kw) -> EpisodeResult:
         """Run until an episode termination condition or step limit is reached."""
         wid = await self._ensure_id()
@@ -496,6 +548,7 @@ class RuntimeWorld:
             RunEpisode(world_id=wid, config=config, input_kwargs=kw)
         )
 
+    @_admitted_world_operation
     async def run_rollout(self, config: RolloutConfig, **kw) -> RolloutResult:
         """Run several episodes on forks of this world."""
         wid = await self._ensure_id()
@@ -503,6 +556,7 @@ class RuntimeWorld:
             RunRollout(world_id=wid, config=config, input_kwargs=kw)
         )
 
+    @_admitted_world_operation
     async def autoresearch(
         self,
         config: AutoResearchConfig,
@@ -531,6 +585,7 @@ class RuntimeWorld:
             )
         )
 
+    @_admitted_world_operation
     async def grade(
         self,
         *component_types: type[Component],
@@ -545,6 +600,7 @@ class RuntimeWorld:
         df = await self.query(*component_types, entity_ids=entity_ids)
         return await self._dispatcher.apply(RunGraders(df=df, graders=tuple(graders)))
 
+    @_admitted_world_operation
     async def evaluate(
         self,
         *component_types: type[Component],
@@ -596,11 +652,13 @@ class RuntimeWorld:
                 )
             )
 
+    @_admitted_world_operation
     async def info(self) -> WorldInfo:
         """Get an immutable snapshot of world state (live or cold)."""
         wid = await self._ensure_id()
         return await self._resolve_info(wid)
 
+    @_admitted_world_operation
     async def fork(
         self,
         name: str | None = None,
@@ -641,16 +699,43 @@ class RuntimeWorld:
 
     async def destroy(self) -> None:
         """Destroy the live world while retaining its durable rows."""
-        wid = await self._ensure_id()
-        await self._dispatcher.apply(DestroyWorld(world_id=wid))
-        await self._shutdown_internal(from_runtime=False)
+        if self._operation_admission.admitted_by_current_task():
+            raise RuntimeError("World handle cannot destroy from an admitted operation")
+        if self._reservation is not None:
+            self._reservation.ensure_close_allowed()
+        if self._state.destroying or self._state.closing or self._state.closed:
+            raise RuntimeError("World handle is closed")
+        async with self._state.runtime._resources.admit_operation():
+            self._state.runtime._ensure_open()
+            async with self._state.close_lock:
+                if self._state.destroying or self._state.closing or self._state.closed:
+                    raise RuntimeError("World handle is closed")
+                self._state.destroying = True
+                try:
+                    await self._operation_admission.wait_drained()
+                    if self._state.closing or self._state.closed:
+                        raise RuntimeError("World handle is closed")
+                    wid = await self._state.ensure_init()
+                    await self._dispatcher.apply(DestroyWorld(world_id=wid))
+                    await self._begin_local_close()
+                finally:
+                    self._state.destroying = False
+            await self._shutdown_internal(from_runtime=False)
 
     async def shutdown(self) -> None:
         """Close this handle without destroying the world."""
+        if self._operation_admission.admitted_by_current_task():
+            raise RuntimeError("World handle cannot close from an admitted operation")
+        if self._reservation is not None:
+            self._reservation.ensure_close_allowed()
+        if self._state.destroying:
+            raise RuntimeError("World handle is closed")
         await self._shutdown_internal(from_runtime=False)
 
     async def _shutdown_internal(self, *, from_runtime: bool) -> None:
         del from_runtime
+        async with self._state.close_lock:
+            await self._begin_local_close()
         if self._reservation is None:
             await self._close_owned()
             return
@@ -658,6 +743,7 @@ class RuntimeWorld:
 
     # ── Queries ───────────────────────────────────────────────────────────
 
+    @_admitted_world_operation
     async def query(
         self, *component_types: type[Component], entity_ids: list[int] | None = None
     ) -> DataFrame:
@@ -679,6 +765,7 @@ class RuntimeWorld:
             )
         )
 
+    @_admitted_world_operation
     async def query_trajectory(
         self,
         component_type: type[Component],
@@ -702,6 +789,7 @@ class RuntimeWorld:
             )
         )
 
+    @_admitted_world_operation
     async def grade_trajectory(
         self,
         component_type: type[Component],
@@ -727,11 +815,13 @@ class RuntimeWorld:
             )
         )
 
+    @_admitted_world_operation
     async def history(self, *, limit: int = 100, **filters: Any) -> DataFrame:
         """Return recent audit-log rows for this world."""
         wid = await self._ensure_id()
         return await self._dispatcher.apply(GetAuditHistory(world_id=wid, limit=limit, **filters))
 
+    @_admitted_world_operation
     async def artifacts(self) -> DataFrame:
         """Return this run's common file-artifact index."""
         wid = await self._ensure_id()
@@ -742,16 +832,19 @@ class RuntimeWorld:
             )
         )
 
+    @_admitted_world_operation
     async def list_processors(self) -> list[ProcessorInfo]:
         """Return summaries of installed processors."""
         wid = await self._ensure_id()
         return await self._dispatcher.apply(ListProcessors(world_id=wid))
 
+    @_admitted_world_operation
     async def list_hooks(self) -> list[HookInfo]:
         """Return summaries of installed hooks."""
         wid = await self._ensure_id()
         return await self._dispatcher.apply(ListHooks(world_id=wid))
 
+    @_admitted_world_operation
     async def add_hook(
         self,
         event_type: type[HookEvent],
@@ -777,11 +870,13 @@ class RuntimeWorld:
             )
         )
 
+    @_admitted_world_operation
     async def remove_hook(self, handle: HookHandle) -> None:
         """Remove a hook by handle."""
         wid = await self._ensure_id()
         await self._dispatcher.apply(RemoveHook(world_id=wid, handle=handle))
 
+    @_admitted_world_operation
     async def list_resources(self) -> list[ResourceInfo]:
         """Return summaries of installed resources."""
         wid = await self._ensure_id()

@@ -66,7 +66,7 @@ Shutdown must:
 
 1. stop admitting new runtime and handle operations;
 2. wait for every already-admitted operation;
-3. join supervised tasks;
+3. cancel every supervised task across all owners, then await their completion;
 4. close workflow and world handles without destroying durable attached state;
 5. attempt every independent cleanup step in the current phase and aggregate
    failures; and
@@ -74,17 +74,38 @@ Shutdown must:
 
 `RuntimeResources` executes the exact phase order `admission`,
 `supervised-tasks`, `workflow-handles`, `world-handles`, `audit`, `storage`.
+Every complete runtime or handle call is admitted by exact task into both the
+process-operation and dispatcher gates. Shutdown synchronously publishes stop
+intent to both gates before waiting on either lock, then finishes the
+process-operation stop and drain before the dispatcher stop and drain. An
+already-admitted exact task may cross its first dispatcher boundary and finish
+same-task nested operations after stop intent; fresh direct/API work and a new
+task, including a child task, have no inherited admission.
+At the same close-start boundary, every extant owner gate enters process-stop:
+raw owner-only work rejects, while an exact task already admitted by the
+process or dispatcher may still cross its first owner boundary. An owner
+created by such a continuation is born process-stopped. After both global
+gates drain, shutdown re-snapshots the owner inventory, tightens every owner
+gate to strict stop, and drains them all before supervised cancellation or
+resource cleanup.
+Supervised cancellation is broadcast before any owner is awaited, so one
+cancellation-resistant task cannot delay cancellation of its peers. Closing
+from the current admitted or supervised task rejects deterministically instead
+of waiting on itself.
 If a phase fails, the runtime rejects public work and retains only the failed
 owners plus their dependencies. A later serialized `shutdown()` retries that
 phase before advancing. `RuntimeShutdownError` reports the phase and ordered
 owner-labelled original causes. Calls after successful finalization are
-no-ops.
+no-ops. Only terminal success detaches handler/dependency graphs; retryable
+failure retains them intact.
 
 ### R5 — Sync parity
 
 `SyncArchetypeRuntime` and `SyncRuntimeWorld` expose the same product semantics
 as the async classes without `await`. The sync facade owns an `asyncio.Runner`
-and does not reuse an outer event loop.
+and does not reuse an outer event loop. A retryable teardown failure retains
+that runner and the supported `shutdown()` method retries the same process
+owner; the runner is released only after successful finalization.
 
 ### R6 — World handles are declarative and lazy
 
@@ -103,7 +124,9 @@ The call captures configuration and synchronously reserves a world-handle owner
 but performs no backend I/O. The first operation single-flights activation
 through the dispatcher. Processors, resources, and hooks are installed in
 declared order. A failed activation must clean up any partially created live
-world and remain retryable when the failure is transient.
+world and remain retryable when the failure is transient. Activation and its
+compensation are one admitted handle operation, so shutdown cannot close
+dispatcher admission between `CreateWorld` and later installation or rollback.
 
 ### R7 — Per-world operation serialization
 
@@ -116,11 +139,16 @@ authority. Different worlds may proceed concurrently.
 
 One runtime may own many handles. Closing a handle waits for work admitted
 through that handle and invalidates the local view; it does not tear down shared
-process services. Runtime shutdown owns shared services.
+process services. Local admission closes before that wait, so late work is
+rejected even when cleanup remains retryable. Runtime shutdown owns shared
+services.
 
 `runtime.attach(world_id)` returns a non-owning handle. Closing it never
 destroys the world. Destruction is an explicit application operation and does
-not delete append-only durable rows.
+not delete append-only durable rows. Destroy first rejects late handle calls
+and drains calls admitted earlier, then performs the durable destroy effect.
+A failed destroy reopens the handle for work and retry; a successful effect
+closes and releases the handle.
 
 ### R9 — Boundary-safe results
 
@@ -250,10 +278,18 @@ exhausted review budget raises while leaving the task pending review.
 The handle owns a strongly registered workflow reservation. Its first submit
 constructs and binds the internal mission service exactly once; run and restore
 resolve that same owner without a parallel service registry. Closing the handle
+strictly stops and drains the reservation's exact-task admission before it
 joins supervised critic work and closes sandbox resources plus its exact
-mission-world cleanup without closing the parent runtime. A failed cleanup
+mission-world cleanup without closing the parent runtime. Facade calls and the
+registered direct `SubmitMission`, `RunMission`, and
+`RestoreMissionSandbox` handlers share that owner gate, beginning before first
+service construction or lookup. Therefore close drains work admitted through
+either ingress, while late direct work rejects before construction or provider
+effect. A failed cleanup
 retains the facade, service, world, and dependencies for retry. Workflow
-handles close before ordinary world handles during runtime teardown.
+handles close before ordinary world handles during runtime teardown. Once
+exact-world cleanup finishes, a later mission-world close failure retries only
+the world-close stage rather than reusing the consumed cleanup lease.
 
 `RuntimeMissions` imports no concrete application service. It dispatches
 `SubmitMission`, `RunMission`, and `RestoreMissionSandbox`; wiring constructs

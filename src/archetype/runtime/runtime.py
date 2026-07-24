@@ -87,7 +87,10 @@ class _RuntimeResourceHost:
         self._resources = resources
 
     def _ensure_open(self) -> None:
-        if self._resources.close_state is not RuntimeCloseState.OPEN:
+        if (
+            self._resources.close_state is not RuntimeCloseState.OPEN
+            and not self._resources.operation_admitted()
+        ):
             raise RuntimeError("Runtime resources are closed")
 
     def _bind_world_state(self, state: _RuntimeWorldState) -> RuntimeWorld:
@@ -174,6 +177,9 @@ class ArchetypeRuntime:
     async def shutdown(self) -> None:
         """Delegate retryable process teardown to the sole resource owner."""
 
+        if self._resources.operation_admitted():
+            raise RuntimeError("ArchetypeRuntime cannot close from an admitted operation")
+        self._resources.ensure_close_allowed()
         async with self._shutdown_lock:
             if self._closed:
                 return
@@ -233,6 +239,7 @@ class ArchetypeRuntime:
         reservation = self._resources.reserve_owner(
             owner_id,
             phase="workflow-handles",
+            closed_message="Agent Missions handle is closed",
         )
         handle = RuntimeMissions(
             self,
@@ -254,14 +261,15 @@ class ArchetypeRuntime:
     ) -> PhysicalTaskEvalReport:
         """Run and grade one batched physical task evaluation."""
 
-        self._ensure_open()
-        return await self._dispatcher.apply(
-            EvaluatePhysicalTask(
-                config=config,
-                env_client=env_client,
-                policy_client=policy_client,
+        async with self._resources.admit_operation():
+            self._ensure_open()
+            return await self._dispatcher.apply(
+                EvaluatePhysicalTask(
+                    config=config,
+                    env_client=env_client,
+                    policy_client=policy_client,
+                )
             )
-        )
 
     async def sweep_physical_instructions(
         self,
@@ -272,14 +280,15 @@ class ArchetypeRuntime:
     ) -> InstructionSweepReport:
         """Compare instruction variants on paired seeds in one world."""
 
-        self._ensure_open()
-        return await self._dispatcher.apply(
-            SweepPhysicalInstructions(
-                config=config,
-                env_client=env_client,
-                policy_client=policy_client,
+        async with self._resources.admit_operation():
+            self._ensure_open()
+            return await self._dispatcher.apply(
+                SweepPhysicalInstructions(
+                    config=config,
+                    env_client=env_client,
+                    policy_client=policy_client,
+                )
             )
-        )
 
     async def resume(
         self,
@@ -301,14 +310,15 @@ class ArchetypeRuntime:
             storage: Storage containing the world.
             name: Local name for the returned handle.
         """
-        self._ensure_open()
-        info = await self._dispatcher.apply(
-            ResumeWorld(
-                storage_config=coerce_storage(storage) or StorageConfig(),
-                world_id=world_id,
+        async with self._resources.admit_operation():
+            self._ensure_open()
+            info = await self._dispatcher.apply(
+                ResumeWorld(
+                    storage_config=coerce_storage(storage) or StorageConfig(),
+                    world_id=world_id,
+                )
             )
-        )
-        return self.attach(info.world_id, name=name)
+            return self.attach(info.world_id, name=name)
 
     async def discover(self, storage: str | Path | StorageConfig | None = None) -> list[WorldInfo]:
         """List every world recorded for a storage identity.
@@ -322,12 +332,13 @@ class ArchetypeRuntime:
         Returns:
             Durable descriptors for every world recorded in that storage.
         """
-        self._ensure_open()
-        return await self._dispatcher.apply(
-            DiscoverWorlds(
-                storage_config=coerce_storage(storage) or StorageConfig(),
+        async with self._resources.admit_operation():
+            self._ensure_open()
+            return await self._dispatcher.apply(
+                DiscoverWorlds(
+                    storage_config=coerce_storage(storage) or StorageConfig(),
+                )
             )
-        )
 
     def attach(
         self,
@@ -384,7 +395,7 @@ class ArchetypeRuntime:
         return _bind_world_state(self._resources, state)
 
     def _ensure_open(self) -> None:
-        if self._shutdown_started or self._closed:
+        if (self._shutdown_started or self._closed) and not self._resources.operation_admitted():
             raise RuntimeError("ArchetypeRuntime is closed")
 
 
@@ -413,12 +424,20 @@ class SyncArchetypeRuntime:
         return self
 
     def __exit__(self, *exc_info: object) -> None:
-        assert self._runner is not None
-        try:
-            self._runner.run(self._runtime.__aexit__(*exc_info))
-        finally:
-            self._runner.close()
-            self._runner = None
+        del exc_info
+        self.shutdown()
+
+    def shutdown(self) -> None:
+        """Retry process teardown and release the runner only after success."""
+
+        runner = self._runner
+        if runner is None:
+            if self._runtime._closed:
+                return
+            raise RuntimeError("SyncArchetypeRuntime is not active")
+        self._dispatch(self._runtime.shutdown())
+        runner.close()
+        self._runner = None
 
     def _require_runner(self) -> asyncio.Runner:
         if self._runner is None:

@@ -1970,3 +1970,183 @@ async def test_stop_admission_rejects_inherited_child_and_drain_waits_for_active
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_admitted_handler_may_finish_same_task_nested_dispatch_after_stop() -> None:
+    api = _commands_api()
+    events: list[str] = []
+    outer_entered = asyncio.Event()
+    enter_nested = asyncio.Event()
+    nested_finished = asyncio.Event()
+    release_outer = asyncio.Event()
+    nested_results: list[object] = []
+    dispatcher: Any = None
+
+    async def handler(operation: _Operation) -> str:
+        if operation.label == "outer":
+            outer_entered.set()
+            await enter_nested.wait()
+            try:
+                nested_results.append(
+                    await dispatcher.apply(_Operation(world_id=operation.world_id, label="inner"))
+                )
+            except BaseException as exc:
+                nested_results.append(exc)
+            nested_finished.set()
+            await release_outer.wait()
+            return "outer-complete"
+        return operation.label
+
+    spec = _Spec(
+        name="synthetic",
+        model=_Operation,
+        handler=handler,
+        permission="spawn",
+        summarize=lambda operation: {"label": operation.label},
+    )
+    dispatcher = _dispatcher(
+        api,
+        registry=_Registry((spec,), events),
+        policy=_PolicyPort(events),
+        scheduler=_SchedulerPort(events),
+        access=_AccessSink(events),
+        target_tick_for_world=lambda _world_id: 0,
+    )
+    outer = asyncio.create_task(dispatcher.apply(_Operation(world_id="world-drain", label="outer")))
+    drain: asyncio.Task[None] | None = None
+    try:
+        await asyncio.wait_for(outer_entered.wait(), timeout=0.5)
+        await dispatcher.stop_admission()
+        drain = asyncio.create_task(dispatcher.wait_drained())
+        enter_nested.set()
+        await asyncio.wait_for(nested_finished.wait(), timeout=0.5)
+
+        assert nested_results == ["inner"]
+        assert not drain.done()
+        with pytest.raises(RuntimeError, match=r"(?i)admission|accept|shutting down"):
+            await dispatcher.apply(_Operation(world_id="world-drain", label="late"))
+
+        release_outer.set()
+        assert await asyncio.wait_for(outer, timeout=0.5) == "outer-complete"
+        await asyncio.wait_for(drain, timeout=0.5)
+    finally:
+        release_outer.set()
+        pending = tuple(task for task in (outer, drain) if task is not None and not task.done())
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_stop_request_stays_sticky_while_admission_lock_is_contended() -> None:
+    api = _commands_api()
+    events: list[str] = []
+    handled: list[str] = []
+
+    async def handler(operation: _Operation) -> str:
+        handled.append(operation.label)
+        return operation.label
+
+    spec = _Spec(
+        name="synthetic",
+        model=_Operation,
+        handler=handler,
+        permission="spawn",
+        summarize=lambda operation: {"label": operation.label},
+    )
+    dispatcher = _dispatcher(
+        api,
+        registry=_Registry((spec,), events),
+        policy=_PolicyPort(events),
+        scheduler=_SchedulerPort(events),
+        access=_AccessSink(events),
+        target_tick_for_world=lambda _world_id: 0,
+    )
+    await dispatcher._admission_lock.acquire()
+    stopping = asyncio.create_task(dispatcher.stop_admission())
+    try:
+        for _ in range(100):
+            if dispatcher._stop_requested:
+                break
+            await asyncio.sleep(0)
+        assert dispatcher._stop_requested
+
+        stopping.cancel("cancelled while command admission lock was held")
+        with pytest.raises(asyncio.CancelledError):
+            await stopping
+
+        assert dispatcher._accepting
+        with pytest.raises(RuntimeError, match="not accepting work"):
+            await asyncio.wait_for(
+                dispatcher.apply(_Operation(world_id="world", label="late")),
+                timeout=0.5,
+            )
+        assert handled == []
+    finally:
+        dispatcher._admission_lock.release()
+
+    await dispatcher.stop_admission()
+    await dispatcher.wait_drained()
+    assert not dispatcher._accepting
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancellation_cannot_strand_command_admission_exit() -> None:
+    api = _commands_api()
+    events: list[str] = []
+    handler_entered = asyncio.Event()
+    handler_release = asyncio.Event()
+
+    async def handler(operation: _Operation) -> str:
+        handler_entered.set()
+        await handler_release.wait()
+        return operation.label
+
+    spec = _Spec(
+        name="synthetic",
+        model=_Operation,
+        handler=handler,
+        permission="spawn",
+        summarize=lambda operation: {"label": operation.label},
+    )
+    dispatcher = _dispatcher(
+        api,
+        registry=_Registry((spec,), events),
+        policy=_PolicyPort(events),
+        scheduler=_SchedulerPort(events),
+        access=_AccessSink(events),
+        target_tick_for_world=lambda _world_id: 0,
+    )
+    admitted = asyncio.create_task(
+        dispatcher.apply(_Operation(world_id="world", label="cancelled-exit"))
+    )
+    await asyncio.wait_for(handler_entered.wait(), timeout=0.5)
+    await dispatcher._admission_lock.acquire()
+    drain: asyncio.Task[None] | None = None
+    try:
+        handler_release.set()
+        await asyncio.sleep(0)
+        admitted.cancel()
+        await asyncio.sleep(0)
+        admitted.cancel()
+        await asyncio.sleep(0)
+
+        assert not admitted.done()
+        assert dispatcher._active_operations == 1
+        assert dispatcher._admitted_task_depths.get(admitted) == 1
+        drain = asyncio.create_task(dispatcher.wait_drained())
+        await asyncio.sleep(0)
+        assert not drain.done()
+    finally:
+        dispatcher._admission_lock.release()
+
+    with pytest.raises(asyncio.CancelledError):
+        await admitted
+    assert drain is not None
+    await asyncio.wait_for(drain, timeout=0.5)
+
+    assert dispatcher._active_operations == 0
+    assert admitted not in dispatcher._admitted_task_depths
+    assert dispatcher._drained.is_set()

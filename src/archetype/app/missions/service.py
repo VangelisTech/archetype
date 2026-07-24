@@ -262,6 +262,7 @@ class MissionService:
         self._task_owner = task_owner
         self._cleanup_factory = cleanup_factory
         self._cleanup: MissionCleanup | None = None
+        self._mission_cleanup_complete = False
         self._closed = False
         self._sandbox_provider = config.sandbox_backend.name
         self._sandbox_environment = config.sandbox_environment
@@ -576,42 +577,51 @@ class MissionService:
         if self._closed:
             return
         cleanup = await self._exact_cleanup()
-        failures: list[BaseException] = []
-        sandbox_failure: BaseException | None = None
-        if self._critic_prewarms:
-            await asyncio.gather(
-                *tuple(self._critic_prewarms.values()),
-                return_exceptions=True,
-            )
-        try:
-            await self._sandboxes.shutdown()
-        except BaseException as exc:
-            sandbox_failure = exc
-            failures.append(exc)
-
-        if cleanup is not None:
-            try:
-                await self._reconcile_sandboxes_after_shutdown(
-                    sandbox_failure,
-                    cleanup=cleanup,
+        if not self._mission_cleanup_complete:
+            failures: list[BaseException] = []
+            sandbox_failure: BaseException | None = None
+            if self._critic_prewarms:
+                await asyncio.gather(
+                    *tuple(self._critic_prewarms.values()),
+                    return_exceptions=True,
                 )
+            try:
+                await self._sandboxes.shutdown()
             except BaseException as exc:
+                sandbox_failure = exc
                 failures.append(exc)
 
-        if failures:
-            raise BaseExceptionGroup(
-                f"Agent Missions shutdown failed for {len(failures)} operation(s)",
-                failures,
-            )
+            if cleanup is not None:
+                try:
+                    await self._reconcile_sandboxes_after_shutdown(
+                        sandbox_failure,
+                        cleanup=cleanup,
+                    )
+                except BaseException as exc:
+                    failures.append(exc)
 
-        if cleanup is not None:
-            try:
-                await cleanup.finish()
-            except BaseException as exc:
+            if failures:
                 raise BaseExceptionGroup(
-                    "Agent Missions shutdown failed for 1 operation(s)",
-                    [exc],
-                ) from exc
+                    f"Agent Missions shutdown failed for {len(failures)} operation(s)",
+                    failures,
+                )
+
+            if cleanup is not None:
+                try:
+                    await cleanup.finish()
+                except BaseException as exc:
+                    raise BaseExceptionGroup(
+                        "Agent Missions shutdown failed for 1 operation(s)",
+                        [exc],
+                    ) from exc
+            self._mission_cleanup_complete = True
+        try:
+            await self._world.shutdown()
+        except BaseException as exc:
+            raise BaseExceptionGroup(
+                "Agent Missions shutdown failed for 1 operation(s)",
+                [exc],
+            ) from exc
         self._closed = True
 
     async def query(self, *components: type[Component]) -> DataFrame:

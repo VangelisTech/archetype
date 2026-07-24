@@ -15,7 +15,8 @@ import ast
 import inspect
 import subprocess
 import sys
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from importlib import import_module
 from pathlib import Path
 from types import SimpleNamespace
@@ -106,9 +107,20 @@ class _ForbiddenAsyncContext:
         return None
 
 
+class _RuntimeResourcesProbe:
+    """Minimal complete-call admission surface for runtime model-parity tests."""
+
+    def __init__(self, dispatcher: object) -> None:
+        self.dispatcher = dispatcher
+
+    @asynccontextmanager
+    async def admit_operation(self) -> AsyncIterator[None]:
+        yield
+
+
 class _RuntimeStateProbe:
     def __init__(self, dispatcher: object) -> None:
-        resources = SimpleNamespace(dispatcher=dispatcher)
+        resources = _RuntimeResourcesProbe(dispatcher)
         self.runtime = SimpleNamespace(
             _resources=resources,
             resources=resources,
@@ -124,6 +136,7 @@ class _RuntimeStateProbe:
         self.world_id = "world-1"
         self.initialized = True
         self.storage_config = None
+        self.destroying = False
         self.closing = False
         self.closed = False
         self.op_lock = _ForbiddenAsyncContext()

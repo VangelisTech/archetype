@@ -509,57 +509,62 @@ async def _handle_submit_mission(
     operation: SubmitMission,
 ) -> Any:
     reservation = resources.owner(operation.owner_id)
+    async with resources.admit_owner_operation(reservation):
 
-    async def construct() -> MissionService:
-        sandbox = SandboxService((operation.config.sandbox_backend,))
-        reservation.bind(sandbox, close=sandbox.shutdown)
+        async def construct() -> MissionService:
+            sandbox = SandboxService((operation.config.sandbox_backend,))
+            reservation.bind(sandbox, close=sandbox.shutdown)
 
-        async def cleanup_factory(world_id: object) -> WorldCleanup:
-            lease = await worlds.begin_close(str(world_id))
-            return WorldCleanup(
-                registry=worlds,
-                lifecycle=lifecycle,
-                world_id=str(world_id),
-                lease=lease,
-                cancel_unsettled=scheduler.cancel_world,
+            async def cleanup_factory(world_id: object) -> WorldCleanup:
+                lease = await worlds.begin_close(str(world_id))
+                return WorldCleanup(
+                    registry=worlds,
+                    lifecycle=lifecycle,
+                    world_id=str(world_id),
+                    lease=lease,
+                    cancel_unsettled=scheduler.cancel_world,
+                )
+
+            return MissionService(
+                world_factory=_runtime_world_factory(resources),
+                name=operation.name,
+                config=operation.config,
+                sandbox_service=sandbox,
+                redaction_service=redaction,
+                task_owner=reservation,
+                cleanup_factory=cleanup_factory,
+                storage=operation.storage,
             )
 
-        return MissionService(
-            world_factory=_runtime_world_factory(resources),
-            name=operation.name,
-            config=operation.config,
-            sandbox_service=sandbox,
-            redaction_service=redaction,
-            task_owner=reservation,
-            cleanup_factory=cleanup_factory,
-            storage=operation.storage,
+        service = await reservation.construct(construct)
+        submission = operation.submission
+        return await service.submit(
+            repository=submission.repository,
+            branch=submission.branch,
+            tasks=submission.tasks,
+            name=submission.name,
+            base_ref=submission.base_ref,
         )
-
-    service = await reservation.construct(construct)
-    submission = operation.submission
-    return await service.submit(
-        repository=submission.repository,
-        branch=submission.branch,
-        tasks=submission.tasks,
-        name=submission.name,
-        base_ref=submission.base_ref,
-    )
 
 
 async def _handle_run_mission(
     resources: RuntimeResources,
     operation: RunMission,
 ) -> Any:
-    service = cast(MissionService, resources.owner(operation.owner_id).require_bound())
-    return await service.run(operation.mission, max_ticks=operation.max_ticks)
+    reservation = resources.owner(operation.owner_id)
+    async with resources.admit_owner_operation(reservation):
+        service = cast(MissionService, reservation.require_bound())
+        return await service.run(operation.mission, max_ticks=operation.max_ticks)
 
 
 async def _handle_restore_mission_sandbox(
     resources: RuntimeResources,
     operation: RestoreMissionSandbox,
 ) -> Any:
-    service = cast(MissionService, resources.owner(operation.owner_id).require_bound())
-    return await service.restore_sandbox(operation.mission, operation.checkpoint)
+    reservation = resources.owner(operation.owner_id)
+    async with resources.admit_owner_operation(reservation):
+        service = cast(MissionService, reservation.require_bound())
+        return await service.restore_sandbox(operation.mission, operation.checkpoint)
 
 
 def _register_world_operations(

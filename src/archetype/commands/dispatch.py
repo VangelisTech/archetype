@@ -131,7 +131,9 @@ class CommandDispatcher:
         self._drained = asyncio.Event()
         self._drained.set()
         self._active_operations = 0
+        self._admitted_task_depths: dict[asyncio.Task[Any], int] = {}
         self._accepting = True
+        self._stop_requested = False
 
     async def apply(self, operation: BaseModel) -> Any:
         """Run one trusted exact operation without fabricating actor evidence."""
@@ -493,26 +495,101 @@ class CommandDispatcher:
             )
             return result
 
+    def request_stop(self) -> None:
+        """Synchronously publish sticky stop intent before lock acquisition."""
+
+        self._stop_requested = True
+
     async def stop_admission(self) -> None:
         """Atomically reject future top-level work."""
+        self.request_stop()
         async with self._admission_lock:
             self._accepting = False
 
     async def wait_drained(self) -> None:
         """Wait until every operation admitted before shutdown has exited."""
+        if self.operation_admitted():
+            raise RuntimeError("command admission cannot drain its current task")
         await self._drained.wait()
 
+    def _detach_closed_graph(self) -> None:
+        """Release handler dependencies after terminal admission drain."""
+
+        if self._accepting or self._active_operations or self._admitted_task_depths:
+            raise RuntimeError("command dependencies require stopped, drained admission")
+        for attribute in (
+            "_registry",
+            "_policy",
+            "_scheduler",
+            "_record_access",
+            "_target_tick_for_world",
+        ):
+            self.__dict__.pop(attribute, None)
+
+    def operation_admitted(self) -> bool:
+        """Whether the current task may finish nested exact-operation work."""
+
+        try:
+            task = asyncio.current_task()
+        except RuntimeError:
+            return False
+        return task is not None and task in self._admitted_task_depths
+
     @asynccontextmanager
-    async def _admitted(self) -> AsyncIterator[None]:
+    async def _admit_runtime_operation(
+        self,
+        continuation: Callable[[], bool],
+    ) -> AsyncIterator[None]:
+        """Count one trusted complete call in command admission."""
+
+        async with self._admitted(continuation=continuation()):
+            yield
+
+    @asynccontextmanager
+    async def _admitted(self, *, continuation: bool = False) -> AsyncIterator[None]:
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("command admission requires an asyncio task")
+        observed_depth = self._admitted_task_depths.get(task, 0)
+        if observed_depth == 0 and self._stop_requested and not continuation:
+            raise RuntimeError("command admission is not accepting work")
         async with self._admission_lock:
-            if not self._accepting:
-                raise RuntimeError("command admission is not accepting work")
-            self._active_operations += 1
-            self._drained.clear()
+            depth = self._admitted_task_depths.get(task, 0)
+            if depth == 0:
+                if (self._stop_requested or not self._accepting) and not continuation:
+                    raise RuntimeError("command admission is not accepting work")
+                self._active_operations += 1
+                self._drained.clear()
+            self._admitted_task_depths[task] = depth + 1
         try:
             yield
         finally:
-            async with self._admission_lock:
+            release = asyncio.create_task(
+                self._release_admission(task),
+                name="archetype-command-admission-release",
+            )
+            interrupted = False
+            while True:
+                try:
+                    await asyncio.shield(release)
+                    break
+                except asyncio.CancelledError:
+                    interrupted = True
+                    if release.done():
+                        break
+            release.result()
+            if interrupted:
+                raise asyncio.CancelledError
+
+    async def _release_admission(self, task: asyncio.Task[Any]) -> None:
+        """Finish exact-task deregistration despite repeated caller cancellation."""
+
+        async with self._admission_lock:
+            remaining = self._admitted_task_depths[task] - 1
+            if remaining:
+                self._admitted_task_depths[task] = remaining
+            else:
+                del self._admitted_task_depths[task]
                 self._active_operations -= 1
                 if self._active_operations == 0:
                     self._drained.set()

@@ -12,6 +12,7 @@ runtime-owned world locks that PR-4 removes.
 from __future__ import annotations
 
 import ast
+import asyncio
 import inspect
 from collections.abc import Sequence
 from contextlib import asynccontextmanager
@@ -25,6 +26,7 @@ import pytest
 
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig
+from archetype.runtime_resources import OperationAdmission
 
 _PULL_FORWARD_MODELS = (
     ("archetype.artifacts.models", "IngestArtifacts"),
@@ -83,9 +85,38 @@ class _DispatchProbe:
         raise AssertionError("trusted runtime must never call dispatcher.apply_as")
 
 
+class _AdmissionResources:
+    def __init__(self, dispatcher: _DispatchProbe) -> None:
+        self.dispatcher = dispatcher
+        self._operations = OperationAdmission(closed_message="runtime is closed")
+
+    def admit_operation(self):
+        return self._operations.admit()
+
+    def admit_owner_operation(self, reservation: _MissionReservationProbe):
+        return reservation.admit_operation()
+
+    def operation_admitted(self) -> bool:
+        return self._operations.admitted_by_current_task()
+
+
+class _MissionReservationProbe:
+    def __init__(self) -> None:
+        self.released = False
+        self.operation_admission = OperationAdmission(
+            closed_message="Agent Missions handle is closed"
+        )
+
+    def admit_operation(self):
+        return self.operation_admission.admit()
+
+    def operation_admitted(self) -> bool:
+        return self.operation_admission.admitted_by_current_task()
+
+
 class _RuntimeProbe:
     def __init__(self, dispatcher: _DispatchProbe) -> None:
-        resources = SimpleNamespace(dispatcher=dispatcher)
+        resources = _AdmissionResources(dispatcher)
         self._resources = resources
         self.resources = resources
         self._dispatcher = dispatcher
@@ -122,6 +153,7 @@ class _WorldStateProbe:
         self.world_id = "world-1"
         self.initialized = True
         self.owns_world = True
+        self.destroying = False
         self.closing = False
         self.closed = False
         self.aliases: WeakSet[object] = WeakSet()
@@ -170,7 +202,7 @@ def _runtime_world(
 def _runtime_shell(dispatcher: _DispatchProbe) -> Any:
     runtime_type = import_module("archetype.runtime.runtime").ArchetypeRuntime
     runtime = object.__new__(runtime_type)
-    resources = SimpleNamespace(dispatcher=dispatcher)
+    resources = _AdmissionResources(dispatcher)
     runtime._resources = resources
     runtime.resources = resources
     runtime._dispatcher = dispatcher
@@ -206,7 +238,10 @@ def _mission_shell(
     handle._storage = storage
     handle._storage_config = storage
     handle.storage = storage
-    handle._reservation = SimpleNamespace(released=False)
+    handle._reservation = _MissionReservationProbe()
+    handle._operation_admission = handle._reservation.operation_admission
+    handle._close_lock = asyncio.Lock()
+    handle._public_closing = False
     handle._public_closed = False
     handle._service = _EffectTrap()
     handle._closed = False
@@ -681,6 +716,12 @@ class _ResourcesCloseProbe:
 
     async def aclose(self) -> None:
         self.close_calls += 1
+
+    def operation_admitted(self) -> bool:
+        return False
+
+    def ensure_close_allowed(self) -> None:
+        return None
 
 
 @pytest.mark.asyncio

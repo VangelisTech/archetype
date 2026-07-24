@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
@@ -84,6 +86,17 @@ async def test_source_loopback_receipt_proves_shared_owner_dispatch_and_cleanup(
 class _Dispatcher:
     def __init__(self, events: list[str]) -> None:
         self._events = events
+
+    @asynccontextmanager
+    async def _admit_runtime_operation(
+        self,
+        continuation: Callable[[], bool],
+    ) -> AsyncIterator[None]:
+        del continuation
+        yield
+
+    def request_stop(self) -> None:
+        pass
 
     async def stop_admission(self) -> None:
         self._events.append("admission")

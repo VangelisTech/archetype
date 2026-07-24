@@ -14,6 +14,7 @@ import asyncio
 import gc
 import weakref
 from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from typing import Any
 
@@ -37,7 +38,9 @@ from archetype.world.models import (
     AddProcessor,
     CreateWorld,
     DestroyWorld,
+    GetWorldInfo,
     ListWorlds,
+    ResumeWorld,
     Run,
 )
 
@@ -76,6 +79,14 @@ class _DrainDispatcher:
         self.stop_failures = list(stop_failures or [])
         self.stop_calls = 0
         self.wait_calls = 0
+
+    @asynccontextmanager
+    async def _admit_runtime_operation(self, continuation: Callable[[], bool]):
+        del continuation
+        yield
+
+    def request_stop(self) -> None:
+        pass
 
     async def stop_admission(self) -> None:
         self.stop_calls += 1
@@ -257,6 +268,93 @@ class TestSingleFlightActivation:
         finally:
             await runtime.shutdown()
 
+    @pytest.mark.asyncio
+    async def test_shutdown_waits_for_compound_activation_compensation(self, tmp_path, monkeypatch):
+        """One admitted handle call retains dispatcher admission through rollback."""
+
+        runtime = ArchetypeRuntime()
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = runtime.world(
+            "activation-shutdown-race",
+            storage=storage,
+            processors=[FailPosWith(RuntimeError("unused"))],
+        )
+        live_world_created = asyncio.Event()
+        release_create = asyncio.Event()
+        dispatcher_stopped = asyncio.Event()
+        destroyed_worlds: list[object] = []
+        dispatcher = runtime._resources.dispatcher
+
+        async def blocking_create(operation):
+            assert type(operation) is CreateWorld
+            info = await original_create(operation)
+            live_world_created.set()
+            await release_create.wait()
+            return info
+
+        original_create = _replace_operation_handler(
+            monkeypatch,
+            dispatcher,
+            operation_name="create_world",
+            operation_type=CreateWorld,
+            handler=blocking_create,
+        )
+
+        async def failing_add(operation):
+            assert type(operation) is AddProcessor
+            raise RuntimeError("injected activation failure")
+
+        _replace_operation_handler(
+            monkeypatch,
+            dispatcher,
+            operation_name="add_processor",
+            operation_type=AddProcessor,
+            handler=failing_add,
+        )
+
+        async def recording_destroy(operation):
+            assert type(operation) is DestroyWorld
+            destroyed_worlds.append(operation.world_id)
+            await original_destroy(operation)
+
+        original_destroy = _replace_operation_handler(
+            monkeypatch,
+            dispatcher,
+            operation_name="destroy_world",
+            operation_type=DestroyWorld,
+            handler=recording_destroy,
+        )
+        original_stop_admission = dispatcher.stop_admission
+
+        async def record_stop_admission():
+            await original_stop_admission()
+            dispatcher_stopped.set()
+
+        monkeypatch.setattr(dispatcher, "stop_admission", record_stop_admission)
+
+        activation = asyncio.create_task(world.spawn(Pos()))
+        await asyncio.wait_for(live_world_created.wait(), timeout=5)
+        shutdown = asyncio.create_task(runtime.shutdown())
+        await asyncio.sleep(0)
+        stopped_before_compensation = dispatcher_stopped.is_set()
+
+        release_create.set()
+        activation_result = await asyncio.wait_for(
+            asyncio.gather(activation, return_exceptions=True),
+            timeout=5,
+        )
+        await asyncio.wait_for(shutdown, timeout=5)
+
+        activation_error = activation_result[0]
+        assert isinstance(activation_error, RuntimeError)
+        assert str(activation_error) == "injected activation failure"
+        assert not stopped_before_compensation
+        assert dispatcher_stopped.is_set()
+        assert len(destroyed_worlds) == 1
+        assert world._state.world_id is None
+        assert not world._state.initialized
+        assert world._state.closed
+
 
 # ── 2. Actor binding ────────────────────────────────────────────────────
 
@@ -388,6 +486,773 @@ class TestShutdownIdempotency:
             await world.spawn(Pos())
 
     @pytest.mark.asyncio
+    async def test_preclose_public_call_crosses_contended_dispatcher_boundary(self, tmp_path):
+        runtime = ArchetypeRuntime()
+        world = runtime.world(
+            "coordinated-first-dispatch",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
+        )
+        dispatcher = runtime._resources.dispatcher
+        await dispatcher._admission_lock.acquire()
+        admitted_spawn = asyncio.create_task(world.spawn(Pos()))
+        try:
+            for _ in range(100):
+                if runtime._resources._operation_admission._depths.get(admitted_spawn):
+                    break
+                await asyncio.sleep(0)
+            assert runtime._resources._operation_admission._depths.get(admitted_spawn) == 1
+
+            shutdown = asyncio.create_task(runtime.shutdown())
+            for _ in range(100):
+                if dispatcher._stop_requested:
+                    break
+                await asyncio.sleep(0)
+            assert dispatcher._stop_requested
+
+            with pytest.raises(RuntimeError, match="not accepting work"):
+                await asyncio.wait_for(
+                    dispatcher.apply(GetWorldInfo(world_id="fresh-api-task")),
+                    timeout=1,
+                )
+            assert not admitted_spawn.done()
+            assert not shutdown.done()
+        finally:
+            dispatcher._admission_lock.release()
+
+        entity_id = await asyncio.wait_for(admitted_spawn, timeout=5)
+        await asyncio.wait_for(shutdown, timeout=5)
+
+        assert isinstance(entity_id, int)
+        assert runtime._closed
+
+    @pytest.mark.asyncio
+    async def test_world_shutdown_waits_for_admitted_run(self, tmp_path, monkeypatch):
+        """World-local close drains a call already admitted through that handle."""
+
+        runtime = ArchetypeRuntime()
+        world = runtime.world(
+            "world-local-drain",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
+        )
+        await world.spawn(Pos())
+        run_started = asyncio.Event()
+        run_release = asyncio.Event()
+
+        async def blocking_run(operation):
+            assert type(operation) is Run
+            run_started.set()
+            await run_release.wait()
+            return await original_run(operation)
+
+        original_run = _replace_operation_handler(
+            monkeypatch,
+            runtime._resources.dispatcher,
+            operation_name="run",
+            operation_type=Run,
+            handler=blocking_run,
+        )
+        admitted_run = asyncio.create_task(world.run())
+        await asyncio.wait_for(run_started.wait(), timeout=5)
+        world_shutdown = asyncio.create_task(world.shutdown())
+        for _ in range(100):
+            if world._state.closing:
+                break
+            await asyncio.sleep(0)
+        assert world._state.closing
+        closed_before_run_exited = world._state.closed
+
+        with pytest.raises(RuntimeError, match="closed"):
+            await world.info()
+
+        run_release.set()
+        await asyncio.wait_for(admitted_run, timeout=5)
+        await asyncio.wait_for(world_shutdown, timeout=5)
+        assert not closed_before_run_exited
+        assert world._state.closed
+        await runtime.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_world_shutdown_rejects_late_work_before_owner_join(self, tmp_path, monkeypatch):
+        runtime = ArchetypeRuntime()
+        world = runtime.world(
+            "world-close-before-owner-join",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
+        )
+        await world.spawn(Pos())
+        supervised_started = asyncio.Event()
+        supervised_cancelled = asyncio.Event()
+        supervised_release = asyncio.Event()
+        reservation = world._reservation
+        assert reservation is not None
+
+        async def supervised_work() -> None:
+            supervised_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                supervised_cancelled.set()
+                await supervised_release.wait()
+
+        supervised = reservation.spawn(supervised_work, label="world-close-barrier")
+        await asyncio.wait_for(supervised_started.wait(), timeout=5)
+        info_calls = 0
+
+        async def counting_info(operation):
+            nonlocal info_calls
+            info_calls += 1
+            return await original_info(operation)
+
+        original_info = _replace_operation_handler(
+            monkeypatch,
+            runtime._resources.dispatcher,
+            operation_name="get_world_info",
+            operation_type=GetWorldInfo,
+            handler=counting_info,
+        )
+        close = asyncio.create_task(world.shutdown())
+        for _ in range(100):
+            if world._state.closing:
+                break
+            await asyncio.sleep(0)
+        await asyncio.wait_for(supervised_cancelled.wait(), timeout=5)
+        assert world._state.closing
+        assert not close.done()
+
+        with pytest.raises(RuntimeError, match="closed"):
+            await world.info()
+        assert info_calls == 0
+
+        supervised_release.set()
+        await asyncio.wait_for(supervised, timeout=5)
+        await asyncio.wait_for(close, timeout=5)
+        await runtime.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_destroy_rejects_late_work_while_effect_is_in_flight(self, tmp_path, monkeypatch):
+        runtime = ArchetypeRuntime()
+        world = runtime.world(
+            "destroy-in-flight",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
+        )
+        await world.spawn(Pos())
+        destroy_started = asyncio.Event()
+        destroy_release = asyncio.Event()
+        info_calls = 0
+
+        async def blocking_destroy(operation):
+            destroy_started.set()
+            await destroy_release.wait()
+            return await original_destroy(operation)
+
+        async def counting_info(operation):
+            nonlocal info_calls
+            info_calls += 1
+            return await original_info(operation)
+
+        original_destroy = _replace_operation_handler(
+            monkeypatch,
+            runtime._resources.dispatcher,
+            operation_name="destroy_world",
+            operation_type=DestroyWorld,
+            handler=blocking_destroy,
+        )
+        original_info = _replace_operation_handler(
+            monkeypatch,
+            runtime._resources.dispatcher,
+            operation_name="get_world_info",
+            operation_type=GetWorldInfo,
+            handler=counting_info,
+        )
+        destroy = asyncio.create_task(world.destroy())
+        await asyncio.wait_for(destroy_started.wait(), timeout=5)
+
+        with pytest.raises(RuntimeError, match="closed"):
+            await world.info()
+        assert info_calls == 0
+
+        destroy_release.set()
+        await asyncio.wait_for(destroy, timeout=5)
+        assert world._state.closed
+        await runtime.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_cannot_release_owner_while_destroy_effect_is_in_flight(
+        self, tmp_path, monkeypatch
+    ):
+        runtime = ArchetypeRuntime()
+        world = runtime.world(
+            "destroy-shutdown-arbitration",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
+        )
+        await world.spawn(Pos())
+        reservation = world._reservation
+        assert reservation is not None
+        destroy_started = asyncio.Event()
+        destroy_release = asyncio.Event()
+        destroy_calls = 0
+
+        async def blocking_destroy(operation):
+            nonlocal destroy_calls
+            destroy_calls += 1
+            destroy_started.set()
+            await destroy_release.wait()
+            return await original_destroy(operation)
+
+        original_destroy = _replace_operation_handler(
+            monkeypatch,
+            runtime._resources.dispatcher,
+            operation_name="destroy_world",
+            operation_type=DestroyWorld,
+            handler=blocking_destroy,
+        )
+        destroy = asyncio.create_task(world.destroy())
+        await asyncio.wait_for(destroy_started.wait(), timeout=5)
+        with pytest.raises(RuntimeError, match="closed"):
+            await asyncio.wait_for(world.shutdown(), timeout=1)
+        assert not reservation.released
+        assert not world._state.closed
+        assert destroy_calls == 1
+
+        destroy_release.set()
+        await asyncio.wait_for(destroy, timeout=5)
+
+        assert destroy_calls == 1
+        assert reservation.released
+        assert world._state.closed
+        await runtime.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_destroy_handler_reentrant_lifecycle_calls_reject_without_deadlock(
+        self, tmp_path, monkeypatch
+    ):
+        runtime = ArchetypeRuntime()
+        world = runtime.world(
+            "destroy-reentrant-lifecycle",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
+        )
+        await world.spawn(Pos())
+        reservation = world._reservation
+        assert reservation is not None
+        destroy_calls = 0
+
+        async def reentrant_destroy(operation):
+            nonlocal destroy_calls
+            destroy_calls += 1
+            with pytest.raises(RuntimeError, match="closed"):
+                await asyncio.wait_for(world.shutdown(), timeout=1)
+            with pytest.raises(RuntimeError, match="closed"):
+                await asyncio.wait_for(world.destroy(), timeout=1)
+            assert not reservation.released
+            return await original_destroy(operation)
+
+        original_destroy = _replace_operation_handler(
+            monkeypatch,
+            runtime._resources.dispatcher,
+            operation_name="destroy_world",
+            operation_type=DestroyWorld,
+            handler=reentrant_destroy,
+        )
+
+        await asyncio.wait_for(world.destroy(), timeout=5)
+
+        assert destroy_calls == 1
+        assert reservation.released
+        assert world._state.closed
+        await runtime.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_destroy_drains_previously_admitted_run_before_durable_effect(
+        self, tmp_path, monkeypatch
+    ):
+        runtime = ArchetypeRuntime()
+        world = runtime.world(
+            "destroy-drains-run",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
+        )
+        await world.spawn(Pos())
+        run_started = asyncio.Event()
+        run_release = asyncio.Event()
+        dispatcher_admission_stopped = asyncio.Event()
+        effects: list[str] = []
+
+        async def blocking_run(operation):
+            run_started.set()
+            await run_release.wait()
+            result = await original_run(operation)
+            effects.append("run:succeeded")
+            return result
+
+        async def counting_destroy(operation):
+            effects.append("destroy:effect")
+            return await original_destroy(operation)
+
+        original_run = _replace_operation_handler(
+            monkeypatch,
+            runtime._resources.dispatcher,
+            operation_name="run",
+            operation_type=Run,
+            handler=blocking_run,
+        )
+        original_destroy = _replace_operation_handler(
+            monkeypatch,
+            runtime._resources.dispatcher,
+            operation_name="destroy_world",
+            operation_type=DestroyWorld,
+            handler=counting_destroy,
+        )
+        dispatcher = runtime._resources.dispatcher
+        original_stop_admission = dispatcher.stop_admission
+
+        async def observed_stop_admission():
+            await original_stop_admission()
+            dispatcher_admission_stopped.set()
+
+        monkeypatch.setattr(dispatcher, "stop_admission", observed_stop_admission)
+        admitted_run = asyncio.create_task(world.run())
+        await asyncio.wait_for(run_started.wait(), timeout=5)
+        destroy = asyncio.create_task(world.destroy())
+        for _ in range(100):
+            if world._state.destroying:
+                break
+            await asyncio.sleep(0)
+        assert world._state.destroying
+        shutdown = asyncio.create_task(runtime.shutdown())
+        await asyncio.sleep(0)
+
+        assert not destroy.done()
+        assert not shutdown.done()
+        assert not dispatcher_admission_stopped.is_set()
+        assert runtime._resources._audit is not None
+        assert runtime._resources._storage is not None
+        assert effects == []
+        with pytest.raises(RuntimeError, match="closed"):
+            await world.info()
+
+        run_release.set()
+        await asyncio.wait_for(admitted_run, timeout=5)
+        await asyncio.wait_for(destroy, timeout=5)
+        await asyncio.wait_for(shutdown, timeout=5)
+
+        assert effects == ["run:succeeded", "destroy:effect"]
+        assert world._state.closed
+
+    @pytest.mark.asyncio
+    async def test_world_close_allows_same_task_nested_public_continuation(
+        self, tmp_path, monkeypatch
+    ):
+        runtime = ArchetypeRuntime()
+        world = runtime.world(
+            "world-nested-continuation",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
+        )
+        await world.spawn(Pos())
+        outer_reached_nested_call = asyncio.Event()
+        nested_call_release = asyncio.Event()
+        original_spawn_many = world.spawn_many
+
+        async def spawn_many_after_close_starts(entities):
+            outer_reached_nested_call.set()
+            await nested_call_release.wait()
+            return await original_spawn_many(entities)
+
+        monkeypatch.setattr(world, "spawn_many", spawn_many_after_close_starts)
+        admitted_batch = asyncio.create_task(world.spawn_batch(Pos(), 2))
+        await asyncio.wait_for(outer_reached_nested_call.wait(), timeout=5)
+        close = asyncio.create_task(world.shutdown())
+        for _ in range(100):
+            if world._state.closing:
+                break
+            await asyncio.sleep(0)
+        assert world._state.closing
+
+        nested_call_release.set()
+        entity_ids = await asyncio.wait_for(admitted_batch, timeout=5)
+        await asyncio.wait_for(close, timeout=5)
+
+        assert len(entity_ids) == 2
+        assert world._state.closed
+        await runtime.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_close_from_current_admitted_operation_rejects_without_deadlock(
+        self, tmp_path, monkeypatch
+    ):
+        runtime = ArchetypeRuntime()
+        world = runtime.world(
+            "self-close-rejection",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
+        )
+        await world.spawn(Pos())
+        destroy_calls = 0
+
+        async def counting_destroy(operation):
+            nonlocal destroy_calls
+            destroy_calls += 1
+            return await original_destroy(operation)
+
+        original_destroy = _replace_operation_handler(
+            monkeypatch,
+            runtime._resources.dispatcher,
+            operation_name="destroy_world",
+            operation_type=DestroyWorld,
+            handler=counting_destroy,
+        )
+
+        async with world._operation_admission.admit():
+            with pytest.raises(RuntimeError, match="cannot close from an admitted operation"):
+                await asyncio.wait_for(world.shutdown(), timeout=1)
+            with pytest.raises(RuntimeError, match="cannot destroy from an admitted operation"):
+                await asyncio.wait_for(world.destroy(), timeout=1)
+        async with runtime._resources.admit_operation():
+            with pytest.raises(RuntimeError, match="cannot close from an admitted operation"):
+                await asyncio.wait_for(runtime.shutdown(), timeout=1)
+
+        assert destroy_calls == 0
+        assert not world._state.closing
+        assert not runtime._shutdown_started
+        await world.destroy()
+        assert destroy_calls == 1
+        await runtime.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_world_supervised_task_cannot_partially_close_its_owner(
+        self, tmp_path, monkeypatch
+    ):
+        runtime = ArchetypeRuntime()
+        world = runtime.world(
+            "supervised-world-self-close",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
+        )
+        await world.spawn(Pos())
+        reservation = world._reservation
+        assert reservation is not None
+        destroy_calls = 0
+
+        async def counting_destroy(operation):
+            nonlocal destroy_calls
+            destroy_calls += 1
+            return await original_destroy(operation)
+
+        original_destroy = _replace_operation_handler(
+            monkeypatch,
+            runtime._resources.dispatcher,
+            operation_name="destroy_world",
+            operation_type=DestroyWorld,
+            handler=counting_destroy,
+        )
+
+        async def supervised_self_close() -> None:
+            with pytest.raises(
+                RuntimeError,
+                match="cannot close from its supervised task",
+            ):
+                await asyncio.wait_for(world.shutdown(), timeout=1)
+            with pytest.raises(
+                RuntimeError,
+                match="cannot close from its supervised task",
+            ):
+                await asyncio.wait_for(world.destroy(), timeout=1)
+            assert not world._state.destroying
+            assert not world._state.closing
+            assert not world._state.closed
+            assert destroy_calls == 0
+            assert (await world.info()).world_id == world.world_id
+
+        task = reservation.spawn(supervised_self_close, label="self-close")
+        await asyncio.wait_for(task, timeout=5)
+
+        assert not world._state.closing
+        assert destroy_calls == 0
+        await world.destroy()
+        assert destroy_calls == 1
+        assert reservation.released
+        await runtime.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_waits_for_resume_to_bind_its_world_owner(self, tmp_path, monkeypatch):
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        async with ArchetypeRuntime() as seed_runtime:
+            seed = seed_runtime.world("resume-owner-seed", storage=storage)
+            await seed.spawn(Pos())
+            await seed.step()
+            world_id = seed.world_id
+
+        runtime = ArchetypeRuntime()
+        dispatcher = runtime._resources.dispatcher
+        resume_effect_complete = asyncio.Event()
+        resume_return_release = asyncio.Event()
+        process_admission_stopped = asyncio.Event()
+        live_resumed_worlds: list[weakref.ReferenceType[object]] = []
+        registry = dispatcher._registry
+        world_registry = registry.resolve_name("step").handler.args[0]
+
+        async def resume_then_pause(operation):
+            assert type(operation) is ResumeWorld
+            info = await original_resume(operation)
+            live = await world_registry.live_world(str(info.world_id))
+            assert live is not None
+            live_resumed_worlds.append(weakref.ref(live))
+            resume_effect_complete.set()
+            await resume_return_release.wait()
+            return info
+
+        original_resume = _replace_operation_handler(
+            monkeypatch,
+            dispatcher,
+            operation_name="resume_world",
+            operation_type=ResumeWorld,
+            handler=resume_then_pause,
+        )
+        process_admission = runtime._resources._operation_admission
+        original_stop_admission = process_admission.stop_admission
+
+        async def observed_stop_admission():
+            await original_stop_admission()
+            process_admission_stopped.set()
+
+        monkeypatch.setattr(process_admission, "stop_admission", observed_stop_admission)
+        baseline_owners = set(runtime._resources._owners)
+        resumed_task = asyncio.create_task(runtime.resume(world_id, storage=storage))
+        await asyncio.wait_for(resume_effect_complete.wait(), timeout=5)
+        assert live_resumed_worlds[0]() is not None
+        assert set(runtime._resources._owners) == baseline_owners
+
+        shutdown = asyncio.create_task(runtime.shutdown())
+        await asyncio.wait_for(process_admission_stopped.wait(), timeout=5)
+        assert not shutdown.done()
+
+        resume_return_release.set()
+        resumed = await asyncio.wait_for(resumed_task, timeout=5)
+        reservation = resumed._reservation
+        assert reservation is not None
+        owner = reservation.owner
+        await asyncio.wait_for(shutdown, timeout=5)
+
+        assert resumed._state.closed
+        assert reservation.released
+        with pytest.raises(KeyError, match=owner):
+            runtime._resources.owner(owner)
+        assert set(runtime._resources._owners) == baseline_owners
+
+    @pytest.mark.asyncio
+    async def test_supervised_task_cannot_brick_public_runtime_shutdown(self):
+        runtime = ArchetypeRuntime()
+        events: list[str] = []
+        handle = _OwnedHandle("supervised-self-close", events)
+        reservation = await _reserve_handle(
+            runtime._resources,
+            handle,
+            owner="mission:supervised-self-close",
+            phase="workflow-handles",
+        )
+
+        async def supervised_self_close() -> None:
+            with pytest.raises(
+                RuntimeError,
+                match="cannot close from its supervised task",
+            ):
+                await asyncio.wait_for(runtime.shutdown(), timeout=1)
+            assert not runtime._shutdown_started
+            assert runtime._resources.close_state is RuntimeCloseState.OPEN
+            assert isinstance(await runtime.discover(), list)
+
+        task = reservation.spawn(supervised_self_close, label="self-close")
+        await asyncio.wait_for(task, timeout=5)
+
+        assert not runtime._shutdown_started
+        assert handle.close_calls == 0
+        await runtime.shutdown()
+        assert runtime._closed
+        assert handle.close_calls == 1
+
+    @pytest.mark.asyncio
+    async def test_dispatcher_admitted_handler_cannot_close_runtime_resources(
+        self, tmp_path, monkeypatch
+    ):
+        runtime = ArchetypeRuntime()
+        world = runtime.world(
+            "resource-self-drain",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
+        )
+        await world.spawn(Pos())
+        resources = runtime._resources
+
+        async def self_closing_info(operation):
+            with pytest.raises(
+                RuntimeError,
+                match="cannot close from an admitted operation",
+            ):
+                await asyncio.wait_for(resources.aclose(), timeout=1)
+            assert resources.close_state is RuntimeCloseState.OPEN
+            assert resources._operation_admission._accepting
+            assert resources.dispatcher._accepting
+            return await original_info(operation)
+
+        original_info = _replace_operation_handler(
+            monkeypatch,
+            resources.dispatcher,
+            operation_name="get_world_info",
+            operation_type=GetWorldInfo,
+            handler=self_closing_info,
+        )
+
+        info = await resources.dispatcher.apply(GetWorldInfo(world_id=world.world_id))
+
+        assert info.world_id == world.world_id
+        assert resources.close_state is RuntimeCloseState.OPEN
+        await runtime.shutdown()
+        assert resources.close_state is RuntimeCloseState.CLOSED
+
+    @pytest.mark.asyncio
+    async def test_cancelled_stop_contention_keeps_process_admission_closed(
+        self, tmp_path, monkeypatch
+    ):
+        runtime = ArchetypeRuntime()
+        world = runtime.world(
+            "cancelled-stop-contention",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
+        )
+        await world.spawn(Pos())
+        info_calls = 0
+
+        async def counting_info(operation):
+            nonlocal info_calls
+            info_calls += 1
+            return await original_info(operation)
+
+        original_info = _replace_operation_handler(
+            monkeypatch,
+            runtime._resources.dispatcher,
+            operation_name="get_world_info",
+            operation_type=GetWorldInfo,
+            handler=counting_info,
+        )
+        admission = runtime._resources._operation_admission
+        await admission._lock.acquire()
+        interrupted = asyncio.create_task(runtime.shutdown())
+        try:
+            for _ in range(100):
+                if admission._stop_requested:
+                    break
+                await asyncio.sleep(0)
+            assert admission._stop_requested
+            assert runtime._resources.dispatcher._stop_requested
+            with pytest.raises(RuntimeError, match="not accepting work"):
+                await asyncio.wait_for(
+                    runtime._resources.dispatcher.apply(GetWorldInfo(world_id=world.world_id)),
+                    timeout=1,
+                )
+            assert info_calls == 0
+            interrupted.cancel("stop contention cancelled")
+            with pytest.raises(RuntimeShutdownError) as captured:
+                await interrupted
+
+            error = captured.value
+            assert error.phase == "admission"
+            assert len(error.failures) == 1
+            failure = error.failures[0]
+            assert failure.owner == "runtime-operations"
+            assert isinstance(failure.cause, asyncio.CancelledError)
+            assert isinstance(error.__cause__, BaseExceptionGroup)
+            assert error.__cause__.exceptions == (failure.cause,)
+            assert runtime._shutdown_started
+            assert runtime._resources.close_state is RuntimeCloseState.CLOSING_RETRYABLE
+            with pytest.raises(RuntimeError, match="closed"):
+                await asyncio.wait_for(world.info(), timeout=1)
+            assert info_calls == 0
+        finally:
+            admission._lock.release()
+
+        await runtime.shutdown()
+        assert runtime._closed
+
+    @pytest.mark.asyncio
+    async def test_cancelled_dispatcher_stop_contention_is_labelled_and_retryable(self, tmp_path):
+        runtime = ArchetypeRuntime()
+        world = runtime.world(
+            "cancelled-dispatcher-stop",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
+        )
+        await world.spawn(Pos())
+        dispatcher = runtime._resources.dispatcher
+        await dispatcher._admission_lock.acquire()
+        interrupted = asyncio.create_task(runtime.shutdown())
+        try:
+            for _ in range(100):
+                if dispatcher._stop_requested:
+                    break
+                await asyncio.sleep(0)
+            assert runtime._resources._operation_admission._stop_requested
+            assert dispatcher._stop_requested
+
+            interrupted.cancel("dispatcher stop contention cancelled")
+            with pytest.raises(RuntimeShutdownError) as captured:
+                await interrupted
+
+            error = captured.value
+            assert error.phase == "admission"
+            assert len(error.failures) == 1
+            failure = error.failures[0]
+            assert failure.owner == "dispatcher"
+            assert isinstance(failure.cause, asyncio.CancelledError)
+            assert isinstance(error.__cause__, BaseExceptionGroup)
+            assert error.__cause__.exceptions == (failure.cause,)
+            with pytest.raises(RuntimeError, match="not accepting work"):
+                await asyncio.wait_for(
+                    dispatcher.apply(GetWorldInfo(world_id=world.world_id)),
+                    timeout=1,
+                )
+        finally:
+            dispatcher._admission_lock.release()
+
+        await runtime.shutdown()
+        assert runtime._closed
+
+    @pytest.mark.asyncio
+    async def test_failed_world_shutdown_remains_locally_closed_and_retryable(
+        self, tmp_path, monkeypatch
+    ):
+        runtime = ArchetypeRuntime()
+        world = runtime.world(
+            "retry-world-close",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
+        )
+        await world.spawn(Pos())
+        reservation = world._reservation
+        assert reservation is not None
+        owner = reservation.owner
+        original_shutdown = world._state.shutdown
+        attempts = 0
+
+        async def fail_once():
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("world close failed")
+            await original_shutdown()
+
+        monkeypatch.setattr(world._state, "shutdown", fail_once)
+
+        with pytest.raises(RuntimeError, match="world close failed"):
+            await world.shutdown()
+
+        assert world._state.closing
+        assert not world._state.closed
+        assert not reservation.released
+        assert runtime._resources.owner(owner) is reservation
+        with pytest.raises(RuntimeError, match="closed"):
+            await world.info()
+
+        await world.shutdown()
+
+        assert attempts == 2
+        assert world._state.closed
+        assert reservation.released
+        with pytest.raises(KeyError, match=owner):
+            runtime._resources.owner(owner)
+        await runtime.shutdown()
+
+    @pytest.mark.asyncio
     async def test_failed_world_destroy_remains_retryable(self, tmp_path, monkeypatch):
         runtime = ArchetypeRuntime()
         world = runtime.world(
@@ -430,6 +1295,80 @@ class TestShutdownIdempotency:
         with pytest.raises(RuntimeError, match="closed"):
             await world.spawn(Pos())
         await runtime.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_destroy_after_committed_effect_retries_to_local_close(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        runtime = ArchetypeRuntime()
+        world = runtime.world(
+            "retry-committed-destroy",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
+        )
+        await world.spawn(Pos())
+        dispatcher = runtime._resources.dispatcher
+        reservation = world._reservation
+        assert reservation is not None
+        owner = reservation.owner
+        effect_committed = asyncio.Event()
+        destroy_task: asyncio.Task[None] | None = None
+
+        async def commit_then_hold_admission_exit(operation):
+            assert type(operation) is DestroyWorld
+            await original_destroy(operation)
+            await dispatcher._admission_lock.acquire()
+            effect_committed.set()
+
+        original_destroy = _replace_operation_handler(
+            monkeypatch,
+            dispatcher,
+            operation_name="destroy_world",
+            operation_type=DestroyWorld,
+            handler=commit_then_hold_admission_exit,
+        )
+        try:
+            destroy_task = asyncio.create_task(world.destroy())
+            await asyncio.wait_for(effect_committed.wait(), timeout=1)
+            destroy_task.cancel("cancel after committed destroy")
+            await asyncio.sleep(0)
+            assert not destroy_task.done()
+            dispatcher._admission_lock.release()
+
+            with pytest.raises(asyncio.CancelledError):
+                await destroy_task
+
+            assert not world._state.destroying
+            assert not world._state.closing
+            assert not world._state.closed
+            assert not reservation.released
+            assert runtime._resources.owner(owner) is reservation
+
+            _replace_operation_handler(
+                monkeypatch,
+                dispatcher,
+                operation_name="destroy_world",
+                operation_type=DestroyWorld,
+                handler=original_destroy,
+            )
+            await world.destroy()
+
+            assert world._state.closed
+            assert reservation.released
+            with pytest.raises(KeyError, match=owner):
+                runtime._resources.owner(owner)
+            await runtime.shutdown()
+            assert runtime._closed
+        finally:
+            if dispatcher._admission_lock.locked():
+                dispatcher._admission_lock.release()
+            if destroy_task is not None:
+                await asyncio.gather(destroy_task, return_exceptions=True)
+            try:
+                await runtime.shutdown()
+            except BaseException:
+                pass
 
     @pytest.mark.asyncio
     async def test_admission_cancellation_group_uses_retryable_runtime_error_contract(
@@ -537,13 +1476,14 @@ class TestShutdownIdempotency:
         admission_stopped = asyncio.Event()
 
         dispatcher = runtime._resources.dispatcher
-        original_stop_admission = dispatcher.stop_admission
+        process_admission = runtime._resources._operation_admission
+        original_stop_admission = process_admission.stop_admission
 
         async def stop_admission():
             await original_stop_admission()
             admission_stopped.set()
 
-        monkeypatch.setattr(dispatcher, "stop_admission", stop_admission)
+        monkeypatch.setattr(process_admission, "stop_admission", stop_admission)
 
         async def blocking_run(operation):
             assert type(operation) is Run
@@ -763,6 +1703,40 @@ class TestShutdownIdempotency:
         ]
         assert first_reservation.released
         assert second.close_calls == 1
+
+    def test_sync_shutdown_failure_retains_runner_for_retry(self, monkeypatch):
+        events: list[str] = []
+        resources = RuntimeResources(dispatcher=_DrainDispatcher(events))
+        handle = _OwnedHandle(
+            "mission:sync-retry",
+            events,
+            failures=[RuntimeError("sync cleanup retry required")],
+        )
+        reservation = resources.reserve_owner(
+            "mission:sync-retry",
+            phase="workflow-handles",
+        )
+        reservation.bind(handle, close=handle.aclose)
+        monkeypatch.setattr(
+            runtime_module,
+            "build_runtime_resources",
+            lambda _config: resources,
+        )
+        runtime = ArchetypeRuntime.sync()
+        runtime.__enter__()
+
+        with pytest.raises(RuntimeShutdownError, match="workflow-handles"):
+            runtime.__exit__(None, None, None)
+
+        assert runtime._runner is not None
+        assert resources.close_state is RuntimeCloseState.CLOSING_RETRYABLE
+
+        runtime.shutdown()
+        runtime.shutdown()
+
+        assert runtime._runner is None
+        assert resources.close_state is RuntimeCloseState.CLOSED
+        assert handle.close_calls == 2
 
 
 class TestStructuredStepFailures:
