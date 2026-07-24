@@ -16,7 +16,6 @@ Archetype's Python reference inventories and classifies the supported top-level 
 | [Configuration](python/configuration.md) | Runtime configuration is user-facing. `WorldConfig` is primarily for custom hosts and lower-level engine construction. |
 | [AutoResearch and evaluation](python/autoresearch.md) | Configure optimization loops and persist evaluation evidence with explicit identities. |
 | [Physical AI](python/physical-ai.md) | Run batched physical-policy evaluations and paired instruction sweeps through the runtime, while retaining queryable world/run evidence. |
-| [Command models](python/commands.md) | Typed command envelopes for supported host adapters. Scheduling, authorization, and concrete application services remain internal. |
 | [Core engine](python/core.md) | Supported engine primitives for custom execution and world lifecycle extensions. |
 | [Storage backends](python/storage.md) | Supported asynchronous storage implementations for custom engine wiring. |
 | [Compatibility API](python/compatibility.md) | The synchronous educational engine and legacy aliases remain available for compatibility. New application code should use `ArchetypeRuntime`. |

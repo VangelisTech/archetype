@@ -4,7 +4,7 @@
 
 **Extension API.** React to world lifecycle events and define the identity record used by trusted ingress adapters.
 
-::: archetype.app.gateway.auth.ActorCtx
+::: archetype.commands.models.ActorCtx
     options:
       members: false
 
