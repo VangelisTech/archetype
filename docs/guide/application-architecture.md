@@ -163,10 +163,10 @@ src/archetype/
   world/             lifecycle, mutation, simulation, query and exact operation models
   commands/          registry, policy, dispatch, durable scheduling and audit projection
   redaction/         canonical pre-durability scanning, receipts and quarantine
+  evaluation/        grading, snapshot pinning, leases and durable receipts
   app/
     ingestion/       live storage selection and typed-ingestion bridge
     artifacts/       file discovery, immutable object storage and media indexes
-    evaluation/      grading orchestration, snapshot pinning and receipt writes
     research/        autoresearch and multi-run research workflows
     missions/        mission graph and external-I/O composition
     physical_ai/     batched evaluation and instruction-sweep workflow
@@ -183,10 +183,12 @@ helpers now live in the registered `archetype.physical_ai` family. Research
 ledger Components and the pure runner decoder live in `archetype.research`,
 while `archetype.app.research` retains workflow authority. Typed trajectory
 schemas and pure transforms live under `archetype.missions.trajectories`; the
-mission trajectory service composes query and evaluation ports. Physical
+mission trajectory service composes world-query functions with the evaluation
+family's pure grader runner. Physical
 evaluation values and pure instruction optimization live under
-`archetype.physical_ai`, while `archetype.app.physical_ai` composes the world,
-mutation, simulation, evaluation, and storage ports. Claude transcript parsing
+`archetype.physical_ai`, while `archetype.app.physical_ai` composes world
+registry/lifecycle and storage ports with world mutation, simulation, and query
+functions. Claude transcript parsing
 now lives under `archetype.missions.trajectories`;
 `archetype.app.artifacts` owns its redact-before-durability workflow. The former
 production
@@ -282,11 +284,11 @@ or CLI boundary.
 | Redaction | Provider-neutral secret scanning, deterministic text redaction, safe receipts and quarantine | None |
 | Ingestion | Select live storage configuration and delegate typed publication | Storage and world-coordinate ports |
 | Artifacts | File discovery, metadata scans, immutable content-addressed objects, and common/media indexes | Ingestion, storage and world-coordinate ports |
-| Evaluation | Snapshot pinning, grader contracts, grading, evidence and durable results | Query, ingestion, storage and world-coordinate ports |
+| Evaluation | Snapshot pinning, grader contracts, grading, leasing, recovery, evidence and durable results | Storage port plus world-query functions; operations carry explicit world and storage coordinates |
 | Commands | Exact registration, authorization policy, governed direct/deferred entry, durable admission, order, leasing, lock-held materialization, retry, settlement, dead letters, transactional outbox and analytical audit projection | Storage/control catalog plus exact world handlers |
 | Research | Multi-run research workflows and bounded persisted-control reads | World registry/lifecycle and storage ports plus world simulation functions and explicit evaluator callbacks |
-| Physical AI | Batched evaluation and instruction-sweep workflows with typed terminal reports | World registry/lifecycle, evaluation, and storage ports plus world mutation/simulation functions |
-| Missions | Graph materialization, tick/external-I/O composition, terminal projection, transcript ingestion, and trajectory query/evaluation composition. Family processors retain transition authority; trajectory evidence cannot advance tasks. | Consumes a structural mission world, family-owned sandbox resource, artifact/ingestion/redaction ports for transcripts, and query/evaluation ports for trajectory reads. |
+| Physical AI | Batched evaluation and instruction-sweep workflows with typed terminal reports | World registry/lifecycle and storage ports plus world mutation/simulation/query functions |
+| Missions | Graph materialization, tick/external-I/O composition, terminal projection, transcript ingestion, and trajectory query/evaluation composition. Family processors retain transition authority; trajectory evidence cannot advance tasks. | Consumes a structural mission world, family-owned sandbox resource, artifact/ingestion/redaction ports for transcripts, and world-query plus pure evaluation-grading functions for trajectory reads. |
 | Runtime/API adapters | Construct exact family operations and select trusted or actor-aware dispatcher entry | Commands dispatcher plus family models |
 | `RuntimeResources` | Process admission, supervised work, handle ownership, and phased retryable teardown | Dispatcher, audit projection, storage, and registered owners |
 | `archetype.wiring` | Concrete construction, registration, and callback wiring | Every concrete implementation it constructs |
@@ -334,7 +336,7 @@ Durability is family-specific rather than one service-level flag:
 | Typed ingestion | `IngestionService` workflow plus `StorageService` and Iceberg | Storage resolves and stamps the durable world/run envelope, the registered schema accepts the rows, and one Iceberg append makes the selected rows visible |
 | Artifact ingestion | `ArtifactService` plus `IngestionService` | The immutable object and any media-specific rows are durable before the common `artifact_files` occurrence becomes visible |
 | Coding-agent transcript | Redaction, artifact, and typed-ingestion authorities | Raw narrative never becomes durable; the sanitized artifact is indexed before normalized rows keyed to its `artifact_id` are appended |
-| Evaluation | Evaluation workflow plus `IngestionService` | Subject and grader contract are pinned and the typed evaluation result is appended |
+| Evaluation | Family handler plus `StorageService` and its control catalog | Subject and grader contract are pinned, one key-conditional result append is durable, and the evaluation lease is settled |
 | Audit | Transactional outbox plus projection | Authoritative event is durable; analytical Iceberg projection may lag |
 
 The store/updater owns physical tick append and flush. `StorageService` owns
@@ -555,11 +557,12 @@ and execution authority. `archetype.artifacts` owns `ArtifactSource`,
 `ArtifactRef`, and `ArtifactStoreConfig`; `archetype.app.artifacts` retains the
 single file-ingestion workflow and object-storage authority.
 
-The evaluation relocation (#557) is complete: `EvalReceipt` lives in
-`archetype.evaluation.components`, the grading value contracts and identity
-digests live in `archetype.evaluation.contracts`, and
-`archetype.app.evaluation` retains orchestration and receipt-write authority
-while importing those domain definitions inward.
+The evaluation workflow pull-forward (#650) is complete:
+`archetype.evaluation` owns `EvalReceipt`, grading values, identity digests,
+exact operation models, snapshot views, and free handlers. Those handlers pin,
+grade, lease, recover, and append through explicit `iStorageService`
+coordinates. There is no application evaluation facade, ingestion fallback, or
+live-world-registry dependency.
 
 The research, trajectory, physical-AI, physical-workflow, ontology, HTN, and
 transcript stages have landed. Physical workflows are reachable through exact
