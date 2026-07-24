@@ -192,8 +192,11 @@ automerge workflow arms only when the head is queue-ready: latest
 `review-complete` succeeded and every non-outdated review thread is
 resolved (premature arms are auto-reverted; arming early only skips the
 review, it never merges sooner). Reply to footgun review threads with
-what you changed, then resolve them — resolving the last thread is what
-re-arms after a review that posted findings.
+what you changed, then resolve them. GitHub Actions cannot observe thread
+resolution, so re-run **Deterministic Review Gate** (or push) once the
+last thread is resolved to re-evaluate arming. The reverse also holds: a
+review submitted on an armed PR that is no longer queue-ready disarms it
+(best-effort — the merge queue may already hold the PR).
 
 ## Application flow
 

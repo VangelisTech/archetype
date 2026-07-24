@@ -18,18 +18,43 @@
 # resolution. Arming on review-complete alone left #645 armed for hours
 # while conversations stayed open. The guard job reported success
 # ("arming is legitimate") without disarming, which shepherds misread as
-# "reverted". Defer arming until threads resolve; re-arm when the last
-# thread resolves.
+# "reverted". Defer arming until threads resolve.
+#
+# Thread resolution itself is NOT observable here: GitHub Actions has no
+# trigger for it (`pull_request_review_thread` is an Apps webhook only, and
+# naming it in `on:` invalidates the whole file). Queue-readiness is
+# therefore re-evaluated on the signals Actions does deliver — a review
+# gate run completing, and any review being submitted, edited, or
+# dismissed. After resolving the last thread, re-run Deterministic Review
+# Gate or push to re-evaluate.
+#
+# Why the dequeue job exists: arming covers queue-ready → armed, but #646
+# lost the reverse transition. Two real findings arrived after
+# review-complete had already passed, the PR was queue-locked, the repair
+# push was rejected GH006, both manual dequeue attempts failed, and the
+# merge won by seconds — known defects landed on main and needed a
+# mandatory hotfix (#647). The dequeue job applies the symmetric
+# back-pressure: a review re-checks queue-readiness and disarms if it has
+# lapsed.
+#
+# Trusted-checkout rule for every job here: any job that executes a repo
+# script must check out the default branch explicitly. GitHub resolves the
+# workflow *file* from the default branch for non-`pull_request` events,
+# but `actions/checkout` without `ref:` follows GITHUB_SHA — which is the
+# PR merge ref on `pull_request`, `pull_request_review`, and
+# `pull_request_review_thread` events. Unpinned, a PR could edit
+# scripts/gh_pr_queue_ready.sh into declaring itself queue-ready.
 #
 # Token note: the arm job prefers AUTOMERGE_PAT (a fine-grained PAT with
 # contents:write + pull-requests:write) because the eventual merge commit
 # must trigger `on: push` workflows — pushes made by the default
 # GITHUB_TOKEN do not, so the docs deploy to Cloudflare Pages on main
-# would be skipped for auto-merged PRs. The disarm/guard jobs deliberately
-# use only github.token: disarming needs no downstream triggers, and a job
-# whose YAML executes from the PR ref (plain `pull_request`) should not
-# reference secrets it doesn't need — least privilege, even though GitHub
-# already withholds repo secrets from fork-triggered pull_request runs.
+# would be skipped for auto-merged PRs. The disarm/guard/dequeue jobs
+# deliberately use only github.token: disarming needs no downstream
+# triggers, and a job whose YAML executes from the PR ref (plain
+# `pull_request`) should not reference secrets it doesn't need — least
+# privilege, even though GitHub already withholds repo secrets from
+# fork-triggered pull_request runs.
 
 name: Auto-merge
 
@@ -40,17 +65,29 @@ on:
   # this workflow does not control.
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, auto_merge_enabled]
-  # Last-thread resolution is the second arming signal: review may have
-  # already passed while conversations were still open.
-  pull_request_review_thread:
-    types: [resolved]
+  # Review activity is the second arming signal, and the dequeue signal.
+  # The review gate may have passed while conversations were still open, and
+  # a review submitted after arming can carry findings the gate never saw
+  # (#646). The arm and dequeue jobs both run on this trigger and cannot
+  # conflict: each one re-runs the same queue-ready check and only acts on
+  # the answer the other does not.
+  #
+  # NOT `pull_request_review_thread`. Thread resolution is a webhook event
+  # for GitHub Apps, NOT a GitHub Actions trigger — naming it makes the
+  # entire workflow file invalid, so GitHub loads no jobs at all and every
+  # push gets a bare "Invalid workflow file" run instead. Actions cannot
+  # observe thread resolution at all; to re-evaluate arming after resolving
+  # the last thread, re-run Deterministic Review Gate (that fires the
+  # workflow_run trigger below) or push.
+  pull_request_review:
+    types: [submitted, edited, dismissed]
   # The review gate's completion is the first arming signal.
   workflow_run:
     workflows: ["Deterministic Review Gate"]
     types: [completed]
 
 permissions:
-  checks: read # Guard/arm query review-complete check runs on the head.
+  checks: read # Guard/arm/dequeue query review-complete check runs on the head.
   contents: write
   pull-requests: write
 
@@ -94,6 +131,13 @@ jobs:
       - name: Checkout queue-ready helper
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
+          # Trusted ref, NOT the PR head: this job runs the PR's own copy of
+          # the workflow file (plain `pull_request`), and an unpinned
+          # checkout would also hand it the PR's copy of the helper — a PR
+          # could edit gh_pr_queue_ready.sh to print "queue-ready", exit 0,
+          # and keep its own premature arm. The default branch is the only
+          # version of the helper this repo has reviewed.
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
 
       # Arming is the queue-ready gate (see header). The arm job below is the
@@ -144,16 +188,19 @@ jobs:
       (github.event_name == 'workflow_run' &&
        github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.head_repository.full_name == github.repository) ||
-      (github.event_name == 'pull_request_review_thread' &&
-       github.event.action == 'resolved')
+      github.event_name == 'pull_request_review'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout queue-ready helper
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          # workflow_run / review_thread execute against the default-branch
-          # workflow file, so this checkout is always the trusted main helper.
+          # workflow_run / pull_request_review execute the default-branch
+          # workflow FILE, but that does not make the checkout trusted: on
+          # pull_request_review GITHUB_SHA resolves to the PR merge ref, so
+          # an unpinned checkout would run the PR's helper with
+          # AUTOMERGE_PAT in the environment. Pin the ref (see header).
           # persist-credentials false: the arm step uses AUTOMERGE_PAT.
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
 
       # Look the PR up by listing open PRs and filtering on headRefOid
@@ -166,15 +213,22 @@ jobs:
           GH_TOKEN: ${{ secrets.AUTOMERGE_PAT || github.token }}
           EVENT_NAME: ${{ github.event_name }}
           WORKFLOW_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          THREAD_PR: ${{ github.event.pull_request.number }}
+          REVIEW_PR: ${{ github.event.pull_request.number }}
         run: |
           chmod +x scripts/gh_pr_queue_ready.sh
 
-          if [ "$EVENT_NAME" = "pull_request_review_thread" ]; then
-            pr="$THREAD_PR"
+          # `.state == "OPEN"` is what `--state open` gives the branch below;
+          # both paths must agree field-for-field on what makes a PR eligible.
+          # gh pr view serves closed and merged PRs just as readily as open
+          # ones, and neither is ever isDraft — so without it, reviewing a
+          # merged PR would reach `gh pr merge --auto` on something that can
+          # no longer be merged, and the "closed" in the message below would
+          # be a claim the code did not implement.
+          if [ "$EVENT_NAME" = "pull_request_review" ]; then
+            pr="$REVIEW_PR"
             meta=$(gh pr view "$pr" --repo "${GITHUB_REPOSITORY}" \
-              --json number,author,isDraft,headRefOid \
-              --jq 'select(.author.login == "everettVT" and (.isDraft | not)) | "\(.number) \(.headRefOid)"')
+              --json number,state,author,isDraft,headRefOid \
+              --jq 'select(.state == "OPEN" and .author.login == "everettVT" and (.isDraft | not)) | "\(.number) \(.headRefOid)"')
             if [ -z "$meta" ]; then
               echo "PR #${pr} is draft, closed, or not authored by everettVT; nothing to arm."
               exit 0
@@ -202,3 +256,75 @@ jobs:
 
           echo "PR #${pr} is queue-ready on ${head_sha}; arming."
           gh pr merge --auto --squash --repo "${GITHUB_REPOSITORY}" "$pr"
+
+  dequeue:
+    name: Disarm when new findings land
+    # The queue-ready → not-queue-ready transition (#646 → #647): a review
+    # submitted after the gate already passed invalidates the verdict the
+    # arm was based on. Runs on the same trigger as the arm job above and
+    # is its mirror image — both re-run the same queue-ready check, so
+    # exactly one of them acts on any given review.
+    if: github.event_name == 'pull_request_review'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout queue-ready helper
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          # Trusted ref: pull_request_review resolves GITHUB_SHA to the PR
+          # merge ref, so an unpinned checkout runs the PR's own helper
+          # (see header).
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      # Best-effort back-pressure, not a guarantee: GitHub's merge queue may
+      # already hold this PR, in which case the dequeue loses the race exactly
+      # as the manual attempts on #646 did. The durable guarantee stays
+      # "arming requires queue-ready" — this only shortens the window in which
+      # an already-armed PR carries findings into the queue.
+      #
+      # Head comes from the API, not github.event.pull_request.head.sha: the
+      # review payload can carry a superseded head if a push raced the review,
+      # and readiness must be judged on what would actually merge.
+      - name: Disarm if the head is no longer queue-ready
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          chmod +x scripts/gh_pr_queue_ready.sh
+          head_sha=$(gh pr view "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+            --json headRefOid --jq '.headRefOid')
+
+          set +e
+          reason=$(scripts/gh_pr_queue_ready.sh "${GITHUB_REPOSITORY}" "${PR_NUMBER}" "${head_sha}")
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "PR #${PR_NUMBER} is still queue-ready on ${head_sha}; nothing to disarm."
+            exit 0
+          fi
+          if [ "$status" -ne 1 ]; then
+            echo "::error::queue-ready helper failed (exit ${status}): ${reason}"
+            exit 1
+          fi
+
+          armed=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest // empty')
+          if [ -z "$armed" ]; then
+            echo "PR #${PR_NUMBER} is no longer queue-ready (${reason}); auto-merge was not armed, nothing to disarm."
+            exit 0
+          fi
+
+          echo "PR #${PR_NUMBER} is no longer queue-ready (${reason}); disarming auto-merge."
+          # Postcondition, not exit code: `--disable-auto` exits nonzero on the
+          # benign already-unarmed no-op, so read autoMergeRequest back.
+          for attempt in 1 2 3; do
+            gh pr merge --disable-auto "$PR_URL" || true
+            armed=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest // empty')
+            if [ -z "$armed" ]; then
+              echo "auto-merge disarmed on new findings (attempt ${attempt})."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::could not disarm #${PR_NUMBER} after new review findings; the merge queue may already have locked it (the #646 race)."
+          exit 1

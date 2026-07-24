@@ -74,12 +74,28 @@ fi
 
 # Count non-outdated unresolved threads. Outdated threads on superseded lines
 # must not block arming after the author pushed a fix that moved the hunk.
-unresolved="$(
+#
+# hasNextPage is not decoration. Truncation is not an error: past 100 threads
+# GitHub returns a clean, valid response containing exactly 100 nodes, so the
+# count below is a perfectly good integer computed from an incomplete set and
+# the guards cannot fire — nothing failed. If every unresolved thread sat past
+# node 100 this would print "queue-ready" and exit 0 while the PR was actually
+# blocked: a fail-open inside the one mechanism whose whole purpose is to fail
+# closed. So ask whether there is more, and refuse when there is.
+#
+# Deliberately NOT a cursor loop. Paging adds a retry surface, more API calls,
+# and a partial-failure mode midway through that would itself need a
+# fail-closed decision. A PR carrying more than 100 review threads is
+# pathological and deserves a human look, so refusing to arm it is the correct
+# outcome and is honest about what was not checked. Five lines that refuse to
+# guess beat forty that might — do not "improve" this into pagination.
+threads="$(
   gh api graphql \
     -f query='query($owner:String!, $name:String!, $number:Int!) {
       repository(owner:$owner, name:$name) {
         pullRequest(number:$number) {
           reviewThreads(first:100) {
+            pageInfo { hasNextPage }
             nodes { isResolved isOutdated }
           }
         }
@@ -88,13 +104,24 @@ unresolved="$(
     -f owner="$OWNER" \
     -f name="$NAME" \
     -F number="$PR_NUMBER" \
-    --jq '[.data.repository.pullRequest.reviewThreads.nodes[]
-           | select(.isResolved == false and .isOutdated == false)] | length' \
+    --jq '.data.repository.pullRequest.reviewThreads
+          | "\(.pageInfo.hasNextPage) \([.nodes[]
+              | select(.isResolved == false and .isOutdated == false)] | length)"' \
     2>/dev/null || true
 )"
 
+truncated="${threads%% *}"
+unresolved="${threads##* }"
+
 if [[ -z "$unresolved" || ! "$unresolved" =~ ^[0-9]+$ ]]; then
   echo "could not enumerate review threads on #${PR_NUMBER}; refusing to treat as queue-ready"
+  exit 1
+fi
+
+# Anything other than an explicit "false" — "true", "null", a shape change —
+# means the page may be incomplete. Fail closed on all of them.
+if [[ "$truncated" != "false" ]]; then
+  echo "more than 100 review threads on #${PR_NUMBER}; refusing to treat as queue-ready without seeing them all"
   exit 1
 fi
 
