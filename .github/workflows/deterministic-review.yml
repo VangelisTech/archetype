@@ -892,6 +892,12 @@ jobs:
       # documented". An advisory-only review therefore concludes
       # `review-complete` success while its threads keep the PR out of the
       # merge queue until each is addressed.
+      #
+      # Re-arming after those dispositions: submit a review. Do NOT re-run
+      # this gate — this head already passed, the run would review it again,
+      # and the publish step above would post the same advisory findings as
+      # fresh unresolved threads, undoing the resolution that was the whole
+      # point. See automerge.yml's queue-ready comment.
       - name: Block merge on findings
         id: finding_gate
         if: >-
