@@ -522,8 +522,8 @@ def task_command_gateway_gate_map() -> list[GraderResult]:
 
 
 def task_append_only_protocols() -> list[GraderResult]:
-    """Storage and audit protocols expose no destructive methods."""
-    from archetype.app.audit.interfaces import iAuditLog
+    """Storage protocol and commands-owned audit expose no destructive methods."""
+    from archetype.commands.audit import AuditLog
     from archetype.core.interfaces import iAsyncStore
 
     destructive = ("delete", "drop", "truncate")
@@ -538,7 +538,7 @@ def task_append_only_protocols() -> list[GraderResult]:
 
     return [
         exact_match(_protocol_ok(iAsyncStore), True, name="iAsyncStore_append_only"),
-        exact_match(_protocol_ok(iAuditLog), True, name="iAuditLog_append_only"),
+        exact_match(_protocol_ok(AuditLog), True, name="AuditLog_append_only"),
     ]
 
 

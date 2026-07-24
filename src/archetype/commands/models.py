@@ -27,8 +27,11 @@ class _FrozenModel(BaseModel):
 class ActorCtx(_FrozenModel):
     """Stable caller identity and its flat role grants."""
 
-    id: UUID
-    roles: set[str] = Field(default_factory=lambda: {"viewer"})
+    id: UUID = Field(description="Stable actor identifier used by access evidence.")
+    roles: set[str] = Field(
+        default_factory=lambda: {"viewer"},
+        description="Flat role grants authenticated for this actor.",
+    )
 
 
 class DurableOptions(_FrozenModel):
