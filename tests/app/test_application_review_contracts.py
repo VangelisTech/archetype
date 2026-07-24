@@ -226,9 +226,7 @@ async def test_trusted_direct_simulation_preserves_live_kwarg_identity(
                 components=[ReviewValue(value=1)],
             )
         )
-        await dispatcher.apply(
-            AddProcessor(world_id=info.world_id, processor=processor)
-        )
+        await dispatcher.apply(AddProcessor(world_id=info.world_id, processor=processor))
         capability = object()
 
         await _invoke_simulation(
@@ -266,9 +264,7 @@ async def test_trusted_direct_simulation_preserves_tuple_identity_and_shape(
                 components=[ReviewValue(value=1)],
             )
         )
-        await dispatcher.apply(
-            AddProcessor(world_id=info.world_id, processor=processor)
-        )
+        await dispatcher.apply(AddProcessor(world_id=info.world_id, processor=processor))
         coordinates = ("outer", ("inner", 3))
 
         await _invoke_simulation(

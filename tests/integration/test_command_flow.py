@@ -55,9 +55,7 @@ _DIRECT_OPERATION_TYPES = tuple(
             for operation_type in WORLD_OPERATION_TYPES
             if operation_type not in _PORTABLE_TYPES
         ),
-        key=lambda operation_type: str(
-            operation_type.model_fields["operation"].default
-        ),
+        key=lambda operation_type: str(operation_type.model_fields["operation"].default),
     )
 )
 
@@ -168,9 +166,7 @@ async def test_deferred_spawn_reserved_id_survives_drain(tmp_path: Path) -> None
         assert applied == 1
         assert reserved_id in world.entity2sig
         rows = await _marker_rows(harness, info, storage)
-        assert [(row["entity_id"], row["tick"]) for row in rows] == [
-            (reserved_id, 0)
-        ]
+        assert [(row["entity_id"], row["tick"]) for row in rows] == [(reserved_id, 0)]
         (record,) = await harness.scheduler.records(info.world_id)
         assert record.status == "APPLIED"
 
@@ -236,16 +232,12 @@ async def test_replayed_reserved_spawn_is_not_applied_twice(tmp_path: Path) -> N
         first = SpawnReserved(
             world_id=info.world_id,
             entity_id=entity_id,
-            components=(
-                ComponentValue.from_component(CommandFlowMarker(tag="first")),
-            ),
+            components=(ComponentValue.from_component(CommandFlowMarker(tag="first")),),
         )
         replay = SpawnReserved(
             world_id=info.world_id,
             entity_id=entity_id,
-            components=(
-                ComponentValue.from_component(CommandFlowMarker(tag="replay")),
-            ),
+            components=(ComponentValue.from_component(CommandFlowMarker(tag="replay")),),
         )
         await harness.dispatcher.defer_batch(
             (
@@ -289,11 +281,7 @@ async def test_queued_update_is_applied_during_drain(tmp_path: Path) -> None:
             Update(
                 world_id=info.world_id,
                 entity_id=entity_id,
-                components=(
-                    ComponentValue.from_component(
-                        CommandFlowMarker(tag="after")
-                    ),
-                ),
+                components=(ComponentValue.from_component(CommandFlowMarker(tag="after")),),
             ),
             DurableOptions(target_tick=1),
         )
@@ -395,11 +383,7 @@ async def test_rejected_deferred_batch_does_not_debit_quota(
                 operation=AddComponents(
                     world_id=info.world_id,
                     entity_id=1,
-                    components=(
-                        ComponentValue.from_component(
-                            CommandFlowMarker(tag="denied")
-                        ),
-                    ),
+                    components=(ComponentValue.from_component(CommandFlowMarker(tag="denied")),),
                 ),
                 options=DurableOptions(target_tick=0),
             ),

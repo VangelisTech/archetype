@@ -1055,8 +1055,8 @@ async def test_pull_forward_handlers_translate_exact_values_without_recursive_di
                         "storage_config": storage,
                         "lineage": lineage,
                         "selection": selection,
-                            "ticks": [4],
-                            "entity_ids": [5],
+                        "ticks": [4],
+                        "entity_ids": [5],
                     },
                 )
             ]
@@ -1070,8 +1070,8 @@ async def test_pull_forward_handlers_translate_exact_values_without_recursive_di
                         "storage_config": storage,
                         "lineage": lineage,
                         "selection": selection,
-                            "ticks": [6],
-                            "entity_ids": [7],
+                        "ticks": [6],
+                        "entity_ids": [7],
                     },
                 )
             ]

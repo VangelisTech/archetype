@@ -218,9 +218,7 @@ async def test_destroy_waits_for_an_admitted_same_world_step(tmp_path):
             dispatcher.apply(Step(world_id=info.world_id, run_config=RunConfig()))
         )
         await entered.wait()
-        destroy = asyncio.create_task(
-            dispatcher.apply(DestroyWorld(world_id=info.world_id))
-        )
+        destroy = asyncio.create_task(dispatcher.apply(DestroyWorld(world_id=info.world_id)))
         await asyncio.sleep(0)
 
         assert not destroy.done()
@@ -276,9 +274,7 @@ async def test_public_destroy_projects_pending_receipt_before_command_cancellati
         )
 
         with pytest.raises(PostCommitProjectionError):
-            await dispatcher.apply(
-                Step(world_id=info.world_id, run_config=RunConfig())
-            )
+            await dispatcher.apply(Step(world_id=info.world_id, run_config=RunConfig()))
 
         pending = registry.pending_receipt(info.world_id)
         assert pending is not None
@@ -370,9 +366,7 @@ async def test_list_worlds_recovery_callback_can_enter_a_sibling_world(tmp_path)
         del receipt
         assert dispatcher is not None
         assert sibling_id is not None
-        callback_info.append(
-            await dispatcher.apply(GetWorldInfo(world_id=sibling_id))
-        )
+        callback_info.append(await dispatcher.apply(GetWorldInfo(world_id=sibling_id)))
 
     async with _application_harness(
         tmp_path,
@@ -451,12 +445,8 @@ async def test_different_registry_world_operations_execute_concurrently(tmp_path
                 )
             )
 
-        first_step = asyncio.create_task(
-            dispatcher.apply(Step(world_id=first.world_id))
-        )
-        second_step = asyncio.create_task(
-            dispatcher.apply(Step(world_id=second.world_id))
-        )
+        first_step = asyncio.create_task(dispatcher.apply(Step(world_id=first.world_id)))
+        second_step = asyncio.create_task(dispatcher.apply(Step(world_id=second.world_id)))
         await asyncio.wait_for(asyncio.gather(entered_a.wait(), entered_b.wait()), timeout=2)
 
         release.set()
@@ -489,14 +479,10 @@ async def test_reserve_ids_uses_registry_operation_and_admission(tmp_path):
             )
         )
 
-        step = asyncio.create_task(
-            dispatcher.apply(Step(world_id=info.world_id))
-        )
+        step = asyncio.create_task(dispatcher.apply(Step(world_id=info.world_id)))
         await entered.wait()
         reservation = asyncio.create_task(
-            dispatcher.apply(
-                ReserveEntityIds(world_id=info.world_id, count=2)
-            )
+            dispatcher.apply(ReserveEntityIds(world_id=info.world_id, count=2))
         )
         await asyncio.sleep(0)
 
@@ -507,9 +493,7 @@ async def test_reserve_ids_uses_registry_operation_and_admission(tmp_path):
 
         await dispatcher.stop_admission()
         with pytest.raises(RuntimeError, match="not accepting work"):
-            await dispatcher.apply(
-                ReserveEntityIds(world_id=info.world_id, count=1)
-            )
+            await dispatcher.apply(ReserveEntityIds(world_id=info.world_id, count=1))
 
 
 @pytest.mark.asyncio
@@ -529,9 +513,7 @@ async def test_inherited_admission_context_cannot_bypass_registry_lock_or_close(
             harness.registry.operation(str(info.world_id)),
         ):
             reservation = asyncio.create_task(
-                dispatcher.apply(
-                    ReserveEntityIds(world_id=info.world_id, count=1)
-                )
+                dispatcher.apply(ReserveEntityIds(world_id=info.world_id, count=1))
             )
             await asyncio.sleep(0)
             assert not reservation.done()

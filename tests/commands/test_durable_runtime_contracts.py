@@ -136,9 +136,7 @@ async def _create_world(
     config: WorldConfig,
     storage: StorageConfig,
 ) -> AsyncWorld:
-    info = await process.dispatcher.apply(
-        CreateWorld(config=config, storage_config=storage)
-    )
+    info = await process.dispatcher.apply(CreateWorld(config=config, storage_config=storage))
     world = await process.worlds.live_world(str(info.world_id))
     assert isinstance(world, AsyncWorld)
     return world
@@ -431,10 +429,7 @@ async def test_command_id_is_durable_idempotency_identity(tmp_path):
     )
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        world = await _create_world(
-            process,
-            WorldConfig(name="idempotency"), _storage(tmp_path)
-        )
+        world = await _create_world(process, WorldConfig(name="idempotency"), _storage(tmp_path))
         command_id = uuid7()
         operation = Spawn.from_components(
             world_id=world.world_id,
@@ -482,10 +477,7 @@ async def test_permanent_rejection_does_not_block_later_same_tick_command(tmp_pa
         audit_storage_config=_audit_storage(tmp_path),
     )
     try:
-        world = await _create_world(
-            process,
-            WorldConfig(name="poison"), _storage(tmp_path)
-        )
+        world = await _create_world(process, WorldConfig(name="poison"), _storage(tmp_path))
         entity_id = await process.dispatcher.apply(
             Spawn.from_components(
                 world_id=world.world_id,
@@ -524,10 +516,7 @@ async def test_transient_failure_retries_and_preserves_tail_order(tmp_path, monk
     )
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        world = await _create_world(
-            process,
-            WorldConfig(name="retry"), _storage(tmp_path)
-        )
+        world = await _create_world(process, WorldConfig(name="retry"), _storage(tmp_path))
         entity_id = await process.dispatcher.apply(
             Spawn.from_components(
                 world_id=world.world_id,
@@ -574,10 +563,7 @@ async def test_exhausted_transient_command_dead_letters_then_tail_continues(tmp_
     )
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        world = await _create_world(
-            process,
-            WorldConfig(name="dead-letter"), _storage(tmp_path)
-        )
+        world = await _create_world(process, WorldConfig(name="dead-letter"), _storage(tmp_path))
         poison_entity = await process.dispatcher.apply(
             Spawn.from_components(
                 world_id=world.world_id,
@@ -628,10 +614,7 @@ async def test_manifest_failure_keeps_command_leased_and_retry_does_not_restage(
         audit_storage_config=_audit_storage(tmp_path),
     )
     try:
-        world = await _create_world(
-            process,
-            WorldConfig(name="atomic"), _storage(tmp_path)
-        )
+        world = await _create_world(process, WorldConfig(name="atomic"), _storage(tmp_path))
         entity_id, command_id = await _defer_reserved_spawn(
             process,
             world.world_id,
@@ -763,9 +746,7 @@ async def test_committed_manifest_response_loss_reconciles_without_replaying_tic
         assert not cast("Any", coordinator).is_command_staged(0, str(command_id))
 
         audit_rows = (
-            await process.dispatcher.apply(
-                GetAuditHistory(world_id=world.world_id)
-            )
+            await process.dispatcher.apply(GetAuditHistory(world_id=world.world_id))
         ).to_pylist()
         command_rows = [row for row in audit_rows if row["command_id"] == str(command_id)]
         assert [row["status"] for row in command_rows] == ["queued", "applied"]
@@ -938,9 +919,7 @@ async def test_destroy_reconciles_ambiguous_prepared_command_before_cancellation
         assert prepared_context is not None
         prepared_token = prepared_context.commit_token
         with pytest.raises(AmbiguousTickCommitError):
-            await process.dispatcher.apply(
-                DestroyWorld(world_id=world.world_id)
-            )
+            await process.dispatcher.apply(DestroyWorld(world_id=world.world_id))
 
         (still_leased,) = await process.scheduler.records(world.world_id)
         assert still_leased.status == "LEASED"
@@ -973,9 +952,7 @@ async def test_destroy_reconciles_ambiguous_prepared_command_before_cancellation
         assert destroy_events == ["destroy"]
 
         audit_rows = (
-            await process.dispatcher.apply(
-                GetAuditHistory(world_id=world.world_id)
-            )
+            await process.dispatcher.apply(GetAuditHistory(world_id=world.world_id))
         ).to_pylist()
         command_rows = [row for row in audit_rows if row["command_id"] == str(command_id)]
         assert [row["status"] for row in command_rows] == ["queued", "applied"]
@@ -1028,9 +1005,7 @@ async def test_pending_reserved_spawn_survives_process_restart(tmp_path):
     )
     try:
         assert world_id is not None
-        await second.dispatcher.apply(
-            ResumeWorld(storage_config=storage, world_id=world_id)
-        )
+        await second.dispatcher.apply(ResumeWorld(storage_config=storage, world_id=world_id))
         resumed = await second.worlds.live_world(world_id)
         assert resumed is not None
         assert resumed.next_entity_id == 2
@@ -1087,10 +1062,7 @@ async def test_command_outbox_projects_queued_and_applied_with_watermark(tmp_pat
     )
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        world = await _create_world(
-            process,
-            WorldConfig(name="projection"), _storage(tmp_path)
-        )
+        world = await _create_world(process, WorldConfig(name="projection"), _storage(tmp_path))
         await process.dispatcher.defer_spawn_as(
             ctx,
             Spawn.from_components(world_id=world.world_id, components=[]),
@@ -1100,15 +1072,11 @@ async def test_command_outbox_projects_queued_and_applied_with_watermark(tmp_pat
         await process.dispatcher.apply(Step(world_id=world.world_id))
 
         rows = (
-            await process.dispatcher.apply(
-                GetAuditHistory(world_id=world.world_id)
-            )
+            await process.dispatcher.apply(GetAuditHistory(world_id=world.world_id))
         ).to_pylist()
         command_rows = [row for row in rows if row["command_id"] == command.command_id]
         assert [row["status"] for row in command_rows] == ["queued", "applied"]
-        assert await process.scheduler.outbox_progress() == {
-            str(world.world_id): (2, 0)
-        }
+        assert await process.scheduler.outbox_progress() == {str(world.world_id): (2, 0)}
     finally:
         await process.shutdown()
 
@@ -1120,10 +1088,7 @@ async def test_cold_readonly_open_discovers_unprojected_command_outbox(tmp_path)
     writer = _runtime_process(tmp_path, audit_storage_config=audit_storage)
     reader = _runtime_process(tmp_path, audit_storage_config=audit_storage)
     try:
-        world = await _create_world(
-            writer,
-            WorldConfig(name="cold-outbox"), world_storage
-        )
+        world = await _create_world(writer, WorldConfig(name="cold-outbox"), world_storage)
         _entity_id, command_id = await writer.dispatcher.defer_spawn(
             Spawn.from_components(world_id=world.world_id, components=[]),
             DurableOptions(target_tick=0),
@@ -1138,16 +1103,10 @@ async def test_cold_readonly_open_discovers_unprojected_command_outbox(tmp_path)
         )
         assert info.world_id == world.world_id
 
-        rows = (
-            await reader.dispatcher.apply(
-                GetAuditHistory(world_id=world.world_id)
-            )
-        ).to_pylist()
+        rows = (await reader.dispatcher.apply(GetAuditHistory(world_id=world.world_id))).to_pylist()
         command_rows = [row for row in rows if row["command_id"] == str(command_id)]
         assert [row["status"] for row in command_rows] == ["queued"]
-        assert await reader.scheduler.outbox_progress() == {
-            str(world.world_id): (1, 0)
-        }
+        assert await reader.scheduler.outbox_progress() == {str(world.world_id): (1, 0)}
     finally:
         await reader.shutdown()
         await writer.shutdown()
@@ -1160,10 +1119,7 @@ async def test_portable_commands_wait_for_scheduled_tick_and_settle_in_ledger_or
         audit_storage_config=_audit_storage(tmp_path),
     )
     try:
-        world = await _create_world(
-            process,
-            WorldConfig(name="messages"), _storage(tmp_path)
-        )
+        world = await _create_world(process, WorldConfig(name="messages"), _storage(tmp_path))
         reserved_ids = await process.dispatcher.apply(
             ReserveEntityIds(world_id=world.world_id, count=3)
         )
@@ -1205,8 +1161,7 @@ async def test_component_wire_identity_survives_same_named_loaded_classes(tmp_pa
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
         world = await _create_world(
-            process,
-            WorldConfig(name="component-wire"), _storage(tmp_path, "component-wire")
+            process, WorldConfig(name="component-wire"), _storage(tmp_path, "component-wire")
         )
         entity_id = await process.dispatcher.apply(
             Spawn.from_components(
