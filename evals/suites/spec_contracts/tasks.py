@@ -71,13 +71,17 @@ SPEC_CASES: tuple[SpecCase, ...] = (
     SpecCase(
         spec_id="command-gate.3",
         source="command-gate.md",
-        anchors=("The permissions matrix", "`list_worlds`"),
+        anchors=("Four roles and permissions", "`list_worlds`"),
         task_id="spec.role_permission_matrix",
     ),
     SpecCase(
         spec_id="command-gate.1",
         source="command-gate.md",
-        anchors=("policy enforcement point", "before any work happens", "access event"),
+        anchors=(
+            "policy and admission",
+            "Pure role denial happens before",
+            "access evidence",
+        ),
         task_id="spec.command_gateway_gate_map",
     ),
     SpecCase(
@@ -95,7 +99,7 @@ SPEC_CASES: tuple[SpecCase, ...] = (
     SpecCase(
         spec_id="audit-log.2",
         source="audit-log.md",
-        anchors=("Append-only invariant", "no `drop_*` or `delete_*` methods"),
+        anchors=("Append-only invariant", "`AuditLog` has no delete or drop operation"),
         task_id="spec.append_only_protocols",
     ),
     SpecCase(
