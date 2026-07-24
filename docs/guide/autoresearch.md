@@ -185,6 +185,16 @@ bypasses that keyed admission and includes an invocation-unique token in every
 rollout name. Concurrent ledgerless calls cannot collide merely because they
 reuse an experiment ID.
 
+The task that owns a ledgered experiment cannot recursively admit that same
+experiment. A direct `await world.autoresearch(...)` from its `on_iteration`
+callback fails with `RuntimeError` instead of waiting on itself. The callback
+may use ordinary world operations or run an unrelated experiment. A separately
+scheduled same-experiment task remains an ordinary serialized waiter, so the
+callback must return before awaiting that task; a sync callback likewise must
+not call the same experiment recursively. Resume it only after the current
+workflow returns. This preserves normal concurrent waiters without granting
+callback descendants inherited lock authority.
+
 The experiment key is not a substitute for world synchronization. Every
 base, lab, candidate, and rollout state boundary uses the named lock owned by
 `WorldRegistry`; the workflow does not carry a handler-wide world lock across

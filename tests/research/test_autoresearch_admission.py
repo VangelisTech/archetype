@@ -122,6 +122,23 @@ def _family_handler(
 
 
 @pytest.mark.asyncio
+async def test_same_task_recursive_admission_rejects_without_leaking_the_key() -> None:
+    admissions = AutoResearchAdmissions()
+
+    async with admissions.admit("recursive-admission"):
+        with pytest.raises(
+            RuntimeError,
+            match="autoresearch admission.*cannot re-enter.*recursive-admission",
+        ):
+            async with admissions.admit("recursive-admission"):
+                raise AssertionError("recursive admission must fail before yielding")
+
+    async with asyncio.timeout(1):
+        async with admissions.admit("recursive-admission") as key:
+            assert key == "autoresearch:recursive-admission"
+
+
+@pytest.mark.asyncio
 async def test_same_experiment_waits_then_resumes_at_the_next_iteration(tmp_path) -> None:
     """A second admitted call must not observe the first call's active attempt."""
 

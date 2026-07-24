@@ -186,11 +186,15 @@ entry share that handler; actor-aware use requires `operator`, resolves a
 because evaluator, preparer, and iteration callbacks are live capabilities.
 
 The dispatcher synchronously awaits the entire outer workflow inside one
-process admission. Callback execution does not hold a runtime handle lock that
-would deadlock reentrant runtime operations; inner world and storage calls do
-not recursively dispatch. Runtime shutdown therefore joins an admitted
-AutoResearch call before closing shared dependencies, without a research-owned
-task, owner reservation, or finalizer.
+process admission. Callback execution does not hold a runtime handle or named
+world lock, so ordinary inner world and storage operations remain available
+without recursive dispatch. A ledgered workflow does retain its experiment-key
+admission: direct same-task reentry for that experiment fails fast, while a
+separately scheduled same-key call remains a normal waiter and must not be
+awaited before the callback returns. Sync callbacks must likewise resume the
+same experiment only after the outer call returns. Runtime shutdown therefore
+joins an admitted AutoResearch call before closing shared dependencies, without
+a research-owned task, owner reservation, or finalizer.
 
 `runtime.evaluate_physical_task(...)` and
 `runtime.sweep_physical_instructions(...)` dispatch typed requests to the

@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 class _AdmissionEntry:
     lock: asyncio.Lock
     users: int = 0
+    owner: asyncio.Task[Any] | None = None
 
 
 class AutoResearchAdmissions:
@@ -64,18 +65,28 @@ class AutoResearchAdmissions:
     async def admit(self, experiment_id: str) -> AsyncIterator[str]:
         """Serialize one experiment and release ownership on every exit path."""
 
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("autoresearch admission requires an asyncio task")
         key = self.key(experiment_id)
         async with self._guard:
             entry = self._entries.setdefault(key, _AdmissionEntry(lock=asyncio.Lock()))
+            if entry.owner is task:
+                raise RuntimeError(
+                    "autoresearch admission cannot re-enter the same experiment "
+                    f"from its owning task: {experiment_id}"
+                )
             entry.users += 1
 
         acquired = False
         try:
             await entry.lock.acquire()
             acquired = True
+            entry.owner = task
             yield key
         finally:
             if acquired:
+                entry.owner = None
                 entry.lock.release()
             async with self._guard:
                 entry.users -= 1
