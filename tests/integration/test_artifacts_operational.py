@@ -9,6 +9,7 @@ import hashlib
 from pathlib import Path
 
 import pytest
+from uuid_utils import UUID
 
 from archetype import ArchetypeRuntime
 from archetype.artifacts.models import ArtifactSource, ArtifactStoreConfig
@@ -74,6 +75,7 @@ async def test_local_artifacts_round_trip_across_a_cold_explicit_handle(
 
         assert len(references) == 2
         assert len({reference.artifact_id for reference in references}) == 2
+        assert all(UUID(reference.artifact_id).version == 7 for reference in references)
         assert {reference.sha256 for reference in references} == {digest}
         assert len({reference.uri for reference in references}) == 1
         expected_object = (object_root / "objects" / "sha256" / digest[:2] / digest).resolve()

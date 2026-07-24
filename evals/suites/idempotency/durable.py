@@ -16,7 +16,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from uuid_utils import uuid7
+from uuid_utils import UUID, uuid7
 
 from archetype.artifacts import ArtifactSource
 from archetype.artifacts.models import IngestArtifacts, QueryArtifacts
@@ -335,6 +335,7 @@ async def _task_artifact_occurrence_identity() -> list[GraderResult]:
                     storage_config=storage,
                 )
             )
+            await process.dispatcher.apply(Step(world_id=world.world_id, run_config=RunConfig()))
             first = root / "first.txt"
             second = root / "second.txt"
             first.write_text("same bytes")
@@ -366,14 +367,15 @@ async def _task_artifact_occurrence_identity() -> list[GraderResult]:
                 )
             ).to_pylist()
             refs = (*submitted, retry)
+            artifact_ids = tuple(reference.artifact_id for reference in refs)
 
             return [
                 state_check(
                     {
-                        "each_submission_has_uuidv7_identity": len(
-                            {reference.artifact_id for reference in refs}
-                        )
-                        == 3,
+                        "each_submission_has_uuidv7_identity": (
+                            len(set(artifact_ids)) == 3
+                            and all(UUID(artifact_id).version == 7 for artifact_id in artifact_ids)
+                        ),
                         "equal_bytes_share_one_object": len({reference.uri for reference in refs})
                         == 1,
                         "equal_bytes_share_sha256": len({reference.sha256 for reference in refs})
