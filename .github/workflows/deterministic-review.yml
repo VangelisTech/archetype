@@ -56,6 +56,13 @@ jobs:
       # review or accumulates two verdict comments.
       reaffirmed: ${{ steps.reaffirm.outputs.reaffirmed }}
     steps:
+      - name: Restrict to maintainer PRs
+        if: github.event.pull_request.user.login != 'everettVT'
+        run: |
+          echo "Deterministic footgun review only runs for PRs authored by everettVT."
+          echo "This PR fails closed: no review ran and merge stays blocked."
+          exit 1
+
       # Draft status is not an input to the verdict — the review binds to the
       # head sha. Marking a PR ready at a sha whose review already completed
       # clean therefore buys no new information: it re-spends a full detector
@@ -306,9 +313,13 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           SCHEMA: ${{ steps.scope.outputs.schema }}
         run: |
-          npm install -g "opencode-ai@${OPENCODE_VERSION}"
           # Read-only enforcement: the detector may read the protected base
-          # and the inert diff, never mutate or execute anything.
+          # and the inert diff, never mutate, execute, or reach out. Written
+          # before any fallible command so a partial first attempt can never
+          # leave the retry step running without it; the retry step rewrites
+          # the identical config for the same reason. Tools are disabled
+          # outright (not just permission-gated) for everything beyond
+          # read/grep/glob/list.
           cat > "${GITHUB_WORKSPACE}/opencode.json" <<'EOF'
           {
             "$schema": "https://opencode.ai/config.json",
@@ -316,9 +327,23 @@ jobs:
               "edit": "deny",
               "bash": "deny",
               "webfetch": "deny"
+            },
+            "tools": {
+              "bash": false,
+              "edit": false,
+              "write": false,
+              "patch": false,
+              "webfetch": false,
+              "websearch": false,
+              "task": false,
+              "skill": false,
+              "lsp": false,
+              "todowrite": false,
+              "todoread": false
             }
           }
           EOF
+          npm install -g "opencode-ai@${OPENCODE_VERSION}"
           python3 - <<'EOF'
           import os
 
@@ -448,6 +473,31 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           SCHEMA: ${{ steps.scope.outputs.schema }}
         run: |
+          # Same read-only enforcement as the first attempt, rewritten here
+          # because that attempt may have failed before writing it.
+          cat > "${GITHUB_WORKSPACE}/opencode.json" <<'EOF'
+          {
+            "$schema": "https://opencode.ai/config.json",
+            "permission": {
+              "edit": "deny",
+              "bash": "deny",
+              "webfetch": "deny"
+            },
+            "tools": {
+              "bash": false,
+              "edit": false,
+              "write": false,
+              "patch": false,
+              "webfetch": false,
+              "websearch": false,
+              "task": false,
+              "skill": false,
+              "lsp": false,
+              "todowrite": false,
+              "todoread": false
+            }
+          }
+          EOF
           npm install -g "opencode-ai@${OPENCODE_VERSION}"
           python3 - <<'EOF'
           import os
