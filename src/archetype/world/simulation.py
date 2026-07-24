@@ -443,26 +443,36 @@ async def run_rollout(
         )
         fork, cancelled = await _await_owned(fork_work)
         fork_world_id = fork.world_id
-        try:
-            if cancelled is not None:
-                raise cancelled
-            return await run_episode(
-                registry,
-                storage,
-                fork_world_id,
-                config.episode_config,
-                **input_kwargs,
-            )
-        finally:
-            if config.destroy_forks_on_complete:
-                try:
-                    teardown = asyncio.ensure_future(destroy_world(fork_world_id))
-                    _, teardown_cancelled = await _await_owned(teardown)
-                except BaseException as exc:
-                    exc.add_note(f"rollout fork teardown failed for world_id={fork_world_id}")
-                    raise
-                if teardown_cancelled is not None:
-                    raise teardown_cancelled
+        episode_result: EpisodeResult | None = None
+        episode_failure: BaseException | None = cancelled
+        if episode_failure is None:
+            try:
+                episode_result = await run_episode(
+                    registry,
+                    storage,
+                    fork_world_id,
+                    config.episode_config,
+                    **input_kwargs,
+                )
+            except BaseException as exc:
+                episode_failure = exc
+
+        if config.destroy_forks_on_complete:
+            try:
+                teardown = asyncio.ensure_future(destroy_world(fork_world_id))
+                _, teardown_cancelled = await _await_owned(teardown)
+            except BaseException as exc:
+                exc.add_note(f"rollout fork teardown failed for world_id={fork_world_id}")
+                if episode_failure is not None:
+                    raise exc from episode_failure
+                raise
+            if teardown_cancelled is not None and episode_failure is None:
+                episode_failure = teardown_cancelled
+
+        if episode_failure is not None:
+            raise episode_failure
+        assert episode_result is not None
+        return episode_result
 
     async def _drain_started(indices: tuple[int, ...]) -> tuple[EpisodeResult, ...]:
         """Drain exactly the started children without exposing cancellation."""

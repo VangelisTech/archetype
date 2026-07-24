@@ -114,7 +114,8 @@ shielding fork acquisition until the child owns the returned ID and shielding
 that fork's teardown to completion. Repeated cancellation cannot interrupt
 cleanup. Cancellation propagates only after every started child reaches its
 `finally` teardown, and a cancelled sequential rollout does not start its next
-episode.
+episode. A substantive child failure observed before caller cancellation
+remains chained beneath the caller's original cancellation.
 
 If `destroy_forks_on_complete` is true, application teardown runs in `finally`
 for each fork. It reconciles committed work, cancels unsettled durable commands,
