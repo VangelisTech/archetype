@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from functools import partial
+
 from archetype import (
     ArchetypeRuntime,
     ArtifactStoreConfig,
@@ -19,11 +21,11 @@ def test_top_level_excludes_internal_service_wiring():
     import archetype
 
     internal = {
-        "ServiceContainer",
-        "CommandGateway",
-        "WorldService",
-        "SimulationService",
-        "QueryService",
+        "RuntimeResources",
+        "CommandDispatcher",
+        "OperationRegistry",
+        "WorldLifecycle",
+        "WorldRegistry",
         "IngestionService",
         "ArtifactService",
         "StorageService",
@@ -62,7 +64,11 @@ def test_sync_runtime_forwards_artifact_store_configuration(tmp_path):
     config = ArtifactStoreConfig.local(tmp_path / "artifacts")
 
     with ArchetypeRuntime.sync(artifact_store=config) as runtime:
-        assert runtime._runtime._container.artifact_service._store_config == config
+        dispatcher = runtime._runtime._resources.dispatcher
+        handler = dispatcher._registry.resolve_name("ingest_artifacts").handler
+        assert isinstance(handler, partial)
+        artifact_service = handler.args[0]
+        assert artifact_service._store_config == config
 
 
 def test_public_api_marker_registers():
