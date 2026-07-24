@@ -206,6 +206,8 @@ def _mission_shell(
     handle._storage = storage
     handle._storage_config = storage
     handle.storage = storage
+    handle._reservation = SimpleNamespace(released=False)
+    handle._public_closed = False
     handle._service = _EffectTrap()
     handle._closed = False
     return handle
