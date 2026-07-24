@@ -1,4 +1,4 @@
-# Current app wiring snapshot
+# Current process wiring snapshot
 
 **Document type:** Non-normative implementation note.
 
@@ -6,30 +6,42 @@ The normative dependency and boundary rules live in
 [`docs/guide/application-architecture.md`](../../../docs/guide/application-architecture.md).
 Arrows below mean consumer to dependency.
 
-## Concrete construction
+## Explicit composition
+
+`archetype.wiring.build_runtime_resources` is the sole concrete cross-family
+composition transaction. It constructs:
+
+1. storage and the canonical stateless redactor;
+2. the world registry, operation registry, scheduler, lifecycle, and audit;
+3. the policy and command dispatcher;
+4. one `RuntimeResources` process owner;
+5. remaining application-family workflow services; and
+6. all 47 exact operation registrations before returning the owner.
+
+Nothing escapes while the registry is incomplete. Runtime consumes the
+trusted dispatcher entry points; FastAPI authenticates an `ActorCtx` and
+consumes actor-aware dispatcher entry points. Neither host contains family
+workflow behavior.
 
 | Consumer | Injected dependencies |
 |---|---|
 | `WorldRegistry` | none; owns live world identity, exact-world locks, and close leases |
 | `CommandScheduler` | exact registry, control-catalog resolution, and ID reservation callables |
 | `WorldLifecycle` | `StorageService`, `WorldRegistry`, and `CommandScheduler.materialize` |
-| `AuditLog` | `iStorageService` and scheduler outbox read/acknowledge callables |
-| `IngestionService` | `iStorageService`, `WorldRegistry` |
-| `ArtifactService` | `iStorageService`, `WorldRegistry`, `iIngestionService` |
-| `TranscriptIngestionService` | `iArtifactService`, `iIngestionService`, `iRedactionService`, `iStorageService`, `WorldRegistry` |
-| `EvaluationService` | `iIngestionService`, `StorageService`, `WorldRegistry`; durable reads call `archetype.world.query` |
-| `TrajectoryService` | `StorageService`, `iEvaluationService`; durable reads call `archetype.world.query` |
-| `PhysicalAIService` | `WorldRegistry`, `WorldLifecycle`, `iEvaluationService`, `StorageService` |
-| `AutoResearchService` | `WorldRegistry`, `WorldLifecycle`, `StorageService` |
-| `RuntimeApplication` | `WorldRegistry`, `WorldLifecycle`, `StorageService`, `CommandDispatcher`, a world-command cancellation callable, and optional app workflow ports |
-| `CommandGateway` | `iRuntimeApplication`, `CommandDispatcher`, `Policy`, bounded access-evidence callable, and a target-tick resolver |
+| `AuditLog` | storage plus scheduler outbox read/acknowledge callables |
+| `RuntimeResources` | dispatcher, audit, storage, and explicit storage ownership |
+| `IngestionService` | storage and `WorldRegistry` |
+| `ArtifactService` | storage, `WorldRegistry`, and ingestion |
+| `TranscriptIngestionService` | artifacts, ingestion, canonical redaction, storage, and `WorldRegistry` |
+| `EvaluationService` | ingestion, storage, and `WorldRegistry` |
+| `TrajectoryService` | storage and evaluation |
+| `PhysicalAIService` | `WorldRegistry`, `WorldLifecycle`, evaluation, and storage |
+| `AutoResearchService` | `WorldRegistry`, `WorldLifecycle`, storage, and exact owned-world cleanup |
+| `MissionService` | a runtime-world factory, sandbox service, narrow redaction capability, generic owner reservation, and exact cleanup factory |
 
-`ServiceContainer` constructs the concrete graph and exposes
-`application` and `command_gateway`. It binds
-`CommandScheduler.materialize(AsyncWorld, tick)` into `WorldLifecycle` at
-construction, so due commands run inside the already-held world operation
-lease. It also wires the scheduler outbox reader/acknowledger into `AuditLog`.
-There is no command-drain or quota-reset setter.
+The operation registry contains the 32 world operations, commands-owned audit
+history, and 14 direct family operations exactly once. Registered handlers
+close over concrete dependencies but never re-enter dispatcher admission.
 
 ## Core world composition
 
@@ -47,10 +59,14 @@ World mutation and simulation functions acquire exact leases from
 `WorldRegistry`. Durable world queries bypass live locking and read persisted
 state through `StorageService`.
 
-## Enforcement
+## Lifetime and enforcement
 
-Every cross-family concrete construction occurs in `app/container.py`.
-Constructors use family protocols, concrete services do not inherit concrete
-services, and the merged `quality/architecture.toml` policy plus its family
-fragments currently has zero migration exceptions.
-`scripts/check_architecture.py` enforces those claims.
+`RuntimeResources` owns sticky admission stop, admitted-work drain, supervised
+tasks, workflow handles, world handles, audit, and owned storage in dependency
+order. Failed cleanup retains the exact owner and cause for retry; injected
+storage is never closed.
+
+Every cross-family concrete construction occurs in `archetype.wiring`.
+Constructors consume reviewed narrow capabilities, concrete services do not
+inherit concrete services, and the merged architecture policy has zero
+migration exceptions. `scripts/check_architecture.py` enforces those claims.
