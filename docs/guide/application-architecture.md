@@ -585,7 +585,7 @@ commands-owned `GetAuditHistory`/`AuditLog` projection. `ActorCtx` and exact
 operation models live with the commands or owning family. There is no generic
 command envelope, facade bridge, or compatibility auth re-export.
 
-## 13. v0.5 architecture after PR4
+## 13. Accepted v0.5 target architecture
 
 This section records the ratified v0.5 architecture and its status after PR4.
 The dispatcher, exact-operation, composition, and runtime-resource ownership
