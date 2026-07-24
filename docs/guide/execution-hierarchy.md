@@ -105,9 +105,12 @@ and preserve result order, but the parent structurally drains every started
 episode before it returns or raises. One episode failure does not cancel
 siblings: bounded siblings finish naturally so cancellation cannot interrupt
 the transfer of a newly registered fork into rollout-owned teardown. The first
-observed failure remains the primary exception after the drain. Additional
-failures are recorded as deterministic child/phase/type/fork notes so an
-existing causal chain on the primary exception is never replaced.
+observed child failure establishes its causal chain's precedence after the
+drain. If that child's teardown also fails, the exact teardown failure replaces
+the earlier child failure as primary for the chain, inherits its precedence,
+and retains the earlier failure as its cause. Additional failures are recorded
+as deterministic child/phase/type/fork notes so that causal chain is never
+replaced.
 
 For either execution mode, caller cancellation follows the same boundary. The
 rollout cancels each started child once so episode work stops promptly, while
@@ -117,8 +120,8 @@ cleanup. Cancellation propagates only after every started child reaches its
 `finally` teardown, and a cancelled sequential rollout does not start its next
 episode. A substantive child failure observed before caller cancellation
 remains chained beneath the caller's original cancellation. A teardown failure
-caused by cancellation instead becomes primary after cleanup completes, with
-the initiating cancellation retained as its cause or note.
+first observed after caller cancellation instead becomes primary after cleanup
+completes, with the initiating cancellation retained as its cause or note.
 
 If `destroy_forks_on_complete` is true, application teardown runs in `finally`
 for each fork. It reconciles committed work, cancels unsettled durable commands,
