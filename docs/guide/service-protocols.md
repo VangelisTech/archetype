@@ -101,7 +101,7 @@ application facade.
 |---|---|---|---|
 | `iRuntimeApplication` | `RuntimeApplication` | runtime; temporary `CommandGateway` workflow bridges | Actor-free facade adapter into registered commands plus remaining staged app workflows |
 | `iCommandGateway` | `CommandGateway` | FastAPI and other untrusted adapters | Transport adapter into actor-aware commands plus a finite temporary workflow bridge |
-| `iStorageService` | `StorageService` | world, commands, ingestion, artifacts, evaluation, transcripts, research, physical AI | Store/session lifetime, control authority, physical visibility, world/run row envelope, terminal Daft execution, and app-table catalog/read/write/retry authority |
+| `iStorageService` | `StorageService` | world, commands, application, ingestion, artifacts, evaluation, transcripts, research, physical AI | Store/session lifetime, control authority, physical visibility, world/run row envelope, terminal Daft execution, and app-table catalog/read/write/retry authority |
 | `iWorldRegistry` | `WorldRegistry` | lifecycle, mutation, simulation, ingestion, artifacts, evaluation, transcripts, research, physical AI, application | Live identity, storage coordinates, exact-world synchronization, retryable close ownership, and committed-receipt retention |
 | `iWorldLifecycle` | `WorldLifecycle` | application, research, physical AI | Managed construction, durable discovery, readonly open, fenced mutable resume, fork, and close |
 | `iIngestionService` | `IngestionService` | artifacts, transcripts, evaluation | Select live storage configuration and delegate typed row publication |

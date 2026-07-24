@@ -176,9 +176,9 @@ async def test_submit_to_unknown_world_rejected():
     """spec: docs/guide/specification.md 'Required Hardening Work' item 3.
 
     submit() and submit_batch() must reject commands targeted at a world_id
-    that was never created. The previous behavior silently queued an orphan
-    command, debited quota, and emitted an audit row, with no way for the
-    caller to learn the command would never run.
+    that was never created. Authorized dispatch may consume its instance-owned
+    quota coordinate and emit bounded failed evidence, but it must not queue an
+    orphan durable row and the caller must receive the canonical error.
     """
     from archetype.app.models import Command, CommandType
     from archetype.errors import WorldNotFoundError

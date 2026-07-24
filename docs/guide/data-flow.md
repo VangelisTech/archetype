@@ -123,7 +123,9 @@ World lifecycle operations are direct gated methods:
 
 - `create_world`: admin only; returns `WorldInfo`.
 - `fork_world`: operator/admin; returns `WorldInfo`.
-- `destroy_world`: operator/admin; removes the live world only.
+- `destroy_world`: operator/admin; begins exact-world close, reconciles committed
+  work, cancels that world's unsettled commands, and publishes durable
+  destroyed state before releasing the live identity.
 
 Destroy does not delete storage or audit rows. See [World Lifecycle](world-lifecycle.md).
 
@@ -132,8 +134,9 @@ Destroy does not delete storage or audit rows. See [World Lifecycle](world-lifec
 Actor-aware dispatcher calls attempt bounded access events through
 commands-owned `AuditLog`. Product transitions append outbox events in the
 transaction that establishes their authority. `AuditLog` exports deduplicated
-events to Iceberg and exposes a watermark. Command-ledger history is
-operational truth; audit history is the analytical projection.
+events to Iceberg; scheduler/control-catalog outbox progress exposes the
+projection watermark. Command-ledger history is operational truth; audit
+history is the analytical projection.
 
 `RuntimeWorld.history(...)` reads through RuntimeApplication. API history reads
 authorize through the gateway. Both adapters construct the registered

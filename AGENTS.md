@@ -308,7 +308,8 @@ change, and report the exact validation that ran. See
 | `src/archetype/runtime/` | `ArchetypeRuntime` — recommended top-level API |
 | `src/archetype/app/container.py` | Service wiring |
 | `src/archetype/app/gateway/service.py` | Authorized ingress gateway |
-| `src/archetype/app/commands/service.py` | Durable scheduler and dispatcher |
+| `src/archetype/commands/dispatch.py` | Governed direct and deferred command entry |
+| `src/archetype/commands/scheduler.py` | Durable scheduler and materializer |
 | `src/archetype/storage/service.py` | Daft execution and durable storage authority |
 | `src/archetype/ingestion/pipeline.py` | Cohesive reusable file-ingestion graph |
 | `src/archetype/core/aio/async_world.py` | World runtime |

@@ -50,14 +50,14 @@ do not fabricate gateway audit rows.
 
 **Runtime operations in this example (curated, not exhaustive):**
 
-| Runtime call | Owning application family |
+| Runtime call | Owning behavior |
 |---|---|
-| `world.step()` / `world.run()` | simulation |
-| entity/component mutations | mutation |
-| processor mutations | mutation |
-| `world.fork()` / `world.info()` | world lifecycle |
-| `world.query()` | query |
-| `world.history()` | audit projection |
+| `world.step()` / `world.run()` | `world.simulation`, registered through commands |
+| entity/component mutations | `world.mutation`, registered through commands |
+| processor mutations | `world.mutation`, registered through commands |
+| `world.fork()` / `world.info()` | world lifecycle, registered through commands |
+| `world.query()` | `world.query`, registered through commands |
+| `world.history()` | commands-owned `AuditLog` projection |
 
 The runtime delegates directly to `iRuntimeApplication`; it does not construct
 an `ActorCtx` or pass through `CommandGateway`. See the normative
