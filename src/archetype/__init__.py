@@ -114,6 +114,7 @@ __all__ = [
     "AutoResearchResult",
     "CandidateContext",
     "EvaluationResult",
+    "ResearchCandidateContext",
     # Durable evaluation types
     "FrameGrader",
     "Outcome",
@@ -201,10 +202,14 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "TrialOutcome": ("archetype.physical_ai.contracts", "TrialOutcome"),
     "VariantOutcome": ("archetype.physical_ai.contracts", "VariantOutcome"),
     # AutoResearch
-    "AutoResearchConfig": ("archetype.app.research.contracts", "AutoResearchConfig"),
-    "AutoResearchResult": ("archetype.app.research.contracts", "AutoResearchResult"),
-    "CandidateContext": ("archetype.app.research.contracts", "CandidateContext"),
-    "EvaluationResult": ("archetype.app.research.contracts", "EvaluationResult"),
+    "AutoResearchConfig": ("archetype.research.models", "AutoResearchConfig"),
+    "AutoResearchResult": ("archetype.research.models", "AutoResearchResult"),
+    "CandidateContext": ("archetype.research.models", "CandidateContext"),
+    "EvaluationResult": ("archetype.research.models", "EvaluationResult"),
+    "ResearchCandidateContext": (
+        "archetype.research.models",
+        "ResearchCandidateContext",
+    ),
     # Durable evaluation types
     "FrameGrader": ("archetype.evaluation.models", "FrameGrader"),
     "Outcome": ("archetype.evaluation.contracts", "Outcome"),

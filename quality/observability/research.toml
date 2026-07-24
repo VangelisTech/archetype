@@ -2,26 +2,38 @@ version = 1
 owner = "research"
 family = "research"
 
+[[module_operation_surface]]
+qualified_scope = "archetype.research.handlers"
+
+[[module_operation_surface]]
+qualified_scope = "archetype.research.views"
+
 [[disposition]]
 operations = [
-  "interfaces.iResearchService.run",
-  "interfaces.iResearchService.sweep",
+  "handlers.handle_autoresearch",
+  "handlers.run_autoresearch",
+  "models.CandidatePreparer.__call__",
+  "models.Evaluator.__call__",
+  "views.next_iteration",
+  "views.read_experiment",
+  "views.read_head",
 ]
 signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
-authority = "Snapshot-pinned experiment state, branch-head rows, iteration records, and typed research results remain authoritative."
+authority = "Persisted experiment state, branch-head rows, iteration records, and typed research results remain authoritative."
 evidence = [
   "docs/guide/autoresearch.md",
-  "tests/app/test_autoresearch_ledger.py",
+  "tests/research/test_autoresearch_ledger.py",
+  "tests/research/test_autoresearch_admission.py",
 ]
-rationale = "Research workflows have no approved direct signal; durable experiment records prove resumable progress."
+rationale = "Family-owned free handlers and views have no approved direct signal; durable experiment records and typed callback outcomes prove resumable progress."
 
 [[legacy]]
 rule = "raw_exception_logging"
-path = "src/archetype/app/research/service.py"
-qualified_scope = "archetype.app.research.service.AutoResearchService.run"
+path = "src/archetype/research/handlers.py"
+qualified_scope = "archetype.research.handlers._run_autoresearch"
 target = "log:exception:'failed to persist autoresearch crash transition for %s':exception"
 owner = "research"
 issue = 523
-reason = "Crash-transition persistence currently records the propagated exception stack in a research workflow log."
+reason = "Moved crash-transition behavior preserves the existing bounded durable-attempt failure path."
 expiry_condition = "Remove when #523 emits a bounded persistence-failure diagnostic tied to durable attempt evidence."

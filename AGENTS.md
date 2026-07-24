@@ -8,7 +8,7 @@ Choose the owning package before adding a type or behavior:
 
 | Kind | Canonical location |
 |---|---|
-| Components, processors, pure DataFrame transforms, transition graphs, and reusable projections | `archetype.<family>` |
+| Components, processors, pure DataFrame transforms, transition graphs, reusable projections, and family-owned free handlers/workflows over declared lower-family ports | `archetype.<family>` |
 | Supported family value contracts | `archetype.<family>.contracts` or another specifically named family module |
 | Capability-scoped resources and provider adapters implementing a family-owned protocol | A named subpackage of `archetype.<family>` |
 | Physical storage, control catalogs, commit coordination, and generic durable world/run envelopes | `archetype.storage` |
@@ -35,6 +35,11 @@ commit coordination, and the generic durable world/run envelope. Workflow
 families consume that substrate through the narrow `iStorageService` port and
 retain the meaning and orchestration of their workflows.
 
+`archetype.research` is the concrete free-workflow example: it owns
+AutoResearch values, ledger state, views, experiment-scoped admission, and the
+directly awaited handler over the declared storage and world-family ports. It
+does not require an application facade or service protocol.
+
 A reviewed family may own a capability-scoped resource adapter without gaining
 application authority. Agent Missions is the concrete example: coding-agent
 state, processors, relations, and sandbox resources live under
@@ -51,9 +56,9 @@ archetype/
 │   ├── commands/       # Registry, policy, dispatch, scheduling + audit projection
 │   ├── evaluation/     # Grading, snapshot views, leases + durable receipts
 │   ├── artifacts/      # File ingestion, content objects + typed/common indexes
+│   ├── research/       # AutoResearch values, ledger views + free workflow handler
 │   ├── <family>/       # Reusable ECS/domain state and pure behavior
 │   ├── app/            # Internal application families
-│   │   ├── research/    #   Autoresearch workflows
 │   │   ├── missions/    #   Coding-agent workflow authority
 │   │   └── physical_ai/ #   Physical-evaluation workflow authority
 │   ├── redaction/      # Canonical pre-durability redaction family

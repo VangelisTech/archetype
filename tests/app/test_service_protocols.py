@@ -17,8 +17,6 @@ from archetype.app.missions.interfaces import (
 from archetype.app.missions.service import MissionService
 from archetype.app.missions.trajectory_service import TrajectoryService
 from archetype.app.missions.transcript_service import TranscriptIngestionService
-from archetype.app.research.interfaces import iResearchService
-from archetype.app.research.service import AutoResearchService
 from archetype.storage.interfaces import iStorageService
 from archetype.storage.service import StorageService
 from archetype.world.interfaces import iWorldLifecycle, iWorldRegistry
@@ -35,7 +33,6 @@ SERVICE_PROTOCOLS = (
     (MissionService, iMissionService),
     (TranscriptIngestionService, iTranscriptIngestionService),
     (TrajectoryService, iTrajectoryService),
-    (AutoResearchService, iResearchService),
 )
 
 

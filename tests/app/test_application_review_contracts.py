@@ -9,7 +9,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 from daft import DataFrame
@@ -19,8 +19,7 @@ from archetype import AsyncProcessor, Component
 from archetype.commands.dispatch import CommandDispatcher
 from archetype.commands.models import ActorCtx
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
-from archetype.research.contracts import AutoResearchConfig
-from archetype.research.models import AutoResearch
+from archetype.research.models import AutoResearch, AutoResearchConfig
 from archetype.world.lifecycle import WorldLifecycle
 from archetype.world.models import (
     AddProcessor,
@@ -118,23 +117,16 @@ async def test_stop_admission_then_wait_drained_joins_admitted_autoresearch(
                 ),
             )
         )
-        handler = dispatcher._registry.resolve_name("autoresearch").handler  # noqa: SLF001
-        assert isinstance(handler, partial)
-        research = handler.args[0]
         entered = asyncio.Event()
         release = asyncio.Event()
         calls = 0
 
-        async def blocked_run(*args: Any, **kwargs: Any) -> str:
+        async def prepare_candidate(_context: object) -> None:
             nonlocal calls
-            del args, kwargs
             calls += 1
             entered.set()
             await release.wait()
-            return "finished"
 
-        original_run = research.run
-        cast(Any, research).run = blocked_run
         model = AutoResearch(
             world_id=info.world_id,
             config=AutoResearchConfig(
@@ -144,8 +136,10 @@ async def test_stop_admission_then_wait_drained_joins_admitted_autoresearch(
                 rollout_contract_id="rollout-v1",
                 num_episodes=1,
                 max_iterations=1,
+                record_to_ledger=False,
             ),
             evaluator=lambda _rollout: 0.0,
+            prepare_candidate=prepare_candidate,
         )
         operation = asyncio.create_task(dispatcher.apply(model))
         await asyncio.wait_for(entered.wait(), timeout=1)
@@ -162,7 +156,8 @@ async def test_stop_admission_then_wait_drained_joins_admitted_autoresearch(
             assert calls == 1
 
             release.set()
-            assert await asyncio.wait_for(operation, timeout=1) == "finished"
+            result = await asyncio.wait_for(operation, timeout=5)
+            assert result.iterations_completed == 1
             await asyncio.wait_for(drain, timeout=1)
         finally:
             release.set()
@@ -170,7 +165,6 @@ async def test_stop_admission_then_wait_drained_joins_admitted_autoresearch(
                 await operation
             if drain is not None and not drain.done():
                 await drain
-            cast(Any, research).run = original_run
 
 
 async def _invoke_simulation(

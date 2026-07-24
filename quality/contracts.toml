@@ -625,8 +625,14 @@ section = "The Loop"
 owner = "research"
 risk = "high"
 pytest = [
-  "tests/app/test_autoresearch_ledger.py",
-  "tests/app/test_runtime_autoresearch.py",
+  "tests/research/test_autoresearch_ledger.py",
+  "tests/research/test_runtime_autoresearch.py",
+  "tests/research/test_autoresearch_admission.py",
+  "tests/app/test_application_review_contracts.py::test_stop_admission_then_wait_drained_joins_admitted_autoresearch",
+  "tests/app/test_lifecycle_parity.py::TestShutdownErrorAggregation::test_shutdown_waits_for_admitted_autoresearch",
+  "tests/wiring/test_wiring_contracts.py::test_wiring_is_explicit_topological_and_has_no_setter_injection",
+  "tests/wiring/test_wiring_contracts.py::test_pull_forward_registration_has_exact_four_actor_aware_and_ten_trusted_only_specs",
+  "tests/wiring/test_wiring_contracts.py::test_pull_forward_handlers_translate_exact_values_without_recursive_dispatch",
   "tests/integration/test_domain_example_receipts.py::test_autoresearch_receipt_pins_improvement_and_ledger_order",
 ]
 static = []

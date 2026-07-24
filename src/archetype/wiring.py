@@ -16,7 +16,6 @@ from archetype.app.missions.service import MissionService
 from archetype.app.missions.trajectory_service import TrajectoryService
 from archetype.app.missions.transcript_service import TranscriptIngestionService
 from archetype.app.physical_ai.service import PhysicalAIService
-from archetype.app.research.service import AutoResearchService
 from archetype.artifacts import handlers as artifact_handlers
 from archetype.artifacts.models import (
     ArtifactStoreConfig,
@@ -62,6 +61,7 @@ from archetype.physical_ai.models import (
     summarize_physical_ai_operation,
 )
 from archetype.redaction.service import RedactionService
+from archetype.research import handlers as research_handlers
 from archetype.research.models import AutoResearch, summarize_research_operation
 from archetype.runtime_resources import RuntimeResources
 from archetype.storage.config import ControlCatalogConfig
@@ -294,20 +294,6 @@ async def _query_audit(audit: AuditLog, operation: GetAuditHistory) -> Any:
         idempotency_key=operation.idempotency_key,
         status=operation.status,
         limit=operation.limit,
-    )
-
-
-async def _handle_autoresearch(
-    service: AutoResearchService,
-    operation: AutoResearch,
-) -> Any:
-    return await service.run(
-        operation.world_id,
-        operation.config,
-        operation.evaluator,
-        prepare_candidate=operation.prepare_candidate,
-        lab_world_id=operation.lab_world_id,
-        on_iteration=operation.on_iteration,
     )
 
 
@@ -614,7 +600,8 @@ def _pull_forward_handler(
     storage: StorageService,
     redaction: RedactionService,
     artifact_store_config: ArtifactStoreConfig | None,
-    research: AutoResearchService,
+    research_admissions: research_handlers.AutoResearchAdmissions,
+    destroy_world: simulation.DestroyWorldCallable,
     physical_ai: PhysicalAIService,
     transcripts: TranscriptIngestionService,
     trajectories: TrajectoryService,
@@ -631,7 +618,17 @@ def _pull_forward_handler(
         QueryArtifacts: cast(Any, partial(artifact_handlers.query_artifacts, storage)),
         RunGraders: cast(Any, evaluation_handlers.run_graders),
         Evaluate: cast(Any, partial(evaluation_handlers.evaluate, storage)),
-        AutoResearch: cast(Any, partial(_handle_autoresearch, research)),
+        AutoResearch: cast(
+            Any,
+            partial(
+                research_handlers.handle_autoresearch,
+                research_admissions,
+                worlds,
+                lifecycle,
+                storage,
+                destroy_world,
+            ),
+        ),
         EvaluatePhysicalTask: cast(
             Any,
             partial(_handle_evaluate_physical_task, physical_ai),
@@ -723,7 +720,8 @@ def _register_pull_forward_operations(
     storage: StorageService,
     redaction: RedactionService,
     artifact_store_config: ArtifactStoreConfig | None,
-    research: AutoResearchService,
+    research_admissions: research_handlers.AutoResearchAdmissions,
+    destroy_world: simulation.DestroyWorldCallable,
     physical_ai: PhysicalAIService,
     transcripts: TranscriptIngestionService,
     trajectories: TrajectoryService,
@@ -744,7 +742,8 @@ def _register_pull_forward_operations(
                     storage=storage,
                     redaction=redaction,
                     artifact_store_config=artifact_store_config,
-                    research=research,
+                    research_admissions=research_admissions,
+                    destroy_world=destroy_world,
                     physical_ai=physical_ai,
                     transcripts=transcripts,
                     trajectories=trajectories,
@@ -865,12 +864,7 @@ def build_runtime_resources(config: RuntimeBootstrapConfig) -> RuntimeResources:
     )
     trajectories = TrajectoryService(storage)
     physical_ai = PhysicalAIService(worlds, lifecycle, storage)
-    research = AutoResearchService(
-        worlds,
-        lifecycle,
-        storage,
-        destroy_world=destroy_owned_world,
-    )
+    research_admissions = research_handlers.AutoResearchAdmissions()
     _register_pull_forward_operations(
         registry,
         resources=resources,
@@ -880,7 +874,8 @@ def build_runtime_resources(config: RuntimeBootstrapConfig) -> RuntimeResources:
         storage=storage,
         redaction=redaction,
         artifact_store_config=config.artifact_store_config,
-        research=research,
+        research_admissions=research_admissions,
+        destroy_world=destroy_owned_world,
         physical_ai=physical_ai,
         transcripts=transcripts,
         trajectories=trajectories,

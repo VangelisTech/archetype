@@ -12,17 +12,18 @@ experiment resumes from the last declared best.
 
 import asyncio
 import json
+from functools import partial
 from pathlib import Path
 
 import pytest
 from uuid_utils import UUID
 
-from archetype.app.research.contracts import AutoResearchConfig, EvaluationResult
 from archetype.commands.models import DurableOptions
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.research import BranchHead, Experiment, Result, Run, RunStatus
-from archetype.research.models import AutoResearch
+from archetype.research.handlers import AutoResearchAdmissions, handle_autoresearch
+from archetype.research.models import AutoResearch, AutoResearchConfig, EvaluationResult
 from archetype.storage.config import ControlCatalogConfig
 from archetype.storage.service import StorageService
 from archetype.world.models import (
@@ -92,8 +93,21 @@ def _world_registry(dispatcher):
     return dispatcher._registry.resolve_name("step").handler.args[0]
 
 
-def _research_service(dispatcher):
-    return dispatcher._registry.resolve_name("autoresearch").handler.args[0]
+def _registered_research_handler(dispatcher):
+    handler = dispatcher._registry.resolve_name("autoresearch").handler
+    assert isinstance(handler, partial)
+    assert handler.func is handle_autoresearch
+    assert len(handler.args) == 5
+    return handler
+
+
+def _isolated_research_handler(dispatcher):
+    registered = _registered_research_handler(dispatcher)
+    return partial(
+        handle_autoresearch,
+        AutoResearchAdmissions(),
+        *registered.args[1:],
+    )
 
 
 async def _base_world(dispatcher, tmp_path):
@@ -133,17 +147,19 @@ async def _run_research(
     prepare_candidate=None,
     lab_world_id=None,
     on_iteration=None,
+    isolated_admission=False,
 ):
-    return await dispatcher.apply(
-        AutoResearch(
-            world_id=world_id,
-            config=config,
-            evaluator=evaluator,
-            prepare_candidate=prepare_candidate,
-            lab_world_id=lab_world_id,
-            on_iteration=on_iteration,
-        )
+    operation = AutoResearch(
+        world_id=world_id,
+        config=config,
+        evaluator=evaluator,
+        prepare_candidate=prepare_candidate,
+        lab_world_id=lab_world_id,
+        on_iteration=on_iteration,
     )
+    if isolated_admission:
+        return await _isolated_research_handler(dispatcher)(operation)
+    return await dispatcher.apply(operation)
 
 
 @pytest.mark.asyncio
@@ -158,8 +174,7 @@ async def test_autoresearch_auto_destroy_uses_application_teardown(
     commands: dict[str, str] = {}
     try:
         base = await _base_world(dispatcher, tmp_path)
-        research_service = _research_service(dispatcher)
-        lifecycle = research_service._world_lifecycle
+        lifecycle = _registered_research_handler(dispatcher).args[2]
         original_fork = lifecycle.fork_world
 
         async def fork_and_queue(*args, **kwargs):
@@ -748,6 +763,7 @@ async def test_resume_fails_closed_while_an_attempt_is_running(tmp_path):
                 config,
                 _scripted_evaluator([2.0]),
                 lab_world_id=lab.world_id,
+                isolated_admission=True,
             )
 
         release.set()

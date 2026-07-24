@@ -55,22 +55,22 @@ method = "to_pylist"
 reason = "Physical-evaluation grading boundary: StorageService admits and materializes latest-tick ledger rows before bounded success and episode-length values become typed task or sweep reports."
 
 [[entries]]
-path = "src/archetype/app/research/service.py"
-symbol = "AutoResearchService._next_iteration"
+path = "src/archetype/research/views.py"
+symbol = "next_iteration"
 expr = "materialized.to_pylist"
 method = "to_pylist"
 reason = "Bounded control-plane history extract: StorageService has already admitted and materialized the query; deterministic Run ids and statuses then enter Python control flow to reject ambiguous resume state."
 
 [[entries]]
-path = "src/archetype/app/research/service.py"
-symbol = "AutoResearchService._read_experiment"
+path = "src/archetype/research/views.py"
+symbol = "read_experiment"
 expr = "materialized.to_pylist"
 method = "to_pylist"
 reason = "Single-row experiment-contract extract: StorageService has already admitted and materialized the query; the persisted identity and JSON configuration digest then enter Python control flow for exact collision rejection before resume."
 
 [[entries]]
-path = "src/archetype/app/research/service.py"
-symbol = "AutoResearchService._read_head"
+path = "src/archetype/research/views.py"
+symbol = "read_head"
 expr = "materialized.to_pylist"
 method = "to_pylist"
 reason = "Single-row loop-state extract: StorageService has already admitted and materialized the query; the latest BranchHead then enters Python control flow for incumbent comparison and entity-id routing."

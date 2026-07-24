@@ -48,7 +48,7 @@ archetype.wiring
   +-> artifact handlers and views -> StorageService
   +-> TranscriptIngestionService -> artifacts/redaction/storage
   +-> evaluation handlers -> storage + world.query
-  +-> AutoResearchService -> storage/world ports
+  +-> research handler + shared admissions -> storage/world ports
   +-> PhysicalAIService -> storage/world ports
 ```
 
@@ -126,11 +126,14 @@ outcomes, and appends one durable evaluation result directly through
 free family handlers; no application evaluation facade or live-registry
 fallback participates.
 
-`AutoResearchService` owns the multi-iteration rollout workflow and its durable
-research ledger. It depends on world registry/lifecycle and storage ports and
-calls world simulation functions. Wiring injects the application-owned
-world teardown callback so rollout forks follow committed-work reconciliation,
-durable command cancellation, then lifecycle close. Scoring remains an explicit
+The top-level research family owns the multi-iteration rollout workflow and
+its durable research ledger. Its free handler depends on world
+registry/lifecycle and storage ports and calls world simulation functions.
+Wiring injects exact world cleanup and one process-shared keyed-admission
+instance. Ledgered calls for the same experiment serialize; ledgerless calls
+bypass that map and use invocation-unique rollout names. The dispatcher awaits
+the handler inside its existing admission, so shutdown drains it without a
+second owner reservation or detached task. Scoring remains an explicit
 callback contract.
 
 `PhysicalAIService` composes world registry/lifecycle and storage ports and
@@ -185,5 +188,5 @@ The CLI remains an HTTP client.
 - physical storage family: `src/archetype/storage/`
 - artifact values, pipeline, scanners, views, and handlers: `src/archetype/artifacts/`
 - evaluation values, grading, pinned views, handlers, and receipt schema: `src/archetype/evaluation/`
-- research: `src/archetype/app/research/`
+- research values, ledger, views, admission, and handler: `src/archetype/research/`
 - command/access audit projection: `src/archetype/commands/audit.py`

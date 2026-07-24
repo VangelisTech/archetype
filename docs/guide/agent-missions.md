@@ -805,8 +805,7 @@ The orphan cleanup follows the same rule:
 | Artifact ingestion and transcript composition | `archetype.artifacts` owns file ingestion; `archetype.app.missions` composes transcript redaction and typed rows over its handler |
 | Physical-AI state and behavior | `archetype.physical_ai` |
 | Physical-AI workflows | `archetype.app.physical_ai` |
-| Research state and pure decoding | `archetype.research` |
-| Research workflows | `archetype.app.research` |
+| Research state, values, views, decoding, and AutoResearch workflow | `archetype.research` |
 | Vendor-neutral observability vocabulary | `archetype._obs` |
 
 Datasets, Experiments, Contrib, and a production RTS vocabulary are not

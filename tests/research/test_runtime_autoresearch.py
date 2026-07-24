@@ -1,11 +1,13 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Runtime exposure of autoresearch and evals.
+"""Research-family runtime exposure of autoresearch and evals.
 
 The trusted beginner path uses exact runtime dispatch. Authorization remains
 covered separately at the actor-aware dispatcher boundary.
 """
+
+import asyncio
 
 import pytest
 from daft import col
@@ -89,6 +91,49 @@ async def test_world_autoresearch_optimizes_and_ledgers(tmp_path):
             f"runtime-exp-id:iter{i}" for i in range(4)
         ]
         assert all(r["run__status"] == RunStatus.STOPPED.value for r in attempts)
+
+
+@pytest.mark.asyncio
+async def test_world_autoresearch_callback_rejects_same_experiment_reentry(tmp_path):
+    """A callback cannot await the same admitted experiment and deadlock shutdown."""
+
+    async with ArchetypeRuntime() as runtime:
+        base = runtime.world(
+            "base", storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        )
+        await base.spawn(Knob(x=0.0))
+        await base.run(steps=1)
+        config = _config("recursive-callback", max_iterations=1)
+        callbacks = 0
+
+        async def reenter(_iteration):
+            nonlocal callbacks
+            callbacks += 1
+            with pytest.raises(
+                RuntimeError,
+                match="autoresearch admission.*cannot re-enter.*recursive-callback-id",
+            ):
+                async with asyncio.timeout(1):
+                    await base.autoresearch(config, lambda _rollout: 2.0)
+
+        result = await asyncio.wait_for(
+            base.autoresearch(
+                config,
+                lambda _rollout: 1.0,
+                on_iteration=reenter,
+            ),
+            timeout=5,
+        )
+
+        assert callbacks == 1
+        assert result.iterations[0].iteration == 0
+
+        resumed = await asyncio.wait_for(
+            base.autoresearch(config, lambda _rollout: 2.0),
+            timeout=5,
+        )
+        assert resumed.iterations[0].iteration == 1
+        assert resumed.final_score == 2.0
 
 
 @pytest.mark.asyncio

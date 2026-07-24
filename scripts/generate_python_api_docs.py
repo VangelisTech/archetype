@@ -129,7 +129,7 @@ PAGES: tuple[ReferencePage, ...] = (
         (
             "AutoResearchConfig",
             "AutoResearchResult",
-            "CandidateContext",
+            "ResearchCandidateContext",
             "EvaluationResult",
             "IterationResult",
             "FrameGrader",
@@ -205,6 +205,7 @@ PAGES: tuple[ReferencePage, ...] = (
 )
 
 ALIASES: dict[str, str] = {
+    "CandidateContext": "ResearchCandidateContext",
     "Processor": "SyncProcessor",
     "World": "SyncWorld",
     "System": "SyncSystem",
@@ -233,7 +234,7 @@ SUPPLEMENTAL: dict[str, tuple[str, str]] = {
         "archetype.missions.trajectories",
         "TranscriptIngestionResult",
     ),
-    "IterationResult": ("archetype.app.research.contracts", "IterationResult"),
+    "IterationResult": ("archetype.research.models", "IterationResult"),
     "EnvClient": ("archetype.physical_ai.manipulation", "EnvClient"),
     "OptimizationResult": ("archetype.physical_ai.optimization", "OptimizationResult"),
     "PerturbationStrategy": (
@@ -297,7 +298,7 @@ RECORDS = frozenset(
         "OnDestroy",
         "AutoResearchConfig",
         "AutoResearchResult",
-        "CandidateContext",
+        "ResearchCandidateContext",
         "EvaluationResult",
         "IterationResult",
         "FrameGrader",

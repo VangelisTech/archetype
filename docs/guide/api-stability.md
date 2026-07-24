@@ -73,8 +73,11 @@ not yet a supported authoring surface. Trajectory schemas, Claude source
 parsing, and pure transforms live under `archetype.missions.trajectories`;
 physical state and pure behavior live in `physical_ai`; physical rollout/sweep
 orchestration is registered behind exact `physical_ai` operations; and
-research ledger state and its pure runner decoder live in
-`archetype.research`.
+research values, ledger state, views, decoder, and free workflow handler live
+in `archetype.research`. `ResearchCandidateContext` is the canonical supported
+preparer-callback value. `CandidateContext` remains an object-identical
+one-release alias; it is not the persisted `archetype.missions.Candidate`
+review subject.
 
 Do not build a compatibility promise around the planning adapter or concrete
 application module paths. New applications use `ArchetypeRuntime` and the

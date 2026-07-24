@@ -1,0 +1,62 @@
+{
+  "base_revision": "984c91775f60f328ba572ca94c142b2e5521e7fa",
+  "source_path": "src/archetype/app/research/service.py",
+  "source_object": "AutoResearchService",
+  "capture": {
+    "method_source": "inspect.getsource",
+    "join": "\n",
+    "preserve_final_method_newline": true
+  },
+  "methods": [
+    "_attach_ledger",
+    "_read_experiment",
+    "_read_head",
+    "_next_iteration",
+    "_record_running",
+    "_record_terminal"
+  ],
+  "byte_length": 12830,
+  "sha256": "feb615ecf76ed8b7cdeaca8694a54928b18ad7f49fc6271c8df3db4ff72e9288",
+  "config_identity_characterization": {
+    "input": {
+      "experiment_name": "family-move-characterization",
+      "experiment_id": "invocation-only-id",
+      "evaluator_id": "score-v1",
+      "rollout_contract_id": "single-step-rollout-v1",
+      "episode_max_steps": 1,
+      "num_episodes": 1,
+      "max_iterations": 999
+    },
+    "canonical_payload": {
+      "destroy_forks_on_complete": false,
+      "episode": {
+        "max_steps": 1,
+        "run": {
+          "debug": false,
+          "metadata": null,
+          "num_steps": 1,
+          "show_rows": 8
+        },
+        "terminal_all": true,
+        "terminal_component": null,
+        "terminal_field": null,
+        "termination": null
+      },
+      "evaluator_id": "score-v1",
+      "experiment_name": "family-move-characterization",
+      "improvement_threshold": 0.0,
+      "num_episodes": 1,
+      "parallel": false,
+      "rollout_contract_id": "single-step-rollout-v1",
+      "schema_version": 2
+    },
+    "byte_length": 417,
+    "sha256": "ad0c3ba901354967814d5b698e8875450477dfb2e324db8bcb840293b23bec55"
+  },
+  "semantic_oracles": [
+    "tests/research/test_autoresearch_ledger.py",
+    "tests/research/test_autoresearch_admission.py",
+    "tests/research/test_autoresearch_family.py"
+  ],
+  "note": "Historical move characterization only. Free family handlers are validated by semantic oracles, not by source-text equivalence."
+}

@@ -165,8 +165,8 @@ src/archetype/
   redaction/         canonical pre-durability scanning, receipts and quarantine
   evaluation/        grading, snapshot pinning, leases and durable receipts
   artifacts/         file values, scans, immutable objects, indexes, views and handlers
+  research/          AutoResearch values, ledger state, views and free workflow handler
   app/
-    research/        autoresearch and multi-run research workflows
     missions/        mission graph and external-I/O composition
     physical_ai/     batched evaluation and instruction-sweep workflow
   runtime_resources.py explicit process-lifetime owner
@@ -179,8 +179,9 @@ Dataset evidence identity has moved into evaluation and the datasets umbrella
 is gone. HTN resolution now lives under `archetype.missions.planning`. The
 physical-AI Components, processors, policy contracts, and external-boundary
 helpers now live in the registered `archetype.physical_ai` family. Research
-ledger Components and the pure runner decoder live in `archetype.research`,
-while `archetype.app.research` retains workflow authority. Typed trajectory
+values, ledger Components, views, pure runner decoder, experiment admission,
+and the directly awaited workflow handler live in `archetype.research`; there
+is no application research facade or service protocol. Typed trajectory
 schemas and pure transforms live under `archetype.missions.trajectories`; the
 mission trajectory service composes world-query functions with the evaluation
 family's pure grader runner. Physical
@@ -275,7 +276,7 @@ operations are stateless behavior over those owners. A live world is an
 internal capability and never crosses an application-service, runtime, API,
 or CLI boundary.
 
-| Consumer/family | Responsibility | Allowed app dependencies |
+| Consumer/family | Responsibility | Allowed dependencies |
 |---|---|---|
 | Storage | Store and session lifetime; control authority; physical visibility; commit coordination; generic world/run envelope; terminal Daft execution; app-table registration, schema, read/write, and retry | None |
 | World registry/lifecycle | Live ownership, exact-world synchronization, create, discovery, readonly open, fenced resume, fork, and retryable close | Storage port |
@@ -286,7 +287,7 @@ or CLI boundary.
 | Artifacts | File values, discovery, metadata scans, immutable content-addressed objects, common/media indexes, storage-backed views, and exact free handlers | Storage port; operations carry explicit durable world and storage coordinates |
 | Evaluation | Snapshot pinning, grader contracts, grading, leasing, recovery, evidence and durable results | Storage port plus world-query functions; operations carry explicit world and storage coordinates |
 | Commands | Exact registration, authorization policy, governed direct/deferred entry, durable admission, order, leasing, lock-held materialization, retry, settlement, dead letters, transactional outbox and analytical audit projection | Storage/control catalog plus exact world handlers |
-| Research | Multi-run research workflows and bounded persisted-control reads | World registry/lifecycle and storage ports plus world simulation functions and explicit evaluator callbacks |
+| Research | AutoResearch values, ledger state, bounded persisted-control reads, experiment-keyed admission, and the directly awaited multi-run workflow | World registry/lifecycle and storage ports plus world simulation functions and explicit evaluator callbacks |
 | Physical AI | Batched evaluation and instruction-sweep workflows with typed terminal reports | World registry/lifecycle and storage ports plus world mutation/simulation/query functions |
 | Missions | Graph materialization, tick/external-I/O composition, terminal projection, transcript ingestion, and trajectory query/evaluation composition. Family processors retain transition authority; trajectory evidence cannot advance tasks. | Consumes a structural mission world, family-owned sandbox resource, artifact-family handlers plus redaction/storage ports for transcripts, and world-query plus pure evaluation-grading functions for trajectory reads. |
 | Runtime/API adapters | Construct exact family operations and select trusted or actor-aware dispatcher entry | Commands dispatcher plus family models |
@@ -297,6 +298,12 @@ World mutation and simulation functions share the registry's exact-world
 authority. Durable world query intentionally reads storage without requiring a
 live world. Evaluation owns the product evaluation transaction; API transport
 never pins snapshots, invokes graders, or persists evaluation receipts.
+Research enters through one exact direct-only `autoresearch` registration. Its
+outer handler is one synchronously awaited dispatcher admission; inner world
+and storage calls do not redispatch. Wiring owns one process-shared
+experiment-keyed admission map, while each state boundary uses the registry's
+named world lock. Research creates no second workflow owner, detached task, or
+shared-service finalizer.
 
 ## 6. Dispatcher and trust-boundary policy
 
@@ -564,8 +571,15 @@ grade, lease, recover, and append through explicit `iStorageService`
 coordinates. There is no application evaluation facade, ingestion fallback, or
 live-world-registry dependency.
 
-The research, trajectory, physical-AI, physical-workflow, ontology, HTN, and
-transcript stages have landed. Physical workflows are reachable through exact
+The research workflow pull-forward (#652) is complete:
+`archetype.research` owns the frozen `AutoResearch` operation, supported values,
+ledger Components, views, process-shared keyed admission type, and free
+handler. Its reviewed graph is `research → storage, world`; the deleted
+`archetype.app.research`, `iResearchService`, and `AutoResearchService` have no
+compatibility facade.
+
+The trajectory, physical-AI, physical-workflow, ontology, HTN, and transcript
+stages have landed. Physical workflows are reachable through exact
 dispatcher operations exposed by `ArchetypeRuntime`; their former raw-service
 bridges and all six Issue #589 architecture exceptions are gone. Transcript
 ingestion is reachable through a trusted runtime operation and writes only
@@ -616,7 +630,7 @@ dependency. `errors` is the exact common-family module; `runtime`, `api`,
 | `artifacts` | `storage` |
 | `redaction` | none |
 | `evaluation` | `storage`, `world` |
-| `research` | `world` |
+| `research` | `storage`, `world` |
 | `physical_ai` | none |
 | `episodes` | `artifacts`, `evaluation` |
 | `graph` | none |

@@ -410,54 +410,6 @@ def test_family_models_import_no_app_commands_runtime_api_cli_or_wiring() -> Non
 def test_old_supported_contract_paths_preserve_object_identity() -> None:
     identity_pairs = (
         (
-            "archetype.app.research.contracts",
-            "AutoResearchConfig",
-            "archetype.research.contracts",
-            "AutoResearchConfig",
-        ),
-        (
-            "archetype.app.research.contracts",
-            "AutoResearchResult",
-            "archetype.research.contracts",
-            "AutoResearchResult",
-        ),
-        (
-            "archetype.app.research.contracts",
-            "CandidateContext",
-            "archetype.research.contracts",
-            "CandidateContext",
-        ),
-        (
-            "archetype.app.research.contracts",
-            "CandidatePreparer",
-            "archetype.research.contracts",
-            "CandidatePreparer",
-        ),
-        (
-            "archetype.app.research.contracts",
-            "Evaluation",
-            "archetype.research.contracts",
-            "Evaluation",
-        ),
-        (
-            "archetype.app.research.contracts",
-            "EvaluationResult",
-            "archetype.research.contracts",
-            "EvaluationResult",
-        ),
-        (
-            "archetype.app.research.contracts",
-            "Evaluator",
-            "archetype.research.contracts",
-            "Evaluator",
-        ),
-        (
-            "archetype.app.research.contracts",
-            "IterationResult",
-            "archetype.research.contracts",
-            "IterationResult",
-        ),
-        (
             "archetype.missions.trajectories",
             "ClaudeTranscriptSource",
             "archetype.episodes.contracts",

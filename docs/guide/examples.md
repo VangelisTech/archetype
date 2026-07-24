@@ -250,6 +250,8 @@ Source: [`examples/10_autoresearch.py`](https://github.com/VangelisTech/archetyp
 
 AutoResearch is a sibling workflow, not a coding-agent mission subfamily. It
 may consume an agent callback without inheriting mission transition authority.
+Its transient `ResearchCandidateContext` is not the persisted missions
+`Candidate` review subject.
 
 ---
 
