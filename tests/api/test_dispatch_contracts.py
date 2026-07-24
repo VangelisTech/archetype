@@ -458,7 +458,7 @@ async def test_actor_aware_ingress_adds_only_actor_and_policy_evidence() -> None
     assert handled[0].input_kwargs["capability"] is capability
     assert handled[1].input_kwargs == {}
     assert len(access.rows) == 1
-    assert access.rows[0].actor_id == actor.id
+    assert access.rows[0].actor_id == str(actor.id)
     assert access.rows[0].operation == "step"
     assert access.rows[0].decision == "allowed"
     assert access.rows[0].outcome == "succeeded"

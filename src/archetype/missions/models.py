@@ -64,6 +64,32 @@ def summarize_mission_operation(operation: _MissionOperation) -> Mapping[str, An
     return {"operation": operation.operation}
 
 
+# ``AgentMissionConfig`` intentionally keeps provider protocols out of its
+# import-time module graph. Pydantic still needs those names when it expands the
+# nested dataclass for ``SubmitMission``; rebuild only the operation model after
+# the contracts module has completed, avoiding a contracts↔driver import cycle.
+def _complete_submit_model() -> None:
+    from archetype.missions.coding_agents.contracts import CodingAgentDriver
+    from archetype.missions.critics.contracts import CriticDriver
+    from archetype.missions.sandboxes.contracts import (
+        SandboxBackend,
+        SandboxEventObserver,
+    )
+
+    SubmitMission.model_rebuild(
+        force=True,
+        _types_namespace={
+            "CodingAgentDriver": CodingAgentDriver,
+            "CriticDriver": CriticDriver,
+            "SandboxBackend": SandboxBackend,
+            "SandboxEventObserver": SandboxEventObserver,
+        },
+    )
+
+
+_complete_submit_model()
+
+
 __all__ = [
     "RestoreMissionSandbox",
     "RunMission",
