@@ -909,6 +909,72 @@ async def test_self_cancelled_reservation_task_is_evicted_before_retry() -> None
 
 
 @pytest.mark.asyncio
+async def test_late_self_cancel_after_waiter_cancellation_retries_on_first_reentry() -> None:
+    api = _scheduler_api()
+
+    async def materialize(_world: object, _operation: BaseModel) -> None:
+        return None
+
+    registry = _OperationRegistry(
+        (
+            _Spec(
+                name="spawn_reserved",
+                model=SpawnReserved,
+                durable=_Durable(
+                    decode=SpawnReserved.model_validate_json,
+                    materialize=materialize,
+                ),
+            ),
+        )
+    )
+    reservation_started = asyncio.Event()
+    cancel_reservation = asyncio.Event()
+    reserve_calls: list[tuple[str, int]] = []
+
+    async def reserve_entity_ids(world_id: object, count: int) -> list[int]:
+        reserve_calls.append((str(world_id), count))
+        if len(reserve_calls) == 1:
+            reservation_started.set()
+            await cancel_reservation.wait()
+            raise asyncio.CancelledError("provider cancelled after its waiter")
+        return [76]
+
+    scheduler = _scheduler(
+        api,
+        registry=registry,
+        catalog=_Catalog(),
+        reserve_entity_ids=reserve_entity_ids,
+    )
+    command_id = uuid7()
+    source = Spawn(world_id="world-late-provider-cancel", components=())
+    options = _options(api, target_tick=5)
+
+    waiter = asyncio.create_task(scheduler.admit_spawn(source, options, command_id=command_id))
+    await reservation_started.wait()
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+    owned_task = scheduler._reservation_tasks[str(command_id)]
+    cancel_reservation.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.shield(owned_task)
+
+    entity_id, admitted = await scheduler.admit_spawn(
+        source,
+        options,
+        command_id=command_id,
+    )
+
+    assert entity_id == 76
+    assert str(admitted) == str(command_id)
+    assert reserve_calls == [
+        ("world-late-provider-cancel", 1),
+        ("world-late-provider-cancel", 1),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_lease_order_uses_actual_world_and_only_stages_before_manifest() -> None:
     api = _scheduler_api()
     seen: list[tuple[_World, _PortableOperation]] = []

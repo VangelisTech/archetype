@@ -496,6 +496,9 @@ class CommandScheduler:
                     )
                 self._reservation_requests[key] = request_digest
                 task = self._reservation_tasks.get(key)
+                if task is not None and task.cancelled():
+                    self._reservation_tasks.pop(key, None)
+                    task = None
                 if task is None:
                     task = asyncio.ensure_future(self._reserve_entity_ids(operation.world_id, 1))
                     self._reservation_tasks[key] = task
