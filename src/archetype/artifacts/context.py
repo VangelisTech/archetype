@@ -12,7 +12,7 @@ from daft.functions import format as daft_format
 from daft.functions import prompt
 from daft.io import IOConfig
 
-from archetype.artifacts.contracts import ArtifactContext
+from archetype.artifacts.models import ArtifactContext
 
 _INDEX_COLUMNS = {"artifact_id", "logical_path", "object_uri", "mime_type"}
 
