@@ -56,6 +56,7 @@ import os
 import re
 import sys
 import time
+from pathlib import Path
 
 from archetype import ArchetypeRuntime
 from archetype.core.config import StorageConfig
@@ -75,6 +76,9 @@ from archetype.missions.sandboxes import (
 
 ISSUE = "https://github.com/VangelisTech/archetype/issues/543"
 REPOSITORY = "VangelisTech/archetype"
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+REGRESSION_TEST = "tests/world/test_query_schema_evolution.py"
+QUERY_SOURCE = "src/archetype/world/query.py"
 
 TASKS = (
     AgentTask(
@@ -82,7 +86,7 @@ TASKS = (
         prompt=(
             f"Reproduce issue #543 ({ISSUE}). Add a deterministic regression test named "
             "test_component_query_tolerates_added_fields in "
-            "tests/app/test_query_schema_evolution.py. Reproduce a historical table "
+            f"{REGRESSION_TEST}. Reproduce a historical table "
             "written with an older component schema and query it through a fresh world "
             "using the same component name with one added field. Do not change production "
             "code in this task."
@@ -95,8 +99,7 @@ TASKS = (
                     "run",
                     "pytest",
                     "-q",
-                    "tests/app/test_query_schema_evolution.py::"
-                    "test_component_query_tolerates_added_fields",
+                    f"{REGRESSION_TEST}::test_component_query_tolerates_added_fields",
                 ),
                 expected_returncode=1,
             ),
@@ -105,8 +108,8 @@ TASKS = (
                 command=(
                     "bash",
                     "-lc",
-                    'test "$(git status --porcelain --untracked-files=all | cut -c4-)" = '
-                    "tests/app/test_query_schema_evolution.py",
+                    f'test "$(git status --porcelain --untracked-files=all | cut -c4-)" '
+                    f'= "{REGRESSION_TEST}"',
                 ),
                 timeout_seconds=60,
             ),
@@ -129,7 +132,7 @@ TASKS = (
                     "run",
                     "pytest",
                     "-q",
-                    "tests/app/test_query_schema_evolution.py",
+                    REGRESSION_TEST,
                     "tests/app/test_runtime_contracts.py",
                 ),
             ),
@@ -148,8 +151,8 @@ TASKS = (
                     "run",
                     "ruff",
                     "check",
-                    "src/archetype/app/query/service.py",
-                    "tests/app/test_query_schema_evolution.py",
+                    QUERY_SOURCE,
+                    REGRESSION_TEST,
                 ),
                 timeout_seconds=300,
             ),
@@ -255,6 +258,16 @@ async def run_demo(
             }
             for task in TASKS
         ],
+        "task_paths": {
+            "implementation": {
+                "path": QUERY_SOURCE,
+                "exists": (REPOSITORY_ROOT / QUERY_SOURCE).is_file(),
+            },
+            "regression": {
+                "path": REGRESSION_TEST,
+                "parent_exists": (REPOSITORY_ROOT / REGRESSION_TEST).parent.is_dir(),
+            },
+        },
         "external_work_started": False,
     }
 
