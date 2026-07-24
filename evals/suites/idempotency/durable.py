@@ -240,7 +240,11 @@ async def _task_resume_and_writer_fencing() -> list[GraderResult]:
             except StaleWriterError:
                 stale_failed = True
             except RuntimeError as exc:
-                stale_failed = "StaleWriter" in type(exc).__name__ or "not the" in str(exc)
+                stale_failed = (
+                    isinstance(exc.__cause__, StaleWriterError)
+                    or "StaleWriter" in type(exc).__name__
+                    or "not the" in str(exc)
+                )
 
             before_new_publish = await _visible_rows(
                 resumed, DurableReading, wid, rid, storage, ticks=[1]

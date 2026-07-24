@@ -151,7 +151,11 @@ async def resume_race(args: argparse.Namespace) -> None:
         except StaleWriterError:
             status = "stale"
         except RuntimeError as exc:
-            if "StaleWriter" not in type(exc).__name__ and "not the" not in str(exc):
+            if (
+                not isinstance(exc.__cause__, StaleWriterError)
+                and "StaleWriter" not in type(exc).__name__
+                and "not the" not in str(exc)
+            ):
                 raise
             status = "stale"
         _emit({"status": status, "epoch": writer_epoch, "tick": world.tick})
