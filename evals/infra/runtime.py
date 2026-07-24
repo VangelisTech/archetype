@@ -11,6 +11,7 @@ typed names for the exact objects already owned by that graph.
 
 from __future__ import annotations
 
+import asyncio
 from functools import partial
 from pathlib import Path
 from typing import cast
@@ -39,7 +40,9 @@ class EvalProcess:
         storage_service: StorageService | None = None,
     ) -> None:
         control = control_catalog_config or ControlCatalogConfig.from_env()
+        self._close_lock = asyncio.Lock()
         self._owns_storage = storage_service is None
+        self._storage_closed = False
         self.storage = storage_service or StorageService(
             control_catalog_config=control,
         )
@@ -61,11 +64,11 @@ class EvalProcess:
         await self.aclose()
 
     async def aclose(self) -> None:
-        try:
+        async with self._close_lock:
             await self.resources.aclose()
-        finally:
-            if self._owns_storage:
+            if self._owns_storage and not self._storage_closed:
                 await self.storage.shutdown()
+                self._storage_closed = True
 
 
 def isolated_eval_process(
