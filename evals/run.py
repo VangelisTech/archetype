@@ -39,7 +39,6 @@ PROFILE_REGISTRY = ROOT / "quality" / "eval_profiles.toml"
 class _ExpectedEvalNoiseFilter:
     """Drop only records produced by intentional adversarial eval inputs."""
 
-    _NOOP_COMMAND_TYPES = frozenset({"message", "query_world", "custom"})
     _RESERVED_SPAWN_PREFIX = "Entity "
     _RESERVED_SPAWN_SUFFIX = (
         " is already registered. Use update_entity to change component values on a live entity."
@@ -50,16 +49,9 @@ class _ExpectedEvalNoiseFilter:
         if not record.exc_info:
             return False
         error = record.exc_info[1]
-        if isinstance(error, KeyError):
-            return error.args == ("entity_id",)
         if not isinstance(error, ValueError):
             return False
         detail = str(error)
-        if (
-            "requires a 'type' key" in detail
-            or detail == "Component type 'TotallyFakeComponent' not found."
-        ):
-            return True
         if not (
             detail.startswith(cls._RESERVED_SPAWN_PREFIX)
             and detail.endswith(cls._RESERVED_SPAWN_SUFFIX)
@@ -70,12 +62,9 @@ class _ExpectedEvalNoiseFilter:
 
     def filter(self, record: logging.LogRecord) -> bool:
         message = record.getMessage()
-        if record.name == "archetype.app.gateway.service":
+        if record.name == "archetype.commands.dispatch":
             if message.startswith("Failed to apply command "):
                 return not self._is_expected_apply_failure(record)
-            prefix = "Unhandled command type in drain: "
-            if message.startswith(prefix):
-                return message.removeprefix(prefix) not in self._NOOP_COMMAND_TYPES
         if record.name == "archetype.core.aio.async_world":
             return "Entity Removal Failed: No entity:" not in message
         return True
