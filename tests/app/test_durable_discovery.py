@@ -21,7 +21,6 @@ import textwrap
 import pytest
 from uuid_utils import uuid7
 
-from archetype.app.container import ServiceContainer
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
@@ -35,7 +34,22 @@ from archetype.storage.catalog import (
     schema_fingerprint,
     storage_fingerprint,
 )
+from archetype.storage.config import ControlCatalogConfig
+from archetype.storage.service import StorageService
 from archetype.storage.signatures import match_signature_records
+from archetype.world.models import (
+    ComponentTypeRef,
+    CreateWorld,
+    DestroyWorld,
+    DiscoverWorlds,
+    ForkWorld,
+    ListSignatures,
+    OpenWorldReadonly,
+    QueryComponents,
+    Spawn,
+    Step,
+)
+from tests._runtime import build_test_runtime
 
 
 class Score(Component):
@@ -48,6 +62,20 @@ class Flag(Component):
 
 def _storage(tmp_path) -> StorageConfig:
     return StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+
+
+def _resources(tmp_path):
+    storage_service = StorageService(
+        control_catalog_config=ControlCatalogConfig(catalog_dir=tmp_path / "control")
+    )
+    return (
+        build_test_runtime(tmp_path, storage_service=storage_service),
+        storage_service,
+    )
+
+
+def _world_registry(dispatcher):
+    return dispatcher._registry.resolve_name("step").handler.args[0]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -95,10 +123,16 @@ def test_catalog_identity_normalizes_equivalent_file_uri(tmp_path):
 async def test_failed_catalog_registration_leaves_no_live_world(tmp_path, monkeypatch):
     """Identity is authoritative both ways: a world the catalog cannot
     describe must not survive as a live, mutable world (create or fork)."""
-    c = ServiceContainer()
+    resources, storage_service = _resources(tmp_path)
+    dispatcher = resources.dispatcher
     try:
         storage = _storage(tmp_path)
-        source = await c.world_lifecycle.create_world(WorldConfig(name="src"), storage)
+        source = await dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name="src"),
+                storage_config=storage,
+            )
+        )
 
         async def _boom(self, record):
             raise CatalogConflictError("injected registration failure")
@@ -106,16 +140,28 @@ async def test_failed_catalog_registration_leaves_no_live_world(tmp_path, monkey
         monkeypatch.setattr(SqliteControlCatalog, "register_world", _boom)
 
         with pytest.raises(CatalogConflictError):
-            await c.world_lifecycle.create_world(WorldConfig(name="orphan"), storage)
+            await dispatcher.apply(
+                CreateWorld(
+                    config=WorldConfig(name="orphan"),
+                    storage_config=storage,
+                )
+            )
         with pytest.raises(CatalogConflictError):
-            await c.world_lifecycle.fork_world(source.world_id, name="orphan-fork")
+            await dispatcher.apply(
+                ForkWorld(
+                    source_world_id=source.world_id,
+                    name="orphan-fork",
+                )
+            )
 
-        live = {w.name for w in await c.world_registry.list_worlds()}
+        registry = _world_registry(dispatcher)
+        live = {world.name for world in await registry.list_worlds()}
         assert live == {"src"}, f"failed registrations must unwind, saw {live}"
         with pytest.raises(KeyError):
-            await c.world_registry.world_id_for_name("orphan")
+            await registry.world_id_for_name("orphan")
     finally:
-        await c.shutdown()
+        await resources.aclose()
+        await storage_service.shutdown()
 
 
 @pytest.mark.asyncio
@@ -195,73 +241,113 @@ def test_concurrent_identical_registration_yields_one_row(tmp_path):
 
 @pytest.mark.asyncio
 async def test_destroyed_worlds_stay_discoverable_with_status(tmp_path):
-    c = ServiceContainer()
+    resources, storage_service = _resources(tmp_path)
+    dispatcher = resources.dispatcher
     try:
         storage = _storage(tmp_path)
-        world = await c.world_lifecycle.create_world(WorldConfig(name="ephemeral"), storage)
-        await c.world_lifecycle.destroy_world(world.world_id)
+        world = await dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name="ephemeral"),
+                storage_config=storage,
+            )
+        )
+        await dispatcher.apply(DestroyWorld(world_id=world.world_id))
 
-        infos = await c.world_lifecycle.discover_worlds(storage)
+        infos = await dispatcher.apply(DiscoverWorlds(storage_config=storage))
         assert [str(i.world_id) for i in infos] == [str(world.world_id)]
-        record = await c.storage_service.get_control_catalog(storage).get_world(str(world.world_id))
+        record = await storage_service.get_control_catalog(storage).get_world(str(world.world_id))
         assert record.status == "destroyed", "append-only: destroy marks, never deletes"
     finally:
-        await c.shutdown()
+        await resources.aclose()
+        await storage_service.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_storage_identity_remains_available_after_destroy(tmp_path):
-    c = ServiceContainer()
+    resources, storage_service = _resources(tmp_path)
+    dispatcher = resources.dispatcher
     try:
         storage = _storage(tmp_path)
-        world = await c.world_lifecycle.create_world(WorldConfig(name="ephemeral"), storage)
-        await c.world_lifecycle.destroy_world(world.world_id)
+        world = await dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name="ephemeral"),
+                storage_config=storage,
+            )
+        )
+        await dispatcher.apply(DestroyWorld(world_id=world.world_id))
 
-        assert await c.world_registry.storage_record(str(world.world_id)) == (
+        assert await _world_registry(dispatcher).storage_record(str(world.world_id)) == (
             storage,
             None,
         )
     finally:
-        await c.shutdown()
+        await resources.aclose()
+        await storage_service.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_fork_records_parent_world(tmp_path):
-    c = ServiceContainer()
+    resources, storage_service = _resources(tmp_path)
+    dispatcher = resources.dispatcher
     try:
         storage = _storage(tmp_path)
-        base = await c.world_lifecycle.create_world(WorldConfig(name="base"), storage)
-        await c.application.create_entity(base.world_id, [Score(points=1.0)])
-        await c.application.step(base.world_id, RunConfig())
-        fork = await c.world_lifecycle.fork_world(base.world_id, name="branch")
+        base = await dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name="base"),
+                storage_config=storage,
+            )
+        )
+        await dispatcher.apply(
+            Spawn.from_components(
+                world_id=base.world_id,
+                components=[Score(points=1.0)],
+            )
+        )
+        await dispatcher.apply(Step(world_id=base.world_id, run_config=RunConfig()))
+        fork = await dispatcher.apply(ForkWorld(source_world_id=base.world_id, name="branch"))
 
-        record = await c.storage_service.get_control_catalog(storage).get_world(str(fork.world_id))
+        record = await storage_service.get_control_catalog(storage).get_world(str(fork.world_id))
         assert record.parent_world_id == str(base.world_id)
     finally:
-        await c.shutdown()
+        await resources.aclose()
+        await storage_service.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_readonly_open_never_constructs_a_live_world(tmp_path):
-    c = ServiceContainer()
+    resources, storage_service = _resources(tmp_path)
+    dispatcher = resources.dispatcher
     try:
         storage = _storage(tmp_path)
-        world = await c.world_lifecycle.create_world(WorldConfig(name="cold"), storage)
+        world = await dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name="cold"),
+                storage_config=storage,
+            )
+        )
         wid = str(world.world_id)
     finally:
-        await c.shutdown()
+        await resources.aclose()
+        await storage_service.shutdown()
 
-    fresh = ServiceContainer()
+    fresh_resources, fresh_storage = _resources(tmp_path)
+    fresh_dispatcher = fresh_resources.dispatcher
     try:
-        info = await fresh.world_lifecycle.open_world_readonly(storage, wid)
+        info = await fresh_dispatcher.apply(OpenWorldReadonly(storage_config=storage, world_id=wid))
         assert str(info.world_id) == wid
-        assert not await fresh.world_registry.contains(wid), (
+        assert not await _world_registry(fresh_dispatcher).contains(wid), (
             "read-only open must not register a live world"
         )
         with pytest.raises(KeyError):
-            await fresh.world_lifecycle.open_world_readonly(storage, str(uuid7()))
+            await fresh_dispatcher.apply(
+                OpenWorldReadonly(
+                    storage_config=storage,
+                    world_id=str(uuid7()),
+                )
+            )
     finally:
-        await fresh.shutdown()
+        await fresh_resources.aclose()
+        await fresh_storage.shutdown()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -271,9 +357,11 @@ async def test_readonly_open_never_constructs_a_live_world(tmp_path):
 _CHILD = textwrap.dedent(
     """
     import asyncio, sys
-    from archetype.app.container import ServiceContainer
     from archetype.core.component import Component
     from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+    from archetype.storage.config import ControlCatalogConfig
+    from archetype.wiring import RuntimeBootstrapConfig, build_runtime_resources
+    from archetype.world.models import CreateWorld, Spawn, Step
 
     class Score(Component):
         points: float = 0.0
@@ -282,21 +370,37 @@ _CHILD = textwrap.dedent(
         label: str = ""
 
     async def main():
-        c = ServiceContainer()
+        resources = build_runtime_resources(
+            RuntimeBootstrapConfig(control_catalog_config=ControlCatalogConfig())
+        )
         try:
-            w = await c.world_lifecycle.create_world(
-                WorldConfig(name="cold"), StorageConfig(uri=sys.argv[1], namespace="ns")
+            dispatcher = resources.dispatcher
+            world = await dispatcher.apply(
+                CreateWorld(
+                    config=WorldConfig(name="cold"),
+                    storage_config=StorageConfig(uri=sys.argv[1], namespace="ns"),
+                )
             )
             # Two archetypes: (Score,) and (Score, Flag) — the subset query
             # must union both, cold.
-            await c.application.create_entity(w.world_id, [Score(points=7.5)])
-            await c.application.create_entity(
-                w.world_id, [Score(points=2.5), Flag(label="x")]
+            await dispatcher.apply(
+                Spawn.from_components(
+                    world_id=world.world_id,
+                    components=[Score(points=7.5)],
+                )
             )
-            await c.application.step(w.world_id, RunConfig())
-            print(w.world_id)
+            await dispatcher.apply(
+                Spawn.from_components(
+                    world_id=world.world_id,
+                    components=[Score(points=2.5), Flag(label="x")],
+                )
+            )
+            await dispatcher.apply(
+                Step(world_id=world.world_id, run_config=RunConfig())
+            )
+            print(world.world_id)
         finally:
-            await c.shutdown()
+            await resources.aclose()
 
     asyncio.run(main())
     """
@@ -318,13 +422,14 @@ async def test_p0_cold_subset_query_across_process_boundary(tmp_path):
     assert result.returncode == 0, result.stderr[-2000:]
     world_id = result.stdout.strip().splitlines()[-1]
 
-    c = ServiceContainer()
+    resources, storage_service = _resources(tmp_path)
+    dispatcher = resources.dispatcher
     try:
-        infos = await c.world_lifecycle.discover_worlds(storage)
+        infos = await dispatcher.apply(DiscoverWorlds(storage_config=storage))
         assert [str(i.world_id) for i in infos] == [world_id]
-        info = await c.world_lifecycle.open_world_readonly(storage, world_id)
+        info = await dispatcher.apply(OpenWorldReadonly(storage_config=storage, world_id=world_id))
 
-        signatures = await c.application.list_signatures(storage)
+        signatures = await dispatcher.apply(ListSignatures(storage_config=storage))
         signature_names = {
             tuple(component.__name__ for component in signature) for signature in signatures
         }
@@ -333,25 +438,44 @@ async def test_p0_cold_subset_query_across_process_boundary(tmp_path):
             "fresh store's empty process-local registry"
         )
 
-        df = await c.application.query_components([Score], world_id, str(info.run_id), storage)
+        df = await dispatcher.apply(
+            QueryComponents(
+                components=(ComponentTypeRef.from_type(Score),),
+                world_id=world_id,
+                run_id=info.run_id,
+                storage_config=storage,
+            )
+        )
         points = sorted(row["score__points"] for row in df.to_pylist())
         assert points == [2.5, 7.5], "subset query must union both archetypes, cold"
     finally:
-        await c.shutdown()
+        await resources.aclose()
+        await storage_service.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_cold_signature_listing_skips_unresolvable_history(tmp_path, caplog):
     """One unrelated stale record cannot poison storage-wide discovery."""
     storage = _storage(tmp_path)
-    writer = ServiceContainer()
+    writer_resources, writer_storage = _resources(tmp_path)
+    writer = writer_resources.dispatcher
     try:
-        world = await writer.world_lifecycle.create_world(WorldConfig(name="current"), storage)
-        await writer.application.create_entity(world.world_id, [Score(points=1.0)])
-        await writer.application.step(world.world_id, RunConfig())
+        world = await writer.apply(
+            CreateWorld(
+                config=WorldConfig(name="current"),
+                storage_config=storage,
+            )
+        )
+        await writer.apply(
+            Spawn.from_components(
+                world_id=world.world_id,
+                components=[Score(points=1.0)],
+            )
+        )
+        await writer.apply(Step(world_id=world.world_id, run_config=RunConfig()))
 
         schema = Archetype.get_archetype_schema((Score,))
-        catalog = writer.storage_service.get_control_catalog(storage)
+        catalog = writer_storage.get_control_catalog(storage)
         await catalog.register_signature(
             SignatureRecord(
                 table_id="a_removed_history",
@@ -369,31 +493,45 @@ async def test_cold_signature_listing_skips_unresolvable_history(tmp_path, caplo
             )
         )
     finally:
-        await writer.shutdown()
+        await writer_resources.aclose()
+        await writer_storage.shutdown()
 
-    reader = ServiceContainer()
+    reader_resources, reader_storage = _resources(tmp_path)
+    reader = reader_resources.dispatcher
     try:
         with caplog.at_level(logging.WARNING, logger="archetype.world.query"):
-            signatures = await reader.application.list_signatures(storage)
+            signatures = await reader.apply(ListSignatures(storage_config=storage))
 
         names = {tuple(component.__name__ for component in sig) for sig in signatures}
         assert ("Score",) in names
         assert "a_removed_history" in caplog.text
         assert "a_schema_match_wrong_identity" in caplog.text
     finally:
-        await reader.shutdown()
+        await reader_resources.aclose()
+        await reader_storage.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_warm_signature_listing_preserves_local_class_identity(tmp_path):
     """Catalog ambiguity fills cold gaps but cannot replace an exact local class."""
     storage = _storage(tmp_path)
-    container = ServiceContainer()
+    resources, storage_service = _resources(tmp_path)
+    dispatcher = resources.dispatcher
     shadow_score_type: type[Component] | None = None
     try:
-        world = await container.world_lifecycle.create_world(WorldConfig(name="warm"), storage)
-        await container.application.create_entity(world.world_id, [Score(points=1.0)])
-        await container.application.step(world.world_id, RunConfig())
+        world = await dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name="warm"),
+                storage_config=storage,
+            )
+        )
+        await dispatcher.apply(
+            Spawn.from_components(
+                world_id=world.world_id,
+                components=[Score(points=1.0)],
+            )
+        )
+        await dispatcher.apply(Step(world_id=world.world_id, run_config=RunConfig()))
 
         shadow_score_type = type(
             "Score",
@@ -406,7 +544,7 @@ async def test_warm_signature_listing_preserves_local_class_identity(tmp_path):
         )
         assert Archetype.get_name((shadow_score_type,)) == Archetype.get_name((Score,))
 
-        signatures = await container.application.list_signatures(storage)
+        signatures = await dispatcher.apply(ListSignatures(storage_config=storage))
         score_table_id = Archetype.get_name((Score,))
         by_table_id = {Archetype.get_name(signature): signature for signature in signatures}
 
@@ -415,30 +553,43 @@ async def test_warm_signature_listing_preserves_local_class_identity(tmp_path):
     finally:
         shadow_score_type = None
         gc.collect()
-        await container.shutdown()
+        await resources.aclose()
+        await storage_service.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_warm_signature_listing_survives_catalog_failure(tmp_path, monkeypatch, caplog):
     """Best-effort discovery retains the complete pre-catalog local answer."""
     storage = _storage(tmp_path)
-    container = ServiceContainer()
+    resources, storage_service = _resources(tmp_path)
+    dispatcher = resources.dispatcher
     try:
-        world = await container.world_lifecycle.create_world(WorldConfig(name="warm"), storage)
-        await container.application.create_entity(world.world_id, [Score(points=1.0)])
-        await container.application.step(world.world_id, RunConfig())
+        world = await dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name="warm"),
+                storage_config=storage,
+            )
+        )
+        await dispatcher.apply(
+            Spawn.from_components(
+                world_id=world.world_id,
+                components=[Score(points=1.0)],
+            )
+        )
+        await dispatcher.apply(Step(world_id=world.world_id, run_config=RunConfig()))
 
         def _unavailable(_storage_config):
             raise RuntimeError("injected catalog outage")
 
-        monkeypatch.setattr(container.storage_service, "get_control_catalog", _unavailable)
+        monkeypatch.setattr(storage_service, "get_control_catalog", _unavailable)
         with caplog.at_level(logging.ERROR, logger="archetype.world.query"):
-            signatures = await container.application.list_signatures(storage)
+            signatures = await dispatcher.apply(ListSignatures(storage_config=storage))
 
         assert (Score,) in signatures
         assert "control catalog unavailable for durable signature discovery" in caplog.text
     finally:
-        await container.shutdown()
+        await resources.aclose()
+        await storage_service.shutdown()
 
 
 @pytest.mark.asyncio
@@ -463,27 +614,47 @@ async def test_p0_stale_descriptor_fails_closed(tmp_path):
     conn.commit()
     conn.close()
 
-    c = ServiceContainer()
+    resources, storage_service = _resources(tmp_path)
+    dispatcher = resources.dispatcher
     try:
-        info = await c.world_lifecycle.open_world_readonly(storage, world_id)
+        info = await dispatcher.apply(OpenWorldReadonly(storage_config=storage, world_id=world_id))
         with pytest.raises(CatalogSchemaMismatchError):
-            await c.application.query_components([Score], world_id, str(info.run_id), storage)
+            await dispatcher.apply(
+                QueryComponents(
+                    components=(ComponentTypeRef.from_type(Score),),
+                    world_id=world_id,
+                    run_id=info.run_id,
+                    storage_config=storage,
+                )
+            )
     finally:
-        await c.shutdown()
+        await resources.aclose()
+        await storage_service.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_reads_never_create_tables(tmp_path):
     """Open-never-create: the seam raises KeyError for missing tables and a
     failed read leaves the store's physical table list unchanged."""
-    c = ServiceContainer()
+    resources, storage_service = _resources(tmp_path)
+    dispatcher = resources.dispatcher
     try:
         storage = _storage(tmp_path)
-        world = await c.world_lifecycle.create_world(WorldConfig(name="w"), storage)
-        await c.application.create_entity(world.world_id, [Score(points=1.0)])
-        await c.application.step(world.world_id, RunConfig())
+        world = await dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name="w"),
+                storage_config=storage,
+            )
+        )
+        await dispatcher.apply(
+            Spawn.from_components(
+                world_id=world.world_id,
+                components=[Score(points=1.0)],
+            )
+        )
+        await dispatcher.apply(Step(world_id=world.world_id, run_config=RunConfig()))
 
-        store = await c.storage_service.get_or_create_store(storage, None)
+        store = await storage_service.get_or_create_store(storage, None)
         before = sorted(await store._list_table_names())
 
         with pytest.raises(KeyError):
@@ -493,7 +664,8 @@ async def test_reads_never_create_tables(tmp_path):
 
         assert sorted(await store._list_table_names()) == before
     finally:
-        await c.shutdown()
+        await resources.aclose()
+        await storage_service.shutdown()
 
 
 def test_schema_fingerprint_is_order_and_content_sensitive():
