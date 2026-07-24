@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from importlib import import_module
 from typing import Any
 
@@ -225,6 +226,221 @@ async def test_public_destroy_reconciles_prepared_commit_before_projection_and_s
     assert events == ["publish:0", "project:0", "destroy", "status:destroyed"]
     assert catalog.statuses == [(world.world_id, "destroyed")]
     assert registry.pending_receipt(world.world_id) is None
+    assert not await registry.contains(world.world_id)
+
+
+async def test_public_destroy_retry_after_status_failure_does_not_refire_on_destroy(
+    monkeypatch,
+) -> None:
+    lifecycle_module = import_module("archetype.world.lifecycle")
+    registry_module, _simulation_module = _managed_api()
+    from archetype.core.interfaces import CommittedTickReceipt
+
+    events: list[str] = []
+
+    class _FailOnceDestroyCatalog(_DestroyCatalog):
+        def __init__(self) -> None:
+            super().__init__(events)
+            self.attempts = 0
+
+        async def set_world_status(self, world_id: str, status: str) -> None:
+            self.attempts += 1
+            self.events.append(f"status:{status}")
+            if self.attempts == 1:
+                raise RuntimeError("control catalog unavailable")
+            self.statuses.append((world_id, status))
+
+    async def on_destroy(_event: OnDestroy) -> None:
+        events.append("destroy")
+
+    world = _ReceiptWorld(
+        world_id="00000000-0000-7000-8000-000000000049",
+        name="status-retry",
+        receipt_type=CommittedTickReceipt,
+    )
+    world.has_prepared_tick_commit = False
+    world.hooks = HookRegistry()
+    world.hooks.add(OnDestroy, on_destroy)
+    storage_config = StorageConfig()
+    registry = registry_module.WorldRegistry()
+    await registry.insert(world, storage_config=storage_config)
+    catalog = _FailOnceDestroyCatalog()
+    lifecycle = lifecycle_module.WorldLifecycle(_DestroyStorage(catalog), registry)
+    monkeypatch.setattr(lifecycle_module, "AsyncWorld", _ReceiptWorld)
+
+    with pytest.raises(RuntimeError, match="control catalog unavailable"):
+        await lifecycle.destroy_world(world.world_id)
+
+    assert await registry.contains(world.world_id)
+    assert events == ["destroy", "status:destroyed"]
+
+    await lifecycle.destroy_world(world.world_id)
+
+    assert events == ["destroy", "status:destroyed", "status:destroyed"]
+    assert catalog.statuses == [(world.world_id, "destroyed")]
+    assert not await registry.contains(world.world_id)
+
+
+async def test_public_destroy_retry_after_ambiguous_status_does_not_refire_on_destroy(
+    monkeypatch,
+) -> None:
+    lifecycle_module = import_module("archetype.world.lifecycle")
+    registry_module, _simulation_module = _managed_api()
+    from archetype.core.interfaces import CommittedTickReceipt
+
+    events: list[str] = []
+
+    class _AmbiguousOnceDestroyCatalog(_DestroyCatalog):
+        def __init__(self) -> None:
+            super().__init__(events)
+            self.attempts = 0
+
+        async def set_world_status(self, world_id: str, status: str) -> None:
+            self.attempts += 1
+            self.events.append(f"status:{status}")
+            self.statuses.append((world_id, status))
+            if self.attempts == 1:
+                raise RuntimeError("destroyed status response lost")
+
+    async def on_destroy(_event: OnDestroy) -> None:
+        events.append("destroy")
+
+    world = _ReceiptWorld(
+        world_id="00000000-0000-7000-8000-000000000059",
+        name="ambiguous-status-retry",
+        receipt_type=CommittedTickReceipt,
+    )
+    world.has_prepared_tick_commit = False
+    world.hooks = HookRegistry()
+    world.hooks.add(OnDestroy, on_destroy)
+    storage_config = StorageConfig()
+    registry = registry_module.WorldRegistry()
+    await registry.insert(world, storage_config=storage_config)
+    catalog = _AmbiguousOnceDestroyCatalog()
+    lifecycle = lifecycle_module.WorldLifecycle(_DestroyStorage(catalog), registry)
+    monkeypatch.setattr(lifecycle_module, "AsyncWorld", _ReceiptWorld)
+
+    with pytest.raises(RuntimeError, match="destroyed status response lost"):
+        await lifecycle.destroy_world(world.world_id)
+
+    assert await registry.contains(world.world_id)
+    assert events == ["destroy", "status:destroyed"]
+    assert catalog.statuses == [(world.world_id, "destroyed")]
+
+    await lifecycle.destroy_world(world.world_id)
+
+    assert events == ["destroy", "status:destroyed", "status:destroyed"]
+    assert catalog.statuses == [
+        (world.world_id, "destroyed"),
+        (world.world_id, "destroyed"),
+    ]
+    assert not await registry.contains(world.world_id)
+
+
+async def test_public_destroy_retry_after_hook_cancellation_refires_unfinished_on_destroy(
+    monkeypatch,
+) -> None:
+    lifecycle_module = import_module("archetype.world.lifecycle")
+    registry_module, _simulation_module = _managed_api()
+    from archetype.core.interfaces import CommittedTickReceipt
+
+    events: list[str] = []
+    hook_started = asyncio.Event()
+    hook_attempts = 0
+
+    async def on_destroy(_event: OnDestroy) -> None:
+        nonlocal hook_attempts
+        hook_attempts += 1
+        events.append(f"destroy:{hook_attempts}")
+        if hook_attempts == 1:
+            hook_started.set()
+            await asyncio.Future()
+
+    world = _ReceiptWorld(
+        world_id="00000000-0000-7000-8000-000000000064",
+        name="cancelled-hook-retry",
+        receipt_type=CommittedTickReceipt,
+    )
+    world.has_prepared_tick_commit = False
+    world.hooks = HookRegistry()
+    world.hooks.add(OnDestroy, on_destroy)
+    storage_config = StorageConfig()
+    registry = registry_module.WorldRegistry()
+    await registry.insert(world, storage_config=storage_config)
+    catalog = _DestroyCatalog(events)
+    lifecycle = lifecycle_module.WorldLifecycle(_DestroyStorage(catalog), registry)
+    monkeypatch.setattr(lifecycle_module, "AsyncWorld", _ReceiptWorld)
+
+    destroy = asyncio.create_task(lifecycle.destroy_world(world.world_id))
+    await hook_started.wait()
+    destroy.cancel("destroy caller cancelled during hook")
+    with pytest.raises(asyncio.CancelledError, match="destroy caller cancelled during hook"):
+        await destroy
+
+    assert await registry.contains(world.world_id)
+    assert events == ["destroy:1"]
+
+    await lifecycle.destroy_world(world.world_id)
+
+    assert events == ["destroy:1", "destroy:2", "status:destroyed"]
+    assert catalog.statuses == [(world.world_id, "destroyed")]
+    assert not await registry.contains(world.world_id)
+
+
+async def test_public_destroy_retry_after_post_hook_cancellation_does_not_refire_on_destroy(
+    monkeypatch,
+) -> None:
+    lifecycle_module = import_module("archetype.world.lifecycle")
+    registry_module, _simulation_module = _managed_api()
+    from archetype.core.interfaces import CommittedTickReceipt
+
+    events: list[str] = []
+
+    class _BlockOnceDestroyCatalog(_DestroyCatalog):
+        def __init__(self) -> None:
+            super().__init__(events)
+            self.attempts = 0
+            self.first_attempt_started = asyncio.Event()
+
+        async def set_world_status(self, world_id: str, status: str) -> None:
+            self.attempts += 1
+            self.events.append(f"status:{status}")
+            if self.attempts == 1:
+                self.first_attempt_started.set()
+                await asyncio.Future()
+            self.statuses.append((world_id, status))
+
+    async def on_destroy(_event: OnDestroy) -> None:
+        events.append("destroy")
+
+    world = _ReceiptWorld(
+        world_id="00000000-0000-7000-8000-000000000069",
+        name="cancelled-status-retry",
+        receipt_type=CommittedTickReceipt,
+    )
+    world.has_prepared_tick_commit = False
+    world.hooks = HookRegistry()
+    world.hooks.add(OnDestroy, on_destroy)
+    storage_config = StorageConfig()
+    registry = registry_module.WorldRegistry()
+    await registry.insert(world, storage_config=storage_config)
+    catalog = _BlockOnceDestroyCatalog()
+    lifecycle = lifecycle_module.WorldLifecycle(_DestroyStorage(catalog), registry)
+    monkeypatch.setattr(lifecycle_module, "AsyncWorld", _ReceiptWorld)
+
+    destroy = asyncio.create_task(lifecycle.destroy_world(world.world_id))
+    await catalog.first_attempt_started.wait()
+    destroy.cancel("destroy caller cancelled after hook")
+    with pytest.raises(asyncio.CancelledError, match="destroy caller cancelled after hook"):
+        await destroy
+
+    assert await registry.contains(world.world_id)
+    assert events == ["destroy", "status:destroyed"]
+
+    await lifecycle.destroy_world(world.world_id)
+
+    assert events == ["destroy", "status:destroyed", "status:destroyed"]
+    assert catalog.statuses == [(world.world_id, "destroyed")]
     assert not await registry.contains(world.world_id)
 
 

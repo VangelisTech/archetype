@@ -142,10 +142,16 @@ lease, `RuntimeApplication`:
 If any cleanup step fails, the entry stays strongly reachable and closing. The
 same lease authorizes a later retry against that exact entry; it cannot
 authorize a sibling or replacement world. Aliases and locks disappear only
-after `finish_close`. Required projection or prepared-commit reconciliation
-failure produces no command cancellation, `OnDestroy`, or durable destroyed
-status. A pending required-projector receipt also prevents final release until
-it is acknowledged.
+after `finish_close`. A successfully completed advisory `OnDestroy` dispatch
+is checkpointed on that exact cleanup lease before the durable status write;
+if a later status write fails, returns an ambiguous response, or is cancelled,
+the retry repeats only the idempotent durable write and does not emit
+`OnDestroy` again. Cancellation while the hook dispatch itself is still
+running does not checkpoint completion and remains retryable. Required
+projection or prepared-commit reconciliation failure produces no command
+cancellation, `OnDestroy`, or durable destroyed status. A pending
+required-projector receipt also prevents final release until it is
+acknowledged.
 
 Destroy never removes persisted rows, lineage, command history, audit history,
 or storage files. Destroyed worlds remain durably queryable but are not

@@ -571,7 +571,9 @@ class WorldLifecycle:
                     key,
                     world,
                 )
-                await world.hooks.fire(OnDestroy(world_id=world.world_id))
+                if not lease.on_destroy_complete:
+                    await world.hooks.fire(OnDestroy(world_id=world.world_id))
+                    lease._complete_on_destroy()
             storage_record = await self._registry.storage_record(key)
             if storage_record is not None:
                 catalog = self._storage.get_control_catalog(storage_record[0])

@@ -38,7 +38,7 @@ class WorldCleanupLease:
     on every use, so a lease cannot authorize a replacement or sibling world.
     """
 
-    __slots__ = ("_entry", "_registry")
+    __slots__ = ("_entry", "_on_destroy_complete", "_registry")
 
     def __init__(
         self,
@@ -51,6 +51,18 @@ class WorldCleanupLease:
             raise TypeError("cleanup leases are created by WorldRegistry.begin_close()")
         self._registry = registry
         self._entry = entry
+        self._on_destroy_complete = False
+
+    @property
+    def on_destroy_complete(self) -> bool:
+        """Whether this exact cleanup lease completed advisory destroy dispatch."""
+
+        return self._on_destroy_complete
+
+    def _complete_on_destroy(self) -> None:
+        """Checkpoint successful advisory destroy dispatch for later retries."""
+
+        self._on_destroy_complete = True
 
 
 _LEASE_KEY = object()
