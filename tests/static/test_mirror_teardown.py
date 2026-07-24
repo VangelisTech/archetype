@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""RED contract for PR-4 composition-mirror teardown."""
+"""Contract for PR-4 composition-mirror teardown."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ _DELETED_PATHS = (
     "app/container.py",
     "app/gateway",
     "app/models.py",
-    "app/redaction",
+    "/".join(("app", "redaction")),
 )
 _DELETED_SYMBOLS = frozenset(
     {
