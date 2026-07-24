@@ -13,15 +13,33 @@ from __future__ import annotations
 import asyncio
 import gc
 import weakref
+from collections.abc import Awaitable, Callable
+from dataclasses import replace
+from typing import Any
 
 import pytest
 
 from archetype import ArchetypeRuntime, Component
+from archetype.commands.models import GetAuditHistory
 from archetype.core.aio import AsyncProcessor
 from archetype.core.config import StorageConfig
 from archetype.core.errors import TickExecutionError
 from archetype.core.hooks import PreTick
-from archetype.runtime.world import _runtime_cleanup_scope
+from archetype.errors import RuntimeShutdownError
+from archetype.runtime import runtime as runtime_module
+from archetype.runtime_resources import (
+    OwnerReservation,
+    RuntimeCloseState,
+    RuntimeResources,
+    RuntimeShutdownPhase,
+)
+from archetype.world.models import (
+    AddProcessor,
+    CreateWorld,
+    DestroyWorld,
+    ListWorlds,
+    Run,
+)
 
 
 class Pos(Component):
@@ -45,28 +63,146 @@ class FailPosWith(AsyncProcessor):
         raise self.error
 
 
+class _DrainDispatcher:
+    """Minimal canonical admission seam for isolated runtime-owner tests."""
+
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        stop_failures: list[BaseException] | None = None,
+    ) -> None:
+        self.events = events
+        self.stop_failures = list(stop_failures or [])
+        self.stop_calls = 0
+        self.wait_calls = 0
+
+    async def stop_admission(self) -> None:
+        self.stop_calls += 1
+        self.events.append("admission:stop")
+        if self.stop_failures:
+            raise self.stop_failures.pop(0)
+
+    async def wait_drained(self) -> None:
+        self.wait_calls += 1
+        self.events.append("admission:drain")
+
+
+class _OwnedHandle:
+    def __init__(
+        self,
+        label: str,
+        events: list[str],
+        *,
+        failures: list[BaseException] | None = None,
+        started: asyncio.Event | None = None,
+        release: asyncio.Event | None = None,
+    ) -> None:
+        self.label = label
+        self.events = events
+        self.failures = list(failures or [])
+        self.started = started
+        self.release = release
+        self.close_calls = 0
+
+    async def aclose(self) -> None:
+        self.close_calls += 1
+        self.events.append(f"close:{self.label}:{self.close_calls}")
+        if self.started is not None:
+            self.started.set()
+        if self.release is not None:
+            await self.release.wait()
+        if self.failures:
+            raise self.failures.pop(0)
+
+
+class _Dependency:
+    def __init__(self, label: str, events: list[str]) -> None:
+        self.label = label
+        self.events = events
+        self.close_calls = 0
+
+    async def shutdown(self) -> None:
+        self.close_calls += 1
+        self.events.append(f"shutdown:{self.label}:{self.close_calls}")
+
+
+async def _reserve_handle(
+    resources: RuntimeResources,
+    handle: Any,
+    *,
+    owner: str,
+    phase: RuntimeShutdownPhase,
+) -> OwnerReservation:
+    reservation = resources.reserve_owner(owner, phase=phase)
+
+    async def construct() -> Any:
+        return handle
+
+    assert await reservation.construct(construct) is handle
+    return reservation
+
+
+def _runtime_with_resources(
+    monkeypatch: pytest.MonkeyPatch,
+    resources: RuntimeResources,
+) -> ArchetypeRuntime:
+    monkeypatch.setattr(
+        runtime_module,
+        "build_runtime_resources",
+        lambda _config: resources,
+    )
+    runtime = ArchetypeRuntime()
+    assert runtime._resources is resources
+    return runtime
+
+
+def _replace_operation_handler(
+    monkeypatch: pytest.MonkeyPatch,
+    dispatcher: Any,
+    *,
+    operation_name: str,
+    operation_type: type,
+    handler: Callable[[Any], Awaitable[Any]],
+) -> Callable[[Any], Awaitable[Any]]:
+    """Install one fault/counting handler at the exact operation registry seam."""
+
+    registry = dispatcher._registry
+    original = registry.resolve_name(operation_name)
+    assert original.model is operation_type
+    replacement = replace(original, handler=handler)
+    monkeypatch.setitem(registry._by_name, operation_name, replacement)
+    monkeypatch.setitem(registry._by_model, operation_type, replacement)
+    return original.handler
+
+
 # ── 1. Single-flight activation ─────────────────────────────────────────
 
 
 class TestSingleFlightActivation:
     @pytest.mark.asyncio
-    async def test_concurrent_spawns_produce_one_create_world(self, tmp_path):
+    async def test_concurrent_spawns_produce_one_create_world(self, tmp_path, monkeypatch):
         """50 concurrent spawn() calls on a never-activated world produce
         exactly ONE create_world call."""
         async with ArchetypeRuntime() as rt:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
             world = rt.world("single-flight", storage=storage)
 
-            application = rt._container.application
-            original_create = application.create_world
             call_count = 0
 
-            async def counting_create(*args, **kwargs):
+            async def counting_create(operation):
                 nonlocal call_count
+                assert type(operation) is CreateWorld
                 call_count += 1
-                return await original_create(*args, **kwargs)
+                return await original_create(operation)
 
-            application.create_world = counting_create
+            original_create = _replace_operation_handler(
+                monkeypatch,
+                rt._resources.dispatcher,
+                operation_name="create_world",
+                operation_type=CreateWorld,
+                handler=counting_create,
+            )
 
             # Launch 50 concurrent spawns. Each triggers ensure_init if
             # the world is not yet activated.  The init_lock should
@@ -86,33 +222,38 @@ class TestSingleFlightActivation:
     async def test_failed_activation_rolls_back_and_can_retry(self, tmp_path, monkeypatch):
         runtime = ArchetypeRuntime()
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = runtime.world("activation-retry", storage=storage, processors=[object()])
-        application = runtime._container.application
-        original_add = application.add_processor
+        processor = FailPosWith(RuntimeError("unused"))
+        world = runtime.world("activation-retry", storage=storage, processors=[processor])
         calls = 0
 
-        async def fail_once(*args, **kwargs):
+        async def fail_once(operation):
             nonlocal calls
+            assert type(operation) is AddProcessor
             calls += 1
             if calls == 1:
                 raise RuntimeError("injected wiring failure")
-            return await original_add(*args, **kwargs)
+            return await original_add(operation)
 
-        monkeypatch.setattr(application, "add_processor", fail_once)
+        original_add = _replace_operation_handler(
+            monkeypatch,
+            runtime._resources.dispatcher,
+            operation_name="add_processor",
+            operation_type=AddProcessor,
+            handler=fail_once,
+        )
         try:
             with pytest.raises(RuntimeError, match="injected wiring failure"):
                 await world.spawn(Pos())
 
             assert not world._state.initialized
-            assert await runtime._container.world_registry.list_worlds() == []
+            assert await runtime._resources.dispatcher.apply(ListWorlds()) == []
 
-            # Replace the invalid processor as well as the transient failure;
-            # retry must perform one clean activation rather than collide with
+            # Retry must perform one clean activation rather than collide with
             # the rolled-back name registration.
-            world._state.init_processors = []
             entity_id = await world.spawn(Pos())
             assert isinstance(entity_id, int)
             assert world._state.initialized
+            assert calls == 2
         finally:
             await runtime.shutdown()
 
@@ -122,20 +263,20 @@ class TestSingleFlightActivation:
 
 class TestActorBinding:
     @pytest.mark.asyncio
-    async def test_runtime_bypasses_untrusted_command_gateway(self, tmp_path, monkeypatch):
+    async def test_runtime_never_uses_actor_aware_dispatch(self, tmp_path, monkeypatch):
         async with ArchetypeRuntime() as runtime:
             world = runtime.world(
                 "trusted-runtime",
                 storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
             )
 
-            async def forbidden_gateway_call(*args, **kwargs):
-                raise AssertionError("trusted runtime must not call CommandGateway")
+            async def forbidden_actor_aware_call(*args, **kwargs):
+                raise AssertionError("trusted runtime must not call dispatcher.apply_as")
 
             monkeypatch.setattr(
-                runtime._container.command_gateway,
-                "create_world",
-                forbidden_gateway_call,
+                runtime._resources.dispatcher,
+                "apply_as",
+                forbidden_actor_aware_call,
             )
             assert isinstance(await world.spawn(Pos()), int)
 
@@ -147,7 +288,9 @@ class TestActorBinding:
                 storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
             )
             await world.spawn(Pos())
-            rows = await runtime._container.audit_log.query(world_id=world.world_id)
+            rows = await runtime._resources.dispatcher.apply(
+                GetAuditHistory(world_id=world.world_id)
+            )
             assert rows.count_rows() == 0
 
 
@@ -252,95 +395,106 @@ class TestShutdownIdempotency:
             storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
         )
         await world.spawn(Pos())
-        application = runtime._application
-        original_destroy = application.destroy_world
         attempts = 0
 
-        async def fail_once(world_id):
+        async def fail_once(operation):
             nonlocal attempts
+            assert type(operation) is DestroyWorld
             attempts += 1
             if attempts == 1:
                 raise RuntimeError("destroy failed")
-            await original_destroy(world_id)
+            await original_destroy(operation)
 
-        monkeypatch.setattr(application, "destroy_world", fail_once)
+        original_destroy = _replace_operation_handler(
+            monkeypatch,
+            runtime._resources.dispatcher,
+            operation_name="destroy_world",
+            operation_type=DestroyWorld,
+            handler=fail_once,
+        )
+        reservation = world._reservation
+        assert reservation is not None
 
         with pytest.raises(RuntimeError, match="destroy failed"):
-            await world.shutdown()
+            await world.destroy()
 
         assert not world._state.closed
-        assert world in runtime._handles
-        with pytest.raises(RuntimeError, match="closed"):
-            await world.spawn(Pos())
+        assert not reservation.released
+        assert isinstance(await world.spawn(Pos()), int)
 
-        await world.shutdown()
+        await world.destroy()
 
         assert attempts == 2
         assert world._state.closed
-        assert world not in runtime._handles
+        assert reservation.released
+        with pytest.raises(RuntimeError, match="closed"):
+            await world.spawn(Pos())
         await runtime.shutdown()
 
     @pytest.mark.asyncio
-    async def test_container_cancellation_group_uses_retryable_runtime_error_contract(
+    async def test_admission_cancellation_group_uses_retryable_runtime_error_contract(
         self, monkeypatch
     ):
-        runtime = ArchetypeRuntime()
-        attempts = 0
+        events: list[str] = []
+        cancellation_group = BaseExceptionGroup(
+            "admission shutdown failed",
+            [asyncio.CancelledError("sandbox close cancelled")],
+        )
+        dispatcher = _DrainDispatcher(events, stop_failures=[cancellation_group])
+        resources = RuntimeResources(dispatcher=dispatcher)
+        runtime = _runtime_with_resources(monkeypatch, resources)
 
-        async def fail_container_shutdown():
-            nonlocal attempts
-            attempts += 1
-            if attempts == 1:
-                raise BaseExceptionGroup(
-                    "container shutdown failed",
-                    [asyncio.CancelledError("sandbox close cancelled")],
-                )
-
-        monkeypatch.setattr(runtime._container, "shutdown", fail_container_shutdown)
-
-        with pytest.raises(RuntimeError, match="encountered 1 error") as captured:
+        with pytest.raises(RuntimeShutdownError) as captured:
             await runtime.shutdown()
 
-        assert isinstance(captured.value.__cause__, BaseExceptionGroup)
-        assert isinstance(captured.value.__cause__.exceptions[0], asyncio.CancelledError)
+        assert captured.value.phase == "admission"
+        assert len(captured.value.failures) == 1
+        assert captured.value.failures[0].owner == "dispatcher"
+        assert captured.value.failures[0].cause is cancellation_group
+        assert isinstance(cancellation_group.exceptions[0], asyncio.CancelledError)
 
         with pytest.raises(RuntimeError, match="closed"):
-            runtime.world("rejected-after-container-failure")
+            runtime.world("rejected-after-admission-failure")
 
         await runtime.shutdown()
 
-        assert attempts == 2
+        assert dispatcher.stop_calls == 2
+        assert dispatcher.wait_calls == 1
+        assert resources.close_state is RuntimeCloseState.CLOSED
 
     @pytest.mark.asyncio
-    async def test_runtime_shutdown_retries_mission_handles_before_container(self, monkeypatch):
-        runtime = ArchetypeRuntime()
-        calls: list[str] = []
+    async def test_runtime_shutdown_retries_workflow_owners_before_dependencies(self, monkeypatch):
+        events: list[str] = []
+        dispatcher = _DrainDispatcher(events)
+        audit = _Dependency("audit", events)
+        resources = RuntimeResources(dispatcher=dispatcher, audit=audit)
+        runtime = _runtime_with_resources(monkeypatch, resources)
+        close_failure = RuntimeError("mission close failed")
+        mission = _OwnedHandle(
+            "mission:retry",
+            events,
+            failures=[close_failure],
+        )
+        reservation = await _reserve_handle(
+            resources,
+            mission,
+            owner="mission:retry",
+            phase="workflow-handles",
+        )
 
-        class FailingMissionHandle:
-            attempts = 0
-
-            async def _shutdown_internal(self, *, from_runtime: bool) -> None:
-                assert from_runtime
-                calls.append("mission")
-                self.attempts += 1
-                if self.attempts == 1:
-                    raise RuntimeError("mission close failed")
-                runtime._mission_handles.discard(self)  # type: ignore[arg-type]
-
-        mission = FailingMissionHandle()
-        runtime._mission_handles.add(mission)  # type: ignore[arg-type]
-
-        async def shutdown_container() -> None:
-            calls.append("container")
-
-        monkeypatch.setattr(runtime._container, "shutdown", shutdown_container)
-
-        with pytest.raises(RuntimeError, match="encountered 1 error") as captured:
+        with pytest.raises(RuntimeShutdownError) as captured:
             await runtime.shutdown()
 
-        assert calls == ["mission"]
-        assert isinstance(captured.value.__cause__, RuntimeError)
-        assert "mission close failed" in str(captured.value.__cause__)
+        assert captured.value.phase == "workflow-handles"
+        assert captured.value.failures[0].owner == "mission:retry"
+        assert captured.value.failures[0].cause is close_failure
+        assert events == [
+            "admission:stop",
+            "admission:drain",
+            "close:mission:retry:1",
+        ]
+        assert audit.close_calls == 0
+        assert not reservation.released
 
         mission_ref = weakref.ref(mission)
         del mission
@@ -352,8 +506,19 @@ class TestShutdownIdempotency:
         await runtime.shutdown()
         await runtime.shutdown()
 
-        assert calls == ["mission", "mission", "container"]
-        assert not runtime._mission_handles
+        assert events == [
+            "admission:stop",
+            "admission:drain",
+            "close:mission:retry:1",
+            "close:mission:retry:2",
+            "shutdown:audit:1",
+        ]
+        assert reservation.released
+        assert resources.close_state is RuntimeCloseState.CLOSED
+        del captured
+        del close_failure
+        gc.collect()
+        assert mission_ref() is None
 
     @pytest.mark.asyncio
     async def test_failed_mission_cleanup_still_drains_admitted_world_work(
@@ -369,41 +534,59 @@ class TestShutdownIdempotency:
         run_started = asyncio.Event()
         run_release = asyncio.Event()
         mission_attempted = asyncio.Event()
+        admission_stopped = asyncio.Event()
 
-        async def blocking_run(*args, **kwargs):
+        dispatcher = runtime._resources.dispatcher
+        original_stop_admission = dispatcher.stop_admission
+
+        async def stop_admission():
+            await original_stop_admission()
+            admission_stopped.set()
+
+        monkeypatch.setattr(dispatcher, "stop_admission", stop_admission)
+
+        async def blocking_run(operation):
+            assert type(operation) is Run
             run_started.set()
             await run_release.wait()
-            return object()
+            return await original_run(operation)
 
-        monkeypatch.setattr(runtime._application, "run", blocking_run)
-
-        class FailingOnceMissionHandle:
-            attempts = 0
-
-            async def _shutdown_internal(self, *, from_runtime: bool) -> None:
-                assert from_runtime
-                self.attempts += 1
-                mission_attempted.set()
-                if self.attempts == 1:
-                    raise RuntimeError("mission close failed")
-                runtime._mission_handles.discard(self)  # type: ignore[arg-type]
-
-        mission = FailingOnceMissionHandle()
-        runtime._mission_handles.add(mission)  # type: ignore[arg-type]
+        original_run = _replace_operation_handler(
+            monkeypatch,
+            dispatcher,
+            operation_name="run",
+            operation_type=Run,
+            handler=blocking_run,
+        )
+        mission = _OwnedHandle(
+            "mission:drain-order",
+            [],
+            failures=[RuntimeError("mission close failed")],
+            started=mission_attempted,
+        )
+        await _reserve_handle(
+            runtime._resources,
+            mission,
+            owner="mission:drain-order",
+            phase="workflow-handles",
+        )
 
         admitted_run = asyncio.create_task(world.run())
         await run_started.wait()
         shutdown = asyncio.create_task(runtime.shutdown())
-        await mission_attempted.wait()
-        await asyncio.sleep(0)
+        await admission_stopped.wait()
 
         assert not shutdown.done()
+        assert not mission_attempted.is_set()
 
         run_release.set()
         await admitted_run
-        with pytest.raises(RuntimeError, match="mission close failed"):
+        with pytest.raises(RuntimeShutdownError) as captured:
             await shutdown
 
+        assert captured.value.phase == "workflow-handles"
+        assert "mission close failed" in str(captured.value.failures[0].cause)
+        assert mission_attempted.is_set()
         assert not world._state.closed
         with pytest.raises(RuntimeError, match="closed"):
             await world.spawn(Pos())
@@ -412,53 +595,60 @@ class TestShutdownIdempotency:
         assert world._state.closed
 
     @pytest.mark.asyncio
-    async def test_cleanup_capability_does_not_admit_a_sibling_world(self, tmp_path):
-        runtime = ArchetypeRuntime()
-        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        mission_world = runtime.world("mission", storage=storage)
-        sibling_world = runtime.world("sibling", storage=storage)
-        await mission_world.spawn(Pos())
-        await sibling_world.spawn(Pos())
+    async def test_workflow_cleanup_cannot_admit_a_sibling_world(self, monkeypatch):
+        events: list[str] = []
+        resources = RuntimeResources(dispatcher=_DrainDispatcher(events))
+        runtime = _runtime_with_resources(monkeypatch, resources)
 
-        runtime._shutdown_started = True
-        mission_world._state.closing = True
-        try:
-            with _runtime_cleanup_scope(mission_world._state):
-                await mission_world.spawn(Pos())
+        class CleanupOwner:
+            async def aclose(self) -> None:
+                events.append("cleanup:mission")
                 with pytest.raises(RuntimeError, match="closed"):
-                    await sibling_world.spawn(Pos())
-        finally:
-            runtime._shutdown_started = False
-            mission_world._state.closing = False
-            await runtime.shutdown()
+                    runtime.world("sibling")
+
+        cleanup = CleanupOwner()
+        await _reserve_handle(
+            resources,
+            cleanup,
+            owner="mission:exact-cleanup",
+            phase="workflow-handles",
+        )
+
+        await runtime.shutdown()
+
+        assert events == [
+            "admission:stop",
+            "admission:drain",
+            "cleanup:mission",
+        ]
 
     @pytest.mark.asyncio
     async def test_concurrent_runtime_shutdown_is_single_flight(self, monkeypatch):
-        runtime = ArchetypeRuntime()
+        events: list[str] = []
+        dispatcher = _DrainDispatcher(events)
+        audit = _Dependency("audit", events)
+        resources = RuntimeResources(dispatcher=dispatcher, audit=audit)
+        runtime = _runtime_with_resources(monkeypatch, resources)
         close_started = asyncio.Event()
         close_release = asyncio.Event()
         second_started = asyncio.Event()
-        calls: list[str] = []
-
-        class BlockingMissionHandle:
-            async def _shutdown_internal(self, *, from_runtime: bool) -> None:
-                assert from_runtime
-                calls.append("mission")
-                close_started.set()
-                await close_release.wait()
-                runtime._mission_handles.discard(self)  # type: ignore[arg-type]
-
-        mission = BlockingMissionHandle()
-        runtime._mission_handles.add(mission)  # type: ignore[arg-type]
-
-        async def shutdown_container() -> None:
-            calls.append("container")
+        mission = _OwnedHandle(
+            "mission:single-flight",
+            events,
+            started=close_started,
+            release=close_release,
+        )
+        await _reserve_handle(
+            resources,
+            mission,
+            owner="mission:single-flight",
+            phase="workflow-handles",
+        )
 
         async def second_shutdown() -> None:
             second_started.set()
             await runtime.shutdown()
 
-        monkeypatch.setattr(runtime._container, "shutdown", shutdown_container)
         first = asyncio.create_task(runtime.shutdown())
         await close_started.wait()
         second = asyncio.create_task(second_shutdown())
@@ -468,93 +658,111 @@ class TestShutdownIdempotency:
         close_release.set()
         await asyncio.gather(first, second)
 
-        assert calls == ["mission", "container"]
+        assert events == [
+            "admission:stop",
+            "admission:drain",
+            "close:mission:single-flight:1",
+            "shutdown:audit:1",
+        ]
+        assert mission.close_calls == 1
+        assert audit.close_calls == 1
 
     @pytest.mark.asyncio
     async def test_cancelled_runtime_shutdown_retains_cleanup_for_retry(self, monkeypatch):
-        runtime = ArchetypeRuntime()
+        events: list[str] = []
+        resources = RuntimeResources(dispatcher=_DrainDispatcher(events))
+        runtime = _runtime_with_resources(monkeypatch, resources)
         close_started = asyncio.Event()
-        never_release = asyncio.Event()
-        calls: list[str] = []
-
-        class CancelledOnceMissionHandle:
-            attempts = 0
-
-            async def _shutdown_internal(self, *, from_runtime: bool) -> None:
-                assert from_runtime
-                calls.append("mission")
-                self.attempts += 1
-                if self.attempts == 1:
-                    close_started.set()
-                    await never_release.wait()
-                runtime._mission_handles.discard(self)  # type: ignore[arg-type]
-
-        mission = CancelledOnceMissionHandle()
-        runtime._mission_handles.add(mission)  # type: ignore[arg-type]
-
-        async def shutdown_container() -> None:
-            calls.append("container")
-
-        monkeypatch.setattr(runtime._container, "shutdown", shutdown_container)
+        close_release = asyncio.Event()
+        mission = _OwnedHandle(
+            "mission:shielded",
+            events,
+            started=close_started,
+            release=close_release,
+        )
+        reservation = await _reserve_handle(
+            resources,
+            mission,
+            owner="mission:shielded",
+            phase="workflow-handles",
+        )
         interrupted = asyncio.create_task(runtime.shutdown())
         await close_started.wait()
         interrupted.cancel()
-        with pytest.raises(RuntimeError, match="encountered 1 error") as captured:
+        with pytest.raises(RuntimeShutdownError) as captured:
             await interrupted
 
-        assert isinstance(captured.value.__cause__, asyncio.CancelledError)
-        assert calls == ["mission"]
+        assert captured.value.phase == "workflow-handles"
+        assert isinstance(captured.value.failures[0].cause, asyncio.CancelledError)
+        assert mission.close_calls == 1
+        assert not reservation.released
         with pytest.raises(RuntimeError, match="closed"):
             runtime.world("rejected-after-cancelled-shutdown")
 
-        await runtime.shutdown()
+        retry = asyncio.create_task(runtime.shutdown())
+        close_release.set()
+        await retry
 
-        assert calls == ["mission", "mission", "container"]
+        assert mission.close_calls == 1
+        assert reservation.released
+        assert resources.close_state is RuntimeCloseState.CLOSED
 
     @pytest.mark.asyncio
     async def test_world_shutdown_cancellation_does_not_skip_sibling_cleanup(self, monkeypatch):
-        runtime = ArchetypeRuntime()
-        calls: list[str] = []
+        events: list[str] = []
+        audit = _Dependency("audit", events)
+        resources = RuntimeResources(
+            dispatcher=_DrainDispatcher(events),
+            audit=audit,
+        )
+        runtime = _runtime_with_resources(monkeypatch, resources)
+        cancellation = asyncio.CancelledError("world close cancelled")
+        first = _OwnedHandle(
+            "world:cancelled",
+            events,
+            failures=[cancellation],
+        )
+        second = _OwnedHandle("world:sibling", events)
+        first_reservation = await _reserve_handle(
+            resources,
+            first,
+            owner="world:cancelled",
+            phase="world-handles",
+        )
+        second_reservation = await _reserve_handle(
+            resources,
+            second,
+            owner="world:sibling",
+            phase="world-handles",
+        )
 
-        class CancelledOnceWorldHandle:
-            attempts = 0
-
-            async def _shutdown_internal(self, *, from_runtime: bool) -> None:
-                assert from_runtime
-                calls.append("cancelled-world")
-                self.attempts += 1
-                if self.attempts == 1:
-                    raise asyncio.CancelledError("world close cancelled")
-
-        class SiblingWorldHandle:
-            async def _shutdown_internal(self, *, from_runtime: bool) -> None:
-                assert from_runtime
-                calls.append("sibling-world")
-
-        first = CancelledOnceWorldHandle()
-        second = SiblingWorldHandle()
-        runtime._handles = (first, second)  # type: ignore[assignment]
-
-        async def shutdown_container() -> None:
-            calls.append("container")
-
-        monkeypatch.setattr(runtime._container, "shutdown", shutdown_container)
-
-        with pytest.raises(RuntimeError, match="encountered 1 error") as captured:
+        with pytest.raises(RuntimeShutdownError) as captured:
             await runtime.shutdown()
 
-        assert isinstance(captured.value.__cause__, asyncio.CancelledError)
-        assert calls == ["cancelled-world", "sibling-world"]
+        assert captured.value.phase == "world-handles"
+        assert captured.value.failures[0].cause is cancellation
+        assert events == [
+            "admission:stop",
+            "admission:drain",
+            "close:world:cancelled:1",
+            "close:world:sibling:1",
+        ]
+        assert not first_reservation.released
+        assert second_reservation.released
+        assert audit.close_calls == 0
 
         await runtime.shutdown()
 
-        assert calls == [
-            "cancelled-world",
-            "sibling-world",
-            "cancelled-world",
-            "sibling-world",
-            "container",
+        assert events == [
+            "admission:stop",
+            "admission:drain",
+            "close:world:cancelled:1",
+            "close:world:sibling:1",
+            "close:world:cancelled:2",
+            "shutdown:audit:1",
         ]
+        assert first_reservation.released
+        assert second.close_calls == 1
 
 
 class TestStructuredStepFailures:
@@ -621,7 +829,7 @@ class TestForkHandles:
 
     @pytest.mark.asyncio
     async def test_fork_registered_with_runtime(self, tmp_path):
-        """The fork handle is registered with the runtime. Shutdown destroys it."""
+        """The fork handle has one strong process-owner reservation."""
         async with ArchetypeRuntime() as rt:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
             world = rt.world("fork-reg", storage=storage)
@@ -632,11 +840,24 @@ class TestForkHandles:
                 storage=StorageConfig(uri=str(tmp_path / "fork_store"), namespace="ns"),
             )
 
-            # Fork should be tracked
-            assert fork in rt._handles
+            reservation = fork._reservation
+            assert reservation is not None
+            owner = reservation.owner
+            fork_state = fork._state
+            fork_ref = weakref.ref(fork)
+            assert rt._resources.owner(owner) is reservation
+            assert not reservation.released
+            del fork
+            gc.collect()
+            assert fork_ref() is not None
 
         # After exiting the context manager (shutdown), the fork state is closed
-        assert fork._state.closed
+        assert fork_state.closed
+        assert reservation.released
+        with pytest.raises(KeyError, match=owner):
+            rt._resources.owner(owner)
+        gc.collect()
+        assert fork_ref() is None
 
 
 # ── 6. Pre-activation add_hook raises ───────────────────────────────────
