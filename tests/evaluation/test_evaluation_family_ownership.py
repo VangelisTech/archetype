@@ -1,15 +1,12 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Evaluation family ownership regressions (issue #557).
+"""Evaluation family ownership regressions (issues #557 and #650).
 
-The #557 relocation is a pure move: `EvalReceipt` and the grading value
-contracts left `archetype.app.evaluation.models` for the top-level
-`archetype.evaluation` family without changing any serialized field,
-default, vocabulary, or digest. These tests pin that contract:
-byte-identical digest vectors, an unchanged Arrow/Pydantic schema, single
-class identity behind the supported root exports, and a one-way
-app -> family dependency.
+The family owns its durable workflow without changing any serialized field,
+default, vocabulary, or digest. These tests pin byte-identical digest vectors,
+an unchanged Arrow/Pydantic schema, single class identity behind supported root
+exports, and the absence of the former application facade.
 """
 
 from __future__ import annotations
@@ -26,6 +23,7 @@ from archetype.core.component import Component
 from archetype.evaluation.components import EvalReceipt
 from archetype.evaluation.contracts import (
     OUTCOME_STATUSES,
+    FrameGrader,
     GraderContract,
     Outcome,
     evaluation_identity_digest,
@@ -70,7 +68,7 @@ def test_outcome_vocabulary_is_unchanged() -> None:
 
 
 def test_digest_vectors_are_byte_for_byte_unchanged() -> None:
-    """Vectors recorded from archetype.app.evaluation.models before the move."""
+    """Vectors recorded before evaluation became a self-contained family."""
     contract = GraderContract(
         grader_id="mean-reading-v1",
         implementation_version="2026.07.15",
@@ -104,6 +102,7 @@ def test_digest_vectors_are_byte_for_byte_unchanged() -> None:
 
 def test_supported_root_exports_resolve_to_the_single_moved_definitions() -> None:
     assert archetype.EvalReceipt is EvalReceipt
+    assert archetype.FrameGrader is FrameGrader
     assert archetype.GraderContract is GraderContract
     assert archetype.Outcome is Outcome
     assert EvalReceipt.__module__ == "archetype.evaluation.components"
@@ -138,10 +137,8 @@ def test_contracts_import_without_the_component_stack() -> None:
 
 def test_no_duplicate_eval_receipt_component_exists() -> None:
     """`get_type_by_name` raises when two Component subclasses share a name."""
-    import archetype.app.evaluation.service  # noqa: F401 — load the app side too
-
     assert Component.get_type_by_name("EvalReceipt") is EvalReceipt
-    assert not (_APP_EVALUATION_DIR / "models.py").exists()
+    assert not any(_APP_EVALUATION_DIR.glob("*.py"))
 
 
 def _imported_modules(path: Path) -> set[str]:
@@ -155,7 +152,7 @@ def _imported_modules(path: Path) -> set[str]:
     return modules
 
 
-def test_app_evaluation_imports_the_family_and_never_the_reverse() -> None:
+def test_evaluation_family_has_no_outward_dependency_or_app_facade() -> None:
     forbidden_prefixes = ("archetype.app", "archetype.runtime", "archetype.api", "archetype.cli")
     for path in sorted(_FAMILY_DIR.rglob("*.py")):
         outward = {
@@ -163,9 +160,4 @@ def test_app_evaluation_imports_the_family_and_never_the_reverse() -> None:
         }
         assert not outward, f"{path} imports outward packages: {sorted(outward)}"
 
-    app_imports: set[str] = set()
-    for path in sorted(_APP_EVALUATION_DIR.rglob("*.py")):
-        app_imports.update(_imported_modules(path))
-    assert any(module.startswith("archetype.evaluation") for module in app_imports), (
-        "app evaluation no longer consumes the top-level family contracts"
-    )
+    assert not any(_APP_EVALUATION_DIR.glob("*.py"))

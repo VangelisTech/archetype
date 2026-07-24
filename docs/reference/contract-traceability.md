@@ -36,7 +36,7 @@ machine authority; this page is its review surface.
 | `artifacts.ingestion.occurrence_identity` | `artifacts` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 4. Occurrence and content identity | pytest: 1; eval: 1 | `pr`, `main`, `release` |
 | `artifacts.ingestion.common_visibility` | `artifacts` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 7. Visibility and failure | pytest: 1; static: 1 | `pr`, `main`, `release` |
 | `artifacts.context.task_anchored` | `artifacts` | medium | [docs/guide/artifacts.md](../guide/artifacts.md) — 11. Task-anchored artifact context | pytest: 1; static: 2 | `pr`, `main`, `release` |
-| `evaluation.result.snapshot_pinned` | `evaluation` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 9. Evaluation results | pytest: 1; eval: 1 | `pr`, `main`, `release` |
+| `evaluation.result.snapshot_pinned` | `evaluation` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 9. Evaluation results | pytest: 2; eval: 1 | `pr`, `main`, `release` |
 | `missions.transcripts.redacted_ingestion` | `missions` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 8. Transcript ingestion | pytest: 2 | `pr`, `main`, `release` |
 | `missions.transcripts.fail_closed` | `missions` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 8. Transcript ingestion | pytest: 1 | `pr`, `main`, `release` |
 | `missions.transcripts.occurrence_identity` | `missions` | medium | [docs/guide/artifacts.md](../guide/artifacts.md) — 8. Transcript ingestion | pytest: 1 | `pr`, `main`, `release` |

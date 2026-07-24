@@ -271,9 +271,11 @@ and another keyed set of normalized rows.
 
 ## 9. Evaluation results
 
-Evaluation is another tabular consumer of general ingestion. It pins the
-world's visible component snapshot, runs the requested grader, and appends one
-row to `evaluation_results`, keyed by `evaluation_id` inside the world run.
+Evaluation pins the world's visible component snapshot from explicit storage
+coordinates, runs the requested grader, and appends one row to
+`evaluation_results`, keyed by `evaluation_id` inside the world run. Its free
+family handler writes through `StorageService`; it does not consult the live
+registry or the general ingestion facade.
 
 Reusing an evaluation ID with the same pinned subject and grader contract
 returns the persisted result without grading again. Reusing it for a different

@@ -163,6 +163,14 @@ class _WorldStateProbe:
     async def ensure_init(self) -> str:
         return "world-1"
 
+    def require_storage_config(self, capability: str) -> StorageConfig:
+        if self.storage_config is None:
+            raise ValueError(
+                f"{capability} requires explicit storage coordinates; "
+                "attach the world with storage=..."
+            )
+        return self.storage_config
+
     @asynccontextmanager
     async def admit(self):
         raise AssertionError("runtime entered duplicate per-world admission state")
@@ -214,6 +222,97 @@ def _runtime_shell(dispatcher: _DispatchProbe) -> Any:
     runtime._handles = WeakSet()
     runtime._mission_handles = set()
     return runtime
+
+
+@pytest.mark.asyncio
+async def test_lazy_world_activation_retains_the_effective_default_storage() -> None:
+    """A default-created handle must remember the coordinates creation used."""
+
+    runtime_world = import_module("archetype.runtime.world")
+    dispatcher = _DispatchProbe()
+    dispatcher.results["create_world"] = SimpleNamespace(world_id="default-world")
+    state = runtime_world._RuntimeWorldState(
+        runtime=_RuntimeProbe(dispatcher),
+        name="default-storage",
+        storage_config=None,
+        cache_config=None,
+        init_processors=[],
+        init_resources=[],
+        init_hooks=[],
+    )
+
+    assert await state.ensure_init() == "default-world"
+    assert isinstance(state.storage_config, StorageConfig)
+    assert len(dispatcher.trusted) == 1
+    create = dispatcher.trusted[0]
+    assert create.operation == "create_world"
+    assert create.storage_config is state.storage_config
+
+
+@pytest.mark.asyncio
+async def test_cold_attached_evaluation_without_storage_fails_before_dispatch() -> None:
+    """A cold handle cannot recover coordinates through a live-registry fallback."""
+
+    from archetype.evaluation.contracts import GraderContract, Outcome
+
+    dispatcher = _DispatchProbe()
+    world, _state = _runtime_world(dispatcher)
+
+    def grader(_frame: object) -> Outcome:
+        raise AssertionError("missing coordinates reached the grader")
+
+    with pytest.raises(ValueError, match="evaluate requires explicit storage coordinates"):
+        await world.evaluate(
+            DispatchMetric,
+            contract=GraderContract(
+                grader_id="cold-fail-closed",
+                implementation_version="v1",
+            ),
+            grader=grader,
+            evaluation_id="cold-without-storage",
+        )
+
+    assert dispatcher.trusted == []
+
+
+@pytest.mark.asyncio
+async def test_resume_retains_the_exact_explicit_storage_on_its_handle(
+    tmp_path: Path,
+) -> None:
+    """Resume and the returned handle must share one effective coordinate value."""
+
+    dispatcher = _DispatchProbe()
+    dispatcher.results["resume_world"] = SimpleNamespace(world_id="resumed-world")
+    runtime = _runtime_shell(dispatcher)
+    runtime._bind_world_state = lambda state: state
+    storage = StorageConfig(
+        uri=str(tmp_path / "resume-store"),
+        namespace="resume-explicit",
+    )
+
+    state = await runtime.resume("durable-world", storage=storage)
+
+    assert len(dispatcher.trusted) == 1
+    resume = dispatcher.trusted[0]
+    assert resume.storage_config is storage
+    assert state.storage_config is storage
+
+
+@pytest.mark.asyncio
+async def test_resume_retains_its_effective_default_storage_on_the_handle() -> None:
+    """Default resume must not discard the coordinates used for admission."""
+
+    dispatcher = _DispatchProbe()
+    dispatcher.results["resume_world"] = SimpleNamespace(world_id="resumed-default")
+    runtime = _runtime_shell(dispatcher)
+    runtime._bind_world_state = lambda state: state
+
+    state = await runtime.resume("durable-world")
+
+    assert len(dispatcher.trusted) == 1
+    resume = dispatcher.trusted[0]
+    assert isinstance(resume.storage_config, StorageConfig)
+    assert state.storage_config is resume.storage_config
 
 
 def _mission_shell(

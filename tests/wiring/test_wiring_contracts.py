@@ -555,7 +555,6 @@ async def test_bootstrap_environment_is_resolved_once_before_family_construction
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from archetype.app.artifacts.service import ArtifactService
-    from archetype.app.evaluation.service import EvaluationService
     from archetype.app.missions.trajectory_service import TrajectoryService
     from archetype.app.missions.transcript_service import TranscriptIngestionService
     from archetype.app.physical_ai.service import PhysicalAIService
@@ -581,7 +580,6 @@ async def test_bootstrap_environment_is_resolved_once_before_family_construction
         Policy,
         ArtifactService,
         TranscriptIngestionService,
-        EvaluationService,
         TrajectoryService,
         PhysicalAIService,
         AutoResearchService,
@@ -756,12 +754,12 @@ async def test_pull_forward_handlers_translate_exact_values_without_recursive_di
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from archetype.app.artifacts.service import ArtifactService
-    from archetype.app.evaluation.service import EvaluationService
     from archetype.app.missions.service import MissionService
     from archetype.app.missions.trajectory_service import TrajectoryService
     from archetype.app.missions.transcript_service import TranscriptIngestionService
     from archetype.app.physical_ai.service import PhysicalAIService
     from archetype.app.research.service import AutoResearchService
+    from archetype.evaluation import handlers as evaluation_handlers
     from archetype.missions.sandboxes.service import SandboxService
     from archetype.world import query as world_query
 
@@ -775,11 +773,16 @@ async def test_pull_forward_handlers_translate_exact_values_without_recursive_di
 
         return method
 
+    def record_free(name: str):
+        async def handler(*args: object, **kwargs: object) -> object:
+            calls.setdefault(name, []).append((args, kwargs))
+            return results[name]
+
+        return handler
+
     method_bindings = (
         (ArtifactService, "ingest", "ingest_artifacts"),
         (ArtifactService, "index", "query_artifacts"),
-        (EvaluationService, "run_graders", "run_graders"),
-        (EvaluationService, "evaluate", "evaluate"),
         (AutoResearchService, "run", "autoresearch"),
         (PhysicalAIService, "evaluate_task", "evaluate_physical_task"),
         (PhysicalAIService, "sweep_instructions", "sweep_physical_instructions"),
@@ -793,6 +796,16 @@ async def test_pull_forward_handlers_translate_exact_values_without_recursive_di
     )
     for service_type, method_name, operation_name in method_bindings:
         monkeypatch.setattr(service_type, method_name, record(operation_name))
+    monkeypatch.setattr(
+        evaluation_handlers,
+        "run_graders",
+        record_free("run_graders"),
+    )
+    monkeypatch.setattr(
+        evaluation_handlers,
+        "evaluate",
+        record_free("evaluate"),
+    )
 
     mission_init: list[dict[str, object]] = []
 
@@ -1006,20 +1019,8 @@ async def test_pull_forward_handlers_translate_exact_values_without_recursive_di
                 ((world_id, (source,)), {"storage_config": storage})
             ]
             assert calls["query_artifacts"] == [((world_id,), {"storage_config": storage})]
-            assert calls["run_graders"] == [((frame, (grader,)), {})]
-            assert calls["evaluate"] == [
-                (
-                    (world_id, (component,)),
-                    {
-                        "contract": contract,
-                        "grader": grader,
-                        "evaluation_id": "evaluation-1",
-                        "storage_config": storage,
-                        "ticks": [2],
-                        "entity_ids": [3],
-                    },
-                )
-            ]
+            assert calls["run_graders"] == [((operations["run_graders"],), {})]
+            assert calls["evaluate"] == [((resources._storage, operations["evaluate"]), {})]
             assert calls["autoresearch"] == [
                 (
                     (world_id, research_config, evaluator),

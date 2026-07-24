@@ -7,7 +7,6 @@ types = [
   "AuditLog",
   "AutoResearchService",
   "CommandScheduler",
-  "EvaluationService",
   "IngestionService",
   "MissionService",
   "PhysicalAIService",
@@ -95,20 +94,11 @@ allowed_app = [
 ]
 
 [[family_rule]]
-name = "evaluation-family"
-consumer = "archetype.app.evaluation"
-allowed_app = [
-  "archetype.app.evaluation",
-  "archetype.app.ingestion.interfaces",
-]
-
-[[family_rule]]
 name = "mission-family"
 consumer = "archetype.app.missions"
 allowed_app = [
   "archetype.app.missions",
   "archetype.app.artifacts.interfaces",
-  "archetype.app.evaluation.interfaces",
   "archetype.app.ingestion.interfaces",
 ]
 
@@ -124,7 +114,6 @@ name = "physical-ai-family"
 consumer = "archetype.app.physical_ai"
 allowed_app = [
   "archetype.app.physical_ai",
-  "archetype.app.evaluation.interfaces",
 ]
 
 [[module_rule]]
@@ -145,15 +134,6 @@ allowed_interfaces = [
 allowed_app = []
 
 [[module_rule]]
-module = "archetype.app.evaluation.service"
-allowed_interfaces = [
-  "archetype.app.ingestion.interfaces.iIngestionService",
-  "archetype.storage.interfaces.iStorageService",
-  "archetype.world.interfaces.iWorldRegistry",
-]
-allowed_app = []
-
-[[module_rule]]
 module = "archetype.app.missions.service"
 allowed_interfaces = []
 allowed_app = []
@@ -161,7 +141,6 @@ allowed_app = []
 [[module_rule]]
 module = "archetype.app.missions.trajectory_service"
 allowed_interfaces = [
-  "archetype.app.evaluation.interfaces.iEvaluationService",
   "archetype.storage.interfaces.iStorageService",
 ]
 allowed_app = []
@@ -179,7 +158,6 @@ allowed_app = []
 [[module_rule]]
 module = "archetype.app.physical_ai.service"
 allowed_interfaces = [
-  "archetype.app.evaluation.interfaces.iEvaluationService",
   "archetype.storage.interfaces.iStorageService",
   "archetype.world.interfaces.iWorldLifecycle",
   "archetype.world.interfaces.iWorldRegistry",

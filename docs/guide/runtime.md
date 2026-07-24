@@ -166,9 +166,9 @@ accepted at the scripting boundary. A string or path becomes
 ### R11 — Evaluation and research
 
 `world.grade(...)` dispatches an exact evaluation operation. The registered
-evaluation workflow owns snapshot pinning, grader execution, outcome
-validation, and durable receipts where requested. The runtime does not compose
-world query functions or `EvaluationService` itself.
+family handler owns snapshot pinning, grader execution, outcome validation, and
+durable receipts where requested. The runtime supplies the handle's explicit
+storage coordinates and does not compose world query or storage functions.
 
 `world.autoresearch(...)` dispatches to the research-family handler. Callback
 execution must not hold a runtime handle lock that would deadlock reentrant

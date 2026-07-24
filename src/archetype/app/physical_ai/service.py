@@ -18,7 +18,6 @@ from typing import Any
 from daft import DataFrame, col
 from uuid_utils import uuid7
 
-from archetype.app.evaluation.interfaces import iEvaluationService
 from archetype.core.component import Component
 from archetype.core.config import WorldConfig
 from archetype.physical_ai.contracts import (
@@ -42,7 +41,7 @@ from archetype.physical_ai.manipulation import (
 )
 from archetype.physical_ai.policy import PolicyActionProcessor, PolicyClient
 from archetype.storage.interfaces import iStorageService
-from archetype.world import mutation, simulation
+from archetype.world import mutation, query, simulation
 from archetype.world.interfaces import iWorldLifecycle, iWorldRegistry
 from archetype.world.models import EpisodeConfig
 
@@ -118,12 +117,10 @@ class PhysicalAIService:
         self,
         world_registry: iWorldRegistry,
         world_lifecycle: iWorldLifecycle,
-        evaluation_service: iEvaluationService,
         storage_service: iStorageService,
     ) -> None:
         self._world_registry = world_registry
         self._world_lifecycle = world_lifecycle
-        self._evaluations = evaluation_service
         self._storage = storage_service
 
     async def evaluate_task(
@@ -189,11 +186,12 @@ class PhysicalAIService:
             raise RuntimeError("physical evaluation completed without an active run identity")
         run_id = episode.run_id
         final = await _latest_rows(
-            await self._evaluations.query_components(
+            await query.query_components(
+                self._storage,
                 [ManipStatus, ManipTask],
-                world_id=world_id,
-                run_id=run_id,
-                storage_config=config.storage,
+                str(world_id),
+                str(run_id),
+                config.storage,
             ),
             self._storage,
         )
@@ -285,11 +283,12 @@ class PhysicalAIService:
             raise RuntimeError("physical sweep completed without an active run identity")
         run_id = episode.run_id
         final = await _latest_rows(
-            await self._evaluations.query_components(
+            await query.query_components(
+                self._storage,
                 [ManipStatus, ManipTask],
-                world_id=world_id,
-                run_id=run_id,
-                storage_config=config.storage,
+                str(world_id),
+                str(run_id),
+                config.storage,
             ),
             self._storage,
         )

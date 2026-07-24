@@ -707,7 +707,7 @@ class SqliteControlCatalog:
     ) -> EvaluationLease:
         """Atomically select the one process allowed to execute a grader.
 
-        Identity mismatches are returned to the evaluation service so it can
+        Identity mismatches are returned to the evaluation handler so it can
         preserve its public ``ValueError`` contract. A live lease owned by a
         different process is observationally ``acquired=False``. Expired and
         explicitly released leases may be taken over; a caller may also renew

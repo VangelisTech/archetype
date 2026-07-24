@@ -138,7 +138,7 @@ the reward query.
 ## Grade a selection
 
 `grade_trajectory()` performs the same read and selection, then delegates the
-lazy frame to the evaluation service's grader runner.
+lazy frame to the evaluation family's pure grader runner.
 
 ```python
 def total_reward(frame):

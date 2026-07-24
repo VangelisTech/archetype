@@ -147,7 +147,6 @@ _EXPECTED_TASK_IDS = frozenset(case.task_id for case in SPEC_CASES)
 
 _RUNTIME_TYPE_ONLY_APP_IMPORTS = frozenset(
     {
-        "archetype.app.evaluation.interfaces",
         "archetype.app.research.contracts",
     }
 )

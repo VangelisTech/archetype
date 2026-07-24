@@ -57,6 +57,11 @@ instruction optimization. `PhysicalTaskEvalConfig`, `PhysicalTaskEvalReport`,
 `VariantOutcome` are supported top-level runtime contracts. The concrete
 application service remains internal.
 
+`FrameGrader`, `Outcome`, `GraderContract`, and `EvalReceipt` are supported
+top-level evaluation contracts. `TrajectoryGrader` remains an object-identical
+namespaced alias of `FrameGrader` for the existing trajectory consumer; the
+evaluation workflow itself is implemented by family-owned free handlers.
+
 The ownership trajectory is recorded in
 [Agent Missions V1, section 9](agent-missions.md#9-family-direction-after-v1),
 and the named family moves are complete. Dataset evidence identity now lives in

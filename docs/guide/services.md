@@ -47,9 +47,9 @@ archetype.wiring
   +-> AuditLog -> StorageService + scheduler outbox callbacks
   +-> IngestionService -> storage/world ports
   +-> ArtifactService -> ingestion/storage/world ports
-  +-> EvaluationService -> ingestion/storage/world ports
+  +-> evaluation handlers -> storage + world.query
   +-> AutoResearchService -> storage/world ports
-  +-> PhysicalAIService -> evaluation/storage/world ports
+  +-> PhysicalAIService -> storage/world ports
 ```
 
 Wiring injects `CommandScheduler.materialize` when lifecycle constructs
@@ -117,9 +117,12 @@ does not add a claim, lease, receipt, or reconciliation state machine. See
 
 ## Evaluation and research families
 
-`EvaluationService` pins persisted world state through storage and world-query authority,
-executes caller-provided graders, validates typed outcomes, and appends one
-durable evaluation result through `iIngestionService`.
+The top-level evaluation family pins persisted world state through storage and
+world-query authority, executes caller-provided graders, validates typed
+outcomes, and appends one durable evaluation result directly through
+`StorageService`. Exact `Evaluate` and `RunGraders` models are registered to
+free family handlers; no application evaluation facade or live-registry
+fallback participates.
 
 `AutoResearchService` owns the multi-iteration rollout workflow and its durable
 research ledger. It depends on world registry/lifecycle and storage ports and
@@ -128,9 +131,9 @@ world teardown callback so rollout forks follow committed-work reconciliation,
 durable command cancellation, then lifecycle close. Scoring remains an explicit
 callback contract.
 
-`PhysicalAIService` composes world registry/lifecycle, evaluation, and storage
-ports and calls world mutation/simulation functions. It uses storage to
-materialize the bounded terminal projection from which it builds a typed
+`PhysicalAIService` composes world registry/lifecycle and storage ports and
+calls world mutation, simulation, and durable query functions. It uses storage
+to materialize the bounded terminal projection from which it builds a typed
 report; the report is not a second state authority.
 
 ## Commands family
@@ -182,7 +185,6 @@ The CLI remains an HTTP client.
 - reusable file-ingestion pipeline and scanners: `src/archetype/ingestion/`
 - file artifacts: `src/archetype/app/artifacts/`
 - artifact file contracts: `src/archetype/artifacts/`
-- evaluation: `src/archetype/app/evaluation/`
-- evaluation domain contracts and receipt schema: `src/archetype/evaluation/`
+- evaluation values, grading, pinned views, handlers, and receipt schema: `src/archetype/evaluation/`
 - research: `src/archetype/app/research/`
 - command/access audit projection: `src/archetype/commands/audit.py`

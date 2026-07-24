@@ -151,21 +151,21 @@ class TestRuntimeAppBoundary:
             [("archetype.app.research.service", False)],
         ),
         (
-            "from archetype.app.evaluation.interfaces import TrajectoryGrader\n",
-            [("archetype.app.evaluation.interfaces", False)],
+            "from archetype.app.artifacts.service import ArtifactService\n",
+            [("archetype.app.artifacts.service", False)],
         ),
         ("from archetype.application import Service\n", []),
         (
             "from typing import TYPE_CHECKING\n"
             "if TYPE_CHECKING:\n"
-            "    import archetype.app.evaluation.interfaces\n",
-            [("archetype.app.evaluation.interfaces", False)],
+            "    import archetype.app.artifacts.service\n",
+            [("archetype.app.artifacts.service", False)],
         ),
         (
             "from typing import TYPE_CHECKING\n"
             "if TYPE_CHECKING:\n"
-            "    from archetype.app.evaluation.interfaces import TrajectoryGrader\n",
-            [("archetype.app.evaluation.interfaces", False)],
+            "    from archetype.app.artifacts.service import ArtifactService\n",
+            [("archetype.app.artifacts.service", False)],
         ),
     ],
 )
@@ -199,7 +199,7 @@ class TestApiAppBoundary:
     ("module", "expected"),
     [
         ("archetype.app.errors", False),
-        ("archetype.app.evaluation.service", False),
+        ("archetype.app.artifacts.service", False),
         ("archetype.app.research.service", False),
     ],
 )

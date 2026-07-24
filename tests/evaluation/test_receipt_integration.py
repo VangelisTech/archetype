@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Snapshot-pinned evaluation evidence over the general ingestion service."""
+"""Snapshot-pinned evaluation evidence through the family-owned handlers."""
 
 import asyncio
 import json
@@ -9,7 +9,6 @@ import subprocess
 import sys
 import textwrap
 import time
-from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -19,11 +18,12 @@ import pyarrow as pa
 import pytest
 from uuid_utils import uuid7
 
-from archetype.app.evaluation import service as evaluation_module
 from archetype.commands.dispatch import CommandDispatcher
 from archetype.commands.models import ActorCtx
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
+from archetype.evaluation import handlers as evaluation_handlers
+from archetype.evaluation import views as evaluation_views
 from archetype.evaluation.components import EvalReceipt
 from archetype.evaluation.contracts import GraderContract, Outcome, subject_digest
 from archetype.evaluation.models import Evaluate
@@ -39,7 +39,7 @@ pytestmark = [
     pytest.mark.integration,
 ]
 
-_EVALUATION_RESULTS = "evaluation_results"
+_EVALUATION_RESULTS = evaluation_views.EVALUATION_RESULTS_TABLE
 
 
 class Telemetry(Component):
@@ -90,15 +90,6 @@ async def _shutdown(resources: RuntimeResources, storage: StorageService) -> Non
     await storage.shutdown()
 
 
-def _evaluation_service(dispatcher: CommandDispatcher) -> evaluation_module.EvaluationService:
-    handler = dispatcher._registry.resolve_name("evaluate").handler
-    assert isinstance(handler, partial)
-    assert handler.args
-    service = handler.args[0]
-    assert isinstance(service, evaluation_module.EvaluationService)
-    return service
-
-
 def _evaluate(
     world_id: object,
     components: list[type[Component]],
@@ -106,7 +97,7 @@ def _evaluate(
     contract: Any,
     grader: Any,
     evaluation_id: str,
-    storage_config: StorageConfig | None = None,
+    storage_config: StorageConfig,
 ) -> Evaluate:
     return Evaluate(
         world_id=world_id,
@@ -274,12 +265,15 @@ async def test_concurrent_service_graphs_run_paid_grader_once(tmp_path):
 async def test_expired_owner_with_persisted_result_recovers_without_regrading(tmp_path):
     resources, storage_service = _runtime(tmp_path)
     dispatcher = resources.dispatcher
-    evaluation_service = _evaluation_service(dispatcher)
     try:
         storage = _storage(tmp_path)
         world = await _seeded_world(dispatcher, storage)
         wid = str(world.world_id)
-        snapshot = await evaluation_service._snapshot(wid, storage)
+        snapshot = await evaluation_views.pin_snapshot(
+            storage_service,
+            world_id=wid,
+            storage_config=storage,
+        )
         contract = _contract()
         subject = subject_digest(
             wid,
@@ -311,11 +305,11 @@ async def test_expired_owner_with_persisted_result_recovers_without_regrading(tm
         await storage_service.append_world_rows(
             storage,
             wid,
-            evaluation_module._EVALUATION_RESULTS,
+            evaluation_views.EVALUATION_RESULTS_TABLE,
             daft.from_arrow(
                 pa.Table.from_pylist(
                     [persisted.model_dump()],
-                    schema=evaluation_module._EVALUATION_SCHEMA,
+                    schema=evaluation_handlers.EVALUATION_SCHEMA,
                 )
             ),
             key_columns=("evaluation_id",),
@@ -355,8 +349,8 @@ async def test_expired_owner_with_persisted_result_recovers_without_regrading(tm
 
 
 async def test_evaluation_heartbeat_renews_and_detects_lost_owner(monkeypatch):
-    monkeypatch.setattr(evaluation_module, "_EVALUATION_LEASE_SECONDS", 0.03)
-    monkeypatch.setattr(evaluation_module, "_EVALUATION_POLL_SECONDS", 0.001)
+    monkeypatch.setattr(evaluation_handlers, "EVALUATION_LEASE_SECONDS", 0.03)
+    monkeypatch.setattr(evaluation_handlers, "EVALUATION_POLL_SECONDS", 0.001)
     lease = SimpleNamespace(
         world_id="world",
         run_id="run",
@@ -413,7 +407,7 @@ async def test_failed_lease_release_does_not_mask_grader_failure(tmp_path, monke
             raise ValueError("grader failed")
 
         monkeypatch.setattr(catalog, "release_evaluation", fail_release)
-        with caplog.at_level("WARNING", logger=evaluation_module.__name__):
+        with caplog.at_level("WARNING", logger=evaluation_handlers.__name__):
             with pytest.raises(ValueError, match="grader failed"):
                 await dispatcher.apply_as(
                     _ctx(),
@@ -434,8 +428,7 @@ async def test_failed_lease_release_does_not_mask_grader_failure(tmp_path, monke
 
 
 async def containerless_heartbeat(catalog, lease, *, stop, lost):
-    return await evaluation_module.EvaluationService._heartbeat_evaluation(
-        None,
+    return await evaluation_handlers._heartbeat_evaluation(
         catalog,
         lease,
         owner="owner",
@@ -447,18 +440,17 @@ async def containerless_heartbeat(catalog, lease, *, stop, lost):
 async def test_grader_reads_captured_snapshot_when_world_advances(tmp_path, monkeypatch):
     resources, storage_service = _runtime(tmp_path)
     dispatcher = resources.dispatcher
-    evaluation_service = _evaluation_service(dispatcher)
     try:
         storage = _storage(tmp_path)
         world = await _seeded_world(dispatcher, storage)
-        original_snapshot = evaluation_service._snapshot
+        original_snapshot = evaluation_views.pin_snapshot
 
         async def capture_then_advance(*args, **kwargs):
             snapshot = await original_snapshot(*args, **kwargs)
             await dispatcher.apply(Step(world_id=world.world_id, run_config=RunConfig()))
             return snapshot
 
-        monkeypatch.setattr(evaluation_service, "_snapshot", capture_then_advance)
+        monkeypatch.setattr(evaluation_views, "pin_snapshot", capture_then_advance)
         graded_ticks: list[int] = []
 
         def grader(df):

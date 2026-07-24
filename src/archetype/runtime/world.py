@@ -93,6 +93,7 @@ if TYPE_CHECKING:
     )
     from archetype.evaluation.components import EvalReceipt
     from archetype.evaluation.contracts import (
+        FrameGrader,
         GraderContract,
         GraderOutput,
         TrajectoryGrader,
@@ -220,12 +221,13 @@ class _RuntimeWorldState:
                 return self.world_id
 
             dispatcher = self.runtime._resources.dispatcher
+            effective_storage_config = self.storage_config or StorageConfig()
 
             try:
                 info = await dispatcher.apply(
                     CreateWorld(
                         config=WorldConfig(name=self.name),
-                        storage_config=self.storage_config,
+                        storage_config=effective_storage_config,
                         cache_config=self.cache_config,
                     )
                 )
@@ -246,6 +248,7 @@ class _RuntimeWorldState:
                         )
                     )
 
+                self.storage_config = effective_storage_config
                 self.initialized = True
             except BaseException:
                 if self.world_id is not None:
@@ -256,6 +259,17 @@ class _RuntimeWorldState:
 
         assert self.world_id is not None
         return self.world_id
+
+    def require_storage_config(self, capability: str) -> StorageConfig:
+        """Return explicit durable coordinates or fail before capability effects."""
+
+        storage_config = self.storage_config
+        if storage_config is None:
+            raise ValueError(
+                f"{capability} requires explicit storage coordinates; "
+                "attach the world with storage=..."
+            )
+        return storage_config
 
     async def shutdown(self) -> None:
         """Close this local handle state without destroying durable world state."""
@@ -589,7 +603,7 @@ class RuntimeWorld:
     async def grade(
         self,
         *component_types: type[Component],
-        graders: Sequence[TrajectoryGrader],
+        graders: Sequence[FrameGrader],
         entity_ids: list[int] | None = None,
     ) -> list[GraderOutput]:
         """Run graders against this world's append-only history.
@@ -605,7 +619,7 @@ class RuntimeWorld:
         self,
         *component_types: type[Component],
         contract: GraderContract,
-        grader: TrajectoryGrader,
+        grader: FrameGrader,
         evaluation_id: str,
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
@@ -617,6 +631,7 @@ class RuntimeWorld:
         grading again. Use a new identity for another nondeterministic trial.
         """
         wid = await self._ensure_id()
+        storage_config = self._state.require_storage_config("evaluate")
         return await self._dispatcher.apply(
             Evaluate(
                 world_id=wid,
@@ -624,7 +639,7 @@ class RuntimeWorld:
                 contract=contract,
                 grader=grader,
                 evaluation_id=evaluation_id,
-                storage_config=self._state.storage_config,
+                storage_config=storage_config,
                 ticks=tuple(ticks) if ticks is not None else None,
                 entity_ids=tuple(entity_ids) if entity_ids is not None else None,
             )
@@ -1017,7 +1032,7 @@ class SyncRuntimeWorld:
     def grade(
         self,
         *component_types: type[Component],
-        graders: Sequence[TrajectoryGrader],
+        graders: Sequence[FrameGrader],
         entity_ids: list[int] | None = None,
     ) -> list[GraderOutput]:
         return self._run(
@@ -1028,7 +1043,7 @@ class SyncRuntimeWorld:
         self,
         *component_types: type[Component],
         contract: GraderContract,
-        grader: TrajectoryGrader,
+        grader: FrameGrader,
         evaluation_id: str,
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,

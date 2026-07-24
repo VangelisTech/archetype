@@ -128,7 +128,7 @@ reason = "series_to_rows helper: converts each Series parameter to a Python list
 
 [[entries]]
 path = "src/archetype/app/physical_ai/service.py"
-line = 105
+line = 104
 method = "to_pylist"
 reason = "Physical-evaluation grading boundary: StorageService admits and materializes latest-tick ledger rows before bounded success and episode-length values become typed task or sweep reports."
 

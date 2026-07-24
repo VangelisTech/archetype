@@ -312,13 +312,14 @@ class ArchetypeRuntime:
         """
         async with self._resources.admit_operation():
             self._ensure_open()
+            effective_storage = coerce_storage(storage) or StorageConfig()
             info = await self._dispatcher.apply(
                 ResumeWorld(
-                    storage_config=coerce_storage(storage) or StorageConfig(),
+                    storage_config=effective_storage,
                     world_id=world_id,
                 )
             )
-            return self.attach(info.world_id, name=name)
+            return self.attach(info.world_id, name=name, storage=effective_storage)
 
     async def discover(self, storage: str | Path | StorageConfig | None = None) -> list[WorldInfo]:
         """List every world recorded for a storage identity.

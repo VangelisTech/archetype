@@ -51,8 +51,7 @@ ArchetypeRuntime -> commands.CommandDispatcher.apply / defer
 FastAPI + ActorCtx -> commands.CommandDispatcher.apply_as / defer_as
 commands.CommandDispatcher -> OperationRegistry -> exact family handler
 
-iEvaluationService
-  -> iIngestionService + iStorageService + iWorldRegistry
+evaluation.handlers -> iStorageService + archetype.world.query
 iIngestionService  -> iStorageService + iWorldRegistry
 iArtifactService   -> iIngestionService + iStorageService + iWorldRegistry
 iTranscriptIngestionService
@@ -66,8 +65,8 @@ CommandScheduler   -> storage control catalog
 iResearchService   -> iWorldRegistry + iWorldLifecycle + iStorageService
                    -> application-owned world-teardown callback
 iPhysicalAIService
-  -> iWorldRegistry + iWorldLifecycle
-  -> iEvaluationService + iStorageService
+  -> iWorldRegistry + iWorldLifecycle + iStorageService
+  -> archetype.world.query
 AuditLog           -> iStorageService + CommandScheduler outbox callbacks
 
 RuntimeMissions -> CommandDispatcher -> registered mission handler
@@ -88,14 +87,13 @@ through those handlers and its exact pre-reserved owner.
 | Port | Implementation | Principal consumers | Responsibility |
 |---|---|---|---|
 | `iStorageService` | `StorageService` | world, commands, ingestion, artifacts, evaluation, transcripts, research, physical AI | Store/session lifetime, control authority, physical visibility, world/run row envelope, terminal Daft execution, and app-table catalog/read/write/retry authority |
-| `iWorldRegistry` | `WorldRegistry` | lifecycle, mutation, simulation, ingestion, artifacts, evaluation, transcripts, research, physical AI | Live identity, storage coordinates, exact-world synchronization, retryable close ownership, and committed-receipt retention |
+| `iWorldRegistry` | `WorldRegistry` | lifecycle, mutation, simulation, ingestion, artifacts, transcripts, research, physical AI | Live identity, storage coordinates, exact-world synchronization, retryable close ownership, and committed-receipt retention |
 | `iWorldLifecycle` | `WorldLifecycle` | wiring, research, physical AI | Managed construction, durable discovery, readonly open, fenced mutable resume, fork, and close |
 | `iWorldCleanup` | `WorldCleanup` | reservation-owned mission cleanup | Exact-world, close-lease-bound retained updates, teardown staging, commit, and finish |
-| `iIngestionService` | `IngestionService` | artifacts, transcripts, evaluation | Select live storage configuration and delegate typed row publication |
+| `iIngestionService` | `IngestionService` | artifacts, transcripts | Select live storage configuration and delegate typed row publication |
 | `iArtifactService` | `ArtifactService` | registered artifact handlers, transcript ingestion | Discover and scan files, persist content-addressed objects, publish typed media indexes, then expose the common file index |
 | `iTranscriptIngestionService` | `TranscriptIngestionService` | registered transcript handlers | Snapshot and redact a coding-agent transcript, ingest the sanitized file, and append normalized mission rows |
 | Structural `MissionRedactor` / `TranscriptRedactor` | canonical `archetype.redaction.RedactionService` | mission execution and transcript ingestion | Provider-neutral pre-durability scanning, deterministic redaction, safe receipts, and quarantine |
-| `iEvaluationService` | `EvaluationService` | registered evaluation handlers, physical AI | Pin persisted world state, lease grader execution through the shared control authority, and append one typed evaluation result |
 | `iResearchService` | `AutoResearchService` | registered research handler | Multi-run autoresearch workflow and research ledger; rollout forks use the injected teardown path |
 | `iMissionService` | `MissionService` | registered mission handlers | Materialize task graphs, own the batteries-included world bundle, drain committed author and critic intents into external work, stage factual observations, and project terminal results |
 | `iTrajectoryService` | `TrajectoryService` | registered trajectory query/grade handlers | Compose durable episode selection with evaluation graders without creating a second trajectory authority |
@@ -257,7 +255,7 @@ See [Agent Missions V1](agent-missions.md).
 because external simulator and model resources are implementations beneath
 that capability. `iPhysicalAIService` is the app-internal workflow port. Its
 implementation composes world lifecycle, entity/processor mutation, episode
-execution, persisted evaluation reads, and storage-admitted terminal report
+execution, persisted world reads, and storage-admitted terminal report
 projection; it does not own those authorities.
 
 The registered dispatcher handlers are the only path exposed to the runtime.
@@ -296,21 +294,22 @@ authority remain under `archetype.app.ingestion`, `archetype.app.artifacts`,
 and the canonical `archetype.storage` family. Storage owns the generic durable
 world/run envelope; ingestion selects the live storage configuration rather
 than duplicating persistence mechanics. The evaluation family completed its
-split under issue #557: `EvalReceipt` lives in
-`archetype.evaluation.components`, and the grading value contracts and
-identity digests live in `archetype.evaluation.contracts`. Current paths
-that predate this rule are migration state, not alternate ownership. The
+workflow pull-forward under issue #650: `EvalReceipt` lives in
+`archetype.evaluation.components`; grading values and identity digests live in
+`archetype.evaluation.models` and `contracts`; and free handlers pin, grade,
+lease, recover, and append through explicit storage coordinates. There is no
+application evaluation facade or live-registry fallback. The
 research family completed #585: ledger Components and the pure runner decoder
 live under `archetype.research`, while loop coordination remains under
 `archetype.app.research`. The trajectory split completed #586: schemas,
 authoring values, and structural transforms live under
-`archetype.missions.trajectories`; `iTrajectoryService` composes only query and
-evaluation ports.
+`archetype.missions.trajectories`; `iTrajectoryService` composes durable query
+with the evaluation family's pure grader runner.
 
 The physical-AI split completed #589: typed request/report values and pure
 optimization live under `archetype.physical_ai`, while
-`iPhysicalAIService` composes world, mutation, simulation, evaluation, and
-storage ports under `archetype.app.physical_ai`. The former root application
+`iPhysicalAIService` composes world, mutation, simulation, query, and storage
+ports under `archetype.app.physical_ai`. The former root application
 command-envelope boundary was removed by the v0.5 dispatcher migration.
 
 The root policy and its `quality/architecture.d/` fragments currently carry no

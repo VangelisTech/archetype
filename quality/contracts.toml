@@ -448,7 +448,10 @@ source = "docs/guide/artifacts.md"
 section = "9. Evaluation results"
 owner = "evaluation"
 risk = "high"
-pytest = ["tests/app/test_eval_receipts.py"]
+pytest = [
+  "tests/evaluation/test_handler_receipts.py",
+  "tests/evaluation/test_receipt_integration.py",
+]
 static = []
 evals = ["idempotency.evaluation_result_replay"]
 benchmarks = []
