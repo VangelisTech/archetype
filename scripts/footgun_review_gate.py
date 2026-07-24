@@ -59,6 +59,14 @@ REQUIRED_CATEGORIES = (
     "observability-boundary-and-authority",
     "telemetry-safety-and-cardinality",
 )
+# Merge-gate severity tier. The skill rulebook defines the semantics and tests
+# derive this tuple from it: `blocking` findings fail `review-complete`;
+# `advisory` findings post as resolvable threads that gate queue-ready until
+# resolved, where a written disposition is a sanctioned resolution.
+SEVERITIES = (
+    "blocking",
+    "advisory",
+)
 
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$")
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -333,6 +341,9 @@ def validate_result(
         category = finding.get("category")
         if category not in REQUIRED_CATEGORIES:
             raise GateError(f"findings[{index}].category is not a reviewed category")
+        severity = finding.get("severity")
+        if severity not in SEVERITIES:
+            raise GateError(f"findings[{index}].severity must be one of {', '.join(SEVERITIES)}")
         path = finding.get("path")
         if path not in scoped_files:
             raise GateError(f"findings[{index}].path is outside the reviewed diff")
@@ -349,6 +360,7 @@ def validate_result(
         normalized_findings.append(
             {
                 "category": category,
+                "severity": severity,
                 "title": _text(finding.get("title"), f"findings[{index}].title", minimum=5),
                 "path": path,
                 "side": side,
@@ -427,6 +439,7 @@ def result_schema() -> dict[str, Any]:
                     "type": "object",
                     "properties": {
                         "category": {"type": "string", "enum": list(REQUIRED_CATEGORIES)},
+                        "severity": {"type": "string", "enum": list(SEVERITIES)},
                         "title": {"type": "string", "minLength": 5},
                         "path": text,
                         "side": {"type": "string", "enum": ["LEFT", "RIGHT"]},
@@ -437,6 +450,7 @@ def result_schema() -> dict[str, Any]:
                     },
                     "required": [
                         "category",
+                        "severity",
                         "title",
                         "path",
                         "side",
@@ -527,7 +541,19 @@ def render_evidence(
     context = _expect_list(result.get("review_context"), "review_context")
     head_sha = str(result["head_sha"])
     finding_count = len(findings)
-    outcome = "no findings" if finding_count == 0 else f"{finding_count} finding(s)"
+    blocking_count = sum(
+        1
+        for finding in findings
+        if _expect_mapping(finding, "findings entry").get("severity") == "blocking"
+    )
+    outcome = (
+        "no findings"
+        if finding_count == 0
+        else (
+            f"{finding_count} finding(s) — "
+            f"{blocking_count} blocking, {finding_count - blocking_count} advisory"
+        )
+    )
     lines = [
         f"## Footgun review — {outcome}",
         "",
@@ -587,9 +613,17 @@ def render_evidence(
 
 
 def render_finding(finding: Mapping[str, Any], head_sha: str) -> str:
+    severity = str(finding["severity"])
+    disposition = (
+        "fix before merge"
+        if severity == "blocking"
+        else "fix, or resolve this thread with a written disposition"
+    )
     return "\n".join(
         [
             f"### {finding['category']}: {finding['title']}",
+            "",
+            f"**Severity:** {severity} — {disposition}",
             "",
             f"**What it does:** {finding['what_it_does']}",
             "",
@@ -766,6 +800,9 @@ def _prepare_command(args: argparse.Namespace) -> None:
     result = _validated_result(args)
     digest = artifact_digest(result)
     finding_count = len(result["findings"])
+    blocking_finding_count = sum(
+        1 for finding in result["findings"] if finding["severity"] == "blocking"
+    )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     _write_json(args.output_dir / "normalized.json", result)
@@ -784,6 +821,7 @@ def _prepare_command(args: argparse.Namespace) -> None:
         {
             "head_sha": str(result["head_sha"]),
             "finding_count": finding_count,
+            "blocking_finding_count": blocking_finding_count,
             "artifact_digest": digest,
         },
     )

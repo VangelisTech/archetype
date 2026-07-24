@@ -208,7 +208,10 @@ jobs:
             lists every scoped file and detector category exactly once, places
             every file in a context-relevant reviewed area, gives a substantive
             diff-specific summary, and anchors every finding to an actual
-            changed line. An empty findings array is valid only after that
+            changed line. Every finding carries a severity per the skill's
+            severity contract: `blocking` only when you can name the concrete
+            failing input or sequence, `advisory` for judgment-dependent risk.
+            An empty findings array is valid only after that
             complete review. Cover each changed file in at least one
             review_context entry; a file may appear in more than one area when
             it genuinely spans concerns.
@@ -276,8 +279,9 @@ jobs:
             Follow the trusted `.claude/skills/footgun-detector/SKILL.md` from
             the protected base. The corrected result must bind to the exact
             head, list every scoped file and detector category exactly once,
-            cover every changed file in `review_context`, and anchor findings
-            to changed lines. `review_context.files` may contain changed paths
+            cover every changed file in `review_context`, anchor findings
+            to changed lines, and give every finding a severity per the
+            skill's severity contract. `review_context.files` may contain changed paths
             only; mention other evidence paths in assessment prose. Do not
             return schema examples or placeholder values.
 
@@ -357,10 +361,10 @@ jobs:
       # detector job made for this head. On a reaffirmed head there is nothing
       # left to publish — the verdict comment for this exact sha is already on
       # the PR — so this job runs to a real success check run without adding a
-      # second verdict. Note the polarity: `finding_count` is empty when
-      # `prepare` is skipped, and `'' != '0'` is true, so the publish-findings
-      # and block-merge steps would otherwise fire with no findings behind
-      # them.
+      # second verdict. Note the polarity: `finding_count` and
+      # `blocking_finding_count` are empty when `prepare` is skipped, and
+      # `'' != '0'` is true, so the publish-findings and block-merge steps
+      # would otherwise fire with no findings behind them.
       - name: Checkout trusted base
         if: needs.footgun-review.outputs.reaffirmed != 'true'
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -493,16 +497,25 @@ jobs:
             --finding-count "${FINDING_COUNT}" \
             --digest "${ARTIFACT_DIGEST}"
 
+      # Severity tier (ruled 2026-07-24): only `blocking` findings — those the
+      # detector binds to a reproducible defect — fail this gate. Advisory
+      # findings still post as resolvable threads above and still gate
+      # queue-ready until resolved; resolving one with a written disposition
+      # and no code change is the sanctioned channel for "reviewed, disagree,
+      # documented". An advisory-only review therefore concludes
+      # `review-complete` success while its threads keep the PR out of the
+      # merge queue until each is addressed.
       - name: Block merge on findings
         id: finding_gate
         if: >-
           needs.footgun-review.outputs.reaffirmed != 'true' &&
-          steps.prepare.outputs.finding_count != '0'
+          steps.prepare.outputs.blocking_finding_count != '0'
         env:
+          BLOCKING_FINDING_COUNT: ${{ steps.prepare.outputs.blocking_finding_count }}
           FINDING_COUNT: ${{ steps.prepare.outputs.finding_count }}
         run: |
-          echo "Footgun review reported ${FINDING_COUNT} blocking finding(s)."
-          echo "Resolve the published review threads and push the fix before merging."
+          echo "Footgun review reported ${BLOCKING_FINDING_COUNT} blocking finding(s) of ${FINDING_COUNT} total."
+          echo "Fix the blocking findings and push. Advisory threads may instead be resolved with a written disposition."
           exit 1
 
       - name: Report incomplete review
