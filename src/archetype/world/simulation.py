@@ -418,6 +418,81 @@ async def run_rollout(
     async with registry.operation(world_id) as base:
         base_name = base.name
 
+    @dataclass(frozen=True, slots=True)
+    class _RolloutFailure:
+        """One timed child failure used to preserve unwind precedence."""
+
+        error: BaseException
+        child_index: int
+        phase: str
+        fork_world_id: str | None
+        observed_order: int
+
+    observed_failures: list[_RolloutFailure] = []
+    observation_order = 0
+
+    def _next_observation_order() -> int:
+        nonlocal observation_order
+        observation_order += 1
+        return observation_order
+
+    def _observe_failure(
+        *,
+        error: BaseException,
+        child_index: int,
+        phase: str,
+        fork_world_id: object | None,
+    ) -> _RolloutFailure:
+        failure = _RolloutFailure(
+            error=error,
+            child_index=child_index,
+            phase=phase,
+            fork_world_id=str(fork_world_id) if fork_world_id is not None else None,
+            observed_order=_next_observation_order(),
+        )
+        observed_failures.append(failure)
+        return failure
+
+    def _observed_failure(
+        *,
+        error: BaseException,
+        child_index: int,
+    ) -> _RolloutFailure | None:
+        return next(
+            (
+                failure
+                for failure in reversed(observed_failures)
+                if failure.error is error and failure.child_index == child_index
+            ),
+            None,
+        )
+
+    def _ordered(failures: list[_RolloutFailure]) -> list[_RolloutFailure]:
+        return sorted(
+            failures,
+            key=lambda failure: (
+                failure.child_index,
+                failure.phase,
+                type(failure.error).__module__,
+                type(failure.error).__qualname__,
+                failure.fork_world_id or "",
+            ),
+        )
+
+    def _note_additional(
+        primary: BaseException,
+        failures: list[_RolloutFailure],
+    ) -> None:
+        for failure in _ordered(failures):
+            error_type = type(failure.error)
+            primary.add_note(
+                "additional rollout failure: "
+                f"child_index={failure.child_index} "
+                f"phase={failure.phase} "
+                f"type={error_type.__module__}.{error_type.__qualname__} "
+                f"fork_world_id={failure.fork_world_id or '<unowned>'}"
+            )
+
     async def _await_owned(
         owned: asyncio.Future[Any],
     ) -> tuple[Any, asyncio.CancelledError | None]:
@@ -429,7 +504,10 @@ async def run_rollout(
                 return await asyncio.shield(owned), cancelled
             except asyncio.CancelledError as exc:
                 if owned.cancelled():
-                    raise
+                    # asyncio.shield synthesizes a replacement CancelledError.
+                    # Future.result() restores the owned task's exact instance,
+                    # message, notes, and traceback.
+                    return owned.result(), cancelled
                 cancelled = cancelled or exc
                 if owned.done():
                     return owned.result(), cancelled
@@ -441,10 +519,26 @@ async def run_rollout(
                 name=f"{base_name}:{config.name_prefix}:{index}",
             )
         )
-        fork, cancelled = await _await_owned(fork_work)
+        try:
+            fork, cancelled = await _await_owned(fork_work)
+        except BaseException as exc:
+            _observe_failure(
+                error=exc,
+                child_index=index,
+                phase="fork",
+                fork_world_id=None,
+            )
+            raise
         fork_world_id = fork.world_id
         episode_result: EpisodeResult | None = None
         episode_failure: BaseException | None = cancelled
+        if episode_failure is not None:
+            _observe_failure(
+                error=episode_failure,
+                child_index=index,
+                phase="fork",
+                fork_world_id=fork_world_id,
+            )
         if episode_failure is None:
             try:
                 episode_result = await run_episode(
@@ -456,6 +550,12 @@ async def run_rollout(
                 )
             except BaseException as exc:
                 episode_failure = exc
+                _observe_failure(
+                    error=exc,
+                    child_index=index,
+                    phase="episode",
+                    fork_world_id=fork_world_id,
+                )
 
         if config.destroy_forks_on_complete:
             try:
@@ -463,11 +563,23 @@ async def run_rollout(
                 _, teardown_cancelled = await _await_owned(teardown)
             except BaseException as exc:
                 exc.add_note(f"rollout fork teardown failed for world_id={fork_world_id}")
+                _observe_failure(
+                    error=exc,
+                    child_index=index,
+                    phase="teardown",
+                    fork_world_id=fork_world_id,
+                )
                 if episode_failure is not None:
                     raise exc from episode_failure
                 raise
             if teardown_cancelled is not None and episode_failure is None:
                 episode_failure = teardown_cancelled
+                _observe_failure(
+                    error=teardown_cancelled,
+                    child_index=index,
+                    phase="teardown",
+                    fork_world_id=fork_world_id,
+                )
 
         if episode_failure is not None:
             raise episode_failure
@@ -477,7 +589,7 @@ async def run_rollout(
     async def _drain_started(indices: tuple[int, ...]) -> tuple[EpisodeResult, ...]:
         """Drain exactly the started children without exposing cancellation."""
 
-        failures: list[BaseException] = []
+        failures: list[_RolloutFailure] = []
 
         async def _capture(index: int) -> EpisodeResult | BaseException:
             try:
@@ -485,7 +597,15 @@ async def run_rollout(
             except BaseException as exc:
                 # Capture in observation order so the exception asyncio.gather
                 # would have propagated first remains the primary failure.
-                failures.append(exc)
+                failure = _observed_failure(error=exc, child_index=index)
+                if failure is None:
+                    failure = _observe_failure(
+                        error=exc,
+                        child_index=index,
+                        phase="child",
+                        fork_world_id=None,
+                    )
+                failures.append(failure)
                 return exc
 
         tasks = tuple(
@@ -497,13 +617,16 @@ async def run_rollout(
         )
         pending = asyncio.gather(*tasks, return_exceptions=True)
         cancelled: asyncio.CancelledError | None = None
+        cancellation_order: int | None = None
         children_cancelled = False
         while True:
             try:
                 outcomes = await asyncio.shield(pending)
                 break
             except asyncio.CancelledError as exc:
-                cancelled = cancelled or exc
+                if cancelled is None:
+                    cancelled = exc
+                    cancellation_order = _next_observation_order()
                 if not children_cancelled:
                     # Each child shields fork acquisition until it owns the
                     # returned ID, then skips/interrupts the episode and drains
@@ -512,30 +635,64 @@ async def run_rollout(
                         task.cancel()
                     children_cancelled = True
 
-        for outcome in outcomes:
+        for index, outcome in zip(indices, outcomes, strict=True):
             if isinstance(outcome, BaseException) and all(
-                outcome is not failure for failure in failures
+                outcome is not failure.error or index != failure.child_index for failure in failures
             ):
-                failures.append(outcome)
+                failures.append(
+                    _observe_failure(
+                        error=outcome,
+                        child_index=index,
+                        phase="child",
+                        fork_world_id=None,
+                    )
+                )
 
         if cancelled is not None:
-            substantive_failures = [
-                failure for failure in failures if not isinstance(failure, asyncio.CancelledError)
+            assert cancellation_order is not None
+            material_failures = [
+                failure
+                for failure in failures
+                if not isinstance(failure.error, asyncio.CancelledError)
+                or failure.phase == "teardown"
+                or failure.observed_order < cancellation_order
             ]
-            if substantive_failures:
+            cancellation_driven_teardown = [
+                failure
+                for failure in material_failures
+                if failure.phase == "teardown" and failure.observed_order > cancellation_order
+            ]
+            if cancellation_driven_teardown:
+                primary = min(
+                    cancellation_driven_teardown,
+                    key=lambda failure: failure.observed_order,
+                )
+                _note_additional(
+                    primary.error,
+                    [failure for failure in material_failures if failure is not primary],
+                )
+                if primary.error.__cause__ is None and primary.error.__context__ is None:
+                    raise primary.error from cancelled
+                primary.error.add_note(
+                    "rollout caller cancellation preceded teardown failure: "
+                    f"type={type(cancelled).__module__}.{type(cancelled).__qualname__} "
+                    f"message={str(cancelled)!r}"
+                )
+                raise primary.error
+            if material_failures:
                 raise cancelled from BaseExceptionGroup(
                     "rollout failures observed while the caller was cancelled",
-                    substantive_failures,
+                    [failure.error for failure in _ordered(material_failures)],
                 )
             raise cancelled
         if failures:
-            primary, *additional = failures
+            primary, *additional = sorted(
+                failures,
+                key=lambda failure: failure.observed_order,
+            )
             if additional:
-                raise primary from BaseExceptionGroup(
-                    "additional rollout failures",
-                    additional,
-                )
-            raise primary
+                _note_additional(primary.error, additional)
+            raise primary.error
         return tuple(cast(EpisodeResult, outcome) for outcome in outcomes)
 
     if config.parallel:
