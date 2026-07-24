@@ -554,6 +554,7 @@ async def test_service_stack_runs_against_remote_catalog(tmp_path, worker_url, m
                 ),
                 grader=lambda df: Outcome(status="pass", score=1.0),
                 evaluation_id="remote-eval-1",
+                storage_config=storage,
             )
         )
         assert eval_receipt.outcome == "pass"

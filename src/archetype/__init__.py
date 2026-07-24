@@ -115,6 +115,7 @@ __all__ = [
     "CandidateContext",
     "EvaluationResult",
     # Durable evaluation types
+    "FrameGrader",
     "Outcome",
     "GraderContract",
     "EvalReceipt",
@@ -205,6 +206,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "CandidateContext": ("archetype.app.research.contracts", "CandidateContext"),
     "EvaluationResult": ("archetype.app.research.contracts", "EvaluationResult"),
     # Durable evaluation types
+    "FrameGrader": ("archetype.evaluation.models", "FrameGrader"),
     "Outcome": ("archetype.evaluation.contracts", "Outcome"),
     "GraderContract": ("archetype.evaluation.contracts", "GraderContract"),
     "EvalReceipt": ("archetype.evaluation.components", "EvalReceipt"),

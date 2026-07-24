@@ -23,29 +23,19 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
-from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
 
-from pydantic_core import to_jsonable_python
-
-if TYPE_CHECKING:
-    from daft import DataFrame
-else:
-    # Callback contracts stay importable without loading the Daft/Arrow stack.
-    DataFrame = Any
-
-_RECEIPT_DIGEST_DOMAIN = "archetype.receipt.v1"
-
-OUTCOME_STATUSES = frozenset({"pass", "fail", "invalid", "inconclusive"})
-
-# PR-5 repoints application consumers to these family-owned callback values and
-# deletes the narrow compatibility exports in app.evaluation.interfaces.
-GraderOutput = object
-GraderReturn = GraderOutput | Sequence[GraderOutput]
-TrajectoryGrader = Callable[[DataFrame], GraderReturn | Awaitable[GraderReturn]]
+from archetype.evaluation.models import (
+    _RECEIPT_DIGEST_DOMAIN,
+    OUTCOME_STATUSES,
+    FrameGrader,
+    GraderContract,
+    GraderOutput,
+    GraderReturn,
+    Outcome,
+    TrajectoryGrader,
+)
 
 
 def _require_text(value: str, field_name: str) -> None:
@@ -213,76 +203,13 @@ class Trial:
         return (*self.task.key, self.episode.episode_id)
 
 
-@dataclass(frozen=True)
-class Outcome:
-    """Represent a validated grading conclusion.
-
-    `status` must be `pass`, `fail`, `invalid`, or `inconclusive`. A supplied
-    score must be finite.
-    """
-
-    status: str
-    score: float | None = None
-    evidence: dict = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        if self.status not in OUTCOME_STATUSES:
-            raise ValueError(
-                f"outcome status {self.status!r} is not one of {sorted(OUTCOME_STATUSES)}"
-            )
-        if self.score is not None and not math.isfinite(self.score):
-            raise ValueError("outcome score must be finite when present")
-
-
-@dataclass(frozen=True)
-class GraderContract:
-    """Identify the grader configuration used for a durable receipt.
-
-    Two receipts are directly comparable only when their contract digests
-    match. Change `implementation_version`, configuration, thresholds, or
-    seed whenever that comparison should no longer be valid.
-    """
-
-    grader_id: str
-    implementation_version: str
-    config: dict = field(default_factory=dict)
-    thresholds: dict = field(default_factory=dict)
-    seed: int | None = None
-
-    def __post_init__(self) -> None:
-        if not self.grader_id.strip():
-            raise ValueError("grader_id must be a non-empty stable identity")
-        if not self.implementation_version.strip():
-            raise ValueError(
-                "implementation_version must name the grader implementation "
-                "(code version, prompt hash, or model id)"
-            )
-
-    def digest(self) -> str:
-        payload = json.dumps(
-            {
-                "domain": _RECEIPT_DIGEST_DOMAIN,
-                "kind": "grader-contract",
-                "grader_id": self.grader_id,
-                "implementation_version": self.implementation_version,
-                "config": to_jsonable_python(self.config),
-                "thresholds": to_jsonable_python(self.thresholds),
-                "seed": self.seed,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=True,
-            allow_nan=False,
-        )
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
 def subject_digest(
     world_id: str,
     run_id: str,
     *,
     snapshot_tick: int,
     snapshot_tokens: list[str],
+    snapshot_segments: list[tuple[str, str, int, list[str]]] | None = None,
     component_names: list[str],
     ticks: list[int] | None = None,
     entity_ids: list[int] | None = None,
@@ -291,16 +218,32 @@ def subject_digest(
 
     The snapshot reference is the manifest head (tick + its commit tokens)
     from the control catalog — immutable by the atomic-visibility contract.
-    The selector is what was asked of that snapshot. Together they make a
-    receipt recomputable and attributable without hashing row content.
+    Fork subjects additionally bind every non-empty inherited segment's
+    world/run, fork-time tick cap, and manifest-head tokens. The selector is
+    what was asked of that snapshot. Together they make a receipt recomputable
+    and attributable without hashing row content.
     """
+    snapshot: dict[str, object] = {
+        "tick": snapshot_tick,
+        "tokens": sorted(snapshot_tokens),
+    }
+    if snapshot_segments is not None:
+        snapshot["segments"] = [
+            {
+                "world_id": str(segment_world),
+                "run_id": str(segment_run),
+                "up_to_tick": int(up_to_tick),
+                "tokens": sorted(tokens),
+            }
+            for segment_world, segment_run, up_to_tick, tokens in snapshot_segments
+        ]
     payload = json.dumps(
         {
             "domain": _RECEIPT_DIGEST_DOMAIN,
             "kind": "subject",
             "world_id": str(world_id),
             "run_id": str(run_id),
-            "snapshot": {"tick": snapshot_tick, "tokens": sorted(snapshot_tokens)},
+            "snapshot": snapshot,
             "selector": {
                 "components": sorted(component_names),
                 "ticks": sorted(int(t) for t in ticks) if ticks is not None else None,
@@ -315,6 +258,27 @@ def subject_digest(
         allow_nan=False,
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+__all__ = [
+    "EpisodeRef",
+    "Eval",
+    "FrameGrader",
+    "Grader",
+    "GraderContract",
+    "GraderKind",
+    "GraderOutput",
+    "GraderReturn",
+    "OUTCOME_STATUSES",
+    "Outcome",
+    "Rubric",
+    "RuntimeSlice",
+    "TaskRef",
+    "TrajectoryGrader",
+    "Trial",
+    "evaluation_identity_digest",
+    "subject_digest",
+]
 
 
 def evaluation_identity_digest(subject: str, contract: str) -> str:

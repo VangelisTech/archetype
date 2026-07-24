@@ -5,7 +5,7 @@ pytest by assembling realistic public or service boundaries and grading the
 observable result independently of the focused test that motivated a change.
 
 This package is one part of the [Repository Harness](repository-harness.md),
-not Archetype's product evaluation service. New bugs still require a focused,
+not Archetype's product evaluation workflow. New bugs still require a focused,
 deterministic pytest regression. Add a repository scenario only when a broader
 composition across entry points, backends, lifecycle states, or concurrency
 schedules provides additional evidence.

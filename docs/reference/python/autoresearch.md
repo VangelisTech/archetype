@@ -72,6 +72,10 @@
 | `improved` | `bool` | `required` |
 | `incumbent_score` | `float` | `required` |
 
+::: archetype.evaluation.models.FrameGrader
+    options:
+      members: false
+
 ::: archetype.evaluation.contracts.Outcome
     options:
       members: false

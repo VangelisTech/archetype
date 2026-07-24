@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Snapshot-pinned evaluation evidence over the general ingestion service."""
+"""Snapshot-pinned evaluation evidence through the family-owned handlers."""
 
 import asyncio
 import json
@@ -9,7 +9,6 @@ import subprocess
 import sys
 import textwrap
 import time
-from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -19,18 +18,19 @@ import pyarrow as pa
 import pytest
 from uuid_utils import uuid7
 
-from archetype.app.evaluation import service as evaluation_module
 from archetype.commands.dispatch import CommandDispatcher
 from archetype.commands.models import ActorCtx
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
+from archetype.evaluation import handlers as evaluation_handlers
+from archetype.evaluation import views as evaluation_views
 from archetype.evaluation.components import EvalReceipt
 from archetype.evaluation.contracts import GraderContract, Outcome, subject_digest
 from archetype.evaluation.models import Evaluate
 from archetype.runtime_resources import RuntimeResources
 from archetype.storage.config import ControlCatalogConfig
 from archetype.storage.service import StorageService
-from archetype.world.models import CreateWorld, Spawn, Step
+from archetype.world.models import CreateWorld, ForkWorld, Spawn, Step
 from tests._runtime import build_test_runtime
 
 pytestmark = [
@@ -39,7 +39,7 @@ pytestmark = [
     pytest.mark.integration,
 ]
 
-_EVALUATION_RESULTS = "evaluation_results"
+_EVALUATION_RESULTS = evaluation_views.EVALUATION_RESULTS_TABLE
 
 
 class Telemetry(Component):
@@ -90,15 +90,6 @@ async def _shutdown(resources: RuntimeResources, storage: StorageService) -> Non
     await storage.shutdown()
 
 
-def _evaluation_service(dispatcher: CommandDispatcher) -> evaluation_module.EvaluationService:
-    handler = dispatcher._registry.resolve_name("evaluate").handler
-    assert isinstance(handler, partial)
-    assert handler.args
-    service = handler.args[0]
-    assert isinstance(service, evaluation_module.EvaluationService)
-    return service
-
-
 def _evaluate(
     world_id: object,
     components: list[type[Component]],
@@ -106,7 +97,7 @@ def _evaluate(
     contract: Any,
     grader: Any,
     evaluation_id: str,
-    storage_config: StorageConfig | None = None,
+    storage_config: StorageConfig,
 ) -> Evaluate:
     return Evaluate(
         world_id=world_id,
@@ -173,6 +164,7 @@ async def test_replay_returns_persisted_result_without_regrading(tmp_path):
                 contract=_contract(),
                 grader=grader,
                 evaluation_id="trial-1",
+                storage_config=storage,
             ),
         )
         replay = await dispatcher.apply_as(
@@ -183,6 +175,7 @@ async def test_replay_returns_persisted_result_without_regrading(tmp_path):
                 contract=_contract(),
                 grader=grader,
                 evaluation_id="trial-1",
+                storage_config=storage,
             ),
         )
 
@@ -194,6 +187,220 @@ async def test_replay_returns_persisted_result_without_regrading(tmp_path):
         assert rows[0]["evaluation_id"] == "trial-1"
     finally:
         await _shutdown(resources, storage_service)
+
+
+@pytest.mark.parametrize(
+    ("child_steps", "fork_depth", "expected_ticks"),
+    [(0, 1, [0]), (1, 1, [0, 1]), (0, 2, [0])],
+    ids=["fresh-fork", "stepped-fork", "nested-fresh-fork"],
+)
+async def test_fork_evaluation_pins_durable_lineage_without_live_registry(
+    tmp_path,
+    child_steps,
+    fork_depth,
+    expected_ticks,
+):
+    """A fork receipt grades its immutable inherited prefix plus child rows."""
+
+    resources, storage_service = _runtime(tmp_path)
+    dispatcher = resources.dispatcher
+    storage = _storage(tmp_path)
+    try:
+        source = await _seeded_world(dispatcher, storage)
+        first_fork = await dispatcher.apply(
+            ForkWorld(
+                source_world_id=source.world_id,
+                name=f"branch-{child_steps}-{fork_depth}-1",
+            )
+        )
+        fork = first_fork
+        if fork_depth == 2:
+            fork = await dispatcher.apply(
+                ForkWorld(
+                    source_world_id=first_fork.world_id,
+                    name=f"branch-{child_steps}-{fork_depth}-2",
+                )
+            )
+        for _ in range(child_steps):
+            await dispatcher.apply(Step(world_id=fork.world_id, run_config=RunConfig()))
+
+        # Publish another source tick after the fork boundary. The child must
+        # retain tick 0 without leaking this later source state.
+        await dispatcher.apply(
+            Spawn.from_components(
+                world_id=source.world_id,
+                components=[Telemetry(reading=99.0)],
+            )
+        )
+        await dispatcher.apply(Step(world_id=source.world_id, run_config=RunConfig()))
+    finally:
+        await _shutdown(resources, storage_service)
+
+    pin_events: list[tuple[str, str | None, int | None]] = []
+    grader_started = False
+
+    class RecordingStorage(StorageService):
+        async def pin_visibility(
+            self,
+            storage_config,
+            world_id,
+            *,
+            run_id=None,
+            max_tick=None,
+        ):
+            assert not grader_started, "all lineage visibility must be pinned before grading"
+            pin_events.append(
+                (str(world_id), str(run_id) if run_id is not None else None, max_tick)
+            )
+            return await super().pin_visibility(
+                storage_config,
+                world_id,
+                run_id=run_id,
+                max_tick=max_tick,
+            )
+
+    cold_storage = RecordingStorage(
+        control_catalog_config=ControlCatalogConfig(
+            catalog_dir=tmp_path / "control-catalogs",
+        )
+    )
+    observed_rows: list[dict[str, Any]] = []
+
+    def grader(frame):
+        nonlocal grader_started
+        grader_started = True
+        observed_rows.extend(frame.to_pylist())
+        return Outcome(status="pass", score=1.0)
+
+    try:
+        result = await evaluation_handlers.evaluate(
+            cold_storage,
+            _evaluate(
+                fork.world_id,
+                [Telemetry],
+                contract=_contract(),
+                grader=grader,
+                evaluation_id=f"fork-lineage-{child_steps}-{fork_depth}",
+                storage_config=storage,
+            ),
+        )
+    finally:
+        await cold_storage.shutdown()
+
+    assert result.outcome == "pass"
+    assert sorted(row["tick"] for row in observed_rows) == expected_ticks
+    assert {row["telemetry__reading"] for row in observed_rows} == {0.8}
+    expected_pins = [
+        (str(fork.world_id), str(fork.run_id), None),
+        (str(source.world_id), str(source.run_id), 0),
+    ]
+    if fork_depth == 2:
+        expected_pins.append((str(first_fork.world_id), str(first_fork.run_id), 0))
+    assert pin_events == expected_pins
+
+
+async def test_parent_without_lineage_preserves_empty_prefix_and_cross_store_forks(
+    tmp_path,
+):
+    """No-lineage forks remain gradeable only for their child-owned history."""
+
+    resources, storage_service = _runtime(tmp_path)
+    dispatcher = resources.dispatcher
+    storage = _storage(tmp_path)
+    cross_storage = StorageConfig(
+        uri=str(tmp_path / "cross-store"),
+        namespace="cross-ns",
+        backend=StorageBackend.ICEBERG,
+    )
+    try:
+        empty_source = await dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name="empty-prefix-source"),
+                storage_config=storage,
+            )
+        )
+        empty_entity = await dispatcher.apply(
+            Spawn.from_components(
+                world_id=empty_source.world_id,
+                components=[Telemetry(reading=0.4)],
+            )
+        )
+        empty_fork = await dispatcher.apply(
+            ForkWorld(source_world_id=empty_source.world_id, name="empty-prefix-child")
+        )
+        with pytest.raises(RuntimeError, match="no published visibility"):
+            await dispatcher.apply(
+                _evaluate(
+                    empty_fork.world_id,
+                    [Telemetry],
+                    contract=_contract(),
+                    grader=lambda _frame: Outcome(status="pass"),
+                    evaluation_id="fresh-empty-prefix",
+                    storage_config=storage,
+                )
+            )
+        await dispatcher.apply(Step(world_id=empty_fork.world_id, run_config=RunConfig()))
+
+        cross_source = await _seeded_world(dispatcher, storage)
+        cross_entity = await dispatcher.apply(
+            Spawn.from_components(
+                world_id=cross_source.world_id,
+                components=[Telemetry(reading=0.6)],
+            )
+        )
+        cross_fork = await dispatcher.apply(
+            ForkWorld(
+                source_world_id=cross_source.world_id,
+                name="cross-store-child",
+                storage_config=cross_storage,
+            )
+        )
+        await dispatcher.apply(Step(world_id=cross_fork.world_id, run_config=RunConfig()))
+    finally:
+        await _shutdown(resources, storage_service)
+
+    cold_storage = _storage_service(tmp_path)
+    observed: dict[str, list[dict[str, Any]]] = {}
+
+    def capture(label):
+        def grader(frame):
+            observed[label] = frame.to_pylist()
+            return Outcome(status="pass", score=1.0)
+
+        return grader
+
+    try:
+        await evaluation_handlers.evaluate(
+            cold_storage,
+            _evaluate(
+                empty_fork.world_id,
+                [Telemetry],
+                contract=_contract(),
+                grader=capture("empty"),
+                evaluation_id="empty-prefix-evaluation",
+                storage_config=storage,
+            ),
+        )
+        await evaluation_handlers.evaluate(
+            cold_storage,
+            _evaluate(
+                cross_fork.world_id,
+                [Telemetry],
+                contract=_contract(),
+                grader=capture("cross"),
+                evaluation_id="cross-store-evaluation",
+                storage_config=cross_storage,
+            ),
+        )
+    finally:
+        await cold_storage.shutdown()
+
+    assert [
+        (row["entity_id"], row["tick"], row["telemetry__reading"]) for row in observed["empty"]
+    ] == [(empty_entity, 0, 0.4)]
+    assert [
+        (row["entity_id"], row["tick"], row["telemetry__reading"]) for row in observed["cross"]
+    ] == [(cross_entity, 1, 0.6)]
 
 
 async def test_concurrent_service_graphs_run_paid_grader_once(tmp_path):
@@ -229,6 +436,7 @@ async def test_concurrent_service_graphs_run_paid_grader_once(tmp_path):
                     contract=_contract(),
                     grader=grader,
                     evaluation_id="concurrent-paid-grade",
+                    storage_config=storage,
                 ),
             )
         )
@@ -271,12 +479,15 @@ async def test_concurrent_service_graphs_run_paid_grader_once(tmp_path):
 async def test_expired_owner_with_persisted_result_recovers_without_regrading(tmp_path):
     resources, storage_service = _runtime(tmp_path)
     dispatcher = resources.dispatcher
-    evaluation_service = _evaluation_service(dispatcher)
     try:
         storage = _storage(tmp_path)
         world = await _seeded_world(dispatcher, storage)
         wid = str(world.world_id)
-        snapshot = await evaluation_service._snapshot(wid, storage)
+        snapshot = await evaluation_views.pin_snapshot(
+            storage_service,
+            world_id=wid,
+            storage_config=storage,
+        )
         contract = _contract()
         subject = subject_digest(
             wid,
@@ -308,11 +519,11 @@ async def test_expired_owner_with_persisted_result_recovers_without_regrading(tm
         await storage_service.append_world_rows(
             storage,
             wid,
-            evaluation_module._EVALUATION_RESULTS,
+            evaluation_views.EVALUATION_RESULTS_TABLE,
             daft.from_arrow(
                 pa.Table.from_pylist(
                     [persisted.model_dump()],
-                    schema=evaluation_module._EVALUATION_SCHEMA,
+                    schema=evaluation_handlers.EVALUATION_SCHEMA,
                 )
             ),
             key_columns=("evaluation_id",),
@@ -352,8 +563,8 @@ async def test_expired_owner_with_persisted_result_recovers_without_regrading(tm
 
 
 async def test_evaluation_heartbeat_renews_and_detects_lost_owner(monkeypatch):
-    monkeypatch.setattr(evaluation_module, "_EVALUATION_LEASE_SECONDS", 0.03)
-    monkeypatch.setattr(evaluation_module, "_EVALUATION_POLL_SECONDS", 0.001)
+    monkeypatch.setattr(evaluation_handlers, "EVALUATION_LEASE_SECONDS", 0.03)
+    monkeypatch.setattr(evaluation_handlers, "EVALUATION_POLL_SECONDS", 0.001)
     lease = SimpleNamespace(
         world_id="world",
         run_id="run",
@@ -410,7 +621,7 @@ async def test_failed_lease_release_does_not_mask_grader_failure(tmp_path, monke
             raise ValueError("grader failed")
 
         monkeypatch.setattr(catalog, "release_evaluation", fail_release)
-        with caplog.at_level("WARNING", logger=evaluation_module.__name__):
+        with caplog.at_level("WARNING", logger=evaluation_handlers.__name__):
             with pytest.raises(ValueError, match="grader failed"):
                 await dispatcher.apply_as(
                     _ctx(),
@@ -420,6 +631,7 @@ async def test_failed_lease_release_does_not_mask_grader_failure(tmp_path, monke
                         contract=_contract(),
                         grader=fail_grader,
                         evaluation_id="failed-release-preserves-grader-error",
+                        storage_config=storage,
                     ),
                 )
 
@@ -430,8 +642,7 @@ async def test_failed_lease_release_does_not_mask_grader_failure(tmp_path, monke
 
 
 async def containerless_heartbeat(catalog, lease, *, stop, lost):
-    return await evaluation_module.EvaluationService._heartbeat_evaluation(
-        None,
+    return await evaluation_handlers._heartbeat_evaluation(
         catalog,
         lease,
         owner="owner",
@@ -443,17 +654,17 @@ async def containerless_heartbeat(catalog, lease, *, stop, lost):
 async def test_grader_reads_captured_snapshot_when_world_advances(tmp_path, monkeypatch):
     resources, storage_service = _runtime(tmp_path)
     dispatcher = resources.dispatcher
-    evaluation_service = _evaluation_service(dispatcher)
     try:
-        world = await _seeded_world(dispatcher, _storage(tmp_path))
-        original_snapshot = evaluation_service._snapshot
+        storage = _storage(tmp_path)
+        world = await _seeded_world(dispatcher, storage)
+        original_snapshot = evaluation_views.pin_snapshot
 
         async def capture_then_advance(*args, **kwargs):
             snapshot = await original_snapshot(*args, **kwargs)
             await dispatcher.apply(Step(world_id=world.world_id, run_config=RunConfig()))
             return snapshot
 
-        monkeypatch.setattr(evaluation_service, "_snapshot", capture_then_advance)
+        monkeypatch.setattr(evaluation_views, "pin_snapshot", capture_then_advance)
         graded_ticks: list[int] = []
 
         def grader(df):
@@ -468,6 +679,7 @@ async def test_grader_reads_captured_snapshot_when_world_advances(tmp_path, monk
                 contract=_contract(),
                 grader=grader,
                 evaluation_id="pinned-while-advancing",
+                storage_config=storage,
             ),
         )
 
@@ -493,6 +705,7 @@ async def test_distinct_trials_record_distinct_results(tmp_path):
                     contract=_contract(),
                     grader=_counting_grader(calls, Outcome(status=status)),
                     evaluation_id=f"trial-{index}",
+                    storage_config=storage,
                 ),
             )
 
@@ -510,7 +723,8 @@ async def test_same_id_with_different_contract_conflicts(tmp_path):
     resources, storage_service = _runtime(tmp_path)
     dispatcher = resources.dispatcher
     try:
-        world = await _seeded_world(dispatcher, _storage(tmp_path))
+        storage = _storage(tmp_path)
+        world = await _seeded_world(dispatcher, storage)
         grader = _counting_grader([], Outcome(status="pass"))
 
         await dispatcher.apply_as(
@@ -521,6 +735,7 @@ async def test_same_id_with_different_contract_conflicts(tmp_path):
                 contract=_contract(),
                 grader=grader,
                 evaluation_id="trial-x",
+                storage_config=storage,
             ),
         )
         with pytest.raises(ValueError, match="different subject or grader contract"):
@@ -532,6 +747,7 @@ async def test_same_id_with_different_contract_conflicts(tmp_path):
                     contract=_contract(implementation_version="2026.08.01"),
                     grader=grader,
                     evaluation_id="trial-x",
+                    storage_config=storage,
                 ),
             )
     finally:
@@ -552,6 +768,7 @@ async def test_fail_closed_inputs(tmp_path):
                 contract=None,
                 grader=lambda df: Outcome(status="pass"),
                 evaluation_id="t",
+                storage_config=storage,
             )
         with pytest.raises(ValueError, match="typed Outcome"):
             await dispatcher.apply_as(
@@ -562,6 +779,7 @@ async def test_fail_closed_inputs(tmp_path):
                     contract=_contract(),
                     grader=lambda df: 0.9,
                     evaluation_id="t2",
+                    storage_config=storage,
                 ),
             )
 
@@ -580,6 +798,7 @@ async def test_fail_closed_inputs(tmp_path):
                     contract=_contract(),
                     grader=lambda df: Outcome(status="pass"),
                     evaluation_id="t3",
+                    storage_config=storage,
                 ),
             )
         with pytest.raises(ValueError):
@@ -607,6 +826,7 @@ async def test_result_is_attributable_to_pinned_snapshot(tmp_path):
                 contract=contract,
                 grader=lambda df: Outcome(status="pass", score=0.8),
                 evaluation_id="attrib",
+                storage_config=storage,
             ),
         )
         row = (await _results(storage_service, wid, storage)).to_pylist()[0]

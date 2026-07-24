@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""EvaluationService contracts."""
+"""Evaluation grading and persisted-query composition contracts."""
 
 from __future__ import annotations
 

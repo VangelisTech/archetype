@@ -1,13 +1,11 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Evaluation domain family: receipt schema and grading value contracts.
+"""Evaluation family: import-light values and snapshot-pinned receipt workflow.
 
-This package owns the reusable, deterministic evaluation definitions:
-``EvalReceipt`` (persistent ECS schema), immutable dataset/evidence identity,
-and grading value contracts. Grading orchestration, snapshot pinning, storage,
-and receipt writes remain internal application authority under
-``archetype.app.evaluation``.
+This package owns ``EvalReceipt`` (persistent ECS schema), immutable
+dataset/evidence identity, grader callbacks, pure grading, pinned views, and
+the storage-only durable evaluation workflow.
 
 A top-level path does not make a symbol public: the supported surface is
 exactly the names re-exported here, which back the ``Outcome``,
@@ -21,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from archetype.evaluation.contracts import (
     EpisodeRef,
     Eval,
+    FrameGrader,
     Grader,
     GraderContract,
     GraderKind,
@@ -38,6 +37,7 @@ __all__ = [
     "EpisodeRef",
     "Eval",
     "EvalReceipt",
+    "FrameGrader",
     "Grader",
     "GraderContract",
     "GraderKind",

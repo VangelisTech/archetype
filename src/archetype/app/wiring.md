@@ -15,7 +15,7 @@ composition transaction. It constructs:
 2. the world registry, operation registry, scheduler, lifecycle, and audit;
 3. the policy and command dispatcher;
 4. one `RuntimeResources` process owner;
-5. remaining application-family workflow services; and
+5. remaining application-family workflow services and family-owned handlers; and
 6. all 47 exact operation registrations before returning the owner.
 
 Nothing escapes while the registry is incomplete. Runtime consumes the
@@ -33,9 +33,9 @@ workflow behavior.
 | `IngestionService` | storage and `WorldRegistry` |
 | `ArtifactService` | storage, `WorldRegistry`, and ingestion |
 | `TranscriptIngestionService` | artifacts, ingestion, canonical redaction, storage, and `WorldRegistry` |
-| `EvaluationService` | ingestion, storage, and `WorldRegistry` |
-| `TrajectoryService` | storage and evaluation |
-| `PhysicalAIService` | `WorldRegistry`, `WorldLifecycle`, evaluation, and storage |
+| evaluation handlers | storage; pinned reads additionally use `archetype.world.query` |
+| `TrajectoryService` | storage and the pure evaluation grader runner |
+| `PhysicalAIService` | `WorldRegistry`, `WorldLifecycle`, and storage |
 | `AutoResearchService` | `WorldRegistry`, `WorldLifecycle`, storage, and exact owned-world cleanup |
 | `MissionService` | a runtime-world factory, sandbox service, narrow redaction capability, generic owner reservation, and exact cleanup factory |
 

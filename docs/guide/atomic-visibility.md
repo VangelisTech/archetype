@@ -138,10 +138,12 @@ the writer learns it is stale and stops (its world never advances).
 
 `persist_lineage` writes the fork's full ancestor chain as **one append**,
 which is atomic on both backends — a crash leaves either the whole chain or
-nothing. Lineage rows are world metadata (negative entity ids, epoch-0
-stamped, never token-filtered). The catalog's world record carries the
-authoritative `parent_world_id`; a fork record whose lineage rows are
-missing is detectable corruption, and fenced resume must refuse it loudly.
+nothing. A caching store must flush a staged lineage append before fork
+activation returns, so a successful activation cannot leave its lineage only
+in process memory. Lineage rows are world metadata (negative entity ids,
+epoch-0 stamped, never token-filtered). The catalog's world record carries the
+authoritative `parent_world_id`; a fork record whose lineage rows are missing
+is detectable corruption, and fenced resume must refuse it loudly.
 
 ## 7. Retention, optimize, and GC
 

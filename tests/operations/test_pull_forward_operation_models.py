@@ -410,18 +410,6 @@ def test_family_models_import_no_app_commands_runtime_api_cli_or_wiring() -> Non
 def test_old_supported_contract_paths_preserve_object_identity() -> None:
     identity_pairs = (
         (
-            "archetype.app.evaluation.interfaces",
-            "GraderOutput",
-            "archetype.evaluation.contracts",
-            "GraderOutput",
-        ),
-        (
-            "archetype.app.evaluation.interfaces",
-            "TrajectoryGrader",
-            "archetype.evaluation.contracts",
-            "TrajectoryGrader",
-        ),
-        (
             "archetype.app.research.contracts",
             "AutoResearchConfig",
             "archetype.research.contracts",

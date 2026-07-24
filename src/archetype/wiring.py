@@ -13,7 +13,6 @@ from typing import Any, Literal, cast
 from pydantic import BaseModel
 
 from archetype.app.artifacts.service import ArtifactService
-from archetype.app.evaluation.service import EvaluationService
 from archetype.app.ingestion.service import IngestionService
 from archetype.app.missions.service import MissionService
 from archetype.app.missions.trajectory_service import TrajectoryService
@@ -45,6 +44,7 @@ from archetype.episodes.models import (
     summarize_episode_operation,
 )
 from archetype.errors import WorldNotFoundError
+from archetype.evaluation import handlers as evaluation_handlers
 from archetype.evaluation.models import (
     Evaluate,
     RunGraders,
@@ -316,29 +316,6 @@ async def _handle_query_artifacts(
     return await service.index(
         str(operation.world_id),
         storage_config=operation.storage_config,
-    )
-
-
-async def _handle_run_graders(
-    service: EvaluationService,
-    operation: RunGraders,
-) -> Any:
-    return await service.run_graders(operation.df, operation.graders)
-
-
-async def _handle_evaluate(
-    service: EvaluationService,
-    operation: Evaluate,
-) -> Any:
-    return await service.evaluate(
-        str(operation.world_id),
-        operation.components,
-        contract=operation.contract,
-        grader=operation.grader,
-        evaluation_id=operation.evaluation_id,
-        storage_config=operation.storage_config,
-        ticks=list(operation.ticks) if operation.ticks is not None else None,
-        entity_ids=(list(operation.entity_ids) if operation.entity_ids is not None else None),
     )
 
 
@@ -659,7 +636,6 @@ def _pull_forward_handler(
     storage: StorageService,
     redaction: RedactionService,
     artifacts: ArtifactService,
-    evaluations: EvaluationService,
     research: AutoResearchService,
     physical_ai: PhysicalAIService,
     transcripts: TranscriptIngestionService,
@@ -668,8 +644,8 @@ def _pull_forward_handler(
     handlers: dict[type[BaseModel], Callable[[BaseModel], Awaitable[Any]]] = {
         IngestArtifacts: cast(Any, partial(_handle_ingest_artifacts, artifacts)),
         QueryArtifacts: cast(Any, partial(_handle_query_artifacts, artifacts)),
-        RunGraders: cast(Any, partial(_handle_run_graders, evaluations)),
-        Evaluate: cast(Any, partial(_handle_evaluate, evaluations)),
+        RunGraders: cast(Any, evaluation_handlers.run_graders),
+        Evaluate: cast(Any, partial(evaluation_handlers.evaluate, storage)),
         AutoResearch: cast(Any, partial(_handle_autoresearch, research)),
         EvaluatePhysicalTask: cast(
             Any,
@@ -762,7 +738,6 @@ def _register_pull_forward_operations(
     storage: StorageService,
     redaction: RedactionService,
     artifacts: ArtifactService,
-    evaluations: EvaluationService,
     research: AutoResearchService,
     physical_ai: PhysicalAIService,
     transcripts: TranscriptIngestionService,
@@ -784,7 +759,6 @@ def _register_pull_forward_operations(
                     storage=storage,
                     redaction=redaction,
                     artifacts=artifacts,
-                    evaluations=evaluations,
                     research=research,
                     physical_ai=physical_ai,
                     transcripts=transcripts,
@@ -913,9 +887,8 @@ def build_runtime_resources(config: RuntimeBootstrapConfig) -> RuntimeResources:
         storage,
         worlds,
     )
-    evaluations = EvaluationService(ingestion, storage, worlds)
-    trajectories = TrajectoryService(storage, evaluations)
-    physical_ai = PhysicalAIService(worlds, lifecycle, evaluations, storage)
+    trajectories = TrajectoryService(storage)
+    physical_ai = PhysicalAIService(worlds, lifecycle, storage)
     research = AutoResearchService(
         worlds,
         lifecycle,
@@ -931,7 +904,6 @@ def build_runtime_resources(config: RuntimeBootstrapConfig) -> RuntimeResources:
         storage=storage,
         redaction=redaction,
         artifacts=artifacts,
-        evaluations=evaluations,
         research=research,
         physical_ai=physical_ai,
         transcripts=transcripts,

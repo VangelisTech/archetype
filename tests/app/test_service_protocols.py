@@ -11,8 +11,6 @@ import pytest
 
 from archetype.app.artifacts.interfaces import iArtifactService
 from archetype.app.artifacts.service import ArtifactService
-from archetype.app.evaluation.interfaces import iEvaluationService
-from archetype.app.evaluation.service import EvaluationService
 from archetype.app.ingestion.interfaces import iIngestionService
 from archetype.app.ingestion.service import IngestionService
 from archetype.app.missions.interfaces import (
@@ -43,7 +41,6 @@ SERVICE_PROTOCOLS = (
     (MissionService, iMissionService),
     (TranscriptIngestionService, iTranscriptIngestionService),
     (TrajectoryService, iTrajectoryService),
-    (EvaluationService, iEvaluationService),
     (AutoResearchService, iResearchService),
 )
 

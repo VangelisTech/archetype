@@ -49,11 +49,11 @@ archetype/
 │   ├── storage/        # Physical rows, Catalogs, commits + control authority
 │   ├── world/          # Managed lifecycle, state behavior, reads + operation models
 │   ├── commands/       # Registry, policy, dispatch, scheduling + audit projection
+│   ├── evaluation/     # Grading, snapshot views, leases + durable receipts
 │   ├── <family>/       # Reusable ECS/domain state and pure behavior
 │   ├── app/            # Internal application families
 │   │   ├── ingestion/   #   Live-storage selection + typed publication
 │   │   ├── artifacts/   #   File source policy + typed index publication
-│   │   ├── evaluation/  #   Grading + receipts
 │   │   ├── research/    #   Autoresearch workflows
 │   │   ├── missions/    #   Coding-agent workflow authority
 │   │   └── physical_ai/ #   Physical-evaluation workflow authority
@@ -280,7 +280,7 @@ change, and report the exact validation that ran. See
 - Use the `tmp_path` fixture for storage isolation.
 - Prefer contract tests over happy-path coverage: concurrent first-use activation, shutdown/fork races, multi-world lifetime isolation, spawn materialization timing, and example-script smoke execution. If a test feels "too specific," it is usually testing the real semantic boundary.
 - A reported bug gets one deterministic pytest regression first. Add a repository scenario only when a matrix of backends, entry points, lifecycle states, or concurrency schedules proves a broader invariant that the focused test cannot own alone.
-- The self-harness is repository-level: `tests/`, `evals/`, `bench/`, static audits, and mutation probes consume the shipped library. Do not move them into `src/archetype/core/` or import them from production code. Product-facing evaluation remains under `src/archetype/` (`EvalService`, dataset identity, graders, and receipts).
+- The self-harness is repository-level: `tests/`, `evals/`, `bench/`, static audits, and mutation probes consume the shipped library. Do not move them into `src/archetype/core/` or import them from production code. Product-facing evaluation remains under `src/archetype/evaluation/` (free handlers, dataset identity, graders, and receipts).
 - Examples are part of the contract. Run them in CI; gate LLM-backed ones on credentials or degrade gracefully.
 - Mutation testing via `mutmut` (`make mutmut`) is on-demand, not in `make ci`. Scope is narrow by design — see `docs/guide/mutation-testing.md`.
 

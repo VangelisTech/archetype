@@ -9,10 +9,10 @@ from collections.abc import Sequence
 
 from daft import DataFrame
 
-from archetype.app.evaluation.interfaces import iEvaluationService
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
 from archetype.evaluation.contracts import GraderOutput, TrajectoryGrader
+from archetype.evaluation.grading import run_graders
 from archetype.missions.trajectories import TrajectorySelection, filter_trajectory_rows
 from archetype.storage.interfaces import iStorageService
 from archetype.world import query
@@ -24,10 +24,8 @@ class TrajectoryService:
     def __init__(
         self,
         storage_service: iStorageService,
-        evaluation_service: iEvaluationService,
     ) -> None:
         self._storage = storage_service
-        self._evaluation_service = evaluation_service
 
     async def query(
         self,
@@ -78,4 +76,4 @@ class TrajectoryService:
             entity_ids=entity_ids,
             lineage=lineage,
         )
-        return await self._evaluation_service.run_graders(frame, graders)
+        return await run_graders(frame, graders)

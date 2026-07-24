@@ -513,6 +513,16 @@ boundary.
   manifest-token, and optional maximum-tick filtering; entity liveness,
   same-tick active/inactive resolution, component ownership, lineage meaning,
   resumed tick, and next entity ID remain world-family rules.
+- A pinned logical-world read MUST resolve durable fork lineage in the world
+  family, capture the current run and every ancestor segment's manifest-token
+  allowlist (or its capped pre-manifest legacy prefix) at its immutable
+  fork-time tick cap before consumption, and reuse that exact segment
+  visibility without repinning while the read executes.
+- A parented world with no lineage rows MAY be interpreted as child-only only
+  when its own history begins at tick zero, or when the recorded parent is
+  absent from the target storage catalog because the fork intentionally
+  severed storage lineage. A present same-store parent plus a later child
+  origin and no lineage MUST fail closed as corruption.
 - `append_world_rows()` and `read_world_rows()` MUST resolve the durable
   world/run from the control catalog. Callers cannot supply those envelope
   columns, and conditional keys MUST be extended with both coordinates.
@@ -666,7 +676,9 @@ retryable failures remain recoverable and exhausted failures become terminal.
 - Coordinated reads MUST restrict results to catalog-published commit tokens.
 - Fork-aware reads MUST compose persisted lineage segments with the fork's own
   rows without requiring a live source world.
-- `get_lineage()` reads persisted ancestry. `list_signatures()` combines the
+- `get_lineage()` reads persisted ancestry through open-never-create physical
+  reads of both current and legacy lineage table identities; an absent optional
+  lineage projection MUST NOT create a table. `list_signatures()` combines the
   selected store's process-local registry with its durable control-catalog
   records, resolving imported component classes by schema fingerprint and
   exact durable table identity. Unresolvable historical records emit a warning

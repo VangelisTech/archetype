@@ -134,7 +134,7 @@ sequenceDiagram
     participant Providers as Env + Policy Providers
     participant World as World + Processors
     participant Simulation as world.simulation
-    participant Evaluation as EvaluationService
+    participant Query as world.query + StorageService
 
     Host->>Runtime: evaluate request + env/policy providers
     Runtime->>Dispatcher: apply(EvaluatePhysicalTask)
@@ -148,8 +148,8 @@ sequenceDiagram
         Simulation->>World: process every live trial
         World-->>World: append component state
     end
-    Physical->>Evaluation: query ManipStatus + ManipTask by world/run
-    Evaluation-->>Physical: lazy persisted frame
+    Physical->>Query: query ManipStatus + ManipTask by world/run
+    Query-->>Physical: lazy persisted frame
     Physical-->>Dispatcher: ledger-derived typed report
     Dispatcher-->>Runtime: report
     Runtime-->>Host: report with world_id + run_id
@@ -166,7 +166,7 @@ sequenceDiagram
 | `archetype.app.physical_ai` | Internal world/process/episode/query orchestration |
 | `CommandDispatcher` | Exact-operation admission and registered handler dispatch |
 | `ArchetypeRuntime` | Supported trusted Python entry point and sync parity |
-| world/simulation/evaluation families | Lifecycle, tick execution, persisted reads, and evaluation evidence |
+| world/simulation/storage families | Lifecycle, tick execution, and persisted reads |
 
 The separation is intentional:
 

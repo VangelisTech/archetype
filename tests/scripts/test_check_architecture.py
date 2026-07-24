@@ -383,7 +383,7 @@ def test_evaluation_family_scope_rejects_synthetic_reverse_app_dependency(
     contracts = tmp_path / "src" / "archetype" / "evaluation" / "contracts.py"
     contracts.parent.mkdir(parents=True)
     contracts.write_text(
-        "from archetype.app.evaluation.service import EvaluationService\n",
+        "from archetype.app.artifacts.service import ArtifactService\n",
         encoding="utf-8",
     )
     rules = """
@@ -401,7 +401,7 @@ allowed_families = []
 
     assert not result.policy_errors
     assert {(violation.rule, violation.target) for violation in result.violations} == {
-        ("top_level_family_outward_dependency", "archetype.app.evaluation.service"),
+        ("top_level_family_outward_dependency", "archetype.app.artifacts.service"),
     }
 
 
