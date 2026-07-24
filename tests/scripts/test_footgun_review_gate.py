@@ -1010,3 +1010,52 @@ def test_merge_dedupe_never_softens_a_blocking_finding():
     merged = gate.merge_lens_results(lens_results, _scope(), DIFF)
 
     assert [finding["severity"] for finding in merged["findings"]] == ["blocking"]
+
+
+def test_wide_merged_lens_evidence_degrades_instead_of_failing_closed():
+    """A merged lens review over a wide diff must still publish.
+
+    Every lens contributes its own summary and its own context entry per
+    changed file, so the merged prose is roughly lens-count times a single
+    detector's. On PR #663 (61 files) that overran GitHub's comment limit on
+    prose alone and the pre-matrix ladder — which only dropped the inline
+    artifact — failed the whole gate with "exceeds the published body limit",
+    posting an incomplete verdict for a review that had actually succeeded.
+    """
+    normalized = validate_result(_result(), _scope(), DIFF)
+    normalized["summary"] = "s" * 30000
+    normalized["review_context"] = [
+        {"area": f"lens-{index}: area", "files": ["old.py"], "assessment": "c" * 20000}
+        for index in range(5)
+    ]
+    digest = artifact_digest(normalized)
+
+    rendered = render_evidence(
+        normalized,
+        digest,
+        run_url="https://example.test/runs/9",
+        artifact_name="footgun-review-validated-9",
+    )
+
+    assert len(rendered.encode("utf-8")) <= gate._PUBLISHED_BODY_LIMIT
+    # Degraded, but never silently: both elisions say what was cut and where
+    # the complete text lives.
+    assert f"summary truncated at {gate._SUMMARY_BUDGET} characters" in rendered
+    assert "5 reviewed area(s) covering 2 changed file(s)" in rendered
+    assert "exceed the published comment budget" in rendered
+    assert "[footgun-review-validated-9](https://example.test/runs/9#artifacts)" in rendered
+    # The digest binds the result, not this rendering, so `verify` still
+    # matches the exact evidence marker.
+    assert evidence_marker(HEAD_SHA, 0, digest) in rendered
+
+
+def test_evidence_degradation_keeps_full_prose_whenever_it_fits():
+    normalized = validate_result(_result(), _scope(), DIFF)
+    digest = artifact_digest(normalized)
+
+    rendered = render_evidence(normalized, digest)
+
+    assert "truncated at" not in rendered
+    assert "reviewed area(s) covering" not in rendered
+    assert normalized["summary"] in rendered
+    assert normalized["review_context"][0]["assessment"] in rendered
