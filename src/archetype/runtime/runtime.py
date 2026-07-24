@@ -358,7 +358,9 @@ class ArchetypeRuntime:
         Args:
             world_id: Durable identity of the world to attach.
             name: Local name for the returned handle.
-            storage: Storage containing a cold world. Omit it for a live world.
+            storage: Storage containing the world. It may be omitted for
+                live-world capabilities; storage-addressed capabilities
+                require explicit coordinates.
         """
         self._ensure_open()
 

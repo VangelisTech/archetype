@@ -221,6 +221,12 @@ narrative Components, or coordinate those steps itself. Sync world handles
 expose the same operation. `world.transcript_rows()` returns the normalized
 session and turn rows for the current run.
 
+Artifact and transcript capabilities require the handle to retain explicit
+storage coordinates. A handle created with `runtime.attach(world_id)` without
+`storage=...` may still use live-world capabilities, but these storage-addressed
+methods reject before dispatch instead of recovering coordinates from
+process-local world state.
+
 `ArtifactSource`, `ArtifactRef`, and `ArtifactStoreConfig` are the supported
 top-level file contracts. Family-owned handlers and views, the storage port,
 and process wiring remain internal implementation surfaces.

@@ -385,11 +385,12 @@ class RuntimeWorld:
         """Redact and index one Claude JSONL session as mission evidence."""
 
         wid = await self._ensure_id()
+        storage_config = self._state.require_storage_config("ingest_claude_transcript")
         return await self._dispatcher.apply(
             IngestClaudeTranscript(
                 world_id=wid,
                 source=source,
-                storage_config=self._state.storage_config,
+                storage_config=storage_config,
             )
         )
 
@@ -398,10 +399,11 @@ class RuntimeWorld:
         """Return normalized coding-agent transcript rows for this run."""
 
         wid = await self._ensure_id()
+        storage_config = self._state.require_storage_config("query_transcript_rows")
         return await self._dispatcher.apply(
             QueryTranscriptRows(
                 world_id=wid,
-                storage_config=self._state.storage_config,
+                storage_config=storage_config,
             )
         )
 
