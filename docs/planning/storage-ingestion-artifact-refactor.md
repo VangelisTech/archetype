@@ -1,7 +1,7 @@
 # Storage, ingestion, and artifact execution refactor
 
 **Status:** Historical implementation record for #619; superseded by the
-v0.5 artifacts-family pull-forward in #651  
+v0.5 artifacts-family pull-forward in #651
 **Date:** 2026-07-21  
 **Tracking pull request:** #619
 **v0.5 follow-up:** #640

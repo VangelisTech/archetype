@@ -22,13 +22,13 @@ archetype.app.missions
   transcript-specific redaction, parsing, and normalized-row publication
 ```
 
-The cohesive `archetype.artifacts.FileIngestionPipeline` keeps the lazy Daft
-graph for scan, persistence, reopening, and every common or specialized index
-together. Only pure metadata algorithms live separately in `scanners.py`; they
-stream where the format permits it. The family-owned free handlers configure
-that graph and call the storage port with explicit durable coordinates. The
-family has reviewed dependencies on core and storage only; it owns no live
-world, run, control-catalog, or background-job authority.
+The cohesive `archetype.artifacts.pipeline.FileIngestionPipeline` keeps the
+lazy Daft graph for scan, persistence, reopening, and every common or
+specialized index together. Only pure metadata algorithms live separately in
+`scanners.py`; they stream where the format permits it. The family-owned free
+handlers configure that graph and call the storage port with explicit durable
+coordinates. The family has reviewed dependencies on core and storage only; it
+owns no live world, run, control-catalog, or background-job authority.
 
 `StorageService` is the single substrate authority. It owns the
 catalog-derived world/run envelope, extends conditional keys with that
@@ -55,6 +55,7 @@ storage = StorageConfig(
 
 async with ArchetypeRuntime() as runtime:
     world = runtime.world("software-factory", storage=storage)
+    await world.step()  # publish the durable head used for artifact attribution
     (diff,) = await world.ingest_artifacts(
         ArtifactSource(
             source_uri="./worktree/change.diff",
@@ -98,7 +99,7 @@ Collection patterns therefore require unique file names unless the caller
 submits the files separately with explicit logical paths.
 
 Two files in one ingestion may not resolve to the same logical path. The
-service fails before publishing either occurrence.
+handler fails before publishing either occurrence.
 
 ## 4. Occurrence and content identity
 
@@ -162,7 +163,7 @@ The artifact common index is `artifact_files`, keyed by `artifact_id`:
 
 | Column | Purpose |
 |---|---|
-| `world_id`, `run_id` | Application-owned envelope |
+| `world_id`, `run_id` | Storage-owned durable envelope |
 | `artifact_id`, `ingested_at`, `tick` | Occurrence and world coordinates |
 | `source_uri`, `logical_path`, `object_uri` | Acquisition, workflow, and storage locations |
 | `size_bytes`, `mime_type`, `media_family` | Common file metadata |
@@ -328,6 +329,9 @@ authority.
 UUIDv7 `context_id` identifies the interpretation; artifact UUIDs continue to
 identify the individual ingestion occurrences. The contract does not create a
 second storage service or copy the files again.
+
+The world must already have a published durable head. For a fresh handle, call
+`await world.step()` before submitting the context's artifacts.
 
 ```python
 from daft.ai.provider import load_openai

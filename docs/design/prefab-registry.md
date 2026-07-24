@@ -69,12 +69,12 @@ persisted tables bites).
 A registry entry stores its immutable manifest through the registered
 artifacts-family handler and lets the owning registry workflow publish its
 typed fields through `StorageService` (per `docs/guide/artifacts.md`): name,
-source `(world_id, entity_id, tick)`, required behavior-module identities, the
-component set with **prefixed schema hashes**, the subtree inventory, the
-eval-suite reference, and evaluation-result identities. Publishing a prefab
-version creates one file occurrence plus one typed prefab-manifest row keyed to
-its `artifact_id`. No new storage system, generic ingestion facade, or artifact
-publication protocol is required.
+source `(world_id, run_id, entity_id, tick)`, required behavior-module
+identities, the component set with **prefixed schema hashes**, the subtree
+inventory, the eval-suite reference, and evaluation-result identities.
+Publishing a prefab version creates one file occurrence plus one typed
+prefab-manifest row keyed to its `artifact_id`. No new storage system, generic
+ingestion facade, or artifact publication protocol is required.
 
 ### R4 — Schema identity is the compatibility contract
 

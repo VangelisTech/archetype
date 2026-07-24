@@ -615,7 +615,7 @@ dependency. `errors` is the exact common-family module; `runtime`, `api`,
 | `commands` | `storage`, `world` |
 | `artifacts` | `storage` |
 | `redaction` | none |
-| `evaluation` | none |
+| `evaluation` | `storage`, `world` |
 | `research` | `world` |
 | `physical_ai` | none |
 | `episodes` | `artifacts`, `evaluation` |

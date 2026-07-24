@@ -310,7 +310,7 @@ change, and report the exact validation that ran. See
 | `src/archetype/commands/dispatch.py` | Governed direct and deferred command entry |
 | `src/archetype/commands/scheduler.py` | Durable scheduler and materializer |
 | `src/archetype/storage/service.py` | Daft execution and durable storage authority |
-| `src/archetype/ingestion/pipeline.py` | Cohesive reusable file-ingestion graph |
+| `src/archetype/artifacts/pipeline.py` | Cohesive reusable file-ingestion graph |
 | `src/archetype/core/aio/async_world.py` | World runtime |
 | `tests/app/test_runtime_contracts.py` | Executable runtime contracts |
 | `tests/sync/test_sync_stack_contracts.py` | Executable sync engine contracts |
