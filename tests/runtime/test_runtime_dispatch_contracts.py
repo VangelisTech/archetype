@@ -303,6 +303,37 @@ async def test_cold_attached_artifacts_without_storage_fail_before_dispatch(
 
 
 @pytest.mark.asyncio
+async def test_attached_transcript_operations_without_storage_fail_before_dispatch(
+    tmp_path: Path,
+) -> None:
+    """Transcript capabilities cannot recover coordinates through live state."""
+
+    from archetype.episodes.contracts import ClaudeTranscriptSource
+
+    dispatcher = _DispatchProbe()
+    world, _state = _runtime_world(dispatcher)
+    source = ClaudeTranscriptSource(
+        tmp_path / "never-read.jsonl",
+        project="runtime-contract",
+        session_id="missing-storage",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="ingest_claude_transcript requires explicit storage coordinates",
+    ):
+        await world.ingest_claude_transcript(source)
+    with pytest.raises(
+        ValueError,
+        match="query_transcript_rows requires explicit storage coordinates",
+    ):
+        await world.transcript_rows()
+
+    assert dispatcher.trusted == []
+    assert not source.path.exists()
+
+
+@pytest.mark.asyncio
 async def test_resume_retains_the_exact_explicit_storage_on_its_handle(
     tmp_path: Path,
 ) -> None:
