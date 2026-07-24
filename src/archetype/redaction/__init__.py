@@ -1,10 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compatibility imports for canonical redaction values.
-
-Root deletes this application-owned path after all consumers repoint in PR-4.
-"""
+"""Shared pre-durability secret scanning and redaction authority."""
 
 from archetype.redaction.models import (
     RedactedFile,
@@ -12,9 +9,9 @@ from archetype.redaction.models import (
     RedactedText,
     RedactionPolicyConfig,
     RedactionReceipt,
-    RedactionStatus,
     SecretQuarantineError,
 )
+from archetype.redaction.service import RedactionService
 
 __all__ = [
     "RedactedFile",
@@ -22,6 +19,6 @@ __all__ = [
     "RedactedText",
     "RedactionPolicyConfig",
     "RedactionReceipt",
-    "RedactionStatus",
+    "RedactionService",
     "SecretQuarantineError",
 ]

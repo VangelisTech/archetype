@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Sequence
 from typing import Any, Protocol, runtime_checkable
 
 from daft import DataFrame
@@ -13,11 +13,14 @@ from uuid_utils import UUID
 
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
+from archetype.evaluation.contracts import (
+    GraderOutput,
+    GraderReturn,
+    TrajectoryGrader,
+)
 from archetype.world.models import EpisodeResult
 
-GraderOutput = object
-GraderReturn = GraderOutput | Sequence[GraderOutput]
-TrajectoryGrader = Callable[[DataFrame], GraderReturn | Awaitable[GraderReturn]]
+# PR-5 deletes these compatibility exports after application consumers repoint.
 
 
 @runtime_checkable
@@ -60,3 +63,11 @@ class iEvaluationService(Protocol):
     async def run_graders(
         self, df: DataFrame, graders: Sequence[TrajectoryGrader]
     ) -> list[GraderOutput]: ...
+
+
+__all__ = [
+    "GraderOutput",
+    "GraderReturn",
+    "TrajectoryGrader",
+    "iEvaluationService",
+]

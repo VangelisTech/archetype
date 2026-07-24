@@ -11,7 +11,7 @@ from typing import Protocol, runtime_checkable
 
 from pydantic import JsonValue
 
-from archetype.app.redaction.models import (
+from archetype.redaction.models import (
     RedactedFile,
     RedactedRecord,
     RedactedText,

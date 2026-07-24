@@ -8,7 +8,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
-from archetype.artifacts.contracts import ArtifactRef
+from archetype.episodes.contracts import (
+    TrajectorySelection as TrajectorySelection,
+)
+from archetype.episodes.contracts import (
+    TranscriptIngestionResult as TranscriptIngestionResult,
+)
 
 if TYPE_CHECKING:
     from archetype.missions.trajectories.components import TrajectoryTurn
@@ -98,43 +103,5 @@ class EpisodeRecord(Protocol):
     duration_steps: int
 
 
-@dataclass(frozen=True)
-class TrajectorySelection:
-    """Typed filters applied to one trajectory component table."""
-
-    trajectory_ids: tuple[str, ...] = ()
-    episode_ids: tuple[str, ...] = ()
-    rollout_ids: tuple[str, ...] = ()
-    task_ids: tuple[str, ...] = ()
-    trial_idxs: tuple[int, ...] = ()
-
-    def requested(self) -> dict[str, tuple[str, ...] | tuple[int, ...]]:
-        """Return only active field filters."""
-        return {
-            name: values
-            for name, values in (
-                ("trajectory_id", self.trajectory_ids),
-                ("episode_id", self.episode_ids),
-                ("rollout_id", self.rollout_ids),
-                ("task_id", self.task_ids),
-                ("trial_idx", self.trial_idxs),
-            )
-            if values
-        }
-
-
-@dataclass(frozen=True)
-class TranscriptIngestionResult:
-    """Durable outputs from sanitizing and indexing one coding-agent session."""
-
-    world_id: str
-    run_id: str
-    trajectory_id: str
-    mission_id: str
-    source_uri: str
-    artifact: ArtifactRef
-    rows_written: int
-    redaction_policy_id: str
-    redaction_status: str
-    redaction_count: int
-    redaction_rule_ids: tuple[str, ...]
+# PR-9 deletes these identity-preserving compatibility imports after episode
+# consumers repoint.  The persistent trajectory Components are unchanged.
