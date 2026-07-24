@@ -25,12 +25,12 @@ It also exercises the two core fixes end-to-end:
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 from daft import DataFrame
 
-import archetype.app.gateway.auth.guard as guard
 from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.core.config import StorageConfig, WorldConfig
 from archetype.physical_ai.manipulation import (
     ACTION_DIM,
@@ -51,16 +51,6 @@ SEED = 0
 TOL = 0.04
 ACTION = [0.05, 0.0, 0.0] + [0.0] * (ACTION_DIM - 3)
 START = (0.001 * SEED, -0.001 * SEED, 0.5)
-
-
-@pytest.fixture(autouse=True)
-def _reset_quotas():
-    # Quota state is process-local in PR-2; isolate test actors explicitly.
-    guard._tick_counters.clear()
-    reset_daily_tokens()
-    yield
-    guard._tick_counters.clear()
-    reset_daily_tokens()
 
 
 def _replay(target: tuple[float, float, float], max_env_steps: int) -> tuple[bool, int]:
@@ -166,7 +156,10 @@ async def test_eval_reproduces_success_and_length_from_raw_manipstatus(tmp_path)
             }
             return state_check(checks, name="episode_lengths")
 
-        results = await container.evaluation_service.run_graders(df, [grade_rate, grade_lengths])
+        results = cast(
+            list[GraderResult],
+            await container.evaluation_service.run_graders(df, [grade_rate, grade_lengths]),
+        )
         assert [r.passed for r in results] == [True, True]
         assert results[0].score == 1.0  # 3/3 success
     finally:
@@ -230,8 +223,9 @@ async def test_eval_grades_a_failed_trial_and_fractional_success_rate(tmp_path):
             }
             return state_check(checks, name="success_lengths")
 
-        results = await container.evaluation_service.run_graders(
-            df, [grade_rate, grade_success_lengths]
+        results = cast(
+            list[GraderResult],
+            await container.evaluation_service.run_graders(df, [grade_rate, grade_success_lengths]),
         )
         assert [r.passed for r in results] == [True, True]
     finally:

@@ -500,20 +500,20 @@ See ``lazy_audit.toml`` for the authoritative policy header and
 
 ## Agent Communication: Queueing vs Delivery (updated Jul 2026)
 
-Archetype provides messaging mechanisms, not a framework delivery policy:
+Archetype provides ECS composition primitives, not a portable framework
+message command or delivery policy:
 
-- `CommandType.MESSAGE` is an RBAC-visible command envelope.
-- `CommandScheduler` durably orders portable deferred envelopes, but it is an
-  application service and is not injected into processor resources.
+- The legacy `CommandType.MESSAGE` compatibility envelope is rejected before
+  quota debit, evidence, or durable admission.
+- `CommandScheduler` durably orders only the six registered portable mutation
+  models and is not injected into processor resources.
 - `Resources`, processors, and hooks are the primitives applications can
   compose into routing and realization behavior.
 
 The framework does not define a message payload schema, recipient validation,
 inbox/outbox components, delivery receipts, channels, or a conversation graph.
-The default dispatcher gives `MESSAGE` an explicit no-op disposition, so
-submitting a message command is not equivalent to delivering it to an entity.
-A host that uses message envelopes must supply the consumer and its
-delivery semantics.
+There is no default `MESSAGE` no-op or durable decoder. A host that needs
+messaging must supply its own state, consumer, and delivery semantics.
 
 [`examples/04_messaging.py`](examples/04_messaging.py) demonstrates one such
 policy entirely in application code:
@@ -530,9 +530,8 @@ MoodProcessor (priority 20)
 Because realization runs before greeting generation, work deposited during
 tick N remains pending until the realization pass in tick N+1. That causal
 delay is a property of this example's priorities and shared `Mailbox`; it is
-not an automatic guarantee of `CommandType.MESSAGE`. The example's `Mailbox`,
-`Inbox`, `Outbox`, and processors are local definitions, not exports from
-`archetype`.
+not a framework command guarantee. The example's `Mailbox`, `Inbox`, `Outbox`,
+and processors are local definitions, not exports from `archetype`.
 
 The mailbox is also mutable world-shared state. The demo keeps all agents in
 one archetype table. A composition that accesses the same mailbox from
@@ -680,8 +679,8 @@ for entry in history:
 7. **JSON-encode** complex types (`list[dict]`, nested objects) for Arrow compatibility
 8. **Resources** for type-safe DI in processors
 9. **Hooks** for observability without processor coupling
-10. **Messaging delivery is application composition** — durable scheduling can
-    order `MESSAGE` envelopes; applications define payloads, routing, and realization
+10. **Messaging delivery is application composition** — the legacy `MESSAGE`
+    envelope is rejected; applications define state, routing, and realization
 11. **Tick-gating** for expensive operations (LLM calls, inner worlds)
 12. **Keep columns in DAG** — avoid intermediate `.collect()` breaking lazy evaluation
 13. **Route app-owned terminal Daft work through `StorageService`** — keep
@@ -725,10 +724,13 @@ deployment. See
   gate controls local materialization pressure and ordering; it does not
   replace Iceberg conflict detection or turn the control catalog into a wrapper
   transaction around the data table.
-- **World lifecycle operations are direct gated calls.** `create_world`,
-  `fork_world`, and `destroy_world` flow through `iCommandGateway` for RBAC and
-  access audit, then delegate to `iRuntimeApplication`. `CommandScheduler`
-  durably owns tick-deferred commands; it is not the lifecycle or authorization
+- **World lifecycle operations are registered direct calls.** The untrusted
+  `iCommandGateway` adapter constructs an exact lifecycle model and enters
+  `CommandDispatcher.apply_as`; commands-owned `Policy` performs RBAC and the
+  dispatcher attempts bounded access evidence. Trusted runtime calls construct
+  the same model through `iRuntimeApplication` and enter
+  `CommandDispatcher.apply`. `CommandScheduler` durably owns only portable
+  tick-deferred operations; it is neither the lifecycle nor authorization
   boundary.
 
 **State across restarts:**

@@ -1,0 +1,18 @@
+# Architecture policy fragment: commands.
+# Merged into quality/architecture.toml by scripts/check_architecture.py;
+# fragments may declare only rule/exception arrays, never scalar policy.
+
+[[top_level_family_rule]]
+name = "commands-domain-family"
+consumer = "archetype.commands"
+allowed_families = ["archetype.storage", "archetype.world"]
+
+[[module_rule]]
+module = "archetype.commands.audit"
+allowed_interfaces = ["archetype.storage.interfaces.iStorageService"]
+allowed_app = []
+
+[[module_rule]]
+module = "archetype.commands.scheduler"
+allowed_interfaces = []
+allowed_app = []

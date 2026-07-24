@@ -21,6 +21,8 @@ from archetype.core.config import StorageConfig, WorldConfig
 from archetype.world import simulation
 from archetype.world.models import EpisodeConfig, RolloutConfig
 
+_TEARDOWN_SENTINEL_ENTITY_ID = 2_147_483_647
+
 # ---------------------------------------------------------------------------
 # Test components
 # ---------------------------------------------------------------------------
@@ -80,9 +82,9 @@ def _queue_future_command_on_each_fork(
     async def fork_and_queue(*args, **kwargs):
         fork = await original_fork(*args, **kwargs)
         command = Command(
-            type=CommandType.CUSTOM,
+            type=CommandType.DESPAWN,
             tick=10_000,
-            payload={"source": "rollout-teardown-contract"},
+            payload={"entity_id": _TEARDOWN_SENTINEL_ENTITY_ID},
         )
         await container.application.submit(fork.world_id, command)
         commands[str(fork.world_id)] = command
@@ -948,7 +950,7 @@ class TestRollout:
             catalog = container.storage_service.get_control_catalog(storage)
             set_world_status = catalog.set_world_status
             observed_before_destroy: list[tuple[str, str, str | None]] = []
-            destroy_world = container.application.destroy_world
+            destroy_world = container.application._destroy_world_owned
 
             async def track_fork(*args, **kwargs):
                 task = asyncio.current_task()
@@ -992,7 +994,11 @@ class TestRollout:
             monkeypatch.setattr(catalog, "set_world_status", observe_set_world_status)
             monkeypatch.setattr(container.world_lifecycle, "fork_world", track_fork)
             monkeypatch.setattr(simulation, "run_episode", block_episode)
-            monkeypatch.setattr(container.application, "destroy_world", block_teardown)
+            monkeypatch.setattr(
+                container.application,
+                "_destroy_world_owned",
+                block_teardown,
+            )
             rollout = asyncio.create_task(
                 container.application.run_rollout(
                     world.world_id,
@@ -1060,7 +1066,7 @@ class TestRollout:
             catalog = container.storage_service.get_control_catalog(storage)
             set_world_status = catalog.set_world_status
             observed_before_destroy: list[tuple[str, str, str | None]] = []
-            destroy_world = container.application.destroy_world
+            destroy_world = container.application._destroy_world_owned
 
             async def observe_set_world_status(world_id: str, status: str) -> None:
                 if status == "destroyed" and world_id in commands:
@@ -1081,7 +1087,7 @@ class TestRollout:
             monkeypatch.setattr(catalog, "set_world_status", observe_set_world_status)
             monkeypatch.setattr(
                 container.application,
-                "destroy_world",
+                "_destroy_world_owned",
                 block_successful_teardown,
             )
             rollout = asyncio.create_task(
@@ -1141,7 +1147,7 @@ class TestRollout:
             catalog = container.storage_service.get_control_catalog(storage)
             set_world_status = catalog.set_world_status
             observed_before_destroy: list[tuple[str, str, str | None]] = []
-            destroy_world = container.application.destroy_world
+            destroy_world = container.application._destroy_world_owned
 
             async def observe_set_world_status(world_id: str, status: str) -> None:
                 if status == "destroyed" and world_id in commands:
@@ -1167,7 +1173,11 @@ class TestRollout:
 
             monkeypatch.setattr(catalog, "set_world_status", observe_set_world_status)
             monkeypatch.setattr(simulation, "run_episode", fail_episode)
-            monkeypatch.setattr(container.application, "destroy_world", block_teardown)
+            monkeypatch.setattr(
+                container.application,
+                "_destroy_world_owned",
+                block_teardown,
+            )
             rollout = asyncio.create_task(
                 container.application.run_rollout(
                     world.world_id,
@@ -1234,7 +1244,7 @@ class TestRollout:
                 storage,
             )
             commands = _queue_future_command_on_each_fork(container, monkeypatch)
-            destroy_world = container.application.destroy_world
+            destroy_world = container.application._destroy_world_owned
 
             async def block_episode(*_args, **_kwargs):
                 task = asyncio.current_task()
@@ -1251,7 +1261,11 @@ class TestRollout:
                 raise teardown_failure
 
             monkeypatch.setattr(simulation, "run_episode", block_episode)
-            monkeypatch.setattr(container.application, "destroy_world", fail_teardown)
+            monkeypatch.setattr(
+                container.application,
+                "_destroy_world_owned",
+                fail_teardown,
+            )
             rollout = asyncio.create_task(
                 container.application.run_rollout(
                     world.world_id,
@@ -1290,7 +1304,11 @@ class TestRollout:
             assert len(teardown_tasks) == 1
             assert all(task.done() for task in teardown_tasks)
 
-            monkeypatch.setattr(container.application, "destroy_world", destroy_world)
+            monkeypatch.setattr(
+                container.application,
+                "_destroy_world_owned",
+                destroy_world,
+            )
             await container.application.destroy_world(fork_id)
             (record,) = await container.command_scheduler.records(fork_id)
             assert record.status == "REJECTED"
@@ -1325,7 +1343,7 @@ class TestRollout:
             )
             commands = _queue_future_command_on_each_fork(container, monkeypatch)
             fork_world = container.world_lifecycle.fork_world
-            destroy_world = container.application.destroy_world
+            destroy_world = container.application._destroy_world_owned
             run_episode = simulation.run_episode
 
             async def record_fork(*args, **kwargs):
@@ -1361,7 +1379,7 @@ class TestRollout:
             monkeypatch.setattr(simulation, "run_episode", run_or_block)
             monkeypatch.setattr(
                 container.application,
-                "destroy_world",
+                "_destroy_world_owned",
                 fail_first_teardown,
             )
             rollout = asyncio.create_task(
@@ -1394,7 +1412,11 @@ class TestRollout:
             )
             assert await container.world_registry.contains(failed_fork_id)
 
-            monkeypatch.setattr(container.application, "destroy_world", destroy_world)
+            monkeypatch.setattr(
+                container.application,
+                "_destroy_world_owned",
+                destroy_world,
+            )
             await container.application.destroy_world(failed_fork_id)
             assert not await container.world_registry.contains(failed_fork_id)
             assert len(commands) == 2
@@ -1503,7 +1525,7 @@ class TestRollout:
                 storage,
             )
             commands = _queue_future_command_on_each_fork(container, monkeypatch)
-            destroy_world = container.application.destroy_world
+            destroy_world = container.application._destroy_world_owned
             run_episode = simulation.run_episode
 
             async def run_or_block(*args, **kwargs):
@@ -1522,7 +1544,7 @@ class TestRollout:
             monkeypatch.setattr(simulation, "run_episode", run_or_block)
             monkeypatch.setattr(
                 container.application,
-                "destroy_world",
+                "_destroy_world_owned",
                 self_cancel_teardown,
             )
             rollout = asyncio.create_task(
@@ -1560,7 +1582,11 @@ class TestRollout:
             assert len(teardown_tasks) == 1
             assert all(task.done() for task in teardown_tasks)
 
-            monkeypatch.setattr(container.application, "destroy_world", destroy_world)
+            monkeypatch.setattr(
+                container.application,
+                "_destroy_world_owned",
+                destroy_world,
+            )
             await container.application.destroy_world(fork_id)
             assert not await container.world_registry.contains(fork_id)
         finally:
@@ -1596,7 +1622,7 @@ class TestRollout:
             )
             commands = _queue_future_command_on_each_fork(container, monkeypatch)
             fork_world = container.world_lifecycle.fork_world
-            destroy_world = container.application.destroy_world
+            destroy_world = container.application._destroy_world_owned
 
             async def record_fork(*args, **kwargs):
                 fork = await fork_world(*args, **kwargs)
@@ -1628,7 +1654,7 @@ class TestRollout:
             monkeypatch.setattr(simulation, "run_episode", fail_episode_by_index)
             monkeypatch.setattr(
                 container.application,
-                "destroy_world",
+                "_destroy_world_owned",
                 fail_primary_teardown,
             )
             rollout = asyncio.create_task(
@@ -1672,7 +1698,11 @@ class TestRollout:
             assert not await container.world_registry.contains(fork_ids[1])
             assert not await container.world_registry.contains(fork_ids[2])
 
-            monkeypatch.setattr(container.application, "destroy_world", destroy_world)
+            monkeypatch.setattr(
+                container.application,
+                "_destroy_world_owned",
+                destroy_world,
+            )
             await container.application.destroy_world(fork_ids[0])
             assert not await container.world_registry.contains(fork_ids[0])
         finally:
@@ -1702,7 +1732,7 @@ class TestRollout:
             )
             commands = _queue_future_command_on_each_fork(container, monkeypatch)
             fork_world = container.world_lifecycle.fork_world
-            destroy_world = container.application.destroy_world
+            destroy_world = container.application._destroy_world_owned
 
             def track_rollout_children(coro, *, name=None, context=None):
                 task = create_task(coro, name=name, context=context)
@@ -1739,7 +1769,7 @@ class TestRollout:
             monkeypatch.setattr(simulation, "run_episode", fail_episode_by_index)
             monkeypatch.setattr(
                 container.application,
-                "destroy_world",
+                "_destroy_world_owned",
                 delay_first_cleanup,
             )
             rollout = create_task(
@@ -1807,7 +1837,7 @@ class TestRollout:
             )
             commands = _queue_future_command_on_each_fork(container, monkeypatch)
             fork_world = container.world_lifecycle.fork_world
-            destroy_world = container.application.destroy_world
+            destroy_world = container.application._destroy_world_owned
 
             def track_rollout_children(coro, *, name=None, context=None):
                 task = create_task(coro, name=name, context=context)
@@ -1845,7 +1875,7 @@ class TestRollout:
             monkeypatch.setattr(simulation, "run_episode", fail_episode_by_index)
             monkeypatch.setattr(
                 container.application,
-                "destroy_world",
+                "_destroy_world_owned",
                 replace_first_failure_during_teardown,
             )
             rollout = create_task(
@@ -1883,7 +1913,11 @@ class TestRollout:
             assert await container.world_registry.contains(fork_ids[0])
             assert not await container.world_registry.contains(fork_ids[1])
 
-            monkeypatch.setattr(container.application, "destroy_world", destroy_world)
+            monkeypatch.setattr(
+                container.application,
+                "_destroy_world_owned",
+                destroy_world,
+            )
             await container.application.destroy_world(fork_ids[0])
             assert len(commands) == 2
             assert not await container.world_registry.contains(fork_ids[0])

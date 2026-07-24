@@ -1,9 +1,9 @@
 # Application families and wiring
 
-The internal application layer wraps the core ECS engine with multi-world
-lifecycle, durable commands, artifacts, evaluation, audit projection, and
-storage ownership. Concrete services and `ServiceContainer` are not supported
-application APIs. Use `ArchetypeRuntime`, REST, or CLI.
+The internal application layer composes workflows over the top-level world,
+commands, storage, and domain families. Concrete services and
+`ServiceContainer` are not supported application APIs. Use
+`ArchetypeRuntime`, REST, or CLI.
 
 Normative dependency rules live in
 [Application Architecture](application-architecture.md); active ports live in
@@ -20,25 +20,33 @@ container.command_gateway  CommandGateway (authorized ingress)
 ```
 
 Construction is synchronous; stores and catalogs open lazily. Shutdown stops
-new application admission, flushes audit projection, then closes container-owned
-world/storage resources.
+dispatcher admission, waits for admitted operations, projects known command
+outboxes, flushes `AuditLog`, and then releases container-owned storage.
+Per-world destroy is a separate lifecycle operation.
 
 ## Wiring overview
 
 Arrows mean consumer to dependency:
 
 ```text
-ArchetypeRuntime -> RuntimeApplication <- CommandGateway <- REST API
-                         |
-                         +-> WorldRegistry + WorldLifecycle
-                         +-> world.mutation / world.simulation / world.query
-                         +-> IngestionService -> storage/world ports
-                         +-> ArtifactService -> ingestion/storage/world ports
-                         +-> EvaluationService -> ingestion/storage/world ports
-                         +-> AutoResearchService -> storage/world ports
-                         +-> PhysicalAIService -> evaluation/storage/world ports
-                         +-> CommandScheduler -> world.handlers.materialize_locked
-                         +-> AuditLog -> StorageService
+ArchetypeRuntime -> RuntimeApplication ----\
+                                            -> CommandDispatcher
+REST API -> CommandGateway ----------------/
+
+CommandGateway -- finite workflow bridge -> RuntimeApplication
+CommandDispatcher -> OperationRegistry
+CommandDispatcher -> registered family handler
+CommandDispatcher -> Policy + CommandScheduler + AuditLog.record_access
+
+ServiceContainer
+  +-> WorldRegistry + WorldLifecycle
+  +-> CommandScheduler -> world.handlers.materialize_locked
+  +-> AuditLog -> StorageService + scheduler outbox callbacks
+  +-> IngestionService -> storage/world ports
+  +-> ArtifactService -> ingestion/storage/world ports
+  +-> EvaluationService -> ingestion/storage/world ports
+  +-> AutoResearchService -> storage/world ports
+  +-> PhysicalAIService -> evaluation/storage/world ports
 ```
 
 The container injects `CommandScheduler.materialize` when lifecycle constructs
@@ -124,36 +132,40 @@ report; the report is not a second state authority.
 
 ## Commands family
 
-`CommandScheduler` admits, leases, dispatches, retries, settles, and inspects
-durable tick-deferred commands. It does not authorize users. Applied outcomes
-settle atomically with the tick visibility manifest; authoritative events are
-written to its outbox.
+The top-level commands family owns exact operation registration,
+trusted/actor-aware dispatch, instance-owned policy, durable scheduling, and
+access/outbox projection. `CommandScheduler` admits, leases, materializes,
+retries, settles, and inspects portable tick-deferred operations. Applied
+outcomes settle atomically with the tick visibility manifest; authoritative
+events are written to its outbox.
 
 See [Durable Commands](durable-commands.md).
 
-## Audit family
+## Commands-owned audit projection
 
 `AuditLog` projects access events and command-outbox events into append-only
 Iceberg rows. The outbox/command ledger is authoritative for workflow outcome;
-the analytical projection can lag.
+the analytical projection can lag. Audit is not a parallel application family.
 
 See [Audit Log](audit-log.md).
 
 ## RuntimeApplication
 
-`RuntimeApplication` is the canonical actor-free application facade. It owns
-operation admission and per-world serialization while delegating each workflow
-to its family port. It does not own concrete services or durable state.
+`RuntimeApplication` is the temporary actor-free application facade. It
+constructs exact family models and enters trusted `CommandDispatcher` methods
+while delegating remaining staged workflows to their family ports. It does not
+own policy, queue state, or durable state.
 
 Trusted local runtime calls terminate here. No `ActorCtx` is invented for local
 scripting.
 
 ## CommandGateway
 
-`CommandGateway` is the policy boundary for untrusted adapters. It accepts
-`ActorCtx`, checks RBAC/quota policy, delegates to `iRuntimeApplication`, and
-attempts one access-audit emission. It does not implement evaluation, world
-lifecycle, command dispatch, or persistence.
+`CommandGateway` is the temporary transport-shaped adapter for untrusted
+callers. It accepts `ActorCtx`, constructs exact family models, and enters the
+actor-aware `CommandDispatcher`. The commands-owned `Policy` and dispatcher
+perform RBAC, quota, admission, and bounded access evidence. The gateway does
+not own those mechanisms or persistence.
 
 FastAPI consumes `iCommandGateway`; the CLI remains an HTTP client.
 
@@ -162,7 +174,7 @@ FastAPI consumes `iCommandGateway`; the CLI remains an HTTP client.
 - composition root: `src/archetype/app/container.py`
 - application facade: `src/archetype/app/application/`
 - gateway: `src/archetype/app/gateway/`
-- durable commands: `src/archetype/app/commands/`
+- governed and durable commands: `src/archetype/commands/`
 - world family: `src/archetype/world/`
 - physical storage family: `src/archetype/storage/`
 - typed-publication routing: `src/archetype/app/ingestion/`
@@ -172,4 +184,4 @@ FastAPI consumes `iCommandGateway`; the CLI remains an HTTP client.
 - evaluation: `src/archetype/app/evaluation/`
 - evaluation domain contracts and receipt schema: `src/archetype/evaluation/`
 - research: `src/archetype/app/research/`
-- audit: `src/archetype/app/audit/`
+- command/access audit projection: `src/archetype/commands/audit.py`

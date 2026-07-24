@@ -2,27 +2,57 @@ version = 1
 owner = "commands"
 family = "commands"
 
+[[concrete_operation_surface]]
+qualified_scope = "archetype.commands.audit.AuditLog"
+
+[[concrete_operation_surface]]
+qualified_scope = "archetype.commands.scheduler.CommandScheduler"
+
 [[disposition]]
 operations = [
-  "interfaces.iCommandScheduler.validate_deferred",
-  "interfaces.iCommandScheduler.require_world",
-  "interfaces.iCommandScheduler.admit",
-  "interfaces.iCommandScheduler.admit_batch",
-  "interfaces.iCommandScheduler.admit_spawn",
-  "interfaces.iCommandScheduler.materialize",
-  "interfaces.iCommandScheduler.pending_count",
-  "interfaces.iCommandScheduler.records",
-  "interfaces.iCommandScheduler.history",
-  "interfaces.iCommandScheduler.cancel_world",
-  "interfaces.iCommandScheduler.read_outbox",
-  "interfaces.iCommandScheduler.mark_outbox_projected",
-  "interfaces.iCommandScheduler.outbox_progress",
+  "audit.AuditLog.flush",
+  "audit.AuditLog.project_outbox",
+  "audit.AuditLog.query",
+  "audit.AuditLog.record",
+  "audit.AuditLog.record_access",
+  "audit.AuditLog.rejected_rows",
+  "audit.AuditLog.shutdown",
+]
+signals = ["none"]
+outcomes = [
+  "propagated_failure",
+  "handled_outcome",
+  "retryable_attempt",
+  "advisory_suppression",
+]
+authority = "The durable control-catalog outbox remains authoritative for command events. Bounded access evidence is advisory; returned Iceberg rows and the projection watermark describe only the analytical projection."
+evidence = [
+  "docs/guide/audit-log.md",
+  "tests/commands/test_audit_projection_contracts.py",
+]
+rationale = "Access evidence is bounded and failure-isolated from the typed operation outcome; command-event recovery uses the durable outbox until analytical append is acknowledged."
+
+[[disposition]]
+operations = [
+  "scheduler.CommandScheduler.acknowledge_outbox",
+  "scheduler.CommandScheduler.admit",
+  "scheduler.CommandScheduler.admit_batch",
+  "scheduler.CommandScheduler.admit_spawn",
+  "scheduler.CommandScheduler.cancel_world",
+  "scheduler.CommandScheduler.history",
+  "scheduler.CommandScheduler.mark_outbox_projected",
+  "scheduler.CommandScheduler.materialize",
+  "scheduler.CommandScheduler.outbox_progress",
+  "scheduler.CommandScheduler.owner",
+  "scheduler.CommandScheduler.pending_count",
+  "scheduler.CommandScheduler.read_outbox",
+  "scheduler.CommandScheduler.records",
 ]
 signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
-authority = "The durable command ledger, lease/settlement state, and transactional outbox remain authoritative."
+authority = "The durable command ledger, lease/settlement state, transactional outbox, and typed scheduler result or exception remain authoritative."
 evidence = [
   "docs/guide/durable-commands.md",
-  "tests/app/test_durable_commands.py",
+  "tests/commands/test_durable_runtime_contracts.py",
 ]
 rationale = "The scheduler has no approved direct signal; durable admission and settlement are the recovery authority."

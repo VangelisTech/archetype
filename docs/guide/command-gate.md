@@ -1,298 +1,214 @@
-# Command Gate
+# Command gate
 
 **Document type:** Normative.
-**Scope:** `iCommandGateway`, `app/gateway/auth/`, role-based authorization.
+**Scope:** commands-owned `OperationRegistry`, `CommandDispatcher`, `Policy`,
+`ActorCtx`, role authorization, quotas, and bounded access evidence.
 
-The concrete class and protocol are `CommandGateway` and `iCommandGateway`.
+The top-level `archetype.commands` family is the policy and admission
+authority. During the v0.5 migration, `CommandGateway` remains a transport-
+shaped compatibility adapter and `RuntimeApplication` remains a trusted
+actor-free adapter. Both construct the same family operation models and enter
+the same `CommandDispatcher`; neither owns policy, counters, queue state, or
+audit storage.
 
 ## 1. The gate model
 
-`iCommandGateway` is the **policy enforcement point** (PEP) for untrusted
-ingress. External mutations, lifecycle operations, reads, and deferred-command
-admission flow through it. The gateway owns authorization, safe result
-downgrade, and access-audit notification. It delegates actor-free execution to
-`iRuntimeApplication`.
+The dispatcher exposes four primary modes:
 
-Each direct method on `iCommandGateway` follows the same three-step shape:
-
-```python
-async def <method>(self, ctx: ActorCtx, *args, **kwargs):
-    guardrail_allow(<Command(type=..., payload=...)>, ctx)
-    admission = principal_snapshot(ctx)
-    result = await self._application.<method>(*args, admission=admission, **kwargs)
-    await self._audit.record_access(access_event_from(ctx, ..., result))
-    return result
+```text
+apply(operation)                         trusted direct
+apply_as(actor, operation)               actor-aware direct
+defer(operation, options)                trusted durable
+defer_as(actor, operation, options)      actor-aware durable
 ```
 
-The gate's contract:
+Batch and reserved-spawn variants preserve the same split. Each path begins
+under one admission barrier and resolves the exact operation model through the
+registry.
 
-- `ctx` is checked against `COMMANDS_BY_ROLE` before any work happens. Empty intersection raises `GuardrailError`.
-- World-scoped quota coordinates are resolved only after authorization. Durable
-  world operations use the live target tick when available and the explicit
-  `(world_id, 0)` bucket when the live binding is missing or raises the
-  family-owned `WorldClosingError`. Other resolver failures propagate without
-  quota, application, or audit effects.
-- Work is delegated to the actor-free application port; the gateway does not
-  compose domain services or own command/audit storage.
-- One access event is emitted per admitted or rejected external call. Domain
-  receipts and transactional outbox events remain the authority for operation
-  outcomes.
+For an actor-aware direct call, the order is:
 
-Nothing below the gateway knows about `ActorCtx`.
-`iWorldLifecycle.create_world(config, ...)` takes no ctx. Authorization is the
-gateway's job alone.
+1. exact model registration;
+2. pure role preauthorization;
+3. trusted/untrusted availability;
+4. bounded world/tick and token-cost coordinates;
+5. instance-owned quota policy;
+6. the registered family handler; and
+7. bounded advisory evidence.
 
-The durable-world quota rule applies uniformly to `destroy_world`,
-`open_world_readonly`, `resume_world`, `query_components`, `query_archetype`,
-world-scoped `list_signatures`, world-scoped `get_audit_history`,
-`query_artifacts`, and `evaluate`. The fallback selects only a quota bucket; it
-does not grant a live operation lease or suppress lifecycle errors raised later
-by the actor-free application workflow.
+Pure role denial happens before world lookup, clock access, quota debit,
+scheduler admission, family effects, or access evidence. This prevents an
+unauthorized caller from using error or evidence differences to enumerate
+worlds. Availability rejection and full-policy denial may emit bounded
+rejection evidence, but never copy the operation payload.
 
-## 2. The four-role model
+For actor-aware durable entry, preauthorization and exact durable eligibility
+precede catalog persistence. Deferred coordinates come from
+`DurableOptions.target_tick`; the path never consults the live target-tick
+resolver. A direct-only or trusted-only operation fails before persistence.
 
-Roles, intent, and use cases:
+Trusted `apply` and `defer` use the same registrations and family behavior but
+do not fabricate `ActorCtx`, authorization, principal, or access-decision
+evidence.
 
-| Role | Intent | Use case |
-|---|---|---|
-| `viewer` | Read-only | Dashboards, monitoring, audit |
-| `player` | Participate as an actor in a simulation | Multi-agent worlds, game-style frontends |
-| `operator` | Run and manage simulations | Researcher, autoresearch agent, ops |
-| `admin` | Unrestricted | Platform owner, runtime default |
+## 2. Exact registration
 
-Roles are flat. A user with `{operator}` is NOT also `viewer` — they get whatever is in the set. To grant viewer + operator, set `{viewer, operator}`.
+Every governed operation has one `OperationSpec` containing:
 
-## 3. The permissions matrix
+- exact Pydantic model type and discriminator name;
+- exact family handler;
+- permission string;
+- quota scope;
+- optional bounded world-key extractor;
+- trusted/untrusted availability;
+- bounded metadata summarizer and token cost; and
+- optional durable decoder/materializer.
 
-✓ = allowed; — = denied.
+There is no MRO guessing or generic command-type fallback. Duplicate names and
+models fail construction. The registered permission—not a caller-selected
+envelope value—is the policy input.
 
-### Reads (information only; no state change)
+The current world surface contains all lifecycle, mutation, simulation,
+composition, and read models. `GetAuditHistory` is the commands-owned boundary
+read. Temporary artifact, evaluation, research, and mission bridge methods use
+the same commands-owned `Policy` while their family registrations land in
+their sequenced PRs; they do not recreate a second guard.
 
-| Method | viewer | player | operator | admin |
-|---|---|---|---|---|
-| `query_archetype` | ✓ | ✓ | ✓ | ✓ |
-| `list_signatures` | ✓ | ✓ | ✓ | ✓ |
-| `get_world_info` | ✓ | ✓ | ✓ | ✓ |
-| `get_audit_history` | ✓ | ✓ | ✓ | ✓ |
-| `query_artifacts` | ✓ | ✓ | ✓ | ✓ |
-| `list_worlds` | ✓ | ✓ | ✓ | ✓ |
-| `list_processors` | ✓ | ✓ | ✓ | ✓ |
-| `list_hooks` | ✓ | ✓ | ✓ | ✓ |
-| `list_resources` | ✓ | ✓ | ✓ | ✓ |
+## 3. Four roles and permissions
 
-### Entity mutations
+Roles are stable flat grants. When an actor carries multiple roles, a
+permission is allowed if any grant contains it. The built-in role sets are
+explicit and versioned in `PERMISSIONS_BY_ROLE`.
 
-| Method | viewer | player | operator | admin |
-|---|---|---|---|---|
-| `create_entity` (spawn) | — | ✓ | ✓ | ✓ |
-| `remove_entity` (despawn) | — | ✓ | ✓ | ✓ |
-| `update` (overlay values) | — | ✓ | ✓ | ✓ |
-| `add_components` (extend schema) | — | — | ✓ | ✓ |
-| `remove_components` | — | — | ✓ | ✓ |
-
-`player` mutates entity values and creates / destroys entities, but cannot change the *schema* (component types). Schema changes affect processor matching; that's an operator concern.
-
-### Processor / hook / resource management
-
-| Method | viewer | player | operator | admin |
-|---|---|---|---|---|
-| `add_processor` | — | — | ✓ | ✓ |
-| `remove_processor` | — | — | ✓ | ✓ |
-| `add_hook` | — | — | ✓ | ✓ |
-| `remove_hook` | — | — | ✓ | ✓ |
-| `add_resource` | — | — | ✓ | ✓ |
-
-Processors define behavior. Hooks observe lifecycle. Resources hold shared state. All three are operator-territory.
-
-### Simulation control
-
-| Method | viewer | player | operator | admin |
-|---|---|---|---|---|
-| `step` | — | — | ✓ | ✓ |
-| `run` | — | — | ✓ | ✓ |
-| `run_episode` | — | — | ✓ | ✓ |
-| `run_rollout` | — | — | ✓ | ✓ |
-| `autoresearch` | — | — | ✓ | ✓ |
-
-A `player` does not advance the world — they participate in the world that something else is advancing.
-
-### World lifecycle
-
-| Method | viewer | player | operator | admin |
-|---|---|---|---|---|
-| `create_world` | — | — | — | ✓ |
-| `fork_world` | — | — | ✓ | ✓ |
-| `destroy_world` | — | — | ✓ | ✓ |
-| `publish` | — | — | ✓ | ✓ |
-| `ingest_files` | — | — | ✓ | ✓ |
-| `write_artifacts` | — | — | ✓ | ✓ |
-| `evaluate` | — | — | ✓ | ✓ |
-
-The asymmetry is intentional. `create_world` establishes new platform-level identity → admin-only. `fork_world` and `destroy_world` are operator-territory because operators routinely fork (rollouts) and destroy (cleanup). Forks and destroys never delete persistent data (append-only invariant), so this is safe.
-
-### Generic submission
-
-| Method | viewer | player | operator | admin |
-|---|---|---|---|---|
-| `submit` | — | ✓ | ✓ | ✓ |
-| `submit_batch` | — | ✓ | ✓ | ✓ |
-| `submit_spawn` | — | ✓ | ✓ | ✓ |
-| `message` (CommandType.MESSAGE) | — | ✓ | ✓ | ✓ |
-| `custom` (CommandType.CUSTOM) | — | ✓ | ✓ | ✓ |
-
-Generic submission is allowed for `player` and up; the underlying command type re-enforces its own role check at apply time.
-
-## 4. Implementation
-
-### 4.1 — `COMMANDS_BY_ROLE` constant
-
-`app/auth/permissions.py` exports the authoritative role-permission constant. Authored role-by-role with set union for inheritance:
-
-```python
-# app/auth/permissions.py
-from archetype.app.models import CommandType
-
-_READS = frozenset({
-    CommandType.QUERY_WORLD,
-    CommandType.GET_WORLD_INFO,
-    CommandType.GET_AUDIT_HISTORY,
-    CommandType.LIST_SIGNATURES,
-    CommandType.LIST_WORLDS,
-    CommandType.LIST_PROCESSORS,
-    CommandType.LIST_HOOKS,
-    CommandType.LIST_RESOURCES,
-})
-
-_PLAYER_ADDS = frozenset({
-    CommandType.SPAWN,
-    CommandType.DESPAWN,
-    CommandType.UPDATE,
-    CommandType.MESSAGE,
-    CommandType.CUSTOM,
-})
-
-_OPERATOR_ADDS = frozenset({
-    CommandType.ADD_COMPONENT,
-    CommandType.REMOVE_COMPONENT,
-    CommandType.ADD_PROCESSOR,
-    CommandType.REMOVE_PROCESSOR,
-    CommandType.ADD_HOOK,
-    CommandType.REMOVE_HOOK,
-    CommandType.ADD_RESOURCE,
-    CommandType.STEP,
-    CommandType.RUN,
-    CommandType.RUN_EPISODE,
-    CommandType.RUN_ROLLOUT,
-    CommandType.AUTORESEARCH,
-    CommandType.FORK_WORLD,
-    CommandType.DESTROY_WORLD,
-})
-
-COMMANDS_BY_ROLE: dict[str, frozenset[CommandType]] = {
-    "viewer":   _READS,
-    "player":   _READS | _PLAYER_ADDS,
-    "operator": _READS | _PLAYER_ADDS | _OPERATOR_ADDS,
-    "admin":    frozenset(CommandType),
-}
-```
-
-`admin` is `frozenset(CommandType)` — it auto-includes new CommandTypes as the enum grows. Other roles are explicit; new commands require an explicit choice about whether `viewer`, `player`, or `operator` get them.
-
-### 4.2 — `guardrail_allow`
-
-```python
-def guardrail_allow(cmd: Command, ctx: ActorCtx) -> None:
-    if not any(cmd.type in COMMANDS_BY_ROLE[r] for r in ctx.roles):
-        raise GuardrailError(
-            f"role(s) {sorted(ctx.roles)} cannot execute {cmd.type.value}"
-        )
-```
-
-Set membership over up to four roles. Negligible cost.
-
-### 4.3 — Optional inverse index
-
-For auditing or lookup-keyed-by-command, derive the inverse once at module load:
-
-```python
-ROLES_BY_COMMAND: dict[CommandType, frozenset[str]] = {
-    cmd: frozenset(role for role, cmds in COMMANDS_BY_ROLE.items() if cmd in cmds)
-    for cmd in CommandType
-}
-```
-
-`COMMANDS_BY_ROLE` is the source of truth. `ROLES_BY_COMMAND` is computed.
-
-### 4.4 — Test pattern
-
-Tests parametrize from `COMMANDS_BY_ROLE` itself; adding a new CommandType produces test cases automatically:
-
-```python
-def _matrix_cases():
-    return [
-        (role, cmd, cmd in COMMANDS_BY_ROLE[role])
-        for role in COMMANDS_BY_ROLE
-        for cmd in CommandType
-    ]
-
-@pytest.mark.parametrize("role,cmd_type,allowed", _matrix_cases())
-def test_role_command_matrix(role, cmd_type, allowed):
-    ctx = ActorCtx(id=uuid7(), roles={role})
-    cmd = Command(type=cmd_type, payload={})
-    if allowed:
-        guardrail_allow(cmd, ctx)
-    else:
-        with pytest.raises(GuardrailError):
-            guardrail_allow(cmd, ctx)
-```
-
-## 5. Trust boundary and `ActorCtx`
-
-`ActorCtx` is constructed only by an authenticated ingress adapter or a focused
-gateway/security test. The trusted scripting runtime is actor-free and does not
-call the gateway.
-
-The CLI sends credentials; it does not construct a trusted role locally.
-FastAPI or another host authenticates the credential into a stable principal,
-constructs `ActorCtx`, and invokes the gateway. Production hosts must fail
-closed when authentication is absent. A development-only anonymous-admin mode,
-if retained, is an explicit host configuration and uses a stable process
-principal rather than a new identity per request.
-
-An embedded host that exposes runtime capabilities to sandboxed or untrusted
-agents must also use the gateway even when no HTTP transport is involved.
-
-## 6. Access audit
-
-Every gated call emits one access event. The event schema is defined in [Audit
-Log](audit-log.md); fields include:
-
-- `command_id`, `world_id`, `actor_id`
-- `command_type`, `payload_json`, `idempotency_key`
-- `accepted_at`, `applied_at`, `status`
-
-Access evidence records the authorization decision and request identity. It is
-not proof that asynchronous or multi-step domain work committed. Command
-outcomes, tick manifests, artifact indexes, evaluation results, and research
-ledgers are authoritative for their own workflows. Their transactional outbox
-events are projected into the analytical audit history independently.
-
-## 7. Migration from earlier role sets
-
-| Old role | New role |
+| Role | Added permissions |
 |---|---|
-| `viewer` | `viewer` (unchanged) |
-| `player` | `player` (unchanged) |
-| `coder` | `operator` (folded in) |
-| `maintainer` | `operator` (folded in; was redundant) |
-| `operator` | `operator` (unchanged) |
-| `admin` | `admin` (unchanged) |
+| `viewer` | `get_world_info`, `list_worlds`, `discover_worlds`, `open_world_readonly`, `query_components`, `query_archetype`, `list_signatures`, `get_audit_history`, `list_processors`, `list_hooks`, `list_resources`, `query_artifacts` |
+| `player` | all viewer permissions plus `spawn`, `create_entities`, `despawn`, `update` |
+| `operator` | all player permissions plus `add_components`, `remove_components`, `add_processor`, `remove_processor`, `fork_world`, `destroy_world`, `step`, `run`, `run_episode`, `run_rollout`, `add_resource`, `add_hook`, `remove_hook`, `autoresearch`, `ingest_artifacts`, `evaluate` |
+| `admin` | all operator permissions plus `create_world`, `resume_world` |
 
-Existing code that constructs `ActorCtx(roles={"maintainer"})` should be updated to `{"operator"}`. Same for `{"coder"}`.
+The asymmetries are intentional:
 
-## 8. Future extensions (out of scope for v1)
+- players may mutate entity values but not schemas or runtime behavior;
+- operators may run, fork, and clean up worlds but cannot create or resume
+  platform identities;
+- admins own world creation and mutable resume;
+- internal `reserve_entity_ids` and `spawn_reserved` registrations reuse the
+  `spawn` permission but are not exposed to actor-aware generic dispatch.
 
-- **Per-resource ACLs.** Per-world view scoping. Today: roles are global per-runtime.
-- **Role hierarchy.** Today: flat sets, explicit composition.
-- **Custom roles.** Products may extend `COMMANDS_BY_ROLE` with new keys.
-- **Quota differentiation.** Per-tick command quotas key off `ctx.id`, not role. Quotas-by-role is a v2 addition.
+Adding an operation requires an explicit registration and an explicit role
+decision. An admin role does not gain an unknown permission automatically.
+
+## 4. Instance-owned quotas
+
+`Policy` owns all mutable authorization state. There are no module-global
+counters and no reset hook.
+
+World/tick command counters key on:
+
+```text
+(actor_id, world_id, target_tick)
+```
+
+This isolates actors, worlds, ticks, and policy instances. The default maximum
+is 500 commands per coordinate. Batch authorization validates every request
+and projected debit before mutating any counter.
+
+Daily token budgets key separately by actor and roll at the UTC date boundary.
+The default maximum is 200,000 tokens. Application-scoped operations debit
+only that daily budget and do not invent a pseudo world/tick coordinate.
+
+Registry quota scopes are:
+
+- `application`: no world key or tick bucket;
+- `live_world`: resolve the current live target tick, propagating lifecycle
+  failures; and
+- `durable_world`: use the live tick when available, or the reviewed tick-zero
+  bucket when the live binding is absent, closing, or durably missing.
+
+The durable-world fallback selects only a quota coordinate. It does not grant
+a world lease or suppress the later family error.
+
+`Policy.preauthorize` is pure. Only `authorize`,
+`authorize_application`, or `authorize_batch` may debit quotas.
+
+## 5. Atomic actor-aware batches
+
+An actor-aware batch follows ordered phases:
+
+1. resolve every exact registration;
+2. preauthorize every permission;
+3. verify every untrusted/durable disposition;
+4. derive every bounded coordinate and policy request;
+5. apply one atomic policy batch;
+6. make one same-world scheduler admission; and
+7. emit one bounded result row per item.
+
+A denial, invalid member, mixed-world batch, identity conflict, or persistence
+failure leaves no partial policy or catalog admission.
+
+## 6. Reserved spawn authority
+
+Callers submit a family `Spawn` model. `defer_spawn` and `defer_spawn_as`
+reserve exactly one entity ID through the scheduler, transform it into the
+internal `SpawnReserved` model, and bind the reservation to the command
+identity.
+
+Role authorization and durable eligibility happen before reservation. An
+identical retry reuses the retained reservation, including after caller
+cancellation or a failed first catalog write. A conflicting retry fails rather
+than allocating another ID.
+
+## 7. Access evidence
+
+Actor-aware allowed, quota-denied, availability-rejected, queued, and failed
+calls may produce an `AccessSummary`. It contains only operation, actor,
+optional world, decision, outcome, and allowlisted bounded scalar metadata.
+The canonical encoded row is limited to 4096 bytes.
+
+Evidence never includes:
+
+- component values or arbitrary results;
+- credentials, callbacks, or storage configuration;
+- repository diffs or task-base revisions;
+- validator output, critic findings, or cleanup state; or
+- exception messages.
+
+Evidence construction and storage are advisory. Their failure cannot replace
+the primary operation result. Durable command state and family receipts remain
+authoritative. See [Audit log](audit-log.md).
+
+## 8. Admission shutdown
+
+`CommandDispatcher.stop_admission` atomically rejects new top-level work.
+Operations admitted before that point retain their active count.
+`wait_drained` completes only after all of them exit.
+
+There is no context-variable or inherited-task bypass. Compound family
+workflows call private sibling behavior under one admitted operation rather
+than recursively entering public dispatcher admission.
+
+Destroy adds a world-local closing barrier around catalog admission. A submit
+racing destroy is either admitted before terminal cancellation or rejected
+after closing begins.
+
+## 9. Trust boundary and `ActorCtx`
+
+`ActorCtx` contains a stable principal identity and its role grants. Only an
+authenticated ingress adapter or focused security test constructs it. The
+trusted Python runtime is actor-free and never calls an actor-aware entry point.
+
+The CLI sends credentials; it does not mint local roles. FastAPI or another
+host authenticates those credentials, constructs `ActorCtx`, and invokes the
+gateway adapter. An embedded host exposing capabilities to sandboxed or
+untrusted code must use the same actor-aware dispatcher boundary even without
+HTTP.
+
+## Executable contracts
+
+- `tests/commands/test_dispatch_policy_contracts.py`
+- `tests/commands/test_integration_contracts.py`
+- `tests/app/test_auth.py`
+- `tests/app/test_permissions.py`
+- `tests/app/test_tick_quota_reset.py`
+- `tests/integration/test_command_flow.py`

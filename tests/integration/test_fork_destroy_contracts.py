@@ -16,16 +16,17 @@ Verifies:
 import pytest
 from uuid_utils import uuid7
 
-import archetype.app.gateway.auth.guard as guard
 from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.models import Command, CommandType
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.core.errors import AmbiguousTickCommitError
 from archetype.core.hooks import PostTick
+from archetype.world.models import Despawn
 from archetype.world.query import get_lineage
+
+_TEARDOWN_SENTINEL_ENTITY_ID = 2_147_483_647
 
 # ---------------------------------------------------------------------------
 # Test component
@@ -34,20 +35,6 @@ from archetype.world.query import get_lineage
 
 class Tag(Component):
     label: str = ""
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def _reset_quotas():
-    guard._tick_counters.clear()
-    reset_daily_tokens()
-    yield
-    guard._tick_counters.clear()
-    reset_daily_tokens()
 
 
 def _admin_ctx() -> ActorCtx:
@@ -360,8 +347,16 @@ async def test_gated_destroy_rejects_only_target_world_pending_commands(tmp_path
         target = await c.command_gateway.create_world(ctx, WorldConfig(name="target"), storage)
         sibling = await c.command_gateway.create_world(ctx, WorldConfig(name="sibling"), storage)
 
-        target_command = Command(type=CommandType.CUSTOM)
-        sibling_command = Command(type=CommandType.CUSTOM)
+        target_command = Command(
+            type=CommandType.DESPAWN,
+            tick=10_000,
+            payload={"entity_id": _TEARDOWN_SENTINEL_ENTITY_ID},
+        )
+        sibling_command = Command(
+            type=CommandType.DESPAWN,
+            tick=10_000,
+            payload={"entity_id": _TEARDOWN_SENTINEL_ENTITY_ID},
+        )
         await c.command_gateway.submit(ctx, target.world_id, target_command)
         await c.command_gateway.submit(ctx, sibling.world_id, sibling_command)
 
@@ -374,8 +369,14 @@ async def test_gated_destroy_rejects_only_target_world_pending_commands(tmp_path
         target_records = await c.command_scheduler.records(target.world_id)
         assert [record.status for record in target_records] == ["REJECTED"]
         assert await c.command_scheduler.pending_count(sibling.world_id) == 1
-        assert [command.id for command in await c.command_scheduler.history(sibling.world_id)] == [
-            sibling_command.id
+        sibling_records = await c.command_scheduler.records(sibling.world_id)
+        assert [record.command_id for record in sibling_records] == [str(sibling_command.id)]
+        assert [record.status for record in sibling_records] == ["PENDING"]
+        assert list(await c.command_scheduler.history(sibling.world_id)) == [
+            Despawn(
+                world_id=sibling.world_id,
+                entity_id=_TEARDOWN_SENTINEL_ENTITY_ID,
+            )
         ]
         live_sibling = await c.world_registry.live_world(str(sibling.world_id))
         assert live_sibling is not None

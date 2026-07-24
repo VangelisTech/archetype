@@ -18,7 +18,7 @@ machine authority; this page is its review surface.
 | `runtime.trust.actor_free` | `runtime` | high | [docs/guide/runtime.md](../guide/runtime.md) — R3 — Runtime is actor-free | pytest: 1; static: 1; eval: 1 | `pr`, `main`, `release` |
 | `runtime.lifecycle.single_flight_and_drain` | `runtime` | high | [docs/guide/specification.md](../guide/specification.md) — Concurrency Contract | pytest: 3; eval: 2 | `pr`, `main`, `release` |
 | `runtime.lifecycle.retryable_teardown` | `runtime` | high | [docs/guide/runtime.md](../guide/runtime.md) — R4 — Async context manager is canonical | pytest: 6 | `pr`, `main`, `release` |
-| `gateway.authorization.rbac` | `gateway` | high | [docs/guide/command-gate.md](../guide/command-gate.md) — 1. The gate model | pytest: 3; static: 1; eval: 5 | `pr`, `main`, `release` |
+| `gateway.authorization.rbac` | `commands` | high | [docs/guide/command-gate.md](../guide/command-gate.md) — 1. The gate model | pytest: 3; static: 1; eval: 5 | `pr`, `main`, `release` |
 | `commands.identity.idempotent` | `commands` | high | [docs/guide/specification.md](../guide/specification.md) — Command ledger, scheduler, and dispatcher | pytest: 1; static: 1; eval: 4 | `pr`, `main`, `release` |
 | `commands.settlement.atomic` | `commands` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 7. Commands, commits, artifacts, and audit | pytest: 3; eval: 2 | `pr`, `main`, `release` |
 | `commands.failure.preserves_progress` | `commands` | high | [docs/guide/specification.md](../guide/specification.md) — Command ledger, scheduler, and dispatcher | pytest: 1; eval: 4 | `pr`, `main`, `release` |
@@ -41,7 +41,7 @@ machine authority; this page is its review surface.
 | `missions.transcripts.fail_closed` | `missions` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 8. Transcript ingestion | pytest: 1 | `pr`, `main`, `release` |
 | `missions.transcripts.occurrence_identity` | `missions` | medium | [docs/guide/artifacts.md](../guide/artifacts.md) — 8. Transcript ingestion | pytest: 1 | `pr`, `main`, `release` |
 | `evaluation.ontology.separated` | `evaluation` | medium | [docs/guide/dataset-eval-ontology.md](../guide/dataset-eval-ontology.md) — 1. The contract in one view | pytest: 1; eval: 2 | `pr`, `main`, `release` |
-| `audit.append_only.evidence` | `audit` | high | [docs/guide/audit-log.md](../guide/audit-log.md) — 2. Append-only invariant | pytest: 1; eval: 1 | `pr`, `main`, `release` |
+| `audit.append_only.evidence` | `commands` | high | [docs/guide/audit-log.md](../guide/audit-log.md) — 2. Append-only invariant | pytest: 1; eval: 1 | `pr`, `main`, `release` |
 | `simulation.episode.termination` | `world` | medium | [docs/guide/specification.md](../guide/specification.md) — Run contract | pytest: 1; eval: 3 | `pr`, `main`, `release` |
 | `physical_ai.workflow.evidence` | `physical_ai` | high | [docs/guide/physical-ai.md](../guide/physical-ai.md) — Evidence invariants | pytest: 4 | `pr`, `main`, `release` |
 | `core.ecs.data_model` | `core` | high | [docs/guide/specification.md](../guide/specification.md) — Data Model Contracts | pytest: 2; eval: 2; benchmark: 1 | `pr`, `main`, `release` |

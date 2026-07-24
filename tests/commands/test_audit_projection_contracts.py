@@ -3,18 +3,16 @@
 
 """Contracts for the bounded, append-only Iceberg audit table."""
 
-import logging
+from datetime import UTC, datetime
+from typing import Any, cast
 
 import pytest
 from uuid_utils import uuid7
 
-import archetype.app.gateway.auth.guard as guard
-from archetype.app.audit.models import make_audit_row
-from archetype.app.audit.service import AuditBackpressureError, AuditLog
 from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.app.gateway.auth.models import ActorCtx
-from archetype.app.models import CommandType
+from archetype.commands.audit import AuditBackpressureError, AuditLog
+from archetype.commands.models import AuditRow
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
 from archetype.storage.service import StorageService
@@ -33,20 +31,59 @@ def _storage(tmp_path, namespace: str = "audit") -> StorageConfig:
     )
 
 
+async def _read_no_outbox(**_kwargs):
+    return []
+
+
+async def _ack_no_outbox(_events) -> None:
+    return None
+
+
+def _audit_log(storage_service, storage_config, *, flush_rows: int = 128) -> AuditLog:
+    return AuditLog(
+        storage_service,
+        storage_config,
+        read_outbox=_read_no_outbox,
+        acknowledge_outbox=_ack_no_outbox,
+        flush_rows=flush_rows,
+    )
+
+
+def _audit_row(
+    ctx,
+    command_type: str,
+    world_id=None,
+    *,
+    command_id=None,
+    status: str = "applied",
+    payload_json: str = "{}",
+) -> AuditRow:
+    now = datetime.now(UTC).isoformat()
+    return AuditRow(
+        command_id=command_id,
+        world_id=world_id,
+        actor_id=ctx.id,
+        command_type=command_type,
+        status=status,
+        payload_json=payload_json,
+        accepted_at=now,
+        applied_at=now,
+    )
+
+
 def test_audit_configuration_fails_closed(tmp_path):
     with pytest.raises(ValueError, match="flush_rows"):
-        AuditLog(StorageService(), storage_config=_storage(tmp_path), flush_rows=0)
+        _audit_log(StorageService(), _storage(tmp_path), flush_rows=0)
     with pytest.raises(ValueError, match="backend=iceberg"):
-        AuditLog(
+        _audit_log(
             StorageService(),
-            storage_config=StorageConfig(uri=str(tmp_path / "lance")),
+            StorageConfig(uri=str(tmp_path / "lance")),
         )
 
 
 @pytest.mark.asyncio
 async def test_command_gate_keeps_audit_backpressure_advisory(
     tmp_path,
-    caplog,
     monkeypatch,
 ):
     container = ServiceContainer(audit_storage_config=_storage(tmp_path, "advisory"))
@@ -57,15 +94,13 @@ async def test_command_gate_keeps_audit_backpressure_advisory(
 
     monkeypatch.setattr(container.audit_log, "record", reject_record)
     try:
-        with caplog.at_level(logging.WARNING, logger="archetype.app.gateway.service"):
-            world = await container.command_gateway.create_world(
-                ctx,
-                WorldConfig(name="applied-despite-audit-backpressure"),
-                StorageConfig(uri=str(tmp_path / "world")),
-            )
+        world = await container.command_gateway.create_world(
+            ctx,
+            WorldConfig(name="applied-despite-audit-backpressure"),
+            StorageConfig(uri=str(tmp_path / "world")),
+        )
 
         assert world.name == "applied-despite-audit-backpressure"
-        assert "audit emission failed" in caplog.text
     finally:
         await container.shutdown()
 
@@ -84,13 +119,14 @@ async def test_injected_session_requires_and_enforces_audit_identity(tmp_path):
             audit_storage_config=storage,
         )
         ctx = ActorCtx(id=uuid7(), roles={"admin"})
-        world = await container.command_gateway.create_world(
+        await container.command_gateway.create_world(
             ctx,
             WorldConfig(name="managed"),
             storage,
         )
-        rows = (await container.audit_log.query(world_id=world.world_id)).to_pylist()
+        rows = (await container.audit_log.query()).to_pylist()
         assert [row["command_type"] for row in rows] == ["create_world"]
+        assert rows[0]["world_id"] is None
 
         different = storage.model_copy(update={"uri": str(tmp_path / "other")})
         with pytest.raises(ValueError, match="configured for a different storage identity"):
@@ -99,15 +135,6 @@ async def test_injected_session_requires_and_enforces_audit_identity(tmp_path):
         if container is not None:
             await container.shutdown()
         await storage_service.shutdown()
-
-
-@pytest.fixture(autouse=True)
-def _reset_quotas():
-    guard._tick_counters.clear()
-    reset_daily_tokens()
-    yield
-    guard._tick_counters.clear()
-    reset_daily_tokens()
 
 
 @pytest.mark.asyncio
@@ -148,10 +175,10 @@ async def test_audit_log_persists_rows_across_instances(tmp_path):
     world_id = str(uuid7())
     first_storage = StorageService()
     second_storage = StorageService()
-    first = AuditLog(first_storage, storage)
-    second = AuditLog(second_storage, storage)
+    first = _audit_log(first_storage, storage)
+    second = _audit_log(second_storage, storage)
     try:
-        await first.record(make_audit_row(ctx, "create_world", world_id))
+        await first.record(_audit_row(ctx, "create_world", world_id))
         await first.shutdown()
 
         rows = (await second.query(world_id)).to_pylist()
@@ -167,14 +194,14 @@ async def test_audit_log_persists_rows_across_instances(tmp_path):
 @pytest.mark.asyncio
 async def test_audit_query_filters_orders_and_limits_in_daft(tmp_path):
     storage_service = StorageService()
-    audit = AuditLog(storage_service, _storage(tmp_path))
+    audit = _audit_log(storage_service, _storage(tmp_path))
     actor_a = ActorCtx(id=uuid7(), roles={"admin"})
     actor_b = ActorCtx(id=uuid7(), roles={"admin"})
     world_a = str(uuid7())
     world_b = str(uuid7())
     try:
-        first = make_audit_row(actor_a, "first", world_a, status="queued")
-        second = make_audit_row(actor_b, "second", world_b)
+        first = _audit_row(actor_a, "first", world_a, status="queued")
+        second = _audit_row(actor_b, "second", world_b)
         await audit.record(first)
         await audit.record(second)
 
@@ -195,25 +222,24 @@ async def test_audit_query_filters_orders_and_limits_in_daft(tmp_path):
 @pytest.mark.asyncio
 async def test_queued_history_restores_command_uuid_from_iceberg(tmp_path):
     storage_service = StorageService()
-    audit = AuditLog(storage_service, _storage(tmp_path))
+    audit = _audit_log(storage_service, _storage(tmp_path))
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     world_id = str(uuid7())
     command_id = uuid7()
     try:
         await audit.record(
-            make_audit_row(
+            _audit_row(
                 ctx,
-                CommandType.SPAWN.value,
+                "spawn",
                 world_id,
                 command_id=command_id,
                 status="queued",
             )
         )
 
-        history = await audit.get_command_history(world_id)
-
-        assert [(command.id, command.type) for command in history] == [
-            (command_id, CommandType.SPAWN)
+        history = (await audit.query(world_id)).to_pylist()
+        assert [(row["command_id"], row["command_type"]) for row in history] == [
+            (str(command_id), "spawn")
         ]
     finally:
         await audit.shutdown()
@@ -225,14 +251,14 @@ async def test_batch_threshold_creates_one_snapshot_per_batch(tmp_path):
     storage = _storage(tmp_path)
     session = configure_session(storage)
     storage_service = StorageService(session=session)
-    audit = AuditLog(storage_service, storage, flush_rows=3)
+    audit = _audit_log(storage_service, storage, flush_rows=3)
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
         for index in range(7):
-            await audit.record(make_audit_row(ctx, f"op-{index}"))
+            await audit.record(_audit_row(ctx, f"op-{index}"))
         await audit.shutdown()
 
-        native_table = session.get_table("audit_rows")._inner
+        native_table = cast(Any, session.get_table("audit_rows"))._inner
         assert len(native_table.snapshots()) == 3
     finally:
         await storage_service.shutdown()
@@ -244,15 +270,15 @@ async def test_failed_flush_rejects_new_rows_without_unbounded_growth(tmp_path):
         async def append_table(self, _config, _table_name, _frame):
             raise RuntimeError("storage unavailable")
 
-    audit = AuditLog(FailingStorage(), _storage(tmp_path), flush_rows=2)
+    audit = _audit_log(FailingStorage(), _storage(tmp_path), flush_rows=2)
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
 
-    await audit.record(make_audit_row(ctx, "first"))
+    await audit.record(_audit_row(ctx, "first"))
     with pytest.raises(RuntimeError, match="storage unavailable"):
-        await audit.record(make_audit_row(ctx, "second"))
+        await audit.record(_audit_row(ctx, "second"))
     assert len(audit._pending) == 2
 
     with pytest.raises(AuditBackpressureError, match="bounded pending batch"):
-        await audit.record(make_audit_row(ctx, "rejected"))
+        await audit.record(_audit_row(ctx, "rejected"))
     assert len(audit._pending) == 2
     assert audit.rejected_rows == 1

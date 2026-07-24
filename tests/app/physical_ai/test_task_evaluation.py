@@ -24,10 +24,8 @@ from __future__ import annotations
 
 import pytest
 
-import archetype.app.gateway.auth.guard as guard
 from archetype import ArchetypeRuntime, PhysicalTaskEvalConfig
 from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.core.config import StorageConfig
 from archetype.physical_ai.manipulation import ManipStatus, ManipTask, ScriptedReachEnv
 from archetype.physical_ai.policy import ScriptedReachPolicy
@@ -44,15 +42,6 @@ TARGETS = {
     2: (0.30, 0.0, 0.5),
     3: (5.00, 0.0, 0.5),
 }
-
-
-@pytest.fixture(autouse=True)
-def _reset_quotas():
-    guard._tick_counters.clear()
-    reset_daily_tokens()
-    yield
-    guard._tick_counters.clear()
-    reset_daily_tokens()
 
 
 def _start(seed: int) -> list[float]:

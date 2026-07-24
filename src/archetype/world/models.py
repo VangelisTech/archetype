@@ -55,15 +55,32 @@ class ComponentTypeRef(_FrozenModel):
 
     type_name: str
     schema_fingerprint: str = Field(min_length=64, max_length=64)
+    # Direct dispatch retains exact class affinity; durable JSON deliberately
+    # omits it and resolves only from the two portable fields above.
+    local_type_affinity: SkipJsonSchema[type[Component] | None] = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+    )
 
     @classmethod
     def from_type(cls, component_type: type[Component]) -> ComponentTypeRef:
         return cls(
             type_name=component_type.__name__,
             schema_fingerprint=schema_fingerprint(component_type.get_prefixed_schema()),
+            local_type_affinity=component_type,
         )
 
     def resolve(self) -> type[Component]:
+        if self.local_type_affinity is not None:
+            local_fingerprint = schema_fingerprint(self.local_type_affinity.get_prefixed_schema())
+            if (
+                self.local_type_affinity.__name__ != self.type_name
+                or local_fingerprint != self.schema_fingerprint
+            ):
+                raise ValueError("local component type affinity no longer matches wire identity")
+            return self.local_type_affinity
+
         matches = [
             component_type
             for component_type in _component_candidates(self.type_name)
@@ -117,6 +134,7 @@ class ComponentValue(ComponentTypeRef):
             type_name=type(component).__name__,
             schema_fingerprint=schema_fingerprint(type(component).get_prefixed_schema()),
             fields_json=fields_json,
+            local_type_affinity=type(component),
         )
 
     def materialize(self) -> Component:

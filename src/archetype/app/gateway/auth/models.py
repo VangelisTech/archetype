@@ -12,18 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Actor identity model."""
+"""Compatibility import for the commands-owned actor identity.
 
-from pydantic import BaseModel, Field
-from uuid_utils import UUID
+New internal code imports :class:`archetype.commands.models.ActorCtx`
+directly. This path remains for the supported API ingress surface.
+"""
 
+from archetype.commands.models import ActorCtx
 
-class ActorCtx(BaseModel):
-    """Identity and permissions of the caller."""
-
-    id: UUID = Field(description="Stable actor identifier used by audit records.")
-    roles: set[str] = Field(
-        default_factory=lambda: {"viewer"}, description="Roles granted to this actor."
-    )
-
-    model_config = dict(frozen=True, arbitrary_types_allowed=True)
+__all__ = ["ActorCtx"]

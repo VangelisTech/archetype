@@ -16,9 +16,7 @@ import weakref
 
 import pytest
 
-import archetype.app.gateway.auth.guard as guard
 from archetype import ArchetypeRuntime, Component
-from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.core.aio import AsyncProcessor
 from archetype.core.config import StorageConfig
 from archetype.core.errors import TickExecutionError
@@ -45,15 +43,6 @@ class FailPosWith(AsyncProcessor):
 
     async def process(self, df, **kwargs):
         raise self.error
-
-
-@pytest.fixture(autouse=True)
-def _reset_quotas():
-    guard._tick_counters.clear()
-    reset_daily_tokens()
-    yield
-    guard._tick_counters.clear()
-    reset_daily_tokens()
 
 
 # ── 1. Single-flight activation ─────────────────────────────────────────
@@ -158,7 +147,8 @@ class TestActorBinding:
                 storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
             )
             await world.spawn(Pos())
-            assert (await runtime._container.audit_log.query()).count_rows() == 0
+            rows = await runtime._container.audit_log.query(world_id=world.world_id)
+            assert rows.count_rows() == 0
 
 
 # ── 3. Default admin identity ───────────────────────────────────────────

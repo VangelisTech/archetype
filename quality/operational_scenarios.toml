@@ -351,6 +351,38 @@ artifact_schema = "archetype.operational-results/v1"
 required_cadence = ["pr", "main", "release"]
 
 [[scenario]]
+id = "dogfood.commands.local"
+kind = "dogfood"
+owner = "commands"
+owner_paths = [
+  "src/archetype/commands",
+  "src/archetype/app/container.py",
+  "src/archetype/app/gateway",
+  "src/archetype/api",
+  "src/archetype/world",
+  "tests/integration/test_commands_operational.py",
+]
+source_path = "tests/integration/test_commands_operational.py"
+source_command = ["pytest", "-q", "tests/integration/test_commands_operational.py"]
+required_extras = []
+tier = 1
+applicability = ["source", "wheel"]
+timeout_seconds = 180
+prerequisites = []
+missing_prerequisite = "fail"
+semantic_oracle = { kind = "pytest", ref = "tests/integration/test_commands_operational.py" }
+contracts = [
+  "gateway.authorization.rbac",
+  "commands.identity.idempotent",
+  "commands.settlement.atomic",
+  "commands.failure.preserves_progress",
+]
+cleanup_policy = "isolated"
+artifact_policy = "redacted_receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["pr", "main", "release"]
+
+[[scenario]]
 id = "dogfood.agent_mission.scripted"
 kind = "dogfood"
 owner = "missions"
@@ -387,7 +419,7 @@ owner_paths = [
   "src/archetype/missions",
   "src/archetype/app/missions",
   "src/archetype/runtime",
-  "src/archetype/app/commands",
+  "src/archetype/commands",
   "src/archetype/world",
   "src/archetype/graph",
   "src/archetype/core/hooks.py",
@@ -427,7 +459,6 @@ trigger_paths = [
   "src/archetype/app/missions/**",
   "src/archetype/runtime/**",
   "src/archetype/commands/**",
-  "src/archetype/app/commands/**",
   "src/archetype/world/**",
   "src/archetype/graph/**",
   "src/archetype/core/hooks.py",

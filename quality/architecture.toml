@@ -81,14 +81,6 @@ forbidden = [
 # This is the executable dependency DAG represented by the container wiring.
 
 [[family_rule]]
-name = "audit-family"
-consumer = "archetype.app.audit"
-allowed_app = [
-  "archetype.app.audit",
-  "archetype.app.models",
-]
-
-[[family_rule]]
 name = "artifact-family"
 consumer = "archetype.app.artifacts"
 allowed_app = [
@@ -146,21 +138,11 @@ allowed_app = [
 ]
 
 [[family_rule]]
-name = "command-family"
-consumer = "archetype.app.commands"
-allowed_app = [
-  "archetype.app.commands",
-  "archetype.app.models",
-]
-
-[[family_rule]]
 name = "application-family"
 consumer = "archetype.app.application"
 allowed_app = [
   "archetype.app.application",
   "archetype.app.artifacts.interfaces",
-  "archetype.app.audit.interfaces",
-  "archetype.app.commands.interfaces",
   "archetype.app.evaluation.interfaces",
   "archetype.app.missions.interfaces",
   "archetype.app.physical_ai.interfaces",
@@ -174,8 +156,6 @@ consumer = "archetype.app.gateway"
 allowed_app = [
   "archetype.app.gateway",
   "archetype.app.application.interfaces",
-  "archetype.app.audit.interfaces",
-  "archetype.app.audit.models",
   "archetype.app.models",
 ]
 
@@ -266,25 +246,9 @@ allowed_app = [
 ]
 
 [[module_rule]]
-module = "archetype.app.audit.service"
-allowed_interfaces = ["archetype.storage.interfaces.iStorageService"]
-allowed_app = [
-  "archetype.app.models",
-]
-
-[[module_rule]]
-module = "archetype.app.commands.service"
-allowed_interfaces = []
-allowed_app = [
-  "archetype.app.models",
-]
-
-[[module_rule]]
 module = "archetype.app.application.service"
 allowed_interfaces = [
   "archetype.app.artifacts.interfaces.iArtifactService",
-  "archetype.app.audit.interfaces.iAuditLog",
-  "archetype.app.commands.interfaces.iCommandScheduler",
   "archetype.app.evaluation.interfaces.iEvaluationService",
   "archetype.app.missions.interfaces.iMissionService",
   "archetype.app.missions.interfaces.iTranscriptIngestionService",
@@ -301,11 +265,9 @@ allowed_app = ["archetype.app.models"]
 module = "archetype.app.gateway.service"
 allowed_interfaces = [
   "archetype.app.application.interfaces.iRuntimeApplication",
-  "archetype.app.audit.interfaces.iAuditLog",
 ]
 allowed_app = [
-  "archetype.app.audit.models",
-  "archetype.app.gateway.auth.guard",
+  "archetype.app.gateway._pr3_commands_bridge",
   "archetype.app.gateway.auth.models",
   "archetype.app.models",
 ]

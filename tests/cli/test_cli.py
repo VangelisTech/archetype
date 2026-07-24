@@ -11,6 +11,7 @@ ServiceContainer so the full stack is exercised without a running server.
 from __future__ import annotations
 
 import ast
+from typing import cast
 from unittest.mock import patch
 
 import httpx
@@ -20,24 +21,13 @@ from click.exceptions import Exit as ClickExit
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
-import archetype.app.gateway.auth.guard as guard
 from archetype.api.app import create_app
 from archetype.api.deps import set_container
 from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.cli import main as cli_mod
 from archetype.cli.main import ENV_BASE_URL, _base_url, _check_server, _handle_response, app
 
 runner = CliRunner()
-
-
-@pytest.fixture(autouse=True)
-def _reset_quotas():
-    guard._tick_counters.clear()
-    reset_daily_tokens()
-    yield
-    guard._tick_counters.clear()
-    reset_daily_tokens()
 
 
 @pytest.fixture
@@ -180,7 +170,7 @@ class TestCLI:
                 raise httpx.RequestError("boom", request=httpx.Request("GET", "http://localhost"))
 
         with pytest.raises(ClickExit):
-            _check_server(_Client())
+            _check_server(cast(httpx.Client, _Client()))
 
         captured = capsys.readouterr()
         assert "Cannot reach Archetype server" in captured.err

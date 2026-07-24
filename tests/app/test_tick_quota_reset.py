@@ -1,502 +1,411 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Target-tick-aware gateway quota contracts.
+"""Dispatcher policy-coordinate and guard-first migration contracts.
 
-Quota scope is carried explicitly from gateway composition or from the durable
-command envelope. Advancing one world therefore creates a new quota key without
-clearing unrelated worlds or relying on a simulation callback.
+The historical filename is retained for test-selection compatibility. Quota
+generations now belong to one injected :class:`Policy`; no tick-reset callback
+or module-global counter exists.
 """
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
+from typing import Any, ClassVar, Literal, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from pydantic import BaseModel, ConfigDict
 from uuid_utils import uuid7
 
-import archetype.app.gateway.auth.guard as guard
-from archetype.app.gateway.auth.errors import GuardrailError
-from archetype.app.gateway.auth.guard import reset_daily_tokens
-from archetype.app.gateway.auth.models import ActorCtx
-from archetype.app.gateway.service import CommandGateway
-from archetype.app.models import Command, CommandType
-from archetype.errors import WorldNotFoundError
-from archetype.world.registry import WorldRegistry
+from archetype.commands.dispatch import CommandDispatcher
+from archetype.commands.models import (
+    AccessSummary,
+    ActorCtx,
+    DeferredItem,
+    DurableOptions,
+)
+from archetype.commands.policy import Policy
+from archetype.commands.registry import DurableOperation, OperationRegistry, OperationSpec
 
 pytestmark = pytest.mark.asyncio
 
 
-@pytest.fixture(autouse=True)
-def _reset_quotas():
-    guard._tick_counters.clear()
-    reset_daily_tokens()
-    yield
-    guard._tick_counters.clear()
-    reset_daily_tokens()
+class _LiveOperation(BaseModel):
+    direct_only: ClassVar[bool] = True
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    operation: Literal["synthetic_live"] = "synthetic_live"
+    world_id: str
 
 
-def _application() -> AsyncMock:
-    application = AsyncMock()
-    application.require_world = AsyncMock()
-    application.validate_deferred_command = Mock()
-    return application
+class _DurableOperation(BaseModel):
+    direct_only: ClassVar[bool] = False
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    operation: Literal["synthetic_durable"] = "synthetic_durable"
+    world_id: str
 
 
-_DURABLE_WORLD_ROUTES = [
-    pytest.param("destroy_world", CommandType.DESTROY_WORLD, id="destroy"),
-    pytest.param("open_world_readonly", CommandType.GET_WORLD_INFO, id="readonly-open"),
-    pytest.param("resume_world", CommandType.CREATE_WORLD, id="resume"),
-    pytest.param("query_components", CommandType.QUERY_WORLD, id="component-query"),
-    pytest.param("query_archetype", CommandType.QUERY_WORLD, id="archetype-query"),
-    pytest.param("list_signatures", CommandType.LIST_SIGNATURES, id="signatures"),
-    pytest.param("get_audit_history", CommandType.GET_AUDIT_HISTORY, id="audit"),
-    pytest.param("query_artifacts", CommandType.QUERY_WORLD, id="artifacts"),
-    pytest.param("evaluate", CommandType.EVALUATE, id="evaluation"),
-]
+class _OperatorDurableOperation(BaseModel):
+    direct_only: ClassVar[bool] = False
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    operation: Literal["synthetic_operator_durable"] = "synthetic_operator_durable"
+    world_id: str
 
 
-async def _invoke_durable_world_route(
-    gateway: CommandGateway,
-    route: str,
-    ctx: ActorCtx,
+class _ApplicationOperation(BaseModel):
+    direct_only: ClassVar[bool] = True
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    operation: Literal["synthetic_application"] = "synthetic_application"
+
+
+@dataclass(slots=True)
+class _Harness:
+    dispatcher: CommandDispatcher
+    effects: list[str]
+    evidence: list[AccessSummary]
+    target_reads: list[str]
+    scheduler: Any
+
+
+def _world_key(operation: BaseModel) -> object:
+    return cast("Any", operation).world_id
+
+
+def _summary(operation: BaseModel) -> Mapping[str, Any]:
+    return {"world_id": cast("Any", operation).world_id}
+
+
+def _empty_summary(_operation: BaseModel) -> Mapping[str, Any]:
+    return {}
+
+
+async def _never_materialize(_world: Any, _operation: BaseModel) -> None:
+    raise AssertionError("dispatcher admission must not materialize an operation")
+
+
+def _durable_metadata(
+    model: type[BaseModel],
+) -> DurableOperation:
+    return DurableOperation(
+        decode=model.model_validate_json,
+        materialize=_never_materialize,
+    )
+
+
+def _register(
+    registry: OperationRegistry,
     *,
-    world_id: str,
-    storage: object,
+    name: str,
+    model: type[BaseModel],
+    handler: Callable[[BaseModel], Awaitable[Any]],
+    permission: str,
+    quota_scope: Literal["application", "live_world", "durable_world"],
+    durable: DurableOperation | None = None,
+    token_cost: int = 0,
+    world_key: Callable[[BaseModel], object] | None = _world_key,
 ) -> None:
-    if route == "destroy_world":
-        await gateway.destroy_world(ctx, world_id)
-    elif route == "open_world_readonly":
-        await gateway.open_world_readonly(ctx, storage, world_id)
-    elif route == "resume_world":
-        await gateway.resume_world(ctx, storage, world_id)
-    elif route == "query_components":
-        await gateway.query_components(ctx, [], world_id, "run-id", storage)
-    elif route == "query_archetype":
-        await gateway.query_archetype(ctx, "signature", world_id, "run-id", storage)
-    elif route == "list_signatures":
-        await gateway.list_signatures(ctx, storage, world_id=world_id)
-    elif route == "get_audit_history":
-        await gateway.get_audit_history(ctx, world_id)
-    elif route == "query_artifacts":
-        await gateway.query_artifacts(ctx, world_id, storage_config=storage)
-    elif route == "evaluate":
-        await gateway.evaluate(
-            ctx,
-            world_id,
-            [],
-            contract=SimpleNamespace(grader_id="grader"),
+    registry.register(
+        OperationSpec(
+            name=name,
+            model=model,
+            handler=handler,
+            permission=permission,
+            summarize=(_empty_summary if quota_scope == "application" else _summary),
+            quota_scope=quota_scope,
+            world_key=world_key,
+            durable=durable,
+            token_cost=token_cost,
         )
-    else:
-        raise AssertionError(f"unknown durable route {route}")
-
-
-async def test_direct_calls_are_scoped_by_resolved_world_and_target_tick(monkeypatch):
-    monkeypatch.setattr(guard, "MAX_CMDS_PER_TICK", 1)
-    application = _application()
-    target_ticks = {"world-a": 7, "world-b": 7}
-    gateway = CommandGateway(
-        application,
-        target_tick_for_world=lambda world_id: target_ticks[str(world_id)],
-    )
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
-
-    await gateway.create_entity(ctx, "world-a", [])
-    await gateway.create_entity(ctx, "world-b", [])
-
-    with pytest.raises(GuardrailError, match="per-tick quota"):
-        await gateway.create_entity(ctx, "world-a", [])
-
-    target_ticks["world-a"] = 8
-    await gateway.create_entity(ctx, "world-a", [])
-
-    assert guard._tick_counters == {
-        (ctx.id, "world-a", 7): 1,
-        (ctx.id, "world-b", 7): 1,
-        (ctx.id, "world-a", 8): 1,
-    }
-    assert application.create_entity.await_count == 3
-
-
-async def test_direct_world_call_without_target_tick_resolver_fails_closed():
-    application = _application()
-    gateway = CommandGateway(application)
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
-
-    with pytest.raises(RuntimeError, match="target_tick_for_world"):
-        await gateway.create_entity(ctx, "world-a", [])
-
-    application.create_entity.assert_not_awaited()
-    assert guard._tick_counters == {}
-    assert guard._daily_tokens == {}
-
-
-async def test_unauthorized_live_world_call_does_not_resolve_target_tick():
-    application = _application()
-    target_tick_for_world = Mock(side_effect=AssertionError("resolver must not run"))
-    gateway = CommandGateway(
-        application,
-        target_tick_for_world=target_tick_for_world,
-    )
-    ctx = ActorCtx(id=uuid7(), roles={"viewer"})
-
-    with pytest.raises(GuardrailError, match="cannot execute 'step'"):
-        await gateway.step(ctx, "secret-world", object())
-
-    target_tick_for_world.assert_not_called()
-    application.step.assert_not_awaited()
-    assert guard._tick_counters == {}
-    assert guard._daily_tokens == {}
-
-
-async def test_unauthorized_durable_world_call_does_not_resolve_target_tick():
-    application = _application()
-    target_tick_for_world = Mock(side_effect=AssertionError("resolver must not run"))
-    gateway = CommandGateway(
-        application,
-        target_tick_for_world=target_tick_for_world,
-    )
-    ctx = ActorCtx(id=uuid7(), roles={"viewer"})
-
-    with pytest.raises(GuardrailError, match="cannot execute 'create_world'"):
-        await gateway.resume_world(ctx, object(), "secret-world")
-
-    target_tick_for_world.assert_not_called()
-    application.resume_world.assert_not_awaited()
-    assert guard._tick_counters == {}
-    assert guard._daily_tokens == {}
-
-
-async def test_authorized_world_call_resolves_and_debits_once():
-    application = _application()
-    target_tick_for_world = Mock(return_value=7)
-    gateway = CommandGateway(
-        application,
-        target_tick_for_world=target_tick_for_world,
-    )
-    ctx = ActorCtx(id=uuid7(), roles={"player"})
-
-    await gateway.create_entity(ctx, "world-a", [])
-
-    target_tick_for_world.assert_called_once_with("world-a")
-    application.create_entity.assert_awaited_once_with("world-a", [])
-    assert guard._tick_counters == {(ctx.id, "world-a", 7): 1}
-    assert guard._daily_tokens == {
-        ctx.id: guard.estimate_token_cost(Command(type=CommandType.SPAWN))
-    }
-
-
-@pytest.mark.parametrize(("route", "command_type"), _DURABLE_WORLD_ROUTES)
-async def test_closing_durable_operations_debit_tick_zero_before_delegation(
-    route,
-    command_type,
-):
-    application = _application()
-    audit = AsyncMock()
-    registry = WorldRegistry()
-    world = SimpleNamespace(world_id="closing-world", name="closing", tick=13)
-    await registry.insert(world)
-    await registry.begin_close(world.world_id)
-    target_tick_for_world = Mock(wraps=registry.target_tick)
-    gateway = CommandGateway(
-        application,
-        audit=audit,
-        target_tick_for_world=target_tick_for_world,
-    )
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
-    expected_ticks = {(ctx.id, world.world_id, 0): 1}
-    expected_tokens = guard.estimate_token_cost(Command(type=command_type))
-
-    async def assert_gated_before_delegation(*_args, **_kwargs):
-        assert guard._tick_counters == expected_ticks
-        assert guard._daily_tokens == {ctx.id: expected_tokens}
-        return SimpleNamespace(outcome="pass")
-
-    application_route = getattr(application, route)
-    application_route.side_effect = assert_gated_before_delegation
-
-    await _invoke_durable_world_route(
-        gateway,
-        route,
-        ctx,
-        world_id=world.world_id,
-        storage=object(),
     )
 
-    target_tick_for_world.assert_called_once_with(world.world_id)
-    assert application_route.await_count == 1
-    audit.record.assert_awaited_once()
-    assert guard._tick_counters == expected_ticks
-    assert guard._daily_tokens == {ctx.id: expected_tokens}
 
+def _harness(
+    *,
+    policy: Policy,
+    ticks: dict[str, int] | None = None,
+) -> _Harness:
+    registry = OperationRegistry()
+    effects: list[str] = []
+    evidence: list[AccessSummary] = []
+    target_reads: list[str] = []
+    scheduler = AsyncMock()
 
-@pytest.mark.parametrize(("route", "command_type"), _DURABLE_WORLD_ROUTES)
-async def test_cold_durable_operations_share_explicit_world_tick_zero(
-    route,
-    command_type,
-):
-    application = _application()
-    audit = AsyncMock()
+    async def handle(operation: BaseModel) -> str:
+        world_id = str(_world_key(operation))
+        effects.append(world_id)
+        return world_id
 
-    def missing_live_world(_world_id):
-        raise KeyError("not live")
+    async def record_access(row: AccessSummary) -> None:
+        evidence.append(row)
 
-    target_tick_for_world = Mock(side_effect=missing_live_world)
-    gateway = CommandGateway(
-        application,
-        audit=audit,
-        target_tick_for_world=target_tick_for_world,
+    resolved_ticks = ticks if ticks is not None else {}
+
+    def target_tick_for_world(world_id: object) -> int:
+        normalized = str(world_id)
+        target_reads.append(normalized)
+        return resolved_ticks[normalized]
+
+    _register(
+        registry,
+        name="synthetic_live",
+        model=_LiveOperation,
+        handler=handle,
+        permission="spawn",
+        quota_scope="live_world",
+        token_cost=1,
     )
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
-    storage = object()
-    world_id = "cold-world"
-    expected_ticks = {(ctx.id, world_id, 0): 1}
-    expected_tokens = guard.estimate_token_cost(Command(type=command_type))
-
-    async def assert_gated_before_delegation(*_args, **_kwargs):
-        assert guard._tick_counters == expected_ticks
-        assert guard._daily_tokens == {ctx.id: expected_tokens}
-        return SimpleNamespace(outcome="pass")
-
-    application_route = getattr(application, route)
-    application_route.side_effect = assert_gated_before_delegation
-
-    await _invoke_durable_world_route(
-        gateway,
-        route,
-        ctx,
-        world_id=world_id,
-        storage=storage,
+    return _Harness(
+        dispatcher=CommandDispatcher(
+            registry=registry,
+            policy=policy,
+            scheduler=scheduler,
+            record_access=record_access,
+            target_tick_for_world=target_tick_for_world,
+        ),
+        effects=effects,
+        evidence=evidence,
+        target_reads=target_reads,
+        scheduler=scheduler,
     )
 
-    target_tick_for_world.assert_called_once_with(world_id)
-    assert application_route.await_count == 1
-    audit.record.assert_awaited_once()
-    assert guard._tick_counters == expected_ticks
-    assert guard._daily_tokens == {ctx.id: expected_tokens}
 
-
-@pytest.mark.parametrize(("route", "_command_type"), _DURABLE_WORLD_ROUTES)
-async def test_durable_operations_propagate_unrelated_resolver_runtime_errors(
-    route,
-    _command_type,
-):
-    application = _application()
-    audit = AsyncMock()
-    target_tick_for_world = Mock(side_effect=RuntimeError("resolver misconfigured"))
-    gateway = CommandGateway(
-        application,
-        audit=audit,
-        target_tick_for_world=target_tick_for_world,
+async def test_live_dispatch_uses_actor_world_and_current_tick_generations() -> None:
+    ticks = {"world-a": 7, "world-b": 7}
+    harness = _harness(
+        policy=Policy(max_commands_per_tick=1, max_tokens_per_day=100),
+        ticks=ticks,
     )
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    actor = ActorCtx(id=uuid7(), roles={"player"})
 
-    with pytest.raises(RuntimeError, match="resolver misconfigured"):
-        await _invoke_durable_world_route(
-            gateway,
-            route,
-            ctx,
-            world_id="world-a",
-            storage=object(),
+    await harness.dispatcher.apply_as(actor, _LiveOperation(world_id="world-a"))
+    await harness.dispatcher.apply_as(actor, _LiveOperation(world_id="world-b"))
+
+    with pytest.raises(PermissionError, match="per-tick quota"):
+        await harness.dispatcher.apply_as(actor, _LiveOperation(world_id="world-a"))
+
+    ticks["world-a"] = 8
+    await harness.dispatcher.apply_as(actor, _LiveOperation(world_id="world-a"))
+
+    assert harness.effects == ["world-a", "world-b", "world-a"]
+    assert harness.target_reads == ["world-a", "world-b", "world-a", "world-a"]
+
+
+async def test_live_dispatch_isolates_actors_at_the_same_world_tick() -> None:
+    harness = _harness(
+        policy=Policy(max_commands_per_tick=1, max_tokens_per_day=100),
+        ticks={"world-a": 7},
+    )
+    actor_a = ActorCtx(id=uuid7(), roles={"player"})
+    actor_b = ActorCtx(id=uuid7(), roles={"player"})
+
+    await harness.dispatcher.apply_as(actor_a, _LiveOperation(world_id="world-a"))
+    await harness.dispatcher.apply_as(actor_b, _LiveOperation(world_id="world-a"))
+
+    assert harness.effects == ["world-a", "world-a"]
+
+
+async def test_dispatchers_with_distinct_policy_instances_do_not_share_debits() -> None:
+    actor = ActorCtx(id=uuid7(), roles={"player"})
+    first = _harness(
+        policy=Policy(max_commands_per_tick=1),
+        ticks={"world-a": 7},
+    )
+    second = _harness(
+        policy=Policy(max_commands_per_tick=1),
+        ticks={"world-a": 7},
+    )
+
+    await first.dispatcher.apply_as(actor, _LiveOperation(world_id="world-a"))
+    with pytest.raises(PermissionError, match="per-tick quota"):
+        await first.dispatcher.apply_as(actor, _LiveOperation(world_id="world-a"))
+
+    await second.dispatcher.apply_as(actor, _LiveOperation(world_id="world-a"))
+    assert second.effects == ["world-a"]
+
+
+async def test_role_denial_precedes_target_resolution_handler_and_evidence() -> None:
+    harness = _harness(
+        policy=Policy(max_commands_per_tick=1),
+        ticks={},
+    )
+    viewer = ActorCtx(id=uuid7(), roles={"viewer"})
+
+    with pytest.raises(PermissionError, match="cannot execute permission 'spawn'"):
+        await harness.dispatcher.apply_as(
+            viewer,
+            _LiveOperation(world_id="secret-world"),
         )
 
-    target_tick_for_world.assert_called_once_with("world-a")
-    getattr(application, route).assert_not_awaited()
-    audit.record.assert_not_awaited()
-    assert guard._tick_counters == {}
-    assert guard._daily_tokens == {}
+    assert harness.target_reads == []
+    assert harness.effects == []
+    assert harness.evidence == []
 
 
-@pytest.mark.parametrize(("route", "_command_type"), _DURABLE_WORLD_ROUTES)
-async def test_unauthorized_durable_operations_stop_before_resolver(
-    route,
-    _command_type,
-):
-    application = _application()
-    audit = AsyncMock()
-    target_tick_for_world = Mock(side_effect=AssertionError("resolver must not run"))
-    gateway = CommandGateway(
-        application,
-        audit=audit,
-        target_tick_for_world=target_tick_for_world,
+async def test_full_quota_denial_precedes_handler_and_records_bounded_evidence() -> None:
+    harness = _harness(
+        policy=Policy(max_commands_per_tick=1, max_tokens_per_day=100),
+        ticks={"world-a": 3},
     )
-    ctx = ActorCtx(id=uuid7(), roles=set())
+    actor = ActorCtx(id=uuid7(), roles={"player"})
 
-    with pytest.raises(GuardrailError, match="cannot execute"):
-        await _invoke_durable_world_route(
-            gateway,
-            route,
-            ctx,
-            world_id="secret-world",
-            storage=object(),
-        )
+    await harness.dispatcher.apply_as(actor, _LiveOperation(world_id="world-a"))
+    with pytest.raises(PermissionError, match="per-tick quota"):
+        await harness.dispatcher.apply_as(actor, _LiveOperation(world_id="world-a"))
 
-    target_tick_for_world.assert_not_called()
-    getattr(application, route).assert_not_awaited()
-    audit.record.assert_not_awaited()
-    assert guard._tick_counters == {}
-    assert guard._daily_tokens == {}
-
-
-async def test_deferred_commands_use_their_actual_scheduled_target_tick(monkeypatch):
-    monkeypatch.setattr(guard, "MAX_CMDS_PER_TICK", 1)
-    application = _application()
-
-    def unexpected_resolver(_world_id):
-        pytest.fail("deferred command admission must use command.tick")
-
-    gateway = CommandGateway(application, target_tick_for_world=unexpected_resolver)
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
-    tick_11 = Command(type=CommandType.CUSTOM, tick=11)
-    tick_12 = Command(type=CommandType.CUSTOM, tick=12)
-
-    await gateway.submit(ctx, "world-a", tick_11)
-    await gateway.submit(ctx, "world-a", tick_12)
-
-    with pytest.raises(GuardrailError, match="per-tick quota"):
-        await gateway.submit(
-            ctx,
-            "world-a",
-            Command(type=CommandType.CUSTOM, tick=11),
-        )
-
-    assert guard._tick_counters == {
-        (ctx.id, "world-a", 11): 1,
-        (ctx.id, "world-a", 12): 1,
-    }
-    assert application.submit.await_count == 2
-
-
-def _admission_gateway():
-    application = _application()
-    audit = AsyncMock()
-    target_tick_for_world = Mock(side_effect=AssertionError("resolver must not run"))
-    gateway = CommandGateway(
-        application,
-        audit=audit,
-        target_tick_for_world=target_tick_for_world,
-    )
-    return gateway, application, audit, target_tick_for_world
-
-
-def _assert_no_admission_effects(application, audit, target_tick_for_world):
-    application.require_world.assert_not_awaited()
-    application.validate_deferred_command.assert_not_called()
-    application.submit.assert_not_awaited()
-    application.submit_batch.assert_not_awaited()
-    application.submit_spawn.assert_not_awaited()
-    audit.record.assert_not_awaited()
-    target_tick_for_world.assert_not_called()
-    assert guard._tick_counters == {}
-    assert guard._daily_tokens == {}
-
-
-async def test_denied_submit_has_no_world_or_admission_effects():
-    gateway, application, audit, target_tick_for_world = _admission_gateway()
-    ctx = ActorCtx(id=uuid7(), roles={"viewer"})
-
-    with pytest.raises(GuardrailError, match="cannot execute 'spawn'"):
-        await gateway.submit(ctx, "secret-world", Command(type=CommandType.SPAWN))
-
-    _assert_no_admission_effects(application, audit, target_tick_for_world)
-
-
-async def test_later_denied_batch_member_has_no_world_or_admission_effects():
-    gateway, application, audit, target_tick_for_world = _admission_gateway()
-    ctx = ActorCtx(id=uuid7(), roles={"player"})
-    commands = [
-        Command(type=CommandType.CUSTOM),
-        Command(type=CommandType.ADD_COMPONENT),
+    assert harness.effects == ["world-a"]
+    assert [(row.decision, row.outcome) for row in harness.evidence] == [
+        ("allowed", "succeeded"),
+        ("denied", "denied"),
     ]
-
-    with pytest.raises(GuardrailError, match="cannot execute 'add_component'"):
-        await gateway.submit_batch(ctx, "secret-world", commands)
-
-    _assert_no_admission_effects(application, audit, target_tick_for_world)
+    assert all(row.metadata.keys() <= {"world_id"} for row in harness.evidence)
 
 
-async def test_denied_submit_spawn_has_no_world_or_admission_effects():
-    gateway, application, audit, target_tick_for_world = _admission_gateway()
-    ctx = ActorCtx(id=uuid7(), roles={"viewer"})
-
-    with pytest.raises(GuardrailError, match="cannot execute 'spawn'"):
-        await gateway.submit_spawn(ctx, "secret-world", [])
-
-    _assert_no_admission_effects(application, audit, target_tick_for_world)
-
-
-async def test_empty_batch_has_no_world_or_admission_effects():
-    gateway, application, audit, target_tick_for_world = _admission_gateway()
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
-
-    with pytest.raises(ValueError, match="commands must not be empty"):
-        await gateway.submit_batch(ctx, "secret-world", [])
-
-    _assert_no_admission_effects(application, audit, target_tick_for_world)
-
-
-@pytest.mark.parametrize("admission", ["submit", "submit_batch", "submit_spawn"])
-async def test_authorized_unknown_world_has_no_admission_or_quota_effects(admission):
-    gateway, application, audit, target_tick_for_world = _admission_gateway()
-    application.require_world.side_effect = WorldNotFoundError("missing-world")
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
-
-    with pytest.raises(WorldNotFoundError):
-        if admission == "submit":
-            await gateway.submit(
-                ctx,
-                "missing-world",
-                Command(type=CommandType.CUSTOM),
-            )
-        elif admission == "submit_batch":
-            await gateway.submit_batch(
-                ctx,
-                "missing-world",
-                [Command(type=CommandType.CUSTOM)],
-            )
-        else:
-            await gateway.submit_spawn(ctx, "missing-world", [])
-
-    application.require_world.assert_awaited_once_with("missing-world")
-    application.validate_deferred_command.assert_not_called()
-    application.submit.assert_not_awaited()
-    application.submit_batch.assert_not_awaited()
-    application.submit_spawn.assert_not_awaited()
-    audit.record.assert_not_awaited()
-    target_tick_for_world.assert_not_called()
-    assert guard._tick_counters == {}
-    assert guard._daily_tokens == {}
-
-
-async def test_batch_validation_is_atomic_and_groups_each_scheduled_tick(monkeypatch):
-    monkeypatch.setattr(guard, "MAX_CMDS_PER_TICK", 1)
-    application = _application()
-    gateway = CommandGateway(application)
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
-
-    rejected = [
-        Command(type=CommandType.CUSTOM, tick=20),
-        Command(type=CommandType.CUSTOM, tick=20),
-    ]
-    with pytest.raises(GuardrailError, match="per-tick quota"):
-        await gateway.submit_batch(ctx, "world-a", rejected)
-
-    assert guard._tick_counters == {}
-    assert guard._daily_tokens == {}
-    application.submit_batch.assert_not_awaited()
-
-    accepted = [
-        Command(type=CommandType.CUSTOM, tick=20),
-        Command(type=CommandType.CUSTOM, tick=21),
-    ]
-    await gateway.submit_batch(ctx, "world-a", accepted)
-
-    assert guard._tick_counters == {
-        (ctx.id, "world-a", 20): 1,
-        (ctx.id, "world-a", 21): 1,
-    }
-    assert guard._daily_tokens[ctx.id] == sum(
-        guard.estimate_token_cost(command) for command in accepted
+async def test_application_scope_never_resolves_a_tick_or_consumes_tick_quota() -> None:
+    registry = OperationRegistry()
+    effects: list[str] = []
+    record_access = AsyncMock()
+    target_tick_for_world = Mock(
+        side_effect=AssertionError("application scope has no tick coordinate")
     )
-    application.submit_batch.assert_awaited_once()
+
+    async def handle(_operation: BaseModel) -> str:
+        effects.append("application")
+        return "application"
+
+    _register(
+        registry,
+        name="synthetic_application",
+        model=_ApplicationOperation,
+        handler=handle,
+        permission="create_world",
+        quota_scope="application",
+        world_key=None,
+    )
+    dispatcher = CommandDispatcher(
+        registry=registry,
+        policy=Policy(max_commands_per_tick=1),
+        scheduler=AsyncMock(),
+        record_access=record_access,
+        target_tick_for_world=target_tick_for_world,
+    )
+    admin = ActorCtx(id=uuid7(), roles={"admin"})
+
+    await dispatcher.apply_as(admin, _ApplicationOperation())
+    await dispatcher.apply_as(admin, _ApplicationOperation())
+
+    assert effects == ["application", "application"]
+    target_tick_for_world.assert_not_called()
+
+
+async def test_deferred_dispatch_uses_options_tick_without_live_tick_resolution() -> None:
+    registry = OperationRegistry()
+    scheduler = AsyncMock()
+    scheduler.admit.return_value = "queued"
+    evidence: list[AccessSummary] = []
+    target_tick_for_world = Mock(
+        side_effect=AssertionError("deferred scope must use DurableOptions.target_tick")
+    )
+
+    async def handle(_operation: BaseModel) -> None:
+        raise AssertionError("deferred admission must not invoke the direct handler")
+
+    async def record_access(row: AccessSummary) -> None:
+        evidence.append(row)
+
+    _register(
+        registry,
+        name="synthetic_durable",
+        model=_DurableOperation,
+        handler=handle,
+        permission="spawn",
+        quota_scope="live_world",
+        durable=_durable_metadata(_DurableOperation),
+    )
+    dispatcher = CommandDispatcher(
+        registry=registry,
+        policy=Policy(max_commands_per_tick=1),
+        scheduler=scheduler,
+        record_access=record_access,
+        target_tick_for_world=target_tick_for_world,
+    )
+    actor = ActorCtx(id=uuid7(), roles={"player"})
+    operation = _DurableOperation(world_id="world-a")
+
+    await dispatcher.defer_as(actor, operation, DurableOptions(target_tick=7))
+    await dispatcher.defer_as(actor, operation, DurableOptions(target_tick=8))
+    with pytest.raises(PermissionError, match="per-tick quota"):
+        await dispatcher.defer_as(actor, operation, DurableOptions(target_tick=7))
+
+    assert scheduler.admit.await_count == 2
+    target_tick_for_world.assert_not_called()
+    assert [row.outcome for row in evidence] == ["queued", "queued", "denied"]
+
+
+async def test_later_batch_role_denial_precedes_all_coordinates_and_admission() -> None:
+    registry = OperationRegistry()
+    scheduler = AsyncMock()
+    coordinate_reads: list[str] = []
+    evidence: list[AccessSummary] = []
+
+    async def handle(_operation: BaseModel) -> None:
+        raise AssertionError("deferred admission must not invoke the direct handler")
+
+    async def record_access(row: AccessSummary) -> None:
+        evidence.append(row)
+
+    def forbidden_world_key(operation: BaseModel) -> object:
+        coordinate_reads.append(type(operation).__name__)
+        raise AssertionError("batch coordinates must follow all role checks")
+
+    for name, model, permission in (
+        ("synthetic_durable", _DurableOperation, "spawn"),
+        (
+            "synthetic_operator_durable",
+            _OperatorDurableOperation,
+            "add_components",
+        ),
+    ):
+        _register(
+            registry,
+            name=name,
+            model=model,
+            handler=handle,
+            permission=permission,
+            quota_scope="live_world",
+            durable=_durable_metadata(model),
+            world_key=forbidden_world_key,
+        )
+
+    dispatcher = CommandDispatcher(
+        registry=registry,
+        policy=Policy(max_commands_per_tick=1),
+        scheduler=scheduler,
+        record_access=record_access,
+        target_tick_for_world=cast(
+            "Callable[[object], int]",
+            lambda _world_id: pytest.fail("batch must not resolve a live tick"),
+        ),
+    )
+    player = ActorCtx(id=uuid7(), roles={"player"})
+    items = (
+        DeferredItem(
+            operation=_DurableOperation(world_id="secret-world"),
+            options=DurableOptions(target_tick=4),
+        ),
+        DeferredItem(
+            operation=_OperatorDurableOperation(world_id="secret-world"),
+            options=DurableOptions(target_tick=4),
+        ),
+    )
+
+    with pytest.raises(PermissionError, match="cannot execute permission 'add_components'"):
+        await dispatcher.defer_batch_as(player, items)
+
+    assert coordinate_reads == []
+    scheduler.admit_batch.assert_not_awaited()
+    assert evidence == []

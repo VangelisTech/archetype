@@ -11,9 +11,9 @@ Arrows below mean consumer to dependency.
 | Consumer | Injected dependencies |
 |---|---|
 | `WorldRegistry` | none; owns live world identity, exact-world locks, and close leases |
-| `CommandScheduler` | live-world admission, control-catalog resolution, catalog-world listing, and ID reservation callables |
+| `CommandScheduler` | exact registry, control-catalog resolution, and ID reservation callables |
 | `WorldLifecycle` | `StorageService`, `WorldRegistry`, and `CommandScheduler.materialize` |
-| `AuditLog` | `iStorageService` |
+| `AuditLog` | `iStorageService` and scheduler outbox read/acknowledge callables |
 | `IngestionService` | `iStorageService`, `WorldRegistry` |
 | `ArtifactService` | `iStorageService`, `WorldRegistry`, `iIngestionService` |
 | `TranscriptIngestionService` | `iArtifactService`, `iIngestionService`, `iRedactionService`, `iStorageService`, `WorldRegistry` |
@@ -21,8 +21,8 @@ Arrows below mean consumer to dependency.
 | `TrajectoryService` | `StorageService`, `iEvaluationService`; durable reads call `archetype.world.query` |
 | `PhysicalAIService` | `WorldRegistry`, `WorldLifecycle`, `iEvaluationService`, `StorageService` |
 | `AutoResearchService` | `WorldRegistry`, `WorldLifecycle`, `StorageService` |
-| `RuntimeApplication` | `WorldRegistry`, `WorldLifecycle`, `StorageService`, scheduler, and optional app workflow ports |
-| `CommandGateway` | `iRuntimeApplication`, `iAuditLog`, and a target-tick resolver |
+| `RuntimeApplication` | `WorldRegistry`, `WorldLifecycle`, `StorageService`, `CommandDispatcher`, a world-command cancellation callable, and optional app workflow ports |
+| `CommandGateway` | `iRuntimeApplication`, `CommandDispatcher`, `Policy`, bounded access-evidence callable, and a target-tick resolver |
 
 `ServiceContainer` constructs the concrete graph and exposes
 `application` and `command_gateway`. It binds

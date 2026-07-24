@@ -12,7 +12,6 @@ from daft import col
 from uuid_utils import uuid7
 
 from archetype import ArchetypeRuntime, AutoResearchConfig, EvaluationResult
-from archetype.app.gateway.auth.errors import GuardrailError
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
@@ -101,7 +100,7 @@ async def test_world_autoresearch_denied_below_operator(tmp_path):
         await base.run(steps=1)
 
         for role in ("viewer", "player"):
-            with pytest.raises(GuardrailError):
+            with pytest.raises(PermissionError, match="cannot execute permission 'autoresearch'"):
                 await runtime._container.command_gateway.autoresearch(
                     ActorCtx(id=uuid7(), roles={role}),
                     base.world_id,

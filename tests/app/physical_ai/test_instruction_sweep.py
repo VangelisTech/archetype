@@ -25,10 +25,8 @@ from __future__ import annotations
 
 import pytest
 
-import archetype.app.gateway.auth.guard as guard
 from archetype import ArchetypeRuntime, InstructionSweepConfig
 from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.core.config import StorageConfig
 from archetype.physical_ai.manipulation import ManipStatus, ManipTask, ScriptedReachEnv
 from archetype.physical_ai.optimization import (
@@ -59,7 +57,7 @@ DISTS = [0.05, 0.10, 0.15, 0.20, 0.25]
 # The "true" task keywords; quality = fraction named. Vocabulary = required
 # keywords plus neutral distractors the optimizer must learn to ignore.
 REQUIRED = ("reach", "red", "block")
-VOCAB = ["reach", "red", "block", "blue", "slowly", "gripper"]
+VOCAB = ("reach", "red", "block", "blue", "slowly", "gripper")
 
 
 def _targets(n_env_keys: int = 64) -> dict[int, tuple[float, float, float]]:
@@ -109,15 +107,6 @@ def _expected_success_rate(
     base = variant_index * SEEDS
     successes = sum(_simulate(base + j, eff_gain, targets) for j in range(SEEDS))
     return successes / SEEDS
-
-
-@pytest.fixture(autouse=True)
-def _reset_quotas():
-    guard._tick_counters.clear()
-    reset_daily_tokens()
-    yield
-    guard._tick_counters.clear()
-    reset_daily_tokens()
 
 
 @pytest.mark.asyncio

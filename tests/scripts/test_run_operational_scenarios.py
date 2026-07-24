@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -298,6 +299,37 @@ def test_timeout_is_failed_and_process_group_is_cleaned(tmp_path: Path) -> None:
     assert result["timed_out"] is True
     assert result["returncode"] != 0
     assert result["process_group_leaked"] is False
+
+
+def test_transient_group_signal_denial_still_requires_exit_proof(monkeypatch) -> None:
+    requested_signals: list[int] = []
+
+    def signal_then_close(_process_group: int, requested_signal: int) -> None:
+        requested_signals.append(requested_signal)
+        if requested_signal == signal.SIGTERM:
+            raise PermissionError("transient group-wide denial")
+        if requested_signals.count(0) > 1:
+            raise ProcessLookupError
+
+    monkeypatch.setattr(os, "killpg", signal_then_close)
+
+    assert operational_runner._terminate_process_group(1234) is True
+    assert requested_signals == [0, signal.SIGTERM, 0]
+
+
+def test_persistent_group_signal_denial_reports_cleanup_debt(monkeypatch) -> None:
+    requested_signals: list[int] = []
+
+    def deny_signal(_process_group: int, requested_signal: int) -> None:
+        requested_signals.append(requested_signal)
+        raise PermissionError("persistent group-wide denial")
+
+    monkeypatch.setattr(os, "killpg", deny_signal)
+    monkeypatch.setattr(operational_runner, "_PROCESS_TERM_GRACE_SECONDS", 0.0)
+    monkeypatch.setattr(operational_runner, "_PROCESS_KILL_GRACE_SECONDS", 0.0)
+
+    assert operational_runner._terminate_process_group(1234) is False
+    assert requested_signals == [0, signal.SIGTERM, 0, signal.SIGKILL, 0]
 
 
 def test_redacted_log_retains_only_digest_and_size(tmp_path: Path) -> None:

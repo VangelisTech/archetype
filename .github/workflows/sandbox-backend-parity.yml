@@ -12,7 +12,6 @@ on:
       - "src/archetype/app/missions/**"
       - "src/archetype/runtime/**"
       - "src/archetype/commands/**"
-      - "src/archetype/app/commands/**"
       - "src/archetype/world/**"
       - "src/archetype/app/world/**"
       - "src/archetype/graph/**"

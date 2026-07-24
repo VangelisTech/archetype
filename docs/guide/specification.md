@@ -106,20 +106,24 @@ implementation work must satisfy.
 | `Live snapshot` | The in-memory active DataFrame per signature for the latest completed tick |
 | `Mutation cache` | The staged spawn/despawn data applied at the next tick |
 | `World lifecycle command` | Create, destroy, or fork world operations |
-| `RuntimeApplication` | Actor-free application facade shared by trusted runtime and authorized gateway paths |
+| `RuntimeApplication` | Actor-free facade adapter for the trusted runtime and the finite temporary gateway workflow bridge |
 | `Runtime` | Trusted scripting facade and process-lifetime owner |
 
 ## Layer Boundaries
 
 Core execution is composed from a store-backed querier and updater, a system,
-and a world. The application layer owns actor-free product semantics through
-`RuntimeApplication` and its world, storage, query, artifact, evaluation,
-commands, audit, and research families.
+and a world. Reusable families own product behavior. The top-level commands
+family owns exact operation registration, governed entry, policy, durable
+scheduling, and audit projection. The application layer owns cross-family
+workflow authority and temporary facade adapters.
 
-Trusted Python scripts use `ArchetypeRuntime -> RuntimeApplication`. Untrusted
-clients use `CLI/HTTP -> API authentication -> CommandGateway authorization ->
-RuntimeApplication`. The CLI is an HTTP client except for server startup.
-Lower packages never depend on their outer consumers.
+Trusted Python scripts use `ArchetypeRuntime -> RuntimeApplication`, whose
+registered world/audit methods construct exact models and enter actor-free
+`CommandDispatcher` methods. Untrusted clients use `CLI/HTTP -> API
+authentication -> CommandGateway`; registered methods enter actor-aware
+dispatcher methods directly, while a finite temporary bridge reaches
+`RuntimeApplication` for staged workflows. The CLI is an HTTP client except
+for server startup. Lower packages never depend on their outer consumers.
 
 The complete allowed service edges, composition rules, and public/internal
 classification are normative in
@@ -451,9 +455,12 @@ downstream resource consumer outside the world lock.
 
 [Application Architecture](application-architecture.md) owns service placement
 and dependency direction. Concrete services and `ServiceContainer` are internal
-implementation machinery. The target policy boundary is `CommandGateway :
-iCommandGateway` for untrusted ingress and `RuntimeApplication :
-iRuntimeApplication` for actor-free application execution.
+implementation machinery. During the current migration,
+`CommandGateway : iCommandGateway` and
+`RuntimeApplication : iRuntimeApplication` are the actor-aware and actor-free
+adapters. The commands-owned `CommandDispatcher` and `Policy` are the policy
+boundary; the accepted v0.5 target removes the temporary adapters after their
+remaining workflow registrations land.
 
 ### Service error taxonomy
 
@@ -556,6 +563,12 @@ iRuntimeApplication` for actor-free application execution.
 
 ### Command ledger, scheduler, and dispatcher
 
+- Every governed operation has one exact `OperationRegistry` entry containing
+  its model/discriminator, handler, permission, quota scope, availability,
+  bounded summary, and optional durable decoder/materializer.
+- Only `Spawn`, `SpawnReserved`, `Despawn`, `Update`, `AddComponents`, and
+  `RemoveComponents` have durable registrations. Direct-only, trusted-only,
+  and unregistered models MUST fail before scheduler persistence.
 - Deferred admission is durable before the caller receives `command_id`.
 - Commands are partitioned by world and ordered by a durable
   `(scheduled_tick, priority, sequence)` key.
@@ -572,28 +585,42 @@ iRuntimeApplication` for actor-free application execution.
 - A command becomes `APPLIED` only when the tick manifest that makes its effect
   visible is published. Manifest and outcome settlement are one control-plane
   transaction.
-- RBAC and quota admission happen only at `iCommandGateway`; trusted local
+- Actor-aware RBAC and quota admission happen in the commands-owned
+  `CommandDispatcher` and instance-owned `Policy`. Trusted dispatcher entry
+  MUST NOT fabricate an actor or authorization evidence; trusted durable
   admission records an explicit local origin.
 
 ### Command gateway
 
-- `iCommandGateway` is the policy enforcement point for untrusted operations.
-- Direct methods authorize, delegate to `iRuntimeApplication`, access-audit,
-  and return a result immediately.
-- `submit()` and `submit_batch()` are tick-deferred APIs. They return command IDs
-  and durably admit work for later application.
-- Generic deferred submission MUST accept only commands with a tick-boundary
-  dispatcher, plus the intentional `MESSAGE`, `CUSTOM`, and `QUERY_WORLD`
-  application envelopes. All other command types MUST be rejected before quota
-  debit, audit emission, or durable admission.
+- `iCommandGateway` is the temporary transport ingress for untrusted
+  operations. Registered methods construct the exact family model and call
+  `CommandDispatcher.apply_as`, `defer_as`, or their batch/spawn variants.
+- `CommandDispatcher` and `Policy` are the policy enforcement point. The
+  gateway MUST NOT own role tables, quota counters, scheduler state, or audit
+  storage.
+- A finite temporary gateway bridge MAY delegate the remaining staged
+  workflows to `iRuntimeApplication`, but it MUST use the same commands-owned
+  policy and MUST NOT provide generic dispatch.
+- `submit()` and `submit_batch()` are compatibility tick-deferred APIs. They
+  translate the supported finite envelope to an exact family model plus
+  `DurableOptions`, preserve caller command ID/version, and durably admit work
+  for later materialization.
+- Generic deferred submission MUST accept only exact portable tick operations.
+  Legacy `MESSAGE`, `CUSTOM`, and `QUERY_WORLD` envelopes and every direct-only
+  operation MUST be rejected before quota debit, audit emission, or scheduler
+  persistence.
 - `submit_spawn()` is the special case that reserves a world-local entity ID
-  before enqueue so `spawn()` can honestly return `entity_id`.
-- Reservation MUST be serialized per world.
-- `submit()`, `submit_batch()`, and `submit_spawn()` MUST reject submissions to
-  an unknown `world_id` by raising `archetype.errors.WorldNotFoundError`
-  before any quota debit, durable admission, or audit emit.
-- Command-family dispatch is the application boundary at tick time; the
-  gateway has no drain method.
+  through `CommandScheduler`, transforms `Spawn` into the internal exact
+  `SpawnReserved`, and returns the reserved identity honestly.
+- Reservation MUST be single-flight for one command identity; an identical
+  retry reuses the reservation and conflicting content fails.
+- Pure role denial MUST happen before world resolution, quota debit, durable
+  admission, family effects, or evidence. After authorization, unknown or
+  closing worlds MUST fail through the exact registry/catalog admission
+  boundary rather than create a command row.
+- `CommandScheduler.materialize(actual_world, tick)` is the durable application
+  boundary at tick time; neither gateway nor dispatcher acquires that world
+  again, and the gateway has no drain method.
 - World lifecycle operations use direct gated methods such as `create_world`,
   `fork_world`, and `destroy_world`.
 
@@ -639,7 +666,9 @@ retryable failures remain recoverable and exhausted failures become terminal.
 - `archetype.world.query` is the internal durable ECS read surface below the
   application facade.
 - Trusted runtime reads go through `iRuntimeApplication`; untrusted reads go
-  through `iCommandGateway` and then the same application operation.
+  through `iCommandGateway`. Both adapters construct the same exact registered
+  query model and enter the appropriate actor-free or actor-aware dispatcher
+  method.
 - Archetype and component reads MUST resolve storage per call and query durable
   rows by `world_id` and `run_id`; they do not require the world to be live in
   the process registry.
@@ -654,21 +683,24 @@ retryable failures remain recoverable and exhausted failures become terminal.
   discovery. Exact process-local class identities take precedence over catalog
   reconstruction. Catalog outages degrade discovery to the process-local
   subset; mutable resume and commit-visibility checks remain strict.
-- Audit and command history are served by `iAuditLog` through the application
-  or authorized gateway boundary. Durable world query has no audit dependency.
+- Analytical audit history is served by commands-owned `AuditLog` through the
+  registered direct-only `GetAuditHistory` operation. Durable command records
+  remain available through `CommandScheduler.records`/`history`; durable world
+  query has no audit dependency.
 
 ### ServiceContainer and runtime lifetime
 
 - `ServiceContainer` is the internal process-scoped wiring root and the only
   app module that imports concrete implementations across families.
-- It exposes actor-free `application` and authorized `gateway` ports, owns the
-  command/control and audit infrastructure, and owns a `StorageService` it
-  creates while borrowing one supplied by a caller.
+- It exposes actor-free `application` and authorized `command_gateway`
+  adapters; composes one `OperationRegistry`, `Policy`, `CommandScheduler`,
+  `AuditLog`, and `CommandDispatcher`; and owns a `StorageService` it creates
+  while borrowing one supplied by a caller.
 - Container shutdown MUST be explicit and distinct from per-world removal.
-- Shutdown stops admission, drains admitted operations, stops command leasing,
-  reconciles audit projection, closes worlds, and then releases owned storage.
-  It attempts every phase and aggregates failures. Injected storage remains
-  caller-owned.
+- Shutdown stops dispatcher admission, drains admitted operations, projects
+  known command outboxes and flushes `AuditLog`, then releases owned storage.
+  It attempts every configured phase and aggregates failures. Injected storage
+  remains caller-owned.
 
 ## Multi-World Contracts
 
@@ -1079,11 +1111,11 @@ behavior and an executable oracle.
 | Item | Status | Contract or remaining work | Oracle or tracking |
 |---|---|---|---|
 | 1 | Resolved | Async and sync updater/store failures raise instead of returning a stamped-but-uncommitted frame. | `tests/core/test_async_store_updater_failures.py`; `tests/sync/test_sync_stack_contracts.py` |
-| 2 | Resolved | Tick-deferred submission is allowlisted to dispatched commands and intentional application envelopes; all direct operations fail before quota, audit, or admission. | `tests/integration/test_command_flow.py::test_direct_only_commands_cannot_enter_tick_deferred_scheduler`; Issues #368, #415, #418 |
-| 3 | Resolved | `CommandGateway.submit*` reject an unknown world with `WorldNotFoundError` before quota, enqueue, or audit side effects. | `tests/integration/test_command_flow.py::test_submit_to_unknown_world_rejected` |
+| 2 | Resolved | Compatibility tick-deferred submission translates exactly six portable mutation envelopes. Direct-only operations and legacy `MESSAGE`, `CUSTOM`, and `QUERY_WORLD` envelopes fail before quota debit, evidence, or durable admission. | `tests/integration/test_command_flow.py::test_direct_only_commands_cannot_enter_tick_deferred_scheduler`; Issues #368, #415, #418 |
+| 3 | Resolved | `CommandGateway.submit*` reject an unknown world with `WorldNotFoundError` without creating a durable command row. Pure role denial precedes world resolution and all effects; an authorized later failure may consume its instance-owned quota coordinate and emit bounded failed evidence. | `tests/integration/test_command_flow.py::test_submit_to_unknown_world_rejected`; `tests/commands/test_dispatch_policy_contracts.py` |
 | 4 | Resolved | Duplicate-name and catalog-registration failures leave no hidden live world. | `tests/core/test_orchestrator_errors_and_instrumentation.py`; `tests/app/test_durable_discovery.py::test_failed_catalog_registration_leaves_no_live_world` |
 | 5 | Resolved | Spawn, despawn, and component migration hooks fire from their public mutation paths with the documented queue-time semantics. | `tests/core/test_resources_hooks_messaging.py`; `tests/core/test_batch_spawn_contract.py`; `tests/sync/test_sync_world.py` |
-| 6 | Resolved | `archetype.world.query` performs durable archetype, component, lineage, and signature reads; application history comes from `iAuditLog`. | `tests/world/test_query_contracts.py`; `tests/world/test_atomic_visibility.py`; `tests/app/test_audit_contracts.py` |
+| 6 | Resolved | `archetype.world.query` performs durable archetype, component, lineage, and signature reads; command history comes from the commands-owned audit projection. | `tests/world/test_query_contracts.py`; `tests/world/test_atomic_visibility.py`; `tests/commands/test_audit_projection_contracts.py` |
 | 7 | Resolved | Gated destroy cancels only the target world's unsettled command state and preserves shared runtime and durable history. | `tests/integration/test_fork_destroy_contracts.py` |
 | 8 | Resolved | Same-entity, same-tick mutations compose in durable scheduler order. | `tests/core/test_same_tick_mutation_composition.py`; `evals/suites/idempotency/tasks.py::task_duplicate_same_tick_mutations_collapse`; Issue #193 |
 
@@ -1097,7 +1129,7 @@ undocumented gap.
 | Subsystem | Contract |
 |---|---|
 | Command ledger | **Durable**: admission, order, leases, retries, terminal outcomes, and dead letters survive process loss. Applied outcomes settle atomically with tick publication. |
-| Audit journal | **Durable journal, eventually consistent projection**: authoritative transitions append transactional outbox events. Iceberg is a deduplicated analytical projection with an observable watermark. |
+| Audit journal | **Durable journal, eventually consistent projection**: authoritative transitions append transactional outbox events. Iceberg is a deduplicated analytical projection; scheduler/control-catalog outbox progress exposes the projection watermark. |
 | Mutation idempotency | **Commands are replay-safe by command identity** while direct simulation mutations remain distinct events. Replaying a staged command cannot materialize its effect twice. |
 | API auth | **Trust-boundary contract**: production ingress authenticates a stable principal and fails closed. Any anonymous-admin development mode is explicit and uses a stable process principal. The trusted runtime is actor-free. |
 | RBAC quota state | **Process-local and advisory** in v0.3 (daily token budgets reset on restart). Durable quota accounting is a control-catalog follow-up; deployments needing hard budgets enforce them at the identity layer above. |

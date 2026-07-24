@@ -1,30 +1,22 @@
-# Copyright 2025 Vangelis Technologies Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Copyright 2026 Vangelis Technologies Inc.
+# SPDX-License-Identifier: Apache-2.0
 
-"""Batched, append-only audit rows in a dedicated Iceberg table."""
+"""Bounded access evidence and replay-safe command-outbox projection."""
 
 from __future__ import annotations
 
 import asyncio
+import inspect
+import json
 from collections.abc import Awaitable, Callable, Sequence
+from datetime import UTC, datetime
 
 import daft
 import pyarrow as pa
 from daft import Expression
 from uuid_utils import UUID
 
-from archetype.app.models import AuditRow, Command, CommandType
+from archetype.commands.models import AccessSummary, AuditRow
 from archetype.core.config import StorageBackend, StorageConfig
 from archetype.errors import AvailabilityError
 from archetype.storage.catalog import OutboxRecord
@@ -33,9 +25,12 @@ from archetype.storage.interfaces import iStorageService
 _AUDIT_TABLE = "audit_rows"
 DEFAULT_AUDIT_FLUSH_ROWS = 128
 
+ReadOutbox = Callable[..., Awaitable[list[OutboxRecord]]]
+AcknowledgeOutbox = Callable[[list[OutboxRecord]], Awaitable[None]]
+
 
 class AuditBackpressureError(AvailabilityError):
-    """The bounded audit buffer rejected a row while storage was unavailable."""
+    """A bounded access batch rejected a row while storage was unavailable."""
 
     public_detail = "Audit log is temporarily unavailable"
 
@@ -82,18 +77,23 @@ def _row_to_dict(row: AuditRow) -> dict[str, str | None]:
 
 
 def _rows_to_frame(rows: Sequence[AuditRow]) -> daft.DataFrame:
-    arrow = pa.Table.from_pylist([_row_to_dict(row) for row in rows], schema=_audit_schema())
-    return daft.from_arrow(arrow)
+    table = pa.Table.from_pylist(
+        [_row_to_dict(row) for row in rows],
+        schema=_audit_schema(),
+    )
+    return daft.from_arrow(table)
 
 
 class AuditLog:
-    """Append audit telemetry to one dedicated Iceberg table in bounded batches."""
+    """Append access rows and project authoritative command events."""
 
     def __init__(
         self,
         storage_service: iStorageService,
         storage_config: StorageConfig | None = None,
         *,
+        read_outbox: ReadOutbox,
+        acknowledge_outbox: AcknowledgeOutbox,
         flush_rows: int = DEFAULT_AUDIT_FLUSH_ROWS,
     ) -> None:
         if flush_rows < 1:
@@ -103,94 +103,127 @@ class AuditLog:
             raise ValueError("audit storage requires backend=iceberg")
         self._storage_service = storage_service
         self._storage_config = effective_config
+        self._read_outbox = read_outbox
+        self._acknowledge_outbox = acknowledge_outbox
+        try:
+            self._read_outbox_accepts_world = (
+                "world_id" in inspect.signature(read_outbox).parameters
+            )
+        except (TypeError, ValueError):
+            self._read_outbox_accepts_world = False
         self._flush_rows = flush_rows
         self._pending: list[AuditRow] = []
         self._lock = asyncio.Lock()
         self._projection_lock = asyncio.Lock()
         self._rejected_rows = 0
-        self._outbox_source: Callable[..., Awaitable[list[OutboxRecord]]] | None = None
-        self._outbox_ack: Callable[[list[OutboxRecord]], Awaitable[None]] | None = None
-
-    def set_outbox_source(
-        self,
-        source: Callable[..., Awaitable[list[OutboxRecord]]],
-        acknowledge: Callable[[list[OutboxRecord]], Awaitable[None]],
-    ) -> None:
-        """Attach a transactional event source for eventual projection."""
-        self._outbox_source = source
-        self._outbox_ack = acknowledge
 
     @property
     def rejected_rows(self) -> int:
-        """Rows rejected before admission because the bounded batch was full."""
+        """Return rows rejected while one failed bounded batch was retained."""
         return self._rejected_rows
 
     async def record(self, row: AuditRow) -> None:
-        """Buffer one row, flushing at the configured batch boundary."""
+        """Buffer one advisory access row without allowing unbounded growth."""
         async with self._lock:
-            # A failed threshold flush leaves exactly one bounded batch. Retry
-            # it before accepting another row so a broken backend cannot turn
-            # advisory telemetry into an unbounded memory sink.
             if len(self._pending) >= self._flush_rows:
                 try:
                     await self._flush_locked()
-                except Exception as exc:
+                except Exception as error:
                     self._rejected_rows += 1
                     raise AuditBackpressureError(
                         "audit row rejected: the bounded pending batch could not flush"
-                    ) from exc
+                    ) from error
             self._pending.append(row)
             if len(self._pending) >= self._flush_rows:
                 await self._flush_locked()
+
+    async def record_access(self, summary: AccessSummary) -> None:
+        """Convert bounded dispatcher evidence into one canonical audit row."""
+        serialized = summary.model_dump(mode="json")
+        metadata = serialized["metadata"]
+        payload_json = json.dumps(
+            metadata,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+        now = datetime.now(UTC).isoformat()
+        await self.record(
+            AuditRow(
+                world_id=summary.world_id,
+                actor_id=summary.actor_id,
+                command_type=summary.operation,
+                status=summary.outcome,
+                payload_json=payload_json,
+                accepted_at=now,
+                applied_at=now,
+            )
+        )
+
+    async def _append_rows(self, rows: Sequence[AuditRow]) -> None:
+        if not rows:
+            return
+        await self._storage_service.append_table(
+            self._storage_config,
+            _AUDIT_TABLE,
+            _rows_to_frame(rows),
+        )
 
     async def _flush_locked(self) -> None:
         if not self._pending:
             return
         pending = tuple(self._pending)
-        await self._storage_service.append_table(
-            self._storage_config,
-            _AUDIT_TABLE,
-            _rows_to_frame(pending),
-        )
+        await self._append_rows(pending)
         del self._pending[: len(pending)]
 
     async def flush(self) -> None:
-        """Persist the current batch as one Iceberg append/snapshot."""
+        """Persist the current access batch as one append."""
         async with self._lock:
             await self._flush_locked()
 
-    async def project_outbox(self, *, limit: int = 1000) -> int:
-        """Project authoritative events, acknowledging only after durable append.
+    @staticmethod
+    def _outbox_row(event: OutboxRecord) -> AuditRow:
+        return AuditRow(
+            audit_id=UUID(str(event.event_id)),
+            command_id=UUID(str(event.aggregate_id)),
+            world_id=event.world_id,
+            actor_id=event.actor_id,
+            command_type=event.command_type,
+            status=event.status,
+            payload_json=event.payload_json,
+            accepted_at=event.occurred_at,
+            applied_at=event.occurred_at,
+            idempotency_key=event.event_id,
+        )
 
-        A crash after the Iceberg append but before acknowledgement may replay
-        an event. ``audit_id`` is the outbox event identity and query-time
-        deduplication keeps the analytical view exactly once.
-        """
-        if self._outbox_source is None or self._outbox_ack is None:
-            return 0
+    async def project_outbox(
+        self,
+        *,
+        world_id: str | UUID | None = None,
+        limit: int = 1000,
+    ) -> int:
+        """Append authoritative events before acknowledging their watermark."""
+        if limit < 1:
+            raise ValueError("limit must be positive")
         async with self._projection_lock:
-            events = await self._outbox_source(limit=limit)
+            if world_id is not None and self._read_outbox_accepts_world:
+                events = await self._read_outbox(
+                    world_id=world_id,
+                    limit=limit,
+                )
+            else:
+                events = await self._read_outbox(limit=limit)
             if not events:
                 return 0
-            rows = [
-                AuditRow(
-                    audit_id=UUID(event.event_id),
-                    command_id=UUID(event.aggregate_id),
-                    world_id=event.world_id,
-                    actor_id=event.actor_id,
-                    command_type=event.command_type,
-                    status=event.status,
-                    payload_json=event.payload_json,
-                    accepted_at=event.occurred_at,
-                    applied_at=event.occurred_at,
-                    idempotency_key=event.event_id,
-                )
-                for event in events
-            ]
+            rows = tuple(self._outbox_row(event) for event in events)
             async with self._lock:
-                self._pending.extend(rows)
+                # Preserve accepted access rows first, but never copy durable
+                # outbox events into the bounded process-memory buffer. A
+                # failed event append remains recoverable at the source.
                 await self._flush_locked()
-            await self._outbox_ack(events)
+                await self._append_rows(rows)
+            await self._acknowledge_outbox(events)
             return len(events)
 
     async def query(
@@ -203,11 +236,11 @@ class AuditLog:
         status: str | None = None,
         limit: int | None = None,
     ) -> daft.DataFrame:
-        """Return a lazy, deterministically ordered query over persisted rows."""
+        """Return a lazy, deterministically ordered, replay-deduped view."""
         if limit is not None and limit < 0:
             raise ValueError("limit must be non-negative")
 
-        await self.project_outbox()
+        await self.project_outbox(world_id=world_id)
         await self.flush()
         try:
             frame = await self._storage_service.read_table(
@@ -229,15 +262,15 @@ class AuditLog:
             )
         if idempotency_key is not None:
             frame = frame.where(
-                frame["idempotency_key"] == idempotency_key  # ty: ignore[invalid-argument-type]
+                frame["idempotency_key"]  # ty: ignore[invalid-argument-type]
+                == idempotency_key
             )
         if status is not None:
             frame = frame.where(
                 frame["status"] == status  # ty: ignore[invalid-argument-type]
             )
 
-        del tick_range  # Accepted compatibility parameter; AuditRow has no tick field.
-
+        del tick_range
         order: list[Expression | str] = ["accepted_at", "audit_id"]
         if limit is not None:
             if limit == 0:
@@ -245,27 +278,15 @@ class AuditLog:
             frame = frame.sort(order, desc=[True, True]).limit(limit)
         return frame.sort(order)
 
-    async def get_command_history(
-        self,
-        world_id: str | UUID,
-        limit: int = 100,
-    ) -> list[Command]:
-        """Project queued audit rows into the application-owned command value."""
-        frame = await self.query(world_id=world_id, status="queued", limit=limit)
-        materialized = await self._storage_service.materialize(frame)
-        result: list[Command] = []
-        for row in materialized.to_pylist():
-            command_id = row["command_id"]
-            if command_id is None:
-                raise ValueError("queued audit row is missing command_id")
-            try:
-                command_type = CommandType(row["command_type"])
-            except ValueError:
-                command_type = CommandType.CUSTOM
-            result.append(Command(id=UUID(str(command_id)), type=command_type))
-        return result
-
     async def shutdown(self) -> None:
-        """Flush pending rows and release standalone storage ownership."""
+        """Project available command evidence and flush accepted access rows."""
         await self.project_outbox()
         await self.flush()
+
+
+__all__ = [
+    "AuditBackpressureError",
+    "AuditLog",
+    "DEFAULT_AUDIT_FLUSH_ROWS",
+    "default_audit_storage",
+]

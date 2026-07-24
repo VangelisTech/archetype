@@ -24,9 +24,9 @@ from daft.io import IOConfig
 from uuid_utils import uuid7
 
 from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.models import Command, CommandType
+from archetype.commands.models import DurableOptions
 from archetype.core.aio import AsyncWorld
 from archetype.core.component import Component
 from archetype.core.config import (
@@ -41,6 +41,7 @@ from archetype.core.sync import QueryManager, SyncStore, UpdateManager
 from archetype.storage.service import StorageService
 from archetype.storage.session import configure_session
 from archetype.world.lifecycle import WorldLifecycle
+from archetype.world.models import Spawn
 from archetype.world.query import get_lineage
 from archetype.world.registry import WorldRegistry
 from evals.graders import exact_match, state_check
@@ -458,67 +459,69 @@ def task_command_identity() -> list[GraderResult]:
 
 
 async def _task_command_identity() -> list[GraderResult]:
-    reset_daily_tokens()
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            container = ServiceContainer()
-            try:
-                storage = StorageConfig(uri=f"{tmp}/store", namespace="idem_submit")
-                world = await container.application.create_world(
-                    WorldConfig(name="submit-non-idempotent"),
-                    storage,
-                )
-                admin = _admin()
-                service_a = Command(type=CommandType.SPAWN, payload={"components": []})
-                service_b = Command(type=CommandType.SPAWN, payload={"components": []})
-
-                service_id_a = await container.command_gateway.submit(
-                    admin,
-                    world.world_id,
-                    service_a,
-                )
-                service_id_b = await container.command_gateway.submit(
-                    admin,
-                    world.world_id,
-                    service_b,
-                )
-                replay_id = await container.command_gateway.submit(
-                    admin,
-                    world.world_id,
-                    service_a,
-                )
-                changed_content_conflicted = False
-                try:
-                    await container.command_gateway.submit(
-                        admin,
-                        world.world_id,
-                        Command(
-                            id=service_a.id,
-                            type=CommandType.SPAWN,
-                            payload={"components": [], "changed": True},
-                        ),
-                    )
-                except Exception:
-                    changed_content_conflicted = True
-                service_pending = await container.command_scheduler.pending_count(world.world_id)
-                service_history = await container.command_scheduler.history(world.world_id)
-            finally:
-                await container.shutdown()
-
-        return [
-            state_check(
-                {
-                    "submit_returns_distinct_command_ids": service_id_a != service_id_b,
-                    "identical_id_replay_converges": replay_id == service_id_a,
-                    "changed_content_conflicts": changed_content_conflicted,
-                    "submit_keeps_two_pending_commands": service_pending == 2,
-                    "submit_history_keeps_both_commands": len(service_history) == 2,
-                },
-                name="durable_command_identity",
+    with tempfile.TemporaryDirectory() as tmp:
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=f"{tmp}/store", namespace="idem_submit")
+            world = await container.application.create_world(
+                WorldConfig(name="submit-non-idempotent"),
+                storage,
             )
-        ]
-    finally:
-        reset_daily_tokens()
+            admin = _admin()
+            service_a = Command(
+                type=CommandType.SPAWN,
+                payload={"components": [IdemCounter(value=1).to_payload()]},
+            )
+            service_b = Command(
+                type=CommandType.SPAWN,
+                payload={"components": [IdemCounter(value=1).to_payload()]},
+            )
+
+            service_id_a = await container.command_gateway.submit(
+                admin,
+                world.world_id,
+                service_a,
+            )
+            service_id_b = await container.command_gateway.submit(
+                admin,
+                world.world_id,
+                service_b,
+            )
+            replay_id = await container.command_gateway.submit(
+                admin,
+                world.world_id,
+                service_a,
+            )
+            changed_content_conflicted = False
+            try:
+                await container.command_gateway.submit(
+                    admin,
+                    world.world_id,
+                    Command(
+                        id=service_a.id,
+                        type=CommandType.SPAWN,
+                        payload={"components": [IdemCounter(value=2).to_payload()]},
+                    ),
+                )
+            except Exception:
+                changed_content_conflicted = True
+            service_pending = await container.command_scheduler.pending_count(world.world_id)
+            service_history = await container.command_scheduler.history(world.world_id)
+        finally:
+            await container.shutdown()
+
+    return [
+        state_check(
+            {
+                "submit_returns_distinct_command_ids": service_id_a != service_id_b,
+                "identical_id_replay_converges": replay_id == service_id_a,
+                "changed_content_conflicts": changed_content_conflicted,
+                "submit_keeps_two_pending_commands": service_pending == 2,
+                "submit_history_keeps_both_commands": len(service_history) == 2,
+            },
+            name="durable_command_identity",
+        )
+    ]
 
 
 def task_submit_spawn_reserves_distinct_entities() -> list[GraderResult]:
@@ -527,7 +530,6 @@ def task_submit_spawn_reserves_distinct_entities() -> list[GraderResult]:
 
 
 async def _task_submit_spawn_reserves_distinct_entities() -> list[GraderResult]:
-    reset_daily_tokens()
     with tempfile.TemporaryDirectory() as tmp:
         container = ServiceContainer()
         try:
@@ -578,7 +580,6 @@ async def _task_submit_spawn_reserves_distinct_entities() -> list[GraderResult]:
             ]
         finally:
             await container.shutdown()
-            reset_daily_tokens()
 
 
 def task_async_world_entity_ids_and_missing_remove() -> list[GraderResult]:
@@ -709,7 +710,6 @@ def task_staged_spawn_last_write_wins() -> list[GraderResult]:
 
 
 async def _task_staged_spawn_last_write_wins() -> list[GraderResult]:
-    reset_daily_tokens()
     with tempfile.TemporaryDirectory() as tmp:
         container = ServiceContainer()
         try:
@@ -744,7 +744,6 @@ async def _task_staged_spawn_last_write_wins() -> list[GraderResult]:
             ]
         finally:
             await container.shutdown()
-            reset_daily_tokens()
 
 
 def task_duplicate_same_tick_mutations_collapse() -> list[GraderResult]:
@@ -753,7 +752,6 @@ def task_duplicate_same_tick_mutations_collapse() -> list[GraderResult]:
 
 
 async def _task_duplicate_same_tick_mutations_collapse() -> list[GraderResult]:
-    reset_daily_tokens()
     with tempfile.TemporaryDirectory() as tmp:
         container = ServiceContainer()
         try:
@@ -765,39 +763,49 @@ async def _task_duplicate_same_tick_mutations_collapse() -> list[GraderResult]:
             world = await _live_world(container, info.world_id)
             admin = _admin()
 
-            spawn_command = Command(
-                type=CommandType.SPAWN,
-                tick=0,
-                payload={"entity_id": 77, "components": [IdemCounter(value=1)]},
+            spawn_operation = Spawn.from_components(
+                world_id=world.world_id,
+                components=[IdemCounter(value=1)],
             )
-            admitted_id = await container.command_gateway.submit(
+            spawn_command_id = uuid7()
+            entity_id, admitted_id = await container.command_dispatcher.defer_spawn_as(
                 admin,
-                world.world_id,
-                spawn_command,
+                spawn_operation,
+                DurableOptions(target_tick=0),
+                command_id=spawn_command_id,
             )
             spawn_applied = await container.application.step(world.world_id, RunConfig())
             spawn_rows = (await world.query_archetype(sig=(IdemCounter,), ticks=[0])).to_pylist()
-            replay_id = await container.command_gateway.submit(
+            replay_entity_id, replay_id = await container.command_dispatcher.defer_spawn_as(
                 admin,
-                world.world_id,
-                spawn_command,
+                spawn_operation,
+                DurableOptions(target_tick=0),
+                command_id=spawn_command_id,
             )
             pending_after_replay = await container.command_scheduler.pending_count(world.world_id)
             spawn_records = [
                 record
                 for record in await container.command_scheduler.records(world.world_id)
-                if record.command_type == CommandType.SPAWN.value
+                if str(record.command_id) == str(spawn_command_id)
             ]
 
             await container.command_gateway.submit(
                 admin,
                 world.world_id,
-                Command(type=CommandType.DESPAWN, tick=1, payload={"entity_id": 77}),
+                Command(
+                    type=CommandType.DESPAWN,
+                    tick=1,
+                    payload={"entity_id": entity_id},
+                ),
             )
             await container.command_gateway.submit(
                 admin,
                 world.world_id,
-                Command(type=CommandType.DESPAWN, tick=1, payload={"entity_id": 77}),
+                Command(
+                    type=CommandType.DESPAWN,
+                    tick=1,
+                    payload={"entity_id": entity_id},
+                ),
             )
             despawn_applied = await container.application.step(world.world_id, RunConfig())
             store = await container.storage_service.get_or_create_store(storage)
@@ -820,7 +828,8 @@ async def _task_duplicate_same_tick_mutations_collapse() -> list[GraderResult]:
                     {
                         "settled_spawn_replay_returns_same_identity": replay_id
                         == admitted_id
-                        == spawn_command.id,
+                        == spawn_command_id
+                        and replay_entity_id == entity_id,
                         "settled_spawn_replay_is_not_requeued": pending_after_replay == 0,
                         "one_terminal_spawn_record": len(spawn_records) == 1
                         and spawn_records[0].status == "APPLIED",
@@ -837,7 +846,6 @@ async def _task_duplicate_same_tick_mutations_collapse() -> list[GraderResult]:
             ]
         finally:
             await container.shutdown()
-            reset_daily_tokens()
 
 
 def task_component_signature_noops_are_idempotent() -> list[GraderResult]:
@@ -846,7 +854,6 @@ def task_component_signature_noops_are_idempotent() -> list[GraderResult]:
 
 
 async def _task_component_signature_noops_are_idempotent() -> list[GraderResult]:
-    reset_daily_tokens()
     with tempfile.TemporaryDirectory() as tmp:
         container = ServiceContainer()
         try:
@@ -910,7 +917,6 @@ async def _task_component_signature_noops_are_idempotent() -> list[GraderResult]
             ]
         finally:
             await container.shutdown()
-            reset_daily_tokens()
 
 
 def task_fixed_reads_are_idempotent() -> list[GraderResult]:
@@ -919,7 +925,6 @@ def task_fixed_reads_are_idempotent() -> list[GraderResult]:
 
 
 async def _task_fixed_reads_are_idempotent() -> list[GraderResult]:
-    reset_daily_tokens()
     with tempfile.TemporaryDirectory() as tmp:
         container = ServiceContainer()
         try:
@@ -982,7 +987,6 @@ async def _task_fixed_reads_are_idempotent() -> list[GraderResult]:
             ]
         finally:
             await container.shutdown()
-            reset_daily_tokens()
 
 
 def task_query_archetype_repeatable() -> list[GraderResult]:

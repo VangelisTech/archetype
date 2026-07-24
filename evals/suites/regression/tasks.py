@@ -8,23 +8,18 @@ from __future__ import annotations
 import asyncio
 import tempfile
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from daft import DataFrame, col
-from uuid_utils import UUID, uuid7
+from uuid_utils import uuid7
 
-import archetype.app.gateway.auth.guard as guard
 from archetype import ArchetypeRuntime, RuntimeWorld, SyncRuntimeWorld
 from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.errors import GuardrailError
-from archetype.app.gateway.auth.guard import (
-    estimate_token_cost,
-    guardrail_allow,
-    reset_daily_tokens,
-)
 from archetype.app.gateway.auth.models import ActorCtx
-from archetype.app.gateway.service import CommandGateway
 from archetype.app.models import Command, CommandType
+from archetype.commands.models import PolicyRequest
+from archetype.commands.policy import Policy
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
@@ -166,8 +161,7 @@ def task_archetype_signatures() -> list[GraderResult]:
 
 def task_rbac_enforcement() -> list[GraderResult]:
     """RBAC correctly allows/denies commands per role."""
-    reset_daily_tokens()
-
+    policy = Policy()
     admin = ActorCtx(id=uuid7(), roles={"admin"})
     viewer = ActorCtx(id=uuid7(), roles={"viewer"})
     player = ActorCtx(id=uuid7(), roles={"player"})
@@ -175,48 +169,55 @@ def task_rbac_enforcement() -> list[GraderResult]:
     results = [
         # Admin allowed everything
         exact_match(
-            _is_allowed(Command(type=CommandType.SPAWN, payload={}), admin),
+            _is_allowed(policy, "spawn", admin),
             True,
             name="admin_spawn",
         ),
         exact_match(
-            _is_allowed(Command(type=CommandType.ADD_PROCESSOR, payload={}), admin),
+            _is_allowed(policy, "add_processor", admin),
             True,
             name="admin_add_processor",
         ),
         # Viewer denied mutations
         exact_match(
-            _is_allowed(Command(type=CommandType.SPAWN, payload={}), viewer),
+            _is_allowed(policy, "spawn", viewer),
             False,
             name="viewer_denied_spawn",
         ),
         exact_match(
-            _is_allowed(Command(type=CommandType.DESPAWN, payload={}), viewer),
+            _is_allowed(policy, "despawn", viewer),
             False,
             name="viewer_denied_despawn",
         ),
         # Player: can spawn, cannot add_processor
         exact_match(
-            _is_allowed(Command(type=CommandType.SPAWN, payload={}), player),
+            _is_allowed(policy, "spawn", player),
             True,
             name="player_spawn",
         ),
     ]
 
-    reset_daily_tokens()
-
     results.append(
         exact_match(
-            _is_allowed(Command(type=CommandType.ADD_PROCESSOR, payload={}), player),
+            _is_allowed(policy, "add_processor", player),
             False,
             name="player_denied_add_processor",
         ),
     )
 
-    reset_daily_tokens()
-
-    # Token costs are all positive
-    all_positive = all(estimate_token_cost(Command(type=ct, payload={})) > 0 for ct in CommandType)
+    container = ServiceContainer()
+    try:
+        all_positive = all(
+            callable(spec.token_cost)
+            or (
+                isinstance(spec.token_cost, int)
+                and not isinstance(spec.token_cost, bool)
+                and spec.token_cost > 0
+            )
+            for spec in container.operation_registry.specs
+        )
+    finally:
+        asyncio.run(container.shutdown())
     results.append(exact_match(all_positive, True, name="token_costs_positive"))
 
     # Default role is viewer
@@ -224,14 +225,12 @@ def task_rbac_enforcement() -> list[GraderResult]:
         exact_match(ActorCtx(id=uuid7()).roles, {"viewer"}, name="default_role_viewer"),
     )
 
-    reset_daily_tokens()
     return results
 
 
-def _is_allowed(cmd: Command, ctx: ActorCtx) -> bool:
-    reset_daily_tokens()
+def _is_allowed(policy: Policy, permission: str, ctx: ActorCtx) -> bool:
     try:
-        guardrail_allow(cmd, ctx, world_id="eval-permission", target_tick=0)
+        policy.preauthorize(ctx, permission=permission)
         return True
     except PermissionError:
         return False
@@ -243,22 +242,83 @@ def _is_allowed(cmd: Command, ctx: ActorCtx) -> bool:
 
 
 def task_command_ordering() -> list[GraderResult]:
-    """Commands sort by (tick, priority, seq)."""
-    a = Command(type=CommandType.SPAWN, tick=0, payload={})
-    b = Command(type=CommandType.SPAWN, tick=1, payload={})
-    c = Command(type=CommandType.SPAWN, tick=0, priority=0, payload={})
-    d = Command(type=CommandType.SPAWN, tick=0, priority=1, payload={})
-    e = Command(type=CommandType.SPAWN, tick=0, priority=0, payload={})
-    f = Command(type=CommandType.SPAWN, tick=0, priority=0, payload={})
+    """The control catalog orders by target tick, priority, then sequence."""
+    return asyncio.run(_task_command_ordering())
 
+
+async def _task_command_ordering() -> list[GraderResult]:
+    with tempfile.TemporaryDirectory() as tmp:
+        container = ServiceContainer()
+        try:
+            world = await container.application.create_world(
+                WorldConfig(name="command-ordering"),
+                StorageConfig(uri=f"{tmp}/store", namespace="eval_ordering"),
+            )
+            actor = ActorCtx(id=uuid7(), roles={"admin"})
+            commands = [
+                Command(
+                    type=CommandType.DESPAWN,
+                    tick=0,
+                    priority=1,
+                    payload={"entity_id": 1},
+                ),
+                Command(
+                    type=CommandType.DESPAWN,
+                    tick=1,
+                    priority=0,
+                    payload={"entity_id": 2},
+                ),
+                Command(
+                    type=CommandType.DESPAWN,
+                    tick=0,
+                    priority=0,
+                    payload={"entity_id": 3},
+                ),
+                Command(
+                    type=CommandType.DESPAWN,
+                    tick=0,
+                    priority=0,
+                    payload={"entity_id": 4},
+                ),
+            ]
+            await container.command_gateway.submit_batch(
+                actor,
+                world.world_id,
+                commands,
+            )
+            records = await container.command_scheduler.records(world.world_id)
+        finally:
+            await container.shutdown()
+
+    by_id = {str(record.command_id): record for record in records}
+    ordered = sorted(
+        records,
+        key=lambda record: (
+            record.scheduled_tick,
+            record.priority,
+            record.sequence,
+        ),
+    )
     return [
-        exact_match(a < b, True, name="lower_tick_first"),
-        exact_match(c < d, True, name="lower_priority_first"),
-        exact_match(e < f, True, name="earlier_seq_first"),
         exact_match(
-            len({Command(type=CommandType.CUSTOM, payload={}).id for _ in range(50)}),
-            50,
-            name="unique_ids",
+            [str(record.command_id) for record in ordered],
+            [
+                str(commands[2].id),
+                str(commands[3].id),
+                str(commands[0].id),
+                str(commands[1].id),
+            ],
+            name="tick_priority_sequence_order",
+        ),
+        state_check(
+            {
+                "catalog_assigned_unique_sequences": len({record.sequence for record in records})
+                == 4,
+                "earlier_equal_key_has_lower_sequence": by_id[str(commands[2].id)].sequence
+                < by_id[str(commands[3].id)].sequence,
+                "caller_ids_preserved": set(by_id) == {str(command.id) for command in commands},
+            },
+            name="catalog_owned_sequence",
         ),
     ]
 
@@ -274,8 +334,6 @@ def task_command_pipeline() -> list[GraderResult]:
 
 
 async def _task_command_pipeline() -> list[GraderResult]:
-    reset_daily_tokens()
-
     with tempfile.TemporaryDirectory() as tmp:
         container = ServiceContainer()
         try:
@@ -298,8 +356,8 @@ async def _task_command_pipeline() -> list[GraderResult]:
             applied = await container.application.step(world.world_id, rc)
             pending_after = await container.command_scheduler.pending_count(wid)
 
-            # History
-            history = await container.audit_log.get_command_history(world.world_id)
+            # Durable command ledger
+            records = await container.command_scheduler.records(world.world_id)
 
             # RBAC at service boundary
             viewer_blocked = False
@@ -316,13 +374,19 @@ async def _task_command_pipeline() -> list[GraderResult]:
                 exact_match(pending, 1, name="submit_enqueues"),
                 exact_match(applied, 1, name="step_drains"),
                 exact_match(pending_after, 0, name="pending_cleared"),
-                exact_match(len(history), 1, name="history_recorded"),
-                exact_match(history[0].type, CommandType.SPAWN, name="history_type"),
+                exact_match(len(records), 1, name="history_recorded"),
+                state_check(
+                    {
+                        "operation_name": records[0].command_type == "spawn",
+                        "terminal_status": records[0].status == "APPLIED",
+                        "identity_preserved": str(records[0].command_id) == str(cmd.id),
+                    },
+                    name="history_operation_identity",
+                ),
                 exact_match(viewer_blocked, True, name="rbac_at_boundary"),
             ]
         finally:
             await container.shutdown()
-            reset_daily_tokens()
 
 
 # ---------------------------------------------------------------------------
@@ -336,8 +400,6 @@ def task_query_correctness() -> list[GraderResult]:
 
 
 async def _task_query_correctness() -> list[GraderResult]:
-    reset_daily_tokens()
-
     with tempfile.TemporaryDirectory() as tmp:
         storage = StorageConfig(uri=f"{tmp}/store", namespace="eval_query")
         admin = ActorCtx(id=uuid7(), roles={"admin"})
@@ -377,10 +439,7 @@ async def _task_query_correctness() -> list[GraderResult]:
             world_id = str(info.world_id)
             run_id = str(first_run.run_id)
         finally:
-            try:
-                await writer.shutdown()
-            finally:
-                reset_daily_tokens()
+            await writer.shutdown()
 
         # A new composition root has no live world object. Trusted reads use
         # RuntimeApplication and resolve the durable storage path instead.
@@ -457,10 +516,7 @@ async def _task_query_correctness() -> list[GraderResult]:
                 ),
             ]
         finally:
-            try:
-                await reader.shutdown()
-            finally:
-                reset_daily_tokens()
+            await reader.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -469,38 +525,32 @@ async def _task_query_correctness() -> list[GraderResult]:
 
 
 def task_tick_quota_resets() -> list[GraderResult]:
-    """The per-tick command quota must NOT accumulate process-wide."""
-    return asyncio.run(_task_tick_quota_resets())
+    """Target-tick generations remain independent within one policy."""
+    return _task_tick_quota_resets()
 
 
-async def _task_tick_quota_resets() -> list[GraderResult]:
-    reset_daily_tokens()
-
-    saved = guard.MAX_CMDS_PER_TICK
-    guard.MAX_CMDS_PER_TICK = 4  # so a few ticks would blow a process-wide counter
+def _task_tick_quota_resets() -> list[GraderResult]:
+    policy = Policy(max_commands_per_tick=4, max_tokens_per_day=1_000_000)
+    actor = ActorCtx(id=uuid7(), roles={"operator"})
     blocked = False
-    with tempfile.TemporaryDirectory() as tmp:
-        container = ServiceContainer()
-        try:
-            storage = StorageConfig(uri=f"{tmp}/store", namespace="eval_quota")
-            ctx = ActorCtx(id=uuid7(), roles={"admin"})
-            info = await container.command_gateway.create_world(
-                ctx, WorldConfig(name="quota"), storage
+    try:
+        # Eight generations contain two commands each. A process-global
+        # counter would reject this after generation two.
+        for target_tick in range(8):
+            policy.authorize(
+                actor,
+                permission="spawn",
+                world_id="eval-quota",
+                target_tick=target_tick,
             )
-            # 8 ticks × (spawn + step) = 16 gated commands, 4× the ceiling, but
-            # only 2 per tick. A per-tick quota that resets each tick never trips.
-            try:
-                for _ in range(8):
-                    await container.command_gateway.create_entity(
-                        ctx, info.world_id, [Tag(label="x")]
-                    )
-                    await container.command_gateway.step(ctx, info.world_id, RunConfig())
-            except Exception:
-                blocked = True
-        finally:
-            guard.MAX_CMDS_PER_TICK = saved
-            await container.shutdown()
-            reset_daily_tokens()
+            policy.authorize(
+                actor,
+                permission="step",
+                world_id="eval-quota",
+                target_tick=target_tick,
+            )
+    except PermissionError:
+        blocked = True
 
     return [exact_match(blocked, False, name="quota_resets_across_ticks")]
 
@@ -512,157 +562,145 @@ async def _task_tick_quota_resets() -> list[GraderResult]:
 
 def task_quota_boundaries() -> list[GraderResult]:
     """Quota accounting is exact, actor-local, atomic, and UTC-day scoped."""
-    return asyncio.run(_task_quota_boundaries())
+    return _task_quota_boundaries()
 
 
-def _custom_commands(count: int) -> list[Command]:
-    return [Command(type=CommandType.CUSTOM) for _ in range(count)]
-
-
-async def _submit_allowed(
-    service: CommandGateway,
-    world_id: str | UUID,
-    ctx: ActorCtx,
+def _policy_batch_allowed(
+    policy: Policy,
+    actor: ActorCtx,
+    *,
     count: int,
 ) -> bool:
+    requests = tuple(
+        PolicyRequest(
+            permission="spawn",
+            world_id="eval-quota-boundaries",
+            target_tick=0,
+        )
+        for _ in range(count)
+    )
     try:
-        if count == 1:
-            await service.submit(ctx, world_id, _custom_commands(1)[0])
-        else:
-            await service.submit_batch(ctx, world_id, _custom_commands(count))
-    except GuardrailError:
+        policy.authorize_batch(actor, requests=requests)
+    except PermissionError:
         return False
     return True
 
 
-def _guard_allowed(ctx: ActorCtx, now: datetime) -> bool:
+@dataclass(slots=True)
+class _PolicyClock:
+    value: datetime
+
+    def __call__(self) -> datetime:
+        return self.value
+
+
+def _daily_allowed(policy: Policy, actor: ActorCtx) -> bool:
     try:
-        guardrail_allow(
-            Command(type=CommandType.CUSTOM),
-            ctx,
+        policy.authorize(
+            actor,
+            permission="spawn",
             world_id="eval-daily-budget",
             target_tick=0,
-            now=now,
+            token_cost=10,
         )
-    except GuardrailError:
+    except PermissionError:
         return False
     return True
 
 
-async def _task_quota_boundaries() -> list[GraderResult]:
-    reset_daily_tokens()
-    saved_daily_limit = guard.MAX_TOKENS_PER_DAY
+def _task_quota_boundaries() -> list[GraderResult]:
+    policy = Policy(max_commands_per_tick=500, max_tokens_per_day=1_000_000)
+    actors = (
+        ActorCtx(id=uuid7(), roles={"admin"}),
+        ActorCtx(id=uuid7(), roles={"admin"}),
+    )
+    accepted_counts = [0, 0]
 
-    with tempfile.TemporaryDirectory() as tmp:
-        container = ServiceContainer()
-        try:
-            storage = StorageConfig(uri=f"{tmp}/store", namespace="eval_quota_boundaries")
-            world = await container.application.create_world(
-                WorldConfig(name="quota-boundaries"),
-                storage,
-            )
-            actors = (
-                ActorCtx(id=uuid7(), roles={"admin"}),
-                ActorCtx(id=uuid7(), roles={"admin"}),
-            )
+    accepted_at_499 = [_policy_batch_allowed(policy, actor, count=499) for actor in actors]
+    for index, accepted in enumerate(accepted_at_499):
+        if accepted:
+            accepted_counts[index] += 499
+    pending_at_499 = sum(accepted_counts)
 
-            accepted_at_499 = await asyncio.gather(
-                *(
-                    _submit_allowed(container.command_gateway, world.world_id, actor, 499)
-                    for actor in actors
-                )
-            )
-            pending_at_499 = await container.command_scheduler.pending_count(world.world_id)
+    bulk_overflow_allowed = [_policy_batch_allowed(policy, actor, count=2) for actor in actors]
+    for index, accepted in enumerate(bulk_overflow_allowed):
+        if accepted:
+            accepted_counts[index] += 2
+    pending_after_bulk_rejection = sum(accepted_counts)
 
-            bulk_overflow_allowed = await asyncio.gather(
-                *(
-                    _submit_allowed(container.command_gateway, world.world_id, actor, 2)
-                    for actor in actors
-                )
-            )
-            pending_after_bulk_rejection = await container.command_scheduler.pending_count(
-                world.world_id
-            )
+    accepted_at_500 = [_policy_batch_allowed(policy, actor, count=1) for actor in actors]
+    for index, accepted in enumerate(accepted_at_500):
+        if accepted:
+            accepted_counts[index] += 1
+    pending_at_500 = sum(accepted_counts)
 
-            accepted_at_500 = await asyncio.gather(
-                *(
-                    _submit_allowed(container.command_gateway, world.world_id, actor, 1)
-                    for actor in actors
-                )
-            )
-            pending_at_500 = await container.command_scheduler.pending_count(world.world_id)
+    command_501_allowed = [_policy_batch_allowed(policy, actor, count=1) for actor in actors]
+    for index, accepted in enumerate(command_501_allowed):
+        if accepted:
+            accepted_counts[index] += 1
+    pending_after_501 = sum(accepted_counts)
 
-            command_501_allowed = await asyncio.gather(
-                *(
-                    _submit_allowed(container.command_gateway, world.world_id, actor, 1)
-                    for actor in actors
-                )
-            )
-            pending_after_501 = await container.command_scheduler.pending_count(world.world_id)
+    clock = _PolicyClock(datetime(2030, 1, 1, 23, 59, 59, tzinfo=UTC))
+    daily_policy = Policy(
+        max_commands_per_tick=500,
+        max_tokens_per_day=20,
+        utcnow=clock,
+    )
+    daily_actor = ActorCtx(id=uuid7(), roles={"admin"})
+    daily_peer = ActorCtx(id=uuid7(), roles={"admin"})
 
-            reset_daily_tokens()
-            guard.MAX_TOKENS_PER_DAY = 20
-            before_midnight = datetime(2030, 1, 1, 23, 59, 59, tzinfo=UTC)
-            at_midnight = datetime(2030, 1, 2, tzinfo=UTC)
-            guard._last_reset_date = before_midnight.date()
-            daily_actor = ActorCtx(id=uuid7(), roles={"admin"})
-            daily_peer = ActorCtx(id=uuid7(), roles={"admin"})
+    daily_exact_limit = all(_daily_allowed(daily_policy, daily_actor) for _ in range(2))
+    daily_over_limit_allowed = _daily_allowed(daily_policy, daily_actor)
+    peer_allowed_same_day = _daily_allowed(daily_policy, daily_peer)
 
-            daily_exact_limit = all(_guard_allowed(daily_actor, before_midnight) for _ in range(2))
-            daily_over_limit_allowed = _guard_allowed(daily_actor, before_midnight)
-            peer_allowed_same_day = _guard_allowed(daily_peer, before_midnight)
+    clock.value = datetime(2030, 1, 2, tzinfo=UTC)
+    actor_allowed_at_midnight = _daily_allowed(daily_policy, daily_actor)
+    peer_exact_limit_after_rollover = all(
+        _daily_allowed(daily_policy, daily_peer) for _ in range(2)
+    )
+    peer_over_limit_after_rollover = _daily_allowed(daily_policy, daily_peer)
 
-            actor_allowed_at_midnight = _guard_allowed(daily_actor, at_midnight)
-            peer_exact_limit_after_rollover = all(
-                _guard_allowed(daily_peer, at_midnight) for _ in range(2)
-            )
-            peer_over_limit_after_rollover = _guard_allowed(daily_peer, at_midnight)
-
-            return [
-                state_check(
-                    {
-                        "both_actors_accepted": all(accepted_at_499),
-                        "499_each_queued": pending_at_499 == 998,
-                    },
-                    name="concurrent_actor_499_boundary",
-                ),
-                state_check(
-                    {
-                        "both_bulk_overflows_rejected": not any(bulk_overflow_allowed),
-                        "queue_unchanged": pending_after_bulk_rejection == pending_at_499,
-                        "quota_unchanged": all(accepted_at_500),
-                    },
-                    name="bulk_overflow_atomic",
-                ),
-                state_check(
-                    {
-                        "500_each_queued": pending_at_500 == 1000,
-                        "both_501_commands_rejected": not any(command_501_allowed),
-                        "rejection_did_not_enqueue": pending_after_501 == pending_at_500,
-                    },
-                    name="exact_500_501_boundary",
-                ),
-                state_check(
-                    {
-                        "exact_daily_budget_allowed": daily_exact_limit,
-                        "next_token_cost_rejected": not daily_over_limit_allowed,
-                        "peer_budget_is_independent": peer_allowed_same_day,
-                    },
-                    name="daily_budget_actor_isolation",
-                ),
-                state_check(
-                    {
-                        "blocked_actor_recovers_at_midnight": actor_allowed_at_midnight,
-                        "peer_receives_full_new_budget": peer_exact_limit_after_rollover,
-                        "new_day_budget_still_enforced": not peer_over_limit_after_rollover,
-                    },
-                    name="utc_midnight_rollover",
-                ),
-            ]
-        finally:
-            guard.MAX_TOKENS_PER_DAY = saved_daily_limit
-            await container.shutdown()
-            reset_daily_tokens()
+    return [
+        state_check(
+            {
+                "both_actors_accepted": all(accepted_at_499),
+                "499_each_queued": pending_at_499 == 998,
+            },
+            name="concurrent_actor_499_boundary",
+        ),
+        state_check(
+            {
+                "both_bulk_overflows_rejected": not any(bulk_overflow_allowed),
+                "queue_unchanged": pending_after_bulk_rejection == pending_at_499,
+                "quota_unchanged": all(accepted_at_500),
+            },
+            name="bulk_overflow_atomic",
+        ),
+        state_check(
+            {
+                "500_each_queued": pending_at_500 == 1000,
+                "both_501_commands_rejected": not any(command_501_allowed),
+                "rejection_did_not_enqueue": pending_after_501 == pending_at_500,
+            },
+            name="exact_500_501_boundary",
+        ),
+        state_check(
+            {
+                "exact_daily_budget_allowed": daily_exact_limit,
+                "next_token_cost_rejected": not daily_over_limit_allowed,
+                "peer_budget_is_independent": peer_allowed_same_day,
+            },
+            name="daily_budget_actor_isolation",
+        ),
+        state_check(
+            {
+                "blocked_actor_recovers_at_midnight": actor_allowed_at_midnight,
+                "peer_receives_full_new_budget": peer_exact_limit_after_rollover,
+                "new_day_budget_still_enforced": not peer_over_limit_after_rollover,
+            },
+            name="utc_midnight_rollover",
+        ),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -672,20 +710,16 @@ async def _task_quota_boundaries() -> list[GraderResult]:
 
 def task_runtime_contracts() -> list[GraderResult]:
     """Compose the public runtime's activation and lifecycle boundaries."""
-    reset_daily_tokens()
-    try:
-        activation, shutdown = asyncio.run(_task_runtime_contracts())
-        return [
-            state_check(activation, name="lazy_single_flight_activation"),
-            state_check(shutdown, name="wait_then_close_shutdown"),
-            exact_match(
-                _public_methods(SyncRuntimeWorld),
-                _public_methods(RuntimeWorld),
-                name="sync_async_world_surface",
-            ),
-        ]
-    finally:
-        reset_daily_tokens()
+    activation, shutdown = asyncio.run(_task_runtime_contracts())
+    return [
+        state_check(activation, name="lazy_single_flight_activation"),
+        state_check(shutdown, name="wait_then_close_shutdown"),
+        exact_match(
+            _public_methods(SyncRuntimeWorld),
+            _public_methods(RuntimeWorld),
+            name="sync_async_world_surface",
+        ),
+    ]
 
 
 def _public_methods(cls: type[object]) -> set[str]:
@@ -781,8 +815,6 @@ def task_episode_value_termination() -> list[GraderResult]:
 
 
 async def _task_episode_value_termination() -> list[GraderResult]:
-    reset_daily_tokens()
-
     with tempfile.TemporaryDirectory() as tmp:
         container = ServiceContainer()
         try:
@@ -812,7 +844,6 @@ async def _task_episode_value_termination() -> list[GraderResult]:
             ]
         finally:
             await container.shutdown()
-            reset_daily_tokens()
 
 
 # ---------------------------------------------------------------------------

@@ -1,250 +1,306 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Authorization gateway for untrusted adapters.
-
-The gateway translates authenticated ``ActorCtx`` calls into actor-free
-``RuntimeApplication`` use cases. It owns RBAC, quota debit, safe access
-audit metadata, and no domain workflow or durable command state.
-"""
+"""Thin untrusted adapter over the commands-owned dispatcher."""
 
 from __future__ import annotations
 
 import json
-import logging
-import math
-from collections.abc import Callable
-from typing import TYPE_CHECKING
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Literal
 
 from archetype._obs import instrument
 from archetype.app.application.interfaces import iRuntimeApplication
-from archetype.app.audit.interfaces import iAuditLog
-from archetype.app.audit.models import make_audit_row
-from archetype.app.gateway.auth.guard import (
-    guardrail_allow,
-    guardrail_authorize,
-    guardrail_check,
-    guardrail_commit,
+from archetype.app.gateway._pr3_commands_bridge import (
+    preauthorize_pr3_bridge_actor_call,
 )
-from archetype.app.models import Command, CommandType
+from archetype.app.models import Command, deferred_operation
+from archetype.commands.models import (
+    AccessSummary,
+    DeferredItem,
+    DurableOptions,
+    GetAuditHistory,
+)
 from archetype.errors import WorldNotFoundError
 from archetype.world.errors import WorldClosingError
+from archetype.world.models import (
+    AddComponents,
+    AddHook,
+    AddProcessor,
+    AddResource,
+    ComponentTypeRef,
+    ComponentValue,
+    CreateEntities,
+    CreateWorld,
+    Despawn,
+    DestroyWorld,
+    DiscoverWorlds,
+    ForkWorld,
+    GetWorldInfo,
+    ListHooks,
+    ListProcessors,
+    ListResources,
+    ListSignatures,
+    ListWorlds,
+    ListWorldSignatures,
+    OpenWorldReadonly,
+    QueryArchetype,
+    QueryComponents,
+    RemoveComponents,
+    RemoveHook,
+    RemoveProcessor,
+    ReserveEntityIds,
+    ResumeWorld,
+    Run,
+    RunEpisode,
+    RunRollout,
+    Spawn,
+    SpawnReserved,
+    Step,
+    Update,
+)
 
 if TYPE_CHECKING:
     from archetype.app.gateway.auth.models import ActorCtx
+    from archetype.commands.dispatch import CommandDispatcher
+    from archetype.commands.policy import Policy
 
-logger = logging.getLogger(__name__)
-
-_APPLICATION_QUOTA_SCOPE = "__application__"
-_APPLICATION_TARGET_TICK = 0
 _DURABLE_TARGET_TICK = 0
 
 
-class CommandGateway:
-    """Authenticate/authorize one untrusted call, then delegate it.
+def _component_values(components) -> tuple[ComponentValue, ...]:
+    return tuple(ComponentValue.from_component(component) for component in components)
 
-    Live world calls resolve their quota coordinate through the explicitly
-    injected ``target_tick_for_world`` snapshot. Durable reads and idempotent
-    deletion remain valid without an available live target and use the explicit
-    ``(world_id, 0)`` coordinate when the target is missing or explicitly
-    closing. Other resolver failures propagate. Deferred calls use the durable
-    command's scheduled tick and never consult the resolver.
-    """
+
+def _component_types(component_types) -> tuple[ComponentTypeRef, ...]:
+    return tuple(ComponentTypeRef.from_type(component_type) for component_type in component_types)
+
+
+def _input_kwargs_json(input_kwargs: dict) -> str:
+    return json.dumps(
+        input_kwargs,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+
+
+class CommandGateway:
+    """Construct exact operation models and delegate actor-aware entry."""
 
     def __init__(
         self,
         application: iRuntimeApplication,
-        audit: iAuditLog | None = None,
+        dispatcher: CommandDispatcher,
+        policy: Policy,
+        record_access: Callable[[AccessSummary], Awaitable[None]],
         *,
         target_tick_for_world: Callable[[object], int] | None = None,
     ) -> None:
         self._application = application
-        self._audit = audit
+        self._dispatcher = dispatcher
+        self._policy = policy
+        self._record_access = record_access
         self._target_tick_for_world = target_tick_for_world
-
-    @staticmethod
-    def _gate(
-        command: Command,
-        ctx: ActorCtx,
-        *,
-        world_id: object,
-        target_tick: int,
-    ) -> None:
-        guardrail_allow(
-            command,
-            ctx,
-            world_id=world_id,
-            target_tick=target_tick,
-        )
-
-    @staticmethod
-    def _gate_batch(commands: list[Command], ctx: ActorCtx, *, world_id: object) -> None:
-        normalized_world_id = str(world_id)
-        projected_counts: dict[int, int] = {}
-        projected_tokens = 0
-        for command in commands:
-            projected_count = projected_counts.get(command.tick, 0)
-            projected_tokens += guardrail_check(
-                command,
-                ctx,
-                world_id=normalized_world_id,
-                target_tick=command.tick,
-                projected_count=projected_count,
-                projected_tokens=projected_tokens,
-            )
-            projected_counts[command.tick] = projected_count + 1
-        guardrail_commit(
-            ctx,
-            tick_counts={
-                (normalized_world_id, target_tick): count
-                for target_tick, count in projected_counts.items()
-            },
-            tokens=projected_tokens,
-        )
 
     def _world_target_tick(self, world_id: object) -> int:
         if self._target_tick_for_world is None:
-            raise RuntimeError(
-                "direct world gateway calls require an explicit target_tick_for_world resolver"
-            )
+            raise RuntimeError("temporary bridge calls require an explicit target-tick resolver")
         return self._target_tick_for_world(world_id)
 
-    def _gate_world(self, command: Command, ctx: ActorCtx, world_id: object) -> None:
-        guardrail_authorize(command, ctx)
-        self._gate(
-            command,
-            ctx,
-            world_id=world_id,
-            target_tick=self._world_target_tick(world_id),
+    async def _record_bridge_access(
+        self,
+        actor: ActorCtx,
+        *,
+        operation: str,
+        world_id: object,
+        decision: Literal["allowed", "denied"],
+        outcome: Literal["succeeded", "failed", "denied", "rejected", "queued"],
+    ) -> None:
+        """Write bounded bridge evidence without replacing the primary result."""
+        record_access = getattr(self, "_record_access", None)
+        if record_access is None:
+            return
+        try:
+            evidence = AccessSummary(
+                operation=operation,
+                actor_id=str(actor.id),
+                world_id=str(world_id),
+                decision=decision,
+                outcome=outcome,
+                metadata={},
+            )
+            await record_access(evidence)
+        except Exception:
+            return
+
+    async def _authorize_bridge_world(
+        self,
+        actor: ActorCtx,
+        *,
+        operation: str,
+        world_id: object,
+        token_cost: int,
+        durable: bool,
+    ) -> None:
+        preauthorize_pr3_bridge_actor_call(
+            self._policy,
+            actor,
+            operation=operation,
         )
-
-    def _gate_durable_world(self, command: Command, ctx: ActorCtx, world_id: object) -> None:
-        """Gate a world-scoped operation that remains valid without a live target.
-
-        Tick zero is the deterministic unavailable-live-world quota coordinate.
-        A missing binding and the world family's explicit closing state both
-        use it. Sharing it with a live world's initial tick is intentionally
-        conservative and avoids an ambient quota reset or an unscoped
-        application-wide bucket. Arbitrary resolver failures still fail closed.
-        """
-        guardrail_authorize(command, ctx)
         try:
             target_tick = self._world_target_tick(world_id)
         except (KeyError, WorldClosingError, WorldNotFoundError):
+            if not durable:
+                raise
             target_tick = _DURABLE_TARGET_TICK
-        self._gate(
-            command,
-            ctx,
-            world_id=world_id,
-            target_tick=target_tick,
-        )
-
-    def _gate_application(self, command: Command, ctx: ActorCtx) -> None:
-        self._gate(
-            command,
-            ctx,
-            world_id=_APPLICATION_QUOTA_SCOPE,
-            target_tick=_APPLICATION_TARGET_TICK,
-        )
-
-    async def _emit(
-        self,
-        ctx: ActorCtx,
-        command_type: str,
-        world_id=None,
-        *,
-        command_id=None,
-        status: str = "applied",
-        payload_json: str = "{}",
-    ) -> None:
-        if self._audit is None:
-            return
         try:
-            await self._audit.record(
-                make_audit_row(
-                    ctx,
-                    command_type,
-                    world_id,
-                    command_id=command_id,
-                    status=status,
-                    payload_json=payload_json,
-                )
+            self._policy.authorize(
+                actor,
+                permission=operation,
+                world_id=world_id,
+                target_tick=target_tick,
+                token_cost=token_cost,
             )
         except Exception:
-            # This is access-decision evidence, not the authority for domain
-            # completion. Durable workflow transitions use family-owned
-            # transactional outboxes and must never depend on this projection.
-            logger.warning("audit emission failed", exc_info=True)
+            await self._record_bridge_access(
+                actor,
+                operation=operation,
+                world_id=world_id,
+                decision="denied",
+                outcome="denied",
+            )
+            raise
+
+    async def _run_bridge_world(
+        self,
+        actor: ActorCtx,
+        *,
+        operation: str,
+        world_id: object,
+        token_cost: int,
+        durable: bool,
+        effect: Callable[[], Awaitable[object]],
+    ):
+        await self._authorize_bridge_world(
+            actor,
+            operation=operation,
+            world_id=world_id,
+            token_cost=token_cost,
+            durable=durable,
+        )
+        try:
+            result = await effect()
+        except Exception:
+            await self._record_bridge_access(
+                actor,
+                operation=operation,
+                world_id=world_id,
+                decision="allowed",
+                outcome="failed",
+            )
+            raise
+        await self._record_bridge_access(
+            actor,
+            operation=operation,
+            world_id=world_id,
+            decision="allowed",
+            outcome="succeeded",
+        )
+        return result
 
     # Mutations ------------------------------------------------------
 
     @instrument("gateway.create_entity")
     async def create_entity(self, ctx, world_id, components):
-        self._gate_world(Command(type=CommandType.SPAWN), ctx, world_id)
-        result = await self._application.create_entity(world_id, components)
-        await self._emit(ctx, "spawn", world_id)
-        return result
+        return await self._dispatcher.apply_as(
+            ctx,
+            Spawn.from_components(world_id=world_id, components=components),
+        )
 
     async def create_entities(self, ctx, world_id, entities):
-        self._gate_world(Command(type=CommandType.SPAWN), ctx, world_id)
-        result = await self._application.create_entities(world_id, entities)
-        await self._emit(
-            ctx, "spawn_batch", world_id, payload_json=json.dumps({"count": len(entities)})
+        return await self._dispatcher.apply_as(
+            ctx,
+            CreateEntities.from_entities(world_id=world_id, entities=entities),
         )
-        return result
 
     async def reserve_entity_ids(self, ctx, world_id, n):
-        self._gate_world(Command(type=CommandType.SPAWN), ctx, world_id)
-        return await self._application.reserve_entity_ids(world_id, n)
+        return await self._dispatcher.apply_as(
+            ctx,
+            ReserveEntityIds(world_id=world_id, count=n),
+        )
 
     async def spawn_with_reserved_id(self, ctx, world_id, entity_id, components):
-        self._gate_world(Command(type=CommandType.SPAWN), ctx, world_id)
-        await self._application.spawn_with_reserved_id(world_id, entity_id, components)
-        await self._emit(
+        return await self._dispatcher.apply_as(
             ctx,
-            "spawn_reserved",
-            world_id,
-            payload_json=json.dumps({"entity_id": entity_id}),
+            SpawnReserved(
+                world_id=world_id,
+                entity_id=entity_id,
+                components=_component_values(components),
+            ),
         )
 
     async def remove_entity(self, ctx, world_id, entity_id):
-        self._gate_world(Command(type=CommandType.DESPAWN), ctx, world_id)
-        await self._application.remove_entity(world_id, entity_id)
-        await self._emit(ctx, "despawn", world_id)
+        return await self._dispatcher.apply_as(
+            ctx,
+            Despawn(world_id=world_id, entity_id=entity_id),
+        )
 
     async def update_entity(self, ctx, world_id, entity_id, components):
-        self._gate_world(Command(type=CommandType.UPDATE), ctx, world_id)
-        await self._application.update_entity(world_id, entity_id, components)
-        await self._emit(ctx, "update", world_id)
+        return await self._dispatcher.apply_as(
+            ctx,
+            Update(
+                world_id=world_id,
+                entity_id=entity_id,
+                components=_component_values(components),
+            ),
+        )
 
     async def add_components(self, ctx, world_id, entity_id, components):
-        self._gate_world(Command(type=CommandType.ADD_COMPONENT), ctx, world_id)
-        await self._application.add_components(world_id, entity_id, components)
-        await self._emit(ctx, "add_component", world_id)
+        return await self._dispatcher.apply_as(
+            ctx,
+            AddComponents(
+                world_id=world_id,
+                entity_id=entity_id,
+                components=_component_values(components),
+            ),
+        )
 
     async def remove_components(self, ctx, world_id, entity_id, component_types):
-        self._gate_world(Command(type=CommandType.REMOVE_COMPONENT), ctx, world_id)
-        await self._application.remove_components(world_id, entity_id, component_types)
-        await self._emit(ctx, "remove_component", world_id)
+        return await self._dispatcher.apply_as(
+            ctx,
+            RemoveComponents(
+                world_id=world_id,
+                entity_id=entity_id,
+                component_types=_component_types(component_types),
+            ),
+        )
 
     async def add_processor(self, ctx, world_id, processor):
-        self._gate_world(Command(type=CommandType.ADD_PROCESSOR), ctx, world_id)
-        await self._application.add_processor(world_id, processor)
-        await self._emit(ctx, "add_processor", world_id)
+        return await self._dispatcher.apply_as(
+            ctx,
+            AddProcessor(world_id=world_id, processor=processor),
+        )
 
     async def remove_processor(self, ctx, world_id, proc_type):
-        self._gate_world(Command(type=CommandType.REMOVE_PROCESSOR), ctx, world_id)
-        await self._application.remove_processor(world_id, proc_type)
-        await self._emit(ctx, "remove_processor", world_id)
+        return await self._dispatcher.apply_as(
+            ctx,
+            RemoveProcessor(world_id=world_id, processor_type=proc_type),
+        )
 
     # Lifecycle ------------------------------------------------------
 
     @instrument("gateway.create_world")
     async def create_world(self, ctx, config, storage_config=None, cache_config=None):
-        self._gate_application(Command(type=CommandType.CREATE_WORLD), ctx)
-        info = await self._application.create_world(config, storage_config, cache_config)
-        await self._emit(ctx, "create_world", info.world_id)
-        return info
+        return await self._dispatcher.apply_as(
+            ctx,
+            CreateWorld(
+                config=config,
+                storage_config=storage_config,
+                cache_config=cache_config,
+            ),
+        )
 
     async def fork_world(
         self,
@@ -255,102 +311,85 @@ class CommandGateway:
         storage_config=None,
         cache_config=None,
     ):
-        self._gate_world(Command(type=CommandType.FORK_WORLD), ctx, source_world_id)
-        info = await self._application.fork_world(
-            source_world_id,
-            name,
-            storage_config=storage_config,
-            cache_config=cache_config,
+        return await self._dispatcher.apply_as(
+            ctx,
+            ForkWorld(
+                source_world_id=source_world_id,
+                name=name,
+                storage_config=storage_config,
+                cache_config=cache_config,
+            ),
         )
-        await self._emit(ctx, "fork_world", info.world_id)
-        return info
 
     async def destroy_world(self, ctx, world_id):
-        self._gate_durable_world(Command(type=CommandType.DESTROY_WORLD), ctx, world_id)
-        await self._application.destroy_world(world_id)
-        await self._emit(ctx, "destroy_world", world_id)
+        return await self._dispatcher.apply_as(ctx, DestroyWorld(world_id=world_id))
 
     @instrument("gateway.get_world_info")
     async def get_world_info(self, ctx, world_id):
-        self._gate_world(Command(type=CommandType.GET_WORLD_INFO), ctx, world_id)
-        info = await self._application.get_world_info(world_id)
-        await self._emit(ctx, "get_world_info", world_id)
-        return info
+        return await self._dispatcher.apply_as(ctx, GetWorldInfo(world_id=world_id))
 
     async def list_worlds(self, ctx):
-        self._gate_application(Command(type=CommandType.LIST_WORLDS), ctx)
-        infos = await self._application.list_worlds()
-        await self._emit(ctx, "list_worlds")
-        return infos
+        return await self._dispatcher.apply_as(ctx, ListWorlds())
 
     async def discover_worlds(self, ctx, storage_config):
-        self._gate_application(Command(type=CommandType.LIST_WORLDS), ctx)
-        infos = await self._application.discover_worlds(storage_config)
-        await self._emit(ctx, "discover_worlds")
-        return infos
+        return await self._dispatcher.apply_as(
+            ctx,
+            DiscoverWorlds(storage_config=storage_config),
+        )
 
     async def open_world_readonly(self, ctx, storage_config, world_id):
-        self._gate_durable_world(Command(type=CommandType.GET_WORLD_INFO), ctx, world_id)
-        info = await self._application.open_world_readonly(storage_config, world_id)
-        await self._emit(ctx, "open_world_readonly", world_id)
-        return info
+        return await self._dispatcher.apply_as(
+            ctx,
+            OpenWorldReadonly(storage_config=storage_config, world_id=world_id),
+        )
 
     async def resume_world(self, ctx, storage_config, world_id):
-        self._gate_durable_world(Command(type=CommandType.CREATE_WORLD), ctx, world_id)
-        info = await self._application.resume_world(storage_config, world_id)
-        await self._emit(ctx, "resume_world", world_id)
-        return info
+        return await self._dispatcher.apply_as(
+            ctx,
+            ResumeWorld(storage_config=storage_config, world_id=world_id),
+        )
 
     # Simulation and workflows --------------------------------------
 
     async def step(self, ctx, world_id, run_config, **input_kwargs):
-        self._gate_world(Command(type=CommandType.STEP), ctx, world_id)
-        result = await self._application.step(world_id, run_config, **input_kwargs)
-        await self._emit(ctx, "step", world_id)
-        return result
+        return await self._dispatcher.apply_as(
+            ctx,
+            Step(
+                world_id=world_id,
+                run_config=run_config,
+                input_kwargs_json=_input_kwargs_json(input_kwargs),
+            ),
+        )
 
     async def run(self, ctx, world_id, run_config, **input_kwargs):
-        self._gate_world(Command(type=CommandType.RUN), ctx, world_id)
-        result = await self._application.run(world_id, run_config, **input_kwargs)
-        await self._emit(ctx, "run", world_id)
-        return result
+        return await self._dispatcher.apply_as(
+            ctx,
+            Run(
+                world_id=world_id,
+                run_config=run_config,
+                input_kwargs_json=_input_kwargs_json(input_kwargs),
+            ),
+        )
 
     async def run_episode(self, ctx, world_id, config, **input_kwargs):
-        self._gate_world(Command(type=CommandType.RUN_EPISODE), ctx, world_id)
-        result = await self._application.run_episode(world_id, config, **input_kwargs)
-        await self._emit(
+        return await self._dispatcher.apply_as(
             ctx,
-            "run_episode",
-            world_id,
-            payload_json=json.dumps(
-                {
-                    "episode_id": str(result.episode_id),
-                    "run_id": str(result.run_id) if result.run_id is not None else None,
-                    "start_tick": result.start_tick,
-                    "final_tick": result.final_tick,
-                    "terminated": result.terminated,
-                    "duration_steps": result.duration_steps,
-                }
+            RunEpisode(
+                world_id=world_id,
+                config=config,
+                input_kwargs_json=_input_kwargs_json(input_kwargs),
             ),
         )
-        return result
 
     async def run_rollout(self, ctx, world_id, config, **input_kwargs):
-        self._gate_world(Command(type=CommandType.RUN_ROLLOUT), ctx, world_id)
-        result = await self._application.run_rollout(world_id, config, **input_kwargs)
-        await self._emit(
+        return await self._dispatcher.apply_as(
             ctx,
-            "run_rollout",
-            world_id,
-            payload_json=json.dumps(
-                {
-                    "num_episodes": result.num_episodes,
-                    "total_duration_steps": result.total_duration_steps,
-                    "episode_world_ids": [str(episode.world_id) for episode in result.episodes],
-                }
+            RunRollout(
+                world_id=world_id,
+                config=config,
+                input_kwargs_json=_input_kwargs_json(input_kwargs),
             ),
         )
-        return result
 
     async def autoresearch(
         self,
@@ -363,45 +402,21 @@ class CommandGateway:
         lab_world_id=None,
         on_iteration=None,
     ):
-        self._gate_world(
-            Command(
-                type=CommandType.AUTORESEARCH,
-                payload={
-                    "max_iterations": config.max_iterations,
-                    "num_episodes": config.num_episodes,
-                },
-            ),
+        return await self._run_bridge_world(
             ctx,
-            world_id,
-        )
-        result = await self._application.autoresearch(
-            world_id,
-            config,
-            evaluator,
-            prepare_candidate=prepare_candidate,
-            lab_world_id=lab_world_id,
-            on_iteration=on_iteration,
-        )
-        await self._emit(
-            ctx,
-            "autoresearch",
-            world_id,
-            payload_json=json.dumps(
-                {
-                    "experiment_id": config.experiment_id,
-                    "iterations_completed": result.iterations_completed,
-                    "initial_score": (
-                        result.initial_score if math.isfinite(result.initial_score) else None
-                    ),
-                    "final_score": (
-                        result.final_score if math.isfinite(result.final_score) else None
-                    ),
-                    "improved": result.improved,
-                    "lab_world_id": result.lab_world_id,
-                }
+            operation="autoresearch",
+            world_id=world_id,
+            token_cost=200 * max(int(config.max_iterations), 1),
+            durable=False,
+            effect=lambda: self._application.autoresearch(
+                world_id,
+                config,
+                evaluator,
+                prepare_candidate=prepare_candidate,
+                lab_world_id=lab_world_id,
+                on_iteration=on_iteration,
             ),
         )
-        return result
 
     # Queries --------------------------------------------------------
 
@@ -416,17 +431,17 @@ class CommandGateway:
         ticks=None,
         entity_ids=None,
     ):
-        self._gate_durable_world(Command(type=CommandType.QUERY_WORLD), ctx, world_id)
-        result = await self._application.query_components(
-            components,
-            world_id,
-            run_id,
-            storage_config,
-            ticks=ticks,
-            entity_ids=entity_ids,
+        return await self._dispatcher.apply_as(
+            ctx,
+            QueryComponents(
+                components=_component_types(components),
+                world_id=world_id,
+                run_id=run_id,
+                storage_config=storage_config,
+                ticks=tuple(ticks) if ticks is not None else None,
+                entity_ids=tuple(entity_ids) if entity_ids is not None else None,
+            ),
         )
-        await self._emit(ctx, "query_world", world_id)
-        return result
 
     async def query_archetype(
         self,
@@ -440,160 +455,143 @@ class CommandGateway:
         entity_ids=None,
         components=None,
     ):
-        self._gate_durable_world(Command(type=CommandType.QUERY_WORLD), ctx, world_id)
-        result = await self._application.query_archetype(
-            sig,
-            world_id,
-            run_id,
-            storage_config,
-            ticks=ticks,
-            entity_ids=entity_ids,
-            components=components,
+        return await self._dispatcher.apply_as(
+            ctx,
+            QueryArchetype(
+                signature=_component_types(sig),
+                world_id=world_id,
+                run_id=run_id,
+                storage_config=storage_config,
+                ticks=tuple(ticks) if ticks is not None else None,
+                entity_ids=tuple(entity_ids) if entity_ids is not None else None,
+                components=(_component_types(components) if components is not None else None),
+            ),
         )
-        await self._emit(ctx, "query_world", world_id)
-        return result
 
     async def list_signatures(self, ctx, storage_config=None, *, world_id=None):
         if world_id is None:
-            self._gate_application(Command(type=CommandType.LIST_SIGNATURES), ctx)
-        else:
-            self._gate_durable_world(Command(type=CommandType.LIST_SIGNATURES), ctx, world_id)
-        result = await self._application.list_signatures(storage_config, world_id=world_id)
-        await self._emit(ctx, "list_signatures", world_id)
-        return result
+            return await self._dispatcher.apply_as(
+                ctx,
+                ListSignatures(storage_config=storage_config),
+            )
+        return await self._dispatcher.apply_as(
+            ctx,
+            ListWorldSignatures(
+                world_id=world_id,
+                storage_config=storage_config,
+            ),
+        )
 
     async def get_audit_history(self, ctx, world_id=None, **filters):
         if world_id is None:
-            self._gate_application(Command(type=CommandType.GET_AUDIT_HISTORY), ctx)
-        else:
-            self._gate_durable_world(Command(type=CommandType.GET_AUDIT_HISTORY), ctx, world_id)
-        result = await self._application.get_audit_history(world_id, **filters)
-        await self._emit(ctx, "get_audit_history", world_id)
-        return result
+            raise ValueError("world_id is required for command audit history")
+        return await self._dispatcher.apply_as(
+            ctx,
+            GetAuditHistory(world_id=world_id, **filters),
+        )
 
     # World wiring/introspection ------------------------------------
 
     async def add_resource(self, ctx, world_id, resource):
-        self._gate_world(Command(type=CommandType.ADD_RESOURCE), ctx, world_id)
-        result = await self._application.add_resource(world_id, resource)
-        await self._emit(ctx, "add_resource", world_id)
-        return result
+        return await self._dispatcher.apply_as(
+            ctx,
+            AddResource(world_id=world_id, resource=resource),
+        )
 
     async def add_hook(self, ctx, world_id, event_type, fn, *, mode="blocking"):
-        self._gate_world(Command(type=CommandType.ADD_HOOK), ctx, world_id)
-        result = await self._application.add_hook(world_id, event_type, fn, mode=mode)
-        await self._emit(ctx, "add_hook", world_id)
-        return result
+        return await self._dispatcher.apply_as(
+            ctx,
+            AddHook(
+                world_id=world_id,
+                event_type=event_type,
+                handler=fn,
+                mode=mode,
+            ),
+        )
 
     async def remove_hook(self, ctx, world_id, handle):
-        self._gate_world(Command(type=CommandType.REMOVE_HOOK), ctx, world_id)
-        await self._application.remove_hook(world_id, handle)
-        await self._emit(ctx, "remove_hook", world_id)
+        return await self._dispatcher.apply_as(
+            ctx,
+            RemoveHook(world_id=world_id, handle=handle),
+        )
 
     async def list_processors(self, ctx, world_id):
-        self._gate_world(Command(type=CommandType.LIST_PROCESSORS), ctx, world_id)
-        result = await self._application.list_processors(world_id)
-        await self._emit(ctx, "list_processors", world_id)
-        return result
+        return await self._dispatcher.apply_as(ctx, ListProcessors(world_id=world_id))
 
     async def list_hooks(self, ctx, world_id):
-        self._gate_world(Command(type=CommandType.LIST_HOOKS), ctx, world_id)
-        result = await self._application.list_hooks(world_id)
-        await self._emit(ctx, "list_hooks", world_id)
-        return result
+        return await self._dispatcher.apply_as(ctx, ListHooks(world_id=world_id))
 
     async def list_resources(self, ctx, world_id):
-        self._gate_world(Command(type=CommandType.LIST_RESOURCES), ctx, world_id)
-        result = await self._application.list_resources(world_id)
-        await self._emit(ctx, "list_resources", world_id)
-        return result
+        return await self._dispatcher.apply_as(ctx, ListResources(world_id=world_id))
 
     # Artifacts and evaluation --------------------------------------
 
     async def ingest_artifacts(self, ctx, world_id, sources, *, storage_config=None):
-        self._gate_world(Command(type=CommandType.INGEST_ARTIFACTS), ctx, world_id)
-        result = await self._application.ingest_artifacts(
-            world_id, sources, storage_config=storage_config
-        )
-        await self._emit(ctx, "ingest_artifacts", world_id)
-        return result
-
-    async def query_artifacts(self, ctx, world_id, *, storage_config=None):
-        self._gate_durable_world(Command(type=CommandType.QUERY_WORLD), ctx, world_id)
-        result = await self._application.query_artifacts(world_id, storage_config=storage_config)
-        await self._emit(ctx, "query_artifacts", world_id)
-        return result
-
-    async def evaluate(self, ctx, world_id, components, **kwargs):
-        self._gate_durable_world(Command(type=CommandType.EVALUATE), ctx, world_id)
-        result = await self._application.evaluate(world_id, components, **kwargs)
-        await self._emit(
+        return await self._run_bridge_world(
             ctx,
-            "evaluate",
-            world_id,
-            payload_json=json.dumps(
-                {
-                    "evaluation_id": kwargs.get("evaluation_id"),
-                    "grader_id": kwargs["contract"].grader_id,
-                    "outcome": result.outcome,
-                }
+            operation="ingest_artifacts",
+            world_id=world_id,
+            token_cost=10,
+            durable=False,
+            effect=lambda: self._application.ingest_artifacts(
+                world_id,
+                sources,
+                storage_config=storage_config,
             ),
         )
-        return result
+
+    async def query_artifacts(self, ctx, world_id, *, storage_config=None):
+        return await self._run_bridge_world(
+            ctx,
+            operation="query_artifacts",
+            world_id=world_id,
+            token_cost=5,
+            durable=True,
+            effect=lambda: self._application.query_artifacts(
+                world_id,
+                storage_config=storage_config,
+            ),
+        )
+
+    async def evaluate(self, ctx, world_id, components, **kwargs):
+        return await self._run_bridge_world(
+            ctx,
+            operation="evaluate",
+            world_id=world_id,
+            token_cost=10,
+            durable=True,
+            effect=lambda: self._application.evaluate(world_id, components, **kwargs),
+        )
 
     # Deferred command acceptance ----------------------------------
 
-    async def submit(self, ctx, world_id, command):
-        guardrail_authorize(command, ctx)
-        await self._application.require_world(world_id)
-        self._application.validate_deferred_command(command)
-        self._gate(
-            command,
+    async def submit(self, ctx, world_id, command: Command):
+        operation, options = deferred_operation(world_id, command)
+        return await self._dispatcher.defer_as(
             ctx,
-            world_id=world_id,
-            target_tick=command.tick,
+            operation,
+            options,
+            command_id=command.id,
+            version=command.version,
         )
-        command_id = await self._application.submit(
-            world_id,
-            command,
-            principal_id=ctx.id,
-            origin="gateway",
-        )
-        return command_id
 
-    async def submit_batch(self, ctx, world_id, commands):
-        if not commands:
-            raise ValueError("commands must not be empty")
-        for command in commands:
-            guardrail_authorize(command, ctx)
-        await self._application.require_world(world_id)
-        for command in commands:
-            self._application.validate_deferred_command(command)
-        self._gate_batch(commands, ctx, world_id=world_id)
-        return await self._application.submit_batch(
-            world_id,
-            commands,
-            principal_id=ctx.id,
-            origin="gateway",
+    async def submit_batch(self, ctx, world_id, commands: list[Command]):
+        items = tuple(
+            DeferredItem(
+                operation=operation,
+                options=options,
+                command_id=command.id,
+                version=command.version,
+            )
+            for command in commands
+            for operation, options in (deferred_operation(world_id, command),)
         )
+        return await self._dispatcher.defer_batch_as(ctx, items)
 
     async def submit_spawn(self, ctx, world_id, components, *, tick=0, priority=0):
-        command = Command(type=CommandType.SPAWN)
-        guardrail_authorize(command, ctx)
-        await self._application.require_world(world_id)
-        self._gate(
-            command,
+        entity_id, _command_id = await self._dispatcher.defer_spawn_as(
             ctx,
-            world_id=world_id,
-            target_tick=tick,
+            Spawn.from_components(world_id=world_id, components=components),
+            DurableOptions(target_tick=tick, priority=priority),
         )
-        entity_id, command = await self._application.submit_spawn(
-            world_id,
-            components,
-            tick=tick,
-            priority=priority,
-            principal_id=ctx.id,
-            origin="gateway",
-        )
-        del command  # durable admission/outbox is the queued-event authority
         return entity_id

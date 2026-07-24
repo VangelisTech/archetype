@@ -115,12 +115,6 @@ method = "to_pylist"
 reason = "Episode-termination boundary: StorageService admits and materializes the one-row (n_done, n_total) reduction before its all/any values enter Python control flow to stop the episode loop."
 
 [[entries]]
-path = "src/archetype/app/audit/service.py"
-line = 257
-method = "to_pylist"
-reason = "Bounded audit projection boundary: StorageService admits and materializes already filtered, limited audit rows before conversion into the application-owned list[Command] history contract."
-
-[[entries]]
 path = "src/archetype/world/resume.py"
 line = 125
 method = "to_pylist"

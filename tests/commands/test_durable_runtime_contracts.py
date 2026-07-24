@@ -6,16 +6,23 @@
 from __future__ import annotations
 
 import sqlite3
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
-from pydantic import create_model
+from pydantic import BaseModel, create_model
 from uuid_utils import uuid7
 
-from archetype.app.commands.service import CommandScheduler
 from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.models import ActorCtx
-from archetype.app.models import Command, CommandType
+from archetype.commands import (
+    ActorCtx,
+    CommandScheduler,
+    DeferredItem,
+    DurableOperation,
+    DurableOptions,
+    OperationRegistry,
+    OperationSpec,
+)
 from archetype.core.aio import AsyncWorld
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
@@ -23,7 +30,6 @@ from archetype.core.errors import AmbiguousTickCommitError
 from archetype.core.hooks import HookRegistry, OnDestroy
 from archetype.core.interfaces import StaleWriterError
 from archetype.core.resources import Resources
-from archetype.errors import WorldNotFoundError
 from archetype.storage.catalog import (
     CommandConflictError,
     SqliteControlCatalog,
@@ -31,6 +37,16 @@ from archetype.storage.catalog import (
     catalog_path_for,
 )
 from archetype.storage.commit import CatalogCommitCoordinator
+from archetype.world.handlers import materialize_locked
+from archetype.world.models import (
+    PORTABLE_TICK_OPERATION_TYPES,
+    ComponentTypeRef,
+    ComponentValue,
+    RemoveComponents,
+    Spawn,
+    SpawnReserved,
+    Update,
+)
 
 pytestmark = [
     pytest.mark.contract("commands.identity.idempotent"),
@@ -45,7 +61,7 @@ class DurableMarker(Component):
 
 
 async def _materializer_harness(tmp_path, namespace: str):
-    """Build the command seam without the temporary application container."""
+    """Build the canonical registry/scheduler seam without the app container."""
     world_id = str(uuid7())
     run_id = uuid7()
     catalog = SqliteControlCatalog(tmp_path / f"{namespace}.db")
@@ -78,29 +94,113 @@ async def _materializer_harness(tmp_path, namespace: str):
         commit_coordinator=coordinator,
     )
 
-    async def require_live_world(candidate) -> None:
-        if str(candidate) != world_id:
-            raise WorldNotFoundError(candidate)
-
-    async def resolve_control_catalog(candidate):
+    async def resolve_control_catalog(candidate: str):
         assert str(candidate) == world_id
         return catalog
-
-    async def list_catalog_world_ids() -> list[str]:
-        return [world_id]
 
     async def reserve_entity_ids(candidate, count: int) -> list[int]:
         assert str(candidate) == world_id
         return world.reserve_entity_ids(count)
 
+    async def direct_handler(_operation: BaseModel) -> None:
+        raise AssertionError("durable materialization must not call the direct handler")
+
+    def summarize(operation: BaseModel) -> dict[str, Any]:
+        return {
+            "operation": cast("Any", operation).operation,
+            "world_id": str(cast("Any", operation).world_id),
+        }
+
+    registry = OperationRegistry()
+    for model in PORTABLE_TICK_OPERATION_TYPES:
+        operation_name = model.model_fields["operation"].default
+        assert isinstance(operation_name, str)
+        registry.register(
+            OperationSpec(
+                name=operation_name,
+                model=model,
+                handler=direct_handler,
+                permission=operation_name,
+                summarize=summarize,
+                quota_scope="live_world",
+                world_key=lambda operation: cast("Any", operation).world_id,
+                durable=DurableOperation(
+                    decode=model.model_validate_json,
+                    materialize=cast("Any", materialize_locked),
+                ),
+            )
+        )
+
     scheduler = CommandScheduler(
-        require_live_world=require_live_world,
-        resolve_control_catalog=resolve_control_catalog,
-        list_catalog_world_ids=list_catalog_world_ids,
+        registry=registry,
+        catalog_for_world=resolve_control_catalog,
         reserve_entity_ids=reserve_entity_ids,
         owner="materializer-test",
     )
     return scheduler, world, catalog, coordinator
+
+
+def _components(*values: Component) -> tuple[ComponentValue, ...]:
+    return tuple(ComponentValue.from_component(value) for value in values)
+
+
+def _spawn_reserved(
+    world_id: object,
+    entity_id: int,
+    *components: Component,
+) -> SpawnReserved:
+    return SpawnReserved(
+        world_id=cast("Any", world_id),
+        entity_id=entity_id,
+        components=_components(*components),
+    )
+
+
+def _update(
+    world_id: object,
+    entity_id: int,
+    *components: Component,
+) -> Update:
+    return Update(
+        world_id=cast("Any", world_id),
+        entity_id=entity_id,
+        components=_components(*components),
+    )
+
+
+def _item(
+    operation: BaseModel,
+    *,
+    target_tick: int = 0,
+    priority: int = 0,
+    max_attempts: int = 3,
+    command_id=None,
+) -> DeferredItem:
+    return DeferredItem(
+        operation=operation,
+        options=DurableOptions(
+            target_tick=target_tick,
+            priority=priority,
+            max_attempts=max_attempts,
+        ),
+        command_id=command_id,
+    )
+
+
+async def _defer_reserved_spawn(
+    container: ServiceContainer,
+    world_id: object,
+    marker: DurableMarker,
+    *,
+    target_tick: int = 0,
+) -> tuple[int, object]:
+    """Use the trusted path only after the world has reserved the exact ID."""
+    (entity_id,) = await container.application.reserve_entity_ids(world_id, 1)
+    command_id = await container.command_dispatcher.defer(
+        _spawn_reserved(world_id, entity_id, marker),
+        DurableOptions(target_tick=target_tick),
+    )
+    return entity_id, command_id
 
 
 # Same wire name, different durable schemas: command hydration must select by
@@ -139,35 +239,38 @@ async def test_scheduler_materializes_the_exact_world_in_ledger_order_and_stages
         tmp_path,
         "exact-world",
     )
-    spawn = Command(
-        type=CommandType.SPAWN,
-        priority=5,
-        payload={"entity_id": 41, "components": [DurableMarker(value=41)]},
+    first_entity_id, spawn_entity_id = world.reserve_entity_ids(2)
+    first = _spawn_reserved(world.world_id, first_entity_id)
+    spawn = _spawn_reserved(
+        world.world_id,
+        spawn_entity_id,
+        DurableMarker(value=41),
     )
-    noop = Command(type=CommandType.CUSTOM, priority=0)
-    seen: list[tuple[AsyncWorld, CommandType]] = []
-    real_apply = scheduler._apply
+    seen: list[tuple[AsyncWorld, int]] = []
+    real_spawn = world.spawn_with_reserved_id
 
-    async def record_exact_world(actual_world, command):
-        seen.append((actual_world, command.type))
-        await real_apply(actual_world, command)
+    async def record_exact_world(entity_id, components):
+        seen.append((world, entity_id))
+        await real_spawn(entity_id, components)
 
-    monkeypatch.setattr(scheduler, "_apply", record_exact_world)
+    monkeypatch.setattr(world, "spawn_with_reserved_id", record_exact_world)
     try:
-        await scheduler.admit_batch(world.world_id, [spawn, noop])
+        command_ids = await scheduler.admit_batch(
+            (
+                _item(spawn, priority=5),
+                _item(first, priority=0),
+            )
+        )
+        spawn_id, first_id = command_ids
 
-        async def forbid_world_reentry(_candidate):
-            raise AssertionError("materializer must not reacquire live-world admission")
-
-        monkeypatch.setattr(scheduler, "_require_live_world", forbid_world_reentry)
         assert await scheduler.materialize(world, 0) == 2
         assert seen == [
-            (world, CommandType.CUSTOM),
-            (world, CommandType.SPAWN),
+            (world, first_entity_id),
+            (world, spawn_entity_id),
         ]
-        assert coordinator.is_command_staged(0, str(noop.id))
-        assert coordinator.is_command_staged(0, str(spawn.id))
-        assert 41 in world.entity2sig
+        assert coordinator.is_command_staged(0, str(first_id))
+        assert coordinator.is_command_staged(0, str(spawn_id))
+        assert spawn_entity_id in world.entity2sig
 
         # A retry before publication sees the same staged ledger identities
         # and reports them without replaying their mutations.
@@ -178,8 +281,8 @@ async def test_scheduler_materializes_the_exact_world_in_ledger_order_and_stages
         context = await coordinator.begin_tick(0)
         await coordinator.publish_tick(0, context, list(world.active_signatures))
         records = {record.command_id: record for record in await scheduler.records(world.world_id)}
-        assert records[str(noop.id)].status == "APPLIED"
-        assert records[str(spawn.id)].status == "APPLIED"
+        assert records[str(first_id)].status == "APPLIED"
+        assert records[str(spawn_id)].status == "APPLIED"
     finally:
         await catalog.close()
 
@@ -192,40 +295,44 @@ async def test_scheduler_preserves_permanent_retryable_and_tail_release_classifi
         tmp_path,
         "classification",
     )
-    permanent = Command(
-        type=CommandType.SPAWN,
-        priority=0,
-        payload={"components": [{"value": 1}]},
-    )
-    transient = Command(type=CommandType.CUSTOM, priority=1)
-    tail = Command(type=CommandType.CUSTOM, priority=2)
-    real_apply = scheduler._apply
+    permanent_entity_id, transient_entity_id, tail_entity_id = world.reserve_entity_ids(3)
+    await world.spawn_with_reserved_id(permanent_entity_id, [])
+    permanent = _spawn_reserved(world.world_id, permanent_entity_id)
+    transient = _spawn_reserved(world.world_id, transient_entity_id)
+    tail = _spawn_reserved(world.world_id, tail_entity_id)
+    real_spawn = world.spawn_with_reserved_id
     fail_transient = True
 
-    async def classify(actual_world, command):
+    async def classify(entity_id, components):
         nonlocal fail_transient
-        if command.id == transient.id and fail_transient:
+        if entity_id == transient_entity_id and fail_transient:
             fail_transient = False
             raise RuntimeError("temporary dispatcher outage")
-        await real_apply(actual_world, command)
+        await real_spawn(entity_id, components)
 
-    monkeypatch.setattr(scheduler, "_apply", classify)
+    monkeypatch.setattr(world, "spawn_with_reserved_id", classify)
     try:
-        await scheduler.admit_batch(world.world_id, [permanent, transient, tail])
+        permanent_id, transient_id, tail_id = await scheduler.admit_batch(
+            (
+                _item(permanent, priority=0),
+                _item(transient, priority=1),
+                _item(tail, priority=2),
+            )
+        )
 
         assert await scheduler.materialize(world, 0) == 0
         first = {record.command_id: record for record in await scheduler.records(world.world_id)}
-        assert first[str(permanent.id)].status == "REJECTED"
-        assert first[str(transient.id)].status == "RETRYABLE"
-        assert first[str(tail.id)].status == "PENDING"
+        assert first[str(permanent_id)].status == "REJECTED"
+        assert first[str(transient_id)].status == "RETRYABLE"
+        assert first[str(tail_id)].status == "PENDING"
 
         assert await scheduler.materialize(world, 0) == 2
         context = await coordinator.begin_tick(0)
         await coordinator.publish_tick(0, context, [])
         settled = {record.command_id: record for record in await scheduler.records(world.world_id)}
-        assert settled[str(permanent.id)].status == "REJECTED"
-        assert settled[str(transient.id)].status == "APPLIED"
-        assert settled[str(tail.id)].status == "APPLIED"
+        assert settled[str(permanent_id)].status == "REJECTED"
+        assert settled[str(transient_id)].status == "APPLIED"
+        assert settled[str(tail_id)].status == "APPLIED"
     finally:
         await catalog.close()
 
@@ -238,21 +345,41 @@ async def test_command_id_is_durable_idempotency_identity(tmp_path):
         world = await container.world_lifecycle.create_world(
             WorldConfig(name="idempotency"), _storage(tmp_path)
         )
-        command = Command(
-            type=CommandType.SPAWN,
-            payload={"components": [DurableMarker(value=1)]},
+        command_id = uuid7()
+        operation = Spawn.from_components(
+            world_id=world.world_id,
+            components=[DurableMarker(value=1)],
+        )
+        options = DurableOptions(target_tick=0)
+
+        first = await container.command_dispatcher.defer_spawn_as(
+            ctx,
+            operation,
+            options,
+            command_id=command_id,
+        )
+        replay = await container.command_dispatcher.defer_spawn_as(
+            ctx,
+            operation,
+            options,
+            command_id=command_id,
         )
 
-        first = await container.command_gateway.submit(ctx, world.world_id, command)
-        replay = await container.command_gateway.submit(ctx, world.world_id, command)
-
-        assert replay == first == command.id
+        assert replay == first == (1, command_id)
         assert await container.command_scheduler.pending_count(world.world_id) == 1
         assert len(await container.command_scheduler.records(world.world_id)) == 1
 
-        changed = command.model_copy(update={"payload": {"components": [DurableMarker(value=2)]}})
+        changed = Spawn.from_components(
+            world_id=world.world_id,
+            components=[DurableMarker(value=2)],
+        )
         with pytest.raises(CommandConflictError):
-            await container.command_gateway.submit(ctx, world.world_id, changed)
+            await container.command_dispatcher.defer_spawn_as(
+                ctx,
+                changed,
+                options,
+                command_id=command_id,
+            )
         assert await container.command_scheduler.pending_count(world.world_id) == 1
     finally:
         await container.shutdown()
@@ -261,27 +388,30 @@ async def test_command_id_is_durable_idempotency_identity(tmp_path):
 @pytest.mark.asyncio
 async def test_permanent_rejection_does_not_block_later_same_tick_command(tmp_path):
     container = ServiceContainer(audit_storage_config=_audit_storage(tmp_path))
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
         world = await container.world_lifecycle.create_world(
             WorldConfig(name="poison"), _storage(tmp_path)
         )
-        poison = Command(
-            type=CommandType.SPAWN,
-            payload={"components": [{"value": 1}]},  # missing component type
+        entity_id = await container.application.create_entity(
+            world.world_id,
+            [DurableMarker(value=0)],
         )
-        valid = Command(
-            type=CommandType.SPAWN,
-            payload={"components": [DurableMarker(value=2)]},
+        (reserved_id,) = await container.application.reserve_entity_ids(world.world_id, 1)
+        poison = _spawn_reserved(world.world_id, entity_id, DurableMarker(value=1))
+        valid = _spawn_reserved(world.world_id, reserved_id, DurableMarker(value=2))
+        await container.command_dispatcher.defer_batch(
+            (
+                _item(poison),
+                _item(valid),
+            ),
         )
-        await container.command_gateway.submit_batch(ctx, world.world_id, [poison, valid])
 
         applied = await container.application.step(world.world_id, RunConfig())
         records = await container.command_scheduler.records(world.world_id)
 
         assert applied == 1
         assert [record.status for record in records] == ["REJECTED", "APPLIED"]
-        assert len(world.entity2sig) == 1
+        assert set(world.entity2sig) == {entity_id, reserved_id}
     finally:
         await container.shutdown()
 
@@ -294,23 +424,30 @@ async def test_transient_failure_retries_and_preserves_tail_order(tmp_path, monk
         world = await container.world_lifecycle.create_world(
             WorldConfig(name="retry"), _storage(tmp_path)
         )
-        first = Command(type=CommandType.CUSTOM, payload={"position": 1})
-        second = Command(
-            type=CommandType.SPAWN,
-            payload={"components": [DurableMarker(value=2)]},
+        entity_id = await container.application.create_entity(
+            world.world_id,
+            [DurableMarker(value=0)],
         )
-        await container.command_gateway.submit_batch(ctx, world.world_id, [first, second])
-        real_apply = container.command_scheduler._apply
+        first = _update(world.world_id, entity_id, DurableMarker(value=1))
+        second = _update(world.world_id, entity_id, DurableMarker(value=2))
+        await container.command_dispatcher.defer_batch_as(
+            ctx,
+            (
+                _item(first),
+                _item(second, priority=1),
+            ),
+        )
+        real_update = world.update_entity
         failed = False
 
-        async def fail_once(world_id, command):
+        async def fail_once(actual_entity_id, components):
             nonlocal failed
-            if command.id == first.id and not failed:
+            if components[0].value == 1 and not failed:
                 failed = True
                 raise RuntimeError("temporary dispatcher outage")
-            return await real_apply(world_id, command)
+            return await real_update(actual_entity_id, components)
 
-        monkeypatch.setattr(container.command_scheduler, "_apply", fail_once)
+        monkeypatch.setattr(world, "update_entity", fail_once)
         assert await container.application.step(world.world_id, RunConfig()) == 0
         first_attempt = await container.command_scheduler.records(world.world_id)
         assert [record.status for record in first_attempt] == ["RETRYABLE", "PENDING"]
@@ -331,20 +468,31 @@ async def test_exhausted_transient_command_dead_letters_then_tail_continues(tmp_
         world = await container.world_lifecycle.create_world(
             WorldConfig(name="dead-letter"), _storage(tmp_path)
         )
-        poison = Command(type=CommandType.CUSTOM, payload={"poison": True})
-        valid = Command(
-            type=CommandType.SPAWN,
-            payload={"components": [DurableMarker(value=9)]},
+        poison_entity = await container.application.create_entity(
+            world.world_id,
+            [DurableMarker(value=0)],
         )
-        await container.command_gateway.submit_batch(ctx, world.world_id, [poison, valid])
-        real_apply = container.command_scheduler._apply
+        valid_entity = await container.application.create_entity(
+            world.world_id,
+            [DurableMarker(value=0)],
+        )
+        poison = _update(world.world_id, poison_entity, DurableMarker(value=1))
+        valid = _update(world.world_id, valid_entity, DurableMarker(value=9))
+        await container.command_dispatcher.defer_batch_as(
+            ctx,
+            (
+                _item(poison, max_attempts=3),
+                _item(valid, priority=1),
+            ),
+        )
+        real_update = world.update_entity
 
-        async def fail_poison(world_id, command):
-            if command.id == poison.id:
+        async def fail_poison(entity_id, components):
+            if entity_id == poison_entity:
                 raise RuntimeError("still unavailable")
-            return await real_apply(world_id, command)
+            return await real_update(entity_id, components)
 
-        monkeypatch.setattr(container.command_scheduler, "_apply", fail_poison)
+        monkeypatch.setattr(world, "update_entity", fail_poison)
         assert await container.application.step(world.world_id, RunConfig()) == 0
         assert await container.application.step(world.world_id, RunConfig()) == 0
         assert await container.application.step(world.world_id, RunConfig()) == 1
@@ -362,16 +510,15 @@ async def test_manifest_failure_keeps_command_leased_and_retry_does_not_restage(
     tmp_path, monkeypatch
 ):
     container = ServiceContainer(audit_storage_config=_audit_storage(tmp_path))
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
         world = await container.world_lifecycle.create_world(
             WorldConfig(name="atomic"), _storage(tmp_path)
         )
-        command = Command(
-            type=CommandType.SPAWN,
-            payload={"entity_id": 41, "components": [DurableMarker(value=41)]},
+        entity_id, command_id = await _defer_reserved_spawn(
+            container,
+            world.world_id,
+            DurableMarker(value=41),
         )
-        await container.command_gateway.submit(ctx, world.world_id, command)
         record = await container.world_registry.storage_record(str(world.world_id))
         assert record is not None
         catalog = container.storage_service.get_control_catalog(record[0])
@@ -391,14 +538,23 @@ async def test_manifest_failure_keeps_command_leased_and_retry_does_not_restage(
 
         (leased,) = await container.command_scheduler.records(world.world_id)
         assert leased.status == "LEASED"
-        signature = world.entity2sig[41]
-        assert len([row for row in world.spawn_cache[signature] if row["entity_id"] == 41]) == 1
+        assert leased.command_id == str(command_id)
+        signature = world.entity2sig[entity_id]
+        assert (
+            len([row for row in world.spawn_cache[signature] if row["entity_id"] == entity_id]) == 1
+        )
 
         assert await container.application.step(world.world_id, RunConfig()) == 1
         (applied,) = await container.command_scheduler.records(world.world_id)
         assert applied.status == "APPLIED" and applied.applied_tick == 0
         assert (
-            len([row for row in world.spawn_cache.get(signature, []) if row["entity_id"] == 41])
+            len(
+                [
+                    row
+                    for row in world.spawn_cache.get(signature, [])
+                    if row["entity_id"] == entity_id
+                ]
+            )
             == 0
         )
     finally:
@@ -411,17 +567,16 @@ async def test_committed_manifest_response_loss_reconciles_without_replaying_tic
     monkeypatch,
 ) -> None:
     container = ServiceContainer(audit_storage_config=_audit_storage(tmp_path))
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
         world = await container.world_lifecycle.create_world(
             WorldConfig(name="committed-response-loss"),
             _storage(tmp_path, "committed-response-loss"),
         )
-        command = Command(
-            type=CommandType.SPAWN,
-            payload={"entity_id": 41, "components": [DurableMarker(value=41)]},
+        entity_id, command_id = await _defer_reserved_spawn(
+            container,
+            world.world_id,
+            DurableMarker(value=41),
         )
-        await container.command_gateway.submit(ctx, world.world_id, command)
         record = await container.world_registry.storage_record(str(world.world_id))
         assert record is not None
         catalog = container.storage_service.get_control_catalog(record[0])
@@ -435,14 +590,15 @@ async def test_committed_manifest_response_loss_reconciles_without_replaying_tic
 
         monkeypatch.setattr(world, "_materialize_commands", record_materialize)
         append_calls = 0
-        real_append = world.updater.store.append
+        world_store = cast("Any", world.updater).store
+        real_append = world_store.append
 
         async def record_append(sig, frame):
             nonlocal append_calls
             append_calls += 1
             return await real_append(sig, frame)
 
-        monkeypatch.setattr(world.updater.store, "append", record_append)
+        monkeypatch.setattr(world_store, "append", record_append)
         execute_calls = 0
         real_execute = world.system.execute
 
@@ -480,16 +636,18 @@ async def test_committed_manifest_response_loss_reconciles_without_replaying_tic
         assert execute_calls == 1
         assert append_calls == 1
         assert publish_calls == 1, "exact visibility must avoid a second fenced POST"
-        assert not world.commit_coordinator.is_command_staged(0, str(command.id))
+        coordinator = world.commit_coordinator
+        assert coordinator is not None
+        assert not cast("Any", coordinator).is_command_staged(0, str(command_id))
 
         audit_rows = (await container.audit_log.query(world_id=world.world_id)).to_pylist()
-        command_rows = [row for row in audit_rows if row["command_id"] == str(command.id)]
+        command_rows = [row for row in audit_rows if row["command_id"] == str(command_id)]
         assert [row["status"] for row in command_rows] == ["queued", "applied"]
         assert world.tick == 1
-        assert 41 in world.entity2sig
-        signature = world.entity2sig[41]
+        assert entity_id in world.entity2sig
+        signature = world.entity2sig[entity_id]
         physical_rows = (
-            await world.updater.store.get_archetype_df(
+            await world_store.get_archetype_df(
                 signature,
                 str(world.world_id),
                 str(world.run_id),
@@ -508,21 +666,22 @@ async def test_exact_visible_commit_finalizes_after_fence_handoff_without_second
     monkeypatch,
 ) -> None:
     container = ServiceContainer(audit_storage_config=_audit_storage(tmp_path))
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
         world = await container.world_lifecycle.create_world(
             WorldConfig(name="response-loss-fence-handoff"),
             _storage(tmp_path, "response-loss-fence-handoff"),
         )
-        command = Command(
-            type=CommandType.SPAWN,
-            payload={"entity_id": 45, "components": [DurableMarker(value=45)]},
+        _entity_id, command_id = await _defer_reserved_spawn(
+            container,
+            world.world_id,
+            DurableMarker(value=45),
         )
-        await container.command_gateway.submit(ctx, world.world_id, command)
         record = await container.world_registry.storage_record(str(world.world_id))
         assert record is not None
         catalog = container.storage_service.get_control_catalog(record[0])
-        original_epoch = world.commit_coordinator.writer_epoch
+        coordinator = world.commit_coordinator
+        assert coordinator is not None
+        original_epoch = cast("Any", coordinator).writer_epoch
         publish_calls = 0
         replacement_epoch = None
         real_publish = catalog.publish_manifest
@@ -555,7 +714,7 @@ async def test_exact_visible_commit_finalizes_after_fence_handoff_without_second
         assert applied.status == "APPLIED"
         assert applied.applied_tick == 0
         assert applied.commit_token == manifest.commit_token
-        assert not world.commit_coordinator.is_command_staged(0, str(command.id))
+        assert not cast("Any", coordinator).is_command_staged(0, str(command_id))
 
         with pytest.raises(StaleWriterError):
             await container.application.step(world.world_id, RunConfig())
@@ -579,17 +738,16 @@ async def test_destroy_reconciles_ambiguous_prepared_command_before_cancellation
     monkeypatch,
 ) -> None:
     container = ServiceContainer(audit_storage_config=_audit_storage(tmp_path))
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
         world = await container.world_lifecycle.create_world(
             WorldConfig(name="ambiguous-destroy"),
             _storage(tmp_path, "ambiguous-destroy"),
         )
-        command = Command(
-            type=CommandType.SPAWN,
-            payload={"entity_id": 51, "components": [DurableMarker(value=51)]},
+        entity_id, command_id = await _defer_reserved_spawn(
+            container,
+            world.world_id,
+            DurableMarker(value=51),
         )
-        await container.command_gateway.submit(ctx, world.world_id, command)
         destroy_events: list[str] = []
 
         async def record_destroy(_event: OnDestroy) -> None:
@@ -636,7 +794,9 @@ async def test_destroy_reconciles_ambiguous_prepared_command_before_cancellation
         assert world.has_prepared_tick_commit
         assert await catalog.list_manifests(str(world.world_id), str(world.run_id)) == []
 
-        prepared_token = world._commit_ctx.commit_token  # noqa: SLF001 - exact retry oracle
+        prepared_context = world._commit_ctx  # noqa: SLF001 - exact retry oracle
+        assert prepared_context is not None
+        prepared_token = prepared_context.commit_token
         with pytest.raises(AmbiguousTickCommitError):
             await container.application.destroy_world(world.world_id)
 
@@ -645,7 +805,9 @@ async def test_destroy_reconciles_ambiguous_prepared_command_before_cancellation
         assert still_leased.applied_tick is None
         assert still_leased.commit_token is None
         assert world.has_prepared_tick_commit
-        assert world._commit_ctx.commit_token == prepared_token  # noqa: SLF001
+        retry_context = world._commit_ctx  # noqa: SLF001
+        assert retry_context is not None
+        assert retry_context.commit_token == prepared_token
         assert await container.world_registry.contains(world.world_id)
         catalog_world = await catalog.get_world(str(world.world_id))
         assert catalog_world is not None and catalog_world.status == "active"
@@ -669,9 +831,9 @@ async def test_destroy_reconciles_ambiguous_prepared_command_before_cancellation
         assert destroy_events == ["destroy"]
 
         audit_rows = (await container.audit_log.query(world_id=world.world_id)).to_pylist()
-        command_rows = [row for row in audit_rows if row["command_id"] == str(command.id)]
+        command_rows = [row for row in audit_rows if row["command_id"] == str(command_id)]
         assert [row["status"] for row in command_rows] == ["queued", "applied"]
-        signature = world.entity2sig[51]
+        signature = world.entity2sig[entity_id]
         physical_rows = (
             await world.updater.store.get_archetype_df(
                 signature,
@@ -722,8 +884,7 @@ async def test_expired_lease_is_recovered_by_another_owner_without_dequeue(tmp_p
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
         world = await container.world_lifecycle.create_world(WorldConfig(name="lease"), storage)
-        command = Command(type=CommandType.CUSTOM)
-        await container.command_gateway.submit(ctx, world.world_id, command)
+        await container.command_gateway.submit_spawn(ctx, world.world_id, [])
         record = await container.world_registry.storage_record(str(world.world_id))
         assert record is not None
         catalog = container.storage_service.get_control_catalog(record[0])
@@ -732,7 +893,8 @@ async def test_expired_lease_is_recovered_by_another_owner_without_dequeue(tmp_p
 
         with sqlite3.connect(catalog_path_for(storage)) as connection:
             connection.execute(
-                "UPDATE commands SET lease_expires_at=0 WHERE command_id=?", (str(command.id),)
+                "UPDATE commands SET lease_expires_at=0 WHERE command_id=?",
+                (first[0].command_id,),
             )
         recovered = await catalog.lease_commands(str(world.world_id), 0, "worker-b")
         assert recovered[0].lease_owner == "worker-b"
@@ -749,12 +911,12 @@ async def test_command_outbox_projects_queued_and_applied_with_watermark(tmp_pat
         world = await container.world_lifecycle.create_world(
             WorldConfig(name="projection"), _storage(tmp_path)
         )
-        command = Command(type=CommandType.CUSTOM)
-        await container.command_gateway.submit(ctx, world.world_id, command)
+        await container.command_gateway.submit_spawn(ctx, world.world_id, [])
+        (command,) = await container.command_scheduler.records(world.world_id)
         await container.application.step(world.world_id, RunConfig())
 
         rows = (await container.audit_log.query(world_id=world.world_id)).to_pylist()
-        command_rows = [row for row in rows if row["command_id"] == str(command.id)]
+        command_rows = [row for row in rows if row["command_id"] == command.command_id]
         assert [row["status"] for row in command_rows] == ["queued", "applied"]
         assert await container.command_scheduler.outbox_progress() == {str(world.world_id): (2, 0)}
     finally:
@@ -767,19 +929,21 @@ async def test_cold_readonly_open_discovers_unprojected_command_outbox(tmp_path)
     audit_storage = _audit_storage(tmp_path, "cold-outbox-audit")
     writer = ServiceContainer(audit_storage_config=audit_storage)
     reader = ServiceContainer(audit_storage_config=audit_storage)
-    command = Command(type=CommandType.CUSTOM)
     try:
         world = await writer.world_lifecycle.create_world(
             WorldConfig(name="cold-outbox"), world_storage
         )
-        await writer.command_scheduler.admit(world.world_id, command)
+        _entity_id, command_id = await writer.command_dispatcher.defer_spawn(
+            Spawn.from_components(world_id=world.world_id, components=[]),
+            DurableOptions(target_tick=0),
+        )
 
         assert await reader.command_scheduler.outbox_progress() == {}
         info = await reader.application.open_world_readonly(world_storage, world.world_id)
         assert info.world_id == world.world_id
 
         rows = (await reader.audit_log.query(world_id=world.world_id)).to_pylist()
-        command_rows = [row for row in rows if row["command_id"] == str(command.id)]
+        command_rows = [row for row in rows if row["command_id"] == str(command_id)]
         assert [row["status"] for row in command_rows] == ["queued"]
         assert await reader.command_scheduler.outbox_progress() == {str(world.world_id): (1, 0)}
     finally:
@@ -788,18 +952,25 @@ async def test_cold_readonly_open_discovers_unprojected_command_outbox(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_message_commands_wait_for_scheduled_tick_and_settle_as_noops(tmp_path):
+async def test_portable_commands_wait_for_scheduled_tick_and_settle_in_ledger_order(tmp_path):
     container = ServiceContainer(audit_storage_config=_audit_storage(tmp_path))
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
         world = await container.world_lifecycle.create_world(
             WorldConfig(name="messages"), _storage(tmp_path)
         )
-        commands = [
-            Command(type=CommandType.MESSAGE, tick=tick, payload={"tick": tick})
-            for tick in (2, 0, 1)
-        ]
-        await container.command_gateway.submit_batch(ctx, world.world_id, commands)
+        reserved_ids = await container.application.reserve_entity_ids(world.world_id, 3)
+        items = tuple(
+            _item(
+                _spawn_reserved(
+                    world.world_id,
+                    entity_id,
+                    DurableMarker(value=tick),
+                ),
+                target_tick=tick,
+            )
+            for entity_id, tick in zip(reserved_ids, (2, 0, 1), strict=True)
+        )
+        await container.command_dispatcher.defer_batch(items)
 
         assert await container.application.step(world.world_id, RunConfig()) == 1
         assert await container.command_scheduler.pending_count(world.world_id) == 2
@@ -812,7 +983,7 @@ async def test_message_commands_wait_for_scheduled_tick_and_settle_as_noops(tmp_
             (0, 0),
             (1, 1),
         ]
-        assert world.entity2sig == {}
+        assert set(world.entity2sig) == set(reserved_ids)
     finally:
         await container.shutdown()
 
@@ -827,32 +998,34 @@ async def test_component_wire_identity_survives_same_named_loaded_classes(tmp_pa
         )
         entity_id = await container.application.create_entity(
             world.world_id,
-            [DurableMarker(value=1), WireCollision(value=2)],
+            [
+                DurableMarker(value=1),
+                WireCollision(value=2),  # ty: ignore[unknown-argument]
+            ],
         )
         await container.application.step(world.world_id, RunConfig())
 
-        await container.command_gateway.submit(
+        await container.command_dispatcher.defer_as(
             ctx,
-            world.world_id,
-            Command(
-                type=CommandType.UPDATE,
-                payload={
-                    "entity_id": entity_id,
-                    "components": [WireCollision(value=9)],
-                },
+            _update(
+                world.world_id,
+                entity_id,
+                WireCollision(value=9),  # ty: ignore[unknown-argument]
             ),
+            DurableOptions(target_tick=world.tick),
         )
         assert await container.application.step(world.world_id, RunConfig()) == 1
         rows = (await world.get_components([WireCollision])).collect().to_pylist()
         assert rows[0]["durablewirecollision__value"] == 9
 
-        await container.command_gateway.submit(
+        await container.command_dispatcher.defer_as(
             ctx,
-            world.world_id,
-            Command(
-                type=CommandType.REMOVE_COMPONENT,
-                payload={"entity_id": entity_id, "component_types": [WireCollision]},
+            RemoveComponents(
+                world_id=world.world_id,
+                entity_id=entity_id,
+                component_types=(ComponentTypeRef.from_type(WireCollision),),
             ),
+            DurableOptions(target_tick=world.tick),
         )
         assert await container.application.step(world.world_id, RunConfig()) == 1
         assert world.entity2sig[entity_id] == (DurableMarker,)

@@ -14,16 +14,26 @@
 
 import json
 from enum import StrEnum
-from itertools import count
-from typing import Any
+from typing import Any, cast
 
 import pyarrow as pa
 import uuid_utils as uuid
 from pydantic import BaseModel, Field, FieldSerializationInfo, field_serializer
 from uuid_utils import UUID
 
-# Global sequence counter for command ordering
-_SEQ = count()
+from archetype.commands.models import AuditRow, DurableOptions
+from archetype.core.component import Component
+from archetype.world.models import (
+    AddComponents,
+    ComponentTypeRef,
+    ComponentValue,
+    Despawn,
+    RemoveComponents,
+    Spawn,
+    SpawnReserved,
+    Update,
+    WorldOperation,
+)
 
 
 class CommandType(StrEnum):
@@ -91,7 +101,9 @@ class Command(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     priority: int = 0
     version: int = 1
-    seq: int = Field(default_factory=lambda: next(_SEQ))
+    # Compatibility-only input order. Durable order is assigned atomically by
+    # the control catalog; no process-global sequence authority remains here.
+    seq: int = 0
 
     model_config = dict(frozen=True, arbitrary_types_allowed=True)
 
@@ -142,25 +154,99 @@ class Command(BaseModel):
         )
 
 
-class AuditRow(BaseModel):
-    """One row in the append-only audit log."""
+def _legacy_component(value: object) -> Component:
+    if isinstance(value, Component):
+        return value
+    if isinstance(value, dict):
+        return Component.from_dict(cast("dict[str, Any]", value))
+    raise TypeError("legacy deferred component values must be Component instances or payloads")
 
-    model_config = dict(frozen=True, arbitrary_types_allowed=True)
 
-    # Identity
-    audit_id: UUID = Field(default_factory=uuid.uuid7)
-    command_id: UUID | None = None
-    world_id: str | UUID | None = None
-    actor_id: str | UUID | None = None
+def _legacy_component_type(value: object) -> type[Component]:
+    if isinstance(value, type) and issubclass(value, Component):
+        return value
+    if isinstance(value, str):
+        return Component.get_type_by_name(value)
+    if isinstance(value, dict):
+        return type(_legacy_component(value))
+    raise TypeError("legacy deferred component types must be Component types or names")
 
-    # What happened
-    command_type: str = ""
-    status: str = "applied"  # "applied" | "rejected" | "queued"
-    payload_json: str = "{}"
 
-    # When
-    accepted_at: str = Field(default_factory=lambda: "")
-    applied_at: str = Field(default_factory=lambda: "")
+def _legacy_entity_id(value: object) -> int:
+    if type(value) is int:
+        return value
+    if isinstance(value, str):
+        digits = value[1:] if value[:1] in {"+", "-"} else value
+        if digits and digits.isascii() and digits.isdecimal():
+            return int(value)
+    raise TypeError("entity_id must be an integer or decimal-integer string")
 
-    # Deduplication (nullable)
-    idempotency_key: str | None = None
+
+def deferred_operation(
+    world_id: str | UUID,
+    command: Command,
+) -> tuple[WorldOperation, DurableOptions]:
+    """Translate the finite legacy wire envelope into one exact family model."""
+    payload = command.payload
+    components = tuple(
+        ComponentValue.from_component(_legacy_component(value))
+        for value in payload.get("components", ())
+    )
+
+    operation: WorldOperation
+    if command.type is CommandType.SPAWN:
+        if "entity_id" in payload:
+            operation = SpawnReserved(
+                world_id=world_id,
+                entity_id=_legacy_entity_id(payload["entity_id"]),
+                components=components,
+            )
+        else:
+            operation = Spawn(world_id=world_id, components=components)
+    elif command.type is CommandType.DESPAWN:
+        operation = Despawn(
+            world_id=world_id,
+            entity_id=_legacy_entity_id(payload.get("entity_id")),
+        )
+    elif command.type is CommandType.UPDATE:
+        operation = Update(
+            world_id=world_id,
+            entity_id=_legacy_entity_id(payload.get("entity_id")),
+            components=components,
+        )
+    elif command.type is CommandType.ADD_COMPONENT:
+        operation = AddComponents(
+            world_id=world_id,
+            entity_id=_legacy_entity_id(payload.get("entity_id")),
+            components=components,
+        )
+    elif command.type is CommandType.REMOVE_COMPONENT:
+        raw_types = payload.get("component_types", payload.get("components", ()))
+        operation = RemoveComponents(
+            world_id=world_id,
+            entity_id=_legacy_entity_id(payload.get("entity_id")),
+            component_types=tuple(
+                ComponentTypeRef.from_type(_legacy_component_type(value)) for value in raw_types
+            ),
+        )
+    else:
+        raise ValueError(
+            f"{command.type.value} is direct-only or unsupported and cannot "
+            "enter portable deferred admission"
+        )
+
+    return (
+        operation,
+        DurableOptions(
+            target_tick=command.tick,
+            priority=command.priority,
+        ),
+    )
+
+
+__all__ = [
+    "AuditRow",
+    "Command",
+    "CommandType",
+    "deferred_operation",
+]

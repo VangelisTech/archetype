@@ -26,9 +26,12 @@ async with ArchetypeRuntime() as runtime:
 
 `examples/10_autoresearch.py` is the full runnable version. The runtime path is
 the supported interface; `ServiceContainer.autoresearch_service` is an internal
-implementation seam used by focused repository tests. Authorized API ingress
-routes through the command gate (`CommandType.AUTORESEARCH`, operator+) and
-emits one audit row per loop.
+implementation seam used by focused repository tests. There is no REST route
+for AutoResearch. The temporary untrusted `iCommandGateway.autoresearch`
+surface uses the finite PR-3 workflow bridge: commands-owned `Policy` applies
+the explicit `autoresearch` permission and quota before the bridge delegates
+to `RuntimeApplication`. The bridge attempts one bounded advisory access event
+for the loop; that evidence is not workflow authority.
 
 ## What's Implemented
 
@@ -106,7 +109,7 @@ from archetype.app.research.contracts import AutoResearchConfig, EvaluationResul
 
 
 async def prepare_candidate(context):
-    candidate = await container.world_service.fork_world(
+    candidate = await container.application.fork_world(
         context.base_world_id,
         name=f"candidate-{context.iteration}",
     )
@@ -136,8 +139,13 @@ result = await container.autoresearch_service.run(
     prepare_candidate=prepare_candidate,
 )
 
-lab = container.world_service.get_world(result.lab_world_id)
-heads = await lab.query_archetype(sig=(BranchHead,), ticks=[t])  # head at any tick
+lab = await container.application.get_world_info(result.lab_world_id)
+heads = await container.application.query_archetype(
+    (BranchHead,),
+    lab.world_id,
+    lab.run_id,
+    ticks=[t],
+)  # head at any tick
 
 # Explicitly reattach the same registered lab instead of relying on name lookup.
 resumed = await container.autoresearch_service.run(

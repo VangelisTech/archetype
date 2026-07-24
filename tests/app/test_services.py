@@ -8,12 +8,10 @@ import asyncio
 import pytest
 from uuid_utils import uuid7
 
-import archetype.app.gateway.auth.guard as guard
 from archetype.app.application.service import RuntimeApplication
-from archetype.app.commands.service import CommandScheduler
 from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.app.gateway.service import CommandGateway
+from archetype.commands.scheduler import CommandScheduler
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.storage.service import StorageService
@@ -24,15 +22,6 @@ from tests.conftest import make_world_harness
 
 class _ListWorldsPos(Component):
     x: int = 0
-
-
-@pytest.fixture(autouse=True)
-def _reset_quotas():
-    guard._tick_counters.clear()
-    reset_daily_tokens()
-    yield
-    guard._tick_counters.clear()
-    reset_daily_tokens()
 
 
 class TestServiceContainer:
@@ -92,7 +81,11 @@ class TestServiceContainer:
         async def shutdown_storage():
             calls.append("storage")
 
-        monkeypatch.setattr(container.application, "stop_admission", fail_admission)
+        monkeypatch.setattr(
+            container.command_dispatcher,
+            "stop_admission",
+            fail_admission,
+        )
         monkeypatch.setattr(container.audit_log, "shutdown", shutdown_audit)
         monkeypatch.setattr(container.storage_service, "shutdown", shutdown_storage)
 
@@ -118,7 +111,11 @@ class TestServiceContainer:
         async def shutdown_storage():
             calls.append("storage")
 
-        monkeypatch.setattr(container.application, "stop_admission", cancel_admission)
+        monkeypatch.setattr(
+            container.command_dispatcher,
+            "stop_admission",
+            cancel_admission,
+        )
         monkeypatch.setattr(container.audit_log, "shutdown", shutdown_audit)
         monkeypatch.setattr(container.storage_service, "shutdown", shutdown_storage)
 

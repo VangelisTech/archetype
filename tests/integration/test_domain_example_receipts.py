@@ -240,6 +240,16 @@ async def test_coding_agent_dry_run_receipt_is_typed_and_starts_no_work(
                 ],
             },
         ],
+        "task_paths": {
+            "implementation": {
+                "path": "src/archetype/world/query.py",
+                "exists": True,
+            },
+            "regression": {
+                "path": "tests/world/test_query_schema_evolution.py",
+                "parent_exists": True,
+            },
+        },
         "external_work_started": False,
     }
 

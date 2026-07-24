@@ -25,6 +25,8 @@ from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.research import BranchHead, Experiment, Result, Run, RunStatus
 from archetype.world.models import EpisodeConfig
 
+_TEARDOWN_SENTINEL_ENTITY_ID = 2_147_483_647
+
 
 class Tag(Component):
     label: str = ""
@@ -97,9 +99,9 @@ async def test_autoresearch_auto_destroy_uses_application_teardown(
         async def fork_and_queue(*args, **kwargs):
             fork = await original_fork(*args, **kwargs)
             command = Command(
-                type=CommandType.CUSTOM,
+                type=CommandType.DESPAWN,
                 tick=10_000,
-                payload={"source": "autoresearch-teardown-contract"},
+                payload={"entity_id": _TEARDOWN_SENTINEL_ENTITY_ID},
             )
             await c.application.submit(fork.world_id, command)
             commands[str(fork.world_id)] = command
