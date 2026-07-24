@@ -21,9 +21,7 @@ from __future__ import annotations
 import pytest
 from daft import DataFrame, col
 
-import archetype.app.gateway.auth.guard as guard
 from archetype import ArchetypeRuntime, AsyncProcessor, Component
-from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.core.config import StorageConfig
 from archetype.world.query import get_lineage
 
@@ -38,15 +36,6 @@ class Inc(AsyncProcessor):
 
     async def process(self, df: DataFrame, **kwargs) -> DataFrame:
         return df.with_column("meter__value", col("meter__value") + 1.0)
-
-
-@pytest.fixture(autouse=True)
-def _reset_quotas():
-    guard._tick_counters.clear()
-    reset_daily_tokens()
-    yield
-    guard._tick_counters.clear()
-    reset_daily_tokens()
 
 
 def _storage(tmp_path) -> StorageConfig:

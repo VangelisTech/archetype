@@ -17,13 +17,12 @@ import tempfile
 from uuid_utils import uuid7
 
 from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.models import Command, CommandType
 from archetype.core.aio import AsyncWorld
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
-from evals.graders import exact_match, state_check
+from evals.graders import state_check
 from evals.harness import EvalHarness
 from evals.types import GraderResult
 
@@ -67,8 +66,6 @@ def task_poison_in_batch() -> list[GraderResult]:
 
 
 async def _task_poison_in_batch() -> list[GraderResult]:
-    reset_daily_tokens()
-
     with tempfile.TemporaryDirectory() as tmp:
         container = ServiceContainer()
         try:
@@ -78,38 +75,36 @@ async def _task_poison_in_batch() -> list[GraderResult]:
             wid = str(world.world_id)
             rc = RunConfig()
 
-            # Valid SPAWN
-            await container.command_gateway.submit(
-                ctx,
-                wid,
+            valid_commands = [
                 Command(
                     type=CommandType.SPAWN,
                     tick=0,
                     payload={"components": [_PoisonPos(x=1, y=1).to_payload()]},
                 ),
-            )
-
-            # Poison SPAWN — bare model_dump() without "type" key
-            await container.command_gateway.submit(
-                ctx,
-                wid,
-                Command(
-                    type=CommandType.SPAWN,
-                    tick=0,
-                    payload={"components": [_PoisonPos(x=2, y=2).model_dump()]},
-                ),
-            )
-
-            # Valid SPAWN
-            await container.command_gateway.submit(
-                ctx,
-                wid,
                 Command(
                     type=CommandType.SPAWN,
                     tick=0,
                     payload={"components": [_PoisonPos(x=3, y=3).to_payload()]},
                 ),
+            ]
+            poison = Command(
+                type=CommandType.SPAWN,
+                tick=0,
+                payload={"components": [_PoisonPos(x=2, y=2).model_dump()]},
             )
+
+            rejected_atomically = False
+            try:
+                await container.command_gateway.submit_batch(
+                    ctx,
+                    wid,
+                    [valid_commands[0], poison, valid_commands[1]],
+                )
+            except ValueError:
+                rejected_atomically = True
+            pending_after_rejection = await container.command_scheduler.pending_count(wid)
+
+            await container.command_gateway.submit_batch(ctx, wid, valid_commands)
 
             await container.application.step(world.world_id, rc)
 
@@ -117,7 +112,14 @@ async def _task_poison_in_batch() -> list[GraderResult]:
             signatures = {frozenset(sig) for sig in set(world.entity2sig.values())}
 
             return [
-                exact_match(entity_count, 2, name="valid_commands_applied"),
+                state_check(
+                    {
+                        "poison_batch_rejected": rejected_atomically,
+                        "no_partial_admission": pending_after_rejection == 0,
+                        "valid_commands_applied": entity_count == 2,
+                    },
+                    name="canonical_batch_validation",
+                ),
                 state_check(
                     {
                         "has_typed_archetype": frozenset({_PoisonPos}) in signatures,
@@ -141,8 +143,6 @@ def task_missing_payload_keys() -> list[GraderResult]:
 
 
 async def _task_missing_payload_keys() -> list[GraderResult]:
-    reset_daily_tokens()
-
     with tempfile.TemporaryDirectory() as tmp:
         container = ServiceContainer()
         try:
@@ -150,38 +150,32 @@ async def _task_missing_payload_keys() -> list[GraderResult]:
             world = await _create_live_world(container, WorldConfig(name="missing-keys"), storage)
             ctx = ActorCtx(id=uuid7(), roles={"admin"})
             wid = str(world.world_id)
-            rc = RunConfig()
-
-            # DESPAWN with no entity_id
-            await container.command_gateway.submit(
-                ctx, wid, Command(type=CommandType.DESPAWN, tick=0, payload={})
-            )
-            # REMOVE_COMPONENT with no entity_id
-            await container.command_gateway.submit(
-                ctx,
-                wid,
+            malformed = [
+                Command(type=CommandType.DESPAWN, tick=0, payload={}),
                 Command(
                     type=CommandType.REMOVE_COMPONENT,
                     tick=0,
                     payload={"component_types": ["_PoisonPos"]},
                 ),
-            )
-            # UPDATE with no entity_id
-            await container.command_gateway.submit(
-                ctx,
-                wid,
                 Command(
                     type=CommandType.UPDATE,
                     tick=0,
                     payload={"components": [_PoisonPos(x=9, y=9).to_payload()]},
                 ),
-            )
-
-            await container.application.step(world.world_id, rc)
+            ]
+            rejected = 0
+            for command in malformed:
+                try:
+                    await container.command_gateway.submit(ctx, wid, command)
+                except (TypeError, ValueError):
+                    rejected += 1
+            pending = await container.command_scheduler.pending_count(wid)
 
             return [
                 state_check(
                     {
+                        "all_malformed_rejected": rejected == len(malformed),
+                        "nothing_persisted": pending == 0,
                         "no_entities_created": len(world.entity2sig) == 0,
                         "no_archetypes": len(world.entity2sig) == 0,
                     },
@@ -203,8 +197,6 @@ def task_unknown_component_type() -> list[GraderResult]:
 
 
 async def _task_unknown_component_type() -> list[GraderResult]:
-    reset_daily_tokens()
-
     with tempfile.TemporaryDirectory() as tmp:
         container = ServiceContainer()
         try:
@@ -235,19 +227,23 @@ async def _task_unknown_component_type() -> list[GraderResult]:
             original_sig = frozenset(world.entity2sig[entity_id])
 
             # Try to remove a nonexistent component type
-            reset_daily_tokens()
-            await container.command_gateway.submit(
-                ctx,
-                wid,
-                Command(
-                    type=CommandType.REMOVE_COMPONENT,
-                    tick=1,
-                    payload={
-                        "entity_id": entity_id,
-                        "component_types": ["TotallyFakeComponent"],
-                    },
-                ),
-            )
+            rejected = False
+            try:
+                await container.command_gateway.submit(
+                    ctx,
+                    wid,
+                    Command(
+                        type=CommandType.REMOVE_COMPONENT,
+                        tick=1,
+                        payload={
+                            "entity_id": entity_id,
+                            "component_types": ["TotallyFakeComponent"],
+                        },
+                    ),
+                )
+            except ValueError:
+                rejected = True
+            pending = await container.command_scheduler.pending_count(wid)
             await container.application.step(world.world_id, rc)
 
             current_sig = frozenset(world.entity2sig[entity_id])
@@ -255,6 +251,8 @@ async def _task_unknown_component_type() -> list[GraderResult]:
             return [
                 state_check(
                     {
+                        "unknown_type_rejected": rejected,
+                        "nothing_persisted": pending == 0,
                         "signature_preserved": current_sig == original_sig,
                         "entity_still_exists": entity_id in world.entity2sig,
                     },
@@ -276,8 +274,6 @@ def task_despawn_nonexistent_entity() -> list[GraderResult]:
 
 
 async def _task_despawn_nonexistent_entity() -> list[GraderResult]:
-    reset_daily_tokens()
-
     with tempfile.TemporaryDirectory() as tmp:
         container = ServiceContainer()
         try:
@@ -304,7 +300,6 @@ async def _task_despawn_nonexistent_entity() -> list[GraderResult]:
             entity_count_before = len(world.entity2sig)
 
             # Despawn a nonexistent entity
-            reset_daily_tokens()
             await container.command_gateway.submit(
                 ctx,
                 wid,
@@ -332,18 +327,16 @@ async def _task_despawn_nonexistent_entity() -> list[GraderResult]:
 
 
 # ---------------------------------------------------------------------------
-# Task 5: unhandled command types are consumed as no-ops
+# Task 5: unsupported legacy command types reject before persistence
 # ---------------------------------------------------------------------------
 
 
 def task_unhandled_command_noop() -> list[GraderResult]:
-    """MESSAGE, QUERY_WORLD, and CUSTOM must be dequeued but produce no mutations."""
+    """MESSAGE, QUERY_WORLD, and CUSTOM reject before portable admission."""
     return asyncio.run(_task_unhandled_command_noop())
 
 
 async def _task_unhandled_command_noop() -> list[GraderResult]:
-    reset_daily_tokens()
-
     with tempfile.TemporaryDirectory() as tmp:
         container = ServiceContainer()
         try:
@@ -351,27 +344,29 @@ async def _task_unhandled_command_noop() -> list[GraderResult]:
             world = await _create_live_world(container, WorldConfig(name="noop-cmds"), storage)
             ctx = ActorCtx(id=uuid7(), roles={"admin"})
             wid = str(world.world_id)
-            rc = RunConfig()
 
+            rejected = 0
             for cmd_type in (CommandType.MESSAGE, CommandType.QUERY_WORLD, CommandType.CUSTOM):
-                await container.command_gateway.submit(
-                    ctx,
-                    wid,
-                    Command(type=cmd_type, tick=0, payload={"data": "test"}),
-                )
-
-            await container.application.step(world.world_id, rc)
+                try:
+                    await container.command_gateway.submit(
+                        ctx,
+                        wid,
+                        Command(type=cmd_type, tick=0, payload={"data": "test"}),
+                    )
+                except ValueError:
+                    rejected += 1
 
             pending = await container.command_scheduler.pending_count(wid)
 
             return [
                 state_check(
                     {
-                        "all_dequeued": pending == 0,
+                        "all_unsupported_rejected": rejected == 3,
+                        "nothing_persisted": pending == 0,
                         "no_entities_created": len(world.entity2sig) == 0,
                         "no_archetypes": len(world.entity2sig) == 0,
                     },
-                    name="clean_noop",
+                    name="unsupported_commands_fail_closed",
                 ),
             ]
         finally:
@@ -413,5 +408,5 @@ def register(harness: EvalHarness) -> None:
         "unhandled_command_noop",
         suite=SUITE,
         fn=task_unhandled_command_noop,
-        desc="MESSAGE/QUERY_WORLD/CUSTOM are dequeued as no-ops",
+        desc="MESSAGE/QUERY_WORLD/CUSTOM reject before portable admission",
     )

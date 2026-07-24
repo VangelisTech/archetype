@@ -12,10 +12,7 @@ from archetype import __version__
 from archetype.api.app import create_app
 from archetype.api.deps import get_actor_ctx, set_container
 from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth import guard
-from archetype.app.gateway.auth.errors import GuardrailError
-from archetype.app.gateway.auth.guard import reset_daily_tokens
-from archetype.app.models import Command, CommandType
+from archetype.commands.policy import Policy
 from archetype.core.config import RunConfig
 from archetype.world.models import EpisodeConfig, RolloutConfig
 
@@ -30,15 +27,6 @@ ROLES = ("admin", "operator", "player", "viewer")
 
 class QueryRouteMetric104(Component):
     value: float = 0.0
-
-
-@pytest.fixture(autouse=True)
-def _reset_quotas():
-    guard._tick_counters.clear()
-    reset_daily_tokens()
-    yield
-    guard._tick_counters.clear()
-    reset_daily_tokens()
 
 
 @pytest.fixture
@@ -342,7 +330,9 @@ class TestSimulationRoutes:
         assert resp.status_code == 200
 
         history = client.get(f"/worlds/{world_id}/history").json()
-        assert [row["command_type"] for row in history] == ["create_world", "step"]
+        # Application-scoped creation has no pre-existing world coordinate;
+        # the world-scoped history contains the admitted step exactly once.
+        assert [row["command_type"] for row in history] == ["step"]
 
     def test_step_not_found(self, client):
         resp = client.post(
@@ -691,22 +681,22 @@ def test_route_modules_do_not_import_forbidden_services():
 
 
 @pytest.mark.asyncio
-async def test_development_principal_identity_is_stable_across_requests(monkeypatch):
-    monkeypatch.setattr(guard, "MAX_CMDS_PER_TICK", 1)
+async def test_development_principal_identity_is_stable_across_requests():
     first = await get_actor_ctx("Bearer player")
     second = await get_actor_ctx("Bearer player")
+    policy = Policy(max_commands_per_tick=1)
 
     assert first.id == second.id
-    guard.guardrail_allow(
-        Command(type=CommandType.CUSTOM),
+    policy.authorize(
         first,
+        permission="spawn",
         world_id="world",
         target_tick=0,
     )
-    with pytest.raises(GuardrailError):
-        guard.guardrail_allow(
-            Command(type=CommandType.CUSTOM),
+    with pytest.raises(PermissionError, match="per-tick quota"):
+        policy.authorize(
             second,
+            permission="spawn",
             world_id="world",
             target_tick=0,
         )

@@ -14,23 +14,20 @@ from __future__ import annotations
 import ast
 import asyncio
 import os
-from contextlib import asynccontextmanager
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 os.environ.setdefault("LOGFIRE_IGNORE_NO_CONFIG", "1")
 
 from uuid_utils import uuid7
 
-from archetype.app.application.service import RuntimeApplication
-from archetype.app.gateway.auth.guard import reset_daily_tokens
+from archetype.app.container import ServiceContainer
 from archetype.app.gateway.auth.models import ActorCtx
-from archetype.app.gateway.auth.permissions import COMMANDS_BY_ROLE
-from archetype.app.gateway.service import CommandGateway
-from archetype.app.models import CommandType
-from archetype.core.config import WorldConfig
+from archetype.commands.policy import PERMISSIONS_BY_ROLE
+from archetype.core.config import StorageConfig, WorldConfig
+from archetype.core.hooks import PreTick
 from archetype.world.models import (
     HookInfo,
     ProcessorInfo,
@@ -80,7 +77,7 @@ SPEC_CASES: tuple[SpecCase, ...] = (
     SpecCase(
         spec_id="command-gate.1",
         source="command-gate.md",
-        anchors=("guardrail_allow", "delegate", "audit.record"),
+        anchors=("policy enforcement point", "before any work happens", "access event"),
         task_id="spec.command_gateway_gate_map",
     ),
     SpecCase(
@@ -143,120 +140,169 @@ _RUNTIME_ALLOWED_APP_IMPORTS = _RUNTIME_TYPE_ONLY_APP_IMPORTS | frozenset(
     }
 )
 
-_EXPECTED_ROLE_MATRIX: dict[str, frozenset[CommandType]] = {
+_EXPECTED_ROLE_MATRIX: dict[str, frozenset[str]] = {
     "viewer": frozenset(
         {
-            CommandType.QUERY_WORLD,
-            CommandType.GET_WORLD_INFO,
-            CommandType.GET_AUDIT_HISTORY,
-            CommandType.LIST_SIGNATURES,
-            CommandType.LIST_WORLDS,
-            CommandType.LIST_PROCESSORS,
-            CommandType.LIST_HOOKS,
-            CommandType.LIST_RESOURCES,
+            "discover_worlds",
+            "get_audit_history",
+            "get_world_info",
+            "list_hooks",
+            "list_processors",
+            "list_resources",
+            "list_signatures",
+            "list_worlds",
+            "open_world_readonly",
+            "query_archetype",
+            "query_artifacts",
+            "query_components",
         }
     ),
     "player": frozenset(
         {
-            CommandType.QUERY_WORLD,
-            CommandType.GET_WORLD_INFO,
-            CommandType.GET_AUDIT_HISTORY,
-            CommandType.LIST_SIGNATURES,
-            CommandType.LIST_WORLDS,
-            CommandType.LIST_PROCESSORS,
-            CommandType.LIST_HOOKS,
-            CommandType.LIST_RESOURCES,
-            CommandType.SPAWN,
-            CommandType.DESPAWN,
-            CommandType.UPDATE,
-            CommandType.MESSAGE,
-            CommandType.CUSTOM,
+            "create_entities",
+            "despawn",
+            "discover_worlds",
+            "get_audit_history",
+            "get_world_info",
+            "list_hooks",
+            "list_processors",
+            "list_resources",
+            "list_signatures",
+            "list_worlds",
+            "open_world_readonly",
+            "query_archetype",
+            "query_artifacts",
+            "query_components",
+            "spawn",
+            "update",
         }
     ),
     "operator": frozenset(
         {
-            CommandType.QUERY_WORLD,
-            CommandType.GET_WORLD_INFO,
-            CommandType.GET_AUDIT_HISTORY,
-            CommandType.LIST_SIGNATURES,
-            CommandType.LIST_WORLDS,
-            CommandType.LIST_PROCESSORS,
-            CommandType.LIST_HOOKS,
-            CommandType.LIST_RESOURCES,
-            CommandType.SPAWN,
-            CommandType.DESPAWN,
-            CommandType.UPDATE,
-            CommandType.MESSAGE,
-            CommandType.CUSTOM,
-            CommandType.ADD_COMPONENT,
-            CommandType.REMOVE_COMPONENT,
-            CommandType.ADD_PROCESSOR,
-            CommandType.REMOVE_PROCESSOR,
-            CommandType.ADD_HOOK,
-            CommandType.REMOVE_HOOK,
-            CommandType.ADD_RESOURCE,
-            CommandType.STEP,
-            CommandType.RUN,
-            CommandType.RUN_EPISODE,
-            CommandType.RUN_ROLLOUT,
-            CommandType.AUTORESEARCH,
-            CommandType.FORK_WORLD,
-            CommandType.DESTROY_WORLD,
-            CommandType.INGEST_ARTIFACTS,
-            CommandType.EVALUATE,
+            "add_components",
+            "add_hook",
+            "add_processor",
+            "add_resource",
+            "autoresearch",
+            "create_entities",
+            "despawn",
+            "destroy_world",
+            "discover_worlds",
+            "evaluate",
+            "fork_world",
+            "get_audit_history",
+            "get_world_info",
+            "ingest_artifacts",
+            "list_hooks",
+            "list_processors",
+            "list_resources",
+            "list_signatures",
+            "list_worlds",
+            "open_world_readonly",
+            "query_archetype",
+            "query_artifacts",
+            "query_components",
+            "remove_components",
+            "remove_hook",
+            "remove_processor",
+            "run",
+            "run_episode",
+            "run_rollout",
+            "spawn",
+            "step",
+            "update",
         }
     ),
-    "admin": frozenset(CommandType),
+    "admin": frozenset(
+        {
+            "add_components",
+            "add_hook",
+            "add_processor",
+            "add_resource",
+            "autoresearch",
+            "create_entities",
+            "create_world",
+            "despawn",
+            "destroy_world",
+            "discover_worlds",
+            "evaluate",
+            "fork_world",
+            "get_audit_history",
+            "get_world_info",
+            "ingest_artifacts",
+            "list_hooks",
+            "list_processors",
+            "list_resources",
+            "list_signatures",
+            "list_worlds",
+            "open_world_readonly",
+            "query_archetype",
+            "query_artifacts",
+            "query_components",
+            "remove_components",
+            "remove_hook",
+            "remove_processor",
+            "resume_world",
+            "run",
+            "run_episode",
+            "run_rollout",
+            "spawn",
+            "step",
+            "update",
+        }
+    ),
 }
 
-_COMMAND_GATE_MAP: dict[str, CommandType] = {
-    "create_entity": CommandType.SPAWN,
-    "create_entities": CommandType.SPAWN,
-    "reserve_entity_ids": CommandType.SPAWN,
-    "spawn_with_reserved_id": CommandType.SPAWN,
-    "remove_entity": CommandType.DESPAWN,
-    "update_entity": CommandType.UPDATE,
-    "add_components": CommandType.ADD_COMPONENT,
-    "remove_components": CommandType.REMOVE_COMPONENT,
-    "add_processor": CommandType.ADD_PROCESSOR,
-    "remove_processor": CommandType.REMOVE_PROCESSOR,
-    "create_world": CommandType.CREATE_WORLD,
-    "fork_world": CommandType.FORK_WORLD,
-    "destroy_world": CommandType.DESTROY_WORLD,
-    "get_world_info": CommandType.GET_WORLD_INFO,
-    "list_worlds": CommandType.LIST_WORLDS,
-    "discover_worlds": CommandType.LIST_WORLDS,
-    "open_world_readonly": CommandType.GET_WORLD_INFO,
-    "resume_world": CommandType.CREATE_WORLD,
-    "ingest_artifacts": CommandType.INGEST_ARTIFACTS,
-    "query_artifacts": CommandType.QUERY_WORLD,
-    "evaluate": CommandType.EVALUATE,
-    "step": CommandType.STEP,
-    "run": CommandType.RUN,
-    "run_episode": CommandType.RUN_EPISODE,
-    "run_rollout": CommandType.RUN_ROLLOUT,
-    "autoresearch": CommandType.AUTORESEARCH,
-    "query_components": CommandType.QUERY_WORLD,
-    "query_archetype": CommandType.QUERY_WORLD,
-    "list_signatures": CommandType.LIST_SIGNATURES,
-    "add_resource": CommandType.ADD_RESOURCE,
-    "add_hook": CommandType.ADD_HOOK,
-    "remove_hook": CommandType.REMOVE_HOOK,
-    "list_processors": CommandType.LIST_PROCESSORS,
-    "list_hooks": CommandType.LIST_HOOKS,
-    "list_resources": CommandType.LIST_RESOURCES,
-    "get_audit_history": CommandType.GET_AUDIT_HISTORY,
-    "submit_spawn": CommandType.SPAWN,
+_COMMAND_GATE_MAP: dict[str, tuple[tuple[str, str], ...]] = {
+    "create_entity": (("Spawn", "spawn"),),
+    "create_entities": (("CreateEntities", "create_entities"),),
+    "reserve_entity_ids": (("ReserveEntityIds", "spawn"),),
+    "spawn_with_reserved_id": (("SpawnReserved", "spawn"),),
+    "remove_entity": (("Despawn", "despawn"),),
+    "update_entity": (("Update", "update"),),
+    "add_components": (("AddComponents", "add_components"),),
+    "remove_components": (("RemoveComponents", "remove_components"),),
+    "add_processor": (("AddProcessor", "add_processor"),),
+    "remove_processor": (("RemoveProcessor", "remove_processor"),),
+    "create_world": (("CreateWorld", "create_world"),),
+    "fork_world": (("ForkWorld", "fork_world"),),
+    "destroy_world": (("DestroyWorld", "destroy_world"),),
+    "get_world_info": (("GetWorldInfo", "get_world_info"),),
+    "list_worlds": (("ListWorlds", "list_worlds"),),
+    "discover_worlds": (("DiscoverWorlds", "discover_worlds"),),
+    "open_world_readonly": (("OpenWorldReadonly", "open_world_readonly"),),
+    "resume_world": (("ResumeWorld", "resume_world"),),
+    "step": (("Step", "step"),),
+    "run": (("Run", "run"),),
+    "run_episode": (("RunEpisode", "run_episode"),),
+    "run_rollout": (("RunRollout", "run_rollout"),),
+    "query_components": (("QueryComponents", "query_components"),),
+    "query_archetype": (("QueryArchetype", "query_archetype"),),
+    "list_signatures": (
+        ("ListSignatures", "list_signatures"),
+        ("ListWorldSignatures", "list_signatures"),
+    ),
+    "get_audit_history": (("GetAuditHistory", "get_audit_history"),),
+    "add_resource": (("AddResource", "add_resource"),),
+    "add_hook": (("AddHook", "add_hook"),),
+    "remove_hook": (("RemoveHook", "remove_hook"),),
+    "list_processors": (("ListProcessors", "list_processors"),),
+    "list_hooks": (("ListHooks", "list_hooks"),),
+    "list_resources": (("ListResources", "list_resources"),),
 }
 
-_DYNAMIC_GATE_METHODS = {
-    "submit": "_gate",
-    "submit_batch": "_gate_batch",
+_BRIDGE_GATE_MAP = {
+    "autoresearch": "autoresearch",
+    "ingest_artifacts": "ingest_artifacts",
+    "query_artifacts": "query_artifacts",
+    "evaluate": "evaluate",
 }
 
-_OUTBOX_AUDITED_METHODS = {"submit", "submit_batch", "submit_spawn"}
-_SYNCHRONOUS_GATE_METHODS = {"reserve_entity_ids"}
-_GATE_HELPERS = frozenset({"_gate", "_gate_world", "_gate_durable_world", "_gate_application"})
+_DEFERRED_GATE_MAP = {
+    "submit": "defer_as",
+    "submit_batch": "defer_batch_as",
+    "submit_spawn": "defer_spawn_as",
+}
 
 
 def _python_files(path: Path) -> list[Path]:
@@ -310,55 +356,6 @@ def _called_attr_name(call: ast.Call) -> str | None:
     return None
 
 
-def _command_type_from_gate_call(call: ast.Call) -> str | None:
-    """Extract ``CommandType.NAME`` from a gateway helper call."""
-    if _called_attr_name(call) not in _GATE_HELPERS or not call.args:
-        return None
-    command_call = call.args[0]
-    if not isinstance(command_call, ast.Call):
-        return None
-    return _command_type_from_command_call(command_call)
-
-
-def _command_type_from_command_call(command_call: ast.Call) -> str | None:
-    for keyword in command_call.keywords:
-        if keyword.arg != "type":
-            continue
-        value = keyword.value
-        if (
-            isinstance(value, ast.Attribute)
-            and isinstance(value.value, ast.Name)
-            and value.value.id == "CommandType"
-        ):
-            return value.attr
-    return None
-
-
-def _assigned_command_type_names(
-    node: ast.AsyncFunctionDef | ast.FunctionDef,
-) -> dict[str, str]:
-    names: dict[str, str] = {}
-    for child in ast.walk(node):
-        if isinstance(child, ast.Assign):
-            value = child.value
-            if not isinstance(value, ast.Call):
-                continue
-            command_type = _command_type_from_command_call(value)
-            if command_type is None:
-                continue
-            for target in child.targets:
-                if isinstance(target, ast.Name):
-                    names[target.id] = command_type
-        elif isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
-            value = child.value
-            if not isinstance(value, ast.Call):
-                continue
-            command_type = _command_type_from_command_call(value)
-            if command_type is not None:
-                names[child.target.id] = command_type
-    return names
-
-
 def task_spec_manifest_traceability() -> list[GraderResult]:
     """Every spec eval cites a normative source and anchor text."""
     checks: dict[str, bool] = {}
@@ -381,21 +378,19 @@ def task_spec_manifest_traceability() -> list[GraderResult]:
 
 def task_role_permission_matrix() -> list[GraderResult]:
     """The code permission matrix exactly matches command-gate.md."""
-    actual = {role: frozenset(commands) for role, commands in COMMANDS_BY_ROLE.items()}
-    explicit_non_admin_review = all(
-        command in actual["admin"]
-        and (
-            command in actual["viewer"]
-            or command in actual["player"]
-            or command in actual["operator"]
-            or command == CommandType.CREATE_WORLD
-        )
-        for command in CommandType
+    actual = {role: frozenset(permissions) for role, permissions in PERMISSIONS_BY_ROLE.items()}
+    all_permissions = frozenset().union(*actual.values())
+    explicit_review = all(
+        permission in _EXPECTED_ROLE_MATRIX["admin"] for permission in all_permissions
     )
     return [
         exact_match(actual, _EXPECTED_ROLE_MATRIX, name="exact_role_matrix"),
-        exact_match(actual["admin"], frozenset(CommandType), name="admin_auto_includes_all"),
-        exact_match(explicit_non_admin_review, True, name="non_admin_commands_reviewed"),
+        exact_match(
+            actual["admin"],
+            _EXPECTED_ROLE_MATRIX["admin"],
+            name="admin_exact_finite_permissions",
+        ),
+        exact_match(explicit_review, True, name="all_permissions_explicitly_reviewed"),
     ]
 
 
@@ -445,7 +440,7 @@ def task_runtime_gate_only_boundary() -> list[GraderResult]:
 
 
 def task_command_gateway_gate_map() -> list[GraderResult]:
-    """Every public gate method has the expected command type and audit emit."""
+    """Gateway methods construct exact models and enter the shared dispatcher."""
     path = SRC / "app" / "gateway" / "service.py"
     tree = ast.parse(path.read_text(), filename=str(path))
     functions = {
@@ -453,45 +448,77 @@ def task_command_gateway_gate_map() -> list[GraderResult]:
         for node in ast.walk(tree)
         if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
     }
+    container = ServiceContainer()
+    try:
+        registered_permissions = {
+            spec.model.__name__: spec.permission for spec in container.operation_registry.specs
+        }
+    finally:
+        asyncio.run(container.shutdown())
 
     checks: dict[str, bool] = {}
-    for method, command_type in _COMMAND_GATE_MAP.items():
+    for method, expected_models in _COMMAND_GATE_MAP.items():
         node = functions.get(method)
         checks[f"{method}:exists"] = node is not None
         if node is None:
             continue
 
         calls = [call for call in ast.walk(node) if isinstance(call, ast.Call)]
-        gate_calls = [call for call in calls if _called_attr_name(call) in _GATE_HELPERS]
-        emit_calls = [call for call in calls if _called_attr_name(call) == "_emit"]
-        assigned_types = _assigned_command_type_names(node)
-        gate_type_names: list[str] = []
-        for call in gate_calls:
-            if name := _command_type_from_gate_call(call):
-                gate_type_names.append(name)
-            elif call.args and isinstance(call.args[0], ast.Name):
-                if name := assigned_types.get(call.args[0].id):
-                    gate_type_names.append(name)
-        checks[f"{method}:gate_type"] = command_type.name in gate_type_names
-        if method not in _OUTBOX_AUDITED_METHODS | _SYNCHRONOUS_GATE_METHODS:
-            checks[f"{method}:emits_audit"] = bool(emit_calls)
-        if gate_calls and emit_calls:
-            checks[f"{method}:gate_before_emit"] = min(c.lineno for c in gate_calls) < min(
-                c.lineno for c in emit_calls
+        constructed_models: set[str] = set()
+        for call in calls:
+            if isinstance(call.func, ast.Name):
+                constructed_models.add(call.func.id)
+            elif (
+                isinstance(call.func, ast.Attribute)
+                and isinstance(call.func.value, ast.Name)
+                and call.func.attr.startswith("from_")
+            ):
+                constructed_models.add(call.func.value.id)
+        called_methods = {name for call in calls if (name := _called_attr_name(call)) is not None}
+        checks[f"{method}:dispatcher_entry"] = "apply_as" in called_methods
+        for model_name, permission in expected_models:
+            checks[f"{method}:constructs:{model_name}"] = model_name in constructed_models
+            checks[f"{method}:registered_permission:{model_name}"] = (
+                registered_permissions.get(model_name) == permission
             )
+        checks[f"{method}:no_legacy_gate_or_emit"] = not (
+            {"_gate", "_gate_batch", "_emit", "guardrail_allow"} & called_methods
+        )
 
-    for method, gate_method in _DYNAMIC_GATE_METHODS.items():
+    for method, operation in _BRIDGE_GATE_MAP.items():
         node = functions.get(method)
         checks[f"{method}:exists"] = node is not None
         if node is None:
             continue
         calls = [call for call in ast.walk(node) if isinstance(call, ast.Call)]
-        checks[f"{method}:has_dynamic_gate"] = any(
-            _called_attr_name(call) == gate_method for call in calls
+        bridge_calls = [call for call in calls if _called_attr_name(call) == "_run_bridge_world"]
+        checks[f"{method}:bridge_entry"] = len(bridge_calls) == 1
+        checks[f"{method}:exact_bridge_permission"] = any(
+            any(
+                keyword.arg == "operation"
+                and isinstance(keyword.value, ast.Constant)
+                and keyword.value.value == operation
+                for keyword in call.keywords
+            )
+            for call in bridge_calls
         )
-        checks[f"{method}:ledger_is_audit_authority"] = method in _OUTBOX_AUDITED_METHODS
 
-    return [state_check(checks, name="command_gateway_gate_shape")]
+    for method, dispatcher_entry in _DEFERRED_GATE_MAP.items():
+        node = functions.get(method)
+        checks[f"{method}:exists"] = node is not None
+        if node is None:
+            continue
+        called_methods = {
+            name
+            for call in ast.walk(node)
+            if isinstance(call, ast.Call) and (name := _called_attr_name(call)) is not None
+        }
+        checks[f"{method}:dispatcher_entry"] = dispatcher_entry in called_methods
+        checks[f"{method}:no_legacy_gate_or_emit"] = not (
+            {"_gate", "_gate_batch", "_emit", "guardrail_allow"} & called_methods
+        )
+
+    return [state_check(checks, name="command_gateway_dispatch_shape")]
 
 
 def task_append_only_protocols() -> list[GraderResult]:
@@ -521,29 +548,52 @@ def task_info_class_downgrades() -> list[GraderResult]:
 
 
 async def _task_info_class_downgrades() -> list[GraderResult]:
-    reset_daily_tokens()
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
-    graph: Any = _FakeWorldGraph()
-    unused: Any = _UnusedService()
-    application = RuntimeApplication(
-        registry=graph,
-        lifecycle=graph,
-        storage=unused,
-        commands=unused,
-        audit=None,
-    )
-    service = CommandGateway(application, audit=None, target_tick_for_world=graph.target_tick)
-
-    try:
-        created = await service.create_world(ctx, WorldConfig(name="spec-info"))
-        forked = await service.fork_world(ctx, created.world_id, "spec-fork")
-        fetched = await service.get_world_info(ctx, created.world_id)
-        worlds = await service.list_worlds(ctx)
-        processors = await service.list_processors(ctx, created.world_id)
-        hooks = await service.list_hooks(ctx, created.world_id)
-        resources = await service.list_resources(ctx, created.world_id)
-    finally:
-        reset_daily_tokens()
+    with tempfile.TemporaryDirectory() as tmp:
+        container = ServiceContainer()
+        try:
+            created = await container.command_gateway.create_world(
+                ctx,
+                WorldConfig(name="spec-info"),
+                StorageConfig(uri=f"{tmp}/store", namespace="spec_info"),
+            )
+            await container.command_gateway.add_processor(
+                ctx,
+                created.world_id,
+                _FakeProcessor(),
+            )
+            await container.command_gateway.add_resource(
+                ctx,
+                created.world_id,
+                _FakeResource(),
+            )
+            await container.command_gateway.add_hook(
+                ctx,
+                created.world_id,
+                PreTick,
+                _fake_handler,
+            )
+            forked = await container.command_gateway.fork_world(
+                ctx,
+                created.world_id,
+                "spec-fork",
+            )
+            fetched = await container.command_gateway.get_world_info(
+                ctx,
+                created.world_id,
+            )
+            worlds = await container.command_gateway.list_worlds(ctx)
+            processors = await container.command_gateway.list_processors(
+                ctx,
+                created.world_id,
+            )
+            hooks = await container.command_gateway.list_hooks(ctx, created.world_id)
+            resources = await container.command_gateway.list_resources(
+                ctx,
+                created.world_id,
+            )
+        finally:
+            await container.shutdown()
 
     info_values = [created, forked, fetched, *worlds, *processors, *hooks, *resources]
     type_checks = {
@@ -554,7 +604,7 @@ async def _task_info_class_downgrades() -> list[GraderResult]:
         "list_processors_downgrades": all(isinstance(item, ProcessorInfo) for item in processors),
         "list_hooks_downgrades": all(isinstance(item, HookInfo) for item in hooks),
         "list_resources_downgrades": all(isinstance(item, ResourceInfo) for item in resources),
-        "no_live_world_escape": all(not isinstance(item, _FakeWorld) for item in info_values),
+        "nonempty_introspection": bool(processors and hooks and resources),
         "models_are_frozen": all(_is_frozen_model(item) for item in info_values),
     }
     return [state_check(type_checks, name="info_downgrade_types")]
@@ -572,18 +622,6 @@ def _is_frozen_model(value: Any) -> bool:
     return False
 
 
-class _FakeWorld:
-    def __init__(self, name: str = "world") -> None:
-        self.world_id = uuid7()
-        self.name = name
-        self.tick = 7
-        self.run_id = uuid7()
-        self.system = SimpleNamespace(processors=[_FakeProcessor()])
-        self.hooks = _FakeHooks()
-        self.resources = _FakeResources()
-        self.has_prepared_tick_commit = False
-
-
 class _FakeProcessor:
     priority = 11
     components = ()
@@ -593,73 +631,8 @@ class _FakeResource:
     pass
 
 
-class _FakeEvent:
+async def _fake_handler(_event: PreTick) -> None:
     pass
-
-
-class _FakeHookHandle:
-    _event_type = _FakeEvent
-    _id = 101
-
-    # Public accessors mirroring core HookHandle's contract.
-    @property
-    def id(self):
-        return self._id
-
-    @property
-    def event_type(self):
-        return self._event_type
-
-
-def _fake_handler() -> None:
-    pass
-
-
-class _FakeHooks:
-    def items(self):
-        return [(_FakeEvent, _FakeHookHandle(), _fake_handler, "blocking")]
-
-
-class _FakeResources:
-    def items(self):
-        return [(_FakeResource, _FakeResource())]
-
-
-class _FakeWorldGraph:
-    def __init__(self) -> None:
-        self.created = _FakeWorld("spec-info")
-        self.forked = _FakeWorld("spec-fork")
-
-    async def create_world(self, config, storage_config=None, cache_config=None):
-        self.created.name = config.name
-        return self.created
-
-    async def fork_world(self, source_world_id, name=None, storage_config=None, cache_config=None):
-        self.forked.name = name or "spec-fork"
-        return self.forked
-
-    @asynccontextmanager
-    async def operation(self, world_id):
-        worlds = {str(world.world_id): world for world in (self.created, self.forked)}
-        yield worlds[str(world_id)]
-
-    async def list_worlds(self):
-        return [self.created, self.forked]
-
-    def pending_receipt(self, world_id):
-        worlds = {str(world.world_id): world for world in (self.created, self.forked)}
-        if str(world_id) not in worlds:
-            raise KeyError(str(world_id))
-        return None
-
-    def target_tick(self, world_id):
-        worlds = {str(world.world_id): world for world in (self.created, self.forked)}
-        return worlds[str(world_id)].tick
-
-
-class _UnusedService:
-    def __getattr__(self, name: str):
-        raise AssertionError(f"unexpected call to unused fake service: {name}")
 
 
 def _registered_task_ids() -> list[str]:
