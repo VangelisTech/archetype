@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import ast
 import inspect
+import subprocess
+import sys
 from collections.abc import Awaitable, Callable, Mapping
 from importlib import import_module
 from pathlib import Path
@@ -30,6 +32,38 @@ from archetype.commands.registry import OperationRegistry, OperationSpec
 from archetype.core.config import RunConfig
 from archetype.world.models import Step
 
+_PULL_FORWARD_MODEL_BOUNDARIES = (
+    ("archetype.artifacts.models", "IngestArtifacts", "ingest_artifacts"),
+    ("archetype.artifacts.models", "QueryArtifacts", "query_artifacts"),
+    ("archetype.evaluation.models", "RunGraders", "run_graders"),
+    ("archetype.evaluation.models", "Evaluate", "evaluate"),
+    ("archetype.research.models", "AutoResearch", "autoresearch"),
+    (
+        "archetype.physical_ai.models",
+        "EvaluatePhysicalTask",
+        "evaluate_physical_task",
+    ),
+    (
+        "archetype.physical_ai.models",
+        "SweepPhysicalInstructions",
+        "sweep_physical_instructions",
+    ),
+    (
+        "archetype.episodes.models",
+        "IngestClaudeTranscript",
+        "ingest_claude_transcript",
+    ),
+    ("archetype.episodes.models", "QueryTranscriptRows", "query_transcript_rows"),
+    ("archetype.episodes.models", "QueryTrajectory", "query_trajectory"),
+    ("archetype.episodes.models", "GradeTrajectory", "grade_trajectory"),
+    ("archetype.missions.models", "SubmitMission", "submit_mission"),
+    ("archetype.missions.models", "RunMission", "run_mission"),
+    (
+        "archetype.missions.models",
+        "RestoreMissionSandbox",
+        "restore_mission_sandbox",
+    ),
+)
 _ACTOR_MODEL_BOUNDARIES = (
     ("archetype.research.models", "AutoResearch", "autoresearch"),
     ("archetype.artifacts.models", "IngestArtifacts", "ingest_artifacts"),
@@ -40,22 +74,7 @@ _ACTOR_AWARE_MODEL_NAMES = frozenset(
     model_name for _module, model_name, _literal in _ACTOR_MODEL_BOUNDARIES
 )
 _PULL_FORWARD_LITERALS = frozenset(
-    {
-        "ingest_artifacts",
-        "query_artifacts",
-        "run_graders",
-        "evaluate",
-        "autoresearch",
-        "evaluate_physical_task",
-        "sweep_physical_instructions",
-        "ingest_claude_transcript",
-        "query_transcript_rows",
-        "query_trajectory",
-        "grade_trajectory",
-        "submit_mission",
-        "run_mission",
-        "restore_mission_sandbox",
-    }
+    literal for _module, _model_name, literal in _PULL_FORWARD_MODEL_BOUNDARIES
 )
 
 
@@ -118,10 +137,12 @@ def _runtime_world(dispatcher: object) -> Any:
     return world_type(state=cast("Any", _RuntimeStateProbe(dispatcher)))
 
 
-def _canonical_actor_models() -> dict[str, type[BaseModel]]:
+def _canonical_models(
+    boundaries: tuple[tuple[str, str, str], ...],
+) -> dict[str, type[BaseModel]]:
     loaded: dict[str, type[BaseModel]] = {}
     errors: list[str] = []
-    for module_name, model_name, _literal in _ACTOR_MODEL_BOUNDARIES:
+    for module_name, model_name, _literal in boundaries:
         try:
             model = getattr(import_module(module_name), model_name)
         except (AttributeError, ImportError) as error:
@@ -133,10 +154,18 @@ def _canonical_actor_models() -> dict[str, type[BaseModel]]:
         loaded[model_name] = model
     if errors:
         pytest.fail(
-            "PR-4 actor-aware operation boundary is incomplete:\n- " + "\n- ".join(errors),
+            "PR-4 canonical operation boundary is incomplete:\n- " + "\n- ".join(errors),
             pytrace=False,
         )
     return loaded
+
+
+def _canonical_actor_models() -> dict[str, type[BaseModel]]:
+    return _canonical_models(_ACTOR_MODEL_BOUNDARIES)
+
+
+def _canonical_pull_forward_models() -> dict[str, type[BaseModel]]:
+    return _canonical_models(_PULL_FORWARD_MODEL_BOUNDARIES)
 
 
 def _actor_operation(
@@ -236,31 +265,59 @@ class _ResourcesSurfaceProbe:
 
 
 @pytest.mark.asyncio
-async def test_actor_aware_ingress_uses_apply_as_for_exact_four_pull_forward_models() -> None:
-    """Programmatic untrusted ingress is the request-scoped dispatcher itself."""
+async def test_actor_aware_ingress_uses_apply_as_for_exact_four_pull_forward_models(
+    tmp_path: Path,
+) -> None:
+    """Production wiring exposes exactly four pull-forwards to apply_as."""
 
     deps = import_module("archetype.api.deps")
-    models = _canonical_actor_models()
-    dispatcher = _ApplyProbe()
-    resources = _ResourcesSurfaceProbe(dispatcher)
-    request = SimpleNamespace(
-        app=SimpleNamespace(state=SimpleNamespace(resources=resources)),
+    wiring = import_module("archetype.wiring")
+    from archetype.storage.config import ControlCatalogConfig
+
+    models = _canonical_pull_forward_models()
+    config = wiring.RuntimeBootstrapConfig(
+        control_catalog_config=ControlCatalogConfig(
+            catalog_dir=tmp_path / "catalogs",
+        ),
     )
-    actor = ActorCtx(id=uuid7(), roles={"admin"})
+    resources = wiring.build_runtime_resources(config)
+    try:
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(resources=resources)),
+        )
+        resolved = await deps.get_dispatcher(cast("Any", request))
+        assert resolved is resources.dispatcher
+        assert getattr(resolved.apply_as, "__self__", None) is resources.dispatcher
 
-    resolved = await deps.get_dispatcher(cast("Any", request))
-    assert resolved is dispatcher
-    for model_name in sorted(models):
-        operation = _actor_operation(models[model_name])
-        await resolved.apply_as(actor, operation)
+        pull_specs = {
+            spec.model.__name__: spec
+            for spec in resources.dispatcher._registry.specs
+            if spec.name in _PULL_FORWARD_LITERALS
+        }
+        assert set(pull_specs) == set(models)
+        for _module_name, model_name, literal in _PULL_FORWARD_MODEL_BOUNDARIES:
+            spec = pull_specs[model_name]
+            assert spec.name == literal
+            assert spec.model is models[model_name]
+            assert spec.trusted is True
+            assert spec.durable is None
 
-    assert {
-        type(operation).__name__ for _actual_actor, operation in dispatcher.actor_aware
-    } == _ACTOR_AWARE_MODEL_NAMES
-    assert len(dispatcher.actor_aware) == 4
-    assert all(actual_actor is actor for actual_actor, _operation in dispatcher.actor_aware)
-    assert dispatcher.trusted == []
-    assert resources.forbidden_reads == []
+        assert {
+            model_name for model_name, spec in pull_specs.items() if spec.untrusted
+        } == _ACTOR_AWARE_MODEL_NAMES
+        assert {model_name for model_name, spec in pull_specs.items() if not spec.untrusted} == set(
+            models
+        ) - _ACTOR_AWARE_MODEL_NAMES
+
+        denied_actor = ActorCtx(id=uuid7(), roles={"unknown"})
+        for model_name in sorted(_ACTOR_AWARE_MODEL_NAMES):
+            with pytest.raises(PermissionError, match="cannot execute permission"):
+                await resolved.apply_as(
+                    denied_actor,
+                    _actor_operation(models[model_name]),
+                )
+    finally:
+        await resources.aclose()
 
 
 @pytest.mark.asyncio
@@ -439,8 +496,19 @@ async def test_request_dependencies_expose_dispatcher_not_registry_storage_or_sa
 
     forbidden_prefixes = (
         "archetype.app",
+        "archetype.commands.policy",
+        "archetype.commands.registry",
+        "archetype.commands.scheduler",
+        "archetype.core.aio",
         "archetype.storage",
+        "archetype.world.registry",
+        "archetype.world.lifecycle",
         "archetype.missions.sandboxes",
+        "archetype.missions.coding_agents",
+        "archetype.missions.critics",
+        "archetype.missions.sessions",
+        "archetype.physical_ai.manipulation",
+        "archetype.physical_ai.policy",
     )
     assert {
         name
@@ -492,40 +560,61 @@ async def test_fastapi_lifespan_owns_and_closes_runtime_resources(
     assert not hasattr(app.state, "container")
 
 
-def test_create_app_and_imports_start_no_resources(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def _call_target(call: ast.Call) -> str | None:
+    def expression_target(expression: ast.expr) -> str | None:
+        if isinstance(expression, ast.Name):
+            return expression.id
+        if isinstance(expression, ast.Attribute):
+            owner = expression_target(expression.value)
+            return f"{owner}.{expression.attr}" if owner is not None else expression.attr
+        return None
+
+    return expression_target(call.func)
+
+
+def test_create_app_and_imports_start_no_resources() -> None:
     """Import and factory construction remain inert until lifespan entry."""
 
-    api_app = import_module("archetype.api.app")
-    build_calls: list[str] = []
+    isolated_import = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import sys
+import types
 
-    def unexpected_build(*_args: object, **_kwargs: object) -> object:
-        build_calls.append("build")
-        raise AssertionError("create_app must not start process resources")
+build_calls = []
+wiring = types.ModuleType("archetype.wiring")
 
-    monkeypatch.setattr(
-        api_app,
-        "build_runtime_resources",
-        unexpected_build,
-        raising=False,
+class RuntimeBootstrapConfig:
+    @classmethod
+    def from_env(cls, *_args, **_kwargs):
+        return cls()
+
+def unexpected_build(*_args, **_kwargs):
+    build_calls.append("build")
+    raise AssertionError("import/create_app must not start process resources")
+
+wiring.RuntimeBootstrapConfig = RuntimeBootstrapConfig
+wiring.RuntimeResources = object
+wiring.build_runtime_resources = unexpected_build
+sys.modules["archetype.wiring"] = wiring
+
+import archetype.api.app as api_app
+
+app = api_app.create_app()
+assert build_calls == []
+assert not hasattr(app.state, "resources")
+assert not hasattr(app.state, "container")
+""",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
     )
-    try:
-        wiring = import_module("archetype.wiring")
-    except ModuleNotFoundError:
-        wiring = None
-    if wiring is not None:
-        monkeypatch.setattr(
-            wiring,
-            "build_runtime_resources",
-            unexpected_build,
-        )
+    assert isolated_import.returncode == 0, isolated_import.stderr
 
-    app = api_app.create_app()
-
-    assert build_calls == []
-    assert not hasattr(app.state, "resources")
-    assert not hasattr(app.state, "container")
+    api_app = import_module("archetype.api.app")
 
     source_path = Path(inspect.getsourcefile(api_app) or "")
     tree = ast.parse(source_path.read_text())
@@ -543,10 +632,28 @@ def test_create_app_and_imports_start_no_resources(
         for node in ast.walk(statement)
         if isinstance(node, ast.Call)
     ]
-    called_names = {node.func.id for node in top_level_calls if isinstance(node.func, ast.Name)}
-    assert "build_runtime_resources" not in called_names
-    assert "RuntimeResources" not in called_names
-    assert "ServiceContainer" not in called_names
+    called_targets = {
+        target for node in top_level_calls if (target := _call_target(node)) is not None
+    }
+    forbidden_constructors = {
+        "build_runtime_resources",
+        "RuntimeResources",
+        "ServiceContainer",
+    }
+    assert {
+        target
+        for target in called_targets
+        if target.rsplit(".", maxsplit=1)[-1] in forbidden_constructors
+    } == set()
+
+    counterfactual = ast.parse("resources = wiring.build_runtime_resources()")
+    counterfactual_calls = [node for node in ast.walk(counterfactual) if isinstance(node, ast.Call)]
+    assert [_call_target(node) for node in counterfactual_calls] == [
+        "wiring.build_runtime_resources"
+    ]
+    assert (
+        _call_target(counterfactual_calls[0]).rsplit(".", maxsplit=1)[-1] in forbidden_constructors
+    )
 
 
 _EXPECTED_DECLARED_ROUTES = {

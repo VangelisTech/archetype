@@ -211,13 +211,40 @@ def _mission_shell(
     return handle
 
 
-def _by_type(
+def _assert_exact_pull_forward_dispatch(
     operations: Sequence[object],
     models: dict[str, type[Any]],
+    *,
+    get_world_info: type[Any],
+    query_components: type[Any],
 ) -> dict[str, Any]:
+    expected_types = (
+        models["IngestArtifacts"],
+        models["QueryArtifacts"],
+        get_world_info,
+        query_components,
+        models["RunGraders"],
+        models["Evaluate"],
+        models["AutoResearch"],
+        models["EvaluatePhysicalTask"],
+        models["SweepPhysicalInstructions"],
+        models["IngestClaudeTranscript"],
+        models["QueryTranscriptRows"],
+        get_world_info,
+        models["QueryTrajectory"],
+        get_world_info,
+        models["GradeTrajectory"],
+        models["SubmitMission"],
+        models["RunMission"],
+        models["RestoreMissionSandbox"],
+    )
+    actual_types = tuple(type(operation) for operation in operations)
+    assert actual_types == expected_types, (
+        "runtime must dispatch the exact canonical sequence: one of each "
+        "pull-forward plus only GetWorldInfo/QueryComponents support calls"
+    )
+
     by_model = {type(operation): operation for operation in operations}
-    missing = [model_name for model_name, model in models.items() if model not in by_model]
-    assert missing == [], f"runtime did not dispatch canonical models: {missing}"
     return {model_name: by_model[model] for model_name, model in models.items()}
 
 
@@ -282,6 +309,7 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
         InstructionSweepConfig,
         PhysicalTaskEvalConfig,
     )
+    from archetype.world.models import GetWorldInfo, QueryComponents
 
     models = _canonical_pull_forward_models()
     dispatcher = _DispatchProbe()
@@ -313,6 +341,12 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
 
     def evaluator(_rollout: object) -> float:
         return 1.0
+
+    def prepare_candidate(_world: object) -> object:
+        return object()
+
+    def on_iteration(_iteration: object) -> None:
+        return None
 
     contract = GraderContract(
         grader_id="runtime-dispatch",
@@ -359,7 +393,16 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
         )
         is results["evaluate"]
     )
-    assert await world.autoresearch(research_config, evaluator) is results["autoresearch"]
+    assert (
+        await world.autoresearch(
+            research_config,
+            evaluator,
+            prepare_candidate=prepare_candidate,
+            lab_world_id="lab-world-1",
+            on_iteration=on_iteration,
+        )
+        is results["autoresearch"]
+    )
     assert (
         await runtime.evaluate_physical_task(
             physical_config,
@@ -446,38 +489,88 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
         await missions.restore_sandbox(submitted, checkpoint) is results["restore_mission_sandbox"]
     )
 
-    operations = _by_type(dispatcher.trusted, models)
+    operations = _assert_exact_pull_forward_dispatch(
+        dispatcher.trusted,
+        models,
+        get_world_info=GetWorldInfo,
+        query_components=QueryComponents,
+    )
     assert len(operations) == 14
     assert all(
         model.model_fields["operation"].default == operations[model_name].operation
         for model_name, model in models.items()
     )
+    with pytest.raises(AssertionError, match="exact canonical sequence"):
+        _assert_exact_pull_forward_dispatch(
+            (*dispatcher.trusted, dispatcher.trusted[0], object()),
+            models,
+            get_world_info=GetWorldInfo,
+            query_components=QueryComponents,
+        )
 
     assert operations["IngestArtifacts"].world_id == "world-1"
     assert operations["IngestArtifacts"].sources == (artifact,)
     assert operations["IngestArtifacts"].storage_config is storage
+    assert operations["QueryArtifacts"].world_id == "world-1"
     assert operations["QueryArtifacts"].storage_config is storage
     # RuntimeWorld.grade legitimately performs its query before RunGraders.
+    run_graders_index = next(
+        index
+        for index, operation in enumerate(dispatcher.trusted)
+        if operation is operations["RunGraders"]
+    )
+    assert type(dispatcher.trusted[run_graders_index - 1]) is QueryComponents
+    grade_info = dispatcher.trusted[run_graders_index - 2]
+    grade_query = dispatcher.trusted[run_graders_index - 1]
+    assert type(grade_info) is GetWorldInfo
+    assert grade_info.world_id == "world-1"
+    assert grade_query.world_id == "world-1"
+    assert grade_query.run_id == "run-1"
+    assert grade_query.storage_config is storage
+    assert grade_query.entity_ids is None
+    assert len(grade_query.components) == 1
+    assert grade_query.components[0].resolve() is DispatchMetric
     assert operations["RunGraders"].df is frame
     assert operations["RunGraders"].graders == (grader,)
+    assert operations["Evaluate"].world_id == "world-1"
     assert operations["Evaluate"].components == (DispatchMetric,)
     assert operations["Evaluate"].contract is contract
     assert operations["Evaluate"].grader is grader
+    assert operations["Evaluate"].evaluation_id == "evaluation-1"
+    assert operations["Evaluate"].storage_config is storage
     assert operations["Evaluate"].ticks == (2,)
     assert operations["Evaluate"].entity_ids == (3,)
     assert operations["AutoResearch"].world_id == "world-1"
     assert operations["AutoResearch"].config is research_config
     assert operations["AutoResearch"].evaluator is evaluator
+    assert operations["AutoResearch"].prepare_candidate is prepare_candidate
+    assert operations["AutoResearch"].lab_world_id == "lab-world-1"
+    assert operations["AutoResearch"].on_iteration is on_iteration
     assert operations["EvaluatePhysicalTask"].config is physical_config
     assert operations["EvaluatePhysicalTask"].env_client is env_client
     assert operations["EvaluatePhysicalTask"].policy_client is policy_client
     assert operations["SweepPhysicalInstructions"].config is sweep_config
+    assert operations["SweepPhysicalInstructions"].env_client is env_client
+    assert operations["SweepPhysicalInstructions"].policy_client is policy_client
+    assert operations["IngestClaudeTranscript"].world_id == "world-1"
     assert operations["IngestClaudeTranscript"].source is transcript
+    assert operations["IngestClaudeTranscript"].storage_config is storage
+    assert operations["QueryTranscriptRows"].world_id == "world-1"
     assert operations["QueryTranscriptRows"].storage_config is storage
     assert operations["QueryTrajectory"].component is DispatchMetric
+    assert operations["QueryTrajectory"].world_id == "world-1"
+    assert operations["QueryTrajectory"].run_id == "run-1"
+    assert operations["QueryTrajectory"].storage_config is storage
     assert operations["QueryTrajectory"].selection is selection
     assert operations["QueryTrajectory"].ticks == (4,)
+    assert operations["QueryTrajectory"].entity_ids == (5,)
+    assert operations["GradeTrajectory"].component is DispatchMetric
+    assert operations["GradeTrajectory"].world_id == "world-1"
+    assert operations["GradeTrajectory"].run_id == "run-1"
     assert operations["GradeTrajectory"].graders == (grader,)
+    assert operations["GradeTrajectory"].storage_config is storage
+    assert operations["GradeTrajectory"].selection is selection
+    assert operations["GradeTrajectory"].ticks == (6,)
     assert operations["GradeTrajectory"].entity_ids == (7,)
 
     submit = operations["SubmitMission"]
@@ -488,9 +581,12 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
     assert submit.submission.repository == "repo"
     assert submit.submission.branch == "branch"
     assert submit.submission.tasks == (task,)
+    assert submit.submission.name == "mission-submission"
+    assert submit.submission.base_ref == "main"
     assert operations["RunMission"].owner_id == "mission-owner-1"
     assert operations["RunMission"].mission is submitted
     assert operations["RunMission"].max_ticks == 9
+    assert operations["RestoreMissionSandbox"].owner_id == "mission-owner-1"
     assert operations["RestoreMissionSandbox"].mission is submitted
     assert operations["RestoreMissionSandbox"].checkpoint is checkpoint
     assert dispatcher.actor_aware == []
