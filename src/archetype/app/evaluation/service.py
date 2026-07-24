@@ -38,14 +38,15 @@ from daft import DataFrame
 from pydantic_core import to_jsonable_python
 from uuid_utils import UUID, uuid7
 
-from archetype.app.evaluation.interfaces import GraderOutput, TrajectoryGrader
 from archetype.app.ingestion.interfaces import iIngestionService
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
 from archetype.evaluation.components import EvalReceipt
 from archetype.evaluation.contracts import (
     GraderContract,
+    GraderOutput,
     Outcome,
+    TrajectoryGrader,
     subject_digest,
 )
 from archetype.storage.interfaces import iStorageService

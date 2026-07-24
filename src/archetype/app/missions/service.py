@@ -104,7 +104,7 @@ from archetype.missions.transitions import (
     CriticExecutionStatus,
     MissionStatus,
 )
-from archetype.redaction import RedactionService
+from archetype.redaction import RedactedText, RedactionReceipt
 
 
 @dataclass(frozen=True)
@@ -177,6 +177,17 @@ class MissionTaskOwner(Protocol):
     ) -> asyncio.Task[T]: ...
 
 
+class MissionRedactor(Protocol):
+    """Exact stateless-redaction capability consumed by mission execution."""
+
+    @property
+    def policy_id(self) -> str: ...
+
+    def redact_text(self, value: str, *, scope: str) -> RedactedText: ...
+
+    def assert_safe_metadata(self, value: str, *, field: str) -> RedactionReceipt: ...
+
+
 class MissionCleanup(Protocol):
     """Exact-world mutation authority available only after close starts."""
 
@@ -213,7 +224,7 @@ class MissionService:
         name: str,
         config: AgentMissionConfig,
         sandbox_service: SandboxServiceProtocol,
-        redaction_service: RedactionService,
+        redaction_service: MissionRedactor,
         task_owner: MissionTaskOwner,
         cleanup_factory: MissionCleanupFactory,
         storage: str | Path | StorageConfig | None = None,

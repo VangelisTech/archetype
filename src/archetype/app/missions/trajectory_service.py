@@ -9,13 +9,10 @@ from collections.abc import Sequence
 
 from daft import DataFrame
 
-from archetype.app.evaluation.interfaces import (
-    GraderOutput,
-    TrajectoryGrader,
-    iEvaluationService,
-)
+from archetype.app.evaluation.interfaces import iEvaluationService
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
+from archetype.evaluation.contracts import GraderOutput, TrajectoryGrader
 from archetype.missions.trajectories import TrajectorySelection, filter_trajectory_rows
 from archetype.storage.interfaces import iStorageService
 from archetype.world import query

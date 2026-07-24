@@ -5,4 +5,4 @@
 [[top_level_family_rule]]
 name = "research-domain-family"
 consumer = "archetype.research"
-allowed_families = []
+allowed_families = ["archetype.world"]
