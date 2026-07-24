@@ -373,6 +373,11 @@ class ServiceContainer:
             # entering the public dispatcher from compound cleanup.
             await self.application._destroy_world_owned(world_id)
 
+        async def cancel_world_commands(world_id: object) -> int:
+            # Preserve the focused replacement seam while injecting only the
+            # application capability, not the concrete scheduler authority.
+            return await self.command_scheduler.cancel_world(world_id)
+
         async def fork_owned_world(*args, **kwargs):
             # Resolve at call time so compound handlers and focused injection
             # tests share the same lifecycle capability.
@@ -442,7 +447,7 @@ class ServiceContainer:
             lifecycle=self.world_lifecycle,
             storage=self.storage_service,
             dispatcher=self.command_dispatcher,
-            scheduler=self.command_scheduler,
+            cancel_world_commands=cancel_world_commands,
             artifacts=self.artifact_service,
             transcripts=self.transcript_ingestion_service,
             evaluations=self.evaluation_service,

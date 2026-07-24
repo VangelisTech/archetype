@@ -57,7 +57,7 @@ from archetype.world.models import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
     from archetype.app.artifacts.interfaces import iArtifactService
     from archetype.app.evaluation.interfaces import iEvaluationService
@@ -69,7 +69,6 @@ if TYPE_CHECKING:
     from archetype.app.physical_ai.interfaces import iPhysicalAIService
     from archetype.app.research.interfaces import iResearchService
     from archetype.commands.dispatch import CommandDispatcher
-    from archetype.commands.scheduler import CommandScheduler
     from archetype.physical_ai.contracts import (
         InstructionSweepConfig,
         InstructionSweepReport,
@@ -110,7 +109,7 @@ class RuntimeApplication:
         lifecycle: iWorldLifecycle,
         storage: iStorageService,
         dispatcher: CommandDispatcher,
-        scheduler: CommandScheduler,
+        cancel_world_commands: Callable[[object], Awaitable[int]],
         research: iResearchService | None = None,
         artifacts: iArtifactService | None = None,
         transcripts: iTranscriptIngestionService | None = None,
@@ -123,7 +122,7 @@ class RuntimeApplication:
         self._lifecycle = lifecycle
         self._storage = storage
         self._dispatcher = dispatcher
-        self._scheduler = scheduler
+        self._cancel_world_commands = cancel_world_commands
         self._research = research
         self._artifacts = artifacts
         self._transcripts = transcripts
@@ -250,7 +249,7 @@ class RuntimeApplication:
                 str(world_id),
                 world,
             )
-            await self._scheduler.cancel_world(world_id)
+            await self._cancel_world_commands(world_id)
         await self._lifecycle.destroy_world(world_id, lease=lease)
 
     async def get_world_info(self, world_id) -> WorldInfo:
