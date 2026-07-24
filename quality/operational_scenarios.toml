@@ -415,6 +415,34 @@ artifact_schema = "archetype.operational-results/v1"
 required_cadence = ["pr", "main", "release"]
 
 [[scenario]]
+id = "dogfood.evaluation.durable_receipt"
+kind = "dogfood"
+owner = "evaluation"
+owner_paths = [
+  "src/archetype/evaluation",
+  "src/archetype/runtime",
+  "src/archetype/wiring.py",
+  "tests/integration/test_evaluation_operational.py",
+]
+source_path = "tests/integration/test_evaluation_operational.py"
+source_command = ["pytest", "-q", "tests/integration/test_evaluation_operational.py"]
+required_extras = []
+tier = 1
+applicability = ["source", "wheel"]
+timeout_seconds = 180
+prerequisites = []
+missing_prerequisite = "fail"
+semantic_oracle = { kind = "pytest", ref = "tests/integration/test_evaluation_operational.py" }
+contracts = [
+  "evaluation.result.snapshot_pinned",
+  "runtime.lifecycle.retryable_teardown",
+]
+cleanup_policy = "isolated"
+artifact_policy = "receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["pr", "main", "release"]
+
+[[scenario]]
 id = "dogfood.agent_mission.scripted"
 kind = "dogfood"
 owner = "missions"
