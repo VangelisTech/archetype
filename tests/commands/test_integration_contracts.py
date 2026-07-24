@@ -136,6 +136,20 @@ class _Policy:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 
+    def preauthorize(
+        self,
+        actor: _Actor,
+        *,
+        permission: str,
+    ) -> None:
+        self.calls.append(
+            {
+                "actor": actor,
+                "permission": permission,
+                "phase": "preauthorize",
+            }
+        )
+
     def authorize(
         self,
         actor: _Actor,
@@ -540,6 +554,46 @@ def test_pr3_bridge_allowlist_is_exhaustive_bounded_and_marked_for_pr4_deletion(
         if callable(value) and any(token in name.lower() for token in forbidden_tokens)
     )
     assert forbidden_callables == []
+
+    class _BridgePolicySpy:
+        def __init__(self) -> None:
+            self.calls: list[tuple[object, str]] = []
+
+        def preauthorize(
+            self,
+            actor: object,
+            *,
+            permission: str,
+        ) -> None:
+            self.calls.append((actor, permission))
+
+    actor = _Actor(roles=frozenset({"admin"}))
+    policy = _BridgePolicySpy()
+    for operation in sorted(_PR4_ACTOR_AWARE_OPERATIONS):
+        bridge.preauthorize_pr3_bridge_actor_call(
+            policy,
+            actor,
+            operation=operation,
+        )
+    assert policy.calls == [(actor, operation) for operation in sorted(_PR4_ACTOR_AWARE_OPERATIONS)]
+
+    trusted_only = "run_mission"
+    with pytest.raises(PermissionError, match=r"(?i)trusted|untrusted|not available"):
+        bridge.preauthorize_pr3_bridge_actor_call(
+            policy,
+            actor,
+            operation=trusted_only,
+        )
+    assert policy.calls[-1] == (actor, trusted_only)
+
+    calls_before_unknown = list(policy.calls)
+    with pytest.raises(KeyError, match=r"(?i)unknown|not registered"):
+        bridge.preauthorize_pr3_bridge_actor_call(
+            policy,
+            actor,
+            operation="unknown_bridge_operation",
+        )
+    assert policy.calls == calls_before_unknown
 
 
 @pytest.mark.asyncio

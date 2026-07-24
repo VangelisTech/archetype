@@ -129,11 +129,33 @@ class _Spec:
     durable: object | None = None
     trusted: bool = True
     untrusted: bool = True
-    token_cost: int = 0
+    token_cost: int | Callable[[BaseModel], int] = 0
+
+
+class _ObservedSpec:
+    """Observe or forbid effect-bearing metadata reads after resolution."""
+
+    def __init__(
+        self,
+        spec: _Spec,
+        events: list[str],
+        *,
+        forbidden_reads: frozenset[str] = frozenset(),
+    ) -> None:
+        self._spec = spec
+        self._events = events
+        self._forbidden_reads = forbidden_reads
+
+    def __getattr__(self, name: str) -> Any:
+        if name in {"untrusted", "durable", "world_key", "token_cost"}:
+            self._events.append(name)
+            if name in self._forbidden_reads:
+                raise AssertionError(f"{name} must not be read before role preauthorization")
+        return getattr(self._spec, name)
 
 
 class _Registry:
-    def __init__(self, specs: tuple[_Spec, ...], events: list[str]) -> None:
+    def __init__(self, specs: tuple[Any, ...], events: list[str]) -> None:
         self._specs = {spec.model: spec for spec in specs}
         self.events = events
         self.resolved: list[BaseModel] = []
@@ -155,12 +177,35 @@ class _PolicyPort:
         events: list[str],
         *,
         denial: BaseException | None = None,
+        preauthorization_denial: BaseException | None = None,
+        denied_permissions: frozenset[str] = frozenset(),
     ) -> None:
         self.events = events
         self.denial = denial
+        self.preauthorization_denial = preauthorization_denial
+        self.denied_permissions = denied_permissions
+        self.preauthorization_calls: list[dict[str, Any]] = []
         self.calls: list[dict[str, Any]] = []
         self.application_calls: list[dict[str, Any]] = []
         self.batch_calls: list[dict[str, Any]] = []
+
+    def preauthorize(
+        self,
+        actor: _Actor,
+        *,
+        permission: str,
+    ) -> None:
+        self.events.append("preauthorize")
+        self.preauthorization_calls.append(
+            {
+                "actor": actor,
+                "permission": permission,
+            }
+        )
+        if self.preauthorization_denial is not None:
+            raise self.preauthorization_denial
+        if permission in self.denied_permissions:
+            raise PermissionError(f"role denied permission {permission!r}")
 
     def authorize(
         self,
@@ -324,11 +369,19 @@ class _AccessSink:
 
 
 class _TargetTickResolver:
-    def __init__(self, ticks: Mapping[str, int]) -> None:
+    def __init__(
+        self,
+        ticks: Mapping[str, int],
+        *,
+        events: list[str] | None = None,
+    ) -> None:
         self.ticks = dict(ticks)
+        self.events = events
         self.calls: list[str] = []
 
     def __call__(self, world_id: object) -> int:
+        if self.events is not None:
+            self.events.append("target_tick")
         normalized_world_id = str(world_id)
         self.calls.append(normalized_world_id)
         return self.ticks[normalized_world_id]
@@ -414,6 +467,7 @@ async def test_trusted_and_actor_aware_entry_share_the_exact_handler() -> None:
     actor = _Actor()
 
     trusted = await dispatcher.apply(operation)
+    assert policy.preauthorization_calls == []
     assert policy.calls == []
     assert access.rows == []
     assert target_ticks.calls == []
@@ -425,6 +479,12 @@ async def test_trusted_and_actor_aware_entry_share_the_exact_handler() -> None:
     assert registry.resolved == [operation, operation]
     assert world_key_calls == [operation]
     assert target_ticks.calls == ["world-parity"]
+    assert policy.preauthorization_calls == [
+        {
+            "actor": actor,
+            "permission": "spawn",
+        }
+    ]
     assert policy.calls == [
         {
             "actor": actor,
@@ -443,7 +503,7 @@ async def test_trusted_and_actor_aware_entry_share_the_exact_handler() -> None:
 
 
 @pytest.mark.asyncio
-async def test_actor_aware_order_is_resolve_policy_handler_bounded_evidence() -> None:
+async def test_actor_aware_order_is_resolve_preauthorize_coordinates_policy_then_effects() -> None:
     api = _commands_api()
     events: list[str] = []
 
@@ -455,18 +515,30 @@ async def test_actor_aware_order_is_resolve_policy_handler_bounded_evidence() ->
         events.append("summarize")
         return {"label": operation.label}
 
-    spec = _Spec(
-        name="synthetic",
-        model=_Operation,
-        handler=handler,
-        permission="spawn",
-        summarize=summarize,
-        token_cost=3,
+    def world_key(operation: BaseModel) -> object:
+        events.append("world_key_call")
+        return cast("_Operation", operation).world_id
+
+    def token_cost(_operation: BaseModel) -> int:
+        events.append("cost_call")
+        return 3
+
+    spec = _ObservedSpec(
+        _Spec(
+            name="synthetic",
+            model=_Operation,
+            handler=handler,
+            permission="spawn",
+            summarize=summarize,
+            world_key=world_key,
+            token_cost=token_cost,
+        ),
+        events,
     )
     registry = _Registry((spec,), events)
     policy = _PolicyPort(events)
     access = _AccessSink(events)
-    target_ticks = _TargetTickResolver({"world-order": 19})
+    target_ticks = _TargetTickResolver({"world-order": 19}, events=events)
     dispatcher = _dispatcher(
         api,
         registry=registry,
@@ -483,7 +555,21 @@ async def test_actor_aware_order_is_resolve_policy_handler_bounded_evidence() ->
 
     assert await dispatcher.apply_as(actor, operation) == "ordered"
 
-    assert events == ["resolve", "policy", "handler", "summarize", "evidence"]
+    assert events[:3] == ["resolve", "preauthorize", "untrusted"]
+    ordered_events = (
+        "world_key",
+        "world_key_call",
+        "target_tick",
+        "token_cost",
+        "cost_call",
+        "policy",
+        "handler",
+        "summarize",
+        "evidence",
+    )
+    assert [events.index(name) for name in ordered_events] == sorted(
+        events.index(name) for name in ordered_events
+    )
     assert target_ticks.calls == ["world-order"]
     assert policy.calls[0] == {
         "actor": actor,
@@ -495,6 +581,96 @@ async def test_actor_aware_order_is_resolve_policy_handler_bounded_evidence() ->
     evidence = _evidence_dict(access.rows[0])
     assert evidence["world_id"] == "world-order"
     assert evidence["metadata"] == {"label": "ordered"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("operation", "permission", "quota_scope"),
+    [
+        pytest.param(
+            _Operation(world_id="secret-live"),
+            "spawn",
+            "live_world",
+            id="live-world",
+        ),
+        pytest.param(
+            _DurableReadOperation(world_id="secret-durable"),
+            "resume_world",
+            "durable_world",
+            id="durable-world",
+        ),
+    ],
+)
+async def test_role_denied_direct_world_operation_stops_before_any_resource_or_effect(
+    operation: BaseModel,
+    permission: str,
+    quota_scope: Literal["live_world", "durable_world"],
+) -> None:
+    api = _commands_api()
+    events: list[str] = []
+
+    async def unexpected_handler(_operation: BaseModel) -> None:
+        raise AssertionError("application handler must not run after role denial")
+
+    def unexpected_world_key(_operation: BaseModel) -> object:
+        raise AssertionError("world_key must not run before role preauthorization")
+
+    def unexpected_cost(_operation: BaseModel) -> int:
+        raise AssertionError("token cost must not resolve before role preauthorization")
+
+    base_spec = _Spec(
+        name=str(type(operation).model_fields["operation"].default),
+        model=type(operation),
+        handler=unexpected_handler,
+        permission=permission,
+        summarize=lambda _operation: {},
+        quota_scope=quota_scope,
+        world_key=unexpected_world_key,
+        token_cost=unexpected_cost,
+    )
+    spec = _ObservedSpec(
+        base_spec,
+        events,
+        forbidden_reads=frozenset({"untrusted", "durable", "world_key", "token_cost"}),
+    )
+    registry = _Registry((spec,), events)
+    policy = _PolicyPort(
+        events,
+        preauthorization_denial=PermissionError("role denied uniformly"),
+    )
+    scheduler = _SchedulerPort(events)
+    access = _AccessSink(events)
+
+    def unexpected_target_tick(_world_id: object) -> int:
+        raise AssertionError("target-tick resolver must not run after role denial")
+
+    dispatcher = _dispatcher(
+        api,
+        registry=registry,
+        policy=policy,
+        scheduler=scheduler,
+        access=access,
+        target_tick_for_world=unexpected_target_tick,
+    )
+    actor = _Actor(roles=frozenset({"viewer"}))
+
+    with pytest.raises(PermissionError, match="role denied uniformly"):
+        await dispatcher.apply_as(actor, operation)
+
+    assert events == ["resolve", "preauthorize"]
+    assert policy.preauthorization_calls == [
+        {
+            "actor": actor,
+            "permission": permission,
+        }
+    ]
+    assert policy.calls == []
+    assert policy.application_calls == []
+    assert policy.batch_calls == []
+    assert scheduler.admissions == []
+    assert scheduler.batch_admissions == []
+    assert scheduler.spawn_admissions == []
+    assert access.rows == []
 
 
 @pytest.mark.asyncio
@@ -671,6 +847,99 @@ async def test_defer_as_rejects_live_direct_only_before_scheduler_persistence() 
         sort_keys=True,
         default=str,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("entrypoint", "operation"),
+    [
+        pytest.param(
+            "defer_as",
+            _Operation(world_id="secret-deferred"),
+            id="generic-deferred",
+        ),
+        pytest.param(
+            "defer_spawn_as",
+            Spawn(world_id="secret-spawn", components=()),
+            id="reserved-spawn",
+        ),
+    ],
+)
+async def test_role_denied_deferred_entry_stops_before_eligibility_coordinates_or_admission(
+    entrypoint: str,
+    operation: BaseModel,
+) -> None:
+    api = _commands_api()
+    events: list[str] = []
+
+    async def unexpected_handler(_operation: BaseModel) -> None:
+        raise AssertionError("direct application handler must remain untouched")
+
+    def unexpected_world_key(_operation: BaseModel) -> object:
+        raise AssertionError("world_key must not run before role preauthorization")
+
+    def unexpected_cost(_operation: BaseModel) -> int:
+        raise AssertionError("token cost must not resolve before role preauthorization")
+
+    base_spec = _Spec(
+        name=str(type(operation).model_fields["operation"].default),
+        model=type(operation),
+        handler=unexpected_handler,
+        permission="spawn",
+        summarize=lambda _operation: {},
+        durable=object(),
+        world_key=unexpected_world_key,
+        token_cost=unexpected_cost,
+    )
+    registry = _Registry(
+        (
+            _ObservedSpec(
+                base_spec,
+                events,
+                forbidden_reads=frozenset({"untrusted", "durable", "world_key", "token_cost"}),
+            ),
+        ),
+        events,
+    )
+    policy = _PolicyPort(
+        events,
+        preauthorization_denial=PermissionError("role denied before admission"),
+    )
+    scheduler = _SchedulerPort(events)
+    access = _AccessSink(events)
+
+    def unexpected_target_tick(_world_id: object) -> int:
+        raise AssertionError("deferred paths must not use the live target-tick resolver")
+
+    dispatcher = _dispatcher(
+        api,
+        registry=registry,
+        policy=policy,
+        scheduler=scheduler,
+        access=access,
+        target_tick_for_world=unexpected_target_tick,
+    )
+    actor = _Actor(roles=frozenset({"viewer"}))
+    options = _DurableOptions(target_tick=31)
+
+    with pytest.raises(PermissionError, match="role denied before admission"):
+        method = getattr(dispatcher, entrypoint)
+        await method(actor, operation, options)
+
+    assert events == ["resolve", "preauthorize"]
+    assert policy.preauthorization_calls == [
+        {
+            "actor": actor,
+            "permission": "spawn",
+        }
+    ]
+    assert policy.calls == []
+    assert policy.application_calls == []
+    assert policy.batch_calls == []
+    assert scheduler.admissions == []
+    assert scheduler.batch_admissions == []
+    assert scheduler.spawn_admissions == []
+    assert access.rows == []
 
 
 @pytest.mark.asyncio
@@ -957,6 +1226,140 @@ async def test_batch_validates_all_members_then_debits_and_admits_once() -> None
 
 
 @pytest.mark.asyncio
+async def test_later_role_denied_batch_member_stops_before_any_member_resource_or_effect() -> None:
+    api = _commands_api()
+    events: list[str] = []
+
+    async def unexpected_handler(_operation: BaseModel) -> None:
+        raise AssertionError("batch admission must not invoke direct application handlers")
+
+    def unexpected_world_key(_operation: BaseModel) -> object:
+        raise AssertionError("no batch world_key may run before all members preauthorize")
+
+    def unexpected_cost(_operation: BaseModel) -> int:
+        raise AssertionError("no batch cost may resolve before all members preauthorize")
+
+    specs = (
+        _ObservedSpec(
+            _Spec(
+                name="synthetic",
+                model=_Operation,
+                handler=unexpected_handler,
+                permission="spawn",
+                summarize=lambda _operation: {},
+                world_key=unexpected_world_key,
+                durable=object(),
+                token_cost=unexpected_cost,
+            ),
+            events,
+            forbidden_reads=frozenset({"untrusted", "durable", "world_key", "token_cost"}),
+        ),
+        _ObservedSpec(
+            _Spec(
+                name="live_operation",
+                model=_LiveOperation,
+                handler=unexpected_handler,
+                permission="add_processor",
+                summarize=lambda _operation: {},
+                world_key=unexpected_world_key,
+                durable=object(),
+                token_cost=unexpected_cost,
+            ),
+            events,
+            forbidden_reads=frozenset({"untrusted", "durable", "world_key", "token_cost"}),
+        ),
+    )
+    registry = _Registry(specs, events)
+    policy = _PolicyPort(
+        events,
+        denied_permissions=frozenset({"add_processor"}),
+    )
+    scheduler = _SchedulerPort(events)
+    access = _AccessSink(events)
+    dispatcher = _dispatcher(
+        api,
+        registry=registry,
+        policy=policy,
+        scheduler=scheduler,
+        access=access,
+        target_tick_for_world=lambda _world_id: pytest.fail(
+            "deferred batch must not use the live target-tick resolver"
+        ),
+    )
+    actor = _Actor(roles=frozenset({"player"}))
+    items = (
+        api.DeferredItem(
+            operation=_Operation(world_id="secret-batch", label="allowed-first"),
+            options=_DurableOptions(target_tick=5),
+        ),
+        api.DeferredItem(
+            operation=_LiveOperation(
+                world_id="secret-batch",
+                callback=lambda: None,
+                credential="BATCH_SECRET",
+            ),
+            options=_DurableOptions(target_tick=5),
+        ),
+    )
+
+    with pytest.raises(PermissionError, match="add_processor"):
+        await dispatcher.defer_batch_as(actor, items)
+
+    assert events == ["resolve", "resolve", "preauthorize", "preauthorize"]
+    assert policy.preauthorization_calls == [
+        {
+            "actor": actor,
+            "permission": "spawn",
+        },
+        {
+            "actor": actor,
+            "permission": "add_processor",
+        },
+    ]
+    assert policy.calls == []
+    assert policy.application_calls == []
+    assert policy.batch_calls == []
+    assert scheduler.admissions == []
+    assert scheduler.batch_admissions == []
+    assert scheduler.spawn_admissions == []
+    assert access.rows == []
+
+
+@pytest.mark.asyncio
+async def test_empty_actor_aware_batch_rejects_before_registry_policy_or_effects() -> None:
+    api = _commands_api()
+    events: list[str] = []
+    registry = _Registry((), events)
+    policy = _PolicyPort(events)
+    scheduler = _SchedulerPort(events)
+    access = _AccessSink(events)
+    dispatcher = _dispatcher(
+        api,
+        registry=registry,
+        policy=policy,
+        scheduler=scheduler,
+        access=access,
+        target_tick_for_world=lambda _world_id: pytest.fail(
+            "empty deferred batch must not resolve a target tick"
+        ),
+    )
+
+    with pytest.raises(ValueError, match=r"(?i)empty|at least one|must not be empty"):
+        await dispatcher.defer_batch_as(_Actor(roles=frozenset({"admin"})), ())
+
+    assert events == []
+    assert registry.resolved == []
+    assert policy.preauthorization_calls == []
+    assert policy.calls == []
+    assert policy.application_calls == []
+    assert policy.batch_calls == []
+    assert scheduler.admissions == []
+    assert scheduler.batch_admissions == []
+    assert scheduler.spawn_admissions == []
+    assert access.rows == []
+
+
+@pytest.mark.asyncio
 async def test_reserved_spawn_authorizes_before_scheduler_and_dispatcher_never_reserves() -> None:
     api = _commands_api()
     assert "reserve_entity_ids" not in signature(api.CommandDispatcher).parameters
@@ -1198,23 +1601,55 @@ def test_policy_role_matrix_is_complete_for_world_audit_and_pr3_bridge_permissio
                 max_tokens_per_day=1_000_000,
             )
             if permission in allowed_permissions:
-                policy.authorize_application(
+                policy.preauthorize(
                     actor,
                     permission=permission,
-                    token_cost=0,
                 )
             else:
                 with pytest.raises(PermissionError, match=r"(?i)cannot|permission|denied"):
-                    policy.authorize_application(
+                    policy.preauthorize(
                         actor,
                         permission=permission,
-                        token_cost=0,
                     )
 
     assert "add_components" not in _EXPECTED_PERMISSIONS_BY_ROLE["player"]
     assert "remove_components" not in _EXPECTED_PERMISSIONS_BY_ROLE["player"]
     assert "create_world" not in _EXPECTED_PERMISSIONS_BY_ROLE["operator"]
     assert "resume_world" not in _EXPECTED_PERMISSIONS_BY_ROLE["operator"]
+
+
+def test_policy_preauthorization_is_pure_and_full_policy_is_the_sole_debit() -> None:
+    api = _commands_api()
+    actor = _Actor(roles=frozenset({"player"}))
+    policy = api.Policy(
+        max_commands_per_tick=1,
+        max_tokens_per_day=1,
+    )
+
+    for _ in range(3):
+        policy.preauthorize(actor, permission="spawn")
+
+    policy.authorize(
+        actor,
+        permission="spawn",
+        world_id="world-a",
+        target_tick=1,
+        token_cost=1,
+    )
+    policy.preauthorize(actor, permission="spawn")
+
+    with pytest.raises(PermissionError, match=r"(?i)daily|token"):
+        policy.authorize(
+            actor,
+            permission="spawn",
+            world_id="world-b",
+            target_tick=2,
+            token_cost=1,
+        )
+
+    denied_actor = _Actor(roles=frozenset({"viewer"}))
+    with pytest.raises(PermissionError, match=r"(?i)cannot|permission|denied"):
+        policy.preauthorize(denied_actor, permission="spawn")
 
 
 @dataclass(slots=True)
