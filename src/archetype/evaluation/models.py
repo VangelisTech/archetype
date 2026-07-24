@@ -222,9 +222,11 @@ class Evaluate(_EvaluationOperation):
     def _require_storage_config(cls, value: Any) -> Any:
         from archetype.core.config import StorageConfig as RuntimeStorageConfig
 
-        if not isinstance(value, RuntimeStorageConfig):
-            raise ValueError("storage_config must be an explicit StorageConfig")
-        return value
+        if isinstance(value, RuntimeStorageConfig):
+            return value
+        if isinstance(value, Mapping):
+            return RuntimeStorageConfig.model_validate(value)
+        raise ValueError("storage_config must be an explicit StorageConfig")
 
 
 def summarize_evaluation_operation(

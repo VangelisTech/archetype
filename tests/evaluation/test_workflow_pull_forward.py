@@ -103,6 +103,7 @@ def test_evaluate_requires_explicit_storage_coordinates(tmp_path: Path) -> None:
             "entity_ids": (3,),
         }
     )
+    assert operation.storage_config is storage
 
     dumped = operation.model_dump(mode="python")
     assert dumped == {
@@ -127,6 +128,23 @@ def test_evaluate_requires_explicit_storage_coordinates(tmp_path: Path) -> None:
         "ticks": (2,),
         "entity_ids": (3,),
     }
+    reconstructed = Evaluate.model_validate(dumped)
+    assert isinstance(reconstructed.storage_config, StorageConfig)
+    assert reconstructed.storage_config == storage
+    assert reconstructed.storage_config is not storage
+
+    from_mapping = Evaluate(
+        **{
+            **_operation_fields(),
+            "storage_config": {
+                "uri": str(tmp_path / "store"),
+                "namespace": "eval",
+            },
+        }
+    )
+    assert isinstance(from_mapping.storage_config, StorageConfig)
+    assert from_mapping.storage_config == storage
+
     assert operation.model_dump(
         mode="json",
         exclude={"components", "grader"},
