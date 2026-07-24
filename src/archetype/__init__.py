@@ -15,7 +15,8 @@
 """Dataframe-first simulations and agent workflows.
 
 `ArchetypeRuntime` is the recommended entry point for applications. Concrete
-services and the service container are internal and are not re-exported here.
+services, `RuntimeResources`, and process wiring are internal and are not
+re-exported here.
 
 Examples:
     >>> from archetype import ArchetypeRuntime
