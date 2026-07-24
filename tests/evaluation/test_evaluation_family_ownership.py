@@ -94,6 +94,22 @@ def test_digest_vectors_are_byte_for_byte_unchanged() -> None:
     assert subject_digest("w", "r", snapshot_tick=0, snapshot_tokens=[], component_names=["C"]) == (
         "e963f7fb8436f4d4c77e53855c7adceb85d0db7614fe2c0444676ad1f4abc8a3"
     )
+    inherited = subject_digest(
+        "fork",
+        "fork-run",
+        snapshot_tick=3,
+        snapshot_tokens=["fork-head"],
+        snapshot_segments=[("source", "source-run", 2, ["source-head"])],
+        component_names=["C"],
+    )
+    assert inherited != subject_digest(
+        "fork",
+        "fork-run",
+        snapshot_tick=3,
+        snapshot_tokens=["fork-head"],
+        snapshot_segments=[("source", "source-run", 2, ["changed-source-head"])],
+        component_names=["C"],
+    )
 
     assert evaluation_identity_digest(subject, contract.digest()) == (
         "2c1ab4dcee38d540ecfdc9d485376d46eb6f2ad06823264b7982b18bda5d7247"

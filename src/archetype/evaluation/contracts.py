@@ -209,6 +209,7 @@ def subject_digest(
     *,
     snapshot_tick: int,
     snapshot_tokens: list[str],
+    snapshot_segments: list[tuple[str, str, int, list[str]]] | None = None,
     component_names: list[str],
     ticks: list[int] | None = None,
     entity_ids: list[int] | None = None,
@@ -217,16 +218,32 @@ def subject_digest(
 
     The snapshot reference is the manifest head (tick + its commit tokens)
     from the control catalog — immutable by the atomic-visibility contract.
-    The selector is what was asked of that snapshot. Together they make a
-    receipt recomputable and attributable without hashing row content.
+    Fork subjects additionally bind every non-empty inherited segment's
+    world/run, fork-time tick cap, and manifest-head tokens. The selector is
+    what was asked of that snapshot. Together they make a receipt recomputable
+    and attributable without hashing row content.
     """
+    snapshot: dict[str, object] = {
+        "tick": snapshot_tick,
+        "tokens": sorted(snapshot_tokens),
+    }
+    if snapshot_segments is not None:
+        snapshot["segments"] = [
+            {
+                "world_id": str(segment_world),
+                "run_id": str(segment_run),
+                "up_to_tick": int(up_to_tick),
+                "tokens": sorted(tokens),
+            }
+            for segment_world, segment_run, up_to_tick, tokens in snapshot_segments
+        ]
     payload = json.dumps(
         {
             "domain": _RECEIPT_DIGEST_DOMAIN,
             "kind": "subject",
             "world_id": str(world_id),
             "run_id": str(run_id),
-            "snapshot": {"tick": snapshot_tick, "tokens": sorted(snapshot_tokens)},
+            "snapshot": snapshot,
             "selector": {
                 "components": sorted(component_names),
                 "ticks": sorted(int(t) for t in ticks) if ticks is not None else None,

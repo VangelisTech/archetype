@@ -275,7 +275,20 @@ Evaluation pins the world's visible component snapshot from explicit storage
 coordinates, runs the requested grader, and appends one row to
 `evaluation_results`, keyed by `evaluation_id` inside the world run. Its free
 family handler writes through `StorageService`; it does not consult the live
-registry or the general ingestion facade.
+registry or the general ingestion facade. A forked subject includes its
+current-run visibility and every durable ancestor segment at that segment's
+fork-time tick cap. All segment allowlists are captured and reused before
+grading; each non-empty segment's world/run, cap, and immutable manifest head
+are bound into the receipt subject identity. Equal-cap zero-width ancestry is
+pinned for integrity but contributes no subject rows or digest segment.
+
+For a no-lineage fork, evaluation admits child-only rows when that run owns
+tick zero or when its parent is absent from the target catalog, as happens
+after an intentional cross-store fork. The latter parent-absence test is the
+current durable severance signal; a future lifecycle schema can replace that
+inference with an explicit lineage-mode marker. If the parent is present and
+the child begins later than tick zero, evaluation fails closed rather than
+persisting a partial receipt.
 
 Reusing an evaluation ID with the same pinned subject and grader contract
 returns the persisted result without grading again. Reusing it for a different

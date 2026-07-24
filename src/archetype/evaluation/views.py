@@ -27,6 +27,7 @@ class PinnedEvaluationSnapshot:
     tick: int
     head_tokens: tuple[str, ...]
     visibility_tokens: tuple[str, ...]
+    query_snapshot: query.PinnedWorldQuerySnapshot
     storage_config: StorageConfig
 
 
@@ -38,17 +39,22 @@ async def pin_snapshot(
 ) -> PinnedEvaluationSnapshot:
     """Capture the exact published visibility used by one grader."""
 
-    visibility = await storage.pin_visibility(storage_config, world_id)
-    if visibility.head_tick is None:
+    query_snapshot = await query.pin_query_snapshot(
+        storage,
+        world_id,
+        storage_config=storage_config,
+    )
+    if query_snapshot.head_tick is None:
         raise RuntimeError(
             f"world {world_id} has no published visibility to evaluate "
             "(step it at least once first)"
         )
     return PinnedEvaluationSnapshot(
-        run_id=visibility.run_id,
-        tick=visibility.head_tick,
-        head_tokens=visibility.head_tokens,
-        visibility_tokens=visibility.visibility_tokens or (),
+        run_id=query_snapshot.run_id,
+        tick=query_snapshot.head_tick,
+        head_tokens=query_snapshot.head_tokens,
+        visibility_tokens=query_snapshot.current.visibility_tokens or (),
+        query_snapshot=query_snapshot,
         storage_config=storage_config,
     )
 
@@ -79,7 +85,7 @@ async def read_pinned_subject(
         entity_ids=(
             [int(entity_id) for entity_id in entity_ids] if entity_ids is not None else None
         ),
-        visibility_tokens=list(snapshot.visibility_tokens),
+        snapshot=snapshot.query_snapshot,
     )
 
 

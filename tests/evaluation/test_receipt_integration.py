@@ -30,7 +30,7 @@ from archetype.evaluation.models import Evaluate
 from archetype.runtime_resources import RuntimeResources
 from archetype.storage.config import ControlCatalogConfig
 from archetype.storage.service import StorageService
-from archetype.world.models import CreateWorld, Spawn, Step
+from archetype.world.models import CreateWorld, ForkWorld, Spawn, Step
 from tests._runtime import build_test_runtime
 
 pytestmark = [
@@ -187,6 +187,220 @@ async def test_replay_returns_persisted_result_without_regrading(tmp_path):
         assert rows[0]["evaluation_id"] == "trial-1"
     finally:
         await _shutdown(resources, storage_service)
+
+
+@pytest.mark.parametrize(
+    ("child_steps", "fork_depth", "expected_ticks"),
+    [(0, 1, [0]), (1, 1, [0, 1]), (0, 2, [0])],
+    ids=["fresh-fork", "stepped-fork", "nested-fresh-fork"],
+)
+async def test_fork_evaluation_pins_durable_lineage_without_live_registry(
+    tmp_path,
+    child_steps,
+    fork_depth,
+    expected_ticks,
+):
+    """A fork receipt grades its immutable inherited prefix plus child rows."""
+
+    resources, storage_service = _runtime(tmp_path)
+    dispatcher = resources.dispatcher
+    storage = _storage(tmp_path)
+    try:
+        source = await _seeded_world(dispatcher, storage)
+        first_fork = await dispatcher.apply(
+            ForkWorld(
+                source_world_id=source.world_id,
+                name=f"branch-{child_steps}-{fork_depth}-1",
+            )
+        )
+        fork = first_fork
+        if fork_depth == 2:
+            fork = await dispatcher.apply(
+                ForkWorld(
+                    source_world_id=first_fork.world_id,
+                    name=f"branch-{child_steps}-{fork_depth}-2",
+                )
+            )
+        for _ in range(child_steps):
+            await dispatcher.apply(Step(world_id=fork.world_id, run_config=RunConfig()))
+
+        # Publish another source tick after the fork boundary. The child must
+        # retain tick 0 without leaking this later source state.
+        await dispatcher.apply(
+            Spawn.from_components(
+                world_id=source.world_id,
+                components=[Telemetry(reading=99.0)],
+            )
+        )
+        await dispatcher.apply(Step(world_id=source.world_id, run_config=RunConfig()))
+    finally:
+        await _shutdown(resources, storage_service)
+
+    pin_events: list[tuple[str, str | None, int | None]] = []
+    grader_started = False
+
+    class RecordingStorage(StorageService):
+        async def pin_visibility(
+            self,
+            storage_config,
+            world_id,
+            *,
+            run_id=None,
+            max_tick=None,
+        ):
+            assert not grader_started, "all lineage visibility must be pinned before grading"
+            pin_events.append(
+                (str(world_id), str(run_id) if run_id is not None else None, max_tick)
+            )
+            return await super().pin_visibility(
+                storage_config,
+                world_id,
+                run_id=run_id,
+                max_tick=max_tick,
+            )
+
+    cold_storage = RecordingStorage(
+        control_catalog_config=ControlCatalogConfig(
+            catalog_dir=tmp_path / "control-catalogs",
+        )
+    )
+    observed_rows: list[dict[str, Any]] = []
+
+    def grader(frame):
+        nonlocal grader_started
+        grader_started = True
+        observed_rows.extend(frame.to_pylist())
+        return Outcome(status="pass", score=1.0)
+
+    try:
+        result = await evaluation_handlers.evaluate(
+            cold_storage,
+            _evaluate(
+                fork.world_id,
+                [Telemetry],
+                contract=_contract(),
+                grader=grader,
+                evaluation_id=f"fork-lineage-{child_steps}-{fork_depth}",
+                storage_config=storage,
+            ),
+        )
+    finally:
+        await cold_storage.shutdown()
+
+    assert result.outcome == "pass"
+    assert sorted(row["tick"] for row in observed_rows) == expected_ticks
+    assert {row["telemetry__reading"] for row in observed_rows} == {0.8}
+    expected_pins = [
+        (str(fork.world_id), str(fork.run_id), None),
+        (str(source.world_id), str(source.run_id), 0),
+    ]
+    if fork_depth == 2:
+        expected_pins.append((str(first_fork.world_id), str(first_fork.run_id), 0))
+    assert pin_events == expected_pins
+
+
+async def test_parent_without_lineage_preserves_empty_prefix_and_cross_store_forks(
+    tmp_path,
+):
+    """No-lineage forks remain gradeable only for their child-owned history."""
+
+    resources, storage_service = _runtime(tmp_path)
+    dispatcher = resources.dispatcher
+    storage = _storage(tmp_path)
+    cross_storage = StorageConfig(
+        uri=str(tmp_path / "cross-store"),
+        namespace="cross-ns",
+        backend=StorageBackend.ICEBERG,
+    )
+    try:
+        empty_source = await dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name="empty-prefix-source"),
+                storage_config=storage,
+            )
+        )
+        empty_entity = await dispatcher.apply(
+            Spawn.from_components(
+                world_id=empty_source.world_id,
+                components=[Telemetry(reading=0.4)],
+            )
+        )
+        empty_fork = await dispatcher.apply(
+            ForkWorld(source_world_id=empty_source.world_id, name="empty-prefix-child")
+        )
+        with pytest.raises(RuntimeError, match="no published visibility"):
+            await dispatcher.apply(
+                _evaluate(
+                    empty_fork.world_id,
+                    [Telemetry],
+                    contract=_contract(),
+                    grader=lambda _frame: Outcome(status="pass"),
+                    evaluation_id="fresh-empty-prefix",
+                    storage_config=storage,
+                )
+            )
+        await dispatcher.apply(Step(world_id=empty_fork.world_id, run_config=RunConfig()))
+
+        cross_source = await _seeded_world(dispatcher, storage)
+        cross_entity = await dispatcher.apply(
+            Spawn.from_components(
+                world_id=cross_source.world_id,
+                components=[Telemetry(reading=0.6)],
+            )
+        )
+        cross_fork = await dispatcher.apply(
+            ForkWorld(
+                source_world_id=cross_source.world_id,
+                name="cross-store-child",
+                storage_config=cross_storage,
+            )
+        )
+        await dispatcher.apply(Step(world_id=cross_fork.world_id, run_config=RunConfig()))
+    finally:
+        await _shutdown(resources, storage_service)
+
+    cold_storage = _storage_service(tmp_path)
+    observed: dict[str, list[dict[str, Any]]] = {}
+
+    def capture(label):
+        def grader(frame):
+            observed[label] = frame.to_pylist()
+            return Outcome(status="pass", score=1.0)
+
+        return grader
+
+    try:
+        await evaluation_handlers.evaluate(
+            cold_storage,
+            _evaluate(
+                empty_fork.world_id,
+                [Telemetry],
+                contract=_contract(),
+                grader=capture("empty"),
+                evaluation_id="empty-prefix-evaluation",
+                storage_config=storage,
+            ),
+        )
+        await evaluation_handlers.evaluate(
+            cold_storage,
+            _evaluate(
+                cross_fork.world_id,
+                [Telemetry],
+                contract=_contract(),
+                grader=capture("cross"),
+                evaluation_id="cross-store-evaluation",
+                storage_config=cross_storage,
+            ),
+        )
+    finally:
+        await cold_storage.shutdown()
+
+    assert [
+        (row["entity_id"], row["tick"], row["telemetry__reading"]) for row in observed["empty"]
+    ] == [(empty_entity, 0, 0.4)]
+    assert [
+        (row["entity_id"], row["tick"], row["telemetry__reading"]) for row in observed["cross"]
+    ] == [(cross_entity, 1, 0.6)]
 
 
 async def test_concurrent_service_graphs_run_paid_grader_once(tmp_path):

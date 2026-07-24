@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
 from daft import DataFrame, col, lit
 
@@ -32,6 +33,43 @@ from archetype.storage.signatures import match_signature_records
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True, slots=True)
+class PinnedQuerySegment:
+    """One immutable world/run visibility segment in a logical world read."""
+
+    world_id: str
+    run_id: str
+    up_to_tick: int | None
+    head_tick: int | None
+    head_tokens: tuple[str, ...]
+    visibility_tokens: tuple[str, ...] | None
+
+
+@dataclass(frozen=True, slots=True)
+class PinnedWorldQuerySnapshot:
+    """Exact current-run and inherited visibility for one logical world."""
+
+    world_id: str
+    run_id: str
+    head_tick: int | None
+    head_tokens: tuple[str, ...]
+    current: PinnedQuerySegment
+    lineage: tuple[PinnedQuerySegment, ...]
+
+    @property
+    def effective_lineage(self) -> tuple[PinnedQuerySegment, ...]:
+        """Return only ancestor segments that own a non-empty tick interval."""
+
+        effective: list[PinnedQuerySegment] = []
+        previous_up_to = -1
+        for segment in self.lineage:
+            assert segment.up_to_tick is not None
+            if segment.up_to_tick > previous_up_to:
+                effective.append(segment)
+            previous_up_to = segment.up_to_tick
+        return tuple(effective)
+
+
 async def _querier_for(
     storage: iStorageService,
     storage_config: StorageConfig | None,
@@ -39,6 +77,135 @@ async def _querier_for(
     effective = storage_config or StorageConfig()
     store = await storage.get_or_create_store(effective, None)
     return effective, store, AsyncQueryManager(store=store)
+
+
+async def pin_query_snapshot(
+    storage: iStorageService,
+    world_id: str,
+    run_id: str | None = None,
+    storage_config: StorageConfig | None = None,
+) -> PinnedWorldQuerySnapshot:
+    """Pin every physical segment that forms one logical world snapshot."""
+
+    effective = storage_config or StorageConfig()
+    wid = str(world_id)
+    catalog = storage.get_control_catalog(effective)
+    record = await catalog.get_world(wid)
+    if record is None:
+        raise KeyError(f"world {wid} is not recorded in catalog for {effective.uri}")
+    recorded_run = str(record.run_id or "")
+    if not recorded_run:
+        raise RuntimeError(f"world {wid} has no recorded run; visibility cannot be pinned")
+    if run_id is not None and str(run_id) != recorded_run:
+        raise ValueError(f"world {wid} records run {recorded_run}, not requested run {run_id}")
+    current_visibility = await storage.pin_visibility(
+        effective,
+        wid,
+        run_id=recorded_run,
+    )
+    rid = str(current_visibility.run_id)
+    if rid != recorded_run:
+        raise RuntimeError(
+            f"world {wid} visibility resolved run {rid}, expected recorded run {recorded_run}"
+        )
+    current = PinnedQuerySegment(
+        world_id=wid,
+        run_id=rid,
+        up_to_tick=None,
+        head_tick=current_visibility.head_tick,
+        head_tokens=current_visibility.head_tokens,
+        visibility_tokens=current_visibility.visibility_tokens,
+    )
+
+    lineage = await get_lineage(storage, wid, rid, effective)
+    parent_world_id = str(record.parent_world_id) if record.parent_world_id else None
+    if parent_world_id is not None:
+        if not lineage:
+            parent_record = await catalog.get_world(parent_world_id)
+            intentionally_severed = parent_record is None
+            owns_from_tick_zero = current.head_tick == 0 or (
+                current.head_tick is None
+                and current.visibility_tokens == ()
+                and getattr(record, "tick_head", None) == 0
+            )
+            if not intentionally_severed and current.head_tick is not None:
+                origin = await storage.pin_visibility(
+                    effective,
+                    wid,
+                    run_id=rid,
+                    max_tick=0,
+                )
+                owns_from_tick_zero = str(origin.run_id) == rid and origin.head_tick == 0
+            if not intentionally_severed and not owns_from_tick_zero:
+                raise RuntimeError(
+                    f"world {wid} records parent {parent_world_id} but has no "
+                    "persisted lineage or child-owned tick-zero origin"
+                )
+        elif str(lineage[-1][0]) != parent_world_id:
+            raise RuntimeError(
+                f"world {wid} records parent {parent_world_id} but its direct lineage "
+                f"segment names {lineage[-1][0]}"
+            )
+    pinned_lineage: list[PinnedQuerySegment] = []
+    previous_up_to = -1
+    logical_lineage_head: PinnedQuerySegment | None = None
+    for ancestor_world, ancestor_run, up_to_tick in lineage or ():
+        cap = int(up_to_tick)
+        if cap < previous_up_to:
+            raise RuntimeError(
+                "fork lineage tick caps must be monotonic: "
+                f"{ancestor_world}/{ancestor_run} ends at {cap} after {previous_up_to}"
+            )
+        widens_visible_interval = cap > previous_up_to
+        visibility = await storage.pin_visibility(
+            effective,
+            str(ancestor_world),
+            run_id=str(ancestor_run),
+            max_tick=cap,
+        )
+        legacy_segment = visibility.head_tick is None and visibility.visibility_tokens is None
+        if widens_visible_interval and visibility.head_tick != cap and not legacy_segment:
+            raise RuntimeError(
+                "fork lineage visibility is incomplete: "
+                f"{ancestor_world}/{ancestor_run} publishes through "
+                f"{visibility.head_tick}, expected {up_to_tick}"
+            )
+        segment = PinnedQuerySegment(
+            world_id=str(ancestor_world),
+            run_id=str(ancestor_run),
+            up_to_tick=cap,
+            head_tick=visibility.head_tick,
+            head_tokens=visibility.head_tokens,
+            visibility_tokens=visibility.visibility_tokens,
+        )
+        pinned_lineage.append(segment)
+        if widens_visible_interval:
+            logical_lineage_head = segment
+        previous_up_to = cap
+
+    if current.head_tick is not None and current.head_tick <= previous_up_to:
+        raise RuntimeError(
+            f"world {wid} current run head {current.head_tick} overlaps inherited "
+            f"lineage through tick {previous_up_to}"
+        )
+    logical_head_tick = current.head_tick
+    logical_head_tokens = current.head_tokens
+    if logical_head_tick is None and logical_lineage_head is not None:
+        lineage_head = logical_lineage_head
+        logical_head_tick = (
+            lineage_head.head_tick
+            if lineage_head.head_tick is not None
+            else lineage_head.up_to_tick
+        )
+        logical_head_tokens = lineage_head.head_tokens
+    return PinnedWorldQuerySnapshot(
+        world_id=wid,
+        run_id=rid,
+        head_tick=logical_head_tick,
+        head_tokens=logical_head_tokens,
+        current=current,
+        lineage=tuple(pinned_lineage),
+    )
 
 
 async def query_archetype(
@@ -125,30 +292,49 @@ async def query_components(
     entity_ids: list[int] | None = None,
     lineage: list[tuple[str, str, int]] | None = None,
     visibility_tokens: list[str] | None = None,
+    snapshot: PinnedWorldQuerySnapshot | None = None,
 ) -> DataFrame:
     """Read every signature containing ``components`` through pinned visibility."""
     if visibility_tokens is not None and lineage:
         raise ValueError("visibility_tokens cannot be combined with lineage")
+    if snapshot is not None:
+        if lineage is not None or visibility_tokens is not None:
+            raise ValueError("snapshot cannot be combined with lineage or visibility_tokens")
+        if (str(world_id), str(run_id)) != (snapshot.world_id, snapshot.run_id):
+            raise ValueError("snapshot does not identify the requested world/run")
     effective, store, querier = await _querier_for(storage, storage_config)
     catalog_records = await _catalog_candidates(storage, effective, components)
     pinned_tokens = list(visibility_tokens) if visibility_tokens is not None else None
+    snapshot_tokens = (
+        {
+            (segment.world_id, segment.run_id): segment.visibility_tokens
+            for segment in (snapshot.current, *snapshot.lineage)
+        }
+        if snapshot is not None
+        else {}
+    )
 
     async def _read(
         segment_world: str,
         segment_run: str,
         segment_ticks: list[int] | None,
     ) -> DataFrame:
-        tokens = (
-            pinned_tokens
-            if visibility_tokens is not None
-            else await _visible_tokens(
+        if snapshot is not None:
+            key = (str(segment_world), str(segment_run))
+            if key not in snapshot_tokens:
+                raise ValueError(f"snapshot has no pinned visibility for {key[0]}/{key[1]}")
+            exact_tokens = snapshot_tokens[key]
+            tokens = list(exact_tokens) if exact_tokens is not None else None
+        elif visibility_tokens is not None:
+            tokens = pinned_tokens
+        else:
+            tokens = await _visible_tokens(
                 storage,
                 effective,
                 segment_world,
                 segment_run,
                 segment_ticks,
             )
-        )
         return await _components_frame(
             querier,
             store,
@@ -162,7 +348,16 @@ async def query_components(
         )
 
     result = await _read(str(world_id), str(run_id), ticks)
-    return await _union_lineage(result, lineage, ticks, _read)
+    effective_lineage = (
+        [
+            (segment.world_id, segment.run_id, int(segment.up_to_tick))
+            for segment in snapshot.effective_lineage
+            if segment.up_to_tick is not None
+        ]
+        if snapshot is not None
+        else lineage
+    )
+    return await _union_lineage(result, effective_lineage, ticks, _read)
 
 
 async def _signature_records(

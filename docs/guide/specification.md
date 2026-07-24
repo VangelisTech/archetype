@@ -513,6 +513,16 @@ boundary.
   manifest-token, and optional maximum-tick filtering; entity liveness,
   same-tick active/inactive resolution, component ownership, lineage meaning,
   resumed tick, and next entity ID remain world-family rules.
+- A pinned logical-world read MUST resolve durable fork lineage in the world
+  family, capture the current run and every ancestor segment's manifest-token
+  allowlist (or its capped pre-manifest legacy prefix) at its immutable
+  fork-time tick cap before consumption, and reuse that exact segment
+  visibility without repinning while the read executes.
+- A parented world with no lineage rows MAY be interpreted as child-only only
+  when its own history begins at tick zero, or when the recorded parent is
+  absent from the target storage catalog because the fork intentionally
+  severed storage lineage. A present same-store parent plus a later child
+  origin and no lineage MUST fail closed as corruption.
 - `append_world_rows()` and `read_world_rows()` MUST resolve the durable
   world/run from the control catalog. Callers cannot supply those envelope
   columns, and conditional keys MUST be extended with both coordinates.

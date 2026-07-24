@@ -183,6 +183,7 @@ operations = [
   "handlers.query_components",
   "query.get_lineage",
   "query.list_signatures",
+  "query.pin_query_snapshot",
   "query.query_archetype",
   "query.query_components",
 ]

@@ -88,6 +88,19 @@ async def evaluate(
         snapshot.run_id,
         snapshot_tick=snapshot.tick,
         snapshot_tokens=list(snapshot.head_tokens),
+        snapshot_segments=(
+            [
+                (
+                    segment.world_id,
+                    segment.run_id,
+                    int(segment.up_to_tick),
+                    list(segment.head_tokens),
+                )
+                for segment in snapshot.query_snapshot.effective_lineage
+                if segment.up_to_tick is not None
+            ]
+            or None
+        ),
         component_names=[component.__name__ for component in operation.components],
         ticks=list(operation.ticks) if operation.ticks is not None else None,
         entity_ids=(list(operation.entity_ids) if operation.entity_ids is not None else None),
