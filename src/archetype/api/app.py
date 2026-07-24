@@ -20,22 +20,26 @@ from fastapi import FastAPI
 
 from archetype import __version__
 from archetype._logging import configure_host_observability
-from archetype.api.deps import get_container, set_container
 from archetype.api.routes import commands, entities, missions, query, simulation, worlds
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan: initialize and shutdown ServiceContainer."""
+    """Own one process resource graph for the exact FastAPI lifespan."""
+    # Composition stays lazy: importing the ASGI module and calling
+    # ``create_app`` must not construct providers, catalogs, or tasks.
+    from archetype.wiring import RuntimeBootstrapConfig, build_runtime_resources
+
     configure_host_observability(service_name="archetype-api")
-    container = get_container()
-    app.state.container = container
+    resources = build_runtime_resources(RuntimeBootstrapConfig.from_env())
+    app.state.resources = resources
     try:
         yield
     finally:
-        await container.shutdown()
-        app.state.container = None
-        set_container(None)
+        try:
+            await resources.aclose()
+        finally:
+            del app.state.resources
 
 
 def create_app() -> FastAPI:

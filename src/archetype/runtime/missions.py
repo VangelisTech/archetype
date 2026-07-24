@@ -5,27 +5,33 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from daft import DataFrame
+from uuid_utils import uuid7
 
 from archetype.core.config import StorageConfig
 from archetype.missions.contracts import (
     AgentMissionConfig,
     AgentTask,
     MissionResult,
+    MissionSubmission,
     SubmittedMission,
 )
+from archetype.missions.models import (
+    RestoreMissionSandbox,
+    RunMission,
+    SubmitMission,
+)
 from archetype.missions.sandboxes import CheckpointRef, SandboxIdentity
-from archetype.runtime.world import RuntimeWorld, _runtime_cleanup_scope
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from archetype.core.component import Component
     from archetype.runtime.runtime import ArchetypeRuntime
+    from archetype.runtime_resources import OwnerReservation
 
 
 class RuntimeMissions:
@@ -38,31 +44,24 @@ class RuntimeMissions:
         *,
         config: AgentMissionConfig,
         storage: str | Path | StorageConfig | None = None,
+        owner_id: str | None = None,
+        reservation: OwnerReservation | None = None,
     ) -> None:
         self._runtime = runtime
-
-        mission_world: RuntimeWorld | None = None
-
-        def world_factory(*args: Any, **kwargs: Any) -> RuntimeWorld:
-            nonlocal mission_world
-            mission_world = runtime.world(*args, **kwargs)
-            return mission_world
-
-        self._service = runtime._agent_mission_service(
-            world_factory=world_factory,
-            name=name,
-            config=config,
-            storage=storage,
+        self._resources = runtime._resources
+        self._dispatcher = self._resources.dispatcher
+        self._owner_id = owner_id or f"mission:{uuid7()}"
+        self._name = name
+        self._config = config
+        self._storage = storage
+        self._reservation = reservation or self._resources.reserve_owner(
+            self._owner_id,
+            phase="workflow-handles",
         )
-        if mission_world is None:
-            raise RuntimeError("Agent Missions service did not create its mission world")
-        self._world = mission_world
-        self._shutdown_lock = asyncio.Lock()
         self._closed = False
 
     async def __aenter__(self) -> RuntimeMissions:
-        if self._closed:
-            raise RuntimeError("Agent Missions handle is closed")
+        self._ensure_open()
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
@@ -77,12 +76,21 @@ class RuntimeMissions:
         name: str = "agent-mission",
         base_ref: str = "main",
     ) -> SubmittedMission:
-        return await self._service.submit(
-            repository=repository,
-            branch=branch,
-            tasks=tasks,
-            name=name,
-            base_ref=base_ref,
+        self._ensure_open()
+        return await self._dispatcher.apply(
+            SubmitMission(
+                owner_id=self._owner_id,
+                name=self._name,
+                config=self._config,
+                storage=self._storage,
+                submission=MissionSubmission(
+                    repository=repository,
+                    branch=branch,
+                    tasks=tuple(tasks),
+                    name=name,
+                    base_ref=base_ref,
+                ),
+            )
         )
 
     async def run(
@@ -91,7 +99,14 @@ class RuntimeMissions:
         *,
         max_ticks: int | None = None,
     ) -> MissionResult:
-        return await self._service.run(mission, max_ticks=max_ticks)
+        self._ensure_open()
+        return await self._dispatcher.apply(
+            RunMission(
+                owner_id=self._owner_id,
+                mission=mission,
+                max_ticks=max_ticks,
+            )
+        )
 
     async def restore_sandbox(
         self,
@@ -100,34 +115,44 @@ class RuntimeMissions:
     ) -> SandboxIdentity:
         """Explicitly restore the mission's process-local sandbox before running."""
 
-        return await self._service.restore_sandbox(mission, checkpoint)
+        self._ensure_open()
+        return await self._dispatcher.apply(
+            RestoreMissionSandbox(
+                owner_id=self._owner_id,
+                mission=mission,
+                checkpoint=checkpoint,
+            )
+        )
 
     async def close(self) -> None:
         await self._shutdown_internal(from_runtime=False)
 
     async def _shutdown_internal(self, *, from_runtime: bool) -> None:
-        async with self._shutdown_lock:
-            if self._closed:
-                return
-            # Public and runtime callers share one exact cleanup capability.
-            # Keeping the parameter distinguishes the internal protocol while
-            # preventing that capability from admitting unrelated worlds.
-            _ = from_runtime
-            with _runtime_cleanup_scope(self._world._state):
-                await self._service.close()
-            self._closed = True
-            self._runtime._unregister_mission_handle(self)
+        del from_runtime
+        if self._closed:
+            return
+        await self._reservation.aclose()
+        self._closed = True
 
     async def query(self, *components: type[Component]) -> DataFrame:
         """Query persisted mission state through the underlying world read path."""
 
-        return await self._service.query(*components)
+        self._ensure_open()
+        service = self._resources.owner(self._owner_id).require_bound()
+        return await service.query(*components)
 
     @property
     def world_id(self):
         """Return the activated world's durable identity."""
 
-        return self._service.world_id
+        self._ensure_open()
+        service = self._resources.owner(self._owner_id).require_bound()
+        return service.world_id
+
+    def _ensure_open(self) -> None:
+        self._runtime._ensure_open()
+        if self._closed:
+            raise RuntimeError("Agent Missions handle is closed")
 
 
 __all__ = ["RuntimeMissions"]

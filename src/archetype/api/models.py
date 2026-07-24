@@ -21,7 +21,6 @@ from typing import Any, cast
 from daft import DataFrame
 from pydantic import BaseModel, Field
 
-from archetype.app.models import Command
 from archetype.core.component import Component
 from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
 from archetype.world.models import EpisodeConfig, RolloutConfig
@@ -97,23 +96,13 @@ class SubmitCommandRequest(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     priority: int = 0
 
-    def to_command(self) -> Command:
-        from archetype.app.models import CommandType
-
-        return Command(
-            type=CommandType(self.type),
-            tick=self.tick,
-            payload=self.payload,
-            priority=self.priority,
-        )
-
 
 class SubmitBatchRequest(BaseModel):
     commands: list[SubmitCommandRequest]
 
 
 class CommandsRequest(BaseModel):
-    commands: list[Command]
+    commands: list[SubmitCommandRequest]
 
 
 class StepRequest(BaseModel):
@@ -167,7 +156,6 @@ class ErrorResponse(BaseModel):
 
 __all__ = [
     "CacheConfig",
-    "Command",
     "CommandBatchResponse",
     "CommandResponse",
     "CommandsRequest",
