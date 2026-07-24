@@ -34,7 +34,7 @@ uv run python examples/01_world_mutations.py
 Source: [`examples/01_world_mutations.py`](https://github.com/VangelisTech/archetype/blob/main/examples/01_world_mutations.py)
 
 This example uses actor-free `ArchetypeRuntime`. RBAC is intentionally absent
-from trusted scripting; the command-gateway and API tests cover role policy.
+from trusted scripting; the dispatcher-policy and API tests cover role policy.
 
 **What it demonstrates:**
 
@@ -46,7 +46,7 @@ from trusted scripting; the command-gateway and API tests cover role policy.
 
 Its structured receipt checks component migration, despawn, processor
 installation/removal, fork isolation, and the fact that trusted runtime calls
-do not fabricate gateway audit rows.
+do not fabricate actor-aware access rows.
 
 **Runtime operations in this example (curated, not exhaustive):**
 
@@ -59,8 +59,8 @@ do not fabricate gateway audit rows.
 | `world.query()` | `world.query`, registered through commands |
 | `world.history()` | commands-owned `AuditLog` projection |
 
-The runtime delegates directly to `iRuntimeApplication`; it does not construct
-an `ActorCtx` or pass through `CommandGateway`. See the normative
+The runtime constructs exact family operations and uses trusted dispatcher
+entry; it does not construct an `ActorCtx`. See the normative
 [Command Gate](command-gate.md#3-four-roles-and-permissions) for the separate
 untrusted-adapter permission matrix.
 

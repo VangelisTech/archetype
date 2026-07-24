@@ -33,7 +33,9 @@ Runtime users usually stage resources when creating a handle:
 world = runtime.world("sim", resources=[SimConfig(gravity=9.8)])
 ```
 
-Post-activation resource attachment is a gated operator/admin action through `iCommandGateway.add_resource(...)`.
+Post-activation resource attachment is the exact `AddResource` operation.
+Trusted runtime entry uses `apply`; authenticated API entry, when exposed,
+uses `apply_as` and requires operator/admin permission.
 
 ```text
 runtime.world(..., resources=[SimConfig(...)])
@@ -123,8 +125,8 @@ class PhysicsProcessor(AsyncProcessor):
 
 ### Workflow clients in processors
 
-The framework does not inject `CommandScheduler`, `CommandGateway`, or
-`ServiceContainer` into world resources. Doing so would cross the application
+The framework does not inject `CommandScheduler`, `CommandDispatcher`, or
+`RuntimeResources` into world resources. Doing so would cross the application
 boundary from inside tick execution and can create re-entrant lifecycle locks.
 Processors transform their DataFrame and may use application-supplied,
 concurrency-safe domain clients. Schedule later work from the owning workflow

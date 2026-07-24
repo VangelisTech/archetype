@@ -73,7 +73,7 @@ reachable through the live registry.
 
 Processors, resources, and hooks are live Python capabilities and are not
 durable configuration. Trusted callers attach them after creation; untrusted
-callers use authorized gateway operations.
+callers use actor-aware dispatcher operations.
 
 ## 4. `fork_world`
 
@@ -126,10 +126,10 @@ and pending mutations into that storage authority.
 Application destroy starts by obtaining a sticky `WorldCleanupLease`. New
 public operations reject once close has begun with the family-owned
 `WorldClosingError`. The synchronous target-tick snapshot emits the same typed
-state so the gateway can place authorized durable-world calls in the explicit
+state so policy can place authorized durable-world calls in the explicit
 tick-zero quota bucket without catching unrelated resolver failures. That quota
 fallback does not grant live operation authority. Under the exact cleanup
-lease, `RuntimeApplication`:
+lease, `WorldCleanup`:
 
 1. retries any already-retained required-projector receipt;
 2. reconciles any prepared tick publication under its exact commit identity
@@ -160,9 +160,9 @@ resumable.
 ## 6. `resume_world` (fenced mutable cold resume)
 
 The family primitive is
-`iWorldLifecycle.open_world_mutable(storage_config, world_id)`. The gateway
-names its boundary-safe proxy `resume_world`; the runtime returns a lazy
-`RuntimeWorld` handle.
+`iWorldLifecycle.open_world_mutable(storage_config, world_id)`. The exact
+boundary model is `ResumeWorld`; the runtime returns a lazy `RuntimeWorld`
+handle after trusted dispatch.
 
 Mutable resume reconstructs a writer in a process that shares only durable
 storage with the previous writer:
@@ -200,8 +200,8 @@ acquiring a writer fence or constructing a live world.
 ## 7. Boundary-safe information
 
 Lifecycle primitives may return an internal `AsyncWorld`. Neither
-`RuntimeApplication`, `CommandGateway`, `ArchetypeRuntime`, nor the REST layer
-returns that capability. They downgrade it to frozen values such as:
+`ArchetypeRuntime` nor the REST layer returns that capability. Registered
+handlers and adapters downgrade it to frozen values such as:
 
 ```python
 class WorldInfo(BaseModel):

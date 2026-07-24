@@ -16,8 +16,9 @@ without being the first interface shown to a new user.
 The recommended interface is `ArchetypeRuntime` and its world handles.
 Components, processors, resources, and the configuration and result types
 required by runtime signatures form the extension/signature interface. REST and
-CLI are supported adapters over the same gateway behavior. Concrete application
-services, app protocols, and `ServiceContainer` are internal. The synchronous
+CLI are supported adapters over the same governed operations. Concrete
+application services, app protocols, process wiring, and `RuntimeResources`
+are internal. The synchronous
 educational engine remains a compatibility interface.
 
 ## What counts as public
@@ -29,9 +30,9 @@ Exporting a name from a lower-level package does not promote it to a supported
 or recommended interface.
 
 `archetype.__all__` does not include concrete application services,
-`CommandGateway`, or `ServiceContainer`. Those objects are internal wiring and
-carry no compatibility promise. Repository composition code imports them from
-their owning family modules; applications use `ArchetypeRuntime`, REST, or CLI.
+`RuntimeResources`, or process-wiring helpers. Those objects carry no
+compatibility promise. Repository composition code imports them from their
+owning modules; applications use `ArchetypeRuntime`, REST, or CLI.
 
 Names beginning with an underscore are internal. Modules explicitly labeled
 experimental may change without the compatibility guarantees of the main API.
@@ -65,8 +66,9 @@ gone. The former `archetype.htn` resolver now lives under
 not yet a supported authoring surface. Trajectory schemas, Claude source
 parsing, and pure transforms live under `archetype.missions.trajectories`;
 physical state and pure behavior live in `physical_ai`; physical rollout/sweep
-orchestration lives behind `RuntimeApplication`; and research ledger state and
-its pure runner decoder live in `archetype.research`.
+orchestration is registered behind exact `physical_ai` operations; and
+research ledger state and its pure runner decoder live in
+`archetype.research`.
 
 Do not build a compatibility promise around the planning adapter or concrete
 application module paths. New applications use `ArchetypeRuntime` and the

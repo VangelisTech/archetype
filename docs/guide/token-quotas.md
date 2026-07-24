@@ -30,7 +30,7 @@ Current world-operation registrations use:
 | `run_rollout` | 200 |
 | `run_episode` | 500 |
 
-The finite PR3 bridge charges:
+Actor-aware workflow registrations charge:
 
 | Operation | Cost |
 |---|---:|
@@ -38,8 +38,8 @@ The finite PR3 bridge charges:
 | `ingest_artifacts`, `evaluate` | 10 |
 | `autoresearch` | 200 per requested iteration, minimum one |
 
-Those bridge costs move into exact registrations when their owning families
-land. Family models do not carry costs, and callers cannot override them.
+These costs belong to their exact `OperationSpec` registrations. Family models
+do not carry costs, and callers cannot override them.
 
 ## Quotas
 
@@ -52,7 +52,7 @@ Two independent limits apply per `Policy` instance:
 
 Changing the live world tick selects a new quota generation; no world callback,
 process-global reset, or shared module counter exists. Actors, worlds, target
-ticks, and runtime/container instances are isolated.
+ticks, and policy instances are isolated.
 
 Application-scoped operations such as `create_world` and `list_worlds` do not
 invent a world/tick bucket. They consume only the daily token budget.
@@ -115,7 +115,7 @@ untrusted code violate the boundary.
 ## Source reference
 
 - policy and role grants: `src/archetype/commands/policy.py`
-- per-operation costs and quota scopes: `src/archetype/app/container.py`
+- per-operation costs and quota scopes: `src/archetype/wiring.py`
 - enforcement order and batches: `src/archetype/commands/dispatch.py`
 - durable options: `src/archetype/commands/models.py`
 - executable policy contracts:

@@ -95,18 +95,41 @@ hosts; later environment changes do not alter the already-constructed service.
 Archetype does not infer a remote catalog from environment variables and does
 not pair remote object data with hidden local metadata. Configure the catalog,
 namespace, and catalog credentials directly in a Daft `Session`, then inject
-that session at the composition root:
+that session at the composition root. This is internal embedded-host wiring;
+ordinary application scripts use `ArchetypeRuntime`:
 
 ```python
 from daft.session import Session
-from archetype.app.container import ServiceContainer
-from archetype.storage import StorageService
+from archetype.core.config import StorageBackend, StorageConfig
+from archetype.storage import ControlCatalogConfig, StorageService
+from archetype.wiring import RuntimeBootstrapConfig, build_runtime_resources
 
+storage_config = StorageConfig(
+    uri="s3://your-bucket/archetype/warehouse",
+    namespace="experiment_1",
+    backend=StorageBackend.ICEBERG,
+    io_config=io_config,
+)
 session = Session()
 session.attach_catalog(configured_catalog)
-session.set_namespace("experiment_1")
+session.set_namespace(storage_config.namespace)
 
-services = ServiceContainer(storage_service=StorageService(session=session))
+control = ControlCatalogConfig.from_env()
+storage_service = StorageService(
+    session=session,
+    control_catalog_config=control,
+)
+runtime_resources = build_runtime_resources(
+    RuntimeBootstrapConfig(
+        control_catalog_config=control,
+        storage_service=storage_service,
+        audit_storage_config=storage_config,
+    )
+)
+
+# After the embedded host has stopped:
+await runtime_resources.aclose()
+await storage_service.shutdown()
 ```
 
 `configured_catalog` may wrap a managed PyIceberg catalog or another catalog
@@ -115,9 +138,10 @@ authoritative. `StorageConfig.io_config` remains the single explicit entry
 point for object-data credentials passed to Daft reads and writes; Archetype
 does not translate it into catalog properties.
 
-An injected `StorageService` remains caller-owned. Container shutdown leaves
-it open so another container or host service can continue using it; the caller
-closes it after its final consumer stops.
+An injected `StorageService` remains caller-owned. `RuntimeResources.aclose()`
+leaves it open so another process owner or host service can continue using it;
+the caller invokes `storage_service.shutdown()` after its final consumer
+stops.
 
 An injected session is bound to one configured storage URI and namespace.
 Create a separate `Session` and `StorageService` for another namespace;
@@ -139,7 +163,7 @@ storage = StorageConfig(
     io_config=io_config,
 )
 
-# Pass this storage config through the ServiceContainer backed by the
+# Pass this storage config through the RuntimeBootstrapConfig backed by the
 # preconfigured session above.
 ```
 

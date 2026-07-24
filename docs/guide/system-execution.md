@@ -188,8 +188,8 @@ example-local `MessageRealizationProcessor` at priority -100. It drains that
 example's shared `Mailbox` before `GreetingProcessor` at priority 10 deposits
 new work. The resulting one-tick delay belongs to that processor/resource
 composition. There is no registered portable message operation; the legacy
-`CommandType.MESSAGE` compatibility envelope is rejected before durable
-admission rather than installing a delivery pipeline.
+HTTP `type="message"` spelling is rejected before durable admission rather
+than installing a delivery pipeline.
 
 ## SyncSystem vs AsyncSystem
 
@@ -284,10 +284,10 @@ sharing boundary created by world forks.
 **Unnecessary defensive checks.** If your processor runs, the columns exist. Don't add `if "col" in df.columns` guards — they're dead code by construction.
 
 **Assuming every deferred behavior is built in.** Spawned entities materialize
-at the next tick boundary. Message delivery does not: the legacy
-`CommandType.MESSAGE` envelope has no exact durable registration and fails
-canonical deferred translation. Applications that need inboxes, routing, or a
-one-tick communication delay must compose those semantics explicitly, as
+at the next tick boundary. Message delivery does not: the legacy HTTP
+`type="message"` spelling has no exact durable registration and fails
+translation. Applications that need inboxes, routing, or a one-tick
+communication delay must compose those semantics explicitly, as
 `examples/04_messaging.py` does.
 
 **Forgetting that `components=()` matches everything.** An observer processor with an empty components tuple will run on every archetype table. This is useful for metrics but can be surprising if unintentional.

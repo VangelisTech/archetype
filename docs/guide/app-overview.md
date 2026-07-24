@@ -62,7 +62,7 @@ exact world while allowing different worlds to progress concurrently.
 
 **WorldLifecycle** owns create, discover, cold-open, mutable resume, fork, and
 retryable close. Internal lifecycle operations may return `AsyncWorld`; the
-application and gateway boundaries return immutable `WorldInfo`.
+registered handler and runtime/API boundaries return immutable `WorldInfo`.
 
 **World mutation and simulation functions** stage entity/component/processor
 changes and execute step, run, episode, and rollout under the registry lease.

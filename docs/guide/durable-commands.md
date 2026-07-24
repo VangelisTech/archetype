@@ -158,10 +158,10 @@ analytical view. The command ledger and manifest remain authoritative.
 registrations. `GetAuditHistory` is a separate commands-owned, direct-only
 operation over the analytical projection.
 
-The compatibility `app.models.Command` envelope is a finite state-free
-translator for existing API callers. It recognizes only supported portable
-mutations and immediately constructs the canonical family model plus
-`DurableOptions`; it owns no dispatch, policy, queue, or replay behavior.
+The HTTP `SubmitCommandRequest` shape is a finite state-free transport
+translator. It recognizes only five supported portable mutation spellings and
+immediately constructs the canonical family model plus `DurableOptions`; it
+owns no dispatch, policy, queue, or replay behavior.
 
 ## Executable contracts
 
