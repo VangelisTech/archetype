@@ -21,12 +21,26 @@ import pytest
 from uuid_utils import uuid7
 
 import archetype.world.lifecycle as lifecycle_module
-from archetype.app.container import ServiceContainer
 from archetype.artifacts import ArtifactSource
+from archetype.artifacts.models import IngestArtifacts
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
 from archetype.core.interfaces import StaleWriterError
 from archetype.storage.catalog import SqliteControlCatalog, WorldRecord
+from archetype.storage.config import ControlCatalogConfig
+from archetype.storage.service import StorageService
+from archetype.world.models import (
+    ComponentTypeRef,
+    CreateWorld,
+    Despawn,
+    DestroyWorld,
+    ForkWorld,
+    QueryComponents,
+    ResumeWorld,
+    Spawn,
+    Step,
+)
+from tests._runtime import build_test_runtime
 
 pytestmark = pytest.mark.asyncio
 
@@ -43,32 +57,71 @@ def _storage(tmp_path) -> StorageConfig:
     return StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
 
 
-async def _seed_world(c: ServiceContainer, storage) -> tuple[str, str, int, int]:
+def _resources(tmp_path):
+    storage_service = StorageService(
+        control_catalog_config=ControlCatalogConfig(catalog_dir=tmp_path / "control")
+    )
+    return (
+        build_test_runtime(tmp_path, storage_service=storage_service),
+        storage_service,
+    )
+
+
+def _world_registry(dispatcher):
+    return dispatcher._registry.resolve_name("step").handler.args[0]
+
+
+async def _live_world(dispatcher, world_id):
+    world = await _world_registry(dispatcher).live_world(str(world_id))
+    assert world is not None
+    return world
+
+
+async def _seed_world(dispatcher, storage) -> tuple[str, str, int, int]:
     """Create a world with two archetypes, three ticks, one despawn.
 
     Returns (world_id, run_id, live_entity_id, despawned_entity_id).
     """
-    world = await c.world_lifecycle.create_world(WorldConfig(name="seed"), storage)
-    e1 = await c.application.create_entity(world.world_id, [Score(points=1.0)])
-    e2 = await c.application.create_entity(world.world_id, [Score(points=2.0), Flag(label="x")])
-    await c.application.step(world.world_id, RunConfig())
-    await c.application.step(world.world_id, RunConfig())
-    await c.application.remove_entity(world.world_id, e2)
-    await c.application.step(world.world_id, RunConfig())
+    world = await dispatcher.apply(
+        CreateWorld(
+            config=WorldConfig(name="seed"),
+            storage_config=storage,
+        )
+    )
+    e1 = await dispatcher.apply(
+        Spawn.from_components(
+            world_id=world.world_id,
+            components=[Score(points=1.0)],
+        )
+    )
+    e2 = await dispatcher.apply(
+        Spawn.from_components(
+            world_id=world.world_id,
+            components=[Score(points=2.0), Flag(label="x")],
+        )
+    )
+    await dispatcher.apply(Step(world_id=world.world_id, run_config=RunConfig()))
+    await dispatcher.apply(Step(world_id=world.world_id, run_config=RunConfig()))
+    await dispatcher.apply(Despawn(world_id=world.world_id, entity_id=e2))
+    await dispatcher.apply(Step(world_id=world.world_id, run_config=RunConfig()))
     return str(world.world_id), str(world.run_id), int(e1), int(e2)
 
 
 async def test_resume_restores_tick_entities_and_continues(tmp_path):
-    c = ServiceContainer()
+    resources, storage_service = _resources(tmp_path)
+    dispatcher = resources.dispatcher
     try:
         storage = _storage(tmp_path)
-        wid, rid, e1, e2 = await _seed_world(c, storage)
+        wid, rid, e1, e2 = await _seed_world(dispatcher, storage)
     finally:
-        await c.shutdown()
+        await resources.aclose()
+        await storage_service.shutdown()
 
-    fresh = ServiceContainer()
+    fresh_resources, fresh_storage = _resources(tmp_path)
+    fresh = fresh_resources.dispatcher
     try:
-        world = await fresh.world_lifecycle.open_world_mutable(storage, wid)
+        await fresh.apply(ResumeWorld(storage_config=storage, world_id=wid))
+        world = await _live_world(fresh, wid)
         assert world.tick == 3, "resume tick = last published tick + 1"
         assert str(world.run_id) == rid, "run identity continues"
         assert set(world.entity2sig) == {e1}, "despawned entities stay dead"
@@ -82,52 +135,95 @@ async def test_resume_restores_tick_entities_and_continues(tmp_path):
         assert world.commit_coordinator is not None and world.commit_coordinator.epoch == 2
 
         # The resumed world is live and steps under the new epoch.
-        e3 = await fresh.application.create_entity(wid, [Score(points=9.0)])
+        e3 = await fresh.apply(
+            Spawn.from_components(
+                world_id=wid,
+                components=[Score(points=9.0)],
+            )
+        )
         assert e3 > max(e1, e2)
-        await fresh.application.step(wid, RunConfig())
-        df = await fresh.application.query_components([Score], wid, rid, storage, ticks=[3])
+        await fresh.apply(Step(world_id=wid, run_config=RunConfig()))
+        df = await fresh.apply(
+            QueryComponents(
+                components=(ComponentTypeRef.from_type(Score),),
+                world_id=wid,
+                run_id=rid,
+                storage_config=storage,
+                ticks=(3,),
+            )
+        )
         points = sorted(r["score__points"] for r in df.to_pylist())
         assert points == [1.0, 9.0], "continued history unions old and new entities"
     finally:
-        await fresh.shutdown()
+        await fresh_resources.aclose()
+        await fresh_storage.shutdown()
 
 
 async def test_resume_fences_out_previous_writer(tmp_path):
-    a = ServiceContainer()
-    b = ServiceContainer()
+    a_resources, a_storage = _resources(tmp_path)
+    b_resources, b_storage = _resources(tmp_path)
+    a = a_resources.dispatcher
+    b = b_resources.dispatcher
     try:
         storage = _storage(tmp_path)
-        world_a = await a.world_lifecycle.create_world(WorldConfig(name="w"), storage)
-        await a.application.create_entity(world_a.world_id, [Score(points=1.0)])
-        await a.application.step(world_a.world_id, RunConfig())
+        world_a = await a.apply(
+            CreateWorld(
+                config=WorldConfig(name="w"),
+                storage_config=storage,
+            )
+        )
+        await a.apply(
+            Spawn.from_components(
+                world_id=world_a.world_id,
+                components=[Score(points=1.0)],
+            )
+        )
+        await a.apply(Step(world_id=world_a.world_id, run_config=RunConfig()))
         wid = str(world_a.world_id)
 
-        # A second container (a second process, logically) resumes the world.
-        world_b = await b.world_lifecycle.open_world_mutable(storage, wid)
+        # A second runtime graph (a second process, logically) resumes the world.
+        await b.apply(ResumeWorld(storage_config=storage, world_id=wid))
+        world_b = await _live_world(b, wid)
         assert world_b.commit_coordinator.epoch == 2
 
         # The original writer is now stale: its publish fails closed.
         with pytest.raises((StaleWriterError, RuntimeError)):
-            await a.application.step(wid, RunConfig())
-        assert world_a.tick == 1, "stale writer must not advance"
+            await a.apply(Step(world_id=wid, run_config=RunConfig()))
+        live_a = await _live_world(a, wid)
+        assert live_a.tick == 1, "stale writer must not advance"
 
         # The new writer owns the world.
-        await b.application.step(wid, RunConfig())
+        await b.apply(Step(world_id=wid, run_config=RunConfig()))
         assert world_b.tick == 2
     finally:
-        await a.shutdown()
-        await b.shutdown()
+        await a_resources.aclose()
+        await a_storage.shutdown()
+        await b_resources.aclose()
+        await b_storage.shutdown()
 
 
 async def test_resume_after_crash_resumes_at_last_visible_tick(tmp_path, monkeypatch):
     """Rows from a crashed, unpublished attempt must not advance the resume
     point: manifests, never rows, decide the tick head."""
-    c = ServiceContainer()
+    resources, storage_service = _resources(tmp_path)
+    dispatcher = resources.dispatcher
     try:
         storage = _storage(tmp_path)
-        world = await c.world_lifecycle.create_world(WorldConfig(name="w"), storage)
-        await c.application.create_entity(world.world_id, [Score(points=1.0)])
-        await c.application.step(world.world_id, RunConfig())  # tick 0 published
+        world = await dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name="w"),
+                storage_config=storage,
+            )
+        )
+        await dispatcher.apply(
+            Spawn.from_components(
+                world_id=world.world_id,
+                components=[Score(points=1.0)],
+            )
+        )
+        await dispatcher.apply(
+            Step(world_id=world.world_id, run_config=RunConfig())
+        )  # tick 0 published
         wid, rid = str(world.world_id), str(world.run_id)
 
         async def _crash(self, *args, **kwargs):
@@ -135,101 +231,156 @@ async def test_resume_after_crash_resumes_at_last_visible_tick(tmp_path, monkeyp
 
         monkeypatch.setattr(SqliteControlCatalog, "publish_manifest", _crash)
         with pytest.raises(RuntimeError, match="injected crash"):
-            await c.application.step(wid, RunConfig())  # tick 1 rows, no manifest
+            await dispatcher.apply(
+                Step(world_id=wid, run_config=RunConfig())
+            )  # tick 1 rows, no manifest
         monkeypatch.undo()
     finally:
-        await c.shutdown()
+        await resources.aclose()
+        await storage_service.shutdown()
 
-    fresh = ServiceContainer()
+    fresh_resources, fresh_storage = _resources(tmp_path)
+    fresh = fresh_resources.dispatcher
     try:
-        resumed = await fresh.world_lifecycle.open_world_mutable(storage, wid)
+        await fresh.apply(ResumeWorld(storage_config=storage, world_id=wid))
+        resumed = await _live_world(fresh, wid)
         assert resumed.tick == 1, "unpublished tick-1 rows must not advance the head"
-        await fresh.application.step(wid, RunConfig())
-        df = await fresh.application.query_components([Score], wid, rid, storage, ticks=[1])
+        await fresh.apply(Step(world_id=wid, run_config=RunConfig()))
+        df = await fresh.apply(
+            QueryComponents(
+                components=(ComponentTypeRef.from_type(Score),),
+                world_id=wid,
+                run_id=rid,
+                storage_config=storage,
+                ticks=(1,),
+            )
+        )
         assert len(df.to_pylist()) == 1, "exactly one visible attempt at the retried tick"
     finally:
-        await fresh.shutdown()
+        await fresh_resources.aclose()
+        await fresh_storage.shutdown()
 
 
 async def test_artifact_index_does_not_advance_resume_tick(tmp_path):
-    c = ServiceContainer()
+    resources, storage_service = _resources(tmp_path)
+    dispatcher = resources.dispatcher
     try:
         storage = _storage(tmp_path).model_copy(update={"backend": StorageBackend.ICEBERG})
-        world = await c.world_lifecycle.create_world(WorldConfig(name="artifacts-first"), storage)
+        world = await dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name="artifacts-first"),
+                storage_config=storage,
+            )
+        )
         output = tmp_path / "before-first-step.txt"
         output.write_text("artifact before the first tick")
-        await c.artifact_service.ingest(
-            str(world.world_id),
-            ArtifactSource(source_uri=str(output)),
+        await dispatcher.apply(
+            IngestArtifacts(
+                world_id=world.world_id,
+                sources=(ArtifactSource(source_uri=str(output)),),
+            )
         )
         wid = str(world.world_id)
     finally:
-        await c.shutdown()
+        await resources.aclose()
+        await storage_service.shutdown()
 
-    fresh = ServiceContainer()
+    fresh_resources, fresh_storage = _resources(tmp_path)
+    fresh = fresh_resources.dispatcher
     try:
-        resumed = await fresh.world_lifecycle.open_world_mutable(storage, wid)
+        await fresh.apply(ResumeWorld(storage_config=storage, world_id=wid))
+        resumed = await _live_world(fresh, wid)
         assert resumed.tick == 0, "artifact indexes are durable but are not tick manifests"
     finally:
-        await fresh.shutdown()
+        await fresh_resources.aclose()
+        await fresh_storage.shutdown()
 
 
 async def test_resume_restores_fork_lineage(tmp_path):
-    c = ServiceContainer()
+    resources, storage_service = _resources(tmp_path)
+    dispatcher = resources.dispatcher
     try:
         storage = _storage(tmp_path)
-        base = await c.world_lifecycle.create_world(WorldConfig(name="base"), storage)
-        await c.application.create_entity(base.world_id, [Score(points=5.0)])
-        await c.application.step(base.world_id, RunConfig())
-        fork = await c.world_lifecycle.fork_world(base.world_id, name="branch")
-        await c.application.step(fork.world_id, RunConfig())
+        base = await dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name="base"),
+                storage_config=storage,
+            )
+        )
+        await dispatcher.apply(
+            Spawn.from_components(
+                world_id=base.world_id,
+                components=[Score(points=5.0)],
+            )
+        )
+        await dispatcher.apply(Step(world_id=base.world_id, run_config=RunConfig()))
+        fork = await dispatcher.apply(ForkWorld(source_world_id=base.world_id, name="branch"))
+        await dispatcher.apply(Step(world_id=fork.world_id, run_config=RunConfig()))
+        live_fork = await _live_world(dispatcher, fork.world_id)
         fid = str(fork.world_id)
-        expected_lineage = list(fork.lineage)
+        expected_lineage = list(live_fork.lineage)
         assert expected_lineage, "fork must carry lineage"
     finally:
-        await c.shutdown()
+        await resources.aclose()
+        await storage_service.shutdown()
 
-    fresh = ServiceContainer()
+    fresh_resources, fresh_storage = _resources(tmp_path)
+    fresh = fresh_resources.dispatcher
     try:
-        resumed = await fresh.world_lifecycle.open_world_mutable(storage, fid)
+        await fresh.apply(ResumeWorld(storage_config=storage, world_id=fid))
+        resumed = await _live_world(fresh, fid)
         assert resumed.lineage == expected_lineage, "ancestor segments restored"
         # Pre-fork history still resolves through the ancestor's run.
         df = await resumed.query_archetype((Score,), ticks=[0])
         rows = df.to_pylist()
         assert len(rows) == 1 and rows[0]["score__points"] == 5.0
     finally:
-        await fresh.shutdown()
+        await fresh_resources.aclose()
+        await fresh_storage.shutdown()
 
 
 async def test_resume_refusals(tmp_path):
-    c = ServiceContainer()
+    resources, storage_service = _resources(tmp_path)
+    dispatcher = resources.dispatcher
     try:
         storage = _storage(tmp_path)
-        world = await c.world_lifecycle.create_world(WorldConfig(name="w"), storage)
-        await c.application.create_entity(world.world_id, [Score(points=1.0)])
-        await c.application.step(world.world_id, RunConfig())
+        world = await dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name="w"),
+                storage_config=storage,
+            )
+        )
+        await dispatcher.apply(
+            Spawn.from_components(
+                world_id=world.world_id,
+                components=[Score(points=1.0)],
+            )
+        )
+        await dispatcher.apply(Step(world_id=world.world_id, run_config=RunConfig()))
         wid = str(world.world_id)
 
         # Already live in this process.
         with pytest.raises(RuntimeError, match="already live"):
-            await c.world_lifecycle.open_world_mutable(storage, wid)
+            await dispatcher.apply(ResumeWorld(storage_config=storage, world_id=wid))
 
         # Unrecorded world.
         with pytest.raises(KeyError):
-            await c.world_lifecycle.open_world_mutable(storage, str(uuid7()))
+            await dispatcher.apply(ResumeWorld(storage_config=storage, world_id=str(uuid7())))
 
         # Destroyed world: queryable, not resumable.
-        await c.world_lifecycle.destroy_world(wid)
+        await dispatcher.apply(DestroyWorld(world_id=wid))
     finally:
-        await c.shutdown()
+        await resources.aclose()
+        await storage_service.shutdown()
 
-    fresh = ServiceContainer()
+    fresh_resources, fresh_storage = _resources(tmp_path)
+    fresh = fresh_resources.dispatcher
     try:
         with pytest.raises(RuntimeError, match="destroyed"):
-            await fresh.world_lifecycle.open_world_mutable(storage, wid)
+            await fresh.apply(ResumeWorld(storage_config=storage, world_id=wid))
 
         # Fork record without lineage rows = detectable corruption.
-        catalog = fresh.storage_service.get_control_catalog(storage)
+        catalog = fresh_storage.get_control_catalog(storage)
         orphan = str(uuid7())
         await catalog.register_world(
             WorldRecord(
@@ -242,9 +393,10 @@ async def test_resume_refusals(tmp_path):
             )
         )
         with pytest.raises(RuntimeError, match="lineage"):
-            await fresh.world_lifecycle.open_world_mutable(storage, orphan)
+            await fresh.apply(ResumeWorld(storage_config=storage, world_id=orphan))
     finally:
-        await fresh.shutdown()
+        await fresh_resources.aclose()
+        await fresh_storage.shutdown()
 
 
 async def test_resume_requires_component_classes(tmp_path):
@@ -254,9 +406,11 @@ async def test_resume_requires_component_classes(tmp_path):
         """
         import asyncio, json, sys
 
-        from archetype.app.container import ServiceContainer
         from archetype.core.component import Component
         from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+        from archetype.storage.config import ControlCatalogConfig
+        from archetype.wiring import RuntimeBootstrapConfig, build_runtime_resources
+        from archetype.world.models import CreateWorld, Spawn, Step
 
         class Score(Component):
             points: float = 0.0
@@ -265,17 +419,30 @@ async def test_resume_requires_component_classes(tmp_path):
             secret: str = ""
 
         async def main(uri):
-            c = ServiceContainer()
+            resources = build_runtime_resources(
+                RuntimeBootstrapConfig(control_catalog_config=ControlCatalogConfig())
+            )
             try:
+                dispatcher = resources.dispatcher
                 storage = StorageConfig(uri=uri, namespace="ns")
-                world = await c.world_lifecycle.create_world(WorldConfig(name="child"), storage)
-                await c.application.create_entity(
-                    world.world_id, [Score(points=1.0), OnlyInChild(secret="s")]
+                world = await dispatcher.apply(
+                    CreateWorld(
+                        config=WorldConfig(name="child"),
+                        storage_config=storage,
+                    )
                 )
-                await c.application.step(world.world_id, RunConfig())
+                await dispatcher.apply(
+                    Spawn.from_components(
+                        world_id=world.world_id,
+                        components=[Score(points=1.0), OnlyInChild(secret="s")],
+                    )
+                )
+                await dispatcher.apply(
+                    Step(world_id=world.world_id, run_config=RunConfig())
+                )
                 print(json.dumps({"world_id": str(world.world_id)}))
             finally:
-                await c.shutdown()
+                await resources.aclose()
 
         asyncio.run(main(sys.argv[1]))
         """
@@ -290,13 +457,15 @@ async def test_resume_requires_component_classes(tmp_path):
     assert proc.returncode == 0, proc.stderr
     wid = json.loads(proc.stdout.strip().splitlines()[-1])["world_id"]
 
-    c = ServiceContainer()
+    resources, storage_service = _resources(tmp_path)
+    dispatcher = resources.dispatcher
     try:
         storage = StorageConfig(uri=uri, namespace="ns")
         with pytest.raises(RuntimeError, match="OnlyInChild"):
-            await c.world_lifecycle.open_world_mutable(storage, wid)
+            await dispatcher.apply(ResumeWorld(storage_config=storage, world_id=wid))
     finally:
-        await c.shutdown()
+        await resources.aclose()
+        await storage_service.shutdown()
 
 
 async def test_autoresearch_continues_across_processes(tmp_path):
@@ -446,31 +615,47 @@ async def test_fork_resumed_before_first_step_inherits_snapshot(tmp_path):
     """A fork registers and persists lineage at creation, possibly before
     writing any rows of its own. Resume must seed the entity directory from
     the ancestor segments — an unstepped fork is its snapshot (Codex P1)."""
-    c = ServiceContainer()
+    resources, storage_service = _resources(tmp_path)
+    dispatcher = resources.dispatcher
     try:
         storage = _storage(tmp_path)
-        base = await c.world_lifecycle.create_world(WorldConfig(name="base"), storage)
-        e1 = await c.application.create_entity(base.world_id, [Score(points=5.0)])
-        await c.application.step(base.world_id, RunConfig())
-        fork = await c.world_lifecycle.fork_world(base.world_id, name="unstepped")
-        fid, fork_tick = str(fork.world_id), int(fork.tick)
+        base = await dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name="base"),
+                storage_config=storage,
+            )
+        )
+        e1 = await dispatcher.apply(
+            Spawn.from_components(
+                world_id=base.world_id,
+                components=[Score(points=5.0)],
+            )
+        )
+        await dispatcher.apply(Step(world_id=base.world_id, run_config=RunConfig()))
+        fork = await dispatcher.apply(ForkWorld(source_world_id=base.world_id, name="unstepped"))
+        live_fork = await _live_world(dispatcher, fork.world_id)
+        fid, fork_tick = str(fork.world_id), int(live_fork.tick)
     finally:
-        await c.shutdown()
+        await resources.aclose()
+        await storage_service.shutdown()
 
-    fresh = ServiceContainer()
+    fresh_resources, fresh_storage = _resources(tmp_path)
+    fresh = fresh_resources.dispatcher
     try:
-        resumed = await fresh.world_lifecycle.open_world_mutable(storage, fid)
+        await fresh.apply(ResumeWorld(storage_config=storage, world_id=fid))
+        resumed = await _live_world(fresh, fid)
         assert resumed.tick == fork_tick, "unstepped fork resumes at the fork point"
         assert set(resumed.entity2sig) == {e1}, "inherited entities restored from lineage"
         assert resumed.next_entity_id > e1, "counter accounts for inherited ids"
 
         # The resumed fork is a working world: step and read continuity.
-        await fresh.application.step(fid, RunConfig())
+        await fresh.apply(Step(world_id=fid, run_config=RunConfig()))
         df = await resumed.query_archetype((Score,), ticks=[fork_tick])
         rows = df.to_pylist()
         assert len(rows) == 1 and rows[0]["score__points"] == 5.0
     finally:
-        await fresh.shutdown()
+        await fresh_resources.aclose()
+        await fresh_storage.shutdown()
 
 
 async def test_resume_snapshot_taken_after_fence_beats_racing_publisher(tmp_path):
@@ -478,13 +663,25 @@ async def test_resume_snapshot_taken_after_fence_beats_racing_publisher(tmp_path
     strand the resumed world behind the true head: the authoritative
     snapshot is taken AFTER fencing, when the head can no longer move
     (Codex P1)."""
-    a = ServiceContainer()
-    b = ServiceContainer()
+    a_resources, a_storage = _resources(tmp_path)
+    b_resources, b_storage = _resources(tmp_path)
+    a = a_resources.dispatcher
+    b = b_resources.dispatcher
     try:
         storage = _storage(tmp_path)
-        world_a = await a.world_lifecycle.create_world(WorldConfig(name="w"), storage)
-        await a.application.create_entity(world_a.world_id, [Score(points=1.0)])
-        await a.application.step(world_a.world_id, RunConfig())  # tick 0
+        world_a = await a.apply(
+            CreateWorld(
+                config=WorldConfig(name="w"),
+                storage_config=storage,
+            )
+        )
+        await a.apply(
+            Spawn.from_components(
+                world_id=world_a.world_id,
+                components=[Score(points=1.0)],
+            )
+        )
+        await a.apply(Step(world_id=world_a.world_id, run_config=RunConfig()))  # tick 0
         wid = str(world_a.world_id)
 
         # Interleave: the incumbent publishes tick 1 exactly between B's
@@ -496,34 +693,56 @@ async def test_resume_snapshot_taken_after_fence_beats_racing_publisher(tmp_path
             nonlocal fired
             if not fired and world_id == wid:
                 fired = True
-                await a.application.step(wid, RunConfig())  # tick 1 lands
+                await a.apply(Step(world_id=wid, run_config=RunConfig()))  # tick 1 lands
             return await real_acquire(self, world_id, holder)
 
         SqliteControlCatalog.acquire_fence = racing_acquire
         try:
-            resumed = await b.world_lifecycle.open_world_mutable(storage, wid)
+            await b.apply(ResumeWorld(storage_config=storage, world_id=wid))
+            resumed = await _live_world(b, wid)
         finally:
             SqliteControlCatalog.acquire_fence = real_acquire
 
         assert resumed.tick == 2, (
             f"snapshot must include the racing publish (tick 1); resumed at {resumed.tick}"
         )
-        await b.application.step(wid, RunConfig())  # tick 2 under epoch 2
-        df = await b.application.query_components([Score], wid, str(resumed.run_id), storage)
+        await b.apply(Step(world_id=wid, run_config=RunConfig()))  # tick 2 under epoch 2
+        df = await b.apply(
+            QueryComponents(
+                components=(ComponentTypeRef.from_type(Score),),
+                world_id=wid,
+                run_id=resumed.run_id,
+                storage_config=storage,
+            )
+        )
         assert {r["tick"] for r in df.to_pylist()} == {0, 1, 2}, "no tick lost, none doubled"
     finally:
-        await a.shutdown()
-        await b.shutdown()
+        await a_resources.aclose()
+        await a_storage.shutdown()
+        await b_resources.aclose()
+        await b_storage.shutdown()
 
 
 async def test_post_fence_resume_failure_is_operationally_loud(tmp_path, monkeypatch, caplog):
-    incumbent = ServiceContainer()
-    replacement = ServiceContainer()
+    incumbent_resources, incumbent_storage = _resources(tmp_path)
+    replacement_resources, replacement_storage = _resources(tmp_path)
+    incumbent = incumbent_resources.dispatcher
+    replacement = replacement_resources.dispatcher
     try:
         storage = _storage(tmp_path)
-        world = await incumbent.world_lifecycle.create_world(WorldConfig(name="w"), storage)
-        await incumbent.application.create_entity(world.world_id, [Score(points=1.0)])
-        await incumbent.application.step(world.world_id, RunConfig())
+        world = await incumbent.apply(
+            CreateWorld(
+                config=WorldConfig(name="w"),
+                storage_config=storage,
+            )
+        )
+        await incumbent.apply(
+            Spawn.from_components(
+                world_id=world.world_id,
+                components=[Score(points=1.0)],
+            )
+        )
+        await incumbent.apply(Step(world_id=world.world_id, run_config=RunConfig()))
         wid = str(world.world_id)
 
         real_resolve = lifecycle_module.resolve_live_signatures
@@ -543,12 +762,14 @@ async def test_post_fence_resume_failure_is_operationally_loud(tmp_path, monkeyp
         )
         with caplog.at_level(logging.ERROR):
             with pytest.raises(RuntimeError, match="post-fence reconstruction"):
-                await replacement.world_lifecycle.open_world_mutable(storage, wid)
+                await replacement.apply(ResumeWorld(storage_config=storage, world_id=wid))
 
         assert "acquired fence epoch" in caplog.text
         assert "failed before installing its replacement writer" in caplog.text
         with pytest.raises((StaleWriterError, RuntimeError)):
-            await incumbent.application.step(wid, RunConfig())
+            await incumbent.apply(Step(world_id=wid, run_config=RunConfig()))
     finally:
-        await incumbent.shutdown()
-        await replacement.shutdown()
+        await incumbent_resources.aclose()
+        await incumbent_storage.shutdown()
+        await replacement_resources.aclose()
+        await replacement_storage.shutdown()
