@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, cast
 
 import pytest
@@ -15,8 +15,7 @@ from daft import DataFrame
 
 from archetype import AsyncProcessor, Component
 from archetype.app.application.interfaces import iRuntimeApplication
-from archetype.app.application.service import RuntimeApplication
-from archetype.app.commands.interfaces import iCommandScheduler
+from archetype.app.container import ServiceContainer
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.core.interfaces import CommittedTickReceipt
 from archetype.storage.service import StorageService
@@ -49,71 +48,54 @@ class BlockingProcessor(AsyncProcessor):
         return df
 
 
-@dataclass
-class _Commands:
-    """Narrow scheduler spy for facade lifecycle contracts."""
+def _record_scheduler_cancellations(container: ServiceContainer) -> list[str]:
+    """Observe teardown while preserving the concrete scheduler behavior."""
 
-    registry: WorldRegistry
-    cancellations: list[str] = field(default_factory=list)
+    cancellations: list[str] = []
+    cancel_world = container.command_scheduler.cancel_world
 
-    async def require_world(self, world_id: object) -> None:
-        if not await self.registry.contains(str(world_id)):
-            raise KeyError(str(world_id))
+    async def record(
+        world_id: object,
+        *,
+        reason: str = "world destroyed",
+    ) -> int:
+        cancellations.append(str(world_id))
+        return await cancel_world(world_id, reason=reason)
 
-    async def cancel_world(self, world_id: object, **kwargs: object) -> int:
-        del kwargs
-        self.cancellations.append(str(world_id))
-        return 0
-
-    @staticmethod
-    def validate_deferred(command: object) -> None:
-        del command
-
-    async def admit(self, *args: object, **kwargs: object) -> Any:
-        raise AssertionError((args, kwargs))
-
-    async def admit_batch(self, *args: object, **kwargs: object) -> Any:
-        raise AssertionError((args, kwargs))
-
-    async def admit_spawn(self, *args: object, **kwargs: object) -> Any:
-        raise AssertionError((args, kwargs))
+    cast(Any, container.command_scheduler).cancel_world = record
+    return cancellations
 
 
 @dataclass
 class _ApplicationHarness:
-    application: RuntimeApplication
+    container: ServiceContainer
+    application: iRuntimeApplication
     lifecycle: WorldLifecycle
     registry: WorldRegistry
     storage: StorageService
-    commands: _Commands
+    cancellations: list[str]
 
 
 @asynccontextmanager
 async def _application_harness():
     storage = StorageService()
-    registry = WorldRegistry()
-    lifecycle = WorldLifecycle(storage, registry)
-    commands = _Commands(registry)
-    application = RuntimeApplication(
-        registry=registry,
-        lifecycle=lifecycle,
-        storage=storage,
-        commands=cast(iCommandScheduler, commands),
-    )
+    container = ServiceContainer(storage_service=storage)
+    application = container.application
     assert isinstance(application, iRuntimeApplication)
     harness = _ApplicationHarness(
+        container=container,
         application=application,
-        lifecycle=lifecycle,
-        registry=registry,
+        lifecycle=container.world_lifecycle,
+        registry=container.world_registry,
         storage=storage,
-        commands=commands,
+        cancellations=_record_scheduler_cancellations(container),
     )
     try:
         yield harness
     finally:
-        for world in await registry.list_worlds():
-            await lifecycle.destroy_world(world.world_id)
-        await application.stop_admission()
+        for world in await container.world_registry.list_worlds():
+            await container.world_lifecycle.destroy_world(world.world_id)
+        await container.shutdown()
         await storage.shutdown()
 
 
@@ -163,14 +145,14 @@ async def test_destroy_waits_for_an_admitted_same_world_step(tmp_path):
         await asyncio.sleep(0)
 
         assert not destroy.done()
-        assert harness.commands.cancellations == []
+        assert harness.cancellations == []
         with pytest.raises(RuntimeError, match="closing"):
             await app.get_world_info(info.world_id)
         release.set()
         await step
         await destroy
         assert not await harness.registry.contains(str(info.world_id))
-        assert harness.commands.cancellations == [str(info.world_id)]
+        assert harness.cancellations == [str(info.world_id)]
 
 
 @pytest.mark.asyncio
@@ -197,18 +179,13 @@ async def test_public_destroy_projects_pending_receipt_before_command_cancellati
         consumer_name="test.application-pending-destroy",
         project=fail_twice,
     )
-    lifecycle = WorldLifecycle(
-        storage,
-        registry,
+    container = ServiceContainer(
+        storage_service=storage,
         required_projector_factory=lambda _world_id: projector,
     )
-    commands = _Commands(registry)
-    application = RuntimeApplication(
-        registry=registry,
-        lifecycle=lifecycle,
-        storage=storage,
-        commands=cast(iCommandScheduler, commands),
-    )
+    application = container.application
+    registry = container.world_registry
+    cancellations = _record_scheduler_cancellations(container)
     try:
         info = await application.create_world(
             WorldConfig(name="pending-destroy"),
@@ -225,7 +202,7 @@ async def test_public_destroy_projects_pending_receipt_before_command_cancellati
             await application.destroy_world(info.world_id)
 
         assert registry.pending_receipt(info.world_id) is pending
-        assert commands.cancellations == []
+        assert cancellations == []
         assert events == ["project:0", "project:0"]
         catalog = storage.get_control_catalog(storage_config)
         record = await catalog.get_world(str(info.world_id))
@@ -234,12 +211,12 @@ async def test_public_destroy_projects_pending_receipt_before_command_cancellati
         await application.destroy_world(info.world_id)
 
         assert events == ["project:0", "project:0", "project:0"]
-        assert commands.cancellations == [str(info.world_id)]
+        assert cancellations == [str(info.world_id)]
         assert not await registry.contains(str(info.world_id))
         record = await catalog.get_world(str(info.world_id))
         assert record is not None and record.status == "destroyed"
     finally:
-        await application.stop_admission()
+        await container.shutdown()
         await storage.shutdown()
 
 
@@ -295,8 +272,7 @@ async def test_list_worlds_recovery_callback_can_enter_a_sibling_world(tmp_path)
         namespace="application-info-cross-world",
     )
     storage = StorageService()
-    registry = WorldRegistry()
-    application: RuntimeApplication | None = None
+    application: iRuntimeApplication | None = None
     callback_info: list[WorldInfo] = []
     sibling_id: str | None = None
 
@@ -306,21 +282,15 @@ async def test_list_worlds_recovery_callback_can_enter_a_sibling_world(tmp_path)
         assert sibling_id is not None
         callback_info.append(await application.get_world_info(sibling_id))
 
-    lifecycle = WorldLifecycle(
-        storage,
-        registry,
+    container = ServiceContainer(
+        storage_service=storage,
         required_projector_factory=lambda _world_id: RequiredProjector(
             consumer_name="test.list-worlds-cross-world",
             project=project,
         ),
     )
-    commands = _Commands(registry)
-    application = RuntimeApplication(
-        registry=registry,
-        lifecycle=lifecycle,
-        storage=storage,
-        commands=cast(iCommandScheduler, commands),
-    )
+    application = container.application
+    registry = container.world_registry
     try:
         first = await application.create_world(
             WorldConfig(name="info-callback-source"),
@@ -358,8 +328,8 @@ async def test_list_worlds_recovery_callback_can_enter_a_sibling_world(tmp_path)
         first_world.tick = 0
     finally:
         for world in await registry.list_worlds():
-            await lifecycle.destroy_world(world.world_id)
-        await application.stop_admission()
+            await container.world_lifecycle.destroy_world(world.world_id)
+        await container.shutdown()
         await storage.shutdown()
 
 
@@ -407,7 +377,7 @@ async def test_reserve_ids_uses_registry_operation_and_admission(tmp_path):
         assert await reservation == [2, 3]
 
         await app.stop_admission()
-        with pytest.raises(RuntimeError, match="shutting down"):
+        with pytest.raises(RuntimeError, match="not accepting work"):
             await app.reserve_entity_ids(info.world_id, 1)
 
 
@@ -418,7 +388,10 @@ async def test_inherited_admission_context_cannot_bypass_registry_lock_or_close(
         app = harness.application
         info = await app.create_world(WorldConfig(name="inherited-context"), storage)
 
-        async with app._admit(), harness.registry.operation(str(info.world_id)):
+        async with (
+            harness.container.command_dispatcher._admitted(),
+            harness.registry.operation(str(info.world_id)),
+        ):
             reservation = asyncio.create_task(app.reserve_entity_ids(info.world_id, 1))
             await asyncio.sleep(0)
             assert not reservation.done()
