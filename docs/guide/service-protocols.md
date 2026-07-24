@@ -315,8 +315,7 @@ research family completed #585 and #652: supported values, ledger Components,
 the runner decoder, storage-backed views, experiment admission, and the free
 workflow handler live under `archetype.research`. There is no
 `archetype.app.research` or `iResearchService`. The trajectory split completed
-#586: schemas,
-authoring values, and structural transforms live under
+issue #586: schemas, authoring values, and structural transforms live under
 `archetype.missions.trajectories`; `iTrajectoryService` composes durable query
 with the evaluation family's pure grader runner.
 
