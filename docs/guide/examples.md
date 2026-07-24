@@ -61,7 +61,7 @@ do not fabricate gateway audit rows.
 
 The runtime delegates directly to `iRuntimeApplication`; it does not construct
 an `ActorCtx` or pass through `CommandGateway`. See the normative
-[Command Gate](command-gate.md#3-the-permissions-matrix) for the separate
+[Command Gate](command-gate.md#3-four-roles-and-permissions) for the separate
 untrusted-adapter permission matrix.
 
 ---

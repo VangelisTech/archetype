@@ -54,7 +54,8 @@ temporary workflow bridge: iCommandGateway -> iRuntimeApplication
 iRuntimeApplication
   -> iWorldRegistry + iWorldLifecycle + iStorageService
   -> world.mutation + world.simulation + world.query
-  -> commands.CommandDispatcher + commands.CommandScheduler
+  -> commands.CommandDispatcher
+  -> application-owned world-command cancellation capability
   -> iArtifactService
   -> iTranscriptIngestionService
   -> iEvaluationService
@@ -123,7 +124,7 @@ application facade.
 | `OperationRegistry` | `CommandDispatcher`, `CommandScheduler`, composition root | Exact model/name registration, handler metadata, and optional durable decoder/materializer |
 | `CommandDispatcher` | `RuntimeApplication`, `CommandGateway` | Trusted and actor-aware direct/durable entry, admission lifetime, policy order, and bounded evidence |
 | `Policy` | `CommandDispatcher`; finite temporary gateway bridge | Pure role preauthorization plus instance-owned world/tick and daily-token quotas |
-| `CommandScheduler` | `CommandDispatcher`, world materializer, application-owned destroy | Canonical durable admission, reservation, leasing, retry, settlement staging, cancellation, and outbox access |
+| `CommandScheduler` | `CommandDispatcher`, world materializer, container-provided destroy cancellation capability | Canonical durable admission, reservation, leasing, retry, settlement staging, cancellation, and outbox access |
 | `AuditLog` | `CommandDispatcher`, registered `GetAuditHistory`, container shutdown | Bounded access rows and transactional command-outbox projection into analytical storage |
 
 ## 4. Boundary rules
@@ -169,6 +170,8 @@ durable control-catalog authority beneath it. The scheduler admits exact
 portable models, leases them in ledger order, invokes the registered lock-held
 materializer, and stages successful IDs. Tick publication performs terminal
 applied settlement. Neither is an application-family protocol.
+`RuntimeApplication` receives only a narrow cancellation callable for
+application-owned destroy; it does not import or retain the concrete scheduler.
 `iIngestionService` owns the general typed-ingestion policy boundary: it
 selects the live storage configuration and delegates typed publication. It has
 no knowledge of files, media, transcripts, or graders. `iStorageService` owns
