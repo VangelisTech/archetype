@@ -17,11 +17,9 @@ from dataclasses import dataclass
 from daft import col
 
 from archetype import ArchetypeRuntime
-from archetype.app.container import ServiceContainer
-from archetype.core.aio import AsyncWorld
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
-from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.core.config import StorageConfig
 from archetype.core.errors import TickExecutionError
 from archetype.core.hooks import PostTick, PreTick
 from evals.graders import exact_match, state_check
@@ -29,24 +27,6 @@ from evals.harness import EvalHarness
 from evals.types import GraderResult
 
 SUITE = "capability"
-
-
-async def _create_live_world(
-    container: ServiceContainer,
-    config: WorldConfig,
-    storage: StorageConfig,
-) -> AsyncWorld:
-    info = await container.application.create_world(config, storage)
-    world = await container.world_registry.live_world(str(info.world_id))
-    if not isinstance(world, AsyncWorld):
-        raise RuntimeError(f"world {info.world_id} was not activated")
-    return world
-
-
-async def _shutdown_container(container: ServiceContainer) -> None:
-    for world in await container.world_registry.list_worlds():
-        await container.application.destroy_world(world.world_id)
-    await container.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -182,22 +162,16 @@ def task_storage_roundtrip() -> list[GraderResult]:
 async def _task_storage_roundtrip() -> list[GraderResult]:
     with tempfile.TemporaryDirectory() as tmp:
         storage_cfg = StorageConfig(uri=f"{tmp}/store", namespace="eval_cap")
-        container = ServiceContainer()
 
-        try:
-            world = await _create_live_world(
-                container,
-                WorldConfig(name="roundtrip"),
-                storage_cfg,
-            )
-
+        async with ArchetypeRuntime() as runtime:
+            world = runtime.world("roundtrip", storage=storage_cfg)
             expected = []
             for i in range(20):
-                comps: list[Component] = [
+                components: list[Component] = [
                     Stats(hp=100 + i, name=f"entity_{i}"),
                     Flags(active=i % 2 == 0, level=i),
                 ]
-                eid = await world.create_entity(comps)
+                eid = await world.spawn(*components)
                 expected.append(
                     {
                         "entity_id": eid,
@@ -208,11 +182,10 @@ async def _task_storage_roundtrip() -> list[GraderResult]:
                 )
 
             # Flush to storage
-            rc = RunConfig.benchmark(steps=1)
-            await world.run(rc)
+            await world.run(steps=1)
 
             # Read back
-            df = await world.get_components([Stats, Flags])
+            df = await world.query(Stats, Flags)
             rows = df.collect().to_pydict()
 
             # Grade: entity count
@@ -234,8 +207,6 @@ async def _task_storage_roundtrip() -> list[GraderResult]:
                 exact_match(returned_ids, expected_ids, name="entity_ids_match"),
                 state_check(field_checks, name="field_integrity"),
             ]
-        finally:
-            await _shutdown_container(container)
 
 
 # ---------------------------------------------------------------------------
@@ -254,34 +225,29 @@ def task_simulation_correctness() -> list[GraderResult]:
 async def _task_simulation_correctness() -> list[GraderResult]:
     with tempfile.TemporaryDirectory() as tmp:
         storage_cfg = StorageConfig(uri=f"{tmp}/store", namespace="eval_sim")
-        container = ServiceContainer()
-
-        try:
-            world = await _create_live_world(
-                container,
-                WorldConfig(name="sim-eval"),
-                storage_cfg,
+        async with ArchetypeRuntime() as runtime:
+            world = runtime.world(
+                "sim-eval",
+                storage=storage_cfg,
+                processors=[ApplyVelocity()],
             )
 
             spawned_ids = []
             init_positions = {}
             for i in range(N_ENTITIES):
-                eid = await world.create_entity(
-                    [
-                        Position(x=i, y=i * 2),
-                        Velocity(dx=1, dy=-1),
-                        Health(hp=100),
-                    ]
+                eid = await world.spawn(
+                    Position(x=i, y=i * 2),
+                    Velocity(dx=1, dy=-1),
+                    Health(hp=100),
                 )
                 spawned_ids.append(eid)
                 init_positions[eid] = (i, i * 2)
 
-            await world.add_processor(ApplyVelocity())
-            rc = RunConfig.benchmark(steps=N_STEPS)
-            await world.run(rc)
+            await world.run(steps=N_STEPS)
 
-            # Query outcome
-            df = await world.get_components([Position, Velocity, Health])
+            # Runtime queries are append-only history; select the final
+            # persisted snapshot for this outcome-oriented capability check.
+            df = (await world.query(Position, Velocity, Health)).where(col("tick") == N_STEPS - 1)
             rows = df.collect().to_pydict()
 
             entity_ids = rows.get("entity_id", [])
@@ -341,8 +307,6 @@ async def _task_simulation_correctness() -> list[GraderResult]:
                 state_check(preservation_checks, name="untouched_data"),
                 state_check(col_checks, name="query_completeness"),
             ]
-        finally:
-            await _shutdown_container(container)
 
 
 # ---------------------------------------------------------------------------

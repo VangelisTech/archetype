@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from archetype.app.redaction import RedactionService, SecretQuarantineError
+from archetype.redaction import RedactionService, SecretQuarantineError
 from evals.graders import state_check
 from evals.harness import EvalHarness
 from evals.types import GraderResult
