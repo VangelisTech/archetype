@@ -13,10 +13,6 @@ from archetype.app.application.interfaces import iRuntimeApplication
 from archetype.app.application.service import RuntimeApplication
 from archetype.app.artifacts.interfaces import iArtifactService
 from archetype.app.artifacts.service import ArtifactService
-from archetype.app.audit.interfaces import iAuditLog
-from archetype.app.audit.service import AuditLog
-from archetype.app.commands.interfaces import iCommandScheduler
-from archetype.app.commands.service import CommandScheduler
 from archetype.app.container import ServiceContainer
 from archetype.app.evaluation.interfaces import iEvaluationService
 from archetype.app.evaluation.service import EvaluationService
@@ -36,6 +32,8 @@ from archetype.app.redaction.interfaces import iRedactionService
 from archetype.app.redaction.service import RedactionService
 from archetype.app.research.interfaces import iResearchService
 from archetype.app.research.service import AutoResearchService
+from archetype.commands.audit import AuditLog
+from archetype.commands.scheduler import CommandScheduler
 from archetype.storage.interfaces import iStorageService
 from archetype.storage.service import StorageService
 from archetype.world.interfaces import iWorldLifecycle, iWorldRegistry
@@ -57,8 +55,6 @@ SERVICE_PROTOCOLS = (
     (RedactionService, iRedactionService),
     (EvaluationService, iEvaluationService),
     (AutoResearchService, iResearchService),
-    (AuditLog, iAuditLog),
-    (CommandScheduler, iCommandScheduler),
     (RuntimeApplication, iRuntimeApplication),
     (CommandGateway, iCommandGateway),
 )
@@ -93,11 +89,11 @@ async def test_container_wiring_conforms_to_every_family_protocol() -> None:
             (container.redaction_service, iRedactionService),
             (container.evaluation_service, iEvaluationService),
             (container.autoresearch_service, iResearchService),
-            (container.audit_log, iAuditLog),
-            (container.command_scheduler, iCommandScheduler),
             (container.application, iRuntimeApplication),
             (container.command_gateway, iCommandGateway),
         )
         assert all(isinstance(service, protocol) for service, protocol in bindings)
+        assert type(container.audit_log) is AuditLog
+        assert type(container.command_scheduler) is CommandScheduler
     finally:
         await container.shutdown()

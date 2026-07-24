@@ -29,7 +29,7 @@ def isolate_default_audit_storage(tmp_path, monkeypatch):
         backend=StorageBackend.ICEBERG,
     )
     monkeypatch.setattr(
-        "archetype.app.audit.service.default_audit_storage",
+        "archetype.commands.audit.default_audit_storage",
         lambda: config,
     )
 

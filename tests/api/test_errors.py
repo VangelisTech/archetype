@@ -13,8 +13,8 @@ from fastapi import HTTPException
 
 from archetype.api.errors import raise_api_error
 from archetype.app import errors as compatibility_errors
-from archetype.app.audit.service import AuditBackpressureError
 from archetype.app.redaction import SecretQuarantineError
+from archetype.commands.audit import AuditBackpressureError
 from archetype.core.errors import AmbiguousTickCommitError, TickExecutionError, TickFailure
 from archetype.errors import (
     AvailabilityError,
