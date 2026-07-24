@@ -8,17 +8,17 @@ Test that submit_spawn reserves an ID and scheduler materialization uses that ex
 Flow: submit_spawn -> durable scheduler -> dispatcher -> entity materialized with reserved ID
 """
 
+import asyncio
+
 import pytest
 from uuid_utils import uuid7
 
 from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth import guard as guard_state
-from archetype.app.gateway.auth.errors import GuardrailError
-from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.models import Command, CommandType
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.world.errors import WorldClosingError
 
 _DEFERRED_COMMAND_TYPES = frozenset(
     {
@@ -27,9 +27,6 @@ _DEFERRED_COMMAND_TYPES = frozenset(
         CommandType.DESPAWN,
         CommandType.ADD_COMPONENT,
         CommandType.REMOVE_COMPONENT,
-        CommandType.MESSAGE,
-        CommandType.CUSTOM,
-        CommandType.QUERY_WORLD,
     }
 )
 _DIRECT_COMMAND_TYPES = tuple(
@@ -39,15 +36,6 @@ _DIRECT_COMMAND_TYPES = tuple(
 
 class CommandFlowMarker(Component):
     tag: str = ""
-
-
-@pytest.fixture(autouse=True)
-def _reset_quotas():
-    guard_state._tick_counters.clear()
-    reset_daily_tokens()
-    yield
-    guard_state._tick_counters.clear()
-    reset_daily_tokens()
 
 
 @pytest.mark.asyncio
@@ -120,7 +108,6 @@ async def test_command_materializer_infrastructure_failure_fails_tick_before_set
 async def test_replayed_reserved_spawn_is_not_applied_twice(tmp_path):
     """The drain path enforces the same double-spawn guard as direct mutation calls."""
     c = ServiceContainer()
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
         world = await c.world_lifecycle.create_world(
             WorldConfig(name="spawn-replay"),
@@ -141,7 +128,7 @@ async def test_replayed_reserved_spawn_is_not_applied_twice(tmp_path):
                 "components": [CommandFlowMarker(tag="replay")],
             },
         )
-        await c.command_gateway.submit_batch(ctx, world.world_id, [first, replay])
+        await c.application.submit_batch(world.world_id, [first, replay])
 
         applied = await c.application.step(world.world_id, RunConfig())
 
@@ -238,7 +225,10 @@ async def test_direct_only_commands_cannot_enter_tick_deferred_scheduler(tmp_pat
             StorageConfig(uri=str(tmp_path / "store")),
         )
 
-        with pytest.raises(ValueError, match="no tick-deferred dispatcher"):
+        with pytest.raises(
+            ValueError,
+            match="direct-only or unsupported|portable deferred admission",
+        ):
             await c.command_gateway.submit(ctx, world.world_id, Command(type=command_type))
 
         assert await c.command_scheduler.pending_count(world.world_id) == 0
@@ -262,7 +252,10 @@ async def test_lifecycle_command_rejects_entire_submit_batch(tmp_path):
             Command(type=CommandType.FORK_WORLD),
         ]
 
-        with pytest.raises(ValueError, match="no tick-deferred dispatcher"):
+        with pytest.raises(
+            ValueError,
+            match="direct-only or unsupported|portable deferred admission",
+        ):
             await c.command_gateway.submit_batch(ctx, world.world_id, commands)
 
         assert await c.command_scheduler.pending_count(world.world_id) == 0
@@ -282,18 +275,83 @@ async def test_rejected_submit_batch_does_not_debit_quota(tmp_path):
             StorageConfig(uri=str(tmp_path / "store")),
         )
         commands = [
-            Command(type=CommandType.CUSTOM),
-            Command(type=CommandType.ADD_COMPONENT),
+            Command(type=CommandType.DESPAWN, payload={"entity_id": 1}),
+            Command(
+                type=CommandType.ADD_COMPONENT,
+                payload={
+                    "entity_id": 1,
+                    "components": [CommandFlowMarker(tag="denied")],
+                },
+            ),
         ]
 
-        with pytest.raises(GuardrailError):
+        with pytest.raises(PermissionError):
             await c.command_gateway.submit_batch(ctx, world.world_id, commands)
 
-        assert guard_state._tick_counters.get(ctx.id, 0) == 0
-        assert guard_state._daily_tokens.get(ctx.id, 0) == 0
+        assert c.policy._tick_debits == {}
+        assert c.policy._daily_token_debits == {}
         assert await c.command_scheduler.pending_count(world.world_id) == 0
         assert await c.command_scheduler.history(world.world_id) == []
     finally:
+        await c.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_admission_racing_destroy_is_cancelled_without_orphaning(tmp_path, monkeypatch):
+    """An admission that wins the world lock is visible to destroy cancellation."""
+    c = ServiceContainer()
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="admit-destroy-race")
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    try:
+        world = await c.world_lifecycle.create_world(
+            WorldConfig(name="admit-destroy-race"),
+            storage,
+        )
+        catalog = c.storage_service.get_control_catalog(storage)
+        admit_commands = catalog.admit_commands
+
+        async def blocked_admit(world_id, admissions):
+            entered.set()
+            await release.wait()
+            return await admit_commands(world_id, admissions)
+
+        monkeypatch.setattr(catalog, "admit_commands", blocked_admit)
+        submit = asyncio.create_task(
+            c.command_gateway.submit(
+                ctx,
+                world.world_id,
+                Command(
+                    type=CommandType.DESPAWN,
+                    tick=10_000,
+                    payload={"entity_id": 9_999},
+                ),
+            )
+        )
+        await entered.wait()
+
+        destroy = asyncio.create_task(c.application.destroy_world(world.world_id))
+        await asyncio.sleep(0)
+        assert not destroy.done()
+
+        release.set()
+        command_id = await submit
+        await destroy
+
+        (record,) = await c.command_scheduler.records(world.world_id)
+        assert str(command_id) == record.command_id
+        assert record.status == "REJECTED"
+        assert not await c.world_registry.contains(world.world_id)
+
+        with pytest.raises((WorldClosingError, LookupError)):
+            await c.command_gateway.submit(
+                ctx,
+                world.world_id,
+                Command(type=CommandType.DESPAWN, payload={"entity_id": 1}),
+            )
+    finally:
+        release.set()
         await c.shutdown()
 
 
