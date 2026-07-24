@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 
 from uuid_utils import UUID
 
-from archetype.app.models import AuditRow
+from archetype.commands.models import AuditRow
 
 
 def make_audit_row(
