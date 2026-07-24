@@ -229,26 +229,25 @@ class TestCreateWorldUnwind:
 
 
 class TestApiSurface:
-    def test_create_world_with_traversal_namespace_is_client_error(self, tmp_path):
+    def test_create_world_with_traversal_namespace_is_client_error(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
         """The HTTP body is the taint source CodeQL traced; prove it 4xxs."""
         pytest.importorskip("httpx")
         from fastapi.testclient import TestClient
 
         from archetype.api.app import create_app
-        from archetype.api.deps import set_container
-        from archetype.app.container import ServiceContainer
 
-        set_container(ServiceContainer())
-        try:
-            with TestClient(create_app()) as client:
-                resp = client.post(
-                    "/worlds",
-                    json={
-                        "name": "evil",
-                        "storage_uri": str(tmp_path / "store"),
-                        "namespace": "../../evil",
-                    },
-                )
-                assert 400 <= resp.status_code < 500, resp.text
-        finally:
-            set_container(None)
+        monkeypatch.setenv("ARCHETYPE_CATALOG_DIR", str(tmp_path / "control"))
+        with TestClient(create_app()) as client:
+            resp = client.post(
+                "/worlds",
+                json={
+                    "name": "evil",
+                    "storage_uri": str(tmp_path / "store"),
+                    "namespace": "../../evil",
+                },
+            )
+            assert 400 <= resp.status_code < 500, resp.text

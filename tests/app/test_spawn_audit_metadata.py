@@ -6,16 +6,16 @@
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 
 import pytest
 from uuid_utils import uuid7
 
-from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.models import ActorCtx
+from archetype.commands.models import ActorCtx, GetAuditHistory
 from archetype.core.component import Component
 from archetype.core.config import StorageBackend, StorageConfig, WorldConfig
+from archetype.world.models import CreateEntities, CreateWorld, Spawn
+from tests._runtime import build_test_runtime
 
 
 class AuditPosition(Component):
@@ -33,29 +33,43 @@ def _audit_storage(tmp_path: Path) -> StorageConfig:
 @pytest.mark.asyncio
 async def test_spawn_operations_emit_one_row_with_structured_metadata(
     tmp_path: Path,
-    caplog,
 ) -> None:
-    container = ServiceContainer(audit_storage_config=_audit_storage(tmp_path))
+    resources = build_test_runtime(
+        tmp_path,
+        audit_storage_config=_audit_storage(tmp_path),
+    )
+    dispatcher = resources.dispatcher
     actor = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        world = await container.world_lifecycle.create_world(
-            WorldConfig(name="spawn-audit-contract"),
-            StorageConfig(uri=str(tmp_path / "world-store")),
+        world = await dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name="spawn-audit-contract"),
+                storage_config=StorageConfig(uri=str(tmp_path / "world-store")),
+            )
         )
 
-        with caplog.at_level(logging.WARNING, logger="archetype.app.gateway.service"):
-            batch_ids = await container.command_gateway.create_entities(
-                actor,
-                world.world_id,
-                [[AuditPosition(x=1.0)], [AuditPosition(x=2.0)]],
-            )
-            entity_id = await container.command_gateway.create_entity(
-                actor,
-                world.world_id,
-                [AuditPosition(x=3.0)],
-            )
+        batch_ids = await dispatcher.apply_as(
+            actor,
+            CreateEntities.from_entities(
+                world_id=world.world_id,
+                entities=[[AuditPosition(x=1.0)], [AuditPosition(x=2.0)]],
+            ),
+        )
+        entity_id = await dispatcher.apply_as(
+            actor,
+            Spawn.from_components(
+                world_id=world.world_id,
+                components=[AuditPosition(x=3.0)],
+            ),
+        )
 
-        rows = (await container.audit_log.query(world_id=world.world_id)).to_pylist()
+        rows = (
+            await dispatcher.apply(
+                GetAuditHistory(
+                    world_id=world.world_id,
+                )
+            )
+        ).to_pylist()
 
         assert len(batch_ids) == 2
         assert entity_id not in batch_ids
@@ -71,6 +85,5 @@ async def test_spawn_operations_emit_one_row_with_structured_metadata(
             },
         }
         assert {row["status"] for row in rows} == {"succeeded"}
-        assert "audit emission failed" not in caplog.text
     finally:
-        await container.shutdown()
+        await resources.aclose()
