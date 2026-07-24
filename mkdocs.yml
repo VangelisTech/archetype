@@ -85,7 +85,6 @@ nav:
           - Configuration: reference/python/configuration.md
           - AutoResearch and Evaluation: reference/python/autoresearch.md
           - Physical AI: reference/python/physical-ai.md
-          - Command Models: reference/python/commands.md
           - Core Engine: reference/python/core.md
           - Storage Backends: reference/python/storage.md
           - Compatibility: reference/python/compatibility.md
