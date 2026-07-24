@@ -173,6 +173,7 @@ async def test_replay_returns_persisted_result_without_regrading(tmp_path):
                 contract=_contract(),
                 grader=grader,
                 evaluation_id="trial-1",
+                storage_config=storage,
             ),
         )
         replay = await dispatcher.apply_as(
@@ -183,6 +184,7 @@ async def test_replay_returns_persisted_result_without_regrading(tmp_path):
                 contract=_contract(),
                 grader=grader,
                 evaluation_id="trial-1",
+                storage_config=storage,
             ),
         )
 
@@ -229,6 +231,7 @@ async def test_concurrent_service_graphs_run_paid_grader_once(tmp_path):
                     contract=_contract(),
                     grader=grader,
                     evaluation_id="concurrent-paid-grade",
+                    storage_config=storage,
                 ),
             )
         )
@@ -420,6 +423,7 @@ async def test_failed_lease_release_does_not_mask_grader_failure(tmp_path, monke
                         contract=_contract(),
                         grader=fail_grader,
                         evaluation_id="failed-release-preserves-grader-error",
+                        storage_config=storage,
                     ),
                 )
 
@@ -445,7 +449,8 @@ async def test_grader_reads_captured_snapshot_when_world_advances(tmp_path, monk
     dispatcher = resources.dispatcher
     evaluation_service = _evaluation_service(dispatcher)
     try:
-        world = await _seeded_world(dispatcher, _storage(tmp_path))
+        storage = _storage(tmp_path)
+        world = await _seeded_world(dispatcher, storage)
         original_snapshot = evaluation_service._snapshot
 
         async def capture_then_advance(*args, **kwargs):
@@ -468,6 +473,7 @@ async def test_grader_reads_captured_snapshot_when_world_advances(tmp_path, monk
                 contract=_contract(),
                 grader=grader,
                 evaluation_id="pinned-while-advancing",
+                storage_config=storage,
             ),
         )
 
@@ -493,6 +499,7 @@ async def test_distinct_trials_record_distinct_results(tmp_path):
                     contract=_contract(),
                     grader=_counting_grader(calls, Outcome(status=status)),
                     evaluation_id=f"trial-{index}",
+                    storage_config=storage,
                 ),
             )
 
@@ -510,7 +517,8 @@ async def test_same_id_with_different_contract_conflicts(tmp_path):
     resources, storage_service = _runtime(tmp_path)
     dispatcher = resources.dispatcher
     try:
-        world = await _seeded_world(dispatcher, _storage(tmp_path))
+        storage = _storage(tmp_path)
+        world = await _seeded_world(dispatcher, storage)
         grader = _counting_grader([], Outcome(status="pass"))
 
         await dispatcher.apply_as(
@@ -521,6 +529,7 @@ async def test_same_id_with_different_contract_conflicts(tmp_path):
                 contract=_contract(),
                 grader=grader,
                 evaluation_id="trial-x",
+                storage_config=storage,
             ),
         )
         with pytest.raises(ValueError, match="different subject or grader contract"):
@@ -532,6 +541,7 @@ async def test_same_id_with_different_contract_conflicts(tmp_path):
                     contract=_contract(implementation_version="2026.08.01"),
                     grader=grader,
                     evaluation_id="trial-x",
+                    storage_config=storage,
                 ),
             )
     finally:
@@ -552,6 +562,7 @@ async def test_fail_closed_inputs(tmp_path):
                 contract=None,
                 grader=lambda df: Outcome(status="pass"),
                 evaluation_id="t",
+                storage_config=storage,
             )
         with pytest.raises(ValueError, match="typed Outcome"):
             await dispatcher.apply_as(
@@ -562,6 +573,7 @@ async def test_fail_closed_inputs(tmp_path):
                     contract=_contract(),
                     grader=lambda df: 0.9,
                     evaluation_id="t2",
+                    storage_config=storage,
                 ),
             )
 
@@ -580,6 +592,7 @@ async def test_fail_closed_inputs(tmp_path):
                     contract=_contract(),
                     grader=lambda df: Outcome(status="pass"),
                     evaluation_id="t3",
+                    storage_config=storage,
                 ),
             )
         with pytest.raises(ValueError):
@@ -607,6 +620,7 @@ async def test_result_is_attributable_to_pinned_snapshot(tmp_path):
                 contract=contract,
                 grader=lambda df: Outcome(status="pass", score=0.8),
                 evaluation_id="attrib",
+                storage_config=storage,
             ),
         )
         row = (await _results(storage_service, wid, storage)).to_pylist()[0]

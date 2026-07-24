@@ -107,8 +107,8 @@ def test_supported_root_exports_resolve_to_the_single_moved_definitions() -> Non
     assert archetype.GraderContract is GraderContract
     assert archetype.Outcome is Outcome
     assert EvalReceipt.__module__ == "archetype.evaluation.components"
-    assert GraderContract.__module__ == "archetype.evaluation.contracts"
-    assert Outcome.__module__ == "archetype.evaluation.contracts"
+    assert GraderContract.__module__ == "archetype.evaluation.models"
+    assert Outcome.__module__ == "archetype.evaluation.models"
 
 
 def test_contracts_import_without_the_component_stack() -> None:
