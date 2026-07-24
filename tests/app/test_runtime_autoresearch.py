@@ -3,8 +3,8 @@
 
 """Runtime exposure of autoresearch and evals.
 
-The trusted beginner path reaches the actor-free application facade.
-Authorization remains covered separately at the untrusted command gateway.
+The trusted beginner path uses exact runtime dispatch. Authorization remains
+covered separately at the actor-aware dispatcher boundary.
 """
 
 import pytest
@@ -12,10 +12,11 @@ from daft import col
 from uuid_utils import uuid7
 
 from archetype import ArchetypeRuntime, AutoResearchConfig, EvaluationResult
-from archetype.app.gateway.auth.models import ActorCtx
+from archetype.commands.models import ActorCtx
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
 from archetype.research import Run, RunStatus
+from archetype.research.models import AutoResearch
 from archetype.world.models import EpisodeConfig
 
 TARGET = 3.0
@@ -101,11 +102,13 @@ async def test_world_autoresearch_denied_below_operator(tmp_path):
 
         for role in ("viewer", "player"):
             with pytest.raises(PermissionError, match="cannot execute permission 'autoresearch'"):
-                await runtime._container.command_gateway.autoresearch(
+                await runtime._resources.dispatcher.apply_as(
                     ActorCtx(id=uuid7(), roles={role}),
-                    base.world_id,
-                    _config(f"denied-{role}", max_iterations=1),
-                    lambda _r: 1.0,
+                    AutoResearch(
+                        world_id=base.world_id,
+                        config=_config(f"denied-{role}", max_iterations=1),
+                        evaluator=lambda _r: 1.0,
+                    ),
                 )
 
 
