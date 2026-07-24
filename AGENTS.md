@@ -192,8 +192,14 @@ automerge workflow arms only when the head is queue-ready: latest
 resolved (premature arms are auto-reverted; arming early only skips the
 review, it never merges sooner). Reply to footgun review threads with
 what you changed, then resolve them. GitHub Actions cannot observe thread
-resolution, so re-run **Deterministic Review Gate** (or push) once the
-last thread is resolved to re-evaluate arming. The reverse also holds: a
+resolution, so once the last thread is resolved, submit a review
+(`gh pr review --comment`) to re-evaluate arming — the one arming signal
+Actions delivers without re-reviewing the head. Do not re-run
+**Deterministic Review Gate** to re-arm: on a head whose findings were
+all advisory the gate succeeds again and republishes those same findings
+as fresh unresolved threads, putting the PR back where it started.
+Pushing also works, since a new head earns a fresh review. The reverse
+also holds: a
 review submitted on an armed PR that is no longer queue-ready disarms it
 (best-effort — the merge queue may already hold the PR).
 

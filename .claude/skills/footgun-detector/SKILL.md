@@ -168,6 +168,8 @@ For each footgun found, output exactly this format:
 ```
 ### <CATEGORY> in `<file>:<line>`
 
+**Severity:** <blocking | advisory>
+
 **What it does:** <one sentence describing the code>
 
 **What goes wrong:** <the runtime consequence — data loss, silent wrong results, crash, cost waste>
@@ -175,6 +177,22 @@ For each footgun found, output exactly this format:
 **Fix:**
 <concrete code suggestion or description of the fix>
 ```
+
+### Severity
+
+Every finding carries exactly one severity:
+
+- **blocking** — a reproducible defect: you can name the concrete input,
+  state, or sequence under which the change misbehaves. In deterministic CI,
+  blocking findings fail the merge gate until the code changes.
+- **advisory** — a real risk whose harm depends on judgment, convention, or
+  context the diff cannot settle. Advisory findings post as review threads
+  and must be resolved before merge, but resolving one with a written
+  disposition — no code change — is a sanctioned outcome.
+
+Reserve `blocking` for findings you would stake the review on: if you cannot
+name the failing input or sequence, it is advisory. A finding too speculative
+for advisory is not a finding at all.
 
 If no footguns are found, say so explicitly:
 
