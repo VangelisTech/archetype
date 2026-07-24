@@ -1,44 +1,68 @@
 #!/usr/bin/env python3
 """
 Pre-commit hook to ensure Apache 2.0 license headers are present in Python files.
+
+Two header conventions are valid, and both must stay valid: the original
+long-form Apache header (2025-era files) and the compact SPDX form newer
+files use:
+
+    # Copyright 2026 Vangelis Technologies Inc.
+    # SPDX-License-Identifier: Apache-2.0
+
+The check is year-agnostic. Recognizing only one literal year made every
+compact-header file read as "missing" — and `--fix` then prepended a second,
+stale-dated copyright block onto 130+ correctly headered files while exiting 0.
+`--fix` now refuses to touch any file that already carries a copyright line it
+cannot classify, and a missing or refused header always exits 1.
 """
 
 import argparse
+import datetime
+import re
 import sys
 from pathlib import Path
 
-APACHE_LICENSE_HEADER = """# Copyright 2025 Vangelis Technologies Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+COPYRIGHT_RE = re.compile(r"Copyright \d{4}(?:-\d{4})? Vangelis Technologies Inc\.")
+LICENSE_MARKERS = ("SPDX-License-Identifier: Apache-2.0", "Apache License")
 
-"""
+# Headers live at the top of the file. Only inspect the head so a docstring or
+# string literal that merely mentions the license cannot satisfy the check.
+HEADER_SEARCH_LIMIT = 2048
+
+
+def _license_header_template() -> str:
+    """Compact SPDX header for newly stamped files, dated to the current year."""
+    year = datetime.date.today().year
+    return (
+        f"# Copyright {year} Vangelis Technologies Inc.\n# SPDX-License-Identifier: Apache-2.0\n\n"
+    )
+
+
+def _file_head(file_path: Path) -> str | None:
+    try:
+        with open(file_path, encoding="utf-8") as f:
+            return f.read(HEADER_SEARCH_LIMIT)
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 def has_license_header(file_path: Path) -> bool:
-    """Check if a file already has the Apache license header."""
-    try:
-        with open(file_path, encoding="utf-8") as f:
-            content = f.read()
-            return (
-                "Copyright 2025 Vangelis Technologies Inc." in content
-                and "Apache License" in content
-            )
-    except (OSError, UnicodeDecodeError):
+    """Check if a file already has a valid Apache license header."""
+    head = _file_head(file_path)
+    if head is None:
         return False
+    return bool(COPYRIGHT_RE.search(head)) and any(marker in head for marker in LICENSE_MARKERS)
 
 
 def add_license_header(file_path: Path) -> bool:
-    """Add the Apache license header to a file."""
+    """Add the compact SPDX license header to a file.
+
+    Returns True only when the file was rewritten. A file that already carries
+    a Vangelis copyright line is never rewritten: it failed the full check, so
+    its header is malformed in a way this script must not guess at — stacking
+    a second copyright block on top of it would hide the problem behind a
+    green exit.
+    """
     try:
         with open(file_path, encoding="utf-8") as f:
             content = f.read()
@@ -47,14 +71,23 @@ def add_license_header(file_path: Path) -> bool:
         if not content.strip():
             return False
 
+        if COPYRIGHT_RE.search(content[:HEADER_SEARCH_LIMIT]):
+            print(
+                f"Refusing to stack a second header on {file_path}: it already "
+                "contains a Vangelis copyright line but no recognized license "
+                "marker. Repair the existing header by hand."
+            )
+            return False
+
         # Handle files that start with shebang
+        header = _license_header_template()
         lines = content.splitlines(keepends=True)
         if lines and lines[0].startswith("#!"):
             # Insert license after shebang
-            new_content = lines[0] + APACHE_LICENSE_HEADER + "".join(lines[1:])
+            new_content = lines[0] + header + "".join(lines[1:])
         else:
             # Insert license at the beginning
-            new_content = APACHE_LICENSE_HEADER + content
+            new_content = header + content
 
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(new_content)
@@ -119,15 +152,20 @@ def main() -> int:
                 else:
                     print(f"Failed to add license header to {file_path}")
 
-    if missing_headers and not args.fix:
+    if args.fix:
+        # A refused or failed fix must keep the run red; exiting 0 here is how
+        # 130+ files were once rewritten wrongly under a green exit.
+        missing_headers = [f for f in missing_headers if not has_license_header(f)]
+
+    if missing_headers:
         print("The following files are missing Apache 2.0 license headers:")
         for file_path in missing_headers:
             print(f"  {file_path}")
-        print("\nRun with --fix to automatically add license headers.")
+        if not args.fix:
+            print("\nRun with --fix to automatically add license headers.")
         return 1
 
-    if not missing_headers:
-        print("All Python files have proper license headers.")
+    print("All Python files have proper license headers.")
 
     return 0
 
