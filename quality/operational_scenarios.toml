@@ -356,8 +356,8 @@ kind = "dogfood"
 owner = "commands"
 owner_paths = [
   "src/archetype/commands",
-  "src/archetype/app/container.py",
-  "src/archetype/app/gateway",
+  "src/archetype/runtime_resources.py",
+  "src/archetype/wiring.py",
   "src/archetype/api",
   "src/archetype/world",
   "tests/integration/test_commands_operational.py",
@@ -390,6 +390,7 @@ owner_paths = [
   "src/archetype/missions",
   "src/archetype/app/missions",
   "src/archetype/runtime",
+  "src/archetype/runtime_resources.py",
   "evals/suites/capability/agent_missions.py",
 ]
 source_path = "evals/suites/capability/agent_missions.py"
@@ -423,7 +424,7 @@ owner_paths = [
   "src/archetype/world",
   "src/archetype/graph",
   "src/archetype/core/hooks.py",
-  "src/archetype/app/container.py",
+  "src/archetype/wiring.py",
   "examples/11_coding_agent_mission.py",
   "evals/suites/capability/agent_missions.py",
   "tests/missions",
@@ -458,12 +459,12 @@ trigger_paths = [
   "src/archetype/missions/**",
   "src/archetype/app/missions/**",
   "src/archetype/runtime/**",
+  "src/archetype/runtime_resources.py",
   "src/archetype/commands/**",
   "src/archetype/world/**",
   "src/archetype/graph/**",
   "src/archetype/core/hooks.py",
   "src/archetype/wiring.py",
-  "src/archetype/app/container.py",
   "examples/11_coding_agent_mission.py",
   "evals/suites/capability/agent_missions.py",
   "tests/missions/**",
