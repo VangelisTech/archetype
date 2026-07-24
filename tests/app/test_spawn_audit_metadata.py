@@ -49,28 +49,28 @@ async def test_spawn_operations_emit_one_row_with_structured_metadata(
                 world.world_id,
                 [[AuditPosition(x=1.0)], [AuditPosition(x=2.0)]],
             )
-            reserved_id = (
-                await container.command_gateway.reserve_entity_ids(
-                    actor,
-                    world.world_id,
-                    1,
-                )
-            )[0]
-            await container.command_gateway.spawn_with_reserved_id(
+            entity_id = await container.command_gateway.create_entity(
                 actor,
                 world.world_id,
-                reserved_id,
                 [AuditPosition(x=3.0)],
             )
 
         rows = (await container.audit_log.query(world_id=world.world_id)).to_pylist()
 
         assert len(batch_ids) == 2
+        assert entity_id not in batch_ids
         assert len(rows) == 2
         assert {row["command_type"]: json.loads(row["payload_json"]) for row in rows} == {
-            "spawn_batch": {"count": 2},
-            "spawn_reserved": {"entity_id": reserved_id},
+            "create_entities": {
+                "operation": "create_entities",
+                "world_id": str(world.world_id),
+            },
+            "spawn": {
+                "operation": "spawn",
+                "world_id": str(world.world_id),
+            },
         }
+        assert {row["status"] for row in rows} == {"succeeded"}
         assert "audit emission failed" not in caplog.text
     finally:
         await container.shutdown()
