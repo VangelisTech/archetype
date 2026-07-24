@@ -15,6 +15,7 @@ from archetype.api.errors import raise_api_error
 from archetype.app import errors as compatibility_errors
 from archetype.commands.audit import AuditBackpressureError
 from archetype.core.errors import AmbiguousTickCommitError, TickExecutionError, TickFailure
+from archetype.core.interfaces import CommittedTickReceipt
 from archetype.errors import (
     AvailabilityError,
     ConflictError,
@@ -27,6 +28,8 @@ from archetype.storage.catalog import (
     CatalogSchemaMismatchError,
     SqliteControlCatalog,
 )
+from archetype.world.errors import WorldClosingError
+from archetype.world.simulation import PostCommitProjectionError
 
 
 def test_app_error_shim_preserves_canonical_class_identity() -> None:
@@ -88,6 +91,39 @@ def test_availability_contract_defaults_to_a_safe_public_detail() -> None:
 
     assert raised.value.status_code == 503
     assert raised.value.detail == "Service is temporarily unavailable"
+
+
+def test_world_closing_maps_to_a_bounded_conflict() -> None:
+    error = WorldClosingError("private-world-id")
+
+    with pytest.raises(HTTPException) as raised:
+        raise_api_error(error)
+
+    assert raised.value.status_code == 409
+    assert raised.value.detail == "World is closing"
+    assert "private-world-id" not in raised.value.detail
+
+
+def test_required_projection_failure_maps_to_a_bounded_retry_signal() -> None:
+    error = PostCommitProjectionError(
+        CommittedTickReceipt(
+            world_id="private-world-id",
+            run_id="00000000-0000-7000-8000-000000000001",
+            committed_tick=3,
+            visibility_token="private-visibility-token",
+            commands_applied=0,
+        ),
+        "private-projector",
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        raise_api_error(error)
+
+    assert raised.value.status_code == 503
+    assert (
+        raised.value.detail == "Required projection is temporarily unavailable; retry the request"
+    )
+    assert "private" not in raised.value.detail
 
 
 def test_ambiguous_tick_commit_is_public_and_maps_to_bounded_retry_signal() -> None:

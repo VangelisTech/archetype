@@ -17,8 +17,8 @@ Three checks keep the command gate's claim-vs-effect surface honest:
    materialization resolves the registered exact model and invokes its
    registered materializer.
 
-3. **API error taxonomy** — every exception class defined in the application
-   or canonical storage authority must be mapped by
+3. **API error taxonomy** — every exception class defined in the application,
+   canonical storage authority, or a registered operation family must be mapped by
    ``api.errors.raise_api_error`` to a non-500 branch (issue #180:
    ``WorldNotFoundError`` extended ``LookupError``, missed the ``KeyError``
    branch, and fell through to the 500 fallback while tests stayed green).
@@ -202,12 +202,23 @@ def check_scheduler_dispatch_shape() -> list[str]:
 
 
 # ── Check 3: error taxonomy ──────────────────────────────────────────────────
-# The whole archetype.app package and the canonical storage authority are
-# walked for Exception subclasses. A hardcoded module list would fail open the
-# moment errors are defined elsewhere within either governed surface (footgun
-# review on PR #407: app/_catalog.py's four exceptions).
-
-ERROR_SURFACE_PACKAGES = ("archetype.app", "archetype.storage")
+# The complete registered-operation family inventory, application package, and
+# canonical storage authority are walked for Exception subclasses. A hardcoded
+# error-module list would fail open the moment a family defines an error beside
+# its behavior rather than in a conventional errors.py module.
+ERROR_SURFACE_PACKAGES = (
+    "archetype.app",
+    "archetype.artifacts",
+    "archetype.commands",
+    "archetype.episodes",
+    "archetype.evaluation",
+    "archetype.missions",
+    "archetype.physical_ai",
+    "archetype.redaction",
+    "archetype.research",
+    "archetype.storage",
+    "archetype.world",
+)
 
 # Exceptions that deliberately surface as HTTP 500 for now. Every entry needs
 # a rationale and an issue; a stale entry (class gone or now mapped) fails

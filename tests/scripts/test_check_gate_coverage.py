@@ -15,12 +15,16 @@ sys.modules["check_gate_coverage"] = checker
 SPEC.loader.exec_module(checker)
 
 
-def test_error_taxonomy_governs_canonical_storage_exceptions() -> None:
+def test_error_taxonomy_governs_registered_family_exceptions() -> None:
     classes = checker._owned_exception_classes()
 
     assert {
+        "archetype.commands.audit.AuditBackpressureError",
+        "archetype.redaction.models.SecretQuarantineError",
         "archetype.storage.catalog.records.CatalogConflictError",
         "archetype.storage.catalog.records.CatalogSchemaMismatchError",
         "archetype.storage.catalog.records.CommandConflictError",
+        "archetype.world.errors.WorldClosingError",
+        "archetype.world.simulation.PostCommitProjectionError",
     } <= classes.keys()
     assert checker.check_error_taxonomy() == []
