@@ -13,6 +13,7 @@ from archetype.core.component import Component
 from archetype.core.config import RunConfig
 from archetype.world.interfaces import iWorldLifecycle, iWorldRegistry
 from archetype.world.registry import WorldCleanupLease
+from archetype.world.simulation import _step_locked
 
 
 class WorldCleanup:
@@ -50,9 +51,10 @@ class WorldCleanup:
     async def stage_teardown(self, components: list[Component]) -> int:
         """Stage one teardown-evidence entity in the bound world."""
 
-        del components
         self._validate()
-        raise NotImplementedError("exact-world teardown staging is not implemented")
+        async with self._registry.cleanup_operation(self._lease) as world:
+            self._require_exact_world(world)
+            return await world.create_entity(components)
 
     async def update_retained(
         self,
@@ -61,9 +63,10 @@ class WorldCleanup:
     ) -> None:
         """Update one retained-evidence entity in the bound world."""
 
-        del entity_id, components
         self._validate()
-        raise NotImplementedError("exact-world retained evidence update is not implemented")
+        async with self._registry.cleanup_operation(self._lease) as world:
+            self._require_exact_world(world)
+            await world.update_entity(entity_id, components)
 
     async def commit(
         self,
@@ -72,15 +75,29 @@ class WorldCleanup:
     ) -> int:
         """Commit and reconcile one managed cleanup step in the bound world."""
 
-        del run_config, input_kwargs
         self._validate()
-        raise NotImplementedError("exact-world cleanup commit is not implemented")
+        async with self._registry.cleanup_operation(self._lease) as world:
+            self._require_exact_world(world)
+            return await _step_locked(
+                self._registry,
+                self._world_id,
+                world,
+                run_config,
+                **input_kwargs,
+            )
 
     async def finish(self) -> None:
         """Destroy and finish close for only the bound world."""
 
         self._validate()
-        raise NotImplementedError("exact-world cleanup finish is not implemented")
+        await self._lifecycle.destroy_world(
+            self._world_id,
+            lease=self._lease,
+        )
+
+    def _require_exact_world(self, world: object) -> None:
+        if str(getattr(world, "world_id", "")) != self._world_id:
+            raise ValueError("cleanup operation did not resolve its bound world")
 
 
 __all__ = ["WorldCleanup"]
