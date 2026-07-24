@@ -44,6 +44,21 @@ class MutableMarker(Component):
     labels: list[str] = Field(default_factory=list)
 
 
+class _DirectTwinA(Component):
+    value: int = 0
+
+
+class _DirectTwinB(Component):
+    value: int = 0
+
+
+# Model the same portable component definition loaded from two modules. The
+# variable names stay unique for the test module; wire identity sees one
+# schema-identical component name.
+_DirectTwinA.__name__ = "DirectDispatchTwin"
+_DirectTwinB.__name__ = "DirectDispatchTwin"
+
+
 def test_world_values_have_one_canonical_owner() -> None:
     world_values = (
         WorldInfo,
@@ -85,6 +100,27 @@ def test_component_type_reference_is_schema_bound() -> None:
     assert reference.type_name == "MutableMarker"
     assert len(reference.schema_fingerprint) == 64
     assert reference.resolve() is MutableMarker
+
+
+def test_direct_component_values_retain_local_type_affinity_without_widening_wire_identity() -> (
+    None
+):
+    component = _DirectTwinB(value=7)
+    value = ComponentValue.from_component(component)
+    reference = ComponentTypeRef.from_type(_DirectTwinB)
+
+    assert type(value.materialize()) is _DirectTwinB
+    assert reference.resolve() is _DirectTwinB
+
+    encoded_value = value.model_dump_json()
+    encoded_reference = reference.model_dump_json()
+    decoded_value = ComponentValue.model_validate_json(encoded_value)
+    decoded_reference = ComponentTypeRef.model_validate_json(encoded_reference)
+
+    assert "_local_type" not in encoded_value
+    assert "_local_type" not in encoded_reference
+    assert type(decoded_value.materialize()) is _DirectTwinA
+    assert decoded_reference.resolve() is _DirectTwinA
 
 
 @pytest.mark.parametrize(

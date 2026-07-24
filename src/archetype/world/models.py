@@ -15,7 +15,7 @@ from collections.abc import Callable
 from typing import Any, ClassVar, Literal, cast
 
 import uuid_utils as uuid
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from archetype.core.component import Component
@@ -55,15 +55,31 @@ class ComponentTypeRef(_FrozenModel):
 
     type_name: str
     schema_fingerprint: str = Field(min_length=64, max_length=64)
+    _local_type: type[Component] | None = PrivateAttr(default=None)
 
     @classmethod
     def from_type(cls, component_type: type[Component]) -> ComponentTypeRef:
-        return cls(
+        reference = cls(
             type_name=component_type.__name__,
             schema_fingerprint=schema_fingerprint(component_type.get_prefixed_schema()),
         )
+        # Direct dispatch must preserve the caller's exact live class so a
+        # processor declared against that class still matches. Private attrs
+        # never enter canonical JSON; a durable decode therefore continues to
+        # resolve solely from the portable name-plus-fingerprint identity.
+        reference._local_type = component_type
+        return reference
 
     def resolve(self) -> type[Component]:
+        if self._local_type is not None:
+            local_fingerprint = schema_fingerprint(self._local_type.get_prefixed_schema())
+            if (
+                self._local_type.__name__ != self.type_name
+                or local_fingerprint != self.schema_fingerprint
+            ):
+                raise ValueError("local component type affinity no longer matches wire identity")
+            return self._local_type
+
         matches = [
             component_type
             for component_type in _component_candidates(self.type_name)
@@ -113,11 +129,13 @@ class ComponentValue(ComponentTypeRef):
             ensure_ascii=True,
             allow_nan=False,
         )
-        return cls(
+        value = cls(
             type_name=type(component).__name__,
             schema_fingerprint=schema_fingerprint(type(component).get_prefixed_schema()),
             fields_json=fields_json,
         )
+        value._local_type = type(component)
+        return value
 
     def materialize(self) -> Component:
         fields = json.loads(self.fields_json)

@@ -92,6 +92,13 @@ the fingerprint of the canonical prefixed schema. Schema-identical
 definitions remain portable across module moves; same-named definitions with
 different schemas are never guessed.
 
+A directly constructed value or type reference also retains a private,
+non-wire affinity to the caller's exact component class. That affinity keeps
+direct mutations and processors on the same live type when a process has
+loaded schema-identical definitions from multiple modules. Canonical JSON
+omits the affinity. Durable decoding therefore remains portable and resolves
+only from the name and schema fingerprint.
+
 ## Ordering and leasing
 
 Due rows are leased in `(scheduled_tick, priority, sequence)` order. Leasing
