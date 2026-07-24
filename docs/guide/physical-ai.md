@@ -129,7 +129,7 @@ permits at most `N - 1` policy-controlled environment steps.
 sequenceDiagram
     participant Host
     participant Runtime as ArchetypeRuntime
-    participant App as RuntimeApplication
+    participant Dispatcher as CommandDispatcher
     participant Physical as PhysicalAIService
     participant Providers as Env + Policy Providers
     participant World as World + Processors
@@ -137,8 +137,8 @@ sequenceDiagram
     participant Evaluation as EvaluationService
 
     Host->>Runtime: evaluate request + env/policy providers
-    Runtime->>App: evaluate_physical_task(config, providers)
-    App->>Physical: evaluate_task(config, providers)
+    Runtime->>Dispatcher: apply(EvaluatePhysicalTask)
+    Dispatcher->>Physical: registered handler
     Physical->>World: create one uniquely named world
     Physical->>World: install policy and environment processors
     Physical->>Providers: reset each environment by seed
@@ -150,8 +150,8 @@ sequenceDiagram
     end
     Physical->>Evaluation: query ManipStatus + ManipTask by world/run
     Evaluation-->>Physical: lazy persisted frame
-    Physical-->>App: ledger-derived typed report
-    App-->>Runtime: report
+    Physical-->>Dispatcher: ledger-derived typed report
+    Dispatcher-->>Runtime: report
     Runtime-->>Host: report with world_id + run_id
 ```
 
@@ -164,7 +164,7 @@ sequenceDiagram
 | `archetype.physical_ai.policy` | Policy boundary and action processor |
 | `archetype.physical_ai.optimization` | Pure, callback-driven instruction search |
 | `archetype.app.physical_ai` | Internal world/process/episode/query orchestration |
-| `RuntimeApplication` | Admission and delegation to the owning application service |
+| `CommandDispatcher` | Exact-operation admission and registered handler dispatch |
 | `ArchetypeRuntime` | Supported trusted Python entry point and sync parity |
 | world/simulation/evaluation families | Lifecycle, tick execution, persisted reads, and evaluation evidence |
 
@@ -182,8 +182,8 @@ The separation is intentional:
 There is currently no REST operation for physical evaluation. The Python
 runtime is a trusted in-process host; an untrusted host must not reach the
 concrete service directly. A future remote surface must add an explicit
-authorized gateway contract rather than treating the runtime method as an
-authentication boundary.
+actor-aware operation registration and API contract rather than treating the
+runtime method as an authentication boundary.
 
 ## Instruction optimization
 

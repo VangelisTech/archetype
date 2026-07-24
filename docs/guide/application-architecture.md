@@ -539,9 +539,9 @@ resources within the mission family.
 
 `quality/architecture.toml` contains the scalar policy and application-family
 DAG. Per-family fragments under `quality/architecture.d/` register the
-top-level dispositions for `artifacts`, `commands`, `evaluation`, `graph`,
-`ingestion`, `missions`, `physical_ai`, `projections`, `research`, `storage`,
-and `world`.
+top-level dispositions for `artifacts`, `commands`, `episodes`, `evaluation`,
+`graph`, `ingestion`, `missions`, `physical_ai`, `projections`, `redaction`,
+`research`, `storage`, and `world`.
 `scripts/check_architecture.py` enforces their package direction, protocol
 imports, concrete construction, concrete inheritance, and persistent
 Component placement.
@@ -565,9 +565,10 @@ The research, trajectory, physical-AI, physical-workflow, ontology, HTN, and
 transcript stages have landed. Physical workflows are reachable through exact
 dispatcher operations exposed by `ArchetypeRuntime`; their former raw-service
 bridges and all six Issue #589 architecture exceptions are gone. Transcript
-ingestion is reachable through runtime/API operations and writes only
-sanitized narrative to typed rows linked to the common artifact occurrence.
-It does not implicitly spawn mission Components. The provisional
+ingestion is reachable through a trusted runtime operation and writes only
+sanitized narrative to typed rows linked to the common artifact occurrence;
+its PR4 registration is not actor-aware. It does not implicitly spawn mission
+Components. The provisional
 `archetype.experiments` package and its two unsafe logging exceptions are gone.
 The architecture manifest currently has no owned migration exceptions.
 
@@ -584,11 +585,14 @@ commands-owned `GetAuditHistory`/`AuditLog` projection. `ActorCtx` and exact
 operation models live with the commands or owning family. There is no generic
 command envelope, facade bridge, or compatibility auth re-export.
 
-## 13. Landed v0.5 architecture
+## 13. v0.5 architecture after PR4
 
-This section records the architecture materialized by the v0.5 refactor. It is
-current and normative. Future moves must update policy, focused
-specifications, and executable oracles atomically.
+This section records the ratified v0.5 architecture and its status after PR4.
+The dispatcher, exact-operation, composition, and runtime-resource ownership
+described here are current. Later behavioral migrations are explicitly marked
+as targets and do not override their current focused specifications. Every
+move must update policy, focused specifications, and executable oracles
+atomically.
 
 Families own behavior. Commands validate. Dispatcher governs entry. Scheduler owns durability. World owns state/tick/run identity. RuntimeResources owns lifetime.
 
@@ -738,26 +742,30 @@ are first-class recovery/evidence references, but their existence has no
 implicit acceptance authority. Only an explicit typed policy may require
 their publication for a transition.
 
-Persistent behavioral evidence converges on `episode_id`. A trajectory is a
-derived learning-facing DataFrame selected from episode evidence and has no
-persistent identity. The run ID and episode-schema changes are intentional
-pre-1.0 v0.5 migrations rather than silent compatibility aliases.
+Remaining target after PR4: persistent behavioral evidence converges on
+`episode_id`. A trajectory becomes a derived learning-facing DataFrame
+selected from episode evidence and has no persistent identity. Until its
+owning migration lands, the persistent trajectory contract in
+[Mission Trajectories](trajectories.md) remains current. The episode-schema
+change is an intentional pre-1.0 v0.5 migration rather than a silent
+compatibility alias.
 
-### v0.5 migration oracle record
+### v0.5 migration oracle status
 
-The v0.5 migration was made executable slice by slice. This table preserves
-the review decomposition; current tests must exercise the landed owner and
-failure boundary rather than relying on a pre-refactor baseline.
+The v0.5 migration is made executable slice by slice. This table preserves
+the review decomposition and distinguishes the shipped PR4 substrate from
+remaining work; a current test must exercise the claimed owner and failure
+boundary rather than relying on a pre-refactor baseline.
 
-| Contract | Baseline evidence | Landed owner |
+| Contract | Executable evidence | Status after PR4 |
 |---|---|---|
-| command materialization and manifest-coupled settlement | command-flow and durable-command integration contracts | world/commands slices |
-| lock and shutdown admission | runtime lifecycle and admitted-work race contracts | world/runtime-resources slices |
-| UUIDv7 run identity and fork/resume continuity | command-flow, fork-storage, and world-resume contracts | world slice |
-| episode identity and trajectory derivation | episode-rollout and trajectory-domain contracts | episodes slice |
-| stable task base, immutable candidate, exact-head critic | coding-agent, critic, mission-service, and capability-eval contracts | missions slice |
-| sandbox cleanup and retryable phased teardown | sandbox-service, runtime-contract, and mission-service race contracts | runtime-resources and missions slices |
-| committed required projection and provider reconciliation | generic seam and mission-consumer failpoint contracts | world and missions slices |
+| command materialization and manifest-coupled settlement | command-flow and durable-command integration contracts | Landed in world/commands |
+| lock and shutdown admission | runtime lifecycle and admitted-work race contracts | Landed in world/runtime resources |
+| UUIDv7 run identity and fork/resume continuity | command-flow, fork-storage, and world-resume contracts | Landed in world |
+| episode identity and trajectory derivation | episode-rollout and trajectory-domain contracts | Remaining episodes migration |
+| stable task base, immutable candidate, exact-head critic | coding-agent, critic, mission-service, and capability-eval contracts | Current preservation baseline; owning missions move remains |
+| sandbox cleanup and retryable phased teardown | sandbox-service, runtime-contract, and mission-service race contracts | PR4 lifetime ownership landed; owning missions move remains |
+| committed required projection and provider reconciliation | generic seam and mission-consumer failpoint contracts | Generic world seam landed; mission consumer remains a later slice |
 
 No row permits an implementation to claim completion from an old baseline test
 alone.

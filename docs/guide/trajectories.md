@@ -7,7 +7,7 @@ description: Persist, select, and grade lightweight mission evidence
 
 **Migration status:** The persistent `trajectory_id` Component schema and
 runtime methods documented here are the implemented current, pre-PR-9
-contract. The [accepted v0.5 target](application-architecture.md#target-lifetime-and-workflow-ownership)
+contract. The [accepted v0.5 target](application-architecture.md#lifetime-and-workflow-ownership)
 replaces persistent trajectory identity with authoritative episode evidence:
 `episode_id` persists, while a trajectory becomes a derived learning-facing
 DataFrame. Until that owning migration lands, the current API below remains
