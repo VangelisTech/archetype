@@ -9,21 +9,20 @@ visual layout is not.
 ## Layers
 
 ```text
-application code -> ArchetypeRuntime -> RuntimeApplication -> CommandDispatcher
-CLI -> REST API -> CommandGateway -> CommandDispatcher
+application code -> ArchetypeRuntime -> CommandDispatcher.apply / defer
+CLI -> REST API -> authentication -> CommandDispatcher.apply_as / defer_as
 CommandDispatcher -> registered family handler -> world/storage/core
-temporary workflow bridge -> RuntimeApplication -> app-family capability
 ```
 
-The trusted runtime bypasses authorization; the API authenticates and enters
-through the gateway. For registered world/audit operations, both temporary
-adapters construct the same exact family model and converge on
-`CommandDispatcher`; only actor-aware entry invokes `Policy` and bounded access
-evidence. `ServiceContainer` and concrete services are internal machinery.
+The trusted runtime bypasses authorization; the API authenticates an
+`ActorCtx` and enters through actor-aware dispatcher methods. Both adapters
+construct the same exact family model; only actor-aware entry invokes `Policy`
+and bounded access evidence. `RuntimeResources`, process wiring, and concrete
+services are internal machinery.
 
 `ArchetypeRuntime` is the recommended script boundary. It owns process lifetime,
-returns lazy actor-free world handles, and forwards operations through
-`iRuntimeApplication`.
+returns lazy actor-free world handles, and forwards exact operations through
+its process-owned dispatcher.
 
 ```python
 from archetype import ArchetypeRuntime, Component
@@ -40,19 +39,19 @@ async with ArchetypeRuntime() as runtime:
     await world.run(steps=10)
 ```
 
-Applications do not construct `ServiceContainer` or call concrete services.
-Repository composition modules and focused implementation tests may use them
-because they are internal seams.
+Applications do not construct the internal wiring graph or call concrete
+services. Repository wiring and focused implementation tests may inspect those
+internal seams.
 
 ## Command Gate
 
-All untrusted operations flow through `iCommandGateway`, the transport ingress
-port. Commands-owned `CommandDispatcher` and `Policy` are the policy
-enforcement point.
+All untrusted operations authenticate an `ActorCtx` and use actor-aware
+dispatcher entry. Commands-owned `CommandDispatcher` and `Policy` are the
+policy enforcement point.
 
 ```text
 API / untrusted caller
-  -> iCommandGateway adapter constructs exact operation
+  -> authenticate ActorCtx and construct exact operation
   -> CommandDispatcher.apply_as / defer_as
   -> OperationRegistry + Policy
   -> registered family handler or CommandScheduler
@@ -61,10 +60,8 @@ API / untrusted caller
 ```
 
 `OperationRegistry`, dispatcher, policy, durable scheduler/ledger, and
-`AuditLog` belong to the top-level commands family. `RuntimeApplication` and
-`CommandGateway` remain temporary facade adapters and own none of that state.
-A finite gateway-to-application bridge remains for staged workflows awaiting
-their exact registrations.
+`AuditLog` belong to the top-level commands family. Runtime and API retain none
+of that state beyond their reference to the process-owned dispatcher.
 
 ## Roles
 
