@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 
 class ConflictError(RuntimeError):
     """A requested operation conflicts with existing durable state.
@@ -45,9 +47,37 @@ class WorldNotFoundError(LookupError):
         self.world_id = world_id
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeShutdownFailure:
+    """One ordered process-shutdown failure with its original cause."""
+
+    phase: str
+    owner: str
+    cause: BaseException
+
+
+class RuntimeShutdownError(RuntimeError):
+    """Bounded retryable process-shutdown boundary error."""
+
+    def __init__(
+        self,
+        phase: str,
+        failures: tuple[RuntimeShutdownFailure, ...],
+    ) -> None:
+        self.phase = phase
+        self.failures = failures
+        owners = ", ".join(failure.owner for failure in failures)
+        super().__init__(
+            f"Runtime shutdown incomplete in phase '{phase}'"
+            + (f" for owners: {owners}" if owners else "")
+        )
+
+
 __all__ = [
     "AvailabilityError",
     "ConflictError",
     "PayloadRejectedError",
+    "RuntimeShutdownError",
+    "RuntimeShutdownFailure",
     "WorldNotFoundError",
 ]
