@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from uuid_utils import uuid7
 
 from archetype.commands.models import ActorCtx, DurableOptions, GetAuditHistory
-from archetype.core.config import StorageConfig
+from archetype.core.config import StorageBackend, StorageConfig
 from archetype.storage.config import ControlCatalogConfig
 from archetype.world.handlers import WORLD_OPERATION_HANDLERS
 from archetype.world.models import PORTABLE_TICK_OPERATION_TYPES, WORLD_OPERATION_TYPES
@@ -186,6 +186,7 @@ def _config(wiring: Any, tmp_path: Path) -> Any:
         audit_storage_config=StorageConfig(
             uri=str(tmp_path / "audit"),
             namespace="pr4-wiring-red",
+            backend=StorageBackend.ICEBERG,
         ),
     )
 
@@ -235,6 +236,10 @@ def _handler_target(handler: object) -> tuple[str, str, object]:
         str(getattr(target, "__qualname__", "")),
         getattr(target, "__code__", target),
     )
+
+
+def _token_cost_identity(value: object) -> object:
+    return _handler_target(value) if callable(value) else value
 
 
 def _expected_world_scope(operation_name: str) -> str:
@@ -451,7 +456,7 @@ async def test_runtime_and_fastapi_have_identical_registered_handler_inventory(
                     spec.quota_scope,
                     spec.trusted,
                     spec.untrusted,
-                    spec.token_cost,
+                    _token_cost_identity(spec.token_cost),
                     spec.durable is not None,
                 )
                 for name, spec in runtime_specs.items()
@@ -463,7 +468,7 @@ async def test_runtime_and_fastapi_have_identical_registered_handler_inventory(
                     spec.quota_scope,
                     spec.trusted,
                     spec.untrusted,
-                    spec.token_cost,
+                    _token_cost_identity(spec.token_cost),
                     spec.durable is not None,
                 )
                 for name, spec in api_specs.items()
@@ -506,7 +511,7 @@ async def test_wiring_is_explicit_topological_and_has_no_setter_injection(
         "set_outbox_source",
     }
     outbox_events: list[tuple[str, object]] = []
-    outbox_rows = [object()]
+    outbox_rows: list[object] = []
 
     async def read_outbox(
         self: object,
@@ -608,6 +613,7 @@ async def test_bootstrap_environment_is_resolved_once_before_family_construction
         audit_storage_config=StorageConfig(
             uri=str(tmp_path / "audit"),
             namespace="pr4-env-once",
+            backend=StorageBackend.ICEBERG,
         ),
     )
     assert calls == [None]
@@ -855,8 +861,11 @@ async def test_pull_forward_handlers_translate_exact_values_without_recursive_di
             mission = object()
             checkpoint = object()
 
-            def operation(name: str, **values: object) -> BaseModel:
-                return specs[name].model.model_construct(operation=name, **values)
+            def operation(operation_name: str, **values: object) -> BaseModel:
+                return specs[operation_name].model.model_construct(
+                    operation=operation_name,
+                    **values,
+                )
 
             operations = {
                 "ingest_artifacts": operation(
