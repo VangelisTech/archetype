@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, is_dataclass
 from functools import partial
 from importlib import import_module
+from types import SimpleNamespace
 from typing import Any, ClassVar, Literal, NamedTuple, cast
 
 import pytest
@@ -413,6 +414,48 @@ _PR4_ACTOR_AWARE_OPERATIONS = frozenset(
 _PR3_BRIDGE_ALIASES = {
     "RuntimeMissions.query": "query_components",
 }
+_PR3_BRIDGE_ACTOR_ROUTES = (
+    pytest.param("autoresearch", id="autoresearch"),
+    pytest.param("ingest_artifacts", id="ingest-artifacts"),
+    pytest.param("query_artifacts", id="query-artifacts"),
+    pytest.param("evaluate", id="evaluate"),
+)
+
+
+async def _invoke_pr3_bridge_actor_route(
+    gateway: Any,
+    route: str,
+    actor: _Actor,
+) -> None:
+    if route == "autoresearch":
+        await gateway.autoresearch(
+            actor,
+            "secret-world",
+            SimpleNamespace(max_iterations=1, num_episodes=1),
+            lambda _result: 1.0,
+        )
+    elif route == "ingest_artifacts":
+        await gateway.ingest_artifacts(
+            actor,
+            "secret-world",
+            ("secret-source",),
+            storage_config=object(),
+        )
+    elif route == "query_artifacts":
+        await gateway.query_artifacts(
+            actor,
+            "secret-world",
+            storage_config=object(),
+        )
+    elif route == "evaluate":
+        await gateway.evaluate(
+            actor,
+            "secret-world",
+            (),
+            contract=SimpleNamespace(grader_id="secret-grader"),
+        )
+    else:
+        raise AssertionError(f"unknown PR-3 bridge actor route {route!r}")
 
 
 @pytest.mark.asyncio
@@ -556,8 +599,9 @@ def test_pr3_bridge_allowlist_is_exhaustive_bounded_and_marked_for_pr4_deletion(
     assert forbidden_callables == []
 
     class _BridgePolicySpy:
-        def __init__(self) -> None:
+        def __init__(self, denial: BaseException | None = None) -> None:
             self.calls: list[tuple[object, str]] = []
+            self.denial = denial
 
         def preauthorize(
             self,
@@ -566,6 +610,8 @@ def test_pr3_bridge_allowlist_is_exhaustive_bounded_and_marked_for_pr4_deletion(
             permission: str,
         ) -> None:
             self.calls.append((actor, permission))
+            if self.denial is not None:
+                raise self.denial
 
     actor = _Actor(roles=frozenset({"admin"}))
     policy = _BridgePolicySpy()
@@ -576,6 +622,15 @@ def test_pr3_bridge_allowlist_is_exhaustive_bounded_and_marked_for_pr4_deletion(
             operation=operation,
         )
     assert policy.calls == [(actor, operation) for operation in sorted(_PR4_ACTOR_AWARE_OPERATIONS)]
+
+    denied_policy = _BridgePolicySpy(PermissionError("bridge role denied"))
+    with pytest.raises(PermissionError, match="bridge role denied"):
+        bridge.preauthorize_pr3_bridge_actor_call(
+            denied_policy,
+            actor,
+            operation="evaluate",
+        )
+    assert denied_policy.calls == [(actor, "evaluate")]
 
     trusted_only = "run_mission"
     with pytest.raises(PermissionError, match=r"(?i)trusted|untrusted|not available"):
@@ -594,6 +649,78 @@ def test_pr3_bridge_allowlist_is_exhaustive_bounded_and_marked_for_pr4_deletion(
             operation="unknown_bridge_operation",
         )
     assert policy.calls == calls_before_unknown
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", _PR3_BRIDGE_ACTOR_ROUTES)
+async def test_pr3_bridge_actor_callsite_preauthorizes_before_any_resource_or_effect(
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+) -> None:
+    """Every temporary gateway callsite invokes the pure guard first."""
+    _commands_api()
+    bridge = import_module("archetype.app.gateway._pr3_commands_bridge")
+    gateway_module = import_module("archetype.app.gateway.service")
+    policy = object()
+    actor = _Actor(roles=frozenset({"viewer"}))
+    events: list[tuple[str, object, object]] = []
+
+    def deny_before_resources(
+        actual_policy: object,
+        actual_actor: object,
+        *,
+        operation: str,
+    ) -> None:
+        events.append((operation, actual_policy, actual_actor))
+        assert actual_policy is policy
+        assert actual_actor is actor
+        raise PermissionError("bridge role denied before resources")
+
+    monkeypatch.setattr(
+        bridge,
+        "preauthorize_pr3_bridge_actor_call",
+        deny_before_resources,
+    )
+    monkeypatch.setattr(
+        gateway_module,
+        "preauthorize_pr3_bridge_actor_call",
+        deny_before_resources,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        gateway_module,
+        "_preauthorize_pr3_bridge_actor_call",
+        deny_before_resources,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        gateway_module,
+        "_pr3_commands_bridge",
+        bridge,
+        raising=False,
+    )
+
+    class _EffectTrap:
+        def __getattr__(self, name: str) -> Any:
+            raise AssertionError(f"bridge denial must not read effect port {name!r}")
+
+    def unexpected_target_tick(_world_id: object) -> int:
+        raise AssertionError("bridge denial must not resolve world state")
+
+    gateway = object.__new__(gateway_module.CommandGateway)
+    gateway._application = _EffectTrap()
+    gateway._audit = _EffectTrap()
+    gateway._target_tick_for_world = unexpected_target_tick
+    gateway._policy = policy
+    gateway._command_policy = policy
+    gateway._bridge_policy = policy
+    gateway._dispatcher = _EffectTrap()
+    gateway._command_dispatcher = _EffectTrap()
+
+    with pytest.raises(PermissionError, match="bridge role denied before resources"):
+        await _invoke_pr3_bridge_actor_route(gateway, route, actor)
+
+    assert events == [(route, policy, actor)]
 
 
 @pytest.mark.asyncio

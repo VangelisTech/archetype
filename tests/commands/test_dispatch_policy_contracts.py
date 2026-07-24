@@ -945,6 +945,8 @@ async def test_role_denied_deferred_entry_stops_before_eligibility_coordinates_o
 @pytest.mark.asyncio
 async def test_application_and_durable_world_policy_coordinates_are_exact_and_fail_closed() -> None:
     api = _commands_api()
+    WorldNotFoundError = import_module("archetype.errors").WorldNotFoundError
+    WorldClosingError = import_module("archetype.world.errors").WorldClosingError
     events: list[str] = []
     handled: list[str] = []
 
@@ -977,32 +979,47 @@ async def test_application_and_durable_world_policy_coordinates_are_exact_and_fa
     )
     registry = _Registry(specs, events)
     policy = _PolicyPort(events)
-    target_ticks = _TargetTickResolver({"world-live": 17})
+    target_tick_calls: list[str] = []
+
+    def target_tick_for_world(world_id: object) -> int:
+        normalized = str(world_id)
+        target_tick_calls.append(normalized)
+        if normalized == "world-live":
+            return 17
+        if normalized == "world-key-error":
+            raise KeyError(normalized)
+        if normalized == "world-not-found":
+            raise WorldNotFoundError(normalized)
+        if normalized == "world-closing":
+            raise WorldClosingError(normalized)
+        if normalized == "world-unrelated-lookup":
+            raise LookupError("unrelated resolver lookup failure")
+        raise RuntimeError("catalog resolver unavailable")
+
     dispatcher = _dispatcher(
         api,
         registry=registry,
         policy=policy,
         scheduler=_SchedulerPort(events),
         access=_AccessSink(events),
-        target_tick_for_world=target_ticks,
+        target_tick_for_world=target_tick_for_world,
     )
     actor = _Actor(roles=frozenset({"viewer"}))
 
     assert await dispatcher.apply_as(actor, _ApplicationOperation()) == "application"
-    assert (
-        await dispatcher.apply_as(
-            actor,
-            _DurableReadOperation(world_id="world-live"),
+    for world_id in (
+        "world-live",
+        "world-key-error",
+        "world-not-found",
+        "world-closing",
+    ):
+        assert (
+            await dispatcher.apply_as(
+                actor,
+                _DurableReadOperation(world_id=world_id),
+            )
+            == world_id
         )
-        == "world-live"
-    )
-    assert (
-        await dispatcher.apply_as(
-            actor,
-            _DurableReadOperation(world_id="world-cold"),
-        )
-        == "world-cold"
-    )
 
     assert policy.application_calls == [
         {
@@ -1015,31 +1032,55 @@ async def test_application_and_durable_world_policy_coordinates_are_exact_and_fa
         (call["world_id"], call["target_tick"], call["permission"]) for call in policy.calls
     ] == [
         ("world-live", 17, "query_components"),
-        ("world-cold", 0, "query_components"),
+        ("world-key-error", 0, "query_components"),
+        ("world-not-found", 0, "query_components"),
+        ("world-closing", 0, "query_components"),
     ]
-    assert target_ticks.calls == ["world-live", "world-cold"]
-    assert handled == ["application_operation", "world-live", "world-cold"]
+    assert target_tick_calls == [
+        "world-live",
+        "world-key-error",
+        "world-not-found",
+        "world-closing",
+    ]
+    assert handled == [
+        "application_operation",
+        "world-live",
+        "world-key-error",
+        "world-not-found",
+        "world-closing",
+    ]
 
     closed_policy = _PolicyPort([])
-
-    def resolver_failure(_world_id: object) -> int:
-        raise RuntimeError("catalog resolver unavailable")
+    closed_access = _AccessSink([])
 
     closed_dispatcher = _dispatcher(
         api,
         registry=_Registry((specs[1],), []),
         policy=closed_policy,
         scheduler=_SchedulerPort([]),
-        access=_AccessSink([]),
-        target_tick_for_world=resolver_failure,
+        access=closed_access,
+        target_tick_for_world=target_tick_for_world,
     )
     with pytest.raises(RuntimeError, match="catalog resolver unavailable"):
         await closed_dispatcher.apply_as(
             actor,
             _DurableReadOperation(world_id="world-error"),
         )
+    with pytest.raises(LookupError, match="unrelated resolver lookup failure"):
+        await closed_dispatcher.apply_as(
+            actor,
+            _DurableReadOperation(world_id="world-unrelated-lookup"),
+        )
     assert closed_policy.calls == []
-    assert handled == ["application_operation", "world-live", "world-cold"]
+    assert closed_access.rows == []
+    assert target_tick_calls[-2:] == ["world-error", "world-unrelated-lookup"]
+    assert handled == [
+        "application_operation",
+        "world-live",
+        "world-key-error",
+        "world-not-found",
+        "world-closing",
+    ]
 
 
 @pytest.mark.asyncio
@@ -1132,22 +1173,40 @@ async def test_batch_validates_all_members_then_debits_and_admits_once() -> None
     async def handler(operation: BaseModel) -> str:
         return str(operation)
 
-    portable_spec = _Spec(
-        name="synthetic",
-        model=_Operation,
-        handler=handler,
-        permission="spawn",
-        summarize=lambda operation: {"label": operation.label},
-        durable=object(),
-        token_cost=3,
+    def world_key(operation: BaseModel) -> object:
+        exact = cast("_Operation | _LiveOperation", operation)
+        events.append(f"world_key_call:{exact.operation}")
+        return exact.world_id
+
+    def token_cost(operation: BaseModel) -> int:
+        events.append(f"cost_call:{type(operation).__name__}")
+        return 3
+
+    portable_spec = _ObservedSpec(
+        _Spec(
+            name="synthetic",
+            model=_Operation,
+            handler=handler,
+            permission="spawn",
+            summarize=lambda operation: {"label": operation.label},
+            world_key=world_key,
+            durable=object(),
+            token_cost=token_cost,
+        ),
+        events,
     )
-    direct_spec = _Spec(
-        name="live_operation",
-        model=_LiveOperation,
-        handler=handler,
-        permission="add_processor",
-        summarize=lambda _operation: {"classification": "direct_only"},
-        durable=None,
+    direct_spec = _ObservedSpec(
+        _Spec(
+            name="live_operation",
+            model=_LiveOperation,
+            handler=handler,
+            permission="add_processor",
+            summarize=lambda _operation: {"classification": "direct_only"},
+            world_key=world_key,
+            durable=None,
+            token_cost=token_cost,
+        ),
+        events,
     )
     registry = _Registry((portable_spec, direct_spec), events)
     policy = _PolicyPort(events)
@@ -1180,6 +1239,21 @@ async def test_batch_validates_all_members_then_debits_and_admits_once() -> None
 
     admitted = await dispatcher.defer_batch_as(actor, items)
 
+    assert events[:4] == [
+        "resolve",
+        "resolve",
+        "preauthorize",
+        "preauthorize",
+    ]
+    eligibility_positions = [
+        index for index, event in enumerate(events) if event in {"untrusted", "durable"}
+    ]
+    coordinate_positions = [
+        index for index, event in enumerate(events) if event in {"world_key", "token_cost"}
+    ]
+    assert len(eligibility_positions) == 4
+    assert coordinate_positions
+    assert max(eligibility_positions) < min(coordinate_positions)
     assert [str(value) for value in admitted] == [str(command_a), str(command_b)]
     assert len(policy.batch_calls) == 1
     requests = policy.batch_calls[0]["requests"]
@@ -1219,8 +1293,21 @@ async def test_batch_validates_all_members_then_debits_and_admits_once() -> None
     )
     policy.batch_calls.clear()
     scheduler.batch_admissions.clear()
+    policy.preauthorization_calls.clear()
+    events.clear()
     with pytest.raises(ValueError, match=r"(?i)direct-only"):
         await dispatcher.defer_batch_as(actor, rejected)
+    assert events[:4] == [
+        "resolve",
+        "resolve",
+        "preauthorize",
+        "preauthorize",
+    ]
+    assert events.count("untrusted") == 2
+    assert events.count("durable") == 2
+    assert "world_key" not in events
+    assert "token_cost" not in events
+    assert not any(event.startswith(("world_key_call:", "cost_call:")) for event in events)
     assert policy.batch_calls == []
     assert scheduler.batch_admissions == []
 
