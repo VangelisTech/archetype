@@ -20,6 +20,10 @@ from archetype.world.models import (
     ListWorldSignatures,
     QueryArchetype,
     QueryComponents,
+    Run,
+    RunEpisode,
+    RunRollout,
+    Step,
 )
 from archetype.world.registry import WorldRegistry
 
@@ -40,6 +44,60 @@ class _World:
     tick: int
     run_id: str
     lineage: list[tuple[str, str, int]]
+
+
+async def test_direct_simulation_handlers_preserve_live_input_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capability = object()
+    coordinates = ("outer", ("inner", 3))
+    input_kwargs = {
+        "capability": capability,
+        "coordinates": coordinates,
+    }
+    operations = (
+        Step(world_id="world", input_kwargs=input_kwargs),
+        Run(world_id="world", input_kwargs=input_kwargs),
+        RunEpisode(world_id="world", input_kwargs=input_kwargs),
+        RunRollout(world_id="world", input_kwargs=input_kwargs),
+    )
+    marker = object()
+
+    def capture(target: list[tuple[tuple[Any, ...], dict[str, Any]]]):
+        async def execute(*args: Any, **kwargs: Any) -> object:
+            target.append((args, kwargs))
+            return marker
+
+        return execute
+
+    for operation in operations:
+        calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+        monkeypatch.setattr(
+            handlers.simulation,
+            operation.operation,
+            capture(calls),
+        )
+        handler = getattr(handlers, operation.operation)
+        if type(operation) in {Step, Run}:
+            result = await handler(object(), operation)
+        elif type(operation) is RunEpisode:
+            result = await handler(object(), object(), operation)
+        else:
+            result = await handler(
+                object(),
+                object(),
+                object(),
+                object(),
+                operation,
+            )
+
+        assert result is marker
+        assert len(calls) == 1
+        forwarded = calls[0][1]
+        assert forwarded["capability"] is capability
+        assert forwarded["coordinates"] is coordinates
+        assert forwarded["coordinates"] == ("outer", ("inner", 3))
 
 
 async def test_get_world_info_uses_registry_lock_and_reconciles_before_snapshot(

@@ -236,22 +236,6 @@ class WorldOperation(_FrozenModel):
     direct_only: ClassVar[bool] = True
     operation: str
 
-    @field_validator("input_kwargs_json", mode="before", check_fields=False)
-    @classmethod
-    def _canonicalize_input_kwargs_json(cls, value: object) -> str:
-        if not isinstance(value, str):
-            raise TypeError("input_kwargs_json must be a JSON string")
-        decoded = json.loads(value)
-        if not isinstance(decoded, dict):
-            raise ValueError("input_kwargs_json must decode to an object")
-        return json.dumps(
-            decoded,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=True,
-            allow_nan=False,
-        )
-
 
 class Spawn(WorldOperation):
     direct_only: ClassVar[bool] = False
@@ -400,28 +384,28 @@ class Step(WorldOperation):
     operation: Literal["step"] = "step"
     world_id: str | JsonUUID
     run_config: RunConfig = Field(default_factory=RunConfig)
-    input_kwargs_json: str = "{}"
+    input_kwargs: dict[str, Any] = Field(default_factory=dict)
 
 
 class Run(WorldOperation):
     operation: Literal["run"] = "run"
     world_id: str | JsonUUID
     run_config: RunConfig = Field(default_factory=RunConfig)
-    input_kwargs_json: str = "{}"
+    input_kwargs: dict[str, Any] = Field(default_factory=dict)
 
 
 class RunEpisode(WorldOperation):
     operation: Literal["run_episode"] = "run_episode"
     world_id: str | JsonUUID
     config: EpisodeConfig = Field(default_factory=EpisodeConfig)
-    input_kwargs_json: str = "{}"
+    input_kwargs: dict[str, Any] = Field(default_factory=dict)
 
 
 class RunRollout(WorldOperation):
     operation: Literal["run_rollout"] = "run_rollout"
     world_id: str | JsonUUID
     config: RolloutConfig = Field(default_factory=RolloutConfig)
-    input_kwargs_json: str = "{}"
+    input_kwargs: dict[str, Any] = Field(default_factory=dict)
 
 
 class QueryComponents(WorldOperation):

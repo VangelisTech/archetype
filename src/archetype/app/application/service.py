@@ -12,7 +12,6 @@ authority.
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
 
 from archetype.app.models import Command, deferred_operation
@@ -87,16 +86,6 @@ def _component_values(components) -> tuple[ComponentValue, ...]:
 
 def _component_types(component_types) -> tuple[ComponentTypeRef, ...]:
     return tuple(ComponentTypeRef.from_type(component_type) for component_type in component_types)
-
-
-def _input_kwargs_json(input_kwargs: dict) -> str:
-    return json.dumps(
-        input_kwargs,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-        allow_nan=False,
-    )
 
 
 class RuntimeApplication:
@@ -278,7 +267,7 @@ class RuntimeApplication:
             Step(
                 world_id=world_id,
                 run_config=run_config,
-                input_kwargs_json=_input_kwargs_json(input_kwargs),
+                input_kwargs=input_kwargs,
             )
         )
 
@@ -287,7 +276,7 @@ class RuntimeApplication:
             Run(
                 world_id=world_id,
                 run_config=run_config,
-                input_kwargs_json=_input_kwargs_json(input_kwargs),
+                input_kwargs=input_kwargs,
             )
         )
 
@@ -296,7 +285,7 @@ class RuntimeApplication:
             RunEpisode(
                 world_id=world_id,
                 config=config,
-                input_kwargs_json=_input_kwargs_json(input_kwargs),
+                input_kwargs=input_kwargs,
             )
         )
 
@@ -305,7 +294,7 @@ class RuntimeApplication:
             RunRollout(
                 world_id=world_id,
                 config=config,
-                input_kwargs_json=_input_kwargs_json(input_kwargs),
+                input_kwargs=input_kwargs,
             )
         )
 
@@ -319,16 +308,19 @@ class RuntimeApplication:
         lab_world_id=None,
         on_iteration=None,
     ):
-        if self._research is None:
-            raise RuntimeError("research service is not wired")
-        return await self._research.run(
-            world_id,
-            config,
-            evaluator,
-            prepare_candidate=prepare_candidate,
-            lab_world_id=lab_world_id,
-            on_iteration=on_iteration,
-        )
+        # PR-4 deletes this finite bridge when the workflow gains its exact
+        # family registration. Keep admission commands-owned in the meantime.
+        async with self._dispatcher._admitted():
+            if self._research is None:
+                raise RuntimeError("research service is not wired")
+            return await self._research.run(
+                world_id,
+                config,
+                evaluator,
+                prepare_candidate=prepare_candidate,
+                lab_world_id=lab_world_id,
+                on_iteration=on_iteration,
+            )
 
     async def evaluate_physical_task(
         self,
@@ -339,13 +331,14 @@ class RuntimeApplication:
     ) -> PhysicalTaskEvalReport:
         """Run one ledger-backed physical evaluation through its owning service."""
 
-        if self._physical_ai is None:
-            raise RuntimeError("physical AI service is not wired")
-        return await self._physical_ai.evaluate_task(
-            config,
-            env_client=env_client,
-            policy_client=policy_client,
-        )
+        async with self._dispatcher._admitted():
+            if self._physical_ai is None:
+                raise RuntimeError("physical AI service is not wired")
+            return await self._physical_ai.evaluate_task(
+                config,
+                env_client=env_client,
+                policy_client=policy_client,
+            )
 
     async def sweep_physical_instructions(
         self,
@@ -356,13 +349,14 @@ class RuntimeApplication:
     ) -> InstructionSweepReport:
         """Run one paired-seed instruction sweep through its owning service."""
 
-        if self._physical_ai is None:
-            raise RuntimeError("physical AI service is not wired")
-        return await self._physical_ai.sweep_instructions(
-            config,
-            env_client=env_client,
-            policy_client=policy_client,
-        )
+        async with self._dispatcher._admitted():
+            if self._physical_ai is None:
+                raise RuntimeError("physical AI service is not wired")
+            return await self._physical_ai.sweep_instructions(
+                config,
+                env_client=env_client,
+                policy_client=policy_client,
+            )
 
     # Query and introspection ----------------------------------------
 
@@ -474,38 +468,54 @@ class RuntimeApplication:
     # Artifacts and evaluation --------------------------------------
 
     async def ingest_artifacts(self, world_id, sources, *, storage_config=None):
-        if self._artifacts is None:
-            raise RuntimeError("artifact service is not wired")
-        return await self._artifacts.ingest(
-            str(world_id),
-            sources,
-            storage_config=storage_config,
-        )
+        async with self._dispatcher._admitted():
+            if self._artifacts is None:
+                raise RuntimeError("artifact service is not wired")
+            return await self._artifacts.ingest(
+                str(world_id),
+                sources,
+                storage_config=storage_config,
+            )
 
     async def ingest_claude_transcript(self, world_id, source, *, storage_config=None):
-        if self._transcripts is None:
-            raise RuntimeError("transcript ingestion service is not wired")
-        return await self._transcripts.ingest(str(world_id), source, storage_config=storage_config)
+        async with self._dispatcher._admitted():
+            if self._transcripts is None:
+                raise RuntimeError("transcript ingestion service is not wired")
+            return await self._transcripts.ingest(
+                str(world_id),
+                source,
+                storage_config=storage_config,
+            )
 
     async def query_transcript_rows(self, world_id, *, storage_config=None):
-        if self._transcripts is None:
-            raise RuntimeError("transcript ingestion service is not wired")
-        return await self._transcripts.read(str(world_id), storage_config=storage_config)
+        async with self._dispatcher._admitted():
+            if self._transcripts is None:
+                raise RuntimeError("transcript ingestion service is not wired")
+            return await self._transcripts.read(
+                str(world_id),
+                storage_config=storage_config,
+            )
 
     async def query_artifacts(self, world_id, *, storage_config=None):
-        if self._artifacts is None:
-            raise RuntimeError("artifact service is not wired")
-        return await self._artifacts.index(str(world_id), storage_config=storage_config)
+        async with self._dispatcher._admitted():
+            if self._artifacts is None:
+                raise RuntimeError("artifact service is not wired")
+            return await self._artifacts.index(
+                str(world_id),
+                storage_config=storage_config,
+            )
 
     async def run_graders(self, df, graders):
-        if self._evaluations is None:
-            raise RuntimeError("evaluation service is not wired")
-        return await self._evaluations.run_graders(df, graders)
+        async with self._dispatcher._admitted():
+            if self._evaluations is None:
+                raise RuntimeError("evaluation service is not wired")
+            return await self._evaluations.run_graders(df, graders)
 
     async def evaluate(self, world_id, components, **kwargs):
-        if self._evaluations is None:
-            raise RuntimeError("evaluation service is not wired")
-        return await self._evaluations.evaluate(str(world_id), components, **kwargs)
+        async with self._dispatcher._admitted():
+            if self._evaluations is None:
+                raise RuntimeError("evaluation service is not wired")
+            return await self._evaluations.evaluate(str(world_id), components, **kwargs)
 
     async def query_trajectory(
         self,
@@ -515,17 +525,18 @@ class RuntimeApplication:
         storage_config=None,
         **kwargs,
     ):
-        if self._trajectories is None:
-            raise RuntimeError("trajectory service is not wired")
-        storage_config = await self._resolve_storage(world_id, storage_config)
-        return await self._trajectories.query(
-            component,
-            world_id=str(world_id),
-            run_id=str(run_id),
-            storage_config=storage_config,
-            lineage=await self._resolve_lineage(world_id, run_id, storage_config),
-            **kwargs,
-        )
+        async with self._dispatcher._admitted():
+            if self._trajectories is None:
+                raise RuntimeError("trajectory service is not wired")
+            storage_config = await self._resolve_storage(world_id, storage_config)
+            return await self._trajectories.query(
+                component,
+                world_id=str(world_id),
+                run_id=str(run_id),
+                storage_config=storage_config,
+                lineage=await self._resolve_lineage(world_id, run_id, storage_config),
+                **kwargs,
+            )
 
     async def grade_trajectory(
         self,
@@ -537,18 +548,19 @@ class RuntimeApplication:
         storage_config=None,
         **kwargs,
     ):
-        if self._trajectories is None:
-            raise RuntimeError("trajectory service is not wired")
-        storage_config = await self._resolve_storage(world_id, storage_config)
-        return await self._trajectories.grade(
-            component,
-            world_id=str(world_id),
-            run_id=str(run_id),
-            graders=graders,
-            storage_config=storage_config,
-            lineage=await self._resolve_lineage(world_id, run_id, storage_config),
-            **kwargs,
-        )
+        async with self._dispatcher._admitted():
+            if self._trajectories is None:
+                raise RuntimeError("trajectory service is not wired")
+            storage_config = await self._resolve_storage(world_id, storage_config)
+            return await self._trajectories.grade(
+                component,
+                world_id=str(world_id),
+                run_id=str(run_id),
+                graders=graders,
+                storage_config=storage_config,
+                lineage=await self._resolve_lineage(world_id, run_id, storage_config),
+                **kwargs,
+            )
 
     # Deferred commands ---------------------------------------------
 

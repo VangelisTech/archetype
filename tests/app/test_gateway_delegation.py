@@ -11,17 +11,23 @@ from uuid_utils import uuid7
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.gateway.service import CommandGateway
 from archetype.core.component import Component
-from archetype.core.config import StorageConfig
+from archetype.core.config import RunConfig, StorageConfig
 from archetype.world.models import (
     AddComponents,
     AddProcessor,
     ComponentTypeRef,
     ComponentValue,
     DiscoverWorlds,
+    EpisodeConfig,
     OpenWorldReadonly,
     RemoveComponents,
     RemoveProcessor,
     ResumeWorld,
+    RolloutConfig,
+    Run,
+    RunEpisode,
+    RunRollout,
+    Step,
     Update,
 )
 
@@ -111,4 +117,35 @@ async def test_discovery_and_resume_construct_exact_operations_for_dispatch():
             call(ctx, ResumeWorld(storage_config=storage, world_id="world-1")),
         ]
     )
+    assert application.mock_calls == []
+
+
+async def test_actor_aware_simulation_preserves_live_inputs_on_exact_operations():
+    application = AsyncMock()
+    dispatcher = AsyncMock()
+    gateway = _gateway(application, dispatcher)
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    capability = object()
+    coordinates = ("outer", ("inner", 3))
+    input_kwargs = {
+        "capability": capability,
+        "coordinates": coordinates,
+    }
+
+    await gateway.step(ctx, "world-1", RunConfig(), **input_kwargs)
+    await gateway.run(ctx, "world-1", RunConfig(), **input_kwargs)
+    await gateway.run_episode(ctx, "world-1", EpisodeConfig(), **input_kwargs)
+    await gateway.run_rollout(ctx, "world-1", RolloutConfig(), **input_kwargs)
+
+    operations = [awaited.args[1] for awaited in dispatcher.apply_as.await_args_list]
+    assert [type(operation) for operation in operations] == [
+        Step,
+        Run,
+        RunEpisode,
+        RunRollout,
+    ]
+    for operation in operations:
+        assert operation.input_kwargs["capability"] is capability
+        assert operation.input_kwargs["coordinates"] is coordinates
+        assert operation.input_kwargs["coordinates"] == ("outer", ("inner", 3))
     assert application.mock_calls == []
