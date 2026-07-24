@@ -24,23 +24,6 @@ from uuid_utils import UUID
 
 if TYPE_CHECKING:
     from archetype.world.models import EpisodeConfig, RolloutResult
-else:
-
-    class _WorldTypeNamespace:
-        """Resolve world-owned public annotations only when introspected."""
-
-        __slots__ = ()
-
-        def __getattr__(self, name: str) -> Any:
-            if name not in {"EpisodeConfig", "RolloutResult"}:
-                raise AttributeError(name)
-            from archetype.world import models as world_models
-
-            return getattr(world_models, name)
-
-    _world_types = _WorldTypeNamespace()
-    EpisodeConfig = ForwardRef("_world_types.EpisodeConfig")
-    RolloutResult = ForwardRef("_world_types.RolloutResult")
 
 
 def _default_episode_config() -> EpisodeConfig:
@@ -202,6 +185,25 @@ def summarize_research_operation(operation: AutoResearch) -> Mapping[str, Any]:
         "operation": operation.operation,
         "world_id": str(operation.world_id),
     }
+
+
+if not TYPE_CHECKING:
+
+    class _WorldTypeNamespace:
+        """Resolve world-owned public annotations only when introspected."""
+
+        __slots__ = ()
+
+        def __getattr__(self, name: str) -> Any:
+            if name not in {"EpisodeConfig", "RolloutResult"}:
+                raise AttributeError(name)
+            from archetype.world import models as world_models
+
+            return getattr(world_models, name)
+
+    _world_types = _WorldTypeNamespace()
+    EpisodeConfig = ForwardRef("_world_types.EpisodeConfig")
+    RolloutResult = ForwardRef("_world_types.RolloutResult")
 
 
 __all__ = [
