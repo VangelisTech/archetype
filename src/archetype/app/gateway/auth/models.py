@@ -12,7 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Temporary compatibility import for the commands-owned actor identity."""
+"""Compatibility import for the commands-owned actor identity.
+
+New internal code imports :class:`archetype.commands.models.ActorCtx`
+directly. This path remains for the supported API ingress surface.
+"""
 
 from archetype.commands.models import ActorCtx
 

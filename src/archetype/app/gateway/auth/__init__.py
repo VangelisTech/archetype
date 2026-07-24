@@ -12,16 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Auth: RBAC guardrails and the four-role permissions model."""
+"""Compatibility exports for commands-owned actor identity and auth errors.
+
+Authorization and quota authority live in :mod:`archetype.commands.policy`.
+The application auth package retains only imports that are part of the
+existing ingress surface.
+"""
 
 from archetype.app.gateway.auth.errors import GuardrailError
-from archetype.app.gateway.auth.guard import guardrail_allow
 from archetype.app.gateway.auth.models import ActorCtx
-from archetype.app.gateway.auth.permissions import COMMANDS_BY_ROLE
 
-__all__ = [
-    "ActorCtx",
-    "COMMANDS_BY_ROLE",
-    "GuardrailError",
-    "guardrail_allow",
-]
+__all__ = ["ActorCtx", "GuardrailError"]

@@ -1,120 +1,143 @@
 # Copyright 2025 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the four-role permissions matrix.
+"""Executable contracts for the commands-owned flat role matrix."""
 
-Generates one test case per (role, command_type) pair from COMMANDS_BY_ROLE.
-Adding a new CommandType automatically expands coverage.
-"""
+from __future__ import annotations
 
 import pytest
 from uuid_utils import uuid7
 
-from archetype.app.gateway.auth import guard as _guard
-from archetype.app.gateway.auth.errors import GuardrailError
-from archetype.app.gateway.auth.guard import guardrail_allow, reset_daily_tokens
-from archetype.app.gateway.auth.models import ActorCtx
-from archetype.app.gateway.auth.permissions import COMMANDS_BY_ROLE
-from archetype.app.models import Command, CommandType
+from archetype.commands.models import ActorCtx
+from archetype.commands.policy import PERMISSIONS_BY_ROLE, Policy
 
-ALL_ROLES = frozenset(COMMANDS_BY_ROLE.keys())
+_VIEWER_PERMISSIONS = frozenset(
+    {
+        "discover_worlds",
+        "get_audit_history",
+        "get_world_info",
+        "list_hooks",
+        "list_processors",
+        "list_resources",
+        "list_signatures",
+        "list_worlds",
+        "open_world_readonly",
+        "query_archetype",
+        "query_artifacts",
+        "query_components",
+    }
+)
+_PLAYER_PERMISSIONS = _VIEWER_PERMISSIONS | {
+    "create_entities",
+    "despawn",
+    "spawn",
+    "update",
+}
+_OPERATOR_PERMISSIONS = _PLAYER_PERMISSIONS | {
+    "add_components",
+    "add_hook",
+    "add_processor",
+    "add_resource",
+    "autoresearch",
+    "destroy_world",
+    "evaluate",
+    "fork_world",
+    "ingest_artifacts",
+    "remove_components",
+    "remove_hook",
+    "remove_processor",
+    "run",
+    "run_episode",
+    "run_rollout",
+    "step",
+}
+_ADMIN_PERMISSIONS = _OPERATOR_PERMISSIONS | {
+    "create_world",
+    "resume_world",
+}
+_EXPECTED_PERMISSIONS_BY_ROLE = {
+    "viewer": _VIEWER_PERMISSIONS,
+    "player": _PLAYER_PERMISSIONS,
+    "operator": _OPERATOR_PERMISSIONS,
+    "admin": _ADMIN_PERMISSIONS,
+}
+_ALL_PERMISSIONS = frozenset().union(*_EXPECTED_PERMISSIONS_BY_ROLE.values())
 
 
-def _matrix_cases() -> list[tuple[str, CommandType, bool]]:
+def _matrix_cases() -> list[tuple[str, str, bool]]:
     return [
-        (role, cmd, cmd in COMMANDS_BY_ROLE[role])
-        for role in sorted(ALL_ROLES)
-        for cmd in CommandType
+        (role, permission, permission in allowed)
+        for role, allowed in sorted(_EXPECTED_PERMISSIONS_BY_ROLE.items())
+        for permission in sorted(_ALL_PERMISSIONS)
     ]
 
 
-@pytest.fixture(autouse=True)
-def _reset_counters():
-    """Reset quota counters between tests."""
-    _guard._tick_counters.clear()
-    reset_daily_tokens()
-    yield
-    _guard._tick_counters.clear()
-    reset_daily_tokens()
+def test_canonical_role_matrix_is_exact() -> None:
+    assert PERMISSIONS_BY_ROLE == _EXPECTED_PERMISSIONS_BY_ROLE
 
 
-def _allow(command: Command, ctx: ActorCtx) -> None:
-    guardrail_allow(command, ctx, world_id="world-1", target_tick=0)
-
-
-@pytest.mark.parametrize("role,cmd_type,allowed", _matrix_cases(), ids=lambda x: str(x))
-def test_role_command_matrix(role, cmd_type, allowed):
-    """Each (role, command) pair is either permitted or denied per the matrix."""
-    ctx = ActorCtx(id=uuid7(), roles={role})
-    cmd = Command(type=cmd_type, payload={})
+@pytest.mark.parametrize(
+    ("role", "permission", "allowed"),
+    _matrix_cases(),
+)
+def test_every_role_permission_pair_is_explicit(
+    role: str,
+    permission: str,
+    allowed: bool,
+) -> None:
+    policy = Policy()
+    actor = ActorCtx(id=uuid7(), roles={role})
 
     if allowed:
-        _allow(cmd, ctx)  # should not raise
+        policy.preauthorize(actor, permission=permission)
     else:
-        with pytest.raises(GuardrailError):
-            _allow(cmd, ctx)
+        with pytest.raises(PermissionError, match="cannot execute permission"):
+            policy.preauthorize(actor, permission=permission)
 
 
-def test_admin_allows_everything():
-    """Admin role permits every command type."""
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
-    for cmd_type in CommandType:
-        _allow(Command(type=cmd_type), ctx)
+def test_admin_is_finite_and_unknown_permissions_fail_closed() -> None:
+    admin = ActorCtx(id=uuid7(), roles={"admin"})
+
+    with pytest.raises(PermissionError, match="cannot execute permission"):
+        Policy().preauthorize(admin, permission="future_unregistered_operation")
 
 
-def test_viewer_cannot_mutate():
-    """Viewer can only read."""
-    ctx = ActorCtx(id=uuid7(), roles={"viewer"})
+def test_player_can_mutate_entity_values_but_not_schema() -> None:
+    player = ActorCtx(id=uuid7(), roles={"player"})
+    policy = Policy()
 
-    # Reads succeed
-    _allow(Command(type=CommandType.QUERY_WORLD), ctx)
-    _allow(Command(type=CommandType.GET_WORLD_INFO), ctx)
+    for permission in ("spawn", "create_entities", "despawn", "update"):
+        policy.preauthorize(player, permission=permission)
 
-    # Mutations fail
-    with pytest.raises(GuardrailError):
-        _allow(Command(type=CommandType.SPAWN), ctx)
-    with pytest.raises(GuardrailError):
-        _allow(Command(type=CommandType.CREATE_WORLD), ctx)
+    for permission in ("add_components", "remove_components", "step"):
+        with pytest.raises(PermissionError, match="cannot execute permission"):
+            policy.preauthorize(player, permission=permission)
 
 
-def test_player_can_spawn_but_not_add_component():
-    """Player can mutate entity values but not schema."""
-    ctx = ActorCtx(id=uuid7(), roles={"player"})
+def test_operator_controls_simulation_but_not_application_world_creation() -> None:
+    operator = ActorCtx(id=uuid7(), roles={"operator"})
+    policy = Policy()
 
-    _allow(Command(type=CommandType.SPAWN), ctx)
-    _allow(Command(type=CommandType.DESPAWN), ctx)
-    _allow(Command(type=CommandType.UPDATE), ctx)
+    for permission in (
+        "step",
+        "run",
+        "run_episode",
+        "run_rollout",
+        "fork_world",
+        "destroy_world",
+    ):
+        policy.preauthorize(operator, permission=permission)
 
-    with pytest.raises(GuardrailError):
-        _allow(Command(type=CommandType.ADD_COMPONENT), ctx)
-    with pytest.raises(GuardrailError):
-        _allow(Command(type=CommandType.STEP), ctx)
-
-
-def test_operator_can_run_and_fork():
-    """Operator has simulation control and fork/destroy."""
-    ctx = ActorCtx(id=uuid7(), roles={"operator"})
-
-    _allow(Command(type=CommandType.STEP), ctx)
-    _allow(Command(type=CommandType.RUN), ctx)
-    _allow(Command(type=CommandType.RUN_EPISODE), ctx)
-    _allow(Command(type=CommandType.RUN_ROLLOUT), ctx)
-    _allow(Command(type=CommandType.FORK_WORLD), ctx)
-    _allow(Command(type=CommandType.DESTROY_WORLD), ctx)
-
-    # But cannot create worlds from scratch
-    with pytest.raises(GuardrailError):
-        _allow(Command(type=CommandType.CREATE_WORLD), ctx)
+    for permission in ("create_world", "resume_world"):
+        with pytest.raises(PermissionError, match="cannot execute permission"):
+            policy.preauthorize(operator, permission=permission)
 
 
-def test_multi_role_union():
-    """Multiple roles compose via union — both sets of permissions apply."""
-    ctx = ActorCtx(id=uuid7(), roles={"viewer", "player"})
+def test_multi_role_grants_are_a_flat_union() -> None:
+    actor = ActorCtx(id=uuid7(), roles={"viewer", "player"})
+    policy = Policy()
 
-    # Gets viewer reads + player mutations
-    _allow(Command(type=CommandType.QUERY_WORLD), ctx)
-    _allow(Command(type=CommandType.SPAWN), ctx)
-
-    # Still can't do operator things
-    with pytest.raises(GuardrailError):
-        _allow(Command(type=CommandType.STEP), ctx)
+    policy.preauthorize(actor, permission="query_components")
+    policy.preauthorize(actor, permission="spawn")
+    with pytest.raises(PermissionError, match="cannot execute permission"):
+        policy.preauthorize(actor, permission="step")
