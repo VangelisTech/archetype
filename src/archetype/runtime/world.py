@@ -278,6 +278,14 @@ class RuntimeWorld:
     # ── Properties (sync, no round-trip) ──────────────────────────────────
 
     @property
+    def active_world_id(self) -> str | UUID | None:
+        """Return the durable identity without activating this lazy handle."""
+
+        if not self._state.initialized:
+            return None
+        return self._state.world_id
+
+    @property
     def world_id(self) -> str | UUID:
         """Return the durable world identifier after activation."""
         if not self._state.initialized or self._state.world_id is None:

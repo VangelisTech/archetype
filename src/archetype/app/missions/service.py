@@ -142,6 +142,12 @@ class _PendingCriticClosure:
 class MissionWorld(Protocol):
     """Structural runtime-world surface required by the application service."""
 
+    @property
+    def active_world_id(self) -> object | None:
+        """Return the durable identity without activating a lazy world."""
+
+        ...
+
     async def reserve_ids(self, n: int) -> list[int]: ...
 
     async def spawn_reserved(self, entity_id: int, *components: Component) -> None: ...
@@ -583,13 +589,14 @@ class MissionService:
             sandbox_failure = exc
             failures.append(exc)
 
-        try:
-            await self._reconcile_sandboxes_after_shutdown(
-                sandbox_failure,
-                cleanup=cleanup,
-            )
-        except BaseException as exc:
-            failures.append(exc)
+        if cleanup is not None:
+            try:
+                await self._reconcile_sandboxes_after_shutdown(
+                    sandbox_failure,
+                    cleanup=cleanup,
+                )
+            except BaseException as exc:
+                failures.append(exc)
 
         if failures:
             raise BaseExceptionGroup(
@@ -597,13 +604,14 @@ class MissionService:
                 failures,
             )
 
-        try:
-            await cleanup.finish()
-        except BaseException as exc:
-            raise BaseExceptionGroup(
-                "Agent Missions shutdown failed for 1 operation(s)",
-                [exc],
-            ) from exc
+        if cleanup is not None:
+            try:
+                await cleanup.finish()
+            except BaseException as exc:
+                raise BaseExceptionGroup(
+                    "Agent Missions shutdown failed for 1 operation(s)",
+                    [exc],
+                ) from exc
         self._closed = True
 
     async def query(self, *components: type[Component]) -> DataFrame:
@@ -617,11 +625,14 @@ class MissionService:
 
         return self._world.world_id
 
-    async def _exact_cleanup(self) -> MissionCleanup:
+    async def _exact_cleanup(self) -> MissionCleanup | None:
         cleanup = self._cleanup
         if cleanup is None:
-            cleanup = await self._cleanup_factory(self.world_id)
-            if str(cleanup.world_id) != str(self.world_id):
+            world_id = self._world.active_world_id
+            if world_id is None:
+                return None
+            cleanup = await self._cleanup_factory(world_id)
+            if str(cleanup.world_id) != str(world_id):
                 raise ValueError("mission cleanup capability is bound to another world")
             self._cleanup = cleanup
         return cleanup
