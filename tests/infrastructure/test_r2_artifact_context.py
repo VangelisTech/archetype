@@ -23,9 +23,7 @@ from uuid_utils import UUID, uuid7
 from archetype import ArchetypeRuntime, Component
 from archetype.artifacts import ArtifactSource, ArtifactStoreConfig
 from archetype.artifacts.models import IngestArtifacts, QueryArtifacts
-from archetype.core.config import StorageBackend, StorageConfig, WorldConfig
-from archetype.episodes.models import IngestClaudeTranscript, QueryTranscriptRows
-from archetype.ingestion import (
+from archetype.artifacts.pipeline import (
     ARTIFACT_AUDIO,
     ARTIFACT_DIFF,
     ARTIFACT_FILES,
@@ -34,9 +32,11 @@ from archetype.ingestion import (
     ARTIFACT_TEXT,
     ARTIFACT_VIDEO,
 )
+from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
+from archetype.episodes.models import IngestClaudeTranscript, QueryTranscriptRows
 from archetype.missions.trajectories import CLAUDE_TRANSCRIPT_TABLE, ClaudeTranscriptSource
 from archetype.storage.service import StorageService
-from archetype.world.models import CreateWorld
+from archetype.world.models import CreateWorld, Step
 from tests._runtime import build_test_runtime
 
 ACCESS_KEY_ID = os.environ.get("R2_ACCESS_KEY_ID")
@@ -217,6 +217,7 @@ async def test_public_runtime_round_trips_r2_lifecycle_and_artifact_objects(
             }.issuperset({(entity_id, 7), (fork_entity_id, 11)})
 
             artifact_world = runtime.world("r2-public-artifact", storage=artifact_storage)
+            await artifact_world.step()
             (reference,) = await artifact_world.ingest_artifacts(
                 ArtifactSource(
                     source_uri=str(artifact_source),
@@ -371,6 +372,12 @@ async def test_huggingface_context_pack_round_trips_through_cloudflare_r2(
             CreateWorld(
                 config=WorldConfig(name="r2-artifact-context"),
                 storage_config=storage,
+            )
+        )
+        await dispatcher.apply(
+            Step(
+                world_id=world.world_id,
+                run_config=RunConfig(),
             )
         )
         references = await dispatcher.apply(

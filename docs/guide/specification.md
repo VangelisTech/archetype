@@ -24,7 +24,7 @@ The current contract set is split across design docs and executable tests.
 | [World Lifecycle](world-lifecycle.md) | Create/fork/destroy | Append-only lifecycle, info-class downgrade, fork sharing/copy rules. |
 | [Durable Discovery](durable-discovery.md) | Control catalog and cold reads | Catalog authority, `discover_worlds`/`open_world_readonly`, fail-closed cold queries. |
 | [Atomic Visibility](atomic-visibility.md) | Tick commit identity | Manifest-published ticks, commit tokens, writer fencing, epoch-0 legacy reads. |
-| [Artifacts](artifacts.md) | External-artifact ingestion | App-layer Daft Catalog registration, typed Iceberg tables, file/media scans, occurrence identity, and content-addressed objects. |
+| [Artifacts](artifacts.md) | External-artifact ingestion | Family-owned file/media scans and handlers over explicit durable coordinates, storage-owned typed Iceberg tables, occurrence identity, and content-addressed objects. |
 | [Agent Missions V1](agent-missions.md) | Coding-agent software factory | Typed task graphs, revision-bound validators, immutable candidates, independent exact-head critic receipts, durable repair findings, and terminal mission rollup. |
 | [Dataset and Evaluation Ontology](dataset-eval-ontology.md) | Dataset/eval identity and vocabulary | Dataset-vs-runtime coordinates, trial/episode cardinality, typed-ingestion ownership, and grader composition. |
 | [Audit Log](audit-log.md) | Audit rows | Append-only audit history and query contract. |

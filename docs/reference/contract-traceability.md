@@ -31,8 +31,8 @@ machine authority; this page is its review surface.
 | `world.mutation.locking` | `world` | high | [docs/guide/specification.md](../guide/specification.md) — Mutation Contracts | pytest: 2 | `pr`, `main`, `release` |
 | `query.cold_reads.correct` | `world` | high | [docs/guide/specification.md](../guide/specification.md) — Durable world reads | pytest: 3; eval: 3; benchmark: 1 | `pr`, `main`, `release` |
 | `storage.cache.concurrent_no_loss` | `storage` | high | [docs/guide/stores.md](../guide/stores.md) — Write-Behind Cache | pytest: 1; eval: 2; benchmark: 1 | `pr`, `main`, `release` |
-| `ingestion.envelope.append_selection` | `ingestion` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 5. Catalog and index contract | pytest: 1; static: 2 | `pr`, `main`, `release` |
-| `ingestion.catalog.cold_roundtrip` | `ingestion` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 5. Catalog and index contract | pytest: 2 | `pr`, `main`, `release` |
+| `ingestion.envelope.append_selection` | `artifacts` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 5. Catalog and index contract | pytest: 1; static: 2 | `pr`, `main`, `release` |
+| `ingestion.catalog.cold_roundtrip` | `artifacts` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 5. Catalog and index contract | pytest: 2 | `pr`, `main`, `release` |
 | `artifacts.ingestion.occurrence_identity` | `artifacts` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 4. Occurrence and content identity | pytest: 1; eval: 1 | `pr`, `main`, `release` |
 | `artifacts.ingestion.common_visibility` | `artifacts` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 7. Visibility and failure | pytest: 1; static: 1 | `pr`, `main`, `release` |
 | `artifacts.context.task_anchored` | `artifacts` | medium | [docs/guide/artifacts.md](../guide/artifacts.md) — 11. Task-anchored artifact context | pytest: 1; static: 2 | `pr`, `main`, `release` |

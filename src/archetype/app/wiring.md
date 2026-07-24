@@ -30,9 +30,8 @@ workflow behavior.
 | `WorldLifecycle` | `StorageService`, `WorldRegistry`, and `CommandScheduler.materialize` |
 | `AuditLog` | storage plus scheduler outbox read/acknowledge callables |
 | `RuntimeResources` | dispatcher, audit, storage, and explicit storage ownership |
-| `IngestionService` | storage and `WorldRegistry` |
-| `ArtifactService` | storage, `WorldRegistry`, and ingestion |
-| `TranscriptIngestionService` | artifacts, ingestion, canonical redaction, storage, and `WorldRegistry` |
+| artifact handlers and views | storage plus explicit durable operation coordinates |
+| `TranscriptIngestionService` | artifact handler, canonical redaction, and storage |
 | evaluation handlers | storage; pinned reads additionally use `archetype.world.query` |
 | `TrajectoryService` | storage and the pure evaluation grader runner |
 | `PhysicalAIService` | `WorldRegistry`, `WorldLifecycle`, and storage |

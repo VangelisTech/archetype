@@ -2,16 +2,26 @@ version = 1
 owner = "artifacts"
 family = "artifacts"
 
+[[module_operation_surface]]
+qualified_scope = "archetype.artifacts.handlers"
+
+[[module_operation_surface]]
+qualified_scope = "archetype.artifacts.views"
+
 [[disposition]]
 operations = [
-  "interfaces.iArtifactService.ingest",
-  "interfaces.iArtifactService.index",
+  "handlers.ingest_artifacts",
+  "handlers.query_artifacts",
+  "views.read_artifact_index",
+  "views.read_artifacts",
 ]
 signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome"]
-authority = "Content-addressed objects, the typed media indexes, and the common artifact index remain authoritative."
+authority = "The published durable world head, content-addressed objects, typed media indexes, and common artifact index remain authoritative."
 evidence = [
   "docs/guide/artifacts.md",
-  "tests/app/test_artifact_ingestion.py",
+  "tests/artifacts/test_handlers_contracts.py",
+  "tests/artifacts/test_ingestion_integration.py",
+  "tests/artifacts/test_storage_publication.py",
 ]
-rationale = "ArtifactService configures the file pipeline, delegates envelope policy to IngestionService and terminal publication to StorageService; a second signal would not add authority."
+rationale = "Family-owned handlers and views delegate durable coordinates, typed table publication, and terminal execution to StorageService; a second signal would not add authority."

@@ -241,11 +241,11 @@ files = files.with_column("source_uri", file_path(col("file")))
 
 Archetype's reusable file path is intentionally cohesive:
 
-- `archetype.ingestion.pipeline.FileIngestionPipeline` keeps scan, UUIDv7
+- `archetype.artifacts.pipeline.FileIngestionPipeline` keeps scan, UUIDv7
   occurrence identity, MIME classification, content-addressed persistence,
   durable-object reopening, and every common or media-specific Daft index in
   one readable graph;
-- `archetype.ingestion.scanners` contains only pure metadata algorithms,
+- `archetype.artifacts.scanners` contains only pure metadata algorithms,
   streaming where the format permits it;
 - the UUIDv7 supplies both `artifact_id` and `ingested_at`;
 - SHA-256, XXH3-64, and byte size are computed in one streaming pass; and
@@ -297,11 +297,11 @@ schema comparison, Iceberg writes, and optimistic conflict retry remain beside
 that execution gate. It is never placed in a world's resource container.
 
 `StorageService` also owns the generic durable world/run envelope and extends
-conditional-append keys with that identity. `IngestionService` selects the
-live storage configuration and delegates those mechanics; it does not create a
-second storage authority. File policy belongs to the one `ArtifactService`,
-which configures the reusable `FileIngestionPipeline` and publishes its tables
-through ingestion.
+conditional-append keys with that identity. Family workflows provide explicit
+durable coordinates and delegate typed publication directly to that substrate;
+they do not create a second storage authority. File policy belongs to the
+artifact family's free handlers, which configure `FileIngestionPipeline` and
+publish typed indexes before the common visibility root.
 
 **Resources** is the runtime DI container that passes services to processors. Each world has one.
 

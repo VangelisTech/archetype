@@ -276,6 +276,33 @@ async def test_cold_attached_evaluation_without_storage_fails_before_dispatch() 
 
 
 @pytest.mark.asyncio
+async def test_cold_attached_artifacts_without_storage_fail_before_dispatch(
+    tmp_path: Path,
+) -> None:
+    """Artifact capabilities cannot recover coordinates through live state."""
+
+    from archetype.artifacts.models import ArtifactSource
+
+    dispatcher = _DispatchProbe()
+    world, _state = _runtime_world(dispatcher)
+    source = ArtifactSource(source_uri=str(tmp_path / "never-scanned.txt"))
+
+    with pytest.raises(
+        ValueError,
+        match="ingest_artifacts requires explicit storage coordinates",
+    ):
+        await world.ingest_artifacts(source)
+    with pytest.raises(
+        ValueError,
+        match="query_artifacts requires explicit storage coordinates",
+    ):
+        await world.artifacts()
+
+    assert dispatcher.trusted == []
+    assert not Path(source.source_uri).exists()
+
+
+@pytest.mark.asyncio
 async def test_resume_retains_the_exact_explicit_storage_on_its_handle(
     tmp_path: Path,
 ) -> None:
@@ -428,7 +455,7 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
     from daft import from_pydict
 
     from archetype.app.research.contracts import AutoResearchConfig
-    from archetype.artifacts.contracts import ArtifactSource
+    from archetype.artifacts.models import ArtifactSource
     from archetype.evaluation.contracts import GraderContract
     from archetype.missions.contracts import (
         AgentMissionConfig,

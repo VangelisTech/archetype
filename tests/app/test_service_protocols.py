@@ -9,10 +9,6 @@ import inspect
 
 import pytest
 
-from archetype.app.artifacts.interfaces import iArtifactService
-from archetype.app.artifacts.service import ArtifactService
-from archetype.app.ingestion.interfaces import iIngestionService
-from archetype.app.ingestion.service import IngestionService
 from archetype.app.missions.interfaces import (
     iMissionService,
     iTrajectoryService,
@@ -36,8 +32,6 @@ SERVICE_PROTOCOLS = (
     (StorageService, iStorageService),
     (WorldRegistry, iWorldRegistry),
     (WorldLifecycle, iWorldLifecycle),
-    (IngestionService, iIngestionService),
-    (ArtifactService, iArtifactService),
     (MissionService, iMissionService),
     (TranscriptIngestionService, iTranscriptIngestionService),
     (TrajectoryService, iTrajectoryService),

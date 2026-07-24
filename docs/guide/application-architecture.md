@@ -164,9 +164,8 @@ src/archetype/
   commands/          registry, policy, dispatch, durable scheduling and audit projection
   redaction/         canonical pre-durability scanning, receipts and quarantine
   evaluation/        grading, snapshot pinning, leases and durable receipts
+  artifacts/         file values, scans, immutable objects, indexes, views and handlers
   app/
-    ingestion/       live storage selection and typed-ingestion bridge
-    artifacts/       file discovery, immutable object storage and media indexes
     research/        autoresearch and multi-run research workflows
     missions/        mission graph and external-I/O composition
     physical_ai/     batched evaluation and instruction-sweep workflow
@@ -190,7 +189,9 @@ evaluation values and pure instruction optimization live under
 registry/lifecycle and storage ports with world mutation, simulation, and query
 functions. Claude transcript parsing
 now lives under `archetype.missions.trajectories`;
-`archetype.app.artifacts` owns its redact-before-durability workflow. The former
+`archetype.app.missions.transcript_service` owns its
+redact-before-durability workflow and consumes the artifacts family directly.
+The former
 production
 `archetype.experiments` umbrella is gone. The repository-root `experiments/`
 directory remains a consumer-side harness, not a package or authority family.
@@ -282,13 +283,12 @@ or CLI boundary.
 | World simulation | Module functions for step, stable committed receipts, required projection, run, episode, and rollout | World-registry and storage ports; construction-injected command materializer |
 | Durable world reads | Module functions for persisted ECS state, lineage, and signature discovery without a live world | Storage port |
 | Redaction | Provider-neutral secret scanning, deterministic text redaction, safe receipts and quarantine | None |
-| Ingestion | Select live storage configuration and delegate typed publication | Storage and world-coordinate ports |
-| Artifacts | File discovery, metadata scans, immutable content-addressed objects, and common/media indexes | Ingestion, storage and world-coordinate ports |
+| Artifacts | File values, discovery, metadata scans, immutable content-addressed objects, common/media indexes, storage-backed views, and exact free handlers | Storage port; operations carry explicit durable world and storage coordinates |
 | Evaluation | Snapshot pinning, grader contracts, grading, leasing, recovery, evidence and durable results | Storage port plus world-query functions; operations carry explicit world and storage coordinates |
 | Commands | Exact registration, authorization policy, governed direct/deferred entry, durable admission, order, leasing, lock-held materialization, retry, settlement, dead letters, transactional outbox and analytical audit projection | Storage/control catalog plus exact world handlers |
 | Research | Multi-run research workflows and bounded persisted-control reads | World registry/lifecycle and storage ports plus world simulation functions and explicit evaluator callbacks |
 | Physical AI | Batched evaluation and instruction-sweep workflows with typed terminal reports | World registry/lifecycle and storage ports plus world mutation/simulation/query functions |
-| Missions | Graph materialization, tick/external-I/O composition, terminal projection, transcript ingestion, and trajectory query/evaluation composition. Family processors retain transition authority; trajectory evidence cannot advance tasks. | Consumes a structural mission world, family-owned sandbox resource, artifact/ingestion/redaction ports for transcripts, and world-query plus pure evaluation-grading functions for trajectory reads. |
+| Missions | Graph materialization, tick/external-I/O composition, terminal projection, transcript ingestion, and trajectory query/evaluation composition. Family processors retain transition authority; trajectory evidence cannot advance tasks. | Consumes a structural mission world, family-owned sandbox resource, artifact-family handlers plus redaction/storage ports for transcripts, and world-query plus pure evaluation-grading functions for trajectory reads. |
 | Runtime/API adapters | Construct exact family operations and select trusted or actor-aware dispatcher entry | Commands dispatcher plus family models |
 | `RuntimeResources` | Process admission, supervised work, handle ownership, and phased retryable teardown | Dispatcher, audit projection, storage, and registered owners |
 | `archetype.wiring` | Concrete construction, registration, and callback wiring | Every concrete implementation it constructs |
@@ -333,9 +333,9 @@ Durability is family-specific rather than one service-level flag:
 | Deferred command outcome | Commit coordinator plus command ledger | Terminal applied outcomes settle atomically with the manifest that makes them visible |
 | Agent Mission dispatch | Mission world tick plus post-tick outbox | A `dispatched` task row is durably visible before any sandbox request leaves the world |
 | Agent Mission acceptance | Mission processors plus world tick | Revision-bound validation and exact-head publication first produce an immutable candidate; a separate critic sandbox stages a complete receipt bound to that candidate's base, head, diff, validator bundle, and policy; only a later task-decision tick accepts, repairs, or exhausts the task |
-| Typed ingestion | `IngestionService` workflow plus `StorageService` and Iceberg | Storage resolves and stamps the durable world/run envelope, the registered schema accepts the rows, and one Iceberg append makes the selected rows visible |
-| Artifact ingestion | `ArtifactService` plus `IngestionService` | The immutable object and any media-specific rows are durable before the common `artifact_files` occurrence becomes visible |
-| Coding-agent transcript | Redaction, artifact, and typed-ingestion authorities | Raw narrative never becomes durable; the sanitized artifact is indexed before normalized rows keyed to its `artifact_id` are appended |
+| Typed family rows | Owning family workflow plus `StorageService` and Iceberg | Storage resolves and stamps the durable world/run envelope, the registered schema accepts the rows, and one Iceberg append makes the selected rows visible |
+| Artifact ingestion | Artifacts-family handler plus `StorageService` | The published durable tick is selected before file effects; the immutable object and any media-specific rows are durable before the common `artifact_files` occurrence becomes visible |
+| Coding-agent transcript | Redaction, artifacts-family handler, and storage authority | Raw narrative never becomes durable; the sanitized artifact is indexed and its digest verified before normalized rows keyed to its `artifact_id` are appended |
 | Evaluation | Family handler plus `StorageService` and its control catalog | Subject and grader contract are pinned, one key-conditional result append is durable, and the evaluation lease is settled |
 | Audit | Transactional outbox plus projection | Authoritative event is durable; analytical Iceberg projection may lag |
 
@@ -364,11 +364,12 @@ callback at the tick boundary.
 `StorageService` owns the catalog-derived world/run envelope, extends
 caller-keyed conditional keys with that identity, and owns `daft.Catalog`
 registration, schema comparison, execution, Iceberg writes, and conflict
-retry. `IngestionService` selects the live storage configuration and delegates
-that generic substrate work. `ArtifactService` specializes the ingestion path
-for files and media metadata. Mission-owned `TranscriptIngestionService`
-composes those ports with redaction and the pure missions parser; it creates no
-third storage authority.
+retry. The artifacts family's free handlers require explicit storage
+coordinates, verify the durable world/run and published head before file
+effects, and specialize that substrate for files and media metadata.
+Mission-owned `TranscriptIngestionService` composes those handlers and the
+storage port with redaction and the pure missions parser; it creates no third
+storage authority.
 Durable external material is described as an artifact, evidence object, typed
 dataset row, or evaluation receipt—never as a universal fact.
 
@@ -542,20 +543,19 @@ resources within the mission family.
 `quality/architecture.toml` contains the scalar policy and application-family
 DAG. Per-family fragments under `quality/architecture.d/` register the
 top-level dispositions for `artifacts`, `commands`, `episodes`, `evaluation`,
-`graph`, `ingestion`, `missions`, `physical_ai`, `projections`, `redaction`,
+`graph`, `missions`, `physical_ai`, `projections`, `redaction`,
 `research`, `storage`, and `world`.
 `scripts/check_architecture.py` enforces their package direction, protocol
 imports, concrete construction, concrete inheritance, and persistent
 Component placement.
 
-The ingestion/artifact split is complete. `archetype.ingestion` owns the
-reusable `FileIngestionPipeline` and its pure bounded scanners.
-`archetype.app.ingestion.IngestionService` selects the live storage
-configuration and delegates generic world/run-enveloped rows;
-`archetype.storage.StorageService` owns that envelope plus app-table catalog
-and execution authority. `archetype.artifacts` owns `ArtifactSource`,
-`ArtifactRef`, and `ArtifactStoreConfig`; `archetype.app.artifacts` retains the
-single file-ingestion workflow and object-storage authority.
+The artifacts pull-forward (#651) is complete. `archetype.artifacts` owns
+`ArtifactSource`, `ArtifactRef`, `ArtifactStoreConfig`, the cohesive
+`FileIngestionPipeline`, bounded scanners, storage-backed views, and exact free
+handlers. `archetype.storage.StorageService` owns the durable world/run
+envelope plus app-table catalog and execution authority. There is no standalone
+ingestion package, application artifact facade, live-registry fallback, or
+default-storage fallback.
 
 The evaluation workflow pull-forward (#650) is complete:
 `archetype.evaluation` owns `EvalReceipt`, grading values, identity digests,
@@ -613,14 +613,13 @@ dependency. `errors` is the exact common-family module; `runtime`, `api`,
 | `storage` | none |
 | `world` | `storage` |
 | `commands` | `storage`, `world` |
-| `artifacts` | none |
+| `artifacts` | `storage` |
 | `redaction` | none |
 | `evaluation` | none |
 | `research` | `world` |
 | `physical_ai` | none |
 | `episodes` | `artifacts`, `evaluation` |
 | `graph` | none |
-| `ingestion` | none |
 | `missions` | `artifacts`, `episodes`, `graph` |
 | `projections` | `graph` |
 

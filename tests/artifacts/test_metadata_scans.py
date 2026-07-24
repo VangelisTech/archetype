@@ -13,11 +13,13 @@ import pytest
 import xxhash
 from uuid_utils import UUID, uuid7
 
-from archetype.ingestion import (
+from archetype.artifacts.pipeline import (
     FileIngestionPipeline,
-    hash_file,
     ingestion_time_for,
     media_family_for,
+)
+from archetype.artifacts.scanners import (
+    hash_file,
     scan_diff_metadata,
     scan_text_metadata,
 )

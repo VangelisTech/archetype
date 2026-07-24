@@ -169,7 +169,7 @@ def test_api_scope_blocks_world_family_behavior_imports(tmp_path):
 
 
 def test_api_scope_rejects_unapproved_application_imports(tmp_path):
-    path = _write(tmp_path, "from archetype.app.artifacts.service import ArtifactService\n")
+    path = _write(tmp_path, "from archetype.app.missions.service import MissionService\n")
     violations = checker._import_violations(path, _API_ROUTES_SURFACE, root=tmp_path)
     assert len(violations) == 1
 

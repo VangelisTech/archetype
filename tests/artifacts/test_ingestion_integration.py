@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Single-service file artifact ingestion contracts."""
+"""Family-owned file artifact ingestion integration contracts."""
 
 import base64
 import hashlib
@@ -19,14 +19,13 @@ import xxhash
 from pypdf import PdfWriter
 from uuid_utils import UUID
 
-from archetype.app.artifacts.service import scan_sources
-from archetype.app.ingestion.service import IngestionService
-from archetype.artifacts.contracts import ArtifactSource, ArtifactStoreConfig
-from archetype.artifacts.models import IngestArtifacts, QueryArtifacts
-from archetype.core.aio import AsyncWorld
-from archetype.core.config import StorageBackend, StorageConfig, WorldConfig
-from archetype.core.errors import AmbiguousTickCommitError
-from archetype.ingestion import (
+from archetype.artifacts.models import (
+    ArtifactSource,
+    ArtifactStoreConfig,
+    IngestArtifacts,
+    QueryArtifacts,
+)
+from archetype.artifacts.pipeline import (
     ARTIFACT_AUDIO,
     ARTIFACT_DIFF,
     ARTIFACT_IMAGES,
@@ -34,11 +33,14 @@ from archetype.ingestion import (
     ARTIFACT_TEXT,
     ARTIFACT_VIDEO,
     FileIngestionPipeline,
+    scan_sources,
 )
+from archetype.core.aio import AsyncWorld
+from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
 from archetype.storage.config import ControlCatalogConfig
 from archetype.storage.service import StorageService
 from archetype.world import simulation
-from archetype.world.models import CreateWorld
+from archetype.world.models import CreateWorld, Step
 from archetype.world.registry import WorldRegistry
 from tests._runtime import build_test_runtime
 
@@ -75,12 +77,19 @@ async def _artifact_runtime(tmp_path: Path):
 
 
 async def _world(dispatcher, storage: StorageConfig):
-    return await dispatcher.apply(
+    world = await dispatcher.apply(
         CreateWorld(
             config=WorldConfig(name="w"),
             storage_config=storage,
         )
     )
+    await dispatcher.apply(
+        Step(
+            world_id=world.world_id,
+            run_config=RunConfig(),
+        )
+    )
+    return world
 
 
 def _world_registry(dispatcher) -> WorldRegistry:
@@ -231,7 +240,7 @@ async def test_text_file_gets_uuidv7_common_index_and_content_address(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_ingest_recovers_live_tick_identity_or_fails_before_artifact_writes(
+async def test_ingest_uses_published_tick_without_live_world_reconciliation(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -241,32 +250,12 @@ async def test_ingest_recovers_live_tick_identity_or_fails_before_artifact_write
         world = await _live_world(dispatcher, world_info.world_id)
         source = tmp_path / "prepared.txt"
         source.write_text("prepared evidence")
-        attempts = 0
+        world.tick = 9
 
-        async def reconcile(registry, world_id, locked_world) -> bool:
-            nonlocal attempts
-            attempts += 1
-            assert registry is _world_registry(dispatcher)
-            assert str(world_id) == str(world.world_id)
-            assert locked_world is world
-            if attempts == 1:
-                raise AmbiguousTickCommitError(tick=0, commit_token="prepared-token")
-            locked_world.tick = 1
-            return True
+        async def reconcile(*_args, **_kwargs) -> bool:
+            raise AssertionError("artifact ingestion must not reconcile live world state")
 
         monkeypatch.setattr(simulation, "reconcile_committed_work_locked", reconcile)
-
-        with pytest.raises(AmbiguousTickCommitError):
-            await dispatcher.apply(
-                IngestArtifacts(
-                    world_id=world.world_id,
-                    sources=(ArtifactSource(source_uri=str(source)),),
-                    storage_config=storage,
-                )
-            )
-
-        store_handle = await storage_service.get_or_create_store(storage)
-        assert not store_handle.session.current_catalog().has_table("ns.artifact_files")
 
         await dispatcher.apply(
             IngestArtifacts(
@@ -288,7 +277,7 @@ async def test_ingest_recovers_live_tick_identity_or_fails_before_artifact_write
             .to_pylist()
         )
 
-        assert rows == [{"tick": 1}]
+        assert rows == [{"tick": 0}]
         world.tick = 0
 
 
@@ -468,14 +457,27 @@ async def test_common_index_is_published_last(tmp_path, monkeypatch):
         world = await _world(dispatcher, storage)
         source = tmp_path / "pixel.png"
         source.write_bytes(_PNG)
-        real_append = IngestionService.append
+        real_append = storage_service.append_world_rows
 
-        async def fail_media(self, world_id, table, rows, **kwargs):
-            if table == ARTIFACT_IMAGES:
+        async def fail_media(
+            storage_config,
+            world_id,
+            table_name,
+            rows,
+            *,
+            key_columns=(),
+        ):
+            if table_name == ARTIFACT_IMAGES:
                 raise RuntimeError("metadata index unavailable")
-            return await real_append(self, world_id, table, rows, **kwargs)
+            return await real_append(
+                storage_config,
+                world_id,
+                table_name,
+                rows,
+                key_columns=key_columns,
+            )
 
-        monkeypatch.setattr(IngestionService, "append", fail_media)
+        monkeypatch.setattr(storage_service, "append_world_rows", fail_media)
         with pytest.raises(RuntimeError, match="metadata index unavailable"):
             await dispatcher.apply(
                 IngestArtifacts(

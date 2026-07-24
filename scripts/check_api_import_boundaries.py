@@ -433,7 +433,7 @@ def _owner_param_violation(param: ast.arg, policy: PublicApiPolicy) -> bool:
     """Match whole annotation tokens plus configured owner-shaped names.
 
     Tokenizing avoids substring hits (``ArtifactServiceConfig`` is not
-    ``ArtifactService``). A parameter-name rule remains the backstop for
+    ``MissionService``). A parameter-name rule remains the backstop for
     import aliases, whose type token cannot be resolved without import walking.
     """
 

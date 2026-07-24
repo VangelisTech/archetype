@@ -24,8 +24,12 @@ from typing import TYPE_CHECKING, Any, Concatenate
 
 from uuid_utils import UUID
 
-from archetype.artifacts.contracts import ArtifactRef, ArtifactSource
-from archetype.artifacts.models import IngestArtifacts, QueryArtifacts
+from archetype.artifacts.models import (
+    ArtifactRef,
+    ArtifactSource,
+    IngestArtifacts,
+    QueryArtifacts,
+)
 from archetype.commands.models import GetAuditHistory
 from archetype.core.component import Component
 from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
@@ -363,12 +367,13 @@ class RuntimeWorld:
     async def ingest_artifacts(self, *sources: ArtifactSource) -> tuple[ArtifactRef, ...]:
         """Copy files into the artifact store and index their metadata."""
 
-        wid = await self._ensure_id()
+        wid = str(await self._ensure_id())
+        storage_config = self._state.require_storage_config("ingest_artifacts")
         return await self._dispatcher.apply(
             IngestArtifacts(
                 world_id=wid,
                 sources=tuple(sources),
-                storage_config=self._state.storage_config,
+                storage_config=storage_config,
             )
         )
 
@@ -841,11 +846,12 @@ class RuntimeWorld:
     @_admitted_world_operation
     async def artifacts(self) -> DataFrame:
         """Return this run's common file-artifact index."""
-        wid = await self._ensure_id()
+        wid = str(await self._ensure_id())
+        storage_config = self._state.require_storage_config("query_artifacts")
         return await self._dispatcher.apply(
             QueryArtifacts(
                 world_id=wid,
-                storage_config=self._state.storage_config,
+                storage_config=storage_config,
             )
         )
 

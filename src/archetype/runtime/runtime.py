@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 from uuid_utils import UUID, uuid7
 
 from archetype._logging import configure_host_observability
-from archetype.artifacts.contracts import ArtifactStoreConfig
+from archetype.artifacts.models import ArtifactStoreConfig
 from archetype.core.config import CacheConfig, StorageConfig
 from archetype.core.hooks import HookEvent
 from archetype.physical_ai.models import (
