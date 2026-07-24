@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Literal
 
@@ -74,16 +73,6 @@ def _component_values(components) -> tuple[ComponentValue, ...]:
 
 def _component_types(component_types) -> tuple[ComponentTypeRef, ...]:
     return tuple(ComponentTypeRef.from_type(component_type) for component_type in component_types)
-
-
-def _input_kwargs_json(input_kwargs: dict) -> str:
-    return json.dumps(
-        input_kwargs,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-        allow_nan=False,
-    )
 
 
 class CommandGateway:
@@ -357,7 +346,7 @@ class CommandGateway:
             Step(
                 world_id=world_id,
                 run_config=run_config,
-                input_kwargs_json=_input_kwargs_json(input_kwargs),
+                input_kwargs=input_kwargs,
             ),
         )
 
@@ -367,7 +356,7 @@ class CommandGateway:
             Run(
                 world_id=world_id,
                 run_config=run_config,
-                input_kwargs_json=_input_kwargs_json(input_kwargs),
+                input_kwargs=input_kwargs,
             ),
         )
 
@@ -377,7 +366,7 @@ class CommandGateway:
             RunEpisode(
                 world_id=world_id,
                 config=config,
-                input_kwargs_json=_input_kwargs_json(input_kwargs),
+                input_kwargs=input_kwargs,
             ),
         )
 
@@ -387,7 +376,7 @@ class CommandGateway:
             RunRollout(
                 world_id=world_id,
                 config=config,
-                input_kwargs_json=_input_kwargs_json(input_kwargs),
+                input_kwargs=input_kwargs,
             ),
         )
 

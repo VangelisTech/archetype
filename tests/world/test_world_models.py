@@ -30,7 +30,10 @@ from archetype.world.models import (
     ResourceInfo,
     RolloutConfig,
     RolloutResult,
+    Run,
+    RunEpisode,
     RunResult,
+    RunRollout,
     Spawn,
     Step,
     WorldInfo,
@@ -157,6 +160,36 @@ def test_live_capability_is_explicit_and_identity_preserving() -> None:
     assert type(operation).direct_only is True
     with pytest.raises(TypeError, match="direct-only"):
         require_portable_tick_operation(operation)
+
+
+def test_direct_simulation_operations_preserve_live_input_values() -> None:
+    capability = object()
+    coordinates = ("outer", ("inner", 3))
+    input_kwargs = {
+        "capability": capability,
+        "coordinates": coordinates,
+    }
+    operations = (
+        Step(world_id="world", input_kwargs=input_kwargs),
+        Run(world_id="world", input_kwargs=input_kwargs),
+        RunEpisode(world_id="world", input_kwargs=input_kwargs),
+        RunRollout(world_id="world", input_kwargs=input_kwargs),
+    )
+
+    assert {type(operation) for operation in operations} == {
+        Step,
+        Run,
+        RunEpisode,
+        RunRollout,
+    }
+    for operation in operations:
+        assert operation.input_kwargs["capability"] is capability
+        assert operation.input_kwargs["coordinates"] is coordinates
+        assert operation.input_kwargs["coordinates"] == ("outer", ("inner", 3))
+        assert "input_kwargs_json" not in type(operation).model_fields
+        assert type(operation).direct_only is True
+        with pytest.raises(TypeError, match="direct-only"):
+            require_portable_tick_operation(operation)
 
 
 def test_portable_admission_and_handler_inventories_are_exact() -> None:

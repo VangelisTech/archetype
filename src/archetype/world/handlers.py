@@ -10,7 +10,6 @@ family.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
@@ -76,13 +75,6 @@ def _component_types(
     values: tuple[ComponentTypeRef, ...],
 ) -> list[type[Component]]:
     return [value.resolve() for value in values]
-
-
-def _input_kwargs(payload_json: str) -> dict[str, Any]:
-    decoded = json.loads(payload_json)
-    if not isinstance(decoded, dict):
-        raise ValueError("input_kwargs_json must decode to an object")
-    return decoded
 
 
 def _world_info(world: Any) -> WorldInfo:
@@ -374,7 +366,7 @@ async def step(registry: iWorldRegistry, operation: Step) -> int:
         registry,
         operation.world_id,
         operation.run_config,
-        **_input_kwargs(operation.input_kwargs_json),
+        **operation.input_kwargs,
     )
 
 
@@ -383,7 +375,7 @@ async def run(registry: iWorldRegistry, operation: Run):
         registry,
         operation.world_id,
         operation.run_config,
-        **_input_kwargs(operation.input_kwargs_json),
+        **operation.input_kwargs,
     )
 
 
@@ -397,7 +389,7 @@ async def run_episode(
         storage,
         operation.world_id,
         operation.config,
-        **_input_kwargs(operation.input_kwargs_json),
+        **operation.input_kwargs,
     )
 
 
@@ -415,7 +407,7 @@ async def run_rollout(
         destroy,
         operation.world_id,
         operation.config,
-        **_input_kwargs(operation.input_kwargs_json),
+        **operation.input_kwargs,
     )
 
 
