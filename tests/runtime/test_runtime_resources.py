@@ -241,6 +241,42 @@ async def test_unsafe_owner_and_task_labels_reject_before_user_code() -> None:
     await resources.aclose()
 
 
+async def test_direct_owner_close_seals_and_joins_supervised_work() -> None:
+    runtime_module, _shutdown_error, _shutdown_failure = _runtime_api()
+    events: list[str] = []
+    resources = _new_resources(runtime_module, _Dispatcher(events))
+    reservation = resources.reserve_owner(
+        "mission:direct-close",
+        phase="workflow-handles",
+    )
+    handle = await _construct(
+        reservation,
+        _Closeable("mission:direct-close", events),
+    )
+    task_started = asyncio.Event()
+    task_release = asyncio.Event()
+
+    async def supervised() -> None:
+        task_started.set()
+        await task_release.wait()
+        events.append("task:finished")
+
+    reservation.spawn(supervised, label="critic-prewarm")
+    closing = asyncio.create_task(reservation.aclose())
+    await _wait(task_started)
+
+    assert handle.close_calls == 0
+    task_release.set()
+    await asyncio.wait_for(closing, timeout=0.5)
+
+    assert events[-2:] == ["task:finished", "close:mission:direct-close:1"]
+    with pytest.raises(RuntimeError, match="sealed"):
+        reservation.spawn(supervised, label="critic-prewarm")
+
+    await resources.aclose()
+    assert handle.close_calls == 1
+
+
 async def test_partial_constructor_failure_remains_cleanup_owned() -> None:
     runtime_module, _shutdown_error, _shutdown_failure = _runtime_api()
     events: list[str] = []

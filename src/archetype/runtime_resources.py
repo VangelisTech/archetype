@@ -254,6 +254,8 @@ class _OwnerReservation:
         return task
 
     async def aclose(self) -> None:
+        self._seal()
+        await self._join_supervised_tasks()
         await self._close_resource()
 
     def _seal(self) -> None:
