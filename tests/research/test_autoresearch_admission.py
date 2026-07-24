@@ -42,9 +42,14 @@ class _TrackingAdmissions(AutoResearchAdmissions):
             yield key
 
 
-def _config(experiment_id: str, *, record_to_ledger: bool = True) -> AutoResearchConfig:
+def _config(
+    experiment_id: str,
+    *,
+    experiment_name: str | None = None,
+    record_to_ledger: bool = True,
+) -> AutoResearchConfig:
     return AutoResearchConfig(
-        experiment_name=experiment_id,
+        experiment_name=experiment_name or experiment_id,
         experiment_id=experiment_id,
         evaluator_id="admission-score-v1",
         rollout_contract_id="admission-rollout-v1",
@@ -203,7 +208,7 @@ async def test_unrelated_experiments_enter_candidate_work_concurrently(tmp_path)
                     _run(
                         handler,
                         base.world_id,
-                        _config(name),
+                        _config(name, experiment_name="shared-display-name"),
                         evaluator=lambda _rollout: 1.0,
                         prepare_candidate=candidate(name),
                     )
