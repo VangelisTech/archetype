@@ -103,6 +103,10 @@ class _Lifecycle:
         await self.registry.finish_close(lease)
 
 
+async def _ignore_unsettled(_world_id: object) -> int:
+    return 0
+
+
 def _cleanup_type() -> type[Any]:
     return import_module("archetype.world.cleanup").WorldCleanup
 
@@ -142,6 +146,7 @@ async def test_cleanup_capability_is_exact_world_and_non_ambient() -> None:
         lifecycle=lifecycle,
         world_id=first.world_id,
         lease=lease,
+        cancel_unsettled=_ignore_unsettled,
     )
 
     entity_id = await cleanup.stage_teardown([_Evidence(value="teardown")])
@@ -159,6 +164,7 @@ async def test_cleanup_capability_is_exact_world_and_non_ambient() -> None:
             lifecycle=lifecycle,
             world_id=sibling.world_id,
             lease=lease,
+            cancel_unsettled=_ignore_unsettled,
         )
 
     other_registry = WorldRegistry()
@@ -169,6 +175,7 @@ async def test_cleanup_capability_is_exact_world_and_non_ambient() -> None:
             lifecycle=lifecycle,
             world_id=first.world_id,
             lease=lease,
+            cancel_unsettled=_ignore_unsettled,
         )
 
     async def child_without_capability() -> None:
@@ -246,6 +253,7 @@ async def test_cleanup_retry_reconciles_receipt_before_finish_close() -> None:
         lifecycle=lifecycle,
         world_id=world.world_id,
         lease=lease,
+        cancel_unsettled=_ignore_unsettled,
     )
 
     await cleanup.stage_teardown([_Evidence(value="cleanup")])
@@ -262,8 +270,8 @@ async def test_cleanup_retry_reconciles_receipt_before_finish_close() -> None:
     assert world.core_step_ticks == [0], "cleanup retry must not replay committed work"
     assert events == [
         "project:0",
-        "destroy:reconcile",
         "project:0",
+        "destroy:reconcile",
         "destroy:finish",
     ]
     assert lifecycle.calls == [(world.world_id, lease)]
@@ -294,8 +302,14 @@ async def test_cleanup_finish_requires_exact_unsettled_command_cancellation() ->
         events,
     )
 
+    cancellation_attempts = 0
+
     async def cancel_unsettled(world_id: object) -> int:
+        nonlocal cancellation_attempts
+        cancellation_attempts += 1
         events.append(f"cancel:{world_id}")
+        if cancellation_attempts == 1:
+            raise RuntimeError("control catalog unavailable")
         return 2
 
     cleanup = WorldCleanup(
@@ -306,9 +320,16 @@ async def test_cleanup_finish_requires_exact_unsettled_command_cancellation() ->
         cancel_unsettled=cancel_unsettled,
     )
 
+    with pytest.raises(RuntimeError, match="control catalog unavailable"):
+        await cleanup.finish()
+
+    assert await registry.contains(world.world_id)
+    assert lifecycle.calls == []
+
     await cleanup.finish()
 
     assert events == [
+        f"cancel:{world.world_id}",
         f"cancel:{world.world_id}",
         "destroy:reconcile",
         "destroy:finish",

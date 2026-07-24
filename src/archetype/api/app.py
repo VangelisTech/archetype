@@ -36,10 +36,8 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        try:
-            await resources.aclose()
-        finally:
-            del app.state.resources
+        await resources.aclose()
+        del app.state.resources
 
 
 def create_app() -> FastAPI:

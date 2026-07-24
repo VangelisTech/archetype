@@ -504,6 +504,7 @@ async def _handle_submit_mission(
     resources: RuntimeResources,
     worlds: WorldRegistry,
     lifecycle: WorldLifecycle,
+    scheduler: CommandScheduler,
     redaction: RedactionService,
     operation: SubmitMission,
 ) -> Any:
@@ -520,6 +521,7 @@ async def _handle_submit_mission(
                 lifecycle=lifecycle,
                 world_id=str(world_id),
                 lease=lease,
+                cancel_unsettled=scheduler.cancel_world,
             )
 
         return MissionService(
@@ -648,6 +650,7 @@ def _pull_forward_handler(
     resources: RuntimeResources,
     worlds: WorldRegistry,
     lifecycle: WorldLifecycle,
+    scheduler: CommandScheduler,
     storage: StorageService,
     redaction: RedactionService,
     artifacts: ArtifactService,
@@ -694,6 +697,7 @@ def _pull_forward_handler(
                 resources,
                 worlds,
                 lifecycle,
+                scheduler,
                 redaction,
             ),
         ),
@@ -749,6 +753,7 @@ def _register_pull_forward_operations(
     resources: RuntimeResources,
     worlds: WorldRegistry,
     lifecycle: WorldLifecycle,
+    scheduler: CommandScheduler,
     storage: StorageService,
     redaction: RedactionService,
     artifacts: ArtifactService,
@@ -770,6 +775,7 @@ def _register_pull_forward_operations(
                     resources=resources,
                     worlds=worlds,
                     lifecycle=lifecycle,
+                    scheduler=scheduler,
                     storage=storage,
                     redaction=redaction,
                     artifacts=artifacts,
@@ -916,6 +922,7 @@ def build_runtime_resources(config: RuntimeBootstrapConfig) -> RuntimeResources:
         resources=resources,
         worlds=worlds,
         lifecycle=lifecycle,
+        scheduler=scheduler,
         storage=storage,
         redaction=redaction,
         artifacts=artifacts,

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from uuid_utils import UUID
@@ -13,13 +14,19 @@ from archetype.core.component import Component
 from archetype.core.config import RunConfig
 from archetype.world.interfaces import iWorldLifecycle, iWorldRegistry
 from archetype.world.registry import WorldCleanupLease
-from archetype.world.simulation import _step_locked
+from archetype.world.simulation import _step_locked, reconcile_committed_work_locked
 
 
 class WorldCleanup:
     """A non-ambient capability bound to one registry lease and world."""
 
-    __slots__ = ("_lease", "_lifecycle", "_registry", "_world_id")
+    __slots__ = (
+        "_cancel_unsettled",
+        "_lease",
+        "_lifecycle",
+        "_registry",
+        "_world_id",
+    )
 
     def __init__(
         self,
@@ -28,6 +35,7 @@ class WorldCleanup:
         lifecycle: iWorldLifecycle,
         world_id: str | UUID,
         lease: WorldCleanupLease,
+        cancel_unsettled: Callable[[object], Awaitable[int]],
     ) -> None:
         exact_world_id = str(world_id)
         registry.validate_cleanup_lease(lease, world_id=exact_world_id)
@@ -35,6 +43,7 @@ class WorldCleanup:
         self._lifecycle = lifecycle
         self._world_id = exact_world_id
         self._lease = lease
+        self._cancel_unsettled = cancel_unsettled
 
     @property
     def world_id(self) -> str:
@@ -90,6 +99,14 @@ class WorldCleanup:
         """Destroy and finish close for only the bound world."""
 
         self._validate()
+        async with self._registry.cleanup_operation(self._lease) as world:
+            self._require_exact_world(world)
+            await reconcile_committed_work_locked(
+                self._registry,
+                self._world_id,
+                world,
+            )
+            await self._cancel_unsettled(self._world_id)
         await self._lifecycle.destroy_world(
             self._world_id,
             lease=self._lease,

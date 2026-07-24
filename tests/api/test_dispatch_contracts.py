@@ -557,7 +557,44 @@ async def test_fastapi_lifespan_owns_and_closes_runtime_resources(
         assert resources.close_calls == 0
 
     assert resources.close_calls == 1
+    assert not hasattr(app.state, "resources")
     assert not hasattr(app.state, "container")
+
+
+@pytest.mark.asyncio
+async def test_fastapi_lifespan_retains_retryable_resources_after_close_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed close keeps the exact owner reachable for a serialized retry."""
+
+    api_app = import_module("archetype.api.app")
+    wiring = import_module("archetype.wiring")
+
+    class RetryableResources(_LifespanResources):
+        async def aclose(self) -> None:
+            self.close_calls += 1
+            if self.close_calls == 1:
+                raise RuntimeError("provider cleanup unavailable")
+
+    resources = RetryableResources()
+
+    def build(*_args: object, **_kwargs: object) -> RetryableResources:
+        return resources
+
+    monkeypatch.setattr(wiring, "build_runtime_resources", build)
+    monkeypatch.setattr(api_app, "build_runtime_resources", build, raising=False)
+
+    app = api_app.create_app()
+    with pytest.raises(RuntimeError, match="provider cleanup unavailable"):
+        async with app.router.lifespan_context(app):
+            assert app.state.resources is resources
+
+    assert app.state.resources is resources
+    assert resources.close_calls == 1
+
+    await app.state.resources.aclose()
+
+    assert resources.close_calls == 2
 
 
 def _call_target(call: ast.Call) -> str | None:
