@@ -1,0 +1,58 @@
+# Codecov status posture. The rationale lives here so the decision is not
+# re-litigated in a triage thread.
+#
+# WHAT WAS WRONG
+# With no config file, Codecov applied its defaults, and the default target is
+# `auto`: the patch status compares the changed lines against the project's own
+# coverage (88.7%) with a 0% threshold. Any diff whose changed lines were less
+# covered than the whole repository failed `codecov/patch` — a red check that
+# was not required, blocked nothing, and cost a triage cycle every time
+# (PRs #646, #647, #649). That is advisory noise, which this repository trades
+# away for fail-loud oracles.
+#
+# THE ONE COVERAGE CONTRACT
+# The repository already commits to exactly one number: the 70% floor in
+# `[tool.coverage.report] fail_under` (pyproject.toml), enforced fail-loud by
+# `make test-cov` inside the required `ci (3.12)` context. Both statuses below
+# restate that same number instead of inventing a second one, so a Codecov
+# status can only go red when the repository breaks a commitment it actually
+# made — not when a refactor happens to land under the current average.
+#
+# WHY `patch` STAYS ON
+# Project coverage is 88.7% against a 70% floor, so every whole-project measure
+# (including `make test-cov` and the `project` status below) has ~18 points of
+# slack and cannot see new untested code arriving. Patch coverage is the only
+# diff-level coverage oracle in the harness; switching it off would delete the
+# signal and keep the redundant one.
+#
+# `project` is deliberately a mirror of the pytest floor rather than `auto`: it
+# fails only when the repository as a whole drops below what it promised, which
+# `make test-cov` fails on first anyway.
+#
+# KNOWN SHARP EDGE
+# Patch percentage quantizes hard on tiny diffs — one uncovered line out of
+# three is 66.7% and goes red. That is intended: the fix is a test, not a
+# looser threshold.
+#
+# NOT REQUIRED (YET)
+# Required contexts live in the repository ruleset, which is not managed in
+# this repo, so this file cannot promote `codecov/patch` to a blocking check.
+# Promoting it is the intended follow-up once the retargeted status has been
+# observed quiet across a few PRs.
+
+coverage:
+  # Match pyproject's `[tool.coverage.report] precision = 1`, and round down so
+  # 69.96% reads as 69.9% and fails the floor rather than passing it.
+  precision: 1
+  round: down
+  status:
+    project:
+      default:
+        target: 70%
+        threshold: 0%
+        informational: false
+    patch:
+      default:
+        target: 70%
+        threshold: 0%
+        informational: false

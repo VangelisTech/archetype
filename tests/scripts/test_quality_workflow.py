@@ -71,6 +71,26 @@ def test_quality_workflow_keeps_fail_loud_coverage_and_infrastructure() -> None:
     )
 
 
+def test_codecov_statuses_restate_the_repository_coverage_floor() -> None:
+    """Codecov judges diffs against the 70% floor, not the moving project average.
+
+    The default `target: auto` pinned `codecov/patch` to whole-project coverage
+    (88.7%), so ordinary refactors failed a non-required check and cost triage
+    (#646, #647, #649). Both statuses now restate `fail_under`, and this test
+    keeps the two numbers from drifting apart.
+    """
+
+    config = (ROOT / ".github" / "codecov.yml").read_text(encoding="utf-8")
+    with (ROOT / "pyproject.toml").open("rb") as stream:
+        floor = tomllib.load(stream)["tool"]["coverage"]["report"]["fail_under"]
+
+    assert re.search(r"^    project:\n      default:\n        target: ", config, re.MULTILINE)
+    assert re.search(r"^    patch:\n      default:\n        target: ", config, re.MULTILINE)
+    assert config.count(f"target: {floor}%") == 2
+    assert config.count("threshold: 0%") == 2
+    assert config.count("informational: false") == 2
+
+
 def test_r2_job_runs_each_oracle_once_and_retains_the_redacted_receipt() -> None:
     workflow = QUALITY_WORKFLOW.read_text(encoding="utf-8")
     infrastructure = _job(workflow, "infrastructure-idempotency")

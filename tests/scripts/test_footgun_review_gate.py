@@ -487,6 +487,94 @@ def test_workflow_materializes_large_diffs_from_inert_git_objects():
     assert workflow.count('cmp --silent "${RUNNER_TEMP}/git-scope.json" "${SCOPE_FILE}"') == 2
 
 
+REVIEW_WORKFLOW = (
+    Path(__file__).resolve().parents[2] / ".github" / "workflows" / "deterministic-review.yml"
+)
+
+# The reaffirm gate turns "this head already has a completed clean review" into
+# a no-op run. Every step that spends the detector, publishes a verdict, or
+# blocks the merge must therefore be skipped on a reaffirmed head. These four
+# are the deliberate exceptions.
+UNGATED_REVIEW_STEPS = frozenset(
+    {
+        # Fails closed for non-maintainers before any spend; must always run.
+        "Restrict to maintainer PRs",
+        # The decision itself.
+        "Reaffirm a completed review of this exact head",
+        # A real guard: the detector job must have succeeded either way.
+        "Require successful detector job",
+        # failure()-gated, so a reaffirmed (nothing-failed) run never reaches it.
+        "Report incomplete review",
+    }
+)
+
+REAFFIRM_GATES = (
+    "steps.reaffirm.outputs.reaffirmed != 'true'",
+    "needs.footgun-review.outputs.reaffirmed != 'true'",
+)
+
+
+def _review_workflow_steps() -> list[tuple[str, str]]:
+    """Return (name, body) for every step in the review workflow."""
+
+    chunks = re.split(r"\n      - name: ", REVIEW_WORKFLOW.read_text(encoding="utf-8"))[1:]
+    return [(chunk.split("\n", 1)[0], chunk) for chunk in chunks]
+
+
+def test_ready_for_review_never_cancels_the_running_review_of_the_same_head():
+    workflow = REVIEW_WORKFLOW.read_text(encoding="utf-8")
+
+    # A push supersedes the head and still cancels. Marking a draft ready
+    # carries no new head, so it queues behind the in-flight review instead of
+    # destroying it (#639, #646).
+    assert "cancel-in-progress: ${{ github.event.action != 'ready_for_review' }}" in workflow
+    assert "cancel-in-progress: true" not in workflow
+
+
+def test_reaffirm_accepts_only_a_completed_clean_review_of_the_exact_head():
+    workflow = REVIEW_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "if: github.event.action == 'ready_for_review'" in workflow
+    assert "checks: read" in workflow
+    assert "reaffirmed: ${{ steps.reaffirm.outputs.reaffirmed }}" in workflow
+    # Bound to this exact sha, and only a concluded success counts.
+    assert "commits/${HEAD_SHA}/check-runs?check_name=review-complete" in workflow
+    assert '[.check_runs[] | select(.conclusion == "success")] | length' in workflow
+    # An API failure falls through to the full review rather than reaffirming.
+    assert "|| passed=0" in workflow
+
+
+def test_reaffirmed_head_skips_every_spending_and_publishing_step():
+    ungated = [
+        name
+        for name, body in _review_workflow_steps()
+        if name not in UNGATED_REVIEW_STEPS and not any(gate in body for gate in REAFFIRM_GATES)
+    ]
+
+    assert ungated == []
+
+
+def test_reaffirmed_head_cannot_fire_the_empty_finding_count_steps():
+    # `finding_count` is empty when `prepare` is skipped, and '' != '0' is
+    # true, so these two would otherwise fire with no findings behind them.
+    bodies = {name: body for name, body in _review_workflow_steps()}
+
+    for name in ("Publish findings as blocking review threads", "Block merge on findings"):
+        assert "needs.footgun-review.outputs.reaffirmed != 'true' &&" in bodies[name]
+
+
+def test_a_superseded_review_never_publishes_an_incomplete_verdict():
+    workflow = REVIEW_WORKFLOW.read_text(encoding="utf-8")
+
+    # always() ran review-complete after the run was cancelled by its own
+    # concurrency group, which failed the first step and posted "Footgun
+    # review — incomplete" beside the superseding run's pass. !cancelled()
+    # still runs the job when the detector job merely failed.
+    assert "if: ${{ !cancelled() && github.event_name != 'merge_group' }}" in workflow
+    assert "if: always() && github.event_name != 'merge_group'" not in workflow
+    assert "if: needs.footgun-review.result != 'success'" in workflow
+
+
 def test_review_payload_batches_each_finding_as_an_inline_thread():
     normalized = validate_result(_result(findings=[_finding()]), _scope(), DIFF)
     digest = artifact_digest(normalized)

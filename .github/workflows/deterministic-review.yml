@@ -24,7 +24,16 @@ concurrency:
   # merge groups cancel each other's check runs, stalling the queue. On
   # merge_group, github.ref is the unique merge-group ref.
   group: deterministic-review-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # A push supersedes the previous head, so cancelling the older run is
+  # right. `ready_for_review` carries no new head: cancelling there killed a
+  # review that was already running on the exact sha being marked ready
+  # (#639, #646), and the cancelled run then published a contradictory
+  # "incomplete" verdict alongside the replacement run's pass. Queue behind
+  # the in-flight run instead — it publishes this head's verdict, and the
+  # queued run reaffirms it (see "Reaffirm a completed review") rather than
+  # reviewing the same sha twice. A later push still cancels both: its own
+  # run evaluates this expression as true.
+  cancel-in-progress: ${{ github.event.action != 'ready_for_review' }}
 
 jobs:
   footgun-review:
@@ -33,8 +42,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     permissions:
+      checks: read # Read this head's own prior review-complete conclusion.
       contents: read
       pull-requests: read # Supply PR metadata to the read-only detector.
+    outputs:
+      # Consumed by review-complete: publication is skipped on a reaffirmed
+      # head so one head never accumulates two verdict comments.
+      reaffirmed: ${{ steps.reaffirm.outputs.reaffirmed }}
     env:
       DIFF_FILE: ${{ github.workspace }}/.footgun-review.diff
       REVIEW_DIR: ${{ github.workspace }}/.footgun-review-output
@@ -48,7 +62,51 @@ jobs:
           echo "This PR fails closed: no review ran and merge stays blocked."
           exit 1
 
+      # Draft status is not an input to the verdict — the review binds to the
+      # head sha. Marking a PR ready at a sha whose review already completed
+      # clean therefore buys no new information: it re-spends a full detector
+      # cycle to rediscover the same answer and posts a second verdict comment
+      # for one head. Reaffirm that verdict instead.
+      #
+      # The only accepted evidence is a `review-complete` check run that
+      # concluded `success` on this exact sha — the same evidence
+      # automerge.yml's guard already treats as authoritative. Everything else
+      # (no prior run, a failure, an incomplete review, a cancelled run, or an
+      # API error) falls through to the full review. This can only skip work
+      # that already produced a verified clean verdict for this head; it can
+      # never manufacture one.
+      #
+      # Both jobs still run to success here rather than being skipped: the
+      # workflow run must conclude `success` for automerge.yml to arm the now
+      # non-draft PR, and `review-complete` must report an actual success
+      # check run for its guard to accept that arm. A skipped job would give
+      # neither.
+      - name: Reaffirm a completed review of this exact head
+        id: reaffirm
+        if: github.event.action == 'ready_for_review'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          # `|| passed=0` keeps an API failure from tripping -e before the
+          # decision: failure to positively confirm the prior pass falls
+          # through to a full review (fail closed).
+          passed=$(gh api \
+            "repos/${REPOSITORY}/commits/${HEAD_SHA}/check-runs?check_name=review-complete&per_page=100" \
+            --jq '[.check_runs[] | select(.conclusion == "success")] | length') || passed=0
+          if [ "${passed:-0}" -gt 0 ]; then
+            echo "reaffirmed=true" >> "${GITHUB_OUTPUT}"
+            echo "review-complete already succeeded on ${HEAD_SHA}; reaffirming that verdict."
+            echo "Reaffirmed the completed clean review of \`${HEAD_SHA}\`; no new review was run." \
+              >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "reaffirmed=false" >> "${GITHUB_OUTPUT}"
+            echo "No completed clean review-complete on ${HEAD_SHA}; running the full review."
+          fi
+
       - name: Checkout trusted base
+        if: steps.reaffirm.outputs.reaffirmed != 'true'
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           # Full trusted-base history lets git find the PR merge base after
@@ -60,6 +118,7 @@ jobs:
 
       - name: Materialize deterministic review scope
         id: scope
+        if: steps.reaffirm.outputs.reaffirmed != 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           GH_TOKEN: ${{ github.token }}
@@ -106,6 +165,7 @@ jobs:
 
       - name: Compute turn budget from scope
         id: budget
+        if: steps.reaffirm.outputs.reaffirmed != 'true'
         run: |
           python3 - <<'EOF' >> "${GITHUB_OUTPUT}"
           import json, os
@@ -121,6 +181,7 @@ jobs:
 
       - name: Run read-only footgun detector
         id: detector
+        if: steps.reaffirm.outputs.reaffirmed != 'true'
         continue-on-error: true
         uses: anthropics/claude-code-action@1298632ce7736903d02a1435002705aa2a594a6c # v1.0.175
         with:
@@ -167,6 +228,7 @@ jobs:
 
       - name: Validate first detector result
         id: first_validation
+        if: steps.reaffirm.outputs.reaffirmed != 'true'
         env:
           STRUCTURED_OUTPUT: ${{ steps.detector.outputs.structured_output }}
         run: |
@@ -182,7 +244,12 @@ jobs:
 
       - name: Retry detector with validator feedback
         id: detector_retry
-        if: steps.first_validation.outputs.valid != 'true'
+        # The reaffirm clause leads every downstream condition: a reaffirmed
+        # head skips first_validation, and its empty output would otherwise
+        # read as "not valid" and spend the retry.
+        if: >-
+          steps.reaffirm.outputs.reaffirmed != 'true' &&
+          steps.first_validation.outputs.valid != 'true'
         continue-on-error: true
         uses: anthropics/claude-code-action@1298632ce7736903d02a1435002705aa2a594a6c # v1.0.175
         with:
@@ -220,6 +287,7 @@ jobs:
 
       - name: Require retry completion
         if: >-
+          steps.reaffirm.outputs.reaffirmed != 'true' &&
           steps.first_validation.outputs.valid != 'true' &&
           steps.detector_retry.outcome != 'success'
         run: |
@@ -227,7 +295,9 @@ jobs:
           exit 1
 
       - name: Validate bounded retry
-        if: steps.first_validation.outputs.valid != 'true'
+        if: >-
+          steps.reaffirm.outputs.reaffirmed != 'true' &&
+          steps.first_validation.outputs.valid != 'true'
         env:
           STRUCTURED_OUTPUT: ${{ steps.detector_retry.outputs.structured_output }}
         run: |
@@ -239,6 +309,7 @@ jobs:
             --output "${REVIEW_DIR}/validated/normalized.json"
 
       - name: Upload validated detector result
+        if: steps.reaffirm.outputs.reaffirmed != 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           if-no-files-found: error
@@ -249,9 +320,21 @@ jobs:
   review-complete:
     name: review-complete
     needs: footgun-review
-    # always() so a footgun crash cannot skip-satisfy the gate on PRs;
-    # merge groups skip both jobs (see the trigger comment).
-    if: always() && github.event_name != 'merge_group'
+    # `!cancelled()` rather than `always()`: a footgun crash must still land
+    # here and fail the gate (a failed dependency is not "cancelled", so this
+    # job runs), but a run cancelled by its own concurrency group must not.
+    # `always()` ran this job after such a cancellation, where the dependency
+    # read as `cancelled`, the first step failed, and the run published
+    # "Footgun review — incomplete" for a head that a superseding run then
+    # passed — two live contradictory verdicts on one PR (#639, #646).
+    #
+    # This does not soften the oracle. A cancelled run concludes `cancelled`,
+    # never `success`, so automerge.yml cannot arm from it; the superseding
+    # run in the same concurrency group publishes the authoritative
+    # `review-complete` check run for whichever head merges.
+    #
+    # Merge groups skip both jobs (see the trigger comment).
+    if: ${{ !cancelled() && github.event_name != 'merge_group' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -270,7 +353,16 @@ jobs:
           echo "Footgun review did not complete successfully."
           exit 1
 
+      # Every publication step below is gated on the reaffirm decision the
+      # detector job made for this head. On a reaffirmed head there is nothing
+      # left to publish — the verdict comment for this exact sha is already on
+      # the PR — so this job runs to a real success check run without adding a
+      # second verdict. Note the polarity: `finding_count` is empty when
+      # `prepare` is skipped, and `'' != '0'` is true, so the publish-findings
+      # and block-merge steps would otherwise fire with no findings behind
+      # them.
       - name: Checkout trusted base
+        if: needs.footgun-review.outputs.reaffirmed != 'true'
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           # Rebuild the same inert diff independently before publication.
@@ -279,6 +371,7 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha }}
 
       - name: Materialize exact review scope
+        if: needs.footgun-review.outputs.reaffirmed != 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           GH_TOKEN: ${{ github.token }}
@@ -323,6 +416,7 @@ jobs:
           fi
 
       - name: Download detector result
+        if: needs.footgun-review.outputs.reaffirmed != 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: footgun-review-validated-${{ github.run_id }}
@@ -330,6 +424,7 @@ jobs:
 
       - name: Validate and render publishable evidence
         id: prepare
+        if: needs.footgun-review.outputs.reaffirmed != 'true'
         env:
           ARTIFACT_NAME: footgun-review-validated-${{ github.run_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -345,14 +440,18 @@ jobs:
             --run-url "${RUN_URL}"
 
       - name: Publish contextual no-findings evidence
-        if: steps.prepare.outputs.finding_count == '0'
+        if: >-
+          needs.footgun-review.outputs.reaffirmed != 'true' &&
+          steps.prepare.outputs.finding_count == '0'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: gh pr comment "${PR_NUMBER}" --body-file "${REVIEW_DIR}/evidence.md"
 
       - name: Publish findings as blocking review threads
-        if: steps.prepare.outputs.finding_count != '0'
+        if: >-
+          needs.footgun-review.outputs.reaffirmed != 'true' &&
+          steps.prepare.outputs.finding_count != '0'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -363,6 +462,7 @@ jobs:
             --input "${REVIEW_DIR}/review.json"
 
       - name: Fetch posted review evidence
+        if: needs.footgun-review.outputs.reaffirmed != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -379,6 +479,7 @@ jobs:
             > "${RUNNER_TEMP}/review-comments.json"
 
       - name: Verify exact review completion evidence
+        if: needs.footgun-review.outputs.reaffirmed != 'true'
         env:
           ARTIFACT_DIGEST: ${{ steps.prepare.outputs.artifact_digest }}
           FINDING_COUNT: ${{ steps.prepare.outputs.finding_count }}
@@ -394,7 +495,9 @@ jobs:
 
       - name: Block merge on findings
         id: finding_gate
-        if: steps.prepare.outputs.finding_count != '0'
+        if: >-
+          needs.footgun-review.outputs.reaffirmed != 'true' &&
+          steps.prepare.outputs.finding_count != '0'
         env:
           FINDING_COUNT: ${{ steps.prepare.outputs.finding_count }}
         run: |
