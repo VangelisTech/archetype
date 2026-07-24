@@ -682,6 +682,72 @@ class TestRollout:
             await container.shutdown()
 
     @pytest.mark.asyncio
+    async def test_parent_cancellation_retains_owned_fork_self_cancellation(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Owned acquisition cancellation is material, not waiter interruption."""
+        container = ServiceContainer()
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        acquisition_entered = asyncio.Event()
+        release_acquisition = asyncio.Event()
+        owned_cancellation = asyncio.CancelledError("owned fork cancellation")
+        owned_cancellation.add_note("pre-created fork cancellation note")
+        acquisition_tasks: set[asyncio.Task[object]] = set()
+        try:
+            world = await container.world_lifecycle.create_world(
+                WorldConfig(name="owned-fork-self-cancel"),
+                storage,
+            )
+
+            async def self_cancel_fork(*_args, **_kwargs):
+                task = asyncio.current_task()
+                assert task is not None
+                acquisition_tasks.add(task)
+                acquisition_entered.set()
+                await release_acquisition.wait()
+                raise owned_cancellation
+
+            monkeypatch.setattr(
+                container.world_lifecycle,
+                "fork_world",
+                self_cancel_fork,
+            )
+            rollout = asyncio.create_task(
+                container.application.run_rollout(
+                    world.world_id,
+                    RolloutConfig(
+                        num_episodes=1,
+                        parallel=True,
+                        episode_config=EpisodeConfig(max_steps=0),
+                        destroy_forks_on_complete=True,
+                    ),
+                )
+            )
+
+            await asyncio.wait_for(acquisition_entered.wait(), timeout=2)
+            rollout.cancel("parent cancellation during acquisition")
+            release_acquisition.set()
+            with pytest.raises(asyncio.CancelledError) as raised:
+                await rollout
+
+            assert raised.value.args == ("parent cancellation during acquisition",)
+            assert isinstance(raised.value.__cause__, BaseExceptionGroup)
+            assert raised.value.__cause__.exceptions == (owned_cancellation,)
+            assert getattr(owned_cancellation, "__notes__", ()) == [
+                "pre-created fork cancellation note"
+            ]
+            assert [item.name for item in await container.application.list_worlds()] == [
+                "owned-fork-self-cancel"
+            ]
+            assert len(acquisition_tasks) == 1
+            assert all(task.done() for task in acquisition_tasks)
+        finally:
+            release_acquisition.set()
+            await container.shutdown()
+
+    @pytest.mark.asyncio
     async def test_parallel_failure_drains_sibling_teardown_before_admission(
         self,
         tmp_path,
@@ -1712,6 +1778,115 @@ class TestRollout:
             assert len(commands) == 2
             for fork_id in commands:
                 assert not await container.world_registry.contains(fork_id)
+            assert all(task.done() for task in child_tasks.values())
+        finally:
+            release_cleanup.set()
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_teardown_replacement_inherits_episode_precedence(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Late teardown replacement keeps its child's first-failure rank."""
+        container = ServiceContainer()
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        cleanup_entered = asyncio.Event()
+        release_cleanup = asyncio.Event()
+        episode_failure = RuntimeError("first observed episode failure")
+        sibling_failure = ValueError("second observed sibling failure")
+        teardown_failure = RuntimeError("third observed teardown failure")
+        fork_names: dict[str, str] = {}
+        child_tasks: dict[int, asyncio.Task[object]] = {}
+        create_task = asyncio.create_task
+        try:
+            world = await container.world_lifecycle.create_world(
+                WorldConfig(name="teardown-replacement-precedence"),
+                storage,
+            )
+            commands = _queue_future_command_on_each_fork(container, monkeypatch)
+            fork_world = container.world_lifecycle.fork_world
+            destroy_world = container.application.destroy_world
+
+            def track_rollout_children(coro, *, name=None, context=None):
+                task = create_task(coro, name=name, context=context)
+                if isinstance(name, str) and name.startswith("archetype-rollout:"):
+                    child_tasks[int(name.rsplit(":", 1)[1])] = task
+                return task
+
+            async def record_fork(*args, **kwargs):
+                fork = await fork_world(*args, **kwargs)
+                assert fork.name is not None
+                fork_names[str(fork.world_id)] = fork.name
+                return fork
+
+            async def fail_episode_by_index(
+                _registry,
+                _storage_service,
+                fork_world_id,
+                _config,
+                **_input_kwargs,
+            ):
+                if fork_names[str(fork_world_id)].endswith(":0"):
+                    raise episode_failure
+                await cleanup_entered.wait()
+                raise sibling_failure
+
+            async def replace_first_failure_during_teardown(fork_world_id):
+                if fork_names[str(fork_world_id)].endswith(":0"):
+                    cleanup_entered.set()
+                    await release_cleanup.wait()
+                    raise teardown_failure
+                await destroy_world(fork_world_id)
+
+            monkeypatch.setattr(asyncio, "create_task", track_rollout_children)
+            monkeypatch.setattr(container.world_lifecycle, "fork_world", record_fork)
+            monkeypatch.setattr(simulation, "run_episode", fail_episode_by_index)
+            monkeypatch.setattr(
+                container.application,
+                "destroy_world",
+                replace_first_failure_during_teardown,
+            )
+            rollout = create_task(
+                container.application.run_rollout(
+                    world.world_id,
+                    RolloutConfig(
+                        num_episodes=2,
+                        parallel=True,
+                        episode_config=EpisodeConfig(max_steps=0),
+                        destroy_forks_on_complete=True,
+                    ),
+                )
+            )
+
+            await asyncio.wait_for(cleanup_entered.wait(), timeout=2)
+            while 1 not in child_tasks or not child_tasks[1].done():
+                await asyncio.sleep(0)
+            assert not child_tasks[0].done()
+
+            release_cleanup.set()
+            with pytest.raises(RuntimeError) as raised:
+                await rollout
+
+            assert raised.value is teardown_failure
+            assert raised.value.__cause__ is episode_failure
+            fork_ids = {
+                int(name.rsplit(":", 1)[1]): fork_id for fork_id, name in fork_names.items()
+            }
+            assert any(
+                "additional rollout failure: "
+                "child_index=1 phase=episode type=builtins.ValueError "
+                f"fork_world_id={fork_ids[1]}" == note
+                for note in getattr(raised.value, "__notes__", ())
+            )
+            assert await container.world_registry.contains(fork_ids[0])
+            assert not await container.world_registry.contains(fork_ids[1])
+
+            monkeypatch.setattr(container.application, "destroy_world", destroy_world)
+            await container.application.destroy_world(fork_ids[0])
+            assert len(commands) == 2
+            assert not await container.world_registry.contains(fork_ids[0])
             assert all(task.done() for task in child_tasks.values())
         finally:
             release_cleanup.set()

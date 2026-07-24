@@ -427,6 +427,7 @@ async def run_rollout(
         phase: str
         fork_world_id: str | None
         observed_order: int
+        precedence_order: int
 
     observed_failures: list[_RolloutFailure] = []
     observation_order = 0
@@ -442,13 +443,16 @@ async def run_rollout(
         child_index: int,
         phase: str,
         fork_world_id: object | None,
+        precedence_order: int | None = None,
     ) -> _RolloutFailure:
+        observed_order = _next_observation_order()
         failure = _RolloutFailure(
             error=error,
             child_index=child_index,
             phase=phase,
             fork_world_id=str(fork_world_id) if fork_world_id is not None else None,
-            observed_order=_next_observation_order(),
+            observed_order=observed_order,
+            precedence_order=(precedence_order if precedence_order is not None else observed_order),
         )
         observed_failures.append(failure)
         return failure
@@ -532,11 +536,12 @@ async def run_rollout(
         fork_world_id = fork.world_id
         episode_result: EpisodeResult | None = None
         episode_failure: BaseException | None = cancelled
+        episode_failure_observation: _RolloutFailure | None = None
         if episode_failure is not None:
-            _observe_failure(
+            episode_failure_observation = _observe_failure(
                 error=episode_failure,
                 child_index=index,
-                phase="fork",
+                phase="waiter",
                 fork_world_id=fork_world_id,
             )
         if episode_failure is None:
@@ -550,7 +555,7 @@ async def run_rollout(
                 )
             except BaseException as exc:
                 episode_failure = exc
-                _observe_failure(
+                episode_failure_observation = _observe_failure(
                     error=exc,
                     child_index=index,
                     phase="episode",
@@ -568,6 +573,11 @@ async def run_rollout(
                     child_index=index,
                     phase="teardown",
                     fork_world_id=fork_world_id,
+                    precedence_order=(
+                        episode_failure_observation.precedence_order
+                        if episode_failure_observation is not None
+                        else None
+                    ),
                 )
                 if episode_failure is not None:
                     raise exc from episode_failure
@@ -654,7 +664,7 @@ async def run_rollout(
                 failure
                 for failure in failures
                 if not isinstance(failure.error, asyncio.CancelledError)
-                or failure.phase == "teardown"
+                or failure.phase in {"fork", "teardown"}
                 or failure.observed_order < cancellation_order
             ]
             cancellation_driven_teardown = [
@@ -688,7 +698,10 @@ async def run_rollout(
         if failures:
             primary, *additional = sorted(
                 failures,
-                key=lambda failure: failure.observed_order,
+                key=lambda failure: (
+                    failure.precedence_order,
+                    failure.observed_order,
+                ),
             )
             if additional:
                 _note_additional(primary.error, additional)
