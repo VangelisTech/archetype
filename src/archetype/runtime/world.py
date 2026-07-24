@@ -102,7 +102,7 @@ if TYPE_CHECKING:
         GraderOutput,
         TrajectoryGrader,
     )
-    from archetype.research.contracts import (
+    from archetype.research.models import (
         AutoResearchConfig,
         AutoResearchResult,
         CandidatePreparer,

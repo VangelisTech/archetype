@@ -15,7 +15,7 @@ composition transaction. It constructs:
 2. the world registry, operation registry, scheduler, lifecycle, and audit;
 3. the policy and command dispatcher;
 4. one `RuntimeResources` process owner;
-5. remaining application-family workflow services and family-owned handlers; and
+5. remaining application-family workflow services and family-owned free handlers; and
 6. all 47 exact operation registrations before returning the owner.
 
 Nothing escapes while the registry is incomplete. Runtime consumes the
@@ -35,12 +35,15 @@ workflow behavior.
 | evaluation handlers | storage; pinned reads additionally use `archetype.world.query` |
 | `TrajectoryService` | storage and the pure evaluation grader runner |
 | `PhysicalAIService` | `WorldRegistry`, `WorldLifecycle`, and storage |
-| `AutoResearchService` | `WorldRegistry`, `WorldLifecycle`, storage, and exact owned-world cleanup |
+| research handler plus process-shared admissions | `WorldRegistry`, `WorldLifecycle`, storage, and exact owned-world cleanup |
 | `MissionService` | a runtime-world factory, sandbox service, narrow redaction capability, generic owner reservation, and exact cleanup factory |
 
 The operation registry contains the 32 world operations, commands-owned audit
-history, and 14 direct family operations exactly once. Registered handlers
-close over concrete dependencies but never re-enter dispatcher admission.
+history, and 14 direct family operations exactly once. The sole research
+operation closes over one process-shared `AutoResearchAdmissions`; its handler
+is awaited inside the dispatcher's existing admission and never re-enters the
+dispatcher. Registered handlers close over concrete dependencies but never
+create a second process owner.
 
 ## Core world composition
 

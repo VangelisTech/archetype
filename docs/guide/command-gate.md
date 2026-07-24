@@ -72,6 +72,12 @@ composition, and read models plus registered workflow-family models.
 availability is explicit per registration; trusted-only workflow operations
 cannot enter through untrusted transport.
 
+`AutoResearch` is registered exactly once as `autoresearch`: trusted and
+actor-aware immediate entry are enabled, actor-aware authorization requires
+`operator`, quota scope is `live_world`, and token cost is
+`200 * max(max_iterations, 1)`. Its live callbacks make it non-durable, so both
+deferred entry modes reject before scheduler or catalog effects.
+
 ## 3. Four roles and permissions
 
 Roles are stable flat grants. When an actor carries multiple roles, a

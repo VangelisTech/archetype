@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Runtime exposure of autoresearch and evals.
+"""Research-family runtime exposure of autoresearch and evals.
 
 The trusted beginner path uses exact runtime dispatch. Authorization remains
 covered separately at the actor-aware dispatcher boundary.

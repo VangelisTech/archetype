@@ -30,6 +30,7 @@ See [API stability and docstrings](../guide/api-stability.md) for the full polic
 
 ## Compatibility aliases
 
+- `CandidateContext` is an alias for `ResearchCandidateContext`.
 - `Processor` is an alias for `SyncProcessor`.
 - `World` is an alias for `SyncWorld`.
 - `System` is an alias for `SyncSystem`.

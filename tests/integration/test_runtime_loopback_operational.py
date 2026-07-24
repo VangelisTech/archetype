@@ -24,7 +24,6 @@ from uuid_utils import uuid7
 from archetype import ArchetypeRuntime
 from archetype.api.app import create_app
 from archetype.api.deps import get_dispatcher
-from archetype.app.research.contracts import AutoResearchConfig
 from archetype.artifacts.models import ArtifactSource, IngestArtifacts, QueryArtifacts
 from archetype.commands.models import AccessSummary, ActorCtx, DeferredItem, DurableOptions
 from archetype.core.config import StorageConfig
@@ -49,7 +48,7 @@ from archetype.missions.sandboxes import CheckpointRef
 from archetype.missions.trajectories import ClaudeTranscriptSource, TrajectorySelection
 from archetype.physical_ai.contracts import InstructionSweepConfig, PhysicalTaskEvalConfig
 from archetype.physical_ai.models import EvaluatePhysicalTask, SweepPhysicalInstructions
-from archetype.research.models import AutoResearch
+from archetype.research.models import AutoResearch, AutoResearchConfig
 from archetype.runtime_resources import RuntimeCloseState, RuntimeResources
 from scripts.run_runtime_loopback import (
     RECEIPT_FILENAME,

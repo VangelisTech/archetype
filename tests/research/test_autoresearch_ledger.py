@@ -93,32 +93,21 @@ def _world_registry(dispatcher):
     return dispatcher._registry.resolve_name("step").handler.args[0]
 
 
-def _research_service(dispatcher):
-    return dispatcher._registry.resolve_name("autoresearch").handler.args[0]
+def _registered_research_handler(dispatcher):
+    handler = dispatcher._registry.resolve_name("autoresearch").handler
+    assert isinstance(handler, partial)
+    assert handler.func is handle_autoresearch
+    assert len(handler.args) == 5
+    return handler
 
 
-def _family_research_handler(dispatcher, *, isolated_admission: bool = False):
-    if not isolated_admission:
-        cached = getattr(dispatcher, "_test_research_family_handler", None)
-        if cached is not None:
-            return cached
-
-    registry = dispatcher._registry
-    worlds = registry.resolve_name("step").handler.args[0]
-    lifecycle = registry.resolve_name("create_world").handler.args[0].__self__
-    storage = registry.resolve_name("query_archetype").handler.args[1]
-    destroy_world = registry.resolve_name("destroy_world").handler.args[0]
-    handler = partial(
+def _isolated_research_handler(dispatcher):
+    registered = _registered_research_handler(dispatcher)
+    return partial(
         handle_autoresearch,
         AutoResearchAdmissions(),
-        worlds,
-        lifecycle,
-        storage,
-        destroy_world,
+        *registered.args[1:],
     )
-    if not isolated_admission:
-        dispatcher._test_research_family_handler = handler
-    return handler
 
 
 async def _base_world(dispatcher, tmp_path):
@@ -160,19 +149,17 @@ async def _run_research(
     on_iteration=None,
     isolated_admission=False,
 ):
-    return await _family_research_handler(
-        dispatcher,
-        isolated_admission=isolated_admission,
-    )(
-        AutoResearch(
-            world_id=world_id,
-            config=config,
-            evaluator=evaluator,
-            prepare_candidate=prepare_candidate,
-            lab_world_id=lab_world_id,
-            on_iteration=on_iteration,
-        )
+    operation = AutoResearch(
+        world_id=world_id,
+        config=config,
+        evaluator=evaluator,
+        prepare_candidate=prepare_candidate,
+        lab_world_id=lab_world_id,
+        on_iteration=on_iteration,
     )
+    if isolated_admission:
+        return await _isolated_research_handler(dispatcher)(operation)
+    return await dispatcher.apply(operation)
 
 
 @pytest.mark.asyncio
@@ -187,8 +174,7 @@ async def test_autoresearch_auto_destroy_uses_application_teardown(
     commands: dict[str, str] = {}
     try:
         base = await _base_world(dispatcher, tmp_path)
-        research_service = _research_service(dispatcher)
-        lifecycle = research_service._world_lifecycle
+        lifecycle = _registered_research_handler(dispatcher).args[2]
         original_fork = lifecycle.fork_world
 
         async def fork_and_queue(*args, **kwargs):

@@ -48,7 +48,7 @@ machine authority; this page is its review surface.
 | `core.processors.execution` | `core` | high | [docs/guide/specification.md](../guide/specification.md) — System and Processor Contracts | pytest: 3; eval: 1 | `pr`, `main`, `release` |
 | `core.hooks.lifecycle` | `core` | medium | [docs/guide/specification.md](../guide/specification.md) — Lifecycle Hook Contracts | pytest: 3 | `pr`, `main`, `release` |
 | `missions.trajectory.runtime_service` | `missions` | medium | [docs/guide/trajectories.md](../guide/trajectories.md) — Select one trajectory table | pytest: 3 | `pr`, `main`, `release` |
-| `research.autoresearch.ledger` | `research` | high | [docs/guide/autoresearch.md](../guide/autoresearch.md) — The Loop | pytest: 3 | `pr`, `main`, `release` |
+| `research.autoresearch.ledger` | `research` | high | [docs/guide/autoresearch.md](../guide/autoresearch.md) — The Loop | pytest: 9 | `pr`, `main`, `release` |
 | `graph.relations.temporal` | `graph` | medium | [docs/guide/prefab-libraries.md](../guide/prefab-libraries.md) — Current relation and temporal-view contract | pytest: 4 | `pr`, `main`, `release` |
 | `graph.prefabs.copy_on_instantiate` | `graph` | medium | [docs/guide/prefab-libraries.md](../guide/prefab-libraries.md) — Instantiation is a ledger operation | pytest: 3 | `pr`, `main`, `release` |
 | `missions.sandbox.checkpoint_restore` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — Supported sandbox backends | pytest: 3 | `pr`, `main`, `release` |

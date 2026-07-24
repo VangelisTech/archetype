@@ -69,6 +69,7 @@ _DELETED_MODULES = (
     "archetype.app.application",
     "archetype.app.container",
     "archetype.app.gateway",
+    ".".join(("archetype", "app", "research")),
     ".".join(("archetype", "app", "artifacts")),
     ".".join(("archetype", "app", "ingestion")),
     ".".join(("archetype", "ingestion")),
@@ -508,6 +509,7 @@ async def test_wiring_is_explicit_topological_and_has_no_setter_injection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from archetype.commands.scheduler import CommandScheduler
+    from archetype.research import handlers as research_handlers
 
     assert _setter_calls("owner.set_outbox_source(source)\nset_container(owner)") == {
         "set_container",
@@ -528,8 +530,20 @@ async def test_wiring_is_explicit_topological_and_has_no_setter_injection(
     async def acknowledge_outbox(self: object, events: list[object]) -> None:
         outbox_events.append(("ack", (self, events)))
 
+    constructed_admissions: list[research_handlers.AutoResearchAdmissions] = []
+    original_admissions_init = research_handlers.AutoResearchAdmissions.__init__
+
+    def initialize_admissions(self: research_handlers.AutoResearchAdmissions) -> None:
+        original_admissions_init(self)
+        constructed_admissions.append(self)
+
     monkeypatch.setattr(CommandScheduler, "read_outbox", read_outbox)
     monkeypatch.setattr(CommandScheduler, "acknowledge_outbox", acknowledge_outbox)
+    monkeypatch.setattr(
+        research_handlers.AutoResearchAdmissions,
+        "__init__",
+        initialize_admissions,
+    )
     wiring = _wiring()
     source_path = Path(inspect.getsourcefile(wiring) or "")
     source = source_path.read_text()
@@ -550,6 +564,22 @@ async def test_wiring_is_explicit_topological_and_has_no_setter_injection(
         ]
         assert resources._storage is audit._storage_service
         assert len(registry.specs) == 47
+        assert [
+            spec.name
+            for spec in registry.specs
+            if spec.model.__module__ == "archetype.research.models"
+        ] == ["autoresearch"]
+        research = registry.resolve_name("autoresearch").handler
+        assert isinstance(research, partial)
+        assert research.func is research_handlers.handle_autoresearch
+        assert len(research.args) == 5
+        admissions, worlds, lifecycle, storage, destroy_world = research.args
+        assert constructed_admissions == [admissions]
+        assert worlds is registry.resolve_name("step").handler.args[0]
+        assert lifecycle is registry.resolve_name("create_world").handler.args[0].__self__
+        assert storage is resources._storage
+        assert storage is registry.resolve_name("query_archetype").handler.args[1]
+        assert destroy_world is registry.resolve_name("destroy_world").handler.args[0]
 
 
 @pytest.mark.asyncio
@@ -560,10 +590,10 @@ async def test_bootstrap_environment_is_resolved_once_before_family_construction
     from archetype.app.missions.trajectory_service import TrajectoryService
     from archetype.app.missions.transcript_service import TranscriptIngestionService
     from archetype.app.physical_ai.service import PhysicalAIService
-    from archetype.app.research.service import AutoResearchService
     from archetype.commands.audit import AuditLog
     from archetype.commands.policy import Policy
     from archetype.commands.scheduler import CommandScheduler
+    from archetype.research.handlers import AutoResearchAdmissions
     from archetype.storage.service import StorageService
     from archetype.world.lifecycle import WorldLifecycle
     from archetype.world.registry import WorldRegistry
@@ -583,7 +613,7 @@ async def test_bootstrap_environment_is_resolved_once_before_family_construction
         TranscriptIngestionService,
         TrajectoryService,
         PhysicalAIService,
-        AutoResearchService,
+        AutoResearchAdmissions,
     )
     constructor_modules = {
         inspect.getmodule(constructor_type) for constructor_type in constructor_types
@@ -758,10 +788,10 @@ async def test_pull_forward_handlers_translate_exact_values_without_recursive_di
     from archetype.app.missions.trajectory_service import TrajectoryService
     from archetype.app.missions.transcript_service import TranscriptIngestionService
     from archetype.app.physical_ai.service import PhysicalAIService
-    from archetype.app.research.service import AutoResearchService
     from archetype.artifacts import handlers as artifact_handlers
     from archetype.evaluation import handlers as evaluation_handlers
     from archetype.missions.sandboxes.service import SandboxService
+    from archetype.research import handlers as research_handlers
     from archetype.world import query as world_query
 
     calls: dict[str, list[tuple[tuple[object, ...], dict[str, object]]]] = {}
@@ -782,7 +812,6 @@ async def test_pull_forward_handlers_translate_exact_values_without_recursive_di
         return handler
 
     method_bindings = (
-        (AutoResearchService, "run", "autoresearch"),
         (PhysicalAIService, "evaluate_task", "evaluate_physical_task"),
         (PhysicalAIService, "sweep_instructions", "sweep_physical_instructions"),
         (TranscriptIngestionService, "ingest", "ingest_claude_transcript"),
@@ -814,6 +843,11 @@ async def test_pull_forward_handlers_translate_exact_values_without_recursive_di
         evaluation_handlers,
         "evaluate",
         record_free("evaluate"),
+    )
+    monkeypatch.setattr(
+        research_handlers,
+        "handle_autoresearch",
+        record_free("autoresearch"),
     )
 
     mission_init: list[dict[str, object]] = []
@@ -1035,14 +1069,13 @@ async def test_pull_forward_handlers_translate_exact_values_without_recursive_di
             ]
             assert calls["run_graders"] == [((operations["run_graders"],), {})]
             assert calls["evaluate"] == [((resources._storage, operations["evaluate"]), {})]
+            registered_research = specs["autoresearch"].handler
+            assert isinstance(registered_research, partial)
+            assert registered_research.func is research_handlers.handle_autoresearch
             assert calls["autoresearch"] == [
                 (
-                    (world_id, research_config, evaluator),
-                    {
-                        "prepare_candidate": prepare_candidate,
-                        "lab_world_id": "lab-world",
-                        "on_iteration": on_iteration,
-                    },
+                    (*registered_research.args, operations["autoresearch"]),
+                    {},
                 )
             ]
             assert calls["evaluate_physical_task"] == [

@@ -54,7 +54,7 @@
     "sha256": "ad0c3ba901354967814d5b698e8875450477dfb2e324db8bcb840293b23bec55"
   },
   "semantic_oracles": [
-    "tests/app/test_autoresearch_ledger.py",
+    "tests/research/test_autoresearch_ledger.py",
     "tests/research/test_autoresearch_admission.py",
     "tests/research/test_autoresearch_family.py"
   ],

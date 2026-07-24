@@ -10,8 +10,6 @@ multi-runtime isolation, sync/async surface parity, and viewer guardrails.
 from __future__ import annotations
 
 import asyncio
-from functools import partial
-
 import pytest
 from daft import DataFrame, col
 
@@ -20,8 +18,7 @@ from archetype.core.config import StorageConfig
 from archetype.errors import RuntimeShutdownError
 from archetype.evaluation import handlers as evaluation_handlers
 from archetype.evaluation.models import RunGraders
-from archetype.research.contracts import AutoResearchConfig
-from archetype.research.models import AutoResearch
+from archetype.research.models import AutoResearchConfig
 from archetype.runtime import SyncRuntimeWorld
 from archetype.runtime.world import RuntimeWorld
 
@@ -124,7 +121,7 @@ class TestShutdownErrorAggregation:
             await world.info()
 
     @pytest.mark.asyncio
-    async def test_shutdown_waits_for_admitted_autoresearch(self, tmp_path, monkeypatch):
+    async def test_shutdown_waits_for_admitted_autoresearch(self, tmp_path):
         runtime = ArchetypeRuntime()
         world = runtime.world(
             "autoresearch-drain",
@@ -134,16 +131,10 @@ class TestShutdownErrorAggregation:
         entered = asyncio.Event()
         release = asyncio.Event()
 
-        async def blocked_autoresearch(*args, **kwargs):
+        async def prepare_candidate(_context: object) -> None:
             entered.set()
             await release.wait()
-            return "finished"
 
-        autoresearch = runtime._resources.dispatcher._registry.resolve_name("autoresearch")
-        assert autoresearch.model is AutoResearch
-        assert isinstance(autoresearch.handler, partial)
-        assert autoresearch.handler.args
-        monkeypatch.setattr(autoresearch.handler.args[0], "run", blocked_autoresearch)
         operation = asyncio.create_task(
             world.autoresearch(
                 AutoResearchConfig(
@@ -156,6 +147,7 @@ class TestShutdownErrorAggregation:
                     record_to_ledger=False,
                 ),
                 lambda _rollout: 0.0,
+                prepare_candidate=prepare_candidate,
             )
         )
         await asyncio.wait_for(entered.wait(), timeout=5)
@@ -164,7 +156,8 @@ class TestShutdownErrorAggregation:
 
         assert not shutdown.done()
         release.set()
-        assert await operation == "finished"
+        result = await operation
+        assert result.iterations_completed == 1
         await shutdown
 
     @pytest.mark.asyncio

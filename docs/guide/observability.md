@@ -200,7 +200,8 @@ signal boundary.
 | Storage | No direct signal yet | Store/catalog state and returned frame |
 | Redaction | No direct signal; safe rule IDs may be carried by approved callers | Redaction receipt or quarantine exception |
 | Artifacts | Child spans for publish, upload, and index | Publication row, object/index state, and publish receipt |
-| Evaluation and research | No direct signal yet | Snapshot-pinned evaluation/research receipts |
+| Evaluation | No direct signal yet | Snapshot-pinned evaluation receipts |
+| Research | No direct signal yet | Persisted experiment, run, result, and branch-head rows plus the typed workflow result |
 | Audit | Logging only; no direct signal yet | Durable control-catalog outbox event; access evidence is advisory and Iceberg rows and their watermark are analytical projection state |
 | Missions and sandboxes | No direct signal yet | Typed transition rows, attempt state, checkpoints, and artifacts |
 | Physical-AI workflow, providers, and pure search | No direct signal yet | Persisted evaluation rows and report for the workflow; provider state and returned values at provider boundaries; returned proposals for pure search |

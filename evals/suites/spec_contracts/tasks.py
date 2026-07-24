@@ -145,11 +145,7 @@ SPEC_CASES: tuple[SpecCase, ...] = (
 
 _EXPECTED_TASK_IDS = frozenset(case.task_id for case in SPEC_CASES)
 
-_RUNTIME_TYPE_ONLY_APP_IMPORTS = frozenset(
-    {
-        "archetype.app.research.contracts",
-    }
-)
+_RUNTIME_TYPE_ONLY_APP_IMPORTS: frozenset[str] = frozenset()
 _RUNTIME_ALLOWED_APP_IMPORTS = _RUNTIME_TYPE_ONLY_APP_IMPORTS
 
 _EXPECTED_ROLE_MATRIX: dict[str, frozenset[str]] = {

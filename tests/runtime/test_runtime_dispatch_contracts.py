@@ -485,7 +485,7 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
 
     from daft import from_pydict
 
-    from archetype.app.research.contracts import AutoResearchConfig
+    from archetype.research.models import AutoResearchConfig
     from archetype.artifacts.models import ArtifactSource
     from archetype.evaluation.contracts import GraderContract
     from archetype.missions.contracts import (

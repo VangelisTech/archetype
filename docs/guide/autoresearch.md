@@ -4,7 +4,10 @@
 
 AutoResearch is a pattern for autonomous software optimization: track a single branch head, evaluate candidate commits against it, and advance the head only when a run improves a user-defined metric. The shape — experiment, run, result, keep / discard / crash — follows Andrej Karpathy's framing of autonomous software optimization as a research direction.
 
-**Status: attempts run on the ledger.** `AutoResearchService` records a `RUNNING` row before candidate preparation or rollout, then records `STOPPED` with an evaluation or `CRASHED` with failure metadata. The loop is itself an archetype simulation.
+**Status: attempts run on the ledger.** The research-family handler records a
+`RUNNING` row before candidate preparation or rollout, then records `STOPPED`
+with an evaluation or `CRASHED` with failure metadata. The loop is itself an
+archetype simulation.
 
 ## Runtime quick path
 
@@ -25,21 +28,26 @@ async with ArchetypeRuntime() as runtime:
 ```
 
 `examples/10_autoresearch.py` is the full runnable version. The runtime path is
-the supported interface; `AutoResearchService` is an internal implementation
-seam used by focused repository tests. Process wiring registers
-`archetype.research.models.AutoResearch`, and the runtime enters it through
-trusted `CommandDispatcher.apply`. There is no REST route for AutoResearch;
-the registration's actor-aware availability is explicit and does not create a
-second transport contract.
+the supported interface. Process wiring registers the frozen
+`archetype.research.models.AutoResearch` model once under the exact name
+`autoresearch`. Trusted `CommandDispatcher.apply` and actor-aware immediate
+`apply_as` reach the same family-owned free handler. The actor-aware
+registration requires `operator`, uses `live_world` quota scope, and charges
+`200 * max(max_iterations, 1)` tokens. There is no dedicated REST route, and
+the live evaluator, preparer, and iteration callback make the operation
+immediate-only: `defer` and `defer_as` reject it before any scheduler or
+control-catalog write.
 
 ## What's Implemented
 
 `archetype.research` models lifecycle state as ordinary Components, so runs
 become entities in an archetype world—forkable, time-travelable, and queryable
 with the same tools as any other simulation state. It owns the reusable ledger
-schema and the pure runner-registry decoder. The workflow and its
-world/simulation coordination remain under `archetype.app.research`; research
-state does not move into missions.
+schema, configuration and result values, storage-backed views, pure
+runner-registry decoder, experiment admission, and directly awaited free
+workflow handler. Its reviewed family edges are `research → storage, world`;
+there is no application research facade, service protocol, or missions-owned
+research state.
 
 | Component | Role |
 |---|---|
@@ -71,8 +79,9 @@ After ingestion, runs are queryable as entities in the world — filter by `expe
 
 ## The Loop
 
-`AutoResearchService.run(world_id, config, evaluator)` is the controller. A
-caller supplies a stable `experiment_id`; the human-readable
+The registered handler delegates to
+`archetype.research.handlers.run_autoresearch(...)`. A caller supplies a stable
+`experiment_id`; the human-readable
 `experiment_name` is not used as an identity key. The caller also supplies
 stable evaluator and rollout contract IDs; callable names are recorded only as
 diagnostics, not treated as semantic identities. Each iteration optionally
@@ -148,24 +157,61 @@ async with ArchetypeRuntime() as runtime:
     )
 ```
 
-`prepare_candidate` receives a `CandidateContext` with deterministic
+`prepare_candidate` receives a `ResearchCandidateContext` with deterministic
 experiment, iteration, and run identities. Returning `None` evaluates the
 original base world. Candidate worlds remain caller-owned.
+`CandidateContext` is a one-release import alias for that exact class; new
+code and documentation use the qualified name. The transient callback value
+is distinct from the persisted `archetype.missions.Candidate` review subject:
+it has no candidate/head/diff/validator/critic receipt identity and does not
+share the mission component schema or relations.
 
 Because the lab world is an ordinary world, the experiment itself is forkable:
 fork the lab at any tick and replay "what if a different run had advanced the
-head." Contract tests: `tests/app/test_autoresearch_ledger.py`.
+head." Contract tests:
+`tests/research/test_autoresearch_ledger.py`,
+`tests/research/test_autoresearch_admission.py`, and
+`tests/research/test_runtime_autoresearch.py`.
+
+### Admission, locks, and process lifetime
+
+Wiring constructs one process-shared `AutoResearchAdmissions` and closes the
+registered handler over it. With `record_to_ledger=True`, the handler holds the
+family key `autoresearch:{experiment_id}` across identity validation and all
+iterations. Calls for the same experiment therefore serialize in one process;
+unrelated experiment IDs remain independent. With
+`record_to_ledger=False`, no shared experiment ledger exists, so the workflow
+bypasses that keyed admission and includes an invocation-unique token in every
+rollout name. Concurrent ledgerless calls cannot collide merely because they
+reuse an experiment ID.
+
+The experiment key is not a substitute for world synchronization. Every
+base, lab, candidate, and rollout state boundary uses the named lock owned by
+`WorldRegistry`; the workflow does not carry a handler-wide world lock across
+callbacks or smuggle dynamically created fork locks through `ContextVar`
+reentrancy. The current loop holds at most one existing world lock itself. Any
+future boundary that truly needs two existing worlds must use the registry's
+sorted world-ID acquisition.
+
+One `AutoResearch` dispatch is one admission and access-decision unit. The
+outer dispatcher synchronously awaits the family handler; inner fork, rollout,
+evaluation, and ledger operations call their owning families directly and do
+not recursively dispatch. The research family creates no detached task, extra
+owner reservation, or finalizer. Consequently, `RuntimeResources` shutdown
+first rejects new process admission and then joins an already admitted
+AutoResearch call before closing the registry, storage, or other shared
+dependencies.
 
 ### Boundary
 
-This service does not generate candidates, mutate Git, merge or promote a
-winner, coordinate messages, or provide exactly-once/concurrent attempt
-claims. `lab_world_id` reattaches a world already registered with the current
-`WorldRegistry`; it does not cold-open a world that is absent from the current
-process.
-Those are outer orchestration concerns. A float comparison and a
-`BranchHead` update mean only that this caller's configured evaluator selected
-a better recorded result.
+The family workflow does not generate candidates, mutate Git, merge or promote
+a winner, or coordinate messages. Its keyed admission is process-local
+serialization, not distributed exactly-once execution or recovery of an
+in-flight attempt after process loss. `lab_world_id` reattaches a world already
+registered with the current `WorldRegistry`; it does not cold-open a world that
+is absent from the current process. Those are outer orchestration concerns. A
+float comparison and a `BranchHead` update mean only that this caller's
+configured evaluator selected a better recorded result.
 
 ## Why ECS-Native
 
@@ -206,7 +252,7 @@ preserves the historical boundary and retained Archetype interfaces. The large b
 ## References
 
 - Andrej Karpathy's framing of autonomous software optimization and branch-frontier agent workflows
-- `src/archetype/research/` — research ledger Components and runner decoder
+- `src/archetype/research/` — research values, ledger Components, views, decoder, and free workflow handler
 - `archetype-runner` — the agent-in-VM runner whose registry feeds this schema
 - `src/archetype/app/physical_ai/` — internal batched evaluation orchestration
 - `src/archetype/physical_ai/` — supported values, state, processors, and provider contracts

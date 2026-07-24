@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Reusable research values, ledger state, and runner-state decoding."""
+"""Research values, ledger state, resumable workflow, and runner decoding."""
 
 from __future__ import annotations
 

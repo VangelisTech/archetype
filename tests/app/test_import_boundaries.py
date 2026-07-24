@@ -147,8 +147,8 @@ class TestRuntimeAppBoundary:
     ("source_text", "expected"),
     [
         (
-            "import archetype.app.research.service\n",
-            [("archetype.app.research.service", False)],
+            "from archetype.research.models import AutoResearchConfig\n",
+            [],
         ),
         (
             "from archetype.app.missions.service import MissionService\n",
@@ -200,7 +200,6 @@ class TestApiAppBoundary:
     [
         ("archetype.app.errors", False),
         ("archetype.app.missions.service", False),
-        ("archetype.app.research.service", False),
     ],
 )
 def test_api_app_import_oracle_contract(module: str, expected: bool) -> None:

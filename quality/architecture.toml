@@ -4,7 +4,6 @@ source_root = "src"
 [concrete_services]
 types = [
   "AuditLog",
-  "AutoResearchService",
   "CommandScheduler",
   "MissionService",
   "PhysicalAIService",
@@ -84,13 +83,6 @@ allowed_app = [
 ]
 
 [[family_rule]]
-name = "research-family"
-consumer = "archetype.app.research"
-allowed_app = [
-  "archetype.app.research",
-]
-
-[[family_rule]]
 name = "physical-ai-family"
 consumer = "archetype.app.physical_ai"
 allowed_app = [
@@ -124,17 +116,6 @@ allowed_interfaces = [
   "archetype.world.interfaces.iWorldRegistry",
 ]
 allowed_app = []
-
-[[module_rule]]
-module = "archetype.app.research.service"
-allowed_interfaces = [
-  "archetype.storage.interfaces.iStorageService",
-  "archetype.world.interfaces.iWorldLifecycle",
-  "archetype.world.interfaces.iWorldRegistry",
-]
-allowed_app = [
-  "archetype.app.research.contracts",
-]
 
 # Exact migration edges. These preserve current behavior while the sequenced
 # family relocations move each definition once, without compatibility copies.

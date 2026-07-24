@@ -27,9 +27,9 @@ from archetype import (
     EpisodeConfig,
     RolloutResult,
 )
-from archetype.app.research.service import AutoResearchConfig
 from archetype.core.config import RunConfig
 from archetype.core.hooks import PostTick
+from archetype.research.models import AutoResearchConfig
 
 # ── Components ────────────────────────────────────────────────────────────
 

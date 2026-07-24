@@ -13,7 +13,6 @@ import sys
 from dataclasses import fields
 from pathlib import Path
 
-from archetype.app.research import contracts as application_contracts
 from archetype.missions import Candidate
 from archetype.research import contracts, models
 from archetype.research.handlers import _config_identity
@@ -67,7 +66,6 @@ def test_models_are_canonical_and_compatibility_exports_are_object_identical() -
     for name in names:
         canonical = getattr(models, name)
         assert getattr(contracts, name) is canonical
-        assert getattr(application_contracts, name) is canonical
 
 
 def test_callback_contracts_are_structural_protocols() -> None:

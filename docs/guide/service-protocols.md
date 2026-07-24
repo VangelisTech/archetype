@@ -60,8 +60,8 @@ CommandDispatcher  -> OperationRegistry + Policy + CommandScheduler
                    -> AuditLog.record_access
 CommandScheduler   -> storage control catalog
                    -> world.handlers lock-held materialization
-iResearchService   -> iWorldRegistry + iWorldLifecycle + iStorageService
-                   -> application-owned world-teardown callback
+research.handlers  -> iWorldRegistry + iWorldLifecycle + iStorageService
+                   -> world simulation + exact owned-world cleanup
 iPhysicalAIService
   -> iWorldRegistry + iWorldLifecycle + iStorageService
   -> archetype.world.query
@@ -90,7 +90,6 @@ through those handlers and its exact pre-reserved owner.
 | `iWorldCleanup` | `WorldCleanup` | reservation-owned mission cleanup | Exact-world, close-lease-bound retained updates, teardown staging, commit, and finish |
 | `iTranscriptIngestionService` | `TranscriptIngestionService` | registered transcript handlers | Snapshot and redact a coding-agent transcript, ingest the sanitized file, and append normalized mission rows |
 | Structural `MissionRedactor` / `TranscriptRedactor` | canonical `archetype.redaction.RedactionService` | mission execution and transcript ingestion | Provider-neutral pre-durability scanning, deterministic redaction, safe receipts, and quarantine |
-| `iResearchService` | `AutoResearchService` | registered research handler | Multi-run autoresearch workflow and research ledger; rollout forks use the injected teardown path |
 | `iMissionService` | `MissionService` | registered mission handlers | Materialize task graphs, own the batteries-included world bundle, drain committed author and critic intents into external work, stage factual observations, and project terminal results |
 | `iTrajectoryService` | `TrajectoryService` | registered trajectory query/grade handlers | Compose durable episode selection with evaluation graders without creating a second trajectory authority |
 | `iPhysicalAIService` | `PhysicalAIService` | registered physical-AI handlers | Create batched evaluation worlds, install physical processors, run episodes, and derive typed reports from persisted state |
@@ -108,6 +107,11 @@ through those handlers and its exact pre-reserved owner.
 | `Policy` | `CommandDispatcher` | Pure role preauthorization plus instance-owned world/tick and daily-token quotas |
 | `CommandScheduler` | `CommandDispatcher`, world materializer, wiring-provided destroy callback | Canonical durable admission, reservation, leasing, retry, settlement staging, cancellation, and outbox access |
 | `AuditLog` | `CommandDispatcher`, registered `GetAuditHistory`, `RuntimeResources` shutdown | Bounded access rows and transactional command-outbox projection into analytical storage |
+
+The research family deliberately has no application service port.
+`archetype.research.handlers.handle_autoresearch` is a free handler closed over
+the world/storage ports, exact cleanup callback, and one process-shared
+`AutoResearchAdmissions` instance by `archetype.wiring`.
 
 ## 4. Boundary rules
 
@@ -179,6 +183,16 @@ Raw narrative never crosses a durability boundary.
 Each ingestion is a new artifact occurrence; normalized row identity is scoped
 to that source artifact. Commands-owned `AuditLog` is an analytical
 projection/read component, not the authority for command outcome.
+
+AutoResearch follows the same free-handler direction without becoming a
+durable workflow. The exact `AutoResearch` model carries live callbacks, so
+trusted `apply` and operator-authorized `apply_as` are available while both
+deferred modes reject before catalog effects. A ledgered call enters the
+process-shared `autoresearch:{experiment_id}` admission; a ledgerless call
+bypasses it and receives invocation-unique rollout names. The dispatcher
+awaits the outer handler synchronously inside its existing process admission,
+and inner world/storage work calls owning families directly. Research creates
+no service facade, recursive dispatch, detached task, or second lifetime owner.
 
 ### Agent Missions V1
 
@@ -297,9 +311,11 @@ workflow pull-forward under issue #650: `EvalReceipt` lives in
 `archetype.evaluation.models` and `contracts`; and free handlers pin, grade,
 lease, recover, and append through explicit storage coordinates. There is no
 application evaluation facade or live-registry fallback. The
-research family completed #585: ledger Components and the pure runner decoder
-live under `archetype.research`, while loop coordination remains under
-`archetype.app.research`. The trajectory split completed #586: schemas,
+research family completed #585 and #652: supported values, ledger Components,
+the runner decoder, storage-backed views, experiment admission, and the free
+workflow handler live under `archetype.research`. There is no
+`archetype.app.research` or `iResearchService`. The trajectory split completed
+#586: schemas,
 authoring values, and structural transforms live under
 `archetype.missions.trajectories`; `iTrajectoryService` composes durable query
 with the evaluation family's pure grader runner.

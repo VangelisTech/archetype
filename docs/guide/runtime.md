@@ -178,9 +178,19 @@ explicit `StorageConfig(..., backend=StorageBackend.ICEBERG)`. Omitted, string,
 and path storage forms select LanceDB and cannot persist evaluation receipts;
 use `world.grade(...)` when persistence is not required.
 
-`world.autoresearch(...)` dispatches to the research-family handler. Callback
-execution must not hold a runtime handle lock that would deadlock reentrant
-runtime operations.
+`world.autoresearch(...)` dispatches the exact direct-only `AutoResearch`
+operation to the research-family handler. Trusted and actor-aware immediate
+entry share that handler; actor-aware use requires `operator`, resolves a
+`live_world` quota coordinate, and charges
+`200 * max(max_iterations, 1)`. Deferred entry rejects before catalog effects
+because evaluator, preparer, and iteration callbacks are live capabilities.
+
+The dispatcher synchronously awaits the entire outer workflow inside one
+process admission. Callback execution does not hold a runtime handle lock that
+would deadlock reentrant runtime operations; inner world and storage calls do
+not recursively dispatch. Runtime shutdown therefore joins an admitted
+AutoResearch call before closing shared dependencies, without a research-owned
+task, owner reservation, or finalizer.
 
 `runtime.evaluate_physical_task(...)` and
 `runtime.sweep_physical_instructions(...)` dispatch typed requests to the
