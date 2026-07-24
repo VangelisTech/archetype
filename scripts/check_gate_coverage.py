@@ -30,11 +30,12 @@ message on any drift.
 from __future__ import annotations
 
 import ast
+import asyncio
 import builtins
 import importlib
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from tempfile import TemporaryDirectory
 from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,34 +45,24 @@ API_ERRORS = ROOT / "src/archetype/api/errors.py"
 # ── Check 1: exact operation registry ────────────────────────────────────────
 
 
-async def _unreachable_handler(*_args: object, **_kwargs: object) -> None:
-    """Satisfy composition binding without executing any application effect."""
-    raise AssertionError("gate coverage only inspects operation registrations")
-
-
 def _composed_registry() -> Any:
-    """Build the real container registry without constructing runtime services."""
-    from archetype.app.container import _register_operations
-    from archetype.commands.registry import OperationRegistry
+    """Build and close the real explicit process graph, retaining its registry."""
+    from archetype.storage.config import ControlCatalogConfig
+    from archetype.wiring import RuntimeBootstrapConfig, build_runtime_resources
 
-    lifecycle = SimpleNamespace(
-        create_world=_unreachable_handler,
-        discover_worlds=_unreachable_handler,
-        open_world_readonly=_unreachable_handler,
-        open_world_mutable=_unreachable_handler,
-    )
-    registry = OperationRegistry()
-    register_operations = cast("Any", _register_operations)
-    register_operations(
-        registry,
-        worlds=object(),
-        lifecycle=lifecycle,
-        storage=object(),
-        audit=object(),
-        fork_world=_unreachable_handler,
-        destroy_world=_unreachable_handler,
-    )
-    return registry
+    async def compose(catalog_dir: Path) -> Any:
+        resources = build_runtime_resources(
+            RuntimeBootstrapConfig(
+                control_catalog_config=ControlCatalogConfig(catalog_dir=catalog_dir),
+            )
+        )
+        try:
+            return cast("Any", resources.dispatcher)._registry
+        finally:
+            await resources.aclose()
+
+    with TemporaryDirectory(prefix="archetype-gate-coverage-") as temporary:
+        return asyncio.run(compose(Path(temporary)))
 
 
 def _model_label(model: type[Any]) -> str:
@@ -80,7 +71,25 @@ def _model_label(model: type[Any]) -> str:
 
 def check_registry_coverage() -> list[str]:
     """Require one exact registration and one exact durable disposition."""
+    from archetype.artifacts.models import IngestArtifacts, QueryArtifacts
     from archetype.commands.models import GetAuditHistory
+    from archetype.episodes.models import (
+        GradeTrajectory,
+        IngestClaudeTranscript,
+        QueryTrajectory,
+        QueryTranscriptRows,
+    )
+    from archetype.evaluation.models import Evaluate, RunGraders
+    from archetype.missions.models import (
+        RestoreMissionSandbox,
+        RunMission,
+        SubmitMission,
+    )
+    from archetype.physical_ai.models import (
+        EvaluatePhysicalTask,
+        SweepPhysicalInstructions,
+    )
+    from archetype.research.models import AutoResearch
     from archetype.world.models import (
         PORTABLE_TICK_OPERATION_TYPES,
         WORLD_OPERATION_TYPES,
@@ -89,7 +98,23 @@ def check_registry_coverage() -> list[str]:
     problems: list[str] = []
     registry = _composed_registry()
     specs = registry.specs
-    expected_models = (*WORLD_OPERATION_TYPES, GetAuditHistory)
+    pull_forward_models = (
+        IngestArtifacts,
+        QueryArtifacts,
+        RunGraders,
+        Evaluate,
+        AutoResearch,
+        EvaluatePhysicalTask,
+        SweepPhysicalInstructions,
+        IngestClaudeTranscript,
+        QueryTranscriptRows,
+        QueryTrajectory,
+        GradeTrajectory,
+        SubmitMission,
+        RunMission,
+        RestoreMissionSandbox,
+    )
+    expected_models = (*WORLD_OPERATION_TYPES, GetAuditHistory, *pull_forward_models)
     actual_models = tuple(spec.model for spec in specs)
     expected_set = set(expected_models)
     actual_set = set(actual_models)
@@ -110,7 +135,9 @@ def check_registry_coverage() -> list[str]:
             + ", ".join(sorted(_model_label(model) for model in unexpected))
         )
     if actual_set == expected_set and actual_models != expected_models:
-        problems.append("operation registry order differs from WORLD_OPERATION_TYPES + audit")
+        problems.append(
+            "operation registry order differs from world + audit + pull-forward inventory"
+        )
 
     for spec in specs:
         operation_field = spec.model.model_fields.get("operation")

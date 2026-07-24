@@ -25,6 +25,15 @@ operations = [
   "service.MissionWorld.shutdown",
   "service.MissionWorld.update",
   "service.MissionWorld.world_id",
+  "service.MissionCleanup.commit",
+  "service.MissionCleanup.finish",
+  "service.MissionCleanup.stage_teardown",
+  "service.MissionCleanup.update_retained",
+  "service.MissionCleanup.world_id",
+  "service.MissionRedactor.assert_safe_metadata",
+  "service.MissionRedactor.policy_id",
+  "service.MissionRedactor.redact_text",
+  "service.MissionTaskOwner.spawn",
   "sandboxes.contracts.SandboxBackend.create",
   "sandboxes.contracts.SandboxBackend.restore",
   "sandboxes.contracts.SandboxServiceProtocol.acquire",
@@ -38,6 +47,10 @@ operations = [
   "sandboxes.contracts.SandboxSession.exec",
   "sandboxes.contracts.SandboxSession.identity",
   "sandboxes.contracts.SandboxSession.status",
+  "transcript_service.TranscriptRedactor.assert_safe_metadata",
+  "transcript_service.TranscriptRedactor.policy_id",
+  "transcript_service.TranscriptRedactor.redact_record",
+  "transcript_service.TranscriptRedactor.sanitize_file",
 ]
 signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
