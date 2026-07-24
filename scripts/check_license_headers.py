@@ -14,12 +14,18 @@ compact-header file read as "missing" — and `--fix` then prepended a second,
 stale-dated copyright block onto 130+ correctly headered files while exiting 0.
 `--fix` now refuses to touch any file that already carries a copyright line it
 cannot classify, and a missing or refused header always exits 1.
+
+The gate also fails loudly rather than silently: an empty audit set and a path
+that does not exist are errors, not passes, and skip rules match whole path
+components so `.github/` is audited instead of being swallowed by a `.git`
+substring match.
 """
 
 import argparse
 import datetime
 import re
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 COPYRIGHT_RE = re.compile(r"Copyright \d{4}(?:-\d{4})? Vangelis Technologies Inc\.")
@@ -100,12 +106,10 @@ def add_license_header(file_path: Path) -> bool:
 
 def should_skip_file(file_path: Path) -> bool:
     """Check if a file should be skipped for license header checking."""
-    # Skip __pycache__ directories and .pyc files
-    if "__pycache__" in str(file_path) or file_path.suffix == ".pyc":
-        return True
-
-    # Skip files in .git directory
-    if ".git" in str(file_path):
+    # Match whole path components. A substring test for ".git" also matched
+    # ".github/...", silently exempting every workflow helper from the gate —
+    # a hole that is invisible precisely because it reports success.
+    if {".git", "__pycache__"}.intersection(file_path.parts) or file_path.suffix == ".pyc":
         return True
 
     # Skip setup.py files that might have special requirements
@@ -113,6 +117,42 @@ def should_skip_file(file_path: Path) -> bool:
         return True
 
     return False
+
+
+def resolve_files(names: Sequence[str]) -> tuple[list[Path], list[str]]:
+    """Resolve the audit set, naming every reason it might be unusable.
+
+    Returns ``(files, errors)``. An empty audit set is an error rather than a
+    pass: a gate that inspects nothing and prints success is how this checker
+    stayed green while most of the tree drifted out from under it.
+    """
+    errors: list[str] = []
+
+    if names:
+        candidates = [Path(name) for name in names if name.endswith(".py")]
+    else:
+        # No files specified: audit every Python file under src/.
+        src_dir = Path(__file__).parent.parent / "src"
+        if not src_dir.is_dir():
+            return [], [f"source root does not exist: {src_dir}"]
+        candidates = sorted(src_dir.glob("**/*.py"))
+
+    files: list[Path] = []
+    for path in candidates:
+        if should_skip_file(path):
+            continue
+        # A path that does not exist is a bad argument, not an unlicensed
+        # file. Reporting it as "missing a license header" sends the reader
+        # off to add a header to a file that is not there.
+        if not path.exists():
+            errors.append(f"path does not exist: {path}")
+            continue
+        files.append(path)
+
+    if not files and not errors:
+        errors.append("no Python files to audit — an empty file set is an error, not a pass")
+
+    return files, errors
 
 
 def main() -> int:
@@ -126,23 +166,11 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    if not args.files:
-        # If no files specified, check all Python files in the src directory
-        project_root = Path(__file__).parent.parent
-        src_dir = project_root / "src"
-        if src_dir.exists():
-            python_files = list(src_dir.glob("**/*.py"))
-        else:
-            python_files = []
-    else:
-        python_files = [Path(f) for f in args.files if f.endswith(".py")]
+    python_files, errors = resolve_files(args.files)
 
     missing_headers = []
 
     for file_path in python_files:
-        if should_skip_file(file_path):
-            continue
-
         if not has_license_header(file_path):
             missing_headers.append(file_path)
 
@@ -157,15 +185,20 @@ def main() -> int:
         # 130+ files were once rewritten wrongly under a green exit.
         missing_headers = [f for f in missing_headers if not has_license_header(f)]
 
+    for message in errors:
+        print(f"error: {message}")
+
     if missing_headers:
         print("The following files are missing Apache 2.0 license headers:")
         for file_path in missing_headers:
             print(f"  {file_path}")
         if not args.fix:
             print("\nRun with --fix to automatically add license headers.")
+
+    if missing_headers or errors:
         return 1
 
-    print("All Python files have proper license headers.")
+    print(f"All {len(python_files)} Python files have proper license headers.")
 
     return 0
 
