@@ -99,6 +99,15 @@ def estimate_token_cost(cmd: Command) -> int:
     return cost
 
 
+def guardrail_authorize(cmd: Command, ctx: ActorCtx) -> None:
+    """Authorize one command without resolving scope or mutating quota state."""
+    allowed = any(cmd.type in COMMANDS_BY_ROLE.get(role, frozenset()) for role in ctx.roles)
+    if not allowed:
+        raise GuardrailError(
+            f"Actor {ctx.id} with roles {sorted(ctx.roles)} cannot execute '{cmd.type.value}'"
+        )
+
+
 def guardrail_check(
     cmd: Command,
     ctx: ActorCtx,
@@ -109,20 +118,15 @@ def guardrail_check(
     projected_tokens: int = 0,
     now: datetime | None = None,
 ) -> int:
-    """Pure RBAC + quota check.
+    """Check RBAC + quotas without debiting the current command.
 
     Returns the token cost of ``cmd`` if allowed; raises ``GuardrailError``
-    otherwise. Does NOT mutate counters.
+    otherwise. Daily rollover normalization may clear prior-day token state.
     """
-    maybe_reset_daily_tokens(now)
-
     # 1. Permission check via the four-role matrix
-    allowed = any(cmd.type in COMMANDS_BY_ROLE.get(r, frozenset()) for r in ctx.roles)
+    guardrail_authorize(cmd, ctx)
 
-    if not allowed:
-        raise GuardrailError(
-            f"Actor {ctx.id} with roles {sorted(ctx.roles)} cannot execute '{cmd.type.value}'"
-        )
+    maybe_reset_daily_tokens(now)
 
     # 2. Per-world, per-target-tick quota
     key = _tick_quota_key(ctx, world_id, target_tick)

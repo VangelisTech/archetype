@@ -20,7 +20,12 @@ from archetype._obs import instrument
 from archetype.app.application.interfaces import iRuntimeApplication
 from archetype.app.audit.interfaces import iAuditLog
 from archetype.app.audit.models import make_audit_row
-from archetype.app.gateway.auth.guard import guardrail_allow, guardrail_check, guardrail_commit
+from archetype.app.gateway.auth.guard import (
+    guardrail_allow,
+    guardrail_authorize,
+    guardrail_check,
+    guardrail_commit,
+)
 from archetype.app.models import Command, CommandType
 from archetype.errors import WorldNotFoundError
 
@@ -103,6 +108,7 @@ class CommandGateway:
         return self._target_tick_for_world(world_id)
 
     def _gate_world(self, command: Command, ctx: ActorCtx, world_id: object) -> None:
+        guardrail_authorize(command, ctx)
         self._gate(
             command,
             ctx,
@@ -117,6 +123,7 @@ class CommandGateway:
         with a live world's initial tick is intentionally conservative and
         avoids an ambient quota reset or an unscoped application-wide bucket.
         """
+        guardrail_authorize(command, ctx)
         try:
             target_tick = self._world_target_tick(world_id)
         except (KeyError, WorldNotFoundError):
@@ -533,6 +540,7 @@ class CommandGateway:
     # Deferred command acceptance ----------------------------------
 
     async def submit(self, ctx, world_id, command):
+        guardrail_authorize(command, ctx)
         await self._application.require_world(world_id)
         self._application.validate_deferred_command(command)
         self._gate(
@@ -550,6 +558,10 @@ class CommandGateway:
         return command_id
 
     async def submit_batch(self, ctx, world_id, commands):
+        if not commands:
+            raise ValueError("commands must not be empty")
+        for command in commands:
+            guardrail_authorize(command, ctx)
         await self._application.require_world(world_id)
         for command in commands:
             self._application.validate_deferred_command(command)
@@ -562,9 +574,11 @@ class CommandGateway:
         )
 
     async def submit_spawn(self, ctx, world_id, components, *, tick=0, priority=0):
+        command = Command(type=CommandType.SPAWN)
+        guardrail_authorize(command, ctx)
         await self._application.require_world(world_id)
         self._gate(
-            Command(type=CommandType.SPAWN),
+            command,
             ctx,
             world_id=world_id,
             target_tick=tick,

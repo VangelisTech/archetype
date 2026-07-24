@@ -22,6 +22,7 @@ from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.gateway.service import CommandGateway
 from archetype.app.models import Command, CommandType
+from archetype.errors import WorldNotFoundError
 
 pytestmark = pytest.mark.asyncio
 
@@ -80,6 +81,61 @@ async def test_direct_world_call_without_target_tick_resolver_fails_closed():
     application.create_entity.assert_not_awaited()
     assert guard._tick_counters == {}
     assert guard._daily_tokens == {}
+
+
+async def test_unauthorized_live_world_call_does_not_resolve_target_tick():
+    application = _application()
+    target_tick_for_world = Mock(side_effect=AssertionError("resolver must not run"))
+    gateway = CommandGateway(
+        application,
+        target_tick_for_world=target_tick_for_world,
+    )
+    ctx = ActorCtx(id=uuid7(), roles={"viewer"})
+
+    with pytest.raises(GuardrailError, match="cannot execute 'step'"):
+        await gateway.step(ctx, "secret-world", object())
+
+    target_tick_for_world.assert_not_called()
+    application.step.assert_not_awaited()
+    assert guard._tick_counters == {}
+    assert guard._daily_tokens == {}
+
+
+async def test_unauthorized_durable_world_call_does_not_resolve_target_tick():
+    application = _application()
+    target_tick_for_world = Mock(side_effect=AssertionError("resolver must not run"))
+    gateway = CommandGateway(
+        application,
+        target_tick_for_world=target_tick_for_world,
+    )
+    ctx = ActorCtx(id=uuid7(), roles={"viewer"})
+
+    with pytest.raises(GuardrailError, match="cannot execute 'create_world'"):
+        await gateway.resume_world(ctx, object(), "secret-world")
+
+    target_tick_for_world.assert_not_called()
+    application.resume_world.assert_not_awaited()
+    assert guard._tick_counters == {}
+    assert guard._daily_tokens == {}
+
+
+async def test_authorized_world_call_resolves_and_debits_once():
+    application = _application()
+    target_tick_for_world = Mock(return_value=7)
+    gateway = CommandGateway(
+        application,
+        target_tick_for_world=target_tick_for_world,
+    )
+    ctx = ActorCtx(id=uuid7(), roles={"player"})
+
+    await gateway.create_entity(ctx, "world-a", [])
+
+    target_tick_for_world.assert_called_once_with("world-a")
+    application.create_entity.assert_awaited_once_with("world-a", [])
+    assert guard._tick_counters == {(ctx.id, "world-a", 7): 1}
+    assert guard._daily_tokens == {
+        ctx.id: guard.estimate_token_cost(Command(type=CommandType.SPAWN))
+    }
 
 
 async def test_cold_durable_operations_share_explicit_world_tick_zero():
@@ -148,6 +204,107 @@ async def test_deferred_commands_use_their_actual_scheduled_target_tick(monkeypa
         (ctx.id, "world-a", 12): 1,
     }
     assert application.submit.await_count == 2
+
+
+def _admission_gateway():
+    application = _application()
+    audit = AsyncMock()
+    target_tick_for_world = Mock(side_effect=AssertionError("resolver must not run"))
+    gateway = CommandGateway(
+        application,
+        audit=audit,
+        target_tick_for_world=target_tick_for_world,
+    )
+    return gateway, application, audit, target_tick_for_world
+
+
+def _assert_no_admission_effects(application, audit, target_tick_for_world):
+    application.require_world.assert_not_awaited()
+    application.validate_deferred_command.assert_not_called()
+    application.submit.assert_not_awaited()
+    application.submit_batch.assert_not_awaited()
+    application.submit_spawn.assert_not_awaited()
+    audit.record.assert_not_awaited()
+    target_tick_for_world.assert_not_called()
+    assert guard._tick_counters == {}
+    assert guard._daily_tokens == {}
+
+
+async def test_denied_submit_has_no_world_or_admission_effects():
+    gateway, application, audit, target_tick_for_world = _admission_gateway()
+    ctx = ActorCtx(id=uuid7(), roles={"viewer"})
+
+    with pytest.raises(GuardrailError, match="cannot execute 'spawn'"):
+        await gateway.submit(ctx, "secret-world", Command(type=CommandType.SPAWN))
+
+    _assert_no_admission_effects(application, audit, target_tick_for_world)
+
+
+async def test_later_denied_batch_member_has_no_world_or_admission_effects():
+    gateway, application, audit, target_tick_for_world = _admission_gateway()
+    ctx = ActorCtx(id=uuid7(), roles={"player"})
+    commands = [
+        Command(type=CommandType.CUSTOM),
+        Command(type=CommandType.ADD_COMPONENT),
+    ]
+
+    with pytest.raises(GuardrailError, match="cannot execute 'add_component'"):
+        await gateway.submit_batch(ctx, "secret-world", commands)
+
+    _assert_no_admission_effects(application, audit, target_tick_for_world)
+
+
+async def test_denied_submit_spawn_has_no_world_or_admission_effects():
+    gateway, application, audit, target_tick_for_world = _admission_gateway()
+    ctx = ActorCtx(id=uuid7(), roles={"viewer"})
+
+    with pytest.raises(GuardrailError, match="cannot execute 'spawn'"):
+        await gateway.submit_spawn(ctx, "secret-world", [])
+
+    _assert_no_admission_effects(application, audit, target_tick_for_world)
+
+
+async def test_empty_batch_has_no_world_or_admission_effects():
+    gateway, application, audit, target_tick_for_world = _admission_gateway()
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+
+    with pytest.raises(ValueError, match="commands must not be empty"):
+        await gateway.submit_batch(ctx, "secret-world", [])
+
+    _assert_no_admission_effects(application, audit, target_tick_for_world)
+
+
+@pytest.mark.parametrize("admission", ["submit", "submit_batch", "submit_spawn"])
+async def test_authorized_unknown_world_has_no_admission_or_quota_effects(admission):
+    gateway, application, audit, target_tick_for_world = _admission_gateway()
+    application.require_world.side_effect = WorldNotFoundError("missing-world")
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+
+    with pytest.raises(WorldNotFoundError):
+        if admission == "submit":
+            await gateway.submit(
+                ctx,
+                "missing-world",
+                Command(type=CommandType.CUSTOM),
+            )
+        elif admission == "submit_batch":
+            await gateway.submit_batch(
+                ctx,
+                "missing-world",
+                [Command(type=CommandType.CUSTOM)],
+            )
+        else:
+            await gateway.submit_spawn(ctx, "missing-world", [])
+
+    application.require_world.assert_awaited_once_with("missing-world")
+    application.validate_deferred_command.assert_not_called()
+    application.submit.assert_not_awaited()
+    application.submit_batch.assert_not_awaited()
+    application.submit_spawn.assert_not_awaited()
+    audit.record.assert_not_awaited()
+    target_tick_for_world.assert_not_called()
+    assert guard._tick_counters == {}
+    assert guard._daily_tokens == {}
 
 
 async def test_batch_validation_is_atomic_and_groups_each_scheduled_tick(monkeypatch):

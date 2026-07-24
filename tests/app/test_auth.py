@@ -155,6 +155,28 @@ class TestDailyTokenReset:
         _allow(cmd, ctx, now=today + timedelta(days=1))
         assert _guard._daily_tokens[ctx.id] == _guard.estimate_token_cost(cmd)
 
+    def test_denied_command_does_not_normalize_daily_state(self):
+        previous_day = _guard._last_reset_date - timedelta(days=1)
+        _guard._last_reset_date = previous_day
+        sentinel_actor = uuid7()
+        _guard._daily_tokens[sentinel_actor] = 123
+        denied_actor = ActorCtx(id=uuid7(), roles={"viewer"})
+        next_day = datetime.combine(
+            previous_day + timedelta(days=1),
+            datetime.min.time(),
+            tzinfo=UTC,
+        )
+
+        with pytest.raises(GuardrailError, match="cannot execute 'spawn'"):
+            _allow(
+                Command(type=CommandType.SPAWN),
+                denied_actor,
+                now=next_day,
+            )
+
+        assert _guard._daily_tokens == {sentinel_actor: 123}
+        assert _guard._last_reset_date == previous_day
+
 
 class TestActorCtx:
     def test_frozen(self):
