@@ -14,7 +14,6 @@ from typing import Any, Protocol
 
 from daft import DataFrame
 
-from archetype.app.redaction.interfaces import iRedactionService
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig
 from archetype.core.hooks import PostTick
@@ -105,6 +104,7 @@ from archetype.missions.transitions import (
     CriticExecutionStatus,
     MissionStatus,
 )
+from archetype.redaction import RedactionService
 
 
 @dataclass(frozen=True)
@@ -213,7 +213,7 @@ class MissionService:
         name: str,
         config: AgentMissionConfig,
         sandbox_service: SandboxServiceProtocol,
-        redaction_service: iRedactionService,
+        redaction_service: RedactionService,
         task_owner: MissionTaskOwner,
         cleanup_factory: MissionCleanupFactory,
         storage: str | Path | StorageConfig | None = None,

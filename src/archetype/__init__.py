@@ -108,9 +108,6 @@ __all__ = [
     "InstructionSweepReport",
     "TrialOutcome",
     "VariantOutcome",
-    # Models
-    "Command",
-    "CommandType",
     # AutoResearch
     "AutoResearchConfig",
     "AutoResearchResult",
@@ -201,9 +198,6 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     ),
     "TrialOutcome": ("archetype.physical_ai.contracts", "TrialOutcome"),
     "VariantOutcome": ("archetype.physical_ai.contracts", "VariantOutcome"),
-    # Command models used by supported host adapters
-    "Command": ("archetype.app.models", "Command"),
-    "CommandType": ("archetype.app.models", "CommandType"),
     # AutoResearch
     "AutoResearchConfig": ("archetype.app.research.contracts", "AutoResearchConfig"),
     "AutoResearchResult": ("archetype.app.research.contracts", "AutoResearchResult"),

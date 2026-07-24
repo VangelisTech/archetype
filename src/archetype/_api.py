@@ -11,12 +11,12 @@ The marker carries a machine-enforced contract (checked by
     expressible through ``ArchetypeRuntime`` or a supported adapter.
 
 Rationale: a public function with ``world_service=`` / ``simulation_service=``
-parameters forces every caller to hand-roll a ``ServiceContainer`` and drive
-services directly, bypassing ``RuntimeApplication`` ownership and its lifecycle
+parameters forces every caller to hand-roll the composition graph and drive
+services directly, bypassing ``RuntimeResources`` ownership and its lifecycle
 and durability wiring. That bypass entered ``src/`` twice through exactly this
 signature shape; both escape hatches have since been removed. Convention did
-not hold; enforcement does. Untrusted adapters additionally pass through
-``CommandGateway`` for RBAC and access audit.
+not hold; enforcement does. Untrusted adapters additionally pass through the
+authenticated command dispatcher for RBAC and access audit.
 
 Deprecated service-shaped parameters that exist only as migration bridges are
 allowlisted (with a removal deadline) in the checker itself, next to

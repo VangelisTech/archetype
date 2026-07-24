@@ -17,8 +17,6 @@ from pydantic import JsonValue
 
 from archetype.app.artifacts.interfaces import iArtifactService
 from archetype.app.ingestion.interfaces import iIngestionService
-from archetype.app.redaction.interfaces import iRedactionService
-from archetype.app.redaction.models import RedactionReceipt
 from archetype.artifacts.contracts import ArtifactSource
 from archetype.core.config import StorageBackend, StorageConfig
 from archetype.missions.trajectories import (
@@ -28,6 +26,7 @@ from archetype.missions.trajectories import (
     TranscriptIngestionResult,
     parse_claude_transcript,
 )
+from archetype.redaction import RedactionReceipt, RedactionService
 from archetype.storage.interfaces import iStorageService
 from archetype.world.interfaces import iWorldRegistry
 
@@ -64,7 +63,7 @@ def _receipt_columns(prefix: str, receipt: RedactionReceipt) -> dict[str, Any]:
 
 def _normalize_session(
     session: LoadedSession,
-    redaction: iRedactionService,
+    redaction: RedactionService,
 ) -> tuple[list[dict[str, Any]], tuple[RedactionReceipt, ...]]:
     header = redaction.redact_record(
         {
@@ -202,7 +201,7 @@ class TranscriptIngestionService:
         self,
         artifact_service: iArtifactService,
         ingestion_service: iIngestionService,
-        redaction_service: iRedactionService,
+        redaction_service: RedactionService,
         storage_service: iStorageService,
         world_registry: iWorldRegistry,
     ) -> None:

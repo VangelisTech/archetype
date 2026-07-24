@@ -117,7 +117,7 @@ def _portable_request(
 ) -> tuple[WorldOperation, DurableOptions]:
     """Translate the legacy HTTP shape directly into one exact operation."""
     if request.type not in _KNOWN_COMMAND_TYPES:
-        raise ValueError(f"{request.type!r} is not a valid CommandType")
+        raise ValueError(f"{request.type!r} is not a registered command operation")
     if request.type not in _PORTABLE_COMMAND_TYPES:
         raise ValueError(
             f"{request.type} is direct-only or unsupported and cannot "
