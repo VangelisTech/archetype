@@ -16,9 +16,7 @@ Verifies:
 import pytest
 from uuid_utils import uuid7
 
-import archetype.app.gateway.auth.guard as guard
 from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.guard import reset_daily_tokens
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.models import Command, CommandType
 from archetype.core.component import Component
@@ -37,20 +35,6 @@ _TEARDOWN_SENTINEL_ENTITY_ID = 2_147_483_647
 
 class Tag(Component):
     label: str = ""
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def _reset_quotas():
-    guard._tick_counters.clear()
-    reset_daily_tokens()
-    yield
-    guard._tick_counters.clear()
-    reset_daily_tokens()
 
 
 def _admin_ctx() -> ActorCtx:
