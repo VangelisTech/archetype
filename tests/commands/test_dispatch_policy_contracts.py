@@ -1839,6 +1839,34 @@ def test_policy_quota_generations_are_actor_world_tick_and_instance_owned() -> N
     assert "set_quota_reset" not in vars(api.policy_module)
 
 
+def test_future_target_never_reopens_exhausted_quota_generation() -> None:
+    api = _commands_api()
+    policy = api.Policy(
+        max_commands_per_tick=1,
+        max_tokens_per_day=1_000_000,
+    )
+    actor = _Actor()
+
+    def authorize(target_tick: int) -> None:
+        policy.authorize(
+            actor,
+            permission="spawn",
+            world_id="world-out-of-order",
+            target_tick=target_tick,
+            token_cost=0,
+        )
+
+    authorize(7)
+    authorize(100)
+
+    # A future deferred coordinate cannot prove that the live/older coordinate
+    # is closed to new admission, so neither exact debit may be pruned locally.
+    with pytest.raises(PermissionError, match=r"(?i)per-tick quota"):
+        authorize(7)
+    with pytest.raises(PermissionError, match=r"(?i)per-tick quota"):
+        authorize(100)
+
+
 @pytest.mark.asyncio
 async def test_stop_admission_rejects_inherited_child_and_drain_waits_for_active() -> None:
     api = _commands_api()
