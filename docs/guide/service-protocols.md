@@ -66,6 +66,7 @@ iTranscriptIngestionService
 iWorldLifecycle    -> iWorldRegistry + iStorageService
 iCommandScheduler  -> world.handlers lock-held materialization
 iResearchService   -> iWorldRegistry + iWorldLifecycle + iStorageService
+                   -> application-owned world-teardown callback
 iPhysicalAIService
   -> iWorldRegistry + iWorldLifecycle
   -> iEvaluationService + iStorageService
@@ -99,7 +100,7 @@ application facade.
 | `iEvaluationService` | `EvaluationService` | application, physical AI | Pin persisted world state, lease grader execution through the shared control authority, and append one typed evaluation result |
 | `iCommandScheduler` | `CommandScheduler` | application | Durable admission, leasing, dispatch, retry, settlement and outbox inspection |
 | `iAuditLog` | `AuditLog` | application, gateway | Append-only access rows, command-outbox projection, and application history |
-| `iResearchService` | `AutoResearchService` | application | Multi-run autoresearch workflow and research ledger |
+| `iResearchService` | `AutoResearchService` | application | Multi-run autoresearch workflow and research ledger; rollout forks use the injected application teardown path |
 | `iMissionService` | `MissionService` | application, `RuntimeMissions` | Materialize task graphs, own the batteries-included world bundle, drain committed author and critic intents into external work, stage factual observations, and project terminal results |
 | `iPhysicalAIService` | `PhysicalAIService` | application | Create batched evaluation worlds, install physical processors, run episodes, and derive typed reports from persisted state |
 | Family resource service `missions.SandboxService` | `missions.SandboxService` | `MissionService` | Select a configured backend and acquire, reuse, close, and shut down mission-keyed sessions; no task-transition authority |

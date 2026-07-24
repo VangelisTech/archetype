@@ -103,9 +103,10 @@ The world lifecycle creates each fork. Sequential rollouts await episodes in
 index order; parallel rollouts use `asyncio.gather` while each fork keeps its
 own exact-world lock. Results preserve index order.
 
-If `destroy_forks_on_complete` is true, lifecycle close runs in `finally` for
-each fork. Closing removes live ownership but never deletes persisted world or
-audit history.
+If `destroy_forks_on_complete` is true, application teardown runs in `finally`
+for each fork. It reconciles committed work, cancels unsettled durable commands,
+then delegates lifecycle close. Closing removes live ownership but never
+deletes persisted world, command, or audit history.
 
 ```python
 class RolloutResult(BaseModel):

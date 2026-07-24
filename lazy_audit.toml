@@ -92,19 +92,19 @@ reason = "Lineage metadata extract: a fork's ancestor segments (bounded by fork 
 
 [[entries]]
 path = "src/archetype/app/research/service.py"
-line = 494
+line = 498
 method = "to_pylist"
 reason = "Single-row experiment-contract extract: StorageService has already admitted and materialized the query; the persisted identity and JSON configuration digest then enter Python control flow for exact collision rejection before resume."
 
 [[entries]]
 path = "src/archetype/app/research/service.py"
-line = 506
+line = 510
 method = "to_pylist"
 reason = "Single-row loop-state extract: StorageService has already admitted and materialized the query; the latest BranchHead then enters Python control flow for incumbent comparison and entity-id routing."
 
 [[entries]]
 path = "src/archetype/app/research/service.py"
-line = 523
+line = 527
 method = "to_pylist"
 reason = "Bounded control-plane history extract: StorageService has already admitted and materialized the query; deterministic Run ids and statuses then enter Python control flow to reject ambiguous resume state."
 

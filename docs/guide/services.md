@@ -112,8 +112,10 @@ durable evaluation result through `iIngestionService`.
 
 `AutoResearchService` owns the multi-iteration rollout workflow and its durable
 research ledger. It depends on world registry/lifecycle and storage ports and
-calls world simulation functions; scoring remains an explicit callback
-contract.
+calls world simulation functions. The container injects the application-owned
+world teardown callback so rollout forks follow committed-work reconciliation,
+durable command cancellation, then lifecycle close. Scoring remains an explicit
+callback contract.
 
 `PhysicalAIService` composes world registry/lifecycle, evaluation, and storage
 ports and calls world mutation/simulation functions. It uses storage to

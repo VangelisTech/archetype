@@ -323,7 +323,7 @@ class RuntimeApplication:
                 self._registry,
                 self._storage,
                 self._lifecycle.fork_world,
-                self._lifecycle.destroy_world,
+                self.destroy_world,
                 world_id,
                 config,
                 **input_kwargs,

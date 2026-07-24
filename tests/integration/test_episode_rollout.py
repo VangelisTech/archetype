@@ -8,13 +8,17 @@ Tests RuntimeApplication.run_episode and run_rollout through the ServiceContaine
 Verifies termination predicates, fork isolation, registry cleanup, and result shapes.
 """
 
+import asyncio
+
 import pytest
 from daft import DataFrame, col
 
 from archetype.app.container import ServiceContainer
+from archetype.app.models import Command, CommandType
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig, WorldConfig
+from archetype.world import simulation
 from archetype.world.models import EpisodeConfig, RolloutConfig
 
 # ---------------------------------------------------------------------------
@@ -62,6 +66,30 @@ async def _make_world(container: ServiceContainer, tmp_path, name: str = "test")
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
     world = await container.world_lifecycle.create_world(WorldConfig(name=name), storage)
     return world
+
+
+def _queue_future_command_on_each_fork(
+    container: ServiceContainer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, Command]:
+    """Admit one command after fork creation and before its episode starts."""
+
+    original_fork = container.world_lifecycle.fork_world
+    commands: dict[str, Command] = {}
+
+    async def fork_and_queue(*args, **kwargs):
+        fork = await original_fork(*args, **kwargs)
+        command = Command(
+            type=CommandType.CUSTOM,
+            tick=10_000,
+            payload={"source": "rollout-teardown-contract"},
+        )
+        await container.application.submit(fork.world_id, command)
+        commands[str(fork.world_id)] = command
+        return fork
+
+    monkeypatch.setattr(container.world_lifecycle, "fork_world", fork_and_queue)
+    return commands
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +392,151 @@ class TestRollout:
             # Base world should still be in the registry
             assert await container.world_registry.contains(str(world.world_id))
         finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_auto_destroy_rejects_queued_command_before_durable_destroy(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Rollout cleanup follows reconcile -> cancel -> lifecycle destroy."""
+        container = ServiceContainer()
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        try:
+            world = await container.world_lifecycle.create_world(
+                WorldConfig(name="command-cleanup"),
+                storage,
+            )
+            commands = _queue_future_command_on_each_fork(container, monkeypatch)
+            catalog = container.storage_service.get_control_catalog(storage)
+            set_world_status = catalog.set_world_status
+            observed_before_destroy: list[tuple[str, str, str | None]] = []
+
+            async def observe_set_world_status(world_id: str, status: str) -> None:
+                if status == "destroyed" and world_id in commands:
+                    (record,) = await container.command_scheduler.records(world_id)
+                    observed_before_destroy.append(
+                        (world_id, record.status, record.last_error_code)
+                    )
+                await set_world_status(world_id, status)
+
+            monkeypatch.setattr(catalog, "set_world_status", observe_set_world_status)
+
+            result = await container.application.run_rollout(
+                world.world_id,
+                RolloutConfig(
+                    num_episodes=1,
+                    episode_config=EpisodeConfig(max_steps=0),
+                    destroy_forks_on_complete=True,
+                ),
+            )
+
+            fork_id = str(result.episodes[0].world_id)
+            assert observed_before_destroy == [(fork_id, "REJECTED", "world_destroyed")]
+            (record,) = await container.command_scheduler.records(fork_id)
+            assert record.command_id == str(commands[fork_id].id)
+            assert record.status == "REJECTED"
+            assert record.last_error_code == "world_destroyed"
+            durable_world = await catalog.get_world(fork_id)
+            assert durable_world is not None and durable_world.status == "destroyed"
+            assert not await container.world_registry.contains(fork_id)
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_auto_destroy_runs_after_episode_failure(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """An episode exception does not strand its fork or queued command."""
+        container = ServiceContainer()
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        try:
+            world = await container.world_lifecycle.create_world(
+                WorldConfig(name="failed-episode-cleanup"),
+                storage,
+            )
+            commands = _queue_future_command_on_each_fork(container, monkeypatch)
+
+            async def fail_episode(*args, **kwargs):
+                del args, kwargs
+                raise RuntimeError("episode failed")
+
+            monkeypatch.setattr(simulation, "run_episode", fail_episode)
+
+            with pytest.raises(RuntimeError, match="episode failed"):
+                await container.application.run_rollout(
+                    world.world_id,
+                    RolloutConfig(
+                        num_episodes=1,
+                        episode_config=EpisodeConfig(max_steps=1),
+                        destroy_forks_on_complete=True,
+                    ),
+                )
+
+            (fork_id,) = commands
+            (record,) = await container.command_scheduler.records(fork_id)
+            assert record.status == "REJECTED"
+            durable_world = await container.storage_service.get_control_catalog(storage).get_world(
+                fork_id
+            )
+            assert durable_world is not None and durable_world.status == "destroyed"
+            assert not await container.world_registry.contains(fork_id)
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_auto_destroy_runs_after_rollout_cancellation(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Caller cancellation still executes the fork's teardown finally."""
+        container = ServiceContainer()
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        episode_entered = asyncio.Event()
+        release_episode = asyncio.Event()
+        try:
+            world = await container.world_lifecycle.create_world(
+                WorldConfig(name="cancelled-episode-cleanup"),
+                storage,
+            )
+            commands = _queue_future_command_on_each_fork(container, monkeypatch)
+
+            async def block_episode(*args, **kwargs):
+                del args, kwargs
+                episode_entered.set()
+                await release_episode.wait()
+                raise AssertionError("cancelled episode resumed")
+
+            monkeypatch.setattr(simulation, "run_episode", block_episode)
+            rollout = asyncio.create_task(
+                container.application.run_rollout(
+                    world.world_id,
+                    RolloutConfig(
+                        num_episodes=1,
+                        episode_config=EpisodeConfig(max_steps=1),
+                        destroy_forks_on_complete=True,
+                    ),
+                )
+            )
+            await asyncio.wait_for(episode_entered.wait(), timeout=2)
+            rollout.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await rollout
+
+            (fork_id,) = commands
+            (record,) = await container.command_scheduler.records(fork_id)
+            assert record.status == "REJECTED"
+            durable_world = await container.storage_service.get_control_catalog(storage).get_world(
+                fork_id
+            )
+            assert durable_world is not None and durable_world.status == "destroyed"
+            assert not await container.world_registry.contains(fork_id)
+        finally:
+            release_episode.set()
             await container.shutdown()
 
     @pytest.mark.asyncio

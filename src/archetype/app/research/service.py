@@ -162,7 +162,8 @@ class AutoResearchService:
 
     Depends on:
       - WorldRegistry for exact-world ownership and serialization
-      - WorldLifecycle for create, fork, and destroy
+      - WorldLifecycle for create and fork
+      - an application-owned destroy callback for coordinated fork teardown
       - world simulation for managed rollout and ledger ticks
     """
 
@@ -171,10 +172,13 @@ class AutoResearchService:
         world_registry: iWorldRegistry,
         world_lifecycle: iWorldLifecycle,
         storage_service: iStorageService,
+        *,
+        destroy_world: simulation.DestroyWorldCallable,
     ) -> None:
         self._world_registry = world_registry
         self._world_lifecycle = world_lifecycle
         self._storage = storage_service
+        self._destroy_world = destroy_world
 
     async def run(
         self,
@@ -279,7 +283,7 @@ class AutoResearchService:
                     self._world_registry,
                     self._storage,
                     self._world_lifecycle.fork_world,
-                    self._world_lifecycle.destroy_world,
+                    self._destroy_world,
                     candidate_world_id,
                     rollout_config,
                 )

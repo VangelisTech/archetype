@@ -18,6 +18,7 @@ import pytest
 from uuid_utils import UUID
 
 from archetype.app.container import ServiceContainer
+from archetype.app.models import Command, CommandType
 from archetype.app.research.contracts import AutoResearchConfig, EvaluationResult
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
@@ -78,6 +79,70 @@ async def _live_world(c: ServiceContainer, world_id):
 
 async def _world_by_name(c: ServiceContainer, name: str):
     return await _live_world(c, await c.world_registry.world_id_for_name(name))
+
+
+@pytest.mark.asyncio
+async def test_autoresearch_auto_destroy_uses_application_teardown(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Internal rollouts cancel queued commands before lifecycle destroy."""
+    c = ServiceContainer()
+    storage = _storage(tmp_path)
+    commands: dict[str, Command] = {}
+    try:
+        base = await _base_world(c, tmp_path)
+        original_fork = c.world_lifecycle.fork_world
+
+        async def fork_and_queue(*args, **kwargs):
+            fork = await original_fork(*args, **kwargs)
+            command = Command(
+                type=CommandType.CUSTOM,
+                tick=10_000,
+                payload={"source": "autoresearch-teardown-contract"},
+            )
+            await c.application.submit(fork.world_id, command)
+            commands[str(fork.world_id)] = command
+            return fork
+
+        monkeypatch.setattr(c.world_lifecycle, "fork_world", fork_and_queue)
+        catalog = c.storage_service.get_control_catalog(storage)
+        set_world_status = catalog.set_world_status
+        observed_before_destroy: list[tuple[str, str]] = []
+
+        async def observe_set_world_status(world_id: str, status: str) -> None:
+            if status == "destroyed" and world_id in commands:
+                (record,) = await c.command_scheduler.records(world_id)
+                observed_before_destroy.append((world_id, record.status))
+            await set_world_status(world_id, status)
+
+        monkeypatch.setattr(catalog, "set_world_status", observe_set_world_status)
+        result = await c.autoresearch_service.run(
+            base.world_id,
+            AutoResearchConfig(
+                experiment_name="teardown",
+                experiment_id="teardown-id",
+                evaluator_id="constant-score-v1",
+                rollout_contract_id="teardown-rollout-v1",
+                episode_config=EpisodeConfig(max_steps=1),
+                num_episodes=1,
+                max_iterations=1,
+                destroy_forks_on_complete=True,
+                record_to_ledger=False,
+            ),
+            lambda _rollout: 1.0,
+        )
+
+        fork_id = str(result.iterations[0].rollout.episodes[0].world_id)
+        assert observed_before_destroy == [(fork_id, "REJECTED")]
+        (record,) = await c.command_scheduler.records(fork_id)
+        assert record.command_id == str(commands[fork_id].id)
+        assert record.status == "REJECTED"
+        durable_world = await catalog.get_world(fork_id)
+        assert durable_world is not None and durable_world.status == "destroyed"
+        assert not await c.world_registry.contains(fork_id)
+    finally:
+        await c.shutdown()
 
 
 @pytest.mark.asyncio

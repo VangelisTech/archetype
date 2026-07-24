@@ -148,10 +148,17 @@ class ServiceContainer:
             self.command_scheduler.mark_outbox_projected,
         )
 
+        async def destroy_rollout_world(world_id) -> None:
+            # RuntimeApplication owns the cross-family teardown ordering. The
+            # late-bound callback breaks the construction cycle while keeping
+            # autoresearch fork cleanup on that one canonical path.
+            await self.application.destroy_world(world_id)
+
         self.autoresearch_service = AutoResearchService(
             self.world_registry,
             self.world_lifecycle,
             self.storage_service,
+            destroy_world=destroy_rollout_world,
         )
 
         self.application = RuntimeApplication(
