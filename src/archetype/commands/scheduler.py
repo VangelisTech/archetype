@@ -18,7 +18,13 @@ from pydantic import BaseModel
 from uuid_utils import UUID, uuid7
 
 from archetype.commands.models import DeferredItem, DurableOptions
-from archetype.commands.registry import OperationRegistry, OperationSpec
+from archetype.commands.registry import (
+    OperationRegistry,
+    OperationSpec,
+    canonical_operation_json,
+    decode_canonical_operation,
+    encode_canonical_operation,
+)
 from archetype.storage.catalog import (
     CommandAdmission,
     CommandConflictError,
@@ -66,21 +72,8 @@ def _canonical_json(value: object) -> str:
     )
 
 
-def _canonical_operation(operation: BaseModel) -> str:
-    return _canonical_json(operation.model_dump(mode="json"))
-
-
 def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def _operation_discriminator(operation: BaseModel) -> str:
-    value = getattr(operation, "operation", None)
-    if not isinstance(value, str) or not value:
-        raise ValueError(
-            f"{type(operation).__name__} has no portable string operation discriminator"
-        )
-    return value
 
 
 def _world_key(spec: object, operation: BaseModel) -> str:
@@ -283,28 +276,9 @@ class CommandScheduler:
         """Resolve, decode, and canonicalize before any catalog side effect."""
         _validate_scalar_metadata(options, version=version, origin=origin)
         spec = self._registry.resolve(operation)
-        durable = getattr(spec, "durable", None)
-        if durable is None:
-            raise ValueError(f"{type(operation).__name__} is direct-only and cannot be deferred")
-
-        name = str(spec.name)
-        if _operation_discriminator(operation) != name:
-            raise ValueError(
-                f"{type(operation).__name__} discriminator does not match registration {name!r}"
-            )
-        if type(operation) is not spec.model:
-            raise TypeError("registry returned a spec for a different exact operation model")
-
-        payload_json = _canonical_operation(operation)
-        decoded = durable.decode(payload_json)
-        if type(decoded) is not spec.model:
-            raise TypeError("durable decoder returned a different exact operation model")
-        if _operation_discriminator(decoded) != name:
-            raise ValueError("durable decoder changed the registered operation discriminator")
-        if _canonical_operation(decoded) != payload_json:
-            raise ValueError("durable operation did not round-trip to canonical JSON")
-
-        world_id = _world_key(spec, decoded)
+        name = spec.name
+        payload_json = encode_canonical_operation(spec, operation)
+        world_id = _world_key(spec, operation)
         principal = str(principal_id) if principal_id is not None else None
         identity = command_id or uuid7()
         if not isinstance(identity, UUID):
@@ -324,7 +298,7 @@ class CommandScheduler:
         return _PreparedAdmission(
             world_id=world_id,
             command_id=identity,
-            operation=decoded,
+            operation=operation,
             spec=spec,
             admission=CommandAdmission(
                 command_id=str(identity),
@@ -465,7 +439,7 @@ class CommandScheduler:
             _canonical_json(
                 {
                     "domain": "archetype.command.spawn-reservation.v1",
-                    "operation": json.loads(_canonical_operation(operation)),
+                    "operation": json.loads(canonical_operation_json(operation)),
                     "target_tick": options.target_tick,
                     "priority": options.priority,
                     "max_attempts": options.max_attempts,
@@ -630,15 +604,9 @@ class CommandScheduler:
         if stored_digest not in valid_digests:
             raise ValueError("durable command payload digest does not match its record")
 
-        operation = durable.decode(payload_json)
-        if type(operation) is not spec.model:
-            raise TypeError("durable decoder returned a different exact operation model")
+        operation = decode_canonical_operation(spec, payload_json)
         if self._registry.resolve(operation) is not spec:
             raise TypeError("decoded operation does not resolve to its recorded registration")
-        if _operation_discriminator(operation) != name:
-            raise ValueError("decoded operation discriminator differs from its record")
-        if _canonical_operation(operation) != payload_json:
-            raise ValueError("stored operation payload is not canonical JSON")
         if _world_key(spec, operation) != actual_world_id:
             raise ValueError("decoded operation world differs from the actual locked world")
 

@@ -7,14 +7,16 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 from collections.abc import Awaitable, Callable, Sequence
+from datetime import UTC, datetime
 
 import daft
 import pyarrow as pa
 from daft import Expression
 from uuid_utils import UUID
 
-from archetype.commands.models import AuditRow
+from archetype.commands.models import AccessSummary, AuditRow
 from archetype.core.config import StorageBackend, StorageConfig
 from archetype.errors import AvailabilityError
 from archetype.storage.catalog import OutboxRecord
@@ -134,6 +136,30 @@ class AuditLog:
             self._pending.append(row)
             if len(self._pending) >= self._flush_rows:
                 await self._flush_locked()
+
+    async def record_access(self, summary: AccessSummary) -> None:
+        """Convert bounded dispatcher evidence into one canonical audit row."""
+        serialized = summary.model_dump(mode="json")
+        metadata = serialized["metadata"]
+        payload_json = json.dumps(
+            metadata,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+        now = datetime.now(UTC).isoformat()
+        await self.record(
+            AuditRow(
+                world_id=summary.world_id,
+                actor_id=summary.actor_id,
+                command_type=summary.operation,
+                status=summary.outcome,
+                payload_json=payload_json,
+                accepted_at=now,
+                applied_at=now,
+            )
+        )
 
     async def _append_rows(self, rows: Sequence[AuditRow]) -> None:
         if not rows:
