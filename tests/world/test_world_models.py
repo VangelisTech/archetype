@@ -111,14 +111,20 @@ def test_direct_component_values_retain_local_type_affinity_without_widening_wir
 
     assert type(value.materialize()) is _DirectTwinB
     assert reference.resolve() is _DirectTwinB
+    with pytest.raises(ValidationError):
+        value.local_type_affinity = _DirectTwinA
+    with pytest.raises(ValidationError):
+        reference.local_type_affinity = _DirectTwinA
 
     encoded_value = value.model_dump_json()
     encoded_reference = reference.model_dump_json()
     decoded_value = ComponentValue.model_validate_json(encoded_value)
     decoded_reference = ComponentTypeRef.model_validate_json(encoded_reference)
 
-    assert "_local_type" not in encoded_value
-    assert "_local_type" not in encoded_reference
+    assert "local_type_affinity" not in encoded_value
+    assert "local_type_affinity" not in encoded_reference
+    assert "local_type_affinity" not in ComponentValue.model_json_schema()["properties"]
+    assert "local_type_affinity" not in ComponentTypeRef.model_json_schema()["properties"]
     assert type(decoded_value.materialize()) is _DirectTwinA
     assert decoded_reference.resolve() is _DirectTwinA
 
