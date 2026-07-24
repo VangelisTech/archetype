@@ -25,9 +25,10 @@ That distinction is intentional:
 - `RuntimeWorld` is the trusted public script surface. Its entity and processor
   mutations (`spawn`, `despawn`, `update`, `add_components`,
   `remove_components`, `add_processor`, `remove_processor`) route through the
-  actor-free `iRuntimeApplication` facade.
-- Runtime handles never accept or retain `ActorCtx`. RBAC belongs to
-  `CommandGateway` for untrusted adapters.
+  actor-free `iRuntimeApplication` adapter.
+- Runtime handles never accept or retain `ActorCtx`. For untrusted adapters,
+  commands-owned `Policy` and `CommandDispatcher` perform RBAC after
+  `CommandGateway` constructs the exact operation.
 - `AsyncWorld` remains the direct engine API. Calling it directly may bypass
   command-gate semantics, which is appropriate for engine and service-layer code.
 
@@ -46,7 +47,11 @@ from archetype.core.config import WorldConfig
 from archetype.app.container import ServiceContainer
 
 container = ServiceContainer()
-world = await container.world_service.create_world(WorldConfig(name="my-sim"))
+try:
+    info = await container.application.create_world(WorldConfig(name="my-sim"))
+    print(info.world_id)
+finally:
+    await container.shutdown()
 ```
 
 Direct construction is core-internal / advanced:
@@ -314,7 +319,9 @@ The fork writes to the same physical store by default, partitioned by its new
 `world_id`. A fork may be created with a different storage config through the
 runtime or, for untrusted ingress, the gated adapter call.
 
-Destroying a fork later removes only the live world object. Storage and audit rows remain queryable.
+Destroying a fork terminally cancels its unsettled commands, records its
+destroyed control state, and removes its live binding. Storage and audit rows
+remain queryable.
 
 ### Usage
 
@@ -330,4 +337,5 @@ For normative lifecycle semantics, see [World Lifecycle](world-lifecycle.md).
 ## Source Reference
 
 - World: `src/archetype/core/aio/async_world.py`
-- World service: `src/archetype/app/world/service.py`
+- Managed world lifecycle: `src/archetype/world/lifecycle.py`
+- Managed world behavior and durable reads: `src/archetype/world/`

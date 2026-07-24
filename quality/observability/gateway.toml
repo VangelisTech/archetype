@@ -15,7 +15,7 @@ emission_workflows = [
   "gateway.get_world_info",
 ]
 outcomes = ["propagated_failure", "handled_outcome"]
-authority = "The RBAC decision, typed application result, and access-audit evidence remain authoritative."
+authority = "The commands-owned policy decision and typed application result or exception remain authoritative; access-audit evidence is advisory."
 evidence = [
   "docs/guide/command-gate.md",
   "tests/app/test_gateway_delegation.py",
@@ -35,7 +35,7 @@ operations = [
 ]
 signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
-authority = "The RBAC decision and durable command admission record remain authoritative."
+authority = "The commands-owned policy decision, typed scheduler result or exception, and durable command admission record remain authoritative."
 evidence = [
   "docs/guide/command-gate.md",
   "docs/guide/durable-commands.md",
@@ -82,7 +82,7 @@ operations = [
 ]
 signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome"]
-authority = "The RBAC decision, typed application result, and owning-family durable evidence remain authoritative."
+authority = "The commands-owned policy decision, typed application result or exception, and owning-family durable evidence remain authoritative; access evidence is advisory."
 evidence = [
   "docs/guide/command-gate.md",
   "tests/app/test_gateway_delegation.py",
@@ -95,7 +95,7 @@ id = "gateway.create_entity"
 qualified_scope = "archetype.app.gateway.service.CommandGateway.create_entity"
 signals = ["child"]
 outcomes = ["propagated_failure", "handled_outcome"]
-authority = "The authorization decision, application result, and access-audit evidence prove the outcome."
+authority = "The commands-owned policy decision and typed application result or exception prove the outcome; access-audit evidence is advisory."
 evidence = [
   "docs/guide/command-gate.md",
   "tests/app/test_gateway_delegation.py",
@@ -107,7 +107,7 @@ id = "gateway.create_world"
 qualified_scope = "archetype.app.gateway.service.CommandGateway.create_world"
 signals = ["child"]
 outcomes = ["propagated_failure", "handled_outcome"]
-authority = "The authorization decision, WorldInfo result, and access-audit evidence prove the outcome."
+authority = "The commands-owned policy decision and typed WorldInfo result or exception prove the outcome; access-audit evidence is advisory."
 evidence = [
   "docs/guide/command-gate.md",
   "tests/app/test_gateway_delegation.py",
@@ -119,7 +119,7 @@ id = "gateway.get_world_info"
 qualified_scope = "archetype.app.gateway.service.CommandGateway.get_world_info"
 signals = ["child"]
 outcomes = ["propagated_failure", "handled_outcome"]
-authority = "The authorization decision, returned WorldInfo, and access-audit evidence prove the outcome."
+authority = "The commands-owned policy decision and returned WorldInfo or exception prove the outcome; access-audit evidence is advisory."
 evidence = [
   "docs/guide/command-gate.md",
   "tests/app/test_gateway_delegation.py",

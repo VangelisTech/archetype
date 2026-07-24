@@ -192,17 +192,25 @@ signal boundary.
 |---|---|---|
 | Runtime host | Explicit construction-time provider and owned-handler setup; no family workflow span | Runtime lifecycle and returned/raised result |
 | CLI and API | `serve` and worker lifespan configure the host; imports and `create_app()` remain inert | HTTP result and gateway/domain result |
-| Gateway | Child spans for the three currently decorated operations; #515 owns a coherent ingress-root design | RBAC decision, typed application result, and access-audit evidence |
+| Gateway | Child spans for the three currently decorated operations; #515 owns a coherent ingress-root design | Commands-owned policy decision and typed application result or exception; access-audit evidence is advisory |
 | RuntimeApplication | No direct signal yet; lower owning family remains visible | Typed family result/exception |
-| Commands | No direct signal yet | Durable command ledger and manifest-coupled settlement |
+| Commands | No direct signal yet | Commands-owned policy decision, typed result or exception, durable command ledger and outbox, and manifest-coupled settlement |
 | World registry, lifecycle, mutation, simulation, and durable reads | Existing query/update scopes without execution-attribution claims; materialize/execute names are legacy pending #518/#519 | Tick manifest, world record, retained committed receipt, and typed result/exception |
 | Storage | No direct signal yet | Store/catalog state and returned frame |
 | Redaction | No direct signal; safe rule IDs may be carried by approved callers | Redaction receipt or quarantine exception |
 | Artifacts | Child spans for publish, upload, and index | Publication row, object/index state, and publish receipt |
 | Evaluation and research | No direct signal yet | Snapshot-pinned evaluation/research receipts |
-| Audit | Logging only; no direct signal yet | Journal/outbox and projection watermark |
+| Audit | Logging only; no direct signal yet | Durable control-catalog outbox event; access evidence is advisory and Iceberg rows and their watermark are analytical projection state |
 | Missions and sandboxes | No direct signal yet | Typed transition rows, attempt state, checkpoints, and artifacts |
 | Physical-AI workflow, providers, and pure search | No direct signal yet | Persisted evaluation rows and report for the workflow; provider state and returned values at provider boundaries; returned proposals for pure search |
+
+For actor-aware operations, the commands-owned policy decision and the typed
+operation result or exception remain authoritative. Any later
+`AccessSummary`/`AuditRow` is bounded, advisory evidence, including after it is
+appended to Iceberg. For durable command transitions, the transactional
+control-catalog outbox event remains the source of truth. The audit Iceberg
+rows and projection watermark describe analytical delivery, which may lag or
+replay; neither can authorize, settle, or change the typed operation outcome.
 
 The machine authority is one independently owned manifest per family under
 `quality/observability/<family>.toml`. The required universe begins with every

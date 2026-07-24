@@ -455,9 +455,12 @@ downstream resource consumer outside the world lock.
 
 [Application Architecture](application-architecture.md) owns service placement
 and dependency direction. Concrete services and `ServiceContainer` are internal
-implementation machinery. The target policy boundary is `CommandGateway :
-iCommandGateway` for untrusted ingress and `RuntimeApplication :
-iRuntimeApplication` for actor-free application execution.
+implementation machinery. During the current migration,
+`CommandGateway : iCommandGateway` and
+`RuntimeApplication : iRuntimeApplication` are the actor-aware and actor-free
+adapters. The commands-owned `CommandDispatcher` and `Policy` are the policy
+boundary; the accepted v0.5 target removes the temporary adapters after their
+remaining workflow registrations land.
 
 ### Service error taxonomy
 

@@ -17,9 +17,10 @@ Episodes do not fork. Rollouts do. A caller may run an episode on a base world
 or on a caller-created fork; the episode preserves that choice.
 
 The supported runtime usually exposes these operations through a
-`RuntimeWorld` handle. Internally, `RuntimeApplication` calls the module
-functions in `archetype.world.simulation`; untrusted calls first pass
-`iCommandGateway`.
+`RuntimeWorld` handle. `RuntimeApplication` constructs the exact execution
+model and enters `CommandDispatcher.apply`; `iCommandGateway` constructs the
+same model and enters `CommandDispatcher.apply_as`. The registered handler then
+calls the module functions in `archetype.world.simulation`.
 
 ## 2. Step and run
 
@@ -144,8 +145,11 @@ fork.
 ## 5. Gate proxies and permissions
 
 `iCommandGateway` exposes authorized `step`, `run`, `run_episode`, and
-`run_rollout` proxies. Each authorizes once, delegates to
-`iRuntimeApplication`, and records one access decision.
+`run_rollout` proxies. Each constructs one exact operation and enters the
+actor-aware dispatcher once. Commands-owned policy authorizes it, the registered
+world handler executes it, and bounded advisory access evidence records the
+result. Registered execution operations do not delegate through
+`iRuntimeApplication`.
 
 | Method | viewer | player | operator | admin |
 |---|---|---|---|---|

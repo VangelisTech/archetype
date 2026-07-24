@@ -45,18 +45,16 @@ archetype/
 ├── src/archetype/
 │   ├── core/           # ECS engine (Daft + Arrow + LanceDB)
 │   ├── storage/        # Physical rows, Catalogs, commits + control authority
+│   ├── world/          # Managed lifecycle, state behavior, reads + operation models
+│   ├── commands/       # Registry, policy, dispatch, scheduling + audit projection
 │   ├── <family>/       # Reusable ECS/domain state and pure behavior
 │   ├── app/            # Internal application families
-│   │   ├── application/ #   Actor-free RuntimeApplication facade
-│   │   ├── gateway/     #   CommandGateway + RBAC/auth
-│   │   ├── commands/    #   Durable scheduler/dispatcher
-│   │   ├── world/       #   Lifecycle, mutation, simulation
-│   │   ├── query/       #   Persisted read path
+│   │   ├── application/ #   Actor-free RuntimeApplication adapter
+│   │   ├── gateway/     #   Actor-aware CommandGateway transport adapter
 │   │   ├── ingestion/   #   Live-storage selection + typed publication
 │   │   ├── artifacts/   #   File source policy + typed index publication
 │   │   ├── evaluation/  #   Grading + receipts
 │   │   ├── research/    #   Autoresearch workflows
-│   │   ├── audit/       #   Append-only projection
 │   │   └── container.py #   Sole concrete composition root
 │   ├── api/            # FastAPI REST layer
 │   ├── cli/            # Typer CLI (thin HTTP client)
@@ -204,12 +202,16 @@ changed before resolving them.
 ## Application flow
 
 ```text
-Trusted script → ArchetypeRuntime → RuntimeApplication
+Trusted script → ArchetypeRuntime → RuntimeApplication adapter
+                                     → CommandDispatcher.apply / defer
 
-CLI → API authentication → CommandGateway authorization
-                             → RuntimeApplication
+CLI → API authentication → CommandGateway adapter
+                             → CommandDispatcher.apply_as / defer_as
 
-RuntimeApplication → family workflow ports → AsyncWorld / durable storage
+temporary staged workflow → CommandGateway → RuntimeApplication
+                                            → app-family capability
+
+CommandDispatcher → exact OperationRegistry handler or CommandScheduler
 
 Deferred admission → CommandScheduler → durable control catalog
 Simulation tick    → CommandScheduler drain → tick commit + command settlement
@@ -217,21 +219,24 @@ Simulation tick    → CommandScheduler drain → tick commit + command settleme
 CLI → API over HTTP (except server startup)
 ```
 
-Roles (flat, not hierarchical):
+Role labels are flat inputs. Their built-in grant sets explicitly include the
+preceding row; no unknown permission is inferred from a role name.
 
 | Role | Permissions |
 |------|-------------|
-| `viewer` | Read-only |
-| `player` | spawn, despawn, update, message, custom |
-| `operator` | schema, processors, hooks, resources, simulation, fork, destroy |
-| `admin` | All commands |
+| `viewer` | Registered read-only operations |
+| `player` | Viewer grants plus spawn, batch create, despawn, and update |
+| `operator` | Player grants plus schema, processors, hooks, resources, simulation, fork, and destroy |
+| `admin` | Operator grants plus world creation and mutable resume |
 
 ## Change-safety quick reference
 
-- Keep dependencies pointing downward: runtime → actor-free app application
-  port; API → gateway port; gateway → application port; app → core. CLI is an
-  HTTP client of API. Do not leak `AsyncWorld`, the container, backend clients,
-  or concrete services across either boundary.
+- Keep dependencies pointing downward: runtime → actor-free application adapter
+  → commands; API → gateway adapter → commands; commands → world/storage; world
+  → storage. The gateway reaches the application adapter only through the
+  finite temporary workflow bridge. CLI is an HTTP client of API. Do not leak
+  `AsyncWorld`, the container, backend clients, or concrete services across
+  either boundary.
 - Treat `src/archetype/core/` as invariant-owned. Prefer an app or runtime
   extension when it can meet the requirement; discuss any core behavior change
   before implementing it.

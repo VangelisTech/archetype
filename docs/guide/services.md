@@ -1,9 +1,9 @@
 # Application families and wiring
 
-The internal application layer wraps the core ECS engine with multi-world
-lifecycle, durable commands, artifacts, evaluation, audit projection, and
-storage ownership. Concrete services and `ServiceContainer` are not supported
-application APIs. Use `ArchetypeRuntime`, REST, or CLI.
+The internal application layer composes workflows over the top-level world,
+commands, storage, and domain families. Concrete services and
+`ServiceContainer` are not supported application APIs. Use
+`ArchetypeRuntime`, REST, or CLI.
 
 Normative dependency rules live in
 [Application Architecture](application-architecture.md); active ports live in
@@ -20,25 +20,33 @@ container.command_gateway  CommandGateway (authorized ingress)
 ```
 
 Construction is synchronous; stores and catalogs open lazily. Shutdown stops
-new application admission, flushes audit projection, then closes container-owned
-world/storage resources.
+dispatcher admission, waits for admitted operations, projects known command
+outboxes, flushes `AuditLog`, and then releases container-owned storage.
+Per-world destroy is a separate lifecycle operation.
 
 ## Wiring overview
 
 Arrows mean consumer to dependency:
 
 ```text
-ArchetypeRuntime -> RuntimeApplication <- CommandGateway <- REST API
-                         |
-                         +-> WorldRegistry + WorldLifecycle
-                         +-> world.mutation / world.simulation / world.query
-                         +-> IngestionService -> storage/world ports
-                         +-> ArtifactService -> ingestion/storage/world ports
-                         +-> EvaluationService -> ingestion/storage/world ports
-                         +-> AutoResearchService -> storage/world ports
-                         +-> PhysicalAIService -> evaluation/storage/world ports
-                         +-> CommandScheduler -> world.handlers.materialize_locked
-                         +-> AuditLog -> StorageService
+ArchetypeRuntime -> RuntimeApplication ----\
+                                            -> CommandDispatcher
+REST API -> CommandGateway ----------------/
+
+CommandGateway -- finite workflow bridge -> RuntimeApplication
+CommandDispatcher -> OperationRegistry
+CommandDispatcher -> registered family handler
+CommandDispatcher -> Policy + CommandScheduler + AuditLog.record_access
+
+ServiceContainer
+  +-> WorldRegistry + WorldLifecycle
+  +-> CommandScheduler -> world.handlers.materialize_locked
+  +-> AuditLog -> StorageService + scheduler outbox callbacks
+  +-> IngestionService -> storage/world ports
+  +-> ArtifactService -> ingestion/storage/world ports
+  +-> EvaluationService -> ingestion/storage/world ports
+  +-> AutoResearchService -> storage/world ports
+  +-> PhysicalAIService -> evaluation/storage/world ports
 ```
 
 The container injects `CommandScheduler.materialize` when lifecycle constructs
