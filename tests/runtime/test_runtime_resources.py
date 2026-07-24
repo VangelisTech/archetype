@@ -183,6 +183,64 @@ async def test_reservation_precedes_factory_and_eager_task_execution() -> None:
     assert handle.close_calls == 1
 
 
+async def test_exact_owner_lookup_resolves_only_a_completely_bound_resource() -> None:
+    runtime_module, _shutdown_error, _shutdown_failure = _runtime_api()
+    events: list[str] = []
+    resources = _new_resources(runtime_module, _Dispatcher(events))
+    reservation = resources.reserve_owner(
+        "mission:lookup",
+        phase="workflow-handles",
+    )
+
+    assert resources.owner("mission:lookup") is reservation
+    with pytest.raises(RuntimeError, match="not bound"):
+        reservation.require_bound()
+    with pytest.raises(KeyError, match="mission:missing"):
+        resources.owner("mission:missing")
+
+    handle = _Closeable("mission:lookup", events)
+    await _construct(reservation, handle)
+
+    assert resources.owner("mission:lookup").require_bound() is handle
+    await resources.aclose()
+    with pytest.raises(KeyError, match="mission:lookup"):
+        resources.owner("mission:lookup")
+
+
+async def test_unsafe_owner_and_task_labels_reject_before_user_code() -> None:
+    runtime_module, _shutdown_error, _shutdown_failure = _runtime_api()
+    events: list[str] = []
+    resources = _new_resources(runtime_module, _Dispatcher(events))
+
+    with pytest.raises(ValueError, match="bounded safe identifier") as owner_error:
+        resources.reserve_owner(
+            "mission:\nRAW_PROVIDER_EVIDENCE",
+            phase="workflow-handles",
+        )
+    assert "RAW_PROVIDER_EVIDENCE" not in str(owner_error.value)
+
+    reservation = resources.reserve_owner(
+        "mission:safe",
+        phase="workflow-handles",
+    )
+    factory_called = False
+
+    async def must_not_run() -> None:
+        nonlocal factory_called
+        factory_called = True
+
+    with pytest.raises(ValueError, match="bounded safe identifier") as label_error:
+        reservation.spawn(
+            must_not_run,
+            label="critic prewarm RAW_PROVIDER_EVIDENCE",
+        )
+    assert "RAW_PROVIDER_EVIDENCE" not in str(label_error.value)
+    assert not factory_called
+
+    await _construct(reservation, _Closeable("mission:safe", events))
+    await resources.aclose()
+
+
 async def test_partial_constructor_failure_remains_cleanup_owned() -> None:
     runtime_module, _shutdown_error, _shutdown_failure = _runtime_api()
     events: list[str] = []
