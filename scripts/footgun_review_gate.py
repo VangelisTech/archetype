@@ -634,6 +634,17 @@ def _markdown_code(value: str) -> str:
 
 
 _PUBLISHED_BODY_LIMIT = 60000
+_SUMMARY_BUDGET = 6000
+
+
+def _elided(text: str, budget: int | None, label: str) -> str:
+    """Return ``text`` bounded to ``budget`` characters, saying so when cut."""
+    if budget is None or len(text) <= budget:
+        return text
+    return (
+        f"{text[:budget].rstrip()}\n\n_({label} truncated at {budget} characters to fit the "
+        "published comment budget; the complete text is in the validated artifact below.)_"
+    )
 
 
 def _artifact_section(
@@ -701,62 +712,83 @@ def render_evidence(
             f"{blocking_count} blocking, {finding_count - blocking_count} advisory"
         )
     )
-    lines = [
-        f"## Footgun review — {outcome}",
-        "",
-        f"**Exact head:** `{head_sha}`  ",
-        f"**Validated scope:** {len(files)} changed file(s), {len(categories)} detector categories",
-        "",
-        str(result["summary"]),
-        "",
-        "<details>",
-        "<summary>Context reviewed</summary>",
-        "",
-    ]
-    for raw_entry in context:
-        entry = _expect_mapping(raw_entry, "review_context entry")
-        entry_files = ", ".join(
-            f"`{_markdown_code(str(path))}`" for path in _expect_list(entry["files"], "files")
-        )
-        lines.extend(
+    marker = evidence_marker(head_sha, finding_count, digest)
+
+    def prose(*, summary_budget: int | None, context_detail: bool) -> list[str]:
+        rendered_lines = [
+            f"## Footgun review — {outcome}",
+            "",
+            f"**Exact head:** `{head_sha}`  ",
+            f"**Validated scope:** {len(files)} changed file(s), "
+            f"{len(categories)} detector categories",
+            "",
+            _elided(str(result["summary"]), summary_budget, "summary"),
+            "",
+            "<details>",
+            "<summary>Context reviewed</summary>",
+            "",
+        ]
+        if context_detail:
+            for raw_entry in context:
+                entry = _expect_mapping(raw_entry, "review_context entry")
+                entry_files = ", ".join(
+                    f"`{_markdown_code(str(path))}`"
+                    for path in _expect_list(entry["files"], "files")
+                )
+                rendered_lines.extend(
+                    [f"- **{entry['area']}** ({entry_files}): {entry['assessment']}", ""]
+                )
+        else:
+            rendered_lines.extend(
+                [
+                    f"{len(context)} reviewed area(s) covering {len(files)} changed file(s). "
+                    "The per-area assessments exceed the published comment budget; read them "
+                    "in the validated artifact below.",
+                    "",
+                ]
+            )
+        rendered_lines.extend(
             [
-                f"- **{entry['area']}** ({entry_files}): {entry['assessment']}",
+                "</details>",
+                "",
+                "<details>",
+                "<summary>Detector categories completed</summary>",
+                "",
+                *[f"- `{category}`" for category in categories],
+                "",
+                "</details>",
                 "",
             ]
         )
-    lines.extend(
-        [
-            "</details>",
-            "",
-            "<details>",
-            "<summary>Detector categories completed</summary>",
-            "",
-            *[f"- `{category}`" for category in categories],
-            "",
-            "</details>",
-            "",
-        ]
-    )
-    marker = evidence_marker(head_sha, finding_count, digest)
+        return rendered_lines
 
-    def body_with_artifact(*, inline: bool) -> str:
+    def body(*, inline: bool, summary_budget: int | None, context_detail: bool) -> str:
         return "\n".join(
             [
-                *lines,
+                *prose(summary_budget=summary_budget, context_detail=context_detail),
                 *_artifact_section(result, run_url, artifact_name, inline=inline),
                 "",
                 marker,
             ]
         )
 
-    rendered = body_with_artifact(inline=True)
-    if len(rendered.encode("utf-8")) <= _PUBLISHED_BODY_LIMIT:
-        return rendered
-
-    rendered = body_with_artifact(inline=False)
-    if len(rendered.encode("utf-8")) > _PUBLISHED_BODY_LIMIT:
-        raise GateError("rendered review evidence exceeds the published body limit")
-    return rendered
+    # Degrade in a fixed order, cheapest loss first, and never silently: the
+    # validated artifact keeps the complete text, every elision says so, and
+    # the digest is computed over the result rather than this rendering, so
+    # shrinking the body cannot weaken the evidence `verify` matches. A
+    # merged lens review carries one summary and one context set per lens, so
+    # a wide diff overruns the comment limit on prose alone — dropping only
+    # the inline artifact (the pre-matrix ladder) is not enough.
+    for inline, summary_budget, context_detail in (
+        (True, None, True),
+        (False, None, True),
+        (False, _SUMMARY_BUDGET, True),
+        (False, _SUMMARY_BUDGET, False),
+    ):
+        rendered = body(inline=inline, summary_budget=summary_budget, context_detail=context_detail)
+        if len(rendered.encode("utf-8")) <= _PUBLISHED_BODY_LIMIT:
+            return rendered
+    raise GateError("rendered review evidence exceeds the published body limit")
 
 
 def render_finding(finding: Mapping[str, Any], head_sha: str) -> str:
