@@ -609,7 +609,7 @@ async def test_fastapi_lifespan_retries_retained_owner_before_reentry(
     class RetryableResources(_LifespanResources):
         async def aclose(self) -> None:
             self.close_calls += 1
-            if self.close_calls == 1:
+            if self.close_calls <= 2:
                 raise RuntimeError("provider cleanup unavailable")
 
     retained = RetryableResources()
@@ -632,8 +632,16 @@ async def test_fastapi_lifespan_retries_retained_owner_before_reentry(
     assert app.state.resources is retained
     assert built == [retained]
 
+    with pytest.raises(RuntimeError, match="provider cleanup unavailable"):
+        async with app.router.lifespan_context(app):
+            pytest.fail("failed retained cleanup must reject lifespan reentry")
+
+    assert retained.close_calls == 2
+    assert built == [retained]
+    assert app.state.resources is retained
+
     async with app.router.lifespan_context(app):
-        assert retained.close_calls == 2
+        assert retained.close_calls == 3
         assert built == [retained, replacement]
         assert app.state.resources is replacement
 

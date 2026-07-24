@@ -26,6 +26,11 @@ from archetype.api.routes import commands, entities, missions, query, simulation
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Own one process resource graph for the exact FastAPI lifespan."""
+    if hasattr(app.state, "resources"):
+        retained = app.state.resources
+        await retained.aclose()
+        del app.state.resources
+
     # Composition stays lazy: importing the ASGI module and calling
     # ``create_app`` must not construct providers, catalogs, or tasks.
     from archetype.wiring import RuntimeBootstrapConfig, build_runtime_resources
