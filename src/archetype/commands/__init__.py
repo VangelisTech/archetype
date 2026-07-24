@@ -4,6 +4,7 @@
 """Governed command dispatch and durable operation machinery."""
 
 from archetype.commands.models import (
+    MAX_ACCESS_SUMMARY_BYTES,
     AccessSummary,
     ActorCtx,
     AuditRow,
@@ -16,6 +17,10 @@ from archetype.commands.registry import (
     DurableOperation,
     OperationRegistry,
     OperationSpec,
+    canonical_operation_json,
+    decode_canonical_operation,
+    encode_canonical_operation,
+    operation_rejection_metadata,
 )
 
 __all__ = [
@@ -26,7 +31,12 @@ __all__ = [
     "DurableOperation",
     "DurableOptions",
     "GetAuditHistory",
+    "MAX_ACCESS_SUMMARY_BYTES",
     "OperationRegistry",
     "OperationSpec",
     "PolicyRequest",
+    "canonical_operation_json",
+    "decode_canonical_operation",
+    "encode_canonical_operation",
+    "operation_rejection_metadata",
 ]

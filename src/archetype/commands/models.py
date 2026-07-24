@@ -5,12 +5,15 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 import uuid_utils as uuid
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from uuid_utils import UUID
+
+MAX_ACCESS_SUMMARY_BYTES = 4096
 
 
 class _FrozenModel(BaseModel):
@@ -45,6 +48,12 @@ class DeferredItem:
     command_id: UUID | None = None
     version: int = 1
 
+    def __post_init__(self) -> None:
+        if isinstance(self.version, bool) or not isinstance(self.version, int):
+            raise TypeError("version must be an integer")
+        if self.version < 1:
+            raise ValueError("version must be at least 1")
+
 
 @dataclass(frozen=True, slots=True)
 class PolicyRequest:
@@ -55,10 +64,23 @@ class PolicyRequest:
     target_tick: int
     token_cost: int = 0
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.permission, str) or not self.permission.strip():
+            raise ValueError("permission must be a non-empty string")
+        for name, value in (
+            ("target_tick", self.target_tick),
+            ("token_cost", self.token_cost),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{name} must be an integer")
+            if value < 0:
+                raise ValueError(f"{name} must be non-negative")
+
 
 class GetAuditHistory(_FrozenModel):
     """Commands-owned, direct-only query over the durable access journal."""
 
+    direct_only: ClassVar[bool] = True
     operation: Literal["get_audit_history"] = "get_audit_history"
     world_id: str | UUID
     tick_range: tuple[int, int] | None = None
@@ -66,6 +88,17 @@ class GetAuditHistory(_FrozenModel):
     idempotency_key: str | None = None
     status: str | None = None
     limit: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _validate_tick_range(self) -> GetAuditHistory:
+        if self.tick_range is None:
+            return self
+        start, end = self.tick_range
+        if start < 0 or end < 0:
+            raise ValueError("tick_range values must be non-negative")
+        if start > end:
+            raise ValueError("tick_range start must not exceed its end")
+        return self
 
 
 class AccessSummary(_FrozenModel):
@@ -77,6 +110,22 @@ class AccessSummary(_FrozenModel):
     decision: Literal["allowed", "denied"]
     outcome: Literal["succeeded", "failed", "denied", "rejected", "queued"]
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_canonical_size(self) -> AccessSummary:
+        try:
+            encoded = json.dumps(
+                self.model_dump(mode="json"),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError) as error:
+            raise ValueError("access summary must be canonical JSON") from error
+        if len(encoded) > MAX_ACCESS_SUMMARY_BYTES:
+            raise ValueError(f"access summary exceeds {MAX_ACCESS_SUMMARY_BYTES} encoded bytes")
+        return self
 
 
 class AuditRow(_FrozenModel):
@@ -101,5 +150,6 @@ __all__ = [
     "DeferredItem",
     "DurableOptions",
     "GetAuditHistory",
+    "MAX_ACCESS_SUMMARY_BYTES",
     "PolicyRequest",
 ]
