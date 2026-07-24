@@ -9,14 +9,17 @@ visual layout is not.
 ## Layers
 
 ```text
-application code -> ArchetypeRuntime -> RuntimeApplication
-CLI              -> REST API -> CommandGateway -> RuntimeApplication
-RuntimeApplication -> internal app-family capabilities -> archetype.core
+application code -> ArchetypeRuntime -> RuntimeApplication -> CommandDispatcher
+CLI -> REST API -> CommandGateway -> CommandDispatcher
+CommandDispatcher -> registered family handler -> world/storage/core
+temporary workflow bridge -> RuntimeApplication -> app-family capability
 ```
 
 The trusted runtime bypasses authorization; the API authenticates and enters
-through the gateway. Both converge on the actor-free `RuntimeApplication`.
-`ServiceContainer` and concrete app services are internal machinery.
+through the gateway. For registered world/audit operations, both temporary
+adapters construct the same exact family model and converge on
+`CommandDispatcher`; only actor-aware entry invokes `Policy` and bounded access
+evidence. `ServiceContainer` and concrete services are internal machinery.
 
 `ArchetypeRuntime` is the recommended script boundary. It owns process lifetime,
 returns lazy actor-free world handles, and forwards operations through
@@ -43,21 +46,25 @@ because they are internal seams.
 
 ## Command Gate
 
-All untrusted operations flow through `iCommandGateway`, the policy
+All untrusted operations flow through `iCommandGateway`, the transport ingress
+port. Commands-owned `CommandDispatcher` and `Policy` are the policy
 enforcement point.
 
 ```text
 API / untrusted caller
-  -> iCommandGateway
-  -> guardrail_allow
-  -> iRuntimeApplication
-  -> iAuditJournal.record_access
+  -> iCommandGateway adapter constructs exact operation
+  -> CommandDispatcher.apply_as / defer_as
+  -> OperationRegistry + Policy
+  -> registered family handler or CommandScheduler
+  -> AuditLog.record_access(bounded evidence)
   -> return result
 ```
 
-The durable ledger/dispatcher belongs to the commands family. Audit owns the
-journal, transactional outbox, and analytical projection. The gateway consumes
-narrow admission/application/audit ports but owns none of that state.
+`OperationRegistry`, dispatcher, policy, durable scheduler/ledger, and
+`AuditLog` belong to the top-level commands family. `RuntimeApplication` and
+`CommandGateway` remain temporary facade adapters and own none of that state.
+A finite gateway-to-application bridge remains for staged workflows awaiting
+their exact registrations.
 
 ## Roles
 
@@ -66,11 +73,13 @@ Roles are flat:
 | Role | Intent |
 |---|---|
 | `viewer` | Read-only operations |
-| `player` | Entity participation: spawn, despawn, update, message, custom |
-| `operator` | Schema, processors, hooks, resources, simulation control, fork, destroy |
-| `admin` | All commands, including world creation |
+| `player` | Viewer permissions plus spawn, batch create, despawn, and update |
+| `operator` | Player permissions plus schema, processors, hooks, resources, simulation control, fork, and destroy |
+| `admin` | Operator permissions plus world creation and mutable resume |
 
-To combine capabilities, give an actor multiple roles. `operator` is not implicitly `viewer` unless both roles are present in the actor context.
+Role labels are flat inputs and an actor's grants are unioned. The built-in
+permission sets above explicitly include the preceding row; no unknown
+permission is inferred from a role name, including `admin`.
 
 See [Command Gate](command-gate.md).
 

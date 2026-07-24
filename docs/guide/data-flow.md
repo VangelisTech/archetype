@@ -7,9 +7,12 @@ for untrusted access.
 The important boundary is:
 
 - App families and `iRuntimeApplication` do not know about `ActorCtx`.
-- `iCommandGateway` authorizes untrusted calls, delegates to
-  `iRuntimeApplication`, records access evidence, and returns safe results.
-- Trusted runtime calls `iRuntimeApplication` directly.
+- `iCommandGateway` is the temporary transport adapter for untrusted calls. It
+  constructs exact operation models and enters actor-aware dispatcher methods.
+- Trusted runtime calls `iRuntimeApplication`, which constructs the same models
+  and enters actor-free dispatcher methods.
+- A finite gateway-to-application bridge remains only for staged workflows
+  whose family registrations land in the next refactor wave.
 
 ## Core Read/Write Split
 
@@ -31,7 +34,11 @@ The important boundary is:
 Trusted runtime:
 
 ```text
-RuntimeWorld -> iRuntimeApplication -> owning family -> safe result
+RuntimeWorld
+    -> iRuntimeApplication adapter
+    -> CommandDispatcher.apply(exact operation)
+    -> OperationRegistry handler
+    -> safe result
 ```
 
 Untrusted adapter:
@@ -41,13 +48,15 @@ API / untrusted caller
     |
 iCommandGateway.<method>(ctx, ...)
     |
-guardrail_allow(command, ctx)
+construct exact family operation
     |
-delegate to iRuntimeApplication
+CommandDispatcher.apply_as(ctx, operation)
     |
-iAuditJournal.record_access(event)
+OperationRegistry -> Policy preauthorization/quotas -> registered handler
     |
-return result
+commands.AuditLog.record_access(bounded evidence)
+    |
+return safe result
 ```
 
 Examples:
@@ -58,8 +67,9 @@ Examples:
 - `run` calls `archetype.world.simulation` and returns `RunResult`.
 - `query_archetype` calls `archetype.world.query` and returns a DataFrame.
 
-Untrusted reads are gated. Trusted runtime and internal workflows use the same
-actor-free application/query semantics directly.
+Untrusted reads are gated. Trusted runtime and untrusted adapters resolve the
+same exact registration and handler; only actor-aware entry runs policy and
+access evidence.
 
 ## Tick-Deferred Path
 
@@ -67,24 +77,29 @@ When a caller wants work applied at a tick boundary, the commands family durably
 admits it. An untrusted caller is authorized before admission:
 
 ```text
-RuntimeApplication or iCommandGateway after authorization
+RuntimeApplication or iCommandGateway compatibility adapter
     |
-iCommandScheduler.admit(world_id, cmd, origin/principal)
+CommandDispatcher.defer / defer_as(exact operation, DurableOptions)
     |
-iCommandLedger (durable PENDING)
+OperationRegistry exact durable eligibility; Policy for actor-aware entry
+    |
+CommandScheduler.admit(operation, options, origin/principal snapshot)
+    |
+control catalog (durable PENDING)
     |
 AsyncWorld.step() construction-injected materializer
     |
-iCommandScheduler.materialize(world, tick)
+CommandScheduler.materialize(actual_world, tick)
     |
-archetype.world.handlers.materialize_locked
+registered DurableOperation -> archetype.world.handlers.materialize_locked
     |
 AsyncWorld internal mutation -> manifest publication + command settlement
 ```
 
-No commands-family operation accepts `ActorCtx`. The gateway converts a
-principal into an immutable admission snapshot. Commands are ordered by a
-durable per-world `(scheduled_tick, priority, sequence)` key.
+Only the actor-aware `CommandDispatcher` entry points accept `ActorCtx`; the
+scheduler receives an immutable principal/origin snapshot, never the live
+actor object. Commands are ordered by a durable per-world
+`(scheduled_tick, priority, sequence)` key.
 
 ## Internal Writes
 
@@ -114,13 +129,15 @@ Destroy does not delete storage or audit rows. See [World Lifecycle](world-lifec
 
 ## Audit flow
 
-Gateway calls emit access events. Product transitions append outbox events in
-the transaction that establishes their authority. The audit projector exports
-deduplicated events to Iceberg and exposes a watermark. Command-ledger history
-is operational truth; audit history is the analytical projection.
+Actor-aware dispatcher calls attempt bounded access events through
+commands-owned `AuditLog`. Product transitions append outbox events in the
+transaction that establishes their authority. `AuditLog` exports deduplicated
+events to Iceberg and exposes a watermark. Command-ledger history is
+operational truth; audit history is the analytical projection.
 
 `RuntimeWorld.history(...)` reads through RuntimeApplication. API history reads
-authorize through the gateway before invoking the same application operation.
+authorize through the gateway. Both adapters construct the registered
+`GetAuditHistory` operation and reach the same commands-owned projection.
 
 See [Audit Log](audit-log.md).
 

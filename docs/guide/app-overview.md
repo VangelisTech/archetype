@@ -1,6 +1,9 @@
 # App Overview
 
-The app layer wraps the core ECS engine with service boundaries for storage, world lifecycle, mutation, simulation, reads, command queuing, and audit history. The API layer exposes those boundaries over HTTP.
+The application layer composes workflows over the core ECS engine and the
+storage/world families. The top-level commands family owns exact governed
+entry, durable scheduling, policy, and audit projection. The API layer exposes
+the temporary application/gateway adapters over HTTP.
 
 For normative ownership and dependency rules, see
 [Application Architecture](application-architecture.md). For active internal
@@ -10,9 +13,10 @@ ports, see [Service Protocols](service-protocols.md). Concrete services and
 ## Layers
 
 ```text
-application -> runtime -> RuntimeApplication
-CLI         -> API -> CommandGateway -> RuntimeApplication
-RuntimeApplication -> internal app-family capabilities -> core
+application -> runtime -> RuntimeApplication adapter -> CommandDispatcher
+CLI -> API -> CommandGateway adapter -> CommandDispatcher
+CommandDispatcher -> registered family handler -> world/storage/core
+temporary workflow bridge -> RuntimeApplication -> app-family capability
 ```
 
 Dependencies point downward. Core does not import app. The CLI does not import app except for `serve`; it talks to the server over HTTP.
@@ -36,7 +40,8 @@ It does not know about:
 - REST routes
 - multi-world API hosting
 
-The app layer adds those concerns.
+The world, commands, application, and API families above core add those
+concerns according to their ownership boundaries.
 
 ## World family boundary
 
@@ -69,10 +74,19 @@ is the audit unit.
 `ActorCtx` and do not require a live world. Trusted reads enter through
 `RuntimeApplication`; untrusted reads first pass `CommandGateway`.
 
-**CommandLedger/Dispatcher** durably admits, orders, leases, applies, retries,
-and settles tick-deferred commands. It does not own RBAC.
+**OperationRegistry** binds each exact operation model to its handler,
+permission, quota scope, availability, bounded summary, and optional durable
+materializer.
 
-**Audit** owns journals, transactional outboxes, and the analytical projection.
+**CommandDispatcher and Policy** own trusted versus actor-aware entry, RBAC,
+quotas, admission lifetime, and bounded access evidence.
+
+**CommandScheduler** durably admits, orders, leases, materializes, retries, and
+stages settlement for portable tick operations.
+
+**AuditLog** projects bounded access rows and transactional command outboxes
+into the analytical audit table. The command ledger and tick manifest remain
+authoritative.
 
 **MissionService** composes the mission family's task entities,
 relationships, processors, committed-intent outbox, and sandbox resource. The
@@ -87,9 +101,12 @@ terminal results from persisted `ManipStatus` rows. Environment and policy
 providers remain family-owned resources; callers reach this workflow through
 `ArchetypeRuntime`, never through raw service parameters.
 
-**RuntimeApplication** is the actor-free application facade consumed by the
-runtime and gateway. **CommandGateway** is the only ActorCtx-aware application
-boundary and is consumed by API/untrusted adapters only.
+**RuntimeApplication** is the temporary actor-free facade adapter consumed by
+the runtime. **CommandGateway** is the temporary transport-shaped,
+`ActorCtx`-aware adapter consumed by API/untrusted adapters. Registered
+world/audit methods on both construct the same exact family models and enter
+`CommandDispatcher`; a finite bridge still reaches `RuntimeApplication` for
+the staged workflows whose registrations land next.
 
 ## Trusted and authorized flow
 
@@ -98,45 +115,49 @@ Direct operation:
 ```text
 Runtime
   -> RuntimeApplication.<method>(...)
-  -> owning family workflow
+  -> CommandDispatcher.apply(exact operation)
+  -> OperationRegistry handler
 
 API
   -> CommandGateway.<method>(ctx, ...)
-  -> guardrail_allow
-  -> RuntimeApplication.<method>(...)
-  -> AuditJournal.record_access
+  -> CommandDispatcher.apply_as(ctx, exact operation)
+  -> Policy + OperationRegistry handler
+  -> AuditLog.record_access(bounded evidence)
 ```
 
 Tick-deferred operation:
 
 ```text
-RuntimeApplication or authorized gateway
+RuntimeApplication or CommandGateway adapter
+  -> CommandDispatcher.defer / defer_as
+  -> OperationRegistry durable eligibility
   -> CommandScheduler.admit
-  -> CommandLedger
+  -> control-catalog command ledger
   -> AsyncWorld construction-injected materializer
-  -> CommandDispatcher
-  -> lock-held world mutation + tick settlement
+  -> CommandScheduler.materialize(actual_world, tick)
+  -> registered lock-held materializer + tick settlement
 ```
 
 See [Data Flow](data-flow.md) for details.
 
 ## Creating a World
 
-`create_world` is an actor-free application operation; untrusted calls are
-authorized before delegation:
+`create_world` is a registered direct operation. Trusted and untrusted adapters
+construct the same `CreateWorld` model; actor-aware entry authorizes before
+the registered handler:
 
 ```text
 1. Runtime handle or authorized API route
-   -> RuntimeApplication.create_world(WorldConfig(...), storage, cache)
+   -> RuntimeApplication or CommandGateway adapter
 
-2. RuntimeApplication -> iWorldLifecycle.create_world(...)
+2. CommandDispatcher.apply / apply_as(CreateWorld(...))
 
-3. WorldLifecycle / build_world(...)
+3. Registered handler -> WorldLifecycle.create_world(...) / build_world(...)
    -> iStorageService backend triplet
    -> AsyncWorld(..., materialize_commands=...)
    -> WorldRegistry.insert(...)
 
-4. RuntimeApplication -> return WorldInfo
+4. Adapter -> return WorldInfo
 ```
 
 Runtime activation then adds staged processors, resources, and hooks through
@@ -156,6 +177,7 @@ See [API Layer](api-layer.md).
 
 - World state and behavior: `src/archetype/world/`
 - Container: `src/archetype/app/container.py`
+- Governed entry, scheduler, policy, and audit: `src/archetype/commands/`
 - Service protocols: `src/archetype/app/<family>/interfaces.py`
 - World ports: `src/archetype/world/interfaces.py`
 - Storage port: `src/archetype/storage/interfaces.py`

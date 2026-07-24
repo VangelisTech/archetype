@@ -556,6 +556,12 @@ iRuntimeApplication` for actor-free application execution.
 
 ### Command ledger, scheduler, and dispatcher
 
+- Every governed operation has one exact `OperationRegistry` entry containing
+  its model/discriminator, handler, permission, quota scope, availability,
+  bounded summary, and optional durable decoder/materializer.
+- Only `Spawn`, `SpawnReserved`, `Despawn`, `Update`, `AddComponents`, and
+  `RemoveComponents` have durable registrations. Direct-only, trusted-only,
+  and unregistered models MUST fail before scheduler persistence.
 - Deferred admission is durable before the caller receives `command_id`.
 - Commands are partitioned by world and ordered by a durable
   `(scheduled_tick, priority, sequence)` key.
@@ -572,28 +578,42 @@ iRuntimeApplication` for actor-free application execution.
 - A command becomes `APPLIED` only when the tick manifest that makes its effect
   visible is published. Manifest and outcome settlement are one control-plane
   transaction.
-- RBAC and quota admission happen only at `iCommandGateway`; trusted local
+- Actor-aware RBAC and quota admission happen in the commands-owned
+  `CommandDispatcher` and instance-owned `Policy`. Trusted dispatcher entry
+  MUST NOT fabricate an actor or authorization evidence; trusted durable
   admission records an explicit local origin.
 
 ### Command gateway
 
-- `iCommandGateway` is the policy enforcement point for untrusted operations.
-- Direct methods authorize, delegate to `iRuntimeApplication`, access-audit,
-  and return a result immediately.
-- `submit()` and `submit_batch()` are tick-deferred APIs. They return command IDs
-  and durably admit work for later application.
-- Generic deferred submission MUST accept only commands with a tick-boundary
-  dispatcher, plus the intentional `MESSAGE`, `CUSTOM`, and `QUERY_WORLD`
-  application envelopes. All other command types MUST be rejected before quota
-  debit, audit emission, or durable admission.
+- `iCommandGateway` is the temporary transport ingress for untrusted
+  operations. Registered methods construct the exact family model and call
+  `CommandDispatcher.apply_as`, `defer_as`, or their batch/spawn variants.
+- `CommandDispatcher` and `Policy` are the policy enforcement point. The
+  gateway MUST NOT own role tables, quota counters, scheduler state, or audit
+  storage.
+- A finite temporary gateway bridge MAY delegate the remaining staged
+  workflows to `iRuntimeApplication`, but it MUST use the same commands-owned
+  policy and MUST NOT provide generic dispatch.
+- `submit()` and `submit_batch()` are compatibility tick-deferred APIs. They
+  translate the supported finite envelope to an exact family model plus
+  `DurableOptions`, preserve caller command ID/version, and durably admit work
+  for later materialization.
+- Generic deferred submission MUST accept only exact portable tick operations.
+  Legacy `MESSAGE`, `CUSTOM`, and `QUERY_WORLD` envelopes and every direct-only
+  operation MUST be rejected before quota debit, audit emission, or scheduler
+  persistence.
 - `submit_spawn()` is the special case that reserves a world-local entity ID
-  before enqueue so `spawn()` can honestly return `entity_id`.
-- Reservation MUST be serialized per world.
-- `submit()`, `submit_batch()`, and `submit_spawn()` MUST reject submissions to
-  an unknown `world_id` by raising `archetype.errors.WorldNotFoundError`
-  before any quota debit, durable admission, or audit emit.
-- Command-family dispatch is the application boundary at tick time; the
-  gateway has no drain method.
+  through `CommandScheduler`, transforms `Spawn` into the internal exact
+  `SpawnReserved`, and returns the reserved identity honestly.
+- Reservation MUST be single-flight for one command identity; an identical
+  retry reuses the reservation and conflicting content fails.
+- Pure role denial MUST happen before world resolution, quota debit, durable
+  admission, family effects, or evidence. After authorization, unknown or
+  closing worlds MUST fail through the exact registry/catalog admission
+  boundary rather than create a command row.
+- `CommandScheduler.materialize(actual_world, tick)` is the durable application
+  boundary at tick time; neither gateway nor dispatcher acquires that world
+  again, and the gateway has no drain method.
 - World lifecycle operations use direct gated methods such as `create_world`,
   `fork_world`, and `destroy_world`.
 
@@ -654,21 +674,24 @@ retryable failures remain recoverable and exhausted failures become terminal.
   discovery. Exact process-local class identities take precedence over catalog
   reconstruction. Catalog outages degrade discovery to the process-local
   subset; mutable resume and commit-visibility checks remain strict.
-- Audit and command history are served by `iAuditLog` through the application
-  or authorized gateway boundary. Durable world query has no audit dependency.
+- Analytical audit history is served by commands-owned `AuditLog` through the
+  registered direct-only `GetAuditHistory` operation. Durable command records
+  remain available through `CommandScheduler.records`/`history`; durable world
+  query has no audit dependency.
 
 ### ServiceContainer and runtime lifetime
 
 - `ServiceContainer` is the internal process-scoped wiring root and the only
   app module that imports concrete implementations across families.
-- It exposes actor-free `application` and authorized `gateway` ports, owns the
-  command/control and audit infrastructure, and owns a `StorageService` it
-  creates while borrowing one supplied by a caller.
+- It exposes actor-free `application` and authorized `command_gateway`
+  adapters; composes one `OperationRegistry`, `Policy`, `CommandScheduler`,
+  `AuditLog`, and `CommandDispatcher`; and owns a `StorageService` it creates
+  while borrowing one supplied by a caller.
 - Container shutdown MUST be explicit and distinct from per-world removal.
-- Shutdown stops admission, drains admitted operations, stops command leasing,
-  reconciles audit projection, closes worlds, and then releases owned storage.
-  It attempts every phase and aggregates failures. Injected storage remains
-  caller-owned.
+- Shutdown stops dispatcher admission, drains admitted operations, projects
+  known command outboxes and flushes `AuditLog`, then releases owned storage.
+  It attempts every configured phase and aggregates failures. Injected storage
+  remains caller-owned.
 
 ## Multi-World Contracts
 

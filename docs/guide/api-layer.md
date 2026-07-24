@@ -2,9 +2,13 @@
 
 Archetype runs as a single `archetype serve` process. The API layer is a FastAPI application over the service layer, and the CLI is a thin HTTP client.
 
-External API operations enter through `iCommandGateway`. The gateway
-authorizes and delegates to the same actor-free `iRuntimeApplication` semantics
-used by the trusted runtime.
+External API operations enter through `iCommandGateway`. During the v0.5
+migration, `CommandGateway` is a transport-shaped adapter: registered
+world/audit methods construct exact family operation models and call the
+actor-aware `CommandDispatcher`, while a finite temporary bridge delegates the
+remaining staged workflows under the same commands-owned `Policy`. The trusted
+`RuntimeApplication` adapter constructs the same registered models and uses
+actor-free dispatcher entry.
 
 ## Application Factory
 
@@ -108,9 +112,11 @@ See [Execution Hierarchy](execution-hierarchy.md).
 | `/worlds/{id}/components` | GET | Lazily filter, limit, or count component projections |
 | `/worlds/{id}/history` | GET | Audit history through `get_audit_history` |
 
-Reads are authorized at `iCommandGateway`; `RuntimeApplication` delegates
-durable ECS reads to `archetype.world.query` and audit history to `iAuditLog`.
-Neither path requires a live world.
+Reads are authorized at `iCommandGateway`. The gateway and
+`RuntimeApplication` adapters construct registered query models;
+`CommandDispatcher` invokes handlers backed by `archetype.world.query` for
+durable ECS reads and commands-owned `AuditLog` for `GetAuditHistory`. Neither
+path requires a live world.
 Routes may import frozen supported values from `archetype.world.models`; they
 must not import world registry, lifecycle, mutation, simulation, query, or
 handler behavior directly.
