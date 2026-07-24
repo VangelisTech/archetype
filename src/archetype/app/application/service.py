@@ -12,21 +12,54 @@ authority.
 
 from __future__ import annotations
 
-import asyncio
-from contextlib import asynccontextmanager
-from contextvars import ContextVar
+import json
 from typing import TYPE_CHECKING
 
-from archetype.app.models import Command
-from archetype.world import handlers, mutation, query, simulation
-from archetype.world.models import ListHooks, ListProcessors, ListResources, WorldInfo
+from archetype.app.models import Command, deferred_operation
+from archetype.commands.models import DeferredItem, DurableOptions, GetAuditHistory
+from archetype.world import query, simulation
+from archetype.world.models import (
+    AddComponents,
+    AddHook,
+    AddProcessor,
+    AddResource,
+    ComponentTypeRef,
+    ComponentValue,
+    CreateEntities,
+    CreateWorld,
+    Despawn,
+    DestroyWorld,
+    DiscoverWorlds,
+    ForkWorld,
+    GetWorldInfo,
+    ListHooks,
+    ListProcessors,
+    ListResources,
+    ListSignatures,
+    ListWorlds,
+    ListWorldSignatures,
+    OpenWorldReadonly,
+    QueryArchetype,
+    QueryComponents,
+    RemoveComponents,
+    RemoveHook,
+    RemoveProcessor,
+    ReserveEntityIds,
+    ResumeWorld,
+    Run,
+    RunEpisode,
+    RunRollout,
+    Spawn,
+    SpawnReserved,
+    Step,
+    Update,
+    WorldInfo,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from archetype.app.artifacts.interfaces import iArtifactService
-    from archetype.app.audit.interfaces import iAuditLog
-    from archetype.app.commands.interfaces import iCommandScheduler
     from archetype.app.evaluation.interfaces import iEvaluationService
     from archetype.app.missions.interfaces import (
         iMissionService,
@@ -35,6 +68,8 @@ if TYPE_CHECKING:
     )
     from archetype.app.physical_ai.interfaces import iPhysicalAIService
     from archetype.app.research.interfaces import iResearchService
+    from archetype.commands.dispatch import CommandDispatcher
+    from archetype.commands.scheduler import CommandScheduler
     from archetype.physical_ai.contracts import (
         InstructionSweepConfig,
         InstructionSweepReport,
@@ -47,17 +82,21 @@ if TYPE_CHECKING:
     from archetype.world.interfaces import iWorldLifecycle, iWorldRegistry
 
 
-_ACTIVE_APPLICATION: ContextVar[RuntimeApplication | None] = ContextVar(
-    "archetype_active_application", default=None
-)
+def _component_values(components) -> tuple[ComponentValue, ...]:
+    return tuple(ComponentValue.from_component(component) for component in components)
 
 
-def _world_info(world) -> WorldInfo:
-    return WorldInfo(
-        world_id=world.world_id,
-        name=world.name,
-        tick=getattr(world, "tick", 0),
-        run_id=world.run_id,
+def _component_types(component_types) -> tuple[ComponentTypeRef, ...]:
+    return tuple(ComponentTypeRef.from_type(component_type) for component_type in component_types)
+
+
+def _input_kwargs_json(input_kwargs: dict) -> str:
+    return json.dumps(
+        input_kwargs,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
     )
 
 
@@ -70,8 +109,8 @@ class RuntimeApplication:
         registry: iWorldRegistry,
         lifecycle: iWorldLifecycle,
         storage: iStorageService,
-        commands: iCommandScheduler,
-        audit: iAuditLog | None = None,
+        dispatcher: CommandDispatcher,
+        scheduler: CommandScheduler,
         research: iResearchService | None = None,
         artifacts: iArtifactService | None = None,
         transcripts: iTranscriptIngestionService | None = None,
@@ -83,8 +122,8 @@ class RuntimeApplication:
         self._registry = registry
         self._lifecycle = lifecycle
         self._storage = storage
-        self._commands = commands
-        self._audit = audit
+        self._dispatcher = dispatcher
+        self._scheduler = scheduler
         self._research = research
         self._artifacts = artifacts
         self._transcripts = transcripts
@@ -93,125 +132,90 @@ class RuntimeApplication:
         self._physical_ai = physical_ai
         self._agent_missions = agent_missions
 
-        self._state_lock = asyncio.Lock()
-        self._drained = asyncio.Event()
-        self._drained.set()
-        self._active_operations = 0
-        self._accepting = True
-        self._create_lock = asyncio.Lock()
-
     def agent_mission_service(self, **kwargs) -> iMissionService:
         """Compose the internal mission workflow port for a trusted runtime handle."""
 
-        if not self._accepting:
-            raise RuntimeError("RuntimeApplication is shutting down")
         if self._agent_missions is None:
             raise RuntimeError("agent mission service is not wired")
         return self._agent_missions(**kwargs)
 
-    @asynccontextmanager
-    async def _admit(self):
-        """Track top-level process work without granting world authority.
-
-        ``_ACTIVE_APPLICATION`` is a temporary PR-4 nesting marker only.
-        Inherited child tasks must still acquire and validate the registry's
-        exact-world operation or cleanup lease.
-        """
-        if _ACTIVE_APPLICATION.get() is self:
-            yield
-            return
-
-        async with self._state_lock:
-            if not self._accepting:
-                raise RuntimeError("RuntimeApplication is shutting down")
-            self._active_operations += 1
-            self._drained.clear()
-
-        token = _ACTIVE_APPLICATION.set(self)
-        try:
-            yield
-        finally:
-            _ACTIVE_APPLICATION.reset(token)
-            async with self._state_lock:
-                self._active_operations -= 1
-                if self._active_operations == 0:
-                    self._drained.set()
-
     async def stop_admission(self) -> None:
         """Reject new top-level calls and wait for every admitted call."""
-        async with self._state_lock:
-            self._accepting = False
-        await self._drained.wait()
+        await self._dispatcher.stop_admission()
+        await self._dispatcher.wait_drained()
 
     # World mutations -------------------------------------------------
 
     async def create_entity(self, world_id, components):
-        async with self._admit():
-            return await mutation.create_entity(self._registry, world_id, components)
+        return await self._dispatcher.apply(
+            Spawn.from_components(world_id=world_id, components=components)
+        )
 
     async def create_entities(self, world_id, entities):
-        async with self._admit():
-            return await mutation.create_entities(self._registry, world_id, entities)
+        return await self._dispatcher.apply(
+            CreateEntities.from_entities(world_id=world_id, entities=entities)
+        )
 
     async def reserve_entity_ids(self, world_id, n: int) -> list[int]:
-        async with self._admit():
-            return await mutation.reserve_entity_ids(self._registry, world_id, n)
+        return await self._dispatcher.apply(ReserveEntityIds(world_id=world_id, count=n))
 
     async def spawn_with_reserved_id(self, world_id, entity_id, components):
-        async with self._admit():
-            return await mutation.spawn_with_reserved_id(
-                self._registry,
-                world_id,
-                entity_id,
-                components,
+        return await self._dispatcher.apply(
+            SpawnReserved(
+                world_id=world_id,
+                entity_id=entity_id,
+                components=_component_values(components),
             )
+        )
 
     async def remove_entity(self, world_id, entity_id):
-        async with self._admit():
-            return await mutation.remove_entity(self._registry, world_id, entity_id)
+        return await self._dispatcher.apply(Despawn(world_id=world_id, entity_id=entity_id))
 
     async def update_entity(self, world_id, entity_id, components):
-        async with self._admit():
-            return await mutation.update_entity(
-                self._registry,
-                world_id,
-                entity_id,
-                components,
+        return await self._dispatcher.apply(
+            Update(
+                world_id=world_id,
+                entity_id=entity_id,
+                components=_component_values(components),
             )
+        )
 
     async def add_components(self, world_id, entity_id, components):
-        async with self._admit():
-            return await mutation.add_components(
-                self._registry,
-                world_id,
-                entity_id,
-                components,
+        return await self._dispatcher.apply(
+            AddComponents(
+                world_id=world_id,
+                entity_id=entity_id,
+                components=_component_values(components),
             )
+        )
 
     async def remove_components(self, world_id, entity_id, component_types):
-        async with self._admit():
-            return await mutation.remove_components(
-                self._registry,
-                world_id,
-                entity_id,
-                component_types,
+        return await self._dispatcher.apply(
+            RemoveComponents(
+                world_id=world_id,
+                entity_id=entity_id,
+                component_types=_component_types(component_types),
             )
+        )
 
     async def add_processor(self, world_id, processor):
-        async with self._admit():
-            return await mutation.add_processor(self._registry, world_id, processor)
+        return await self._dispatcher.apply(AddProcessor(world_id=world_id, processor=processor))
 
     async def remove_processor(self, world_id, proc_type):
-        async with self._admit():
-            return await mutation.remove_processor(self._registry, world_id, proc_type)
+        return await self._dispatcher.apply(
+            RemoveProcessor(world_id=world_id, processor_type=proc_type)
+        )
 
     # World lifecycle -------------------------------------------------
 
     async def create_world(self, config, storage_config=None, cache_config=None) -> WorldInfo:
-        async with self._admit(), self._create_lock:
-            return _world_info(
-                await self._lifecycle.create_world(config, storage_config, cache_config)
+        return await self._dispatcher.apply(
+            CreateWorld(
+                config=config,
+                storage_config=storage_config,
+                cache_config=cache_config,
             )
+        )
 
     async def fork_world(
         self,
@@ -221,113 +225,90 @@ class RuntimeApplication:
         storage_config=None,
         cache_config=None,
     ) -> WorldInfo:
-        async with self._admit():
-            return _world_info(
-                await self._lifecycle.fork_world(
-                    source_world_id,
-                    name,
-                    storage_config,
-                    cache_config,
-                )
+        return await self._dispatcher.apply(
+            ForkWorld(
+                source_world_id=source_world_id,
+                name=name,
+                storage_config=storage_config,
+                cache_config=cache_config,
             )
+        )
 
     async def destroy_world(self, world_id) -> None:
-        async with self._admit():
-            try:
-                lease = await self._registry.begin_close(str(world_id))
-            except KeyError:
-                # Destroy remains idempotent when no live world is bound.
-                return
-            async with self._registry.cleanup_operation(lease) as world:
-                await simulation.reconcile_committed_work_locked(
-                    self._registry,
-                    str(world_id),
-                    world,
-                )
-                await self._commands.cancel_world(world_id)
-            await self._lifecycle.destroy_world(world_id, lease=lease)
+        await self._dispatcher.apply(DestroyWorld(world_id=world_id))
 
-    async def get_world_info(self, world_id) -> WorldInfo:
-        async with self._admit(), self._registry.operation(str(world_id)) as world:
+    async def _destroy_world_owned(self, world_id) -> None:
+        """Finish one already-owned teardown without recursive admission."""
+        try:
+            lease = await self._registry.begin_close(str(world_id))
+        except KeyError:
+            # Destroy remains idempotent when no live world is bound.
+            return
+        async with self._registry.cleanup_operation(lease) as world:
             await simulation.reconcile_committed_work_locked(
                 self._registry,
                 str(world_id),
                 world,
             )
-            return _world_info(world)
+            await self._scheduler.cancel_world(world_id)
+        await self._lifecycle.destroy_world(world_id, lease=lease)
+
+    async def get_world_info(self, world_id) -> WorldInfo:
+        return await self._dispatcher.apply(GetWorldInfo(world_id=world_id))
 
     async def list_worlds(self) -> list[WorldInfo]:
-        async with self._admit():
-            snapshot = await self._registry.list_worlds()
-            world_ids = [str(world.world_id) for world in snapshot]
-            infos: list[WorldInfo] = []
-            # Reconcile each snapshotted world under its own lock. Recovery
-            # runs user hooks and required projectors, so holding sibling
-            # locks here could deadlock a callback that targets another world.
-            # A close racing the snapshot fails the whole call closed.
-            for world_id in world_ids:
-                async with self._registry.operation(world_id) as world:
-                    await simulation.reconcile_committed_work_locked(
-                        self._registry,
-                        world_id,
-                        world,
-                    )
-                    infos.append(_world_info(world))
-            return infos
+        return await self._dispatcher.apply(ListWorlds())
 
     async def discover_worlds(self, storage_config) -> list[WorldInfo]:
-        async with self._admit():
-            return await self._lifecycle.discover_worlds(storage_config)
+        return await self._dispatcher.apply(DiscoverWorlds(storage_config=storage_config))
 
     async def open_world_readonly(self, storage_config, world_id) -> WorldInfo:
-        async with self._admit():
-            return await self._lifecycle.open_world_readonly(storage_config, world_id)
+        return await self._dispatcher.apply(
+            OpenWorldReadonly(storage_config=storage_config, world_id=world_id)
+        )
 
     async def resume_world(self, storage_config, world_id) -> WorldInfo:
-        async with self._admit():
-            return _world_info(await self._lifecycle.open_world_mutable(storage_config, world_id))
+        return await self._dispatcher.apply(
+            ResumeWorld(storage_config=storage_config, world_id=world_id)
+        )
 
     # Simulation and long workflows ----------------------------------
 
     async def step(self, world_id, run_config, **input_kwargs) -> int:
-        async with self._admit():
-            return await simulation.step(
-                self._registry,
-                world_id,
-                run_config,
-                **input_kwargs,
+        return await self._dispatcher.apply(
+            Step(
+                world_id=world_id,
+                run_config=run_config,
+                input_kwargs_json=_input_kwargs_json(input_kwargs),
             )
+        )
 
     async def run(self, world_id, run_config, **input_kwargs):
-        async with self._admit():
-            return await simulation.run(
-                self._registry,
-                world_id,
-                run_config,
-                **input_kwargs,
+        return await self._dispatcher.apply(
+            Run(
+                world_id=world_id,
+                run_config=run_config,
+                input_kwargs_json=_input_kwargs_json(input_kwargs),
             )
+        )
 
     async def run_episode(self, world_id, config, **input_kwargs):
-        async with self._admit():
-            return await simulation.run_episode(
-                self._registry,
-                self._storage,
-                world_id,
-                config,
-                **input_kwargs,
+        return await self._dispatcher.apply(
+            RunEpisode(
+                world_id=world_id,
+                config=config,
+                input_kwargs_json=_input_kwargs_json(input_kwargs),
             )
+        )
 
     async def run_rollout(self, world_id, config, **input_kwargs):
-        async with self._admit():
-            return await simulation.run_rollout(
-                self._registry,
-                self._storage,
-                self._lifecycle.fork_world,
-                self.destroy_world,
-                world_id,
-                config,
-                **input_kwargs,
+        return await self._dispatcher.apply(
+            RunRollout(
+                world_id=world_id,
+                config=config,
+                input_kwargs_json=_input_kwargs_json(input_kwargs),
             )
+        )
 
     async def autoresearch(
         self,
@@ -341,15 +322,14 @@ class RuntimeApplication:
     ):
         if self._research is None:
             raise RuntimeError("research service is not wired")
-        async with self._admit():
-            return await self._research.run(
-                world_id,
-                config,
-                evaluator,
-                prepare_candidate=prepare_candidate,
-                lab_world_id=lab_world_id,
-                on_iteration=on_iteration,
-            )
+        return await self._research.run(
+            world_id,
+            config,
+            evaluator,
+            prepare_candidate=prepare_candidate,
+            lab_world_id=lab_world_id,
+            on_iteration=on_iteration,
+        )
 
     async def evaluate_physical_task(
         self,
@@ -362,12 +342,11 @@ class RuntimeApplication:
 
         if self._physical_ai is None:
             raise RuntimeError("physical AI service is not wired")
-        async with self._admit():
-            return await self._physical_ai.evaluate_task(
-                config,
-                env_client=env_client,
-                policy_client=policy_client,
-            )
+        return await self._physical_ai.evaluate_task(
+            config,
+            env_client=env_client,
+            policy_client=policy_client,
+        )
 
     async def sweep_physical_instructions(
         self,
@@ -380,12 +359,11 @@ class RuntimeApplication:
 
         if self._physical_ai is None:
             raise RuntimeError("physical AI service is not wired")
-        async with self._admit():
-            return await self._physical_ai.sweep_instructions(
-                config,
-                env_client=env_client,
-                policy_client=policy_client,
-            )
+        return await self._physical_ai.sweep_instructions(
+            config,
+            env_client=env_client,
+            policy_client=policy_client,
+        )
 
     # Query and introspection ----------------------------------------
 
@@ -420,18 +398,16 @@ class RuntimeApplication:
         ticks=None,
         entity_ids=None,
     ):
-        async with self._admit():
-            storage_config = await self._resolve_storage(world_id, storage_config)
-            return await query.query_components(
-                self._storage,
-                components,
-                str(world_id),
-                str(run_id),
-                storage_config,
-                ticks=ticks,
-                entity_ids=entity_ids,
-                lineage=await self._resolve_lineage(world_id, run_id, storage_config),
+        return await self._dispatcher.apply(
+            QueryComponents(
+                components=_component_types(components),
+                world_id=world_id,
+                run_id=run_id,
+                storage_config=storage_config,
+                ticks=tuple(ticks) if ticks is not None else None,
+                entity_ids=tuple(entity_ids) if entity_ids is not None else None,
             )
+        )
 
     async def query_archetype(
         self,
@@ -444,114 +420,93 @@ class RuntimeApplication:
         entity_ids=None,
         components=None,
     ):
-        async with self._admit():
-            storage_config = await self._resolve_storage(world_id, storage_config)
-            return await query.query_archetype(
-                self._storage,
-                sig,
-                str(world_id),
-                str(run_id),
-                storage_config,
-                ticks=ticks,
-                entity_ids=entity_ids,
-                components=components,
-                lineage=await self._resolve_lineage(world_id, run_id, storage_config),
+        return await self._dispatcher.apply(
+            QueryArchetype(
+                signature=_component_types(sig),
+                world_id=world_id,
+                run_id=run_id,
+                storage_config=storage_config,
+                ticks=tuple(ticks) if ticks is not None else None,
+                entity_ids=tuple(entity_ids) if entity_ids is not None else None,
+                components=(_component_types(components) if components is not None else None),
             )
+        )
 
     async def list_signatures(self, storage_config=None, *, world_id=None):
-        async with self._admit():
-            if world_id is not None:
-                storage_config = await self._resolve_storage(world_id, storage_config)
-            return await query.list_signatures(self._storage, storage_config)
+        if world_id is None:
+            return await self._dispatcher.apply(ListSignatures(storage_config=storage_config))
+        return await self._dispatcher.apply(
+            ListWorldSignatures(
+                world_id=world_id,
+                storage_config=storage_config,
+            )
+        )
 
     async def add_resource(self, world_id, resource):
-        async with self._admit():
-            return await mutation.add_resource(self._registry, world_id, resource)
+        return await self._dispatcher.apply(AddResource(world_id=world_id, resource=resource))
 
     async def add_hook(self, world_id, event_type, fn, *, mode="blocking"):
-        async with self._admit():
-            return await mutation.add_hook(
-                self._registry,
-                world_id,
-                event_type,
-                fn,
+        return await self._dispatcher.apply(
+            AddHook(
+                world_id=world_id,
+                event_type=event_type,
+                handler=fn,
                 mode=mode,
             )
+        )
 
     async def remove_hook(self, world_id, handle):
-        async with self._admit():
-            return await mutation.remove_hook(self._registry, world_id, handle)
+        return await self._dispatcher.apply(RemoveHook(world_id=world_id, handle=handle))
 
     async def list_processors(self, world_id):
-        async with self._admit():
-            return await handlers.list_processors(
-                self._registry,
-                ListProcessors(world_id=world_id),
-            )
+        return await self._dispatcher.apply(ListProcessors(world_id=world_id))
 
     async def list_hooks(self, world_id):
-        async with self._admit():
-            return await handlers.list_hooks(
-                self._registry,
-                ListHooks(world_id=world_id),
-            )
+        return await self._dispatcher.apply(ListHooks(world_id=world_id))
 
     async def list_resources(self, world_id):
-        async with self._admit():
-            return await handlers.list_resources(
-                self._registry,
-                ListResources(world_id=world_id),
-            )
+        return await self._dispatcher.apply(ListResources(world_id=world_id))
 
     async def get_audit_history(self, world_id=None, **filters):
-        async with self._admit():
-            if self._audit is None:
-                return []
-            return await self._audit.query(world_id=world_id, **filters)
+        if world_id is None:
+            raise ValueError("world_id is required for command audit history")
+        return await self._dispatcher.apply(GetAuditHistory(world_id=world_id, **filters))
 
     # Artifacts and evaluation --------------------------------------
 
     async def ingest_artifacts(self, world_id, sources, *, storage_config=None):
         if self._artifacts is None:
             raise RuntimeError("artifact service is not wired")
-        async with self._admit():
-            return await self._artifacts.ingest(
-                str(world_id),
-                sources,
-                storage_config=storage_config,
-            )
+        return await self._artifacts.ingest(
+            str(world_id),
+            sources,
+            storage_config=storage_config,
+        )
 
     async def ingest_claude_transcript(self, world_id, source, *, storage_config=None):
         if self._transcripts is None:
             raise RuntimeError("transcript ingestion service is not wired")
-        async with self._admit():
-            return await self._transcripts.ingest(
-                str(world_id), source, storage_config=storage_config
-            )
+        return await self._transcripts.ingest(str(world_id), source, storage_config=storage_config)
 
     async def query_transcript_rows(self, world_id, *, storage_config=None):
         if self._transcripts is None:
             raise RuntimeError("transcript ingestion service is not wired")
-        async with self._admit():
-            return await self._transcripts.read(str(world_id), storage_config=storage_config)
+        return await self._transcripts.read(str(world_id), storage_config=storage_config)
 
     async def query_artifacts(self, world_id, *, storage_config=None):
         if self._artifacts is None:
             raise RuntimeError("artifact service is not wired")
-        async with self._admit():
-            return await self._artifacts.index(str(world_id), storage_config=storage_config)
+        return await self._artifacts.index(str(world_id), storage_config=storage_config)
 
     async def run_graders(self, df, graders):
         if self._evaluations is None:
             raise RuntimeError("evaluation service is not wired")
-        async with self._admit():
-            return await self._evaluations.run_graders(df, graders)
+        return await self._evaluations.run_graders(df, graders)
 
     async def evaluate(self, world_id, components, **kwargs):
         if self._evaluations is None:
             raise RuntimeError("evaluation service is not wired")
-        async with self._admit():
-            return await self._evaluations.evaluate(str(world_id), components, **kwargs)
+        return await self._evaluations.evaluate(str(world_id), components, **kwargs)
 
     async def query_trajectory(
         self,
@@ -563,16 +518,15 @@ class RuntimeApplication:
     ):
         if self._trajectories is None:
             raise RuntimeError("trajectory service is not wired")
-        async with self._admit():
-            storage_config = await self._resolve_storage(world_id, storage_config)
-            return await self._trajectories.query(
-                component,
-                world_id=str(world_id),
-                run_id=str(run_id),
-                storage_config=storage_config,
-                lineage=await self._resolve_lineage(world_id, run_id, storage_config),
-                **kwargs,
-            )
+        storage_config = await self._resolve_storage(world_id, storage_config)
+        return await self._trajectories.query(
+            component,
+            world_id=str(world_id),
+            run_id=str(run_id),
+            storage_config=storage_config,
+            lineage=await self._resolve_lineage(world_id, run_id, storage_config),
+            **kwargs,
+        )
 
     async def grade_trajectory(
         self,
@@ -586,26 +540,24 @@ class RuntimeApplication:
     ):
         if self._trajectories is None:
             raise RuntimeError("trajectory service is not wired")
-        async with self._admit():
-            storage_config = await self._resolve_storage(world_id, storage_config)
-            return await self._trajectories.grade(
-                component,
-                world_id=str(world_id),
-                run_id=str(run_id),
-                graders=graders,
-                storage_config=storage_config,
-                lineage=await self._resolve_lineage(world_id, run_id, storage_config),
-                **kwargs,
-            )
+        storage_config = await self._resolve_storage(world_id, storage_config)
+        return await self._trajectories.grade(
+            component,
+            world_id=str(world_id),
+            run_id=str(run_id),
+            graders=graders,
+            storage_config=storage_config,
+            lineage=await self._resolve_lineage(world_id, run_id, storage_config),
+            **kwargs,
+        )
 
     # Deferred commands ---------------------------------------------
 
     async def require_world(self, world_id) -> None:
-        async with self._admit():
-            await self._commands.require_world(world_id)
+        await self._dispatcher.apply(GetWorldInfo(world_id=world_id))
 
     def validate_deferred_command(self, command: Command) -> None:
-        self._commands.validate_deferred(command)
+        deferred_operation("__validation__", command)
 
     async def submit(
         self,
@@ -615,13 +567,15 @@ class RuntimeApplication:
         principal_id=None,
         origin: str = "local",
     ):
-        async with self._admit():
-            return await self._commands.admit(
-                world_id,
-                command,
-                principal_id=principal_id,
-                origin=origin,
-            )
+        if principal_id is not None or origin != "local":
+            raise ValueError("actor-aware deferred admission must use CommandGateway")
+        operation, options = deferred_operation(world_id, command)
+        return await self._dispatcher.defer(
+            operation,
+            options,
+            command_id=command.id,
+            version=command.version,
+        )
 
     async def submit_batch(
         self,
@@ -631,13 +585,19 @@ class RuntimeApplication:
         principal_id=None,
         origin: str = "local",
     ):
-        async with self._admit():
-            return await self._commands.admit_batch(
-                world_id,
-                commands,
-                principal_id=principal_id,
-                origin=origin,
+        if principal_id is not None or origin != "local":
+            raise ValueError("actor-aware deferred admission must use CommandGateway")
+        items = tuple(
+            DeferredItem(
+                operation=operation,
+                options=options,
+                command_id=command.id,
+                version=command.version,
             )
+            for command in commands
+            for operation, options in (deferred_operation(world_id, command),)
+        )
+        return await self._dispatcher.defer_batch(items)
 
     async def submit_spawn(
         self,
@@ -649,12 +609,9 @@ class RuntimeApplication:
         principal_id=None,
         origin: str = "local",
     ):
-        async with self._admit():
-            return await self._commands.admit_spawn(
-                world_id,
-                components,
-                tick=tick,
-                priority=priority,
-                principal_id=principal_id,
-                origin=origin,
-            )
+        if principal_id is not None or origin != "local":
+            raise ValueError("actor-aware deferred admission must use CommandGateway")
+        return await self._dispatcher.defer_spawn(
+            Spawn.from_components(world_id=world_id, components=components),
+            DurableOptions(target_tick=tick, priority=priority),
+        )
