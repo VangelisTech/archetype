@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
+import shutil
 import subprocess
 import tomllib
 from pathlib import Path
@@ -19,6 +21,7 @@ from scripts.run_operational_scenarios import run_scenarios
 ROOT = Path(__file__).resolve().parents[2]
 QUALITY_WORKFLOW = ROOT / ".github" / "workflows" / "python-tests.yml"
 AUTOMERGE_WORKFLOW = ROOT / ".github" / "workflows" / "automerge.yml"
+QUEUE_READY_HELPER = ROOT / "scripts" / "gh_pr_queue_ready.sh"
 MAKEFILE = ROOT / "Makefile"
 OPERATIONAL_SCENARIOS = ROOT / "quality" / "operational_scenarios.toml"
 
@@ -31,6 +34,35 @@ def _job(workflow: str, job_id: str) -> str:
     )
     assert match is not None, f"workflow lost the {job_id!r} job"
     return match.group("body")
+
+
+def _job_ids(workflow: str) -> list[str]:
+    """Every job in the workflow, so new jobs inherit the checks by default."""
+    _, _, jobs = workflow.partition("\njobs:\n")
+    assert jobs, "workflow lost its jobs: block"
+    ids = re.findall(r"^  ([a-z][a-z0-9-]*):$", jobs, re.MULTILINE)
+    assert ids, "workflow declares no jobs"
+    return ids
+
+
+def _code_only(text: str) -> str:
+    """Drop whole-line comments.
+
+    Assertions must bind to what runs, not to prose about what runs. A comment
+    that quotes the very expression it explains — as the ones in this workflow
+    do — otherwise satisfies the assertion after the code has been deleted.
+    """
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+
+_HELPER_PATH = QUEUE_READY_HELPER.relative_to(ROOT).as_posix()
+
+
+def _helper_call(head_sha: str = r"\w+") -> re.Pattern[str]:
+    """Match a real three-argument invocation, not a bare mention of the path."""
+    return re.compile(
+        rf'{re.escape(_HELPER_PATH)} "\$\{{GITHUB_REPOSITORY\}}" "\$\{{\w+\}}" "\$\{{{head_sha}\}}"'
+    )
 
 
 def test_quality_workflow_preserves_active_required_context_names() -> None:
@@ -409,16 +441,311 @@ def test_quality_gate_aggregates_every_applicable_job() -> None:
         assert f"      - {job_id}\n" in gate
 
 
+# The four tests below protect ONE invariant, split by the file that owns each
+# half: auto-merge may only ever be armed for a head whose latest review verdict
+# passed cleanly, and the arm must not survive that verdict changing.
+#
+#   * `scripts/gh_pr_queue_ready.sh` owns the *decision* — latest-run-wins on the
+#     exact head, plus zero open non-outdated threads, failing closed on doubt.
+#   * `.github/workflows/automerge.yml` owns the *plumbing* — which events
+#     re-evaluate arming, that every arm/guard/dequeue path delegates the
+#     decision to that one script, and that the sha it arms is the sha it
+#     checked.
+#
+# If the decision logic moves again, re-anchor these assertions to the file that
+# owns it afterwards — do NOT copy the string literals across. Mirroring
+# literals is how this test broke in the first place: it pinned workflow text
+# that had since moved into the helper, so the test failed while the behaviour
+# it guards was intact. Assert the property, in its home, against a value
+# derived from the file — never a copy of a line that lives somewhere else.
+
+
+def test_queue_ready_helper_owns_latest_run_wins_and_fails_closed() -> None:
+    helper = QUEUE_READY_HELPER.read_text(encoding="utf-8")
+
+    # Latest run wins. review-complete can be re-run on an unchanged head, so
+    # ordering the check runs and taking the newest is what stops a stale
+    # success outvoting a fresh failure.
+    assert "sort_by(.started_at) | last" in helper
+
+    # The verdict is read for the sha the caller passed, never for whatever
+    # GitHub currently calls the PR head.
+    sha_arg = re.search(r'^(\w+)="\$3"$', helper, re.MULTILINE)
+    assert sha_arg is not None, "helper no longer takes the head sha as its third argument"
+    assert re.search(rf"commits/\$\{{{sha_arg.group(1)}\}}/check-runs", helper)
+    assert "check_name=review-complete" in helper
+
+    # Fail closed. Only an explicit success is ready; a missing conclusion, an
+    # API error, and an unparsable thread count all land on the not-ready path.
+    assert re.search(r'!=\s*"success"', helper)
+    assert "refusing to treat as queue-ready" in helper
+    assert "isResolved == false and .isOutdated == false" in helper
+
+    # Exit-code contract: exactly one success exit, and it is the last word of
+    # the script — every guard above it exits non-zero.
+    assert re.findall(r"^exit 0$", helper, re.MULTILINE) == ["exit 0"]
+    assert helper.rstrip().endswith("exit 0")
+
+
+# The tests below run the helper for real against a stubbed `gh`, so they
+# assert the decision it reaches rather than the text of its queries. The stub
+# evaluates the helper's own `--jq` filters with real jq, which is what makes
+# "did it even ask for hasNextPage?" observable without pinning the query.
+_STUB_HEAD_SHA = "0" * 40
+_STUB_REPO = "VangelisTech/archetype"
+_STUB_PR = "654"
+
+# `gh api [graphql] ... --jq FILTER` reduced to: pick the canned payload for
+# whichever endpoint was called, then apply the filter the helper passed.
+#
+# GraphQL returns only the fields the query selected, so the stub prunes
+# pageInfo when the query did not ask for it. Without that, a helper that
+# reads `.pageInfo.hasNextPage` while querying only `nodes` would still be
+# handed a value here and would look correct against a server that would
+# never have sent one.
+_GH_STUB = """#!/bin/sh
+filter='.'
+query=''
+prev=''
+for arg in "$@"; do
+  if [ "$prev" = "--jq" ]; then filter="$arg"; fi
+  case "$arg" in query=*) query="$arg" ;; esac
+  prev="$arg"
+done
+
+payload="$QUEUE_READY_STUB_DIR/check_runs.json"
+case " $* " in
+  *" graphql "*)
+    payload="$QUEUE_READY_STUB_DIR/graphql.json"
+    # Inspect the QUERY, not the whole argv: the --jq filter names the same
+    # fields, so matching on argv would report every field as selected.
+    case "$query" in
+      *pageInfo*) ;;
+      *) jq 'del(.data.repository.pullRequest.reviewThreads.pageInfo)' "$payload" \
+           > "$QUEUE_READY_STUB_DIR/pruned.json"
+         payload="$QUEUE_READY_STUB_DIR/pruned.json" ;;
+    esac
+    ;;
+esac
+exec jq -r "$filter" "$payload"
+"""
+
+
+def _thread(*, resolved: bool, outdated: bool = False) -> dict[str, bool]:
+    return {"isResolved": resolved, "isOutdated": outdated}
+
+
+def _run_queue_ready(
+    tmp_path: Path,
+    *,
+    threads: list[dict[str, bool]],
+    has_next_page: bool,
+    review_conclusion: str = "success",
+) -> subprocess.CompletedProcess[str]:
+    """Run the real helper with `gh` stubbed to serve the given API responses."""
+    if shutil.which("jq") is None:
+        pytest.skip("jq is required to evaluate the helper's own --jq filters")
+
+    stub_dir = tmp_path / "stubs"
+    bin_dir = tmp_path / "bin"
+    stub_dir.mkdir()
+    bin_dir.mkdir()
+
+    (stub_dir / "check_runs.json").write_text(
+        json.dumps(
+            {
+                "check_runs": [
+                    {"started_at": "2026-07-24T10:00:00Z", "conclusion": review_conclusion}
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (stub_dir / "graphql.json").write_text(
+        json.dumps(
+            {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {
+                                "pageInfo": {"hasNextPage": has_next_page},
+                                "nodes": threads,
+                            }
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    gh = bin_dir / "gh"
+    gh.write_text(_GH_STUB, encoding="utf-8")
+    gh.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env["QUEUE_READY_STUB_DIR"] = str(stub_dir)
+    return subprocess.run(
+        [str(QUEUE_READY_HELPER), _STUB_REPO, _STUB_PR, _STUB_HEAD_SHA],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+def test_queue_ready_refuses_a_truncated_review_thread_page(tmp_path: Path) -> None:
+    """Truncation is a clean response, so no other guard can catch it."""
+    # 100 returned threads, all resolved, and more beyond the page. Every
+    # unresolved thread could be sitting past node 100 — the count is a valid
+    # integer over an incomplete set, so nothing "fails" and the helper would
+    # otherwise call this queue-ready and arm a blocked PR.
+    result = _run_queue_ready(
+        tmp_path,
+        threads=[_thread(resolved=True) for _ in range(100)],
+        has_next_page=True,
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "queue-ready" != result.stdout.strip()
+    assert "refusing to treat as queue-ready" in result.stdout
+
+
+def test_queue_ready_accepts_a_complete_page_with_every_thread_resolved(tmp_path: Path) -> None:
+    """Control: the truncation refusal must not swallow the ready path."""
+    result = _run_queue_ready(
+        tmp_path,
+        threads=[_thread(resolved=True), _thread(resolved=False, outdated=True)],
+        has_next_page=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == "queue-ready"
+
+
+def test_queue_ready_still_counts_unresolved_threads_on_a_complete_page(tmp_path: Path) -> None:
+    result = _run_queue_ready(
+        tmp_path,
+        threads=[_thread(resolved=False), _thread(resolved=False), _thread(resolved=True)],
+        has_next_page=False,
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "2 unresolved review thread(s) remain" in result.stdout
+
+
+def test_queue_ready_refuses_a_head_whose_review_did_not_pass(tmp_path: Path) -> None:
+    result = _run_queue_ready(
+        tmp_path,
+        threads=[],
+        has_next_page=False,
+        review_conclusion="failure",
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "no authoritative passing review-complete" in result.stdout
+
+
 def test_automerge_remains_bound_to_latest_reviewed_head() -> None:
     workflow = AUTOMERGE_WORKFLOW.read_text(encoding="utf-8")
 
+    # Every new head and every review signal re-evaluates arming.
     assert (
         "types: [opened, synchronize, reopened, ready_for_review, auto_merge_enabled]" in workflow
     )
     assert 'workflows: ["Deterministic Review Gate"]' in workflow
     assert "github.event.workflow_run.conclusion == 'success'" in workflow
     assert "github.event.workflow_run.head_repository.full_name == github.repository" in workflow
-    assert "sort_by(.started_at) | last | .conclusion // empty" in workflow
-    assert r".headRefOid == \"${HEAD_SHA}\"" in workflow
-    assert ".isDraft | not" in workflow
-    assert 'gh pr merge --auto --squash --repo "${GITHUB_REPOSITORY}" "$pr"' in workflow
+
+    # Every job that decides whether an arm may stand runs the one helper and
+    # branches on its exit status, instead of re-deriving readiness inline...
+    for job_id in ("guard", "arm", "dequeue"):
+        body = _code_only(_job(workflow, job_id))
+        assert _helper_call().search(body), (
+            f"the {job_id!r} job stopped invoking {_HELPER_PATH} for its decision"
+        )
+        assert "status=$?" in body, f"the {job_id!r} job ignores the queue-ready verdict"
+    # ...and the decision has not leaked back into the workflow.
+    assert "check_name=review-complete" not in workflow
+    assert "reviewThreads" not in workflow
+
+    arm = _code_only(_job(workflow, "arm"))
+    head_match = re.search(r'\.headRefOid == \\"\$\{?(\w+)\}?\\"', arm)
+    assert head_match is not None, "the arm job no longer resolves the PR by matching its head sha"
+    # The sha the PR was matched on is the sha readiness is checked for: an arm
+    # is never granted on one head's verdict and applied to another.
+    assert _helper_call(head_sha=head_match.group(1)).search(arm), (
+        "the arm job checks readiness for a different sha than the one it matched the PR on"
+    )
+
+    # Both PR-resolution paths (workflow_run and review) filter, so a new path
+    # cannot quietly arm a draft or a non-maintainer PR.
+    pr_filters = re.findall(r"select\((.+?)\)\s*\|", arm, re.DOTALL)
+    assert pr_filters, "the arm job no longer filters the PRs it resolves"
+    for pr_filter in pr_filters:
+        assert ".isDraft | not" in pr_filter
+        assert "author.login" in pr_filter
+        # Conjunction, never disjunction: an `or` would make either predicate
+        # optional and arm exactly what the other one exists to exclude.
+        assert " or " not in pr_filter
+
+    # ...and both agree on state, by whichever mechanism each path has. gh pr
+    # view serves closed and merged PRs, and neither is ever isDraft, so
+    # without an explicit state check the review path would try to arm a PR
+    # that can no longer be merged.
+    assert "--state open" in arm, "the gh pr list path stopped restricting to open PRs"
+    assert '.state == "OPEN"' in arm, "the review path stopped restricting to open PRs"
+
+    assert 'gh pr merge --auto --squash --repo "${GITHUB_REPOSITORY}" "$pr"' in arm
+
+
+def test_automerge_runs_repo_scripts_from_the_trusted_default_branch() -> None:
+    """A PR must not be able to edit the script that judges it."""
+    workflow = AUTOMERGE_WORKFLOW.read_text(encoding="utf-8")
+
+    checked = 0
+    for job_id in _job_ids(workflow):
+        body = _code_only(_job(workflow, job_id))
+        if "scripts/" not in body:
+            continue
+        checked += 1
+        # `actions/checkout` without `ref:` follows GITHUB_SHA, which is the PR
+        # merge ref on pull_request and pull_request_review* events.
+        assert "ref: ${{ github.event.repository.default_branch }}" in body, (
+            f"the {job_id!r} job executes a repo script from an untrusted checkout"
+        )
+    assert checked, "no job executes a repo script; re-anchor this test"
+
+
+def test_automerge_triggers_are_real_github_actions_events() -> None:
+    """A webhook name Actions does not support invalidates the whole file."""
+    workflow = AUTOMERGE_WORKFLOW.read_text(encoding="utf-8")
+
+    # `pull_request_review_thread` is an Apps-only webhook. Naming it in `on:`
+    # makes GitHub reject the file outright: no job runs, every push gets a
+    # bare "Invalid workflow file" run, and the arming gate silently does
+    # nothing at all. Actions has no trigger for thread resolution — do not
+    # reintroduce one. See the workflow header.
+    assert "pull_request_review_thread:" not in workflow
+
+
+def test_automerge_disarms_when_new_findings_land_on_an_armed_pr() -> None:
+    workflow = AUTOMERGE_WORKFLOW.read_text(encoding="utf-8")
+
+    # The #646 -> #647 race: findings arrived after review-complete passed,
+    # while the PR was already armed and queue-locked. A submitted review is
+    # the signal Actions actually delivers for that.
+    assert "  pull_request_review:\n    types: [submitted, edited, dismissed]\n" in workflow
+
+    dequeue = _code_only(_job(workflow, "dequeue"))
+    assert "github.event_name == 'pull_request_review'" in dequeue
+    # Judged on what would actually merge, not on the event's cached head.
+    assert "--json headRefOid" in dequeue
+    # Disarm is verified by reading autoMergeRequest back, not by exit code:
+    # `--disable-auto` exits nonzero on the benign already-unarmed no-op.
+    assert dequeue.count("--json autoMergeRequest --jq '.autoMergeRequest // empty'") >= 2
+    assert "gh pr merge --disable-auto" in dequeue
+    # Both outcomes are distinguishable in the log (the #645 shepherd failure).
+    assert "nothing to disarm" in dequeue
+    assert "auto-merge disarmed on new findings" in dequeue

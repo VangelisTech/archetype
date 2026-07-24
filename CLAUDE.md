@@ -66,8 +66,13 @@ make check                      # Auto-format + lint
 ## PR flow
 
 Open the PR and stop — never run `gh pr merge --auto`. The automerge
-workflow arms auto-merge only after the deterministic review gate passes
-your current head; arming earlier does not merge sooner, it only lets the
-PR enter the merge queue before its review verdict (premature arms are
-auto-reverted). Reply to footgun review threads with what you changed
-before resolving them.
+workflow arms auto-merge only once your head is queue-ready: the latest
+`review-complete` succeeded on that exact sha **and** every non-outdated
+review thread is resolved. Arming earlier does not merge sooner, it only
+lets the PR enter the merge queue before its review verdict (premature
+arms are auto-reverted). Reply to footgun review threads with what you
+changed, then resolve them — then re-run **Deterministic Review Gate**,
+because GitHub Actions cannot observe thread resolution and nothing
+re-evaluates arming on its own. A review submitted on an armed PR that is
+no longer queue-ready disarms it, best-effort. Full mechanism in
+`AGENTS.md`.
