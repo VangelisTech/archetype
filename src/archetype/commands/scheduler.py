@@ -503,8 +503,14 @@ class CommandScheduler:
             try:
                 entity_ids = await asyncio.shield(task)
             except asyncio.CancelledError:
-                # The task remains retained. An identical retry awaits the same
-                # reservation instead of allocating another ID.
+                # Caller cancellation leaves the shielded reservation live and
+                # owned for an identical retry. A reservation task that
+                # cancelled itself is terminal, so retaining it would pin every
+                # later retry to the same CancelledError forever.
+                if task.cancelled():
+                    async with self._identity_lock:
+                        if self._reservation_tasks.get(key) is task:
+                            self._reservation_tasks.pop(key, None)
                 raise
             except BaseException:
                 async with self._identity_lock:
