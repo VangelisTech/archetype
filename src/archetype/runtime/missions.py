@@ -58,7 +58,6 @@ class RuntimeMissions:
             self._owner_id,
             phase="workflow-handles",
         )
-        self._closed = False
 
     async def __aenter__(self) -> RuntimeMissions:
         self._ensure_open()
@@ -129,10 +128,9 @@ class RuntimeMissions:
 
     async def _shutdown_internal(self, *, from_runtime: bool) -> None:
         del from_runtime
-        if self._closed:
+        if self._reservation_released():
             return
         await self._reservation.aclose()
-        self._closed = True
 
     async def query(self, *components: type[Component]) -> DataFrame:
         """Query persisted mission state through the underlying world read path."""
@@ -151,8 +149,12 @@ class RuntimeMissions:
 
     def _ensure_open(self) -> None:
         self._runtime._ensure_open()
-        if self._closed:
+        if self._reservation_released():
             raise RuntimeError("Agent Missions handle is closed")
+
+    def _reservation_released(self) -> bool:
+        reservation = getattr(self, "_reservation", None)
+        return reservation is not None and reservation.released
 
 
 __all__ = ["RuntimeMissions"]

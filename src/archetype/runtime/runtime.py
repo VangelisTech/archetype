@@ -234,7 +234,7 @@ class ArchetypeRuntime:
             owner_id,
             phase="workflow-handles",
         )
-        return RuntimeMissions(
+        handle = RuntimeMissions(
             self,
             name,
             config=config,
@@ -242,6 +242,8 @@ class ArchetypeRuntime:
             owner_id=owner_id,
             reservation=reservation,
         )
+        reservation.retain_anchor(handle)
+        return handle
 
     async def evaluate_physical_task(
         self,
