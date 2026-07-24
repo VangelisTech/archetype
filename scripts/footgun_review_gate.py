@@ -966,7 +966,7 @@ def _merge_command(args: argparse.Namespace) -> None:
 def _extract_command(args: argparse.Namespace) -> None:
     """Write the extracted JSON object, or pass the raw text through.
 
-    Never fails on unparseable model output: the passthrough feeds the
+    Never fails on unparsable model output: the passthrough feeds the
     attempt validator, which turns it into bounded-retry feedback.
     """
     raw = args.raw.read_text(encoding="utf-8")

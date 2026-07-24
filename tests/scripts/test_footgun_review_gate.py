@@ -871,7 +871,7 @@ def test_extract_prefers_the_last_head_bound_object():
     assert gate.extract_structured_json(raw) == {"head_sha": HEAD_SHA, "attempt": 2}
 
 
-def test_extract_command_passes_unparseable_output_through(tmp_path):
+def test_extract_command_passes_unparsable_output_through(tmp_path):
     raw_path = tmp_path / "raw.txt"
     output_path = tmp_path / "extracted.json"
     raw_path.write_text("no structured result here { broken", encoding="utf-8")
