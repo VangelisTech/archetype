@@ -188,10 +188,12 @@ make test-cov    # coverage report
 ```
 
 PR flow: open the PR and stop — never run `gh pr merge --auto`. The
-automerge workflow arms after the review gate passes your current head
-(premature arms are auto-reverted; arming early only skips the review, it
-never merges sooner). Reply to footgun review threads with what you
-changed before resolving them.
+automerge workflow arms only when the head is queue-ready: latest
+`review-complete` succeeded and every non-outdated review thread is
+resolved (premature arms are auto-reverted; arming early only skips the
+review, it never merges sooner). Reply to footgun review threads with
+what you changed, then resolve them — resolving the last thread is what
+re-arms after a review that posted findings.
 
 ## Application flow
 
