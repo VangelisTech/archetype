@@ -68,6 +68,29 @@ def test_exact_operations_require_explicit_storage_coordinates(tmp_path: Path) -
         ).storage_config
         is storage
     )
+    assert (
+        IngestArtifacts(
+            world_id="  world-1  ",
+            sources=(source,),
+            storage_config=storage,
+        ).world_id
+        == "world-1"
+    )
+    assert (
+        QueryArtifacts(
+            world_id="\tworld-1\n",
+            storage_config=storage,
+        ).world_id
+        == "world-1"
+    )
+    with pytest.raises(ValidationError, match="world_id must not be empty"):
+        IngestArtifacts(
+            world_id=" \t ",
+            sources=(source,),
+            storage_config=storage,
+        )
+    with pytest.raises(ValidationError, match="world_id must not be empty"):
+        QueryArtifacts(world_id="\n", storage_config=storage)
 
     io_config = IOConfig()
     assert ArtifactStoreConfig(io_config=io_config).io_config is io_config
@@ -94,6 +117,41 @@ def test_exact_operations_require_explicit_storage_coordinates(tmp_path: Path) -
     assert decoded_query.world_id == str(world_id)
     assert decoded_query.storage_config == storage
     assert decoded_query.model_dump(mode="json") == query.model_dump(mode="json")
+
+
+@pytest.mark.parametrize(
+    "invalid_world_id",
+    (None, 1, True, object()),
+    ids=("none", "integer", "boolean", "object"),
+)
+def test_exact_operations_reject_non_string_world_ids(
+    tmp_path: Path,
+    invalid_world_id: object,
+) -> None:
+    from archetype.artifacts.models import (
+        ArtifactSource,
+        IngestArtifacts,
+        QueryArtifacts,
+    )
+
+    source = ArtifactSource(source_uri=str(tmp_path / "evidence.txt"))
+    storage = _storage(tmp_path)
+
+    with pytest.raises(ValidationError, match="world_id must be a string or UUID"):
+        IngestArtifacts.model_validate(
+            {
+                "world_id": invalid_world_id,
+                "sources": (source,),
+                "storage_config": storage,
+            },
+        )
+    with pytest.raises(ValidationError, match="world_id must be a string or UUID"):
+        QueryArtifacts.model_validate(
+            {
+                "world_id": invalid_world_id,
+                "storage_config": storage,
+            },
+        )
 
 
 def test_models_and_contract_shim_are_import_light() -> None:

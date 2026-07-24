@@ -225,10 +225,14 @@ class _ArtifactOperation(BaseModel):
     @field_validator("world_id", check_fields=False, mode="before")
     @classmethod
     def _string_world_id(cls, value: object) -> str:
-        value = str(value).strip()
-        if not value:
+        if isinstance(value, UUID):
+            return str(value)
+        if not isinstance(value, str):
+            raise ValueError("world_id must be a string or UUID")
+        normalized = value.strip()
+        if not normalized:
             raise ValueError("world_id must not be empty")
-        return value
+        return normalized
 
 
 class IngestArtifacts(_ArtifactOperation):
