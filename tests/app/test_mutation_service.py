@@ -3,15 +3,28 @@
 
 """Tests for world mutation behavior — entity ID accuracy and mutation lifecycle."""
 
+from typing import Any
+
 import pytest
 from uuid_utils import uuid7
 
-from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.models import ActorCtx
-from archetype.app.models import Command, CommandType, deferred_operation
+from archetype.commands.models import ActorCtx, DurableOptions
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
-from archetype.world.models import Despawn, Update
+from archetype.world.models import (
+    AddComponents,
+    AddProcessor,
+    ComponentTypeRef,
+    ComponentValue,
+    CreateWorld,
+    Despawn,
+    RemoveComponents,
+    RemoveProcessor,
+    Spawn,
+    Step,
+    Update,
+)
+from tests._runtime import build_test_runtime
 
 
 class Position(Component):
@@ -24,163 +37,157 @@ class Velocity(Component):
     vy: float = 0.0
 
 
-class Health(Component):
-    hp: int = 100
+def _world_registry(dispatcher: Any) -> Any:
+    return dispatcher._registry.resolve_name("step").handler.args[0]
 
 
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [(7, 7), ("7", 7), ("+7", 7), ("-7", -7), ("007", 7)],
-)
-def test_parse_entity_id_accepts_only_exact_integer_forms(value, expected):
-    operation, _options = deferred_operation(
-        uuid7(),
-        Command(type=CommandType.DESPAWN, payload={"entity_id": value}),
+async def _create_world(dispatcher: Any, tmp_path):
+    info = await dispatcher.apply(
+        CreateWorld(
+            config=WorldConfig(name="w"),
+            storage_config=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
+        )
     )
-
-    assert type(operation) is Despawn
-    assert operation.entity_id == expected
-
-
-def test_legacy_update_translates_to_one_exact_world_operation():
-    """The compatibility envelope selects one family model, not a scheduler arm."""
-    operation, _options = deferred_operation(
-        uuid7(),
-        Command(type=CommandType.UPDATE, payload={"entity_id": 7, "components": []}),
-    )
-
-    assert type(operation) is Update
-    assert operation.operation == "update"
-    assert operation.entity_id == 7
+    world = await _world_registry(dispatcher).live_world(str(info.world_id))
+    assert world is not None
+    return info, world
 
 
-@pytest.mark.parametrize("value", [True, 7.0, 7.9, "7.0", " 7", "7 ", "", None])
-def test_parse_entity_id_rejects_lossy_or_ambiguous_values(value):
-    with pytest.raises(TypeError, match="entity_id must be an integer"):
-        deferred_operation(
-            uuid7(),
-            Command(type=CommandType.DESPAWN, payload={"entity_id": value}),
+@pytest.mark.asyncio
+async def test_spawn_returns_accurate_id(tmp_path):
+    """Spawn returns an ID that maps to exactly the staged entity."""
+
+    resources = build_test_runtime(tmp_path)
+    dispatcher = resources.dispatcher
+    try:
+        info, world = await _create_world(dispatcher, tmp_path)
+
+        entity_id = await dispatcher.apply(
+            Spawn.from_components(
+                world_id=info.world_id,
+                components=[Position(x=1.0, y=2.0)],
+            )
         )
 
+        assert entity_id in world.entity2sig
+        assert world.entity2sig[entity_id] is not None
 
-@pytest.mark.asyncio
-async def test_create_entity_returns_accurate_id(tmp_path):
-    """create_entity returns an ID that maps to exactly the spawned entity."""
-    container = ServiceContainer()
-    try:
-        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
+        await dispatcher.apply(Step(world_id=info.world_id, run_config=RunConfig(num_steps=1)))
 
-        eid = await container.application.create_entity(world.world_id, [Position(x=1.0, y=2.0)])
-
-        # ID is registered immediately
-        assert eid in world.entity2sig
-        assert world.entity2sig[eid] is not None
-
-        # After step, the entity is queryable in the store
-        await container.application.step(world.world_id, RunConfig(num_steps=1))
-
-        df = await world.get_components([Position])
-        rows = df.collect().to_pylist()
-        entity_ids = [r["entity_id"] for r in rows]
-        assert eid in entity_ids
+        rows = (await world.get_components([Position])).collect().to_pylist()
+        assert entity_id in [row["entity_id"] for row in rows]
     finally:
-        await container.shutdown()
+        await resources.aclose()
 
 
 @pytest.mark.asyncio
-async def test_create_entity_ids_are_sequential_and_unique(tmp_path):
-    """Multiple create_entity calls return sequential, unique IDs."""
-    container = ServiceContainer()
+async def test_spawn_ids_are_sequential_and_unique(tmp_path):
+    resources = build_test_runtime(tmp_path)
+    dispatcher = resources.dispatcher
     try:
-        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
-        ms = container.application
+        info, _world = await _create_world(dispatcher, tmp_path)
 
-        ids = []
-        for i in range(5):
-            eid = await ms.create_entity(world.world_id, [Position(x=float(i))])
-            ids.append(eid)
+        entity_ids = [
+            await dispatcher.apply(
+                Spawn.from_components(
+                    world_id=info.world_id,
+                    components=[Position(x=float(index))],
+                )
+            )
+            for index in range(5)
+        ]
 
-        # All unique
-        assert len(set(ids)) == 5
-        # Sequential
-        assert ids == list(range(ids[0], ids[0] + 5))
+        assert len(set(entity_ids)) == 5
+        assert entity_ids == list(range(entity_ids[0], entity_ids[0] + 5))
     finally:
-        await container.shutdown()
+        await resources.aclose()
 
 
 @pytest.mark.asyncio
-async def test_remove_entity_despawns_after_step(tmp_path):
-    """remove_entity marks entity for despawn; after step it's gone."""
-    container = ServiceContainer()
+async def test_despawn_removes_entity_after_step(tmp_path):
+    resources = build_test_runtime(tmp_path)
+    dispatcher = resources.dispatcher
     try:
-        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
-        ms = container.application
+        info, world = await _create_world(dispatcher, tmp_path)
+        entity_id = await dispatcher.apply(
+            Spawn.from_components(
+                world_id=info.world_id,
+                components=[Position(x=1.0)],
+            )
+        )
+        await dispatcher.apply(Step(world_id=info.world_id, run_config=RunConfig()))
 
-        eid = await ms.create_entity(world.world_id, [Position(x=1.0)])
-        await container.application.step(world.world_id, RunConfig(num_steps=1))
+        await dispatcher.apply(Despawn(world_id=info.world_id, entity_id=entity_id))
+        assert entity_id not in world.entity2sig
 
-        await ms.remove_entity(world.world_id, eid)
-        assert eid not in world.entity2sig
-
-        await container.application.step(world.world_id, RunConfig(num_steps=1))
-
-        df = await world.get_components([Position])
-        rows = df.collect().to_pylist()
-        active = [r for r in rows if r.get("is_active", True)]
-        assert all(r["entity_id"] != eid for r in active)
+        await dispatcher.apply(Step(world_id=info.world_id, run_config=RunConfig()))
+        rows = (await world.get_components([Position])).collect().to_pylist()
+        active = [row for row in rows if row.get("is_active", True)]
+        assert all(row["entity_id"] != entity_id for row in active)
     finally:
-        await container.shutdown()
+        await resources.aclose()
 
 
 @pytest.mark.asyncio
 async def test_add_components_widens_archetype(tmp_path):
-    """add_components changes the entity's archetype signature."""
-    container = ServiceContainer()
+    resources = build_test_runtime(tmp_path)
+    dispatcher = resources.dispatcher
     try:
-        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
-        ms = container.application
+        info, world = await _create_world(dispatcher, tmp_path)
+        entity_id = await dispatcher.apply(
+            Spawn.from_components(
+                world_id=info.world_id,
+                components=[Position(x=1.0)],
+            )
+        )
+        await dispatcher.apply(Step(world_id=info.world_id, run_config=RunConfig()))
 
-        eid = await ms.create_entity(world.world_id, [Position(x=1.0)])
-        await container.application.step(world.world_id, RunConfig(num_steps=1))
+        old_signature = world.entity2sig[entity_id]
+        await dispatcher.apply(
+            AddComponents(
+                world_id=info.world_id,
+                entity_id=entity_id,
+                components=(ComponentValue.from_component(Velocity(vx=5.0)),),
+            )
+        )
+        new_signature = world.entity2sig[entity_id]
 
-        old_sig = world.entity2sig[eid]
-        await ms.add_components(world.world_id, eid, [Velocity(vx=5.0)])
-        new_sig = world.entity2sig[eid]
-
-        assert len(new_sig) > len(old_sig)
-        assert Velocity in new_sig
+        assert len(new_signature) > len(old_signature)
+        assert Velocity in new_signature
     finally:
-        await container.shutdown()
+        await resources.aclose()
 
 
 @pytest.mark.asyncio
 async def test_remove_components_narrows_archetype(tmp_path):
-    """remove_components changes the entity's archetype signature."""
-    container = ServiceContainer()
+    resources = build_test_runtime(tmp_path)
+    dispatcher = resources.dispatcher
     try:
-        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
-        ms = container.application
+        info, world = await _create_world(dispatcher, tmp_path)
+        entity_id = await dispatcher.apply(
+            Spawn.from_components(
+                world_id=info.world_id,
+                components=[Position(x=1.0), Velocity(vx=5.0)],
+            )
+        )
+        await dispatcher.apply(Step(world_id=info.world_id, run_config=RunConfig()))
 
-        eid = await ms.create_entity(world.world_id, [Position(x=1.0), Velocity(vx=5.0)])
-        await container.application.step(world.world_id, RunConfig(num_steps=1))
+        await dispatcher.apply(
+            RemoveComponents(
+                world_id=info.world_id,
+                entity_id=entity_id,
+                component_types=(ComponentTypeRef.from_type(Velocity),),
+            )
+        )
 
-        await ms.remove_components(world.world_id, eid, [Velocity])
-        sig = world.entity2sig[eid]
-
-        assert Position in sig
-        assert Velocity not in sig
+        assert Position in world.entity2sig[entity_id]
+        assert Velocity not in world.entity2sig[entity_id]
     finally:
-        await container.shutdown()
+        await resources.aclose()
 
 
 @pytest.mark.asyncio
 async def test_add_and_remove_processor(tmp_path):
-    """add_processor and remove_processor modify the world's system."""
     from daft import DataFrame
 
     from archetype.core.aio.async_processor import AsyncProcessor
@@ -192,166 +199,161 @@ async def test_add_and_remove_processor(tmp_path):
         async def process(self, df: DataFrame, **kwargs) -> DataFrame:
             return df
 
-    container = ServiceContainer()
+    resources = build_test_runtime(tmp_path)
+    dispatcher = resources.dispatcher
     try:
-        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
-        ms = container.application
+        info, world = await _create_world(dispatcher, tmp_path)
+        processor = NoopProcessor()
 
-        proc = NoopProcessor()
-        await ms.add_processor(world.world_id, proc)
-        assert proc in world.system.processors
+        await dispatcher.apply(AddProcessor(world_id=info.world_id, processor=processor))
+        assert processor in world.system.processors
 
-        await ms.remove_processor(world.world_id, NoopProcessor)
-        assert proc not in world.system.processors
+        await dispatcher.apply(
+            RemoveProcessor(world_id=info.world_id, processor_type=NoopProcessor)
+        )
+        assert processor not in world.system.processors
     finally:
-        await container.shutdown()
+        await resources.aclose()
 
 
 @pytest.mark.asyncio
-async def test_entity_commands_coerce_string_entity_ids(tmp_path):
-    """DESPAWN/ADD_COMPONENT/REMOVE_COMPONENT accept JSON-string entity ids (#178).
+async def test_deferred_entity_operations_accept_wire_string_ids(tmp_path):
+    """JSON entity IDs normalize on exact operation models before admission."""
 
-    REST payloads arrive with entity_id as a string; SPAWN and UPDATE already
-    coerced with int() while these three passed the raw value through to the
-    int-keyed world, silently missing the entity.
-    """
-    container = ServiceContainer()
+    resources = build_test_runtime(tmp_path)
+    dispatcher = resources.dispatcher
+    actor = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
-        ctx = ActorCtx(id=uuid7(), roles={"admin"})
-        cs = container.command_gateway
-
-        eid = await container.application.create_entity(world.world_id, [Position(x=1.0)])
-        await container.application.step(world.world_id, RunConfig(num_steps=1))
-
-        await cs.submit(
-            ctx,
-            world.world_id,
-            Command(
-                type=CommandType.ADD_COMPONENT,
-                payload={"entity_id": str(eid), "components": [Velocity(vx=3.0)]},
-            ),
+        info, world = await _create_world(dispatcher, tmp_path)
+        entity_id = await dispatcher.apply(
+            Spawn.from_components(
+                world_id=info.world_id,
+                components=[Position(x=1.0)],
+            )
         )
-        await container.application.step(world.world_id, RunConfig(num_steps=1))
+        await dispatcher.apply(Step(world_id=info.world_id, run_config=RunConfig()))
+
+        add = AddComponents.model_validate(
+            {
+                "world_id": info.world_id,
+                "entity_id": str(entity_id),
+                "components": (ComponentValue.from_component(Velocity(vx=3.0)),),
+            }
+        )
+        assert add.entity_id == entity_id
+        await dispatcher.defer_as(
+            actor,
+            add,
+            DurableOptions(target_tick=world.tick),
+        )
+        await dispatcher.apply(Step(world_id=info.world_id, run_config=RunConfig()))
         rows = (await world.get_components([Velocity])).collect().to_pylist()
-        assert eid in [r["entity_id"] for r in rows]
+        assert entity_id in [row["entity_id"] for row in rows]
 
-        await cs.submit(
-            ctx,
-            world.world_id,
-            Command(
-                type=CommandType.REMOVE_COMPONENT,
-                payload={"entity_id": str(eid), "component_types": [Velocity]},
-            ),
+        remove = RemoveComponents.model_validate(
+            {
+                "world_id": info.world_id,
+                "entity_id": str(entity_id),
+                "component_types": (ComponentTypeRef.from_type(Velocity),),
+            }
         )
-        await container.application.step(world.world_id, RunConfig(num_steps=1))
+        assert remove.entity_id == entity_id
+        await dispatcher.defer_as(
+            actor,
+            remove,
+            DurableOptions(target_tick=world.tick),
+        )
+        await dispatcher.apply(Step(world_id=info.world_id, run_config=RunConfig()))
         rows = (await world.get_components([Velocity])).collect().to_pylist()
-        assert eid not in [r["entity_id"] for r in rows]
+        assert entity_id not in [row["entity_id"] for row in rows]
 
-        await cs.submit(
-            ctx,
-            world.world_id,
-            Command(type=CommandType.DESPAWN, payload={"entity_id": str(eid)}),
+        despawn = Despawn.model_validate({"world_id": info.world_id, "entity_id": str(entity_id)})
+        assert despawn.entity_id == entity_id
+        await dispatcher.defer_as(
+            actor,
+            despawn,
+            DurableOptions(target_tick=world.tick),
         )
-        await container.application.step(world.world_id, RunConfig(num_steps=1))
-        assert eid not in world.entity2sig
+        await dispatcher.apply(Step(world_id=info.world_id, run_config=RunConfig()))
+        assert entity_id not in world.entity2sig
     finally:
-        await container.shutdown()
-
-
-@pytest.mark.parametrize(
-    ("command_type", "payload"),
-    [
-        (CommandType.UPDATE, {"components": [Position(x=2.0)]}),
-        (CommandType.DESPAWN, {}),
-        (CommandType.ADD_COMPONENT, {"components": [Velocity()]}),
-        (
-            CommandType.REMOVE_COMPONENT,
-            {"component_types": [Velocity]},
-        ),
-    ],
-)
-def test_entity_commands_reject_fractional_ids(command_type, payload):
-    command = Command(
-        type=command_type,
-        payload={"entity_id": 1.9, **payload},
-    )
-    with pytest.raises(TypeError, match="entity_id must be an integer"):
-        deferred_operation(uuid7(), command)
+        await resources.aclose()
 
 
 @pytest.mark.asyncio
-async def test_scheduled_update_is_applied(tmp_path):
-    """A submitted UPDATE command changes component state after step (#193).
-
-    UPDATE had no case in the drain dispatcher: submit() gated it, queued it,
-    emitted "queued" — and _apply dropped it at a warn-level log.
-    """
-    container = ServiceContainer()
+async def test_deferred_update_is_applied(tmp_path):
+    resources = build_test_runtime(tmp_path)
+    dispatcher = resources.dispatcher
+    actor = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
-        ctx = ActorCtx(id=uuid7(), roles={"admin"})
-        eid = await container.application.create_entity(world.world_id, [Position(x=1.0)])
-        await container.application.step(world.world_id, RunConfig(num_steps=1))
-
-        await container.command_gateway.submit(
-            ctx,
-            world.world_id,
-            Command(
-                type=CommandType.UPDATE,
-                payload={"entity_id": str(eid), "components": [Position(x=99.0)]},
-            ),
+        info, world = await _create_world(dispatcher, tmp_path)
+        entity_id = await dispatcher.apply(
+            Spawn.from_components(
+                world_id=info.world_id,
+                components=[Position(x=1.0)],
+            )
         )
-        await container.application.step(world.world_id, RunConfig(num_steps=1))
+        await dispatcher.apply(Step(world_id=info.world_id, run_config=RunConfig()))
+
+        await dispatcher.defer_as(
+            actor,
+            Update(
+                world_id=info.world_id,
+                entity_id=entity_id,
+                components=(ComponentValue.from_component(Position(x=99.0)),),
+            ),
+            DurableOptions(target_tick=world.tick),
+        )
+        await dispatcher.apply(Step(world_id=info.world_id, run_config=RunConfig()))
 
         rows = (await world.get_components([Position])).collect().to_pylist()
-        row = next(r for r in rows if r["entity_id"] == eid)
+        row = next(row for row in rows if row["entity_id"] == entity_id)
         assert row["position__x"] == 99.0
     finally:
-        await container.shutdown()
+        await resources.aclose()
 
 
 @pytest.mark.asyncio
 async def test_same_drain_update_then_add_component_keeps_updated_state(tmp_path):
-    """#193: UPDATE then ADD_COMPONENT in one drain — the widened row composes.
+    """A widened row composes from the freshest same-drain component state."""
 
-    _move_entity read the entity's row from tick-1 in the store, ignoring the
-    freshest same-drain row parked in spawn_cache, so the migration forked
-    from stale pre-update state.
-    """
-    container = ServiceContainer()
+    resources = build_test_runtime(tmp_path)
+    dispatcher = resources.dispatcher
+    actor = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await container.world_lifecycle.create_world(WorldConfig(name="w"), storage)
-        ctx = ActorCtx(id=uuid7(), roles={"admin"})
-        cs = container.command_gateway
-        eid = await container.application.create_entity(world.world_id, [Position(x=1.0)])
-        await container.application.step(world.world_id, RunConfig(num_steps=1))
+        info, world = await _create_world(dispatcher, tmp_path)
+        entity_id = await dispatcher.apply(
+            Spawn.from_components(
+                world_id=info.world_id,
+                components=[Position(x=1.0)],
+            )
+        )
+        await dispatcher.apply(Step(world_id=info.world_id, run_config=RunConfig()))
 
-        await cs.submit(
-            ctx,
-            world.world_id,
-            Command(
-                type=CommandType.UPDATE,
-                payload={"entity_id": str(eid), "components": [Position(x=99.0)]},
+        target_tick = world.tick
+        await dispatcher.defer_as(
+            actor,
+            Update(
+                world_id=info.world_id,
+                entity_id=entity_id,
+                components=(ComponentValue.from_component(Position(x=99.0)),),
             ),
+            DurableOptions(target_tick=target_tick),
         )
-        await cs.submit(
-            ctx,
-            world.world_id,
-            Command(
-                type=CommandType.ADD_COMPONENT,
-                payload={"entity_id": str(eid), "components": [Velocity(vx=5.0)]},
+        await dispatcher.defer_as(
+            actor,
+            AddComponents(
+                world_id=info.world_id,
+                entity_id=entity_id,
+                components=(ComponentValue.from_component(Velocity(vx=5.0)),),
             ),
+            DurableOptions(target_tick=target_tick),
         )
-        await container.application.step(world.world_id, RunConfig(num_steps=1))
+        await dispatcher.apply(Step(world_id=info.world_id, run_config=RunConfig()))
 
         rows = (await world.get_components([Position, Velocity])).collect().to_pylist()
-        row = next(r for r in rows if r["entity_id"] == eid)
+        row = next(row for row in rows if row["entity_id"] == entity_id)
         assert row["velocity__vx"] == 5.0
         assert row["position__x"] == 99.0, "widened row was built from stale pre-update state"
     finally:
-        await container.shutdown()
+        await resources.aclose()
