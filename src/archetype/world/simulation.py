@@ -577,7 +577,7 @@ async def run_rollout(
                 _observe_failure(
                     error=teardown_cancelled,
                     child_index=index,
-                    phase="teardown",
+                    phase="waiter",
                     fork_world_id=fork_world_id,
                 )
 

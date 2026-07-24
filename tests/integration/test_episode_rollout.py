@@ -974,6 +974,85 @@ class TestRollout:
             await container.shutdown()
 
     @pytest.mark.asyncio
+    async def test_cancellation_during_successful_teardown_keeps_parent_exact(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Waiter interruption is not a successful teardown failure."""
+        container = ServiceContainer()
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        teardown_entered = asyncio.Event()
+        release_teardown = asyncio.Event()
+        teardown_tasks: set[asyncio.Task[object]] = set()
+        try:
+            world = await container.world_lifecycle.create_world(
+                WorldConfig(name="cancel-during-successful-teardown"),
+                storage,
+            )
+            commands = _queue_future_command_on_each_fork(container, monkeypatch)
+            catalog = container.storage_service.get_control_catalog(storage)
+            set_world_status = catalog.set_world_status
+            observed_before_destroy: list[tuple[str, str, str | None]] = []
+            destroy_world = container.application.destroy_world
+
+            async def observe_set_world_status(world_id: str, status: str) -> None:
+                if status == "destroyed" and world_id in commands:
+                    (record,) = await container.command_scheduler.records(world_id)
+                    observed_before_destroy.append(
+                        (world_id, record.status, record.last_error_code)
+                    )
+                await set_world_status(world_id, status)
+
+            async def block_successful_teardown(fork_world_id):
+                task = asyncio.current_task()
+                assert task is not None
+                teardown_tasks.add(task)
+                teardown_entered.set()
+                await release_teardown.wait()
+                await destroy_world(fork_world_id)
+
+            monkeypatch.setattr(catalog, "set_world_status", observe_set_world_status)
+            monkeypatch.setattr(
+                container.application,
+                "destroy_world",
+                block_successful_teardown,
+            )
+            rollout = asyncio.create_task(
+                container.application.run_rollout(
+                    world.world_id,
+                    RolloutConfig(
+                        num_episodes=1,
+                        parallel=True,
+                        episode_config=EpisodeConfig(max_steps=0),
+                        destroy_forks_on_complete=True,
+                    ),
+                )
+            )
+
+            await asyncio.wait_for(teardown_entered.wait(), timeout=2)
+            rollout.cancel("original")
+            await asyncio.sleep(0)
+            assert not rollout.done()
+            release_teardown.set()
+            with pytest.raises(asyncio.CancelledError) as raised:
+                await rollout
+
+            assert raised.value.args == ("original",)
+            assert raised.value.__cause__ is None
+            (fork_id,) = commands
+            assert observed_before_destroy == [(fork_id, "REJECTED", "world_destroyed")]
+            (record,) = await container.command_scheduler.records(fork_id)
+            assert record.status == "REJECTED"
+            assert record.last_error_code == "world_destroyed"
+            assert not await container.world_registry.contains(fork_id)
+            assert len(teardown_tasks) == 1
+            assert all(task.done() for task in teardown_tasks)
+        finally:
+            release_teardown.set()
+            await container.shutdown()
+
+    @pytest.mark.asyncio
     async def test_cancellation_during_teardown_keeps_episode_failure_as_cause(
         self,
         tmp_path,
@@ -1185,6 +1264,7 @@ class TestRollout:
 
             async def record_fork(*args, **kwargs):
                 fork = await fork_world(*args, **kwargs)
+                assert fork.name is not None
                 fork_names[str(fork.world_id)] = fork.name
                 return fork
 
@@ -1287,6 +1367,7 @@ class TestRollout:
 
             async def record_fork(*args, **kwargs):
                 fork = await fork_world(*args, **kwargs)
+                assert fork.name is not None
                 fork_names[str(fork.world_id)] = fork.name
                 return fork
 
@@ -1453,6 +1534,7 @@ class TestRollout:
 
             async def record_fork(*args, **kwargs):
                 fork = await fork_world(*args, **kwargs)
+                assert fork.name is not None
                 fork_names[str(fork.world_id)] = fork.name
                 return fork
 
@@ -1564,6 +1646,7 @@ class TestRollout:
 
             async def record_fork(*args, **kwargs):
                 fork = await fork_world(*args, **kwargs)
+                assert fork.name is not None
                 fork_names[str(fork.world_id)] = fork.name
                 return fork
 
