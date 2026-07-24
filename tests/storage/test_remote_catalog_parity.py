@@ -477,69 +477,113 @@ async def test_service_stack_runs_against_remote_catalog(tmp_path, worker_url, m
     monkeypatch.setenv("ARCHETYPE_CONTROL_CATALOG_URL", worker_url)
     monkeypatch.setenv("ARCHETYPE_CONTROL_CATALOG_TOKEN", WORKER_TOKEN)
 
-    from archetype.app.container import ServiceContainer
-    from archetype.artifacts import ArtifactSource
+    from archetype.artifacts import ArtifactSource, ArtifactStoreConfig
+    from archetype.artifacts.models import IngestArtifacts, QueryArtifacts
     from archetype.core.component import Component
     from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
     from archetype.evaluation.contracts import GraderContract, Outcome
+    from archetype.evaluation.models import Evaluate
+    from archetype.wiring import RuntimeBootstrapConfig, build_runtime_resources
+    from archetype.world.models import (
+        ComponentTypeRef,
+        CreateWorld,
+        DiscoverWorlds,
+        QueryComponents,
+        Spawn,
+        Step,
+    )
 
     class Probe(Component):
         value: float = 0.0
 
-    c = ServiceContainer()
+    resources = build_runtime_resources(
+        RuntimeBootstrapConfig.from_env(
+            artifact_store_config=ArtifactStoreConfig.local(tmp_path / "artifacts")
+        )
+    )
+    fresh_resources = None
     try:
+        dispatcher = resources.dispatcher
         storage = StorageConfig(
             uri=str(tmp_path / "store"),
             namespace="ns",
             backend=StorageBackend.ICEBERG,
         )
-        world = await c.world_lifecycle.create_world(WorldConfig(name="remote-w"), storage)
+        info = await dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name="remote-w"),
+                storage_config=storage,
+            )
+        )
+        world_registry = dispatcher._registry.resolve_name("step").handler.args[0]
+        world = await world_registry.live_world(str(info.world_id))
+        assert world is not None
         assert world.commit_coordinator is not None
-        await c.application.create_entity(world.world_id, [Probe(value=1.0)])
-        await c.application.step(world.world_id, RunConfig())
-        await c.application.step(world.world_id, RunConfig())
+        await dispatcher.apply(
+            Spawn.from_components(
+                world_id=info.world_id,
+                components=[Probe(value=1.0)],
+            )
+        )
+        await dispatcher.apply(Step(world_id=info.world_id, run_config=RunConfig()))
+        await dispatcher.apply(Step(world_id=info.world_id, run_config=RunConfig()))
         wid, rid = str(world.world_id), str(world.run_id)
 
         output = tmp_path / "remote-artifact.txt"
         output.write_text("probe output")
-        (artifact,) = await c.artifact_service.ingest(
-            wid,
-            ArtifactSource(
-                source_uri=str(output),
-                logical_path="results/remote-artifact.txt",
-            ),
+        (artifact,) = await dispatcher.apply(
+            IngestArtifacts(
+                world_id=wid,
+                sources=(
+                    ArtifactSource(
+                        source_uri=str(output),
+                        logical_path="results/remote-artifact.txt",
+                    ),
+                ),
+            )
         )
         assert artifact.logical_path == "results/remote-artifact.txt"
 
-        eval_receipt = await c.command_gateway.evaluate(
-            __import__("archetype.app.gateway.auth.models", fromlist=["ActorCtx"]).ActorCtx(
-                id=__import__("uuid_utils").uuid7(), roles={"operator"}
-            ),
-            wid,
-            [Probe],
-            contract=GraderContract(grader_id="probe-v1", implementation_version="1"),
-            grader=lambda df: Outcome(status="pass", score=1.0),
-            evaluation_id="remote-eval-1",
+        eval_receipt = await dispatcher.apply(
+            Evaluate(
+                world_id=wid,
+                components=(Probe,),
+                contract=GraderContract(
+                    grader_id="probe-v1",
+                    implementation_version="1",
+                ),
+                grader=lambda df: Outcome(status="pass", score=1.0),
+                evaluation_id="remote-eval-1",
+            )
         )
         assert eval_receipt.outcome == "pass"
 
-        # Cold discovery through the remote catalog from a FRESH container.
-        await c.shutdown()
-        fresh = ServiceContainer()
-        try:
-            infos = await fresh.world_lifecycle.discover_worlds(storage)
-            assert wid in [str(i.world_id) for i in infos]
-            df = await fresh.application.query_components([Probe], wid, rid, storage)
-            rows = df.to_pylist()
-            assert {r["tick"] for r in rows} >= {0, 1}, "stepped history visible cold"
-            artifacts = await fresh.artifact_service.index(wid, storage_config=storage)
-            assert artifacts.select("artifact_id").to_pylist() == [
-                {"artifact_id": artifact.artifact_id}
-            ]
-        finally:
-            await fresh.shutdown()
+        # Cold discovery through the remote catalog from a fresh runtime graph.
+        await resources.aclose()
+        resources = None
+        fresh_resources = build_runtime_resources(RuntimeBootstrapConfig.from_env())
+        fresh_dispatcher = fresh_resources.dispatcher
+        infos = await fresh_dispatcher.apply(DiscoverWorlds(storage_config=storage))
+        assert wid in [str(candidate.world_id) for candidate in infos]
+        rows = (
+            await fresh_dispatcher.apply(
+                QueryComponents(
+                    components=(ComponentTypeRef.from_type(Probe),),
+                    world_id=wid,
+                    run_id=rid,
+                    storage_config=storage,
+                )
+            )
+        ).to_pylist()
+        assert {row["tick"] for row in rows} >= {0, 1}, "stepped history visible cold"
+        artifacts = await fresh_dispatcher.apply(
+            QueryArtifacts(world_id=wid, storage_config=storage)
+        )
+        assert artifacts.select("artifact_id").to_pylist() == [
+            {"artifact_id": artifact.artifact_id}
+        ]
     finally:
-        try:
-            await c.shutdown()
-        except Exception:
-            pass
+        if fresh_resources is not None:
+            await fresh_resources.aclose()
+        if resources is not None:
+            await resources.aclose()
