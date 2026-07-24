@@ -7,8 +7,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from archetype.api.app import create_app
-from archetype.api.deps import set_container
-from archetype.app.container import ServiceContainer
 from archetype.missions.components import (
     AgentExecution,
     Mission,
@@ -24,13 +22,11 @@ from archetype.missions.relations import DependsOn, Guards, PartOfMission
 
 
 @pytest.fixture
-def client():
-    container = ServiceContainer()
-    set_container(container)
+def client(tmp_path, monkeypatch):
+    monkeypatch.setenv("ARCHETYPE_CATALOG_DIR", str(tmp_path / "catalogs"))
     app = create_app()
     with TestClient(app) as c:
         yield c
-    set_container(None)
 
 
 def _spawn(client, world_id, components):

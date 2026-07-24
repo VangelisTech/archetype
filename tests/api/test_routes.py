@@ -10,11 +10,11 @@ import pytest
 
 from archetype import __version__
 from archetype.api.app import create_app
-from archetype.api.deps import get_actor_ctx, set_container
-from archetype.app.container import ServiceContainer
+from archetype.api.deps import get_actor_ctx
+from archetype.commands.dispatch import CommandDispatcher
 from archetype.commands.policy import Policy
 from archetype.core.config import RunConfig
-from archetype.world.models import EpisodeConfig, RolloutConfig
+from archetype.world.models import EpisodeConfig, ListSignatures, RolloutConfig
 
 pytest.importorskip("httpx", reason="httpx required for API tests")
 
@@ -30,13 +30,11 @@ class QueryRouteMetric104(Component):
 
 
 @pytest.fixture
-def client():
-    container = ServiceContainer()
-    set_container(container)
+def client(tmp_path, monkeypatch):
+    monkeypatch.setenv("ARCHETYPE_CATALOG_DIR", str(tmp_path / "catalogs"))
     app = create_app()
     with TestClient(app) as c:
         yield c
-    set_container(None)
 
 
 class TestRootRoute:
@@ -553,16 +551,16 @@ class TestQueryRoutes:
         expected_uri,
         expected_namespace,
     ):
-        from archetype.app.gateway.service import CommandGateway
         from archetype.core.config import StorageConfig
 
         captured = {}
 
-        async def list_signatures(_self, _ctx, storage_config):
-            captured["config"] = storage_config
+        async def apply_as(_self, _ctx, operation):
+            assert type(operation) is ListSignatures
+            captured["config"] = operation.storage_config
             return []
 
-        monkeypatch.setattr(CommandGateway, "list_signatures", list_signatures)
+        monkeypatch.setattr(CommandDispatcher, "apply_as", apply_as)
         assert client.get(f"/signatures?{query}").status_code == 200
 
         defaults = StorageConfig()

@@ -5,7 +5,7 @@
 
 Tests for ``serve`` and ``--help`` run without a server. Integration tests
 patch ``_request`` to route through a FastAPI TestClient against a real
-ServiceContainer so the full stack is exercised without a running server.
+runtime resource graph so the full stack is exercised without a running server.
 """
 
 from __future__ import annotations
@@ -22,8 +22,6 @@ from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 from archetype.api.app import create_app
-from archetype.api.deps import set_container
-from archetype.app.container import ServiceContainer
 from archetype.cli import main as cli_mod
 from archetype.cli.main import ENV_BASE_URL, _base_url, _check_server, _handle_response, app
 
@@ -31,14 +29,12 @@ runner = CliRunner()
 
 
 @pytest.fixture
-def api_client():
-    """Yield a TestClient wired to a fresh ServiceContainer."""
-    container = ServiceContainer()
-    set_container(container)
+def api_client(tmp_path, monkeypatch):
+    """Yield a TestClient wired to a fresh runtime resource owner."""
+    monkeypatch.setenv("ARCHETYPE_CATALOG_DIR", str(tmp_path / "catalogs"))
     fastapi_app = create_app()
     with TestClient(fastapi_app) as tc:
         yield tc
-    set_container(None)
 
 
 @pytest.fixture
@@ -421,29 +417,33 @@ class TestCLIIntegration:
             assert empty in result.output
 
 
-def _is_app_module(module: str) -> bool:
-    return module == "archetype.app" or module.startswith("archetype.app.")
+def _is_internal_runtime_module(module: str) -> bool:
+    prefixes = (
+        "archetype.runtime_resources",
+        "archetype.storage",
+        "archetype.world.registry",
+    )
+    return any(module == prefix or module.startswith(f"{prefix}.") for prefix in prefixes)
 
 
-def test_cli_app_import_boundary_uses_dotted_segments():
-    assert _is_app_module("archetype.app.models")
-    assert not _is_app_module("archetype.application")
+def test_cli_internal_import_boundary_uses_dotted_segments():
+    assert _is_internal_runtime_module("archetype.storage.service")
+    assert not _is_internal_runtime_module("archetype.storage_engine")
 
 
-def test_cli_does_not_import_forbidden_app_modules():
+def test_cli_does_not_import_internal_runtime_modules():
     source = cli_mod.__file__
     tree = ast.parse(open(source).read())
     forbidden = []
-    allowed = {"archetype.app.models", "archetype.app.gateway.auth.models"}
     for node in ast.walk(tree):
         module = None
         if isinstance(node, ast.ImportFrom):
             module = node.module
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                if _is_app_module(alias.name) and alias.name not in allowed:
+                if _is_internal_runtime_module(alias.name):
                     forbidden.append(alias.name)
-        if module and _is_app_module(module) and module not in allowed:
+        if module and _is_internal_runtime_module(module):
             forbidden.append(module)
     assert forbidden == []
 
