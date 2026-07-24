@@ -18,6 +18,7 @@ from daft import DataFrame, col
 from archetype import ArchetypeRuntime, AsyncProcessor, Component
 from archetype.core.config import StorageConfig
 from archetype.errors import RuntimeShutdownError
+from archetype.evaluation import handlers as evaluation_handlers
 from archetype.evaluation.models import RunGraders
 from archetype.research.contracts import AutoResearchConfig
 from archetype.research.models import AutoResearch
@@ -185,9 +186,8 @@ class TestShutdownErrorAggregation:
 
         run_graders = runtime._resources.dispatcher._registry.resolve_name("run_graders")
         assert run_graders.model is RunGraders
-        assert isinstance(run_graders.handler, partial)
-        assert run_graders.handler.args
-        monkeypatch.setattr(run_graders.handler.args[0], "run_graders", blocked_graders)
+        assert run_graders.handler is evaluation_handlers.run_graders
+        monkeypatch.setattr(evaluation_handlers.grading, "run_graders", blocked_graders)
         operation = asyncio.create_task(
             world.grade(LifecycleParityPos, graders=[lambda _frame: object()])
         )
