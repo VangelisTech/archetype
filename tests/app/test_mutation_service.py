@@ -3,18 +3,15 @@
 
 """Tests for world mutation behavior — entity ID accuracy and mutation lifecycle."""
 
-import inspect
-from unittest.mock import AsyncMock, MagicMock
-
 import pytest
 from uuid_utils import uuid7
 
-from archetype.app.commands.service import CommandScheduler, _parse_entity_id
 from archetype.app.container import ServiceContainer
 from archetype.app.gateway.auth.models import ActorCtx
-from archetype.app.models import Command, CommandType
+from archetype.app.models import Command, CommandType, deferred_operation
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.world.models import Despawn, Update
 
 
 class Position(Component):
@@ -36,20 +33,34 @@ class Health(Component):
     [(7, 7), ("7", 7), ("+7", 7), ("-7", -7), ("007", 7)],
 )
 def test_parse_entity_id_accepts_only_exact_integer_forms(value, expected):
-    assert _parse_entity_id(value) == expected
+    operation, _options = deferred_operation(
+        uuid7(),
+        Command(type=CommandType.DESPAWN, payload={"entity_id": value}),
+    )
+
+    assert type(operation) is Despawn
+    assert operation.entity_id == expected
 
 
-def test_update_has_one_authoritative_dispatch_arm():
-    """Each command type has one reachable implementation in the drain dispatcher."""
-    source = inspect.getsource(CommandScheduler._apply)
+def test_legacy_update_translates_to_one_exact_world_operation():
+    """The compatibility envelope selects one family model, not a scheduler arm."""
+    operation, _options = deferred_operation(
+        uuid7(),
+        Command(type=CommandType.UPDATE, payload={"entity_id": 7, "components": []}),
+    )
 
-    assert source.count("case CommandType.UPDATE:") == 1
+    assert type(operation) is Update
+    assert operation.operation == "update"
+    assert operation.entity_id == 7
 
 
 @pytest.mark.parametrize("value", [True, 7.0, 7.9, "7.0", " 7", "7 ", "", None])
 def test_parse_entity_id_rejects_lossy_or_ambiguous_values(value):
     with pytest.raises(TypeError, match="entity_id must be an integer"):
-        _parse_entity_id(value)
+        deferred_operation(
+            uuid7(),
+            Command(type=CommandType.DESPAWN, payload={"entity_id": value}),
+        )
 
 
 @pytest.mark.asyncio
@@ -250,7 +261,6 @@ async def test_entity_commands_coerce_string_entity_ids(tmp_path):
         await container.shutdown()
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("command_type", "payload"),
     [
@@ -263,22 +273,13 @@ async def test_entity_commands_coerce_string_entity_ids(tmp_path):
         ),
     ],
 )
-async def test_entity_commands_reject_fractional_ids(command_type, payload):
-    scheduler = CommandScheduler(
-        require_live_world=AsyncMock(),
-        resolve_control_catalog=AsyncMock(),
-        list_catalog_world_ids=AsyncMock(return_value=[]),
-        reserve_entity_ids=AsyncMock(),
-    )
-    world = MagicMock()
-    world.world_id = "world"
+def test_entity_commands_reject_fractional_ids(command_type, payload):
     command = Command(
         type=command_type,
         payload={"entity_id": 1.9, **payload},
     )
     with pytest.raises(TypeError, match="entity_id must be an integer"):
-        await scheduler._apply(world, command)
-    assert world.method_calls == []
+        deferred_operation(uuid7(), command)
 
 
 @pytest.mark.asyncio
