@@ -165,10 +165,18 @@ accepted at the scripting boundary. A string or path becomes
 
 ### R11 — Evaluation and research
 
-`world.grade(...)` dispatches an exact evaluation operation. The registered
-family handler owns snapshot pinning, grader execution, outcome validation, and
-durable receipts where requested. The runtime supplies the handle's explicit
-storage coordinates and does not compose world query or storage functions.
+`world.grade(...)` queries the handle's append-only history and dispatches
+`RunGraders` over that lazy frame; its outputs are ephemeral.
+`world.evaluate(...)` instead dispatches an exact `Evaluate` operation. The
+registered family handler owns snapshot pinning, grader execution, outcome
+validation, and durable receipt persistence. The runtime supplies the handle's
+explicit storage coordinates but does not pin or persist that evaluation
+itself.
+
+Durable `world.evaluate(...)` receipts require the world handle to use an
+explicit `StorageConfig(..., backend=StorageBackend.ICEBERG)`. Omitted, string,
+and path storage forms select LanceDB and cannot persist evaluation receipts;
+use `world.grade(...)` when persistence is not required.
 
 `world.autoresearch(...)` dispatches to the research-family handler. Callback
 execution must not hold a runtime handle lock that would deadlock reentrant

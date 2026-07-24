@@ -629,6 +629,8 @@ class RuntimeWorld:
         The receipt is pinned to the current snapshot and grader contract.
         Repeating an evaluation identity returns its original receipt without
         grading again. Use a new identity for another nondeterministic trial.
+        Durable receipts require an Iceberg-backed world; use ``grade()`` for
+        ephemeral scoring on other storage backends.
         """
         wid = await self._ensure_id()
         storage_config = self._state.require_storage_config("evaluate")

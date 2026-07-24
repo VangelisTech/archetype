@@ -18,6 +18,7 @@ import pyarrow as pa
 from pydantic_core import to_jsonable_python
 from uuid_utils import uuid7
 
+from archetype.core.config import StorageBackend
 from archetype.evaluation import grading, views
 from archetype.evaluation.components import EvalReceipt
 from archetype.evaluation.contracts import subject_digest
@@ -75,6 +76,11 @@ async def evaluate(
         raise ValueError(
             "persisted receipts require a GraderContract descriptor; "
             "use run_graders for ephemeral scoring"
+        )
+    if storage_config.backend != StorageBackend.ICEBERG:
+        raise ValueError(
+            "durable evaluation receipts require StorageBackend.ICEBERG; "
+            "use world.grade() for ephemeral scoring"
         )
 
     world_id = str(operation.world_id)

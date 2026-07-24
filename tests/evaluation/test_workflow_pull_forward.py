@@ -198,6 +198,35 @@ async def test_missing_storage_rejects_before_storage_or_grader_effects() -> Non
     assert effects == []
 
 
+@pytest.mark.asyncio
+async def test_unsupported_receipt_storage_rejects_before_effects(tmp_path: Path) -> None:
+    from archetype.core.config import StorageConfig
+    from archetype.evaluation.handlers import evaluate
+
+    effects: list[str] = []
+
+    class StorageTrap:
+        def __getattr__(self, name: str) -> Any:
+            effects.append(f"storage:{name}")
+            raise AssertionError(f"unsupported backend reached storage effect {name}")
+
+    def grader_trap(_frame: Any) -> Outcome:
+        effects.append("grader")
+        raise AssertionError("unsupported backend reached grader")
+
+    operation = Evaluate(
+        **{
+            **_operation_fields(),
+            "grader": grader_trap,
+            "storage_config": StorageConfig(uri=str(tmp_path / "lancedb")),
+        }
+    )
+    with pytest.raises(ValueError, match=r"StorageBackend\.ICEBERG"):
+        await evaluate(StorageTrap(), operation)
+
+    assert effects == []
+
+
 def test_family_topology_has_no_external_ontology_or_application_imports() -> None:
     forbidden = (
         "archetype.app",
