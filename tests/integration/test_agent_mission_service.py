@@ -16,6 +16,7 @@ import pytest
 
 from archetype import ArchetypeRuntime
 from archetype.core.config import StorageConfig
+from archetype.errors import RuntimeShutdownError
 from archetype.missions import (
     AgentExecution,
     AgentMissionConfig,
@@ -38,7 +39,11 @@ from archetype.missions import (
     TaskValidator,
     ValidationResult,
 )
-from archetype.missions.coding_agents import AgentProcessObservation
+from archetype.missions.coding_agents import (
+    AgentProcessObservation,
+    DispatchedValidator,
+    TaskDispatchRequest,
+)
 from archetype.missions.critics import CriticProcessObservation
 from archetype.missions.relations import Guards
 from archetype.missions.sandboxes import (
@@ -55,6 +60,7 @@ from archetype.missions.sandboxes import (
 )
 from archetype.missions.sandboxes.apple_container import AppleContainerSandboxSession
 from archetype.projections import latest
+from archetype.runtime_resources import RuntimeCloseState
 
 
 def _git(*arguments: str, cwd: Path | None = None) -> str:
@@ -1951,6 +1957,409 @@ async def test_critic_close_failure_is_durable_and_retryable(
         ]
         assert len(critic_rows) == 1
         assert critic_rows[0][f"{sandbox}status"] == SandboxStatus.CLOSED.value
+
+
+@pytest.mark.asyncio
+async def test_runtime_resources_retain_failed_author_cleanup_and_world_until_retry(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    backend = _AutoReplacementBackend(first_close_failures=1)
+    runtime = ArchetypeRuntime()
+    missions = runtime.missions(
+        "resource-owner-author-retry",
+        config=AgentMissionConfig(
+            sandbox_backend=backend,
+            sandbox_environment="local-resource-owner-test",
+            driver=_MissionDriver(workspace),
+            critic_driver=_ApprovingCriticDriver(),
+            workspace=str(workspace),
+            critic_workspace=str(tmp_path / "critic"),
+            checkpoint_after_dispatch=False,
+        ),
+        storage=StorageConfig(
+            uri=str(tmp_path / "resource_owner_author_retry"),
+            namespace="resource_owner_author_retry_contract",
+        ),
+    )
+    try:
+        submitted = await missions.submit(
+            repository=str(remote),
+            branch="agent/resource-owner-author-retry",
+            tasks=(
+                AgentTask(
+                    "implementation",
+                    "Create implementation.txt containing fixed.",
+                    (
+                        CommandValidator(
+                            "focused",
+                            (
+                                "sh",
+                                "-lc",
+                                'test "$(cat implementation.txt)" = fixed',
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        service = missions._service  # noqa: SLF001 - exact retained owner oracle
+        key = SandboxKey(f"mission:{submitted.mission_id}")
+        session = await service._sandboxes.acquire(  # noqa: SLF001
+            key,
+            service._sandbox_spec(  # noqa: SLF001
+                submitted.mission_id,
+                submitted.branch,
+            ),
+        )
+        await service._ensure_sandbox_entity(  # noqa: SLF001
+            submitted.mission_id,
+            session.identity,
+            status=SandboxStatus.READY,
+        )
+        await service._world.step()  # noqa: SLF001 - durable READY counterfactual
+        world = service._world  # noqa: SLF001 - exact retained world oracle
+        world_id = missions.world_id
+        mission_ref = weakref.ref(missions)
+        service_ref = weakref.ref(service)
+        world_ref = weakref.ref(world)
+
+        with pytest.raises(RuntimeShutdownError) as raised:
+            await runtime.shutdown()
+
+        assert raised.value.phase == "workflow-handles"
+        assert "provider close unavailable" not in str(raised.value)
+        assert runtime._resources.close_state is RuntimeCloseState.CLOSING_RETRYABLE  # noqa: SLF001
+        assert session.close_attempts == 1
+        assert await session.status() is SandboxStatus.ERRORED
+        assert await runtime._container.world_registry.contains(world_id)  # noqa: SLF001
+
+        del missions, service, world
+        gc.collect()
+        assert mission_ref() is not None
+        assert service_ref() is not None
+        assert world_ref() is not None
+
+        await runtime.shutdown()
+        await runtime.shutdown()
+
+        assert session.close_attempts == 2
+        assert await session.status() is SandboxStatus.CLOSED
+        assert runtime._resources.close_state is RuntimeCloseState.CLOSED  # noqa: SLF001
+        assert not await runtime._container.world_registry.contains(world_id)  # noqa: SLF001
+    finally:
+        try:
+            await runtime.shutdown()
+        except BaseException:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_runtime_resources_retain_failed_critic_cleanup_and_world_until_retry(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    backend = _CriticCloseRetryBackend()
+    runtime = ArchetypeRuntime()
+    missions = runtime.missions(
+        "resource-owner-critic-retry",
+        config=AgentMissionConfig(
+            sandbox_backend=backend,
+            sandbox_environment="local-resource-owner-test",
+            driver=_MissionDriver(workspace),
+            critic_driver=_ApprovingCriticDriver(),
+            workspace=str(workspace),
+            critic_workspace=str(tmp_path / "critic"),
+            checkpoint_after_dispatch=False,
+        ),
+        storage=StorageConfig(
+            uri=str(tmp_path / "resource_owner_critic_retry"),
+            namespace="resource_owner_critic_retry_contract",
+        ),
+    )
+    try:
+        submitted = await missions.submit(
+            repository=str(remote),
+            branch="agent/resource-owner-critic-retry",
+            tasks=(
+                AgentTask(
+                    "implementation",
+                    "Create implementation.txt containing fixed.",
+                    (
+                        CommandValidator(
+                            "focused",
+                            (
+                                "sh",
+                                "-lc",
+                                'test "$(cat implementation.txt)" = fixed',
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        service = missions._service  # noqa: SLF001 - exact retained owner oracle
+        dispatch_id = "retained-critic-cleanup"
+        key = service._critic_sandbox_key(dispatch_id)  # noqa: SLF001
+        session = await service._sandboxes.acquire(  # noqa: SLF001
+            key,
+            service._critic_sandbox_spec(  # noqa: SLF001
+                mission_id=submitted.mission_id,
+                dispatch_id=dispatch_id,
+                branch=submitted.branch,
+            ),
+        )
+        task_id = submitted.task_id("implementation")
+        await service._ensure_sandbox_entity(  # noqa: SLF001
+            submitted.mission_id,
+            session.identity,
+            status=SandboxStatus.READY,
+            bind_mission=False,
+        )
+        service._critic_sandbox_context[session.identity.sandbox_id] = (  # noqa: SLF001
+            key,
+            submitted.mission_id,
+            task_id,
+            dispatch_id,
+        )
+        await service._world.step()  # noqa: SLF001 - durable READY counterfactual
+        world = service._world  # noqa: SLF001 - exact retained world oracle
+        world_id = missions.world_id
+        mission_ref = weakref.ref(missions)
+        service_ref = weakref.ref(service)
+        world_ref = weakref.ref(world)
+
+        with pytest.raises(RuntimeShutdownError) as raised:
+            await runtime.shutdown()
+
+        assert raised.value.phase == "workflow-handles"
+        assert "provider close unavailable" not in str(raised.value)
+        assert runtime._resources.close_state is RuntimeCloseState.CLOSING_RETRYABLE  # noqa: SLF001
+        assert session.close_attempts == 1
+        assert session.closed == 0
+        assert await runtime._container.world_registry.contains(world_id)  # noqa: SLF001
+
+        del missions, service, world
+        gc.collect()
+        assert mission_ref() is not None
+        assert service_ref() is not None
+        assert world_ref() is not None
+
+        await runtime.shutdown()
+        await runtime.shutdown()
+
+        assert session.close_attempts == 2
+        assert session.closed == 1
+        assert runtime._resources.close_state is RuntimeCloseState.CLOSED  # noqa: SLF001
+        assert not await runtime._container.world_registry.contains(world_id)  # noqa: SLF001
+    finally:
+        try:
+            await runtime.shutdown()
+        except BaseException:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_run_admitted_before_close_may_bind_but_late_run_has_no_provider_effect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    backend = _LocalBackend()
+    runtime = ArchetypeRuntime()
+    missions = runtime.missions(
+        "whole-run-admission",
+        config=AgentMissionConfig(
+            sandbox_backend=backend,
+            sandbox_environment="local-admission-test",
+            driver=_MissionDriver(workspace),
+            critic_driver=_ApprovingCriticDriver(),
+            workspace=str(workspace),
+            critic_workspace=str(tmp_path / "critic"),
+            checkpoint_after_dispatch=False,
+        ),
+        storage=StorageConfig(
+            uri=str(tmp_path / "whole_run_admission"),
+            namespace="whole_run_admission_contract",
+        ),
+    )
+    release = asyncio.Event()
+    first_run: asyncio.Task[object] | None = None
+    shutdown: asyncio.Task[None] | None = None
+    try:
+        submitted = await missions.submit(
+            repository=str(remote),
+            branch="agent/whole-run-admission",
+            tasks=(
+                AgentTask(
+                    "implementation",
+                    "Create implementation.txt containing fixed.",
+                    (CommandValidator("focused", ("true",)),),
+                ),
+            ),
+        )
+        service = missions._service  # noqa: SLF001 - dispatcher boundary spy
+        provider_effects: list[int] = []
+        first_entered = asyncio.Event()
+        sandbox_bound = asyncio.Event()
+        admission_stopped = asyncio.Event()
+        first_result = object()
+        late_result = object()
+
+        async def controlled_run(
+            mission,
+            *,
+            max_ticks: int | None = None,
+        ) -> object:
+            del max_ticks
+            provider_effects.append(mission.mission_id)
+            if len(provider_effects) > 1:
+                return late_result
+            first_entered.set()
+            await release.wait()
+            await service._sandboxes.acquire(  # noqa: SLF001
+                SandboxKey(f"mission:{mission.mission_id}"),
+                service._sandbox_spec(mission.mission_id, mission.branch),  # noqa: SLF001
+            )
+            sandbox_bound.set()
+            return first_result
+
+        monkeypatch.setattr(service, "run", controlled_run)
+        dispatcher = runtime._resources.dispatcher  # noqa: SLF001
+        stop_admission = dispatcher.stop_admission
+
+        async def observed_stop_admission() -> None:
+            await stop_admission()
+            admission_stopped.set()
+
+        monkeypatch.setattr(dispatcher, "stop_admission", observed_stop_admission)
+
+        first_run = asyncio.create_task(missions.run(submitted))
+        await asyncio.wait_for(first_entered.wait(), timeout=1)
+        shutdown = asyncio.create_task(runtime.shutdown())
+        await asyncio.wait_for(admission_stopped.wait(), timeout=1)
+
+        with pytest.raises(RuntimeError, match="admission|accepting|closed"):
+            await missions.run(submitted)
+        assert provider_effects == [submitted.mission_id]
+
+        release.set()
+        assert await first_run is first_result
+        await shutdown
+
+        assert sandbox_bound.is_set()
+        assert backend.session is not None
+        assert backend.session.closed == 1
+    finally:
+        release.set()
+        pending = tuple(task for task in (first_run, shutdown) if task is not None)
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        try:
+            await runtime.shutdown()
+        except BaseException:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_critic_prewarm_is_reserved_before_eager_task_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    runtime = ArchetypeRuntime()
+    missions = runtime.missions(
+        "eager-critic-prewarm",
+        config=AgentMissionConfig(
+            sandbox_backend=_LocalBackend(),
+            sandbox_environment="local-eager-prewarm-test",
+            driver=_MissionDriver(workspace),
+            critic_driver=_ApprovingCriticDriver(),
+            workspace=str(workspace),
+            critic_workspace=str(tmp_path / "critic"),
+            checkpoint_after_dispatch=False,
+        ),
+        storage=StorageConfig(
+            uri=str(tmp_path / "eager_critic_prewarm"),
+            namespace="eager_critic_prewarm_contract",
+        ),
+    )
+    try:
+        reservation = missions._reservation  # noqa: SLF001 - tracked-task oracle
+        submitted = await missions.submit(
+            repository=str(remote),
+            branch="agent/eager-critic-prewarm",
+            tasks=(
+                AgentTask(
+                    "implementation",
+                    "Create implementation.txt containing fixed.",
+                    (CommandValidator("focused", ("true",)),),
+                ),
+            ),
+        )
+        service = missions._service  # noqa: SLF001 - tracked-task oracle
+        events: list[str] = []
+        sentinel = object()
+        reservation_type = type(reservation)
+        original_spawn = reservation_type.spawn
+
+        def observed_spawn(self, factory, *, label: str):
+            if self is not reservation:
+                return original_spawn(self, factory, label=label)
+            events.append(f"spawn:{label}")
+
+            async def observed_factory():
+                assert events == [f"spawn:{label}"]
+                events.append("factory:eager")
+                return await factory()
+
+            return original_spawn(self, observed_factory, label=label)
+
+        async def eager_prewarm(_request):
+            assert events == ["spawn:critic-prewarm", "factory:eager"]
+            return sentinel
+
+        monkeypatch.setattr(reservation_type, "spawn", observed_spawn)
+        monkeypatch.setattr(service, "_prewarm_critic", eager_prewarm)
+        request = TaskDispatchRequest(
+            mission_id=submitted.mission_id,
+            task_id=submitted.task_id("implementation"),
+            task_name="implementation",
+            dispatch_id="eager-prewarm-contract",
+            dispatch_sequence=1,
+            repository=str(remote),
+            branch=submitted.branch,
+            base_ref=submitted.base_ref,
+            prompt="contract",
+            validators=(
+                DispatchedValidator(
+                    901,
+                    CommandValidator("focused", ("true",)),
+                ),
+            ),
+            publication_policy=RepositoryPublicationPolicy.COMMIT_AND_PUSH,
+            critic_policy=CriticPolicy(),
+        )
+
+        loop = asyncio.get_running_loop()
+        previous_factory = loop.get_task_factory()
+        try:
+            loop.set_task_factory(asyncio.eager_task_factory)
+            service._start_critic_prewarm(request)  # noqa: SLF001
+        finally:
+            loop.set_task_factory(previous_factory)
+
+        assert events == ["spawn:critic-prewarm", "factory:eager"]
+        assert await service._critic_prewarms[request.dispatch_id] is sentinel  # noqa: SLF001
+    finally:
+        try:
+            await runtime.shutdown()
+        except BaseException:
+            pass
 
 
 @pytest.mark.asyncio
