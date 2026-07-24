@@ -3,9 +3,9 @@
 
 """Fresh-process worker for real-storage idempotency scenarios.
 
-The parent eval invokes this module with ``python -m``. Each command creates a
-new ServiceContainer, so no component registry, world registry, connection,
-or event-loop state is shared between scenario phases.
+The parent eval invokes this module with ``python -m``. Each command composes a
+new canonical process graph, so no component registry, world registry,
+connection, or event-loop state is shared between scenario phases.
 """
 
 from __future__ import annotations
@@ -19,14 +19,23 @@ from pathlib import Path
 
 from uuid_utils import uuid7
 
-from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.models import ActorCtx
+from archetype.commands.models import ActorCtx
 from archetype.core.aio import AsyncWorld
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
 from archetype.core.interfaces import StaleWriterError
 from archetype.evaluation.contracts import GraderContract, Outcome
+from archetype.evaluation.models import Evaluate
 from archetype.storage.catalog import SqliteControlCatalog
+from archetype.world.models import (
+    CreateWorld,
+    OpenWorldReadonly,
+    QueryComponents,
+    ResumeWorld,
+    Spawn,
+    Step,
+)
+from evals.infra.runtime import EvalProcess, component_refs
 
 
 class ProcessReading(Component):
@@ -65,24 +74,31 @@ def _ready(path: str | None, payload: dict | None = None) -> None:
     Path(path).write_text(json.dumps(payload or {"ready": True}, sort_keys=True))
 
 
-async def _live_world(container: ServiceContainer, world_id: object) -> AsyncWorld:
-    world = await container.world_registry.live_world(str(world_id))
+async def _live_world(process: EvalProcess, world_id: object) -> AsyncWorld:
+    world = await process.worlds.live_world(str(world_id))
     if not isinstance(world, AsyncWorld):
         raise RuntimeError(f"world {world_id} was not activated")
     return world
 
 
 async def seed(args: argparse.Namespace) -> None:
-    container = ServiceContainer()
+    process = EvalProcess()
     try:
         storage = _storage(args)
-        info = await container.application.create_world(WorldConfig(name=args.name), storage)
-        await container.application.create_entity(
-            info.world_id,
-            [ProcessReading(value=args.value)],
+        info = await process.dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name=args.name),
+                storage_config=storage,
+            )
         )
-        await container.application.step(info.world_id, RunConfig())
-        world = await _live_world(container, info.world_id)
+        await process.dispatcher.apply(
+            Spawn.from_components(
+                world_id=info.world_id,
+                components=[ProcessReading(value=args.value)],
+            )
+        )
+        await process.dispatcher.apply(Step(world_id=info.world_id, run_config=RunConfig()))
+        world = await _live_world(process, info.world_id)
         _emit(
             {
                 "world_id": str(world.world_id),
@@ -91,37 +107,41 @@ async def seed(args: argparse.Namespace) -> None:
             }
         )
     finally:
-        await container.shutdown()
+        await process.aclose()
 
 
 async def crash_publish(args: argparse.Namespace) -> None:
     """Hard-exit after durable appends but before manifest publication."""
-    container = ServiceContainer()
+    process = EvalProcess()
     storage = _storage(args)
-    await container.application.resume_world(storage, args.world_id)
+    await process.dispatcher.apply(ResumeWorld(storage_config=storage, world_id=args.world_id))
 
     async def die_before_publish(self, *publish_args, **publish_kwargs):
         os._exit(args.exit_code)
 
     SqliteControlCatalog.publish_manifest = die_before_publish  # ty: ignore[invalid-assignment]
-    await container.application.step(args.world_id, RunConfig())
+    await process.dispatcher.apply(Step(world_id=args.world_id, run_config=RunConfig()))
     raise AssertionError("publish crash hook did not terminate the process")
 
 
 async def resume_verify(args: argparse.Namespace) -> None:
-    container = ServiceContainer()
+    process = EvalProcess()
     try:
         storage = _storage(args)
-        await container.application.resume_world(storage, args.world_id)
-        world = await _live_world(container, args.world_id)
+        await process.dispatcher.apply(ResumeWorld(storage_config=storage, world_id=args.world_id))
+        world = await _live_world(process, args.world_id)
         resume_tick = world.tick
-        await container.application.step(args.world_id, RunConfig())
-        frame = await container.application.query_components(
-            [ProcessReading], args.world_id, str(world.run_id), storage, ticks=[resume_tick]
+        await process.dispatcher.apply(Step(world_id=args.world_id, run_config=RunConfig()))
+        frame = await process.dispatcher.apply(
+            QueryComponents(
+                components=component_refs([ProcessReading]),
+                world_id=args.world_id,
+                run_id=str(world.run_id),
+                storage_config=storage,
+                ticks=(resume_tick,),
+            )
         )
-        manifests = await container.storage_service.get_control_catalog(storage).list_manifests(
-            args.world_id
-        )
+        manifests = await process.storage.get_control_catalog(storage).list_manifests(args.world_id)
         writer_epoch = getattr(world.commit_coordinator, "epoch", None)
         _emit(
             {
@@ -133,20 +153,20 @@ async def resume_verify(args: argparse.Namespace) -> None:
             }
         )
     finally:
-        await container.shutdown()
+        await process.aclose()
 
 
 async def resume_race(args: argparse.Namespace) -> None:
-    container = ServiceContainer()
+    process = EvalProcess()
     try:
         storage = _storage(args)
-        await container.application.resume_world(storage, args.world_id)
-        world = await _live_world(container, args.world_id)
+        await process.dispatcher.apply(ResumeWorld(storage_config=storage, world_id=args.world_id))
+        world = await _live_world(process, args.world_id)
         writer_epoch = getattr(world.commit_coordinator, "epoch", None)
         _ready(args.ready, {"epoch": writer_epoch})
         _wait_for(args.go)
         try:
-            await container.application.step(args.world_id, RunConfig())
+            await process.dispatcher.apply(Step(world_id=args.world_id, run_config=RunConfig()))
             status = "published"
         except StaleWriterError:
             status = "stale"
@@ -160,22 +180,27 @@ async def resume_race(args: argparse.Namespace) -> None:
             status = "stale"
         _emit({"status": status, "epoch": writer_epoch, "tick": world.tick})
     finally:
-        await container.shutdown()
+        await process.aclose()
 
 
 async def query_world(args: argparse.Namespace) -> None:
-    container = ServiceContainer()
+    process = EvalProcess()
     try:
         storage = _storage(args)
-        info = await container.application.open_world_readonly(storage, args.world_id)
+        info = await process.dispatcher.apply(
+            OpenWorldReadonly(storage_config=storage, world_id=args.world_id)
+        )
         rows = (
-            await container.application.query_components(
-                [ProcessReading], args.world_id, str(info.run_id), storage
+            await process.dispatcher.apply(
+                QueryComponents(
+                    components=component_refs([ProcessReading]),
+                    world_id=args.world_id,
+                    run_id=str(info.run_id),
+                    storage_config=storage,
+                )
             )
         ).to_pylist()
-        manifests = await container.storage_service.get_control_catalog(storage).list_manifests(
-            args.world_id
-        )
+        manifests = await process.storage.get_control_catalog(storage).list_manifests(args.world_id)
         _emit(
             {
                 "row_ticks": sorted({row["tick"] for row in rows}),
@@ -184,12 +209,12 @@ async def query_world(args: argparse.Namespace) -> None:
             }
         )
     finally:
-        await container.shutdown()
+        await process.aclose()
 
 
 async def evaluate_world(args: argparse.Namespace) -> None:
     """Race a paid-style grader through a fresh service graph."""
-    container = ServiceContainer()
+    process = EvalProcess()
     try:
         storage = _storage(args)
         _ready(args.ready)
@@ -200,51 +225,53 @@ async def evaluate_world(args: argparse.Namespace) -> None:
                 log.write(f"{os.getpid()}\n")
             return Outcome(status="pass", score=float(frame.count_rows()))
 
-        result = await container.command_gateway.evaluate(
+        result = await process.dispatcher.apply_as(
             ActorCtx(id=uuid7(), roles={"operator"}),
-            args.world_id,
-            [ProcessReading],
-            contract=GraderContract(
-                grader_id="process-evaluation",
-                implementation_version="1",
+            Evaluate(
+                world_id=args.world_id,
+                components=(ProcessReading,),
+                contract=GraderContract(
+                    grader_id="process-evaluation",
+                    implementation_version="1",
+                ),
+                grader=grader,
+                evaluation_id=args.evaluation_id,
+                storage_config=storage,
             ),
-            grader=grader,
-            evaluation_id=args.evaluation_id,
-            storage_config=storage,
         )
         _emit(result.model_dump())
     finally:
-        await container.shutdown()
+        await process.aclose()
 
 
 async def query_evaluations(args: argparse.Namespace) -> None:
-    container = ServiceContainer()
+    process = EvalProcess()
     try:
-        rows = await container.ingestion_service.read(
+        rows = await process.storage.read_world_rows(
+            _storage(args),
             args.world_id,
             _EVALUATION_RESULTS,
-            storage_config=_storage(args),
         )
         values = rows.select("evaluation_id").to_pydict()
         _emit({"rows": rows.count_rows(), "evaluation_ids": values["evaluation_id"]})
     finally:
-        await container.shutdown()
+        await process.aclose()
 
 
 async def advance(args: argparse.Namespace) -> None:
-    container = ServiceContainer()
+    process = EvalProcess()
     try:
         storage = _storage(args)
-        await container.application.resume_world(storage, args.world_id)
-        world = await _live_world(container, args.world_id)
-        await container.application.step(world.world_id, RunConfig())
+        await process.dispatcher.apply(ResumeWorld(storage_config=storage, world_id=args.world_id))
+        world = await _live_world(process, args.world_id)
+        await process.dispatcher.apply(Step(world_id=world.world_id, run_config=RunConfig()))
         _emit({"tick": world.tick})
     finally:
-        await container.shutdown()
+        await process.aclose()
 
 
 async def evaluate_conflict(args: argparse.Namespace) -> None:
-    container = ServiceContainer()
+    process = EvalProcess()
     try:
         storage = _storage(args)
 
@@ -255,23 +282,25 @@ async def evaluate_conflict(args: argparse.Namespace) -> None:
 
         conflict = False
         try:
-            await container.command_gateway.evaluate(
+            await process.dispatcher.apply_as(
                 ActorCtx(id=uuid7(), roles={"operator"}),
-                args.world_id,
-                [ProcessReading],
-                contract=GraderContract(
-                    grader_id="process-evaluation",
-                    implementation_version="1",
+                Evaluate(
+                    world_id=args.world_id,
+                    components=(ProcessReading,),
+                    contract=GraderContract(
+                        grader_id="process-evaluation",
+                        implementation_version="1",
+                    ),
+                    grader=grader,
+                    evaluation_id=args.evaluation_id,
+                    storage_config=storage,
                 ),
-                grader=grader,
-                evaluation_id=args.evaluation_id,
-                storage_config=storage,
             )
         except ValueError:
             conflict = True
         _emit({"conflict": conflict})
     finally:
-        await container.shutdown()
+        await process.aclose()
 
 
 def build_parser() -> argparse.ArgumentParser:

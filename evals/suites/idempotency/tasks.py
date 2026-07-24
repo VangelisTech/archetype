@@ -23,10 +23,7 @@ from pathlib import Path
 from daft.io import IOConfig
 from uuid_utils import uuid7
 
-from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.models import ActorCtx
-from archetype.app.models import Command, CommandType
-from archetype.commands.models import DurableOptions
+from archetype.commands.models import ActorCtx, DurableOptions
 from archetype.core.aio import AsyncWorld
 from archetype.core.component import Component
 from archetype.core.config import (
@@ -41,11 +38,29 @@ from archetype.core.sync import QueryManager, SyncStore, UpdateManager
 from archetype.storage.service import StorageService
 from archetype.storage.session import configure_session
 from archetype.world.lifecycle import WorldLifecycle
-from archetype.world.models import Spawn
+from archetype.world.models import (
+    AddComponents,
+    CreateWorld,
+    Despawn,
+    ForkWorld,
+    ListSignatures,
+    QueryArchetype,
+    QueryComponents,
+    RemoveComponents,
+    Run,
+    Spawn,
+    Step,
+)
 from archetype.world.query import get_lineage
 from archetype.world.registry import WorldRegistry
 from evals.graders import exact_match, state_check
 from evals.harness import EvalHarness
+from evals.infra.runtime import (
+    EvalProcess,
+    component_refs,
+    component_values,
+    isolated_eval_process,
+)
 from evals.suites.idempotency.durable import (
     task_artifact_occurrence_identity,
     task_atomic_publish_retry,
@@ -64,8 +79,8 @@ ROOT = Path(__file__).resolve().parents[3]
 SPECIFICATION = ROOT / "docs" / "guide" / "specification.md"
 
 
-async def _live_world(container: ServiceContainer, world_id: object) -> AsyncWorld:
-    world = await container.world_registry.live_world(str(world_id))
+async def _live_world(process: EvalProcess, world_id: object) -> AsyncWorld:
+    world = await process.worlds.live_world(str(world_id))
     if not isinstance(world, AsyncWorld):
         raise RuntimeError(f"world {world_id} was not activated")
     return world
@@ -460,55 +475,63 @@ def task_command_identity() -> list[GraderResult]:
 
 async def _task_command_identity() -> list[GraderResult]:
     with tempfile.TemporaryDirectory() as tmp:
-        container = ServiceContainer()
+        process = isolated_eval_process(tmp)
         try:
             storage = StorageConfig(uri=f"{tmp}/store", namespace="idem_submit")
-            world = await container.application.create_world(
-                WorldConfig(name="submit-non-idempotent"),
-                storage,
+            world = await process.dispatcher.apply(
+                CreateWorld(
+                    config=WorldConfig(name="submit-non-idempotent"),
+                    storage_config=storage,
+                )
             )
             admin = _admin()
-            service_a = Command(
-                type=CommandType.SPAWN,
-                payload={"components": [IdemCounter(value=1).to_payload()]},
+            service_a = Spawn.from_components(
+                world_id=world.world_id,
+                components=[IdemCounter(value=1)],
             )
-            service_b = Command(
-                type=CommandType.SPAWN,
-                payload={"components": [IdemCounter(value=1).to_payload()]},
+            service_b = Spawn.from_components(
+                world_id=world.world_id,
+                components=[IdemCounter(value=1)],
             )
+            service_a_id = uuid7()
+            service_b_id = uuid7()
+            options = DurableOptions(target_tick=0)
 
-            service_id_a = await container.command_gateway.submit(
+            service_id_a = await process.dispatcher.defer_as(
                 admin,
-                world.world_id,
                 service_a,
+                options,
+                command_id=service_a_id,
             )
-            service_id_b = await container.command_gateway.submit(
+            service_id_b = await process.dispatcher.defer_as(
                 admin,
-                world.world_id,
                 service_b,
+                options,
+                command_id=service_b_id,
             )
-            replay_id = await container.command_gateway.submit(
+            replay_id = await process.dispatcher.defer_as(
                 admin,
-                world.world_id,
                 service_a,
+                options,
+                command_id=service_a_id,
             )
             changed_content_conflicted = False
             try:
-                await container.command_gateway.submit(
+                await process.dispatcher.defer_as(
                     admin,
-                    world.world_id,
-                    Command(
-                        id=service_a.id,
-                        type=CommandType.SPAWN,
-                        payload={"components": [IdemCounter(value=2).to_payload()]},
+                    Spawn.from_components(
+                        world_id=world.world_id,
+                        components=[IdemCounter(value=2)],
                     ),
+                    options,
+                    command_id=service_a_id,
                 )
             except Exception:
                 changed_content_conflicted = True
-            service_pending = await container.command_scheduler.pending_count(world.world_id)
-            service_history = await container.command_scheduler.history(world.world_id)
+            service_pending = await process.scheduler.pending_count(world.world_id)
+            service_history = await process.scheduler.history(world.world_id)
         finally:
-            await container.shutdown()
+            await process.aclose()
 
     return [
         state_check(
@@ -531,35 +554,47 @@ def task_submit_spawn_reserves_distinct_entities() -> list[GraderResult]:
 
 async def _task_submit_spawn_reserves_distinct_entities() -> list[GraderResult]:
     with tempfile.TemporaryDirectory() as tmp:
-        container = ServiceContainer()
+        process = isolated_eval_process(tmp)
         try:
             storage = StorageConfig(uri=f"{tmp}/store", namespace="idem_spawn")
-            world = await container.application.create_world(
-                WorldConfig(name="submit-spawn"),
-                storage,
+            world = await process.dispatcher.apply(
+                CreateWorld(
+                    config=WorldConfig(name="submit-spawn"),
+                    storage_config=storage,
+                )
             )
             admin = _admin()
-            first = await container.command_gateway.submit_spawn(
+            first, _first_command = await process.dispatcher.defer_spawn_as(
                 admin,
-                world.world_id,
-                [IdemCounter(value=1)],
+                Spawn.from_components(
+                    world_id=world.world_id,
+                    components=[IdemCounter(value=1)],
+                ),
+                DurableOptions(target_tick=0),
             )
-            second = await container.command_gateway.submit_spawn(
+            second, _second_command = await process.dispatcher.defer_spawn_as(
                 admin,
-                world.world_id,
-                [IdemCounter(value=2)],
+                Spawn.from_components(
+                    world_id=world.world_id,
+                    components=[IdemCounter(value=2)],
+                ),
+                DurableOptions(target_tick=0),
             )
-            pending_before = await container.command_scheduler.pending_count(world.world_id)
-            applied = await container.application.step(world.world_id, RunConfig())
-            pending_after = await container.command_scheduler.pending_count(world.world_id)
+            pending_before = await process.scheduler.pending_count(world.world_id)
+            applied = await process.dispatcher.apply(
+                Step(world_id=world.world_id, run_config=RunConfig())
+            )
+            pending_after = await process.scheduler.pending_count(world.world_id)
 
             rows = (
-                await container.application.query_archetype(
-                    (IdemCounter,),
-                    world.world_id,
-                    world.run_id,
-                    storage,
-                    ticks=[0],
+                await process.dispatcher.apply(
+                    QueryArchetype(
+                        signature=component_refs([IdemCounter]),
+                        world_id=world.world_id,
+                        run_id=world.run_id,
+                        storage_config=storage,
+                        ticks=(0,),
+                    )
                 )
             ).to_pylist()
             values_by_entity = {row["entity_id"]: row["idemcounter__value"] for row in rows}
@@ -579,7 +614,7 @@ async def _task_submit_spawn_reserves_distinct_entities() -> list[GraderResult]:
                 )
             ]
         finally:
-            await container.shutdown()
+            await process.aclose()
 
 
 def task_async_world_entity_ids_and_missing_remove() -> list[GraderResult]:
@@ -667,13 +702,13 @@ async def _task_runtime_handles_and_history() -> list[GraderResult]:
         async with ArchetypeRuntime() as runtime:
             storage = StorageConfig(uri=f"{tmp}/store", namespace="idem_runtime")
             world = runtime.world("runtime-handles", storage=storage)
-            worlds_before_activation = len(await runtime._container.world_registry.list_worlds())
+            worlds_before_activation = len(await runtime.discover(storage))
 
             await world.spawn(IdemCounter(value=7))
             world_info = await world.info()
             sibling_a = runtime.attach(world_info.world_id, storage=storage)
             sibling_b = runtime.attach(world_info.world_id, storage=storage)
-            worlds_after_activation = len(await runtime._container.world_registry.list_worlds())
+            worlds_after_activation = len(await runtime.discover(storage))
             sibling_a_info = await sibling_a.info()
             sibling_b_info = await sibling_b.info()
 
@@ -711,14 +746,16 @@ def task_staged_spawn_last_write_wins() -> list[GraderResult]:
 
 async def _task_staged_spawn_last_write_wins() -> list[GraderResult]:
     with tempfile.TemporaryDirectory() as tmp:
-        container = ServiceContainer()
+        process = isolated_eval_process(tmp)
         try:
             storage = StorageConfig(uri=f"{tmp}/store", namespace="idem_staged_spawns")
-            info = await container.application.create_world(
-                WorldConfig(name="staged-spawn-last-write-wins"),
-                storage,
+            info = await process.dispatcher.apply(
+                CreateWorld(
+                    config=WorldConfig(name="staged-spawn-last-write-wins"),
+                    storage_config=storage,
+                )
             )
-            world = await _live_world(container, info.world_id)
+            world = await _live_world(process, info.world_id)
 
             entity_id = await world.create_entity([IdemCounter(value=1)])
             sig = world.entity2sig[entity_id]
@@ -728,7 +765,7 @@ async def _task_staged_spawn_last_write_wins() -> list[GraderResult]:
             }
             world.spawn_cache[sig].append(duplicate_row)
             staged_count = len(world.spawn_cache[sig])
-            await container.application.step(world.world_id, RunConfig())
+            await process.dispatcher.apply(Step(world_id=world.world_id, run_config=RunConfig()))
             rows = (await world.query_archetype(sig=(IdemCounter,), ticks=[0])).to_pylist()
 
             return [
@@ -743,7 +780,7 @@ async def _task_staged_spawn_last_write_wins() -> list[GraderResult]:
                 )
             ]
         finally:
-            await container.shutdown()
+            await process.aclose()
 
 
 def task_duplicate_same_tick_mutations_collapse() -> list[GraderResult]:
@@ -753,14 +790,16 @@ def task_duplicate_same_tick_mutations_collapse() -> list[GraderResult]:
 
 async def _task_duplicate_same_tick_mutations_collapse() -> list[GraderResult]:
     with tempfile.TemporaryDirectory() as tmp:
-        container = ServiceContainer()
+        process = isolated_eval_process(tmp)
         try:
             storage = StorageConfig(uri=f"{tmp}/store", namespace="idem_dupes")
-            info = await container.application.create_world(
-                WorldConfig(name="duplicate-mutations"),
-                storage,
+            info = await process.dispatcher.apply(
+                CreateWorld(
+                    config=WorldConfig(name="duplicate-mutations"),
+                    storage_config=storage,
+                )
             )
-            world = await _live_world(container, info.world_id)
+            world = await _live_world(process, info.world_id)
             admin = _admin()
 
             spawn_operation = Spawn.from_components(
@@ -768,47 +807,43 @@ async def _task_duplicate_same_tick_mutations_collapse() -> list[GraderResult]:
                 components=[IdemCounter(value=1)],
             )
             spawn_command_id = uuid7()
-            entity_id, admitted_id = await container.command_dispatcher.defer_spawn_as(
+            entity_id, admitted_id = await process.dispatcher.defer_spawn_as(
                 admin,
                 spawn_operation,
                 DurableOptions(target_tick=0),
                 command_id=spawn_command_id,
             )
-            spawn_applied = await container.application.step(world.world_id, RunConfig())
+            spawn_applied = await process.dispatcher.apply(
+                Step(world_id=world.world_id, run_config=RunConfig())
+            )
             spawn_rows = (await world.query_archetype(sig=(IdemCounter,), ticks=[0])).to_pylist()
-            replay_entity_id, replay_id = await container.command_dispatcher.defer_spawn_as(
+            replay_entity_id, replay_id = await process.dispatcher.defer_spawn_as(
                 admin,
                 spawn_operation,
                 DurableOptions(target_tick=0),
                 command_id=spawn_command_id,
             )
-            pending_after_replay = await container.command_scheduler.pending_count(world.world_id)
+            pending_after_replay = await process.scheduler.pending_count(world.world_id)
             spawn_records = [
                 record
-                for record in await container.command_scheduler.records(world.world_id)
+                for record in await process.scheduler.records(world.world_id)
                 if str(record.command_id) == str(spawn_command_id)
             ]
 
-            await container.command_gateway.submit(
+            await process.dispatcher.defer_as(
                 admin,
-                world.world_id,
-                Command(
-                    type=CommandType.DESPAWN,
-                    tick=1,
-                    payload={"entity_id": entity_id},
-                ),
+                Despawn(world_id=world.world_id, entity_id=entity_id),
+                DurableOptions(target_tick=1),
             )
-            await container.command_gateway.submit(
+            await process.dispatcher.defer_as(
                 admin,
-                world.world_id,
-                Command(
-                    type=CommandType.DESPAWN,
-                    tick=1,
-                    payload={"entity_id": entity_id},
-                ),
+                Despawn(world_id=world.world_id, entity_id=entity_id),
+                DurableOptions(target_tick=1),
             )
-            despawn_applied = await container.application.step(world.world_id, RunConfig())
-            store = await container.storage_service.get_or_create_store(storage)
+            despawn_applied = await process.dispatcher.apply(
+                Step(world_id=world.world_id, run_config=RunConfig())
+            )
+            store = await process.storage.get_or_create_store(storage)
             despawn_rows = (
                 await store.get_archetype_df(
                     sig=(IdemCounter,),
@@ -845,7 +880,7 @@ async def _task_duplicate_same_tick_mutations_collapse() -> list[GraderResult]:
                 )
             ]
         finally:
-            await container.shutdown()
+            await process.aclose()
 
 
 def task_component_signature_noops_are_idempotent() -> list[GraderResult]:
@@ -855,14 +890,16 @@ def task_component_signature_noops_are_idempotent() -> list[GraderResult]:
 
 async def _task_component_signature_noops_are_idempotent() -> list[GraderResult]:
     with tempfile.TemporaryDirectory() as tmp:
-        container = ServiceContainer()
+        process = isolated_eval_process(tmp)
         try:
             storage = StorageConfig(uri=f"{tmp}/store", namespace="idem_component_noops")
-            info = await container.application.create_world(
-                WorldConfig(name="component-noops"),
-                storage,
+            info = await process.dispatcher.apply(
+                CreateWorld(
+                    config=WorldConfig(name="component-noops"),
+                    storage_config=storage,
+                )
             )
-            world = await _live_world(container, info.world_id)
+            world = await _live_world(process, info.world_id)
             admin = _admin()
             entity_id = await world.create_entity([IdemCounter(value=3)])
             await world.step(RunConfig())
@@ -880,20 +917,24 @@ async def _task_component_signature_noops_are_idempotent() -> list[GraderResult]
             world.add_hook(OnComponentRemoved, on_removed)
 
             signature_before = world.entity2sig[entity_id]
-            await container.command_gateway.add_components(
+            await process.dispatcher.apply_as(
                 admin,
-                world.world_id,
-                entity_id,
-                [IdemCounter(value=99)],
+                AddComponents(
+                    world_id=world.world_id,
+                    entity_id=entity_id,
+                    components=component_values([IdemCounter(value=99)]),
+                ),
             )
             after_add_signature = world.entity2sig[entity_id]
             after_add_pending = _pending_rows(world)
 
-            await container.command_gateway.remove_components(
+            await process.dispatcher.apply_as(
                 admin,
-                world.world_id,
-                entity_id,
-                [IdemMarker],
+                RemoveComponents(
+                    world_id=world.world_id,
+                    entity_id=entity_id,
+                    component_types=component_refs([IdemMarker]),
+                ),
             )
             after_remove_signature = world.entity2sig[entity_id]
             after_remove_pending = _pending_rows(world)
@@ -916,7 +957,7 @@ async def _task_component_signature_noops_are_idempotent() -> list[GraderResult]
                 )
             ]
         finally:
-            await container.shutdown()
+            await process.aclose()
 
 
 def task_fixed_reads_are_idempotent() -> list[GraderResult]:
@@ -926,56 +967,67 @@ def task_fixed_reads_are_idempotent() -> list[GraderResult]:
 
 async def _task_fixed_reads_are_idempotent() -> list[GraderResult]:
     with tempfile.TemporaryDirectory() as tmp:
-        container = ServiceContainer()
+        process = isolated_eval_process(tmp)
         try:
             storage = StorageConfig(uri=f"{tmp}/store", namespace="idem_reads")
-            world = await container.application.create_world(
-                WorldConfig(name="fixed-reads"),
-                storage,
+            world = await process.dispatcher.apply(
+                CreateWorld(
+                    config=WorldConfig(name="fixed-reads"),
+                    storage_config=storage,
+                )
             )
             admin = _admin()
-            await container.command_gateway.submit_spawn(
+            await process.dispatcher.defer_spawn_as(
                 admin,
-                world.world_id,
-                [IdemCounter(value=5)],
+                Spawn.from_components(
+                    world_id=world.world_id,
+                    components=[IdemCounter(value=5)],
+                ),
+                DurableOptions(target_tick=0),
             )
-            await container.application.step(world.world_id, RunConfig())
-            child = await container.application.fork_world(
-                world.world_id,
-                "fixed-reads-child",
-                storage_config=storage,
+            await process.dispatcher.apply(Step(world_id=world.world_id, run_config=RunConfig()))
+            child = await process.dispatcher.apply(
+                ForkWorld(
+                    source_world_id=world.world_id,
+                    name="fixed-reads-child",
+                    storage_config=storage,
+                )
             )
 
             rows_a = (
-                await container.application.query_components(
-                    [IdemCounter],
-                    str(child.world_id),
-                    str(child.run_id),
-                    storage,
+                await process.dispatcher.apply(
+                    QueryComponents(
+                        components=component_refs([IdemCounter]),
+                        world_id=str(child.world_id),
+                        run_id=str(child.run_id),
+                        storage_config=storage,
+                    )
                 )
             ).to_pylist()
             rows_b = (
-                await container.application.query_components(
-                    [IdemCounter],
-                    str(child.world_id),
-                    str(child.run_id),
-                    storage,
+                await process.dispatcher.apply(
+                    QueryComponents(
+                        components=component_refs([IdemCounter]),
+                        world_id=str(child.world_id),
+                        run_id=str(child.run_id),
+                        storage_config=storage,
+                    )
                 )
             ).to_pylist()
             lineage_a = await get_lineage(
-                container.storage_service,
+                process.storage,
                 str(child.world_id),
                 str(child.run_id),
                 storage,
             )
             lineage_b = await get_lineage(
-                container.storage_service,
+                process.storage,
                 str(child.world_id),
                 str(child.run_id),
                 storage,
             )
-            signatures_a = await container.application.list_signatures(storage)
-            signatures_b = await container.application.list_signatures(storage)
+            signatures_a = await process.dispatcher.apply(ListSignatures(storage_config=storage))
+            signatures_b = await process.dispatcher.apply(ListSignatures(storage_config=storage))
 
             signature_names_a = sorted(tuple(c.__name__ for c in sig) for sig in signatures_a)
             signature_names_b = sorted(tuple(c.__name__ for c in sig) for sig in signatures_b)
@@ -986,7 +1038,7 @@ async def _task_fixed_reads_are_idempotent() -> list[GraderResult]:
                 exact_match(signature_names_a, signature_names_b, name="signatures_repeatable"),
             ]
         finally:
-            await container.shutdown()
+            await process.aclose()
 
 
 def task_query_archetype_repeatable() -> list[GraderResult]:
@@ -1067,14 +1119,16 @@ def task_step_and_run_are_not_idempotent() -> list[GraderResult]:
 
 async def _task_step_and_run_are_not_idempotent() -> list[GraderResult]:
     with tempfile.TemporaryDirectory() as tmp:
-        container = ServiceContainer()
+        process = isolated_eval_process(tmp)
         try:
             storage = StorageConfig(uri=f"{tmp}/store", namespace="idem_step_run")
-            info = await container.application.create_world(
-                WorldConfig(name="step-run"),
-                storage,
+            info = await process.dispatcher.apply(
+                CreateWorld(
+                    config=WorldConfig(name="step-run"),
+                    storage_config=storage,
+                )
             )
-            world = await _live_world(container, info.world_id)
+            world = await _live_world(process, info.world_id)
             await world.create_entity([IdemCounter(value=8)])
 
             start_tick = world.tick
@@ -1083,13 +1137,17 @@ async def _task_step_and_run_are_not_idempotent() -> list[GraderResult]:
             await world.step(RunConfig())
             after_second_step = world.tick
 
-            run_one = await container.application.run(
-                world.world_id,
-                RunConfig(num_steps=1),
+            run_one = await process.dispatcher.apply(
+                Run(
+                    world_id=world.world_id,
+                    run_config=RunConfig(num_steps=1),
+                )
             )
-            run_two = await container.application.run(
-                world.world_id,
-                RunConfig(num_steps=1),
+            run_two = await process.dispatcher.apply(
+                Run(
+                    world_id=world.world_id,
+                    run_config=RunConfig(num_steps=1),
+                )
             )
 
             tick0_rows = (await world.query_archetype(sig=(IdemCounter,), ticks=[0])).to_pylist()
@@ -1113,7 +1171,7 @@ async def _task_step_and_run_are_not_idempotent() -> list[GraderResult]:
                 )
             ]
         finally:
-            await container.shutdown()
+            await process.aclose()
 
 
 def register(harness: EvalHarness) -> None:
