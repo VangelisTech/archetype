@@ -39,7 +39,7 @@ authority = "The RBAC decision and durable command admission record remain autho
 evidence = [
   "docs/guide/command-gate.md",
   "docs/guide/durable-commands.md",
-  "tests/app/test_durable_commands.py",
+  "tests/commands/test_durable_runtime_contracts.py",
 ]
 rationale = "Deferred gateway calls delegate durable admission to the scheduler; no gateway signal is approved."
 

@@ -23,6 +23,6 @@ outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
 authority = "The durable command ledger, lease/settlement state, and transactional outbox remain authoritative."
 evidence = [
   "docs/guide/durable-commands.md",
-  "tests/app/test_durable_commands.py",
+  "tests/commands/test_durable_runtime_contracts.py",
 ]
 rationale = "The scheduler has no approved direct signal; durable admission and settlement are the recovery authority."

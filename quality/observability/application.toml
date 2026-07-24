@@ -72,6 +72,6 @@ outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
 authority = "The durable command ledger, settlement row, and typed scheduler result remain authoritative."
 evidence = [
   "docs/guide/durable-commands.md",
-  "tests/app/test_durable_commands.py",
+  "tests/commands/test_durable_runtime_contracts.py",
 ]
 rationale = "The facade delegates deferred admission and settlement to the command family without emitting a second signal."

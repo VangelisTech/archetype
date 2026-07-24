@@ -186,7 +186,7 @@ source = "docs/guide/specification.md"
 section = "Command ledger, scheduler, and dispatcher"
 owner = "commands"
 risk = "high"
-pytest = ["tests/app/test_durable_commands.py"]
+pytest = ["tests/commands/test_durable_runtime_contracts.py"]
 static = ["scripts/check_idempotency_contracts.py"]
 evals = [
   "command_ordering",
@@ -204,7 +204,7 @@ section = "7. Commands, commits, artifacts, and audit"
 owner = "commands"
 risk = "high"
 pytest = [
-  "tests/app/test_durable_commands.py",
+  "tests/commands/test_durable_runtime_contracts.py",
   "tests/integration/test_command_flow.py::test_submit_spawn_reserved_id_survives_drain",
   "tests/integration/test_command_flow.py::test_command_materializer_infrastructure_failure_fails_tick_before_settlement",
 ]
@@ -219,7 +219,7 @@ source = "docs/guide/specification.md"
 section = "Command ledger, scheduler, and dispatcher"
 owner = "commands"
 risk = "high"
-pytest = ["tests/app/test_durable_commands.py"]
+pytest = ["tests/commands/test_durable_runtime_contracts.py"]
 static = []
 evals = [
   "poison_in_batch",
@@ -509,9 +509,9 @@ profiles = ["pr", "main", "release"]
 id = "audit.append_only.evidence"
 source = "docs/guide/audit-log.md"
 section = "2. Append-only invariant"
-owner = "audit"
+owner = "commands"
 risk = "high"
-pytest = ["tests/app/test_audit_contracts.py"]
+pytest = ["tests/commands/test_audit_projection_contracts.py"]
 static = []
 evals = ["spec.append_only_protocols"]
 benchmarks = []

@@ -117,7 +117,7 @@ not from an in-memory broker history.
 
 ## Executable contracts
 
-- `tests/app/test_durable_commands.py`
+- `tests/commands/test_durable_runtime_contracts.py`
 - `tests/integration/test_command_flow.py`
 - `evals/suites/idempotency/tasks.py`
 - `evals/suites/idempotency/process.py`

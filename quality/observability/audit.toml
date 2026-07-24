@@ -22,6 +22,6 @@ outcomes = [
 authority = "The append-only audit journal, durable outbox, projection watermark, and returned rows remain authoritative."
 evidence = [
   "docs/guide/audit-log.md",
-  "tests/app/test_audit_contracts.py",
+  "tests/commands/test_audit_projection_contracts.py",
 ]
 rationale = "Audit projection failures may be suppressed only where durable outbox state remains authoritative and retryable."
