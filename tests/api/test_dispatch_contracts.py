@@ -597,6 +597,50 @@ async def test_fastapi_lifespan_retains_retryable_resources_after_close_failure(
     assert resources.close_calls == 2
 
 
+@pytest.mark.asyncio
+async def test_fastapi_lifespan_retries_retained_owner_before_reentry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A restart cannot overwrite the exact graph retained by failed teardown."""
+
+    api_app = import_module("archetype.api.app")
+    wiring = import_module("archetype.wiring")
+
+    class RetryableResources(_LifespanResources):
+        async def aclose(self) -> None:
+            self.close_calls += 1
+            if self.close_calls == 1:
+                raise RuntimeError("provider cleanup unavailable")
+
+    retained = RetryableResources()
+    replacement = _LifespanResources()
+    built: list[_LifespanResources] = []
+
+    def build(*_args: object, **_kwargs: object) -> _LifespanResources:
+        resource = (retained, replacement)[len(built)]
+        built.append(resource)
+        return resource
+
+    monkeypatch.setattr(wiring, "build_runtime_resources", build)
+    monkeypatch.setattr(api_app, "build_runtime_resources", build, raising=False)
+
+    app = api_app.create_app()
+    with pytest.raises(RuntimeError, match="provider cleanup unavailable"):
+        async with app.router.lifespan_context(app):
+            assert app.state.resources is retained
+
+    assert app.state.resources is retained
+    assert built == [retained]
+
+    async with app.router.lifespan_context(app):
+        assert retained.close_calls == 2
+        assert built == [retained, replacement]
+        assert app.state.resources is replacement
+
+    assert replacement.close_calls == 1
+    assert not hasattr(app.state, "resources")
+
+
 def _call_target(call: ast.Call) -> str | None:
     def expression_target(expression: ast.expr) -> str | None:
         if isinstance(expression, ast.Name):
