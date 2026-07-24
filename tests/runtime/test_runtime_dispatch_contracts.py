@@ -619,8 +619,8 @@ async def test_runtime_has_no_actor_or_access_decision_evidence() -> None:
     assert operation.config is config
     assert operation.env_client is env_client
     assert dispatcher.actor_aware == []
-    assert "actor" not in operation.model_fields
-    assert "actor_id" not in operation.model_fields
+    assert "actor" not in type(operation).model_fields
+    assert "actor_id" not in type(operation).model_fields
 
 
 def test_runtime_world_has_no_duplicate_world_operation_lock_or_context_authority() -> None:
