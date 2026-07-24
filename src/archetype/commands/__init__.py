@@ -3,6 +3,8 @@
 
 """Governed command dispatch and durable operation machinery."""
 
+from archetype.commands.audit import AuditLog
+from archetype.commands.dispatch import CommandDispatcher
 from archetype.commands.models import (
     MAX_ACCESS_SUMMARY_BYTES,
     AccessSummary,
@@ -13,6 +15,7 @@ from archetype.commands.models import (
     GetAuditHistory,
     PolicyRequest,
 )
+from archetype.commands.policy import Policy
 from archetype.commands.registry import (
     DurableOperation,
     OperationRegistry,
@@ -22,11 +25,15 @@ from archetype.commands.registry import (
     encode_canonical_operation,
     operation_rejection_metadata,
 )
+from archetype.commands.scheduler import CommandScheduler
 
 __all__ = [
     "AccessSummary",
     "ActorCtx",
+    "AuditLog",
     "AuditRow",
+    "CommandDispatcher",
+    "CommandScheduler",
     "DeferredItem",
     "DurableOperation",
     "DurableOptions",
@@ -34,6 +41,7 @@ __all__ = [
     "MAX_ACCESS_SUMMARY_BYTES",
     "OperationRegistry",
     "OperationSpec",
+    "Policy",
     "PolicyRequest",
     "canonical_operation_json",
     "decode_canonical_operation",
