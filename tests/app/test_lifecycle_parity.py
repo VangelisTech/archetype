@@ -10,6 +10,7 @@ multi-runtime isolation, sync/async surface parity, and viewer guardrails.
 from __future__ import annotations
 
 import asyncio
+
 import pytest
 from daft import DataFrame, col
 
