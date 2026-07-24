@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""RED identity contract for promotion of the canonical redaction family."""
+"""Identity contract for the promoted canonical redaction family."""
 
 from __future__ import annotations
 
