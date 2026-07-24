@@ -94,6 +94,10 @@ class _Dependency:
         self.events.append(f"shutdown:{self.owner}:{self.shutdown_calls}")
 
 
+class _Anchor:
+    pass
+
+
 def _runtime_api() -> tuple[Any, Any, Any]:
     """Load only the selected node's absent PR-4 seams."""
 
@@ -451,6 +455,42 @@ async def test_failed_phase_retains_owner_and_dependencies_until_retry() -> None
     assert dispatcher.stop_calls == dispatcher.wait_calls == 1
 
 
+async def test_owner_anchor_is_strong_until_failed_cleanup_retry_releases() -> None:
+    runtime_module, RuntimeShutdownError, _shutdown_failure = _runtime_api()
+    events: list[str] = []
+    resources = _new_resources(runtime_module, _Dispatcher(events))
+    reservation = resources.reserve_owner(
+        "mission:anchored",
+        phase="workflow-handles",
+    )
+    handle = _Closeable(
+        "mission:anchored",
+        events,
+        failures=[RuntimeError("retry cleanup")],
+    )
+    await _construct(reservation, handle)
+    anchor = _Anchor()
+    anchor_ref = weakref.ref(anchor)
+
+    assert reservation.retain_anchor(anchor) is anchor
+    assert not reservation.released
+    del anchor
+    gc.collect()
+
+    with pytest.raises(RuntimeShutdownError):
+        await resources.aclose()
+
+    gc.collect()
+    assert anchor_ref() is not None
+    assert not reservation.released
+
+    await resources.aclose()
+    gc.collect()
+
+    assert reservation.released
+    assert anchor_ref() is None
+
+
 async def test_cancelled_waiter_does_not_cancel_owned_cleanup() -> None:
     runtime_module, RuntimeShutdownError, _shutdown_failure = _runtime_api()
     events: list[str] = []
@@ -463,10 +503,12 @@ async def test_cancelled_waiter_does_not_cancel_owned_cleanup() -> None:
         started=cleanup_started,
         release=cleanup_release,
     )
-    await _construct(
-        resources.reserve_owner(handle.owner, phase="workflow-handles"),
-        handle,
-    )
+    reservation = resources.reserve_owner(handle.owner, phase="workflow-handles")
+    await _construct(reservation, handle)
+    anchor = _Anchor()
+    anchor_ref = weakref.ref(anchor)
+    reservation.retain_anchor(anchor)
+    del anchor
 
     cancelled_waiter = asyncio.create_task(resources.aclose())
     await _wait(cleanup_started)
@@ -481,6 +523,9 @@ async def test_cancelled_waiter_does_not_cancel_owned_cleanup() -> None:
     assert isinstance(raised.value.__cause__, BaseExceptionGroup)
     assert raised.value.__cause__.exceptions == (failure.cause,)
     assert not handle.cancelled
+    gc.collect()
+    assert anchor_ref() is not None
+    assert not reservation.released
 
     retry = asyncio.create_task(resources.aclose())
     cleanup_release.set()
@@ -488,6 +533,9 @@ async def test_cancelled_waiter_does_not_cancel_owned_cleanup() -> None:
 
     assert handle.close_calls == 1, "retry joins the still-owned cleanup operation"
     assert not handle.cancelled
+    gc.collect()
+    assert reservation.released
+    assert anchor_ref() is None
 
 
 async def test_concurrent_close_serializes_failure_retry_and_success() -> None:

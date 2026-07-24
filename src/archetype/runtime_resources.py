@@ -64,6 +64,17 @@ class OwnerReservation(Protocol):
     @property
     def phase(self) -> RuntimeShutdownPhase: ...
 
+    @property
+    def released(self) -> bool:
+        """Whether this exact owner completed cleanup and released its anchors."""
+
+        ...
+
+    def retain_anchor[T](self, anchor: T) -> T:
+        """Keep an inert handle reachable until this owner releases."""
+
+        ...
+
     async def construct[T](self, factory: AsyncResourceFactory[T]) -> T:
         """Construct and bind one resource inside this reservation."""
 
@@ -174,6 +185,7 @@ class _OwnerReservation:
         self._resource_close: _OwnedClose | None = None
         self._construct_complete = False
         self._construct_lock = asyncio.Lock()
+        self._anchors: list[object] = []
         self._supervised: list[_SupervisedSlot] = []
         self._supervised_join: _OwnedClose | None = None
         self._sealed = False
@@ -186,6 +198,18 @@ class _OwnerReservation:
     @property
     def phase(self) -> RuntimeShutdownPhase:
         return self._phase
+
+    @property
+    def released(self) -> bool:
+        return self._released
+
+    def retain_anchor[T](self, anchor: T) -> T:
+        self._require_bindable()
+        if anchor is None:
+            raise TypeError("runtime owner anchor must not be None")
+        if all(retained is not anchor for retained in self._anchors):
+            self._anchors.append(anchor)
+        return anchor
 
     async def construct[T](self, factory: AsyncResourceFactory[T]) -> T:
         if not callable(factory):
@@ -290,6 +314,7 @@ class _OwnerReservation:
     def _release(self) -> None:
         self._resource = _MISSING
         self._resource_close = None
+        self._anchors.clear()
         self._released = True
 
     def _require_bindable(self) -> None:
