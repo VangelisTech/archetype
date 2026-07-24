@@ -3,9 +3,11 @@
 
 """Tests for typed mission trajectory schemas and pure transforms."""
 
-import pyarrow as pa
+from types import SimpleNamespace
 
-from archetype.app.models import Command, CommandType
+import pyarrow as pa
+from uuid_utils import uuid7
+
 from archetype.core.component import Component
 from archetype.missions.trajectories import (
     Trajectory,
@@ -128,7 +130,13 @@ def test_trajectory_from_episode_result_records_header_fields() -> None:
 
 
 def test_commands_and_audit_rows_materialize_as_typed_events() -> None:
-    command = Command(type=CommandType.SPAWN, tick=2, priority=5, version=3)
+    command = SimpleNamespace(
+        id=uuid7(),
+        type="spawn",
+        tick=2,
+        priority=5,
+        version=3,
+    )
     command_events = commands_to_events([command], trajectory_id="traj-1")
     audit_events = audit_rows_to_events(
         [

@@ -36,14 +36,5 @@ def _assert_scanner_contract(service_type: type[Any]) -> None:
 
 
 def test_canonical_redaction_import_preserves_policy_digest_and_receipt_behavior() -> None:
-    # The old owner proves the golden behavior on the PR-3 base.  Root deletes
-    # this path only after all consumers repoint to the canonical family.
-    try:
-        legacy = import_module("archetype.app.redaction")
-    except ModuleNotFoundError:
-        legacy = None
-    if legacy is not None:
-        _assert_scanner_contract(legacy.RedactionService)
-
     canonical = import_module("archetype.redaction")
     _assert_scanner_contract(canonical.RedactionService)

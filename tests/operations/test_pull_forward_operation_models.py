@@ -201,20 +201,6 @@ def _canonical_models(
     return loaded
 
 
-def _assert_pr3_bridge_counterfactual() -> None:
-    """Prove the exact inventory against the finite bridge while it exists."""
-
-    try:
-        bridge = import_module("archetype.app.gateway._pr3_commands_bridge")
-    except ModuleNotFoundError:
-        # The bridge is deliberately deleted once PR-4 wiring is complete.
-        return
-    assert dict(bridge.PR3_BRIDGE_MODEL_LITERALS) == _EXPECTED_LITERALS
-    assert bridge.PR3_BRIDGE_UNTRUSTED_OPERATIONS == {
-        _EXPECTED_LITERALS[name] for name in _ACTOR_AWARE_MODELS
-    }
-
-
 def _operation_instance(model: type[BaseModel]) -> BaseModel:
     literal = _EXPECTED_LITERALS[model.__name__]
     return model.model_construct(operation=literal)
@@ -376,7 +362,6 @@ def _forbidden_imports(source: str) -> set[str]:
 
 
 def test_pull_forward_inventory_is_exactly_fourteen_models() -> None:
-    _assert_pr3_bridge_counterfactual()
     models = _canonical_models()
 
     assert len(models) == 14
@@ -525,7 +510,6 @@ def test_old_supported_contract_paths_preserve_object_identity() -> None:
 
 @pytest.mark.asyncio
 async def test_pull_forward_specs_have_exact_immediate_availability_and_are_non_durable() -> None:
-    _assert_pr3_bridge_counterfactual()
     probe_effects: list[str] = []
     probe_registry = OperationRegistry()
     probe_registry.register(_probe_spec(untrusted=True, effects=probe_effects))

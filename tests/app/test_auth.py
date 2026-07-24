@@ -1,7 +1,7 @@
 # Copyright 2025 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compatibility and instance-owned commands policy contracts."""
+"""Commands-owned actor identity and instance-owned policy contracts."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from pydantic import ValidationError
 from uuid_utils import uuid7
 
 import archetype.commands.policy as policy_module
-from archetype.app.gateway.auth import ActorCtx as CompatibilityActorCtx
 from archetype.commands.models import ActorCtx, PolicyRequest
 from archetype.commands.policy import (
     DEFAULT_MAX_COMMANDS_PER_TICK,
@@ -48,9 +47,8 @@ def _authorize(
     )
 
 
-def test_compatibility_actor_is_the_commands_owned_frozen_value() -> None:
-    assert CompatibilityActorCtx is ActorCtx
-    actor = CompatibilityActorCtx(id=uuid7(), roles={"admin"})
+def test_actor_context_is_a_commands_owned_frozen_value() -> None:
+    actor = ActorCtx(id=uuid7(), roles={"admin"})
 
     with pytest.raises(ValidationError):
         actor.roles = {"viewer"}

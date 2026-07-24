@@ -9,8 +9,6 @@ import ast
 import re
 from pathlib import Path
 
-from archetype.app.models import CommandType
-
 _GUIDE_ROOT = Path("docs/guide")
 _COMMAND_TOTAL_PATTERNS = (
     re.compile(r"\b(\d+)\s+command\s+types?\b", re.IGNORECASE),
@@ -32,21 +30,18 @@ _BEGINNER_EXAMPLES = (
 )
 
 
-def test_numeric_command_type_claims_match_the_enum() -> None:
-    """A guide may omit a volatile total, but any total it states must be true."""
-    expected = len(CommandType)
+def test_guides_do_not_freeze_numeric_command_type_claims() -> None:
+    """Exact family operations make a global command-type total meaningless."""
     stale: list[str] = []
 
     for guide in sorted(_GUIDE_ROOT.glob("*.md")):
         text = guide.read_text()
         for pattern in _COMMAND_TOTAL_PATTERNS:
             for match in pattern.finditer(text):
-                claimed = int(match.group(1))
-                if claimed != expected:
-                    line = text.count("\n", 0, match.start()) + 1
-                    stale.append(f"{guide}:{line} claims {claimed}; CommandType has {expected}")
+                line = text.count("\n", 0, match.start()) + 1
+                stale.append(f"{guide}:{line} freezes a global command-type total")
 
-    assert not stale, "stale command-type totals:\n" + "\n".join(stale)
+    assert not stale, "global command-type totals are no longer a contract:\n" + "\n".join(stale)
 
 
 def test_trusted_runtime_example_keeps_rbac_at_the_adapter_boundary() -> None:

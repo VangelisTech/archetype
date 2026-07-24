@@ -18,8 +18,8 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-import archetype.app.redaction.service as redaction_module
-from archetype.app.redaction import (
+import archetype.redaction.service as redaction_module
+from archetype.redaction import (
     RedactionPolicyConfig,
     RedactionReceipt,
     RedactionService,
