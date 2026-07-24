@@ -13,6 +13,8 @@ from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import Protocol, runtime_checkable
 
+from archetype.errors import AvailabilityError
+
 
 class SandboxStatus(StrEnum):
     """Lifecycle of an isolated filesystem and process container."""
@@ -101,8 +103,10 @@ class SandboxIdentity:
             raise ValueError("sandbox identity requires an environment")
 
 
-class SandboxTeardownError(RuntimeError):
+class SandboxTeardownError(AvailabilityError):
     """A retained session could not be closed before explicit replacement."""
+
+    public_detail = "Sandbox cleanup is temporarily unavailable"
 
     def __init__(self, identity: SandboxIdentity, cause: BaseException) -> None:
         self.identity = identity

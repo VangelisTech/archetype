@@ -236,9 +236,6 @@ INTERNAL_ONLY_EXCEPTIONS = {
     "archetype.missions.critics.harness._UnverifiableReview": (
         "caught and normalized inside CriticHarness.review before the mission handler returns"
     ),
-    "archetype.missions.sandboxes.contracts.SandboxTeardownError": (
-        "caught by MissionService and converted to bounded durable sandbox evidence"
-    ),
 }
 
 
