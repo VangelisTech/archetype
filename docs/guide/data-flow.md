@@ -127,10 +127,10 @@ See [Audit Log](audit-log.md).
 ## Source Reference
 
 - Gateway: `src/archetype/app/gateway/service.py`
-- Durable command scheduler: `src/archetype/app/commands/service.py`
+- Governed dispatcher and durable scheduler: `src/archetype/commands/`
 - Managed simulation: `src/archetype/world/simulation.py`
 - Durable world reads: `src/archetype/world/query.py`
 - World mutation adapters: `src/archetype/world/mutation.py`
-- RBAC guard: `src/archetype/app/gateway/auth/guard.py`
+- Instance-owned RBAC and quotas: `src/archetype/commands/policy.py`
 - Querier: `src/archetype/core/aio/async_querier.py`
 - Updater: `src/archetype/core/aio/async_updater.py`

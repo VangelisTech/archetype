@@ -1,110 +1,119 @@
 ---
-title: Custom Commands
-description: How to route domain-specific commands through Archetype
+title: Custom operations
+description: How domain-specific behavior enters Archetype's exact operation registry
 ---
 
-`CommandType.CUSTOM` is a portable domain-envelope reservation. Custom
-commands still pass through the command gate, so role permissions, quotas,
-durable ordering, and audit projection match other deferred commands. The
-built-in dispatcher deliberately performs no domain mutation for them.
+Archetype does not treat an arbitrary JSON payload as executable behavior.
+The compatibility `CommandType.CUSTOM` envelope is rejected before durable
+admission. There is no built-in custom no-op that can be authorized, queued,
+and reported as applied without a domain effect.
 
-## Submitting a Custom Command
+Domain behavior enters through an exact, family-owned Pydantic operation and
+one reviewed commands registration.
 
-```python
-from archetype.app.models import Command, CommandType
+## Define meaning in the owning family
 
-cmd = Command(
-    type=CommandType.CUSTOM,
-    payload={
-        "action": "trigger_event",
-        "event_type": "explosion",
-        "position": {"x": 10, "y": 20},
-    },
-)
-
-await container.command_gateway.submit(ctx, world_id, cmd)
-```
-
-Via REST:
-
-```bash
-curl -X POST localhost:8000/worlds/{world_id}/commands \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "type": "custom",
-    "tick": 0,
-    "payload": {
-      "action": "trigger_event",
-      "event_type": "explosion",
-      "position": {"x": 10, "y": 20}
-    }
-  }'
-```
-
-## Default Behavior
-
-The default deferred dispatcher does not mutate world state for unknown custom payloads. The command can still be authorized, queued, drained, and audited; domain behavior requires an application-specific dispatcher.
-
-## Extension Pattern
-
-Adding domain behavior is an internal host extension, not a public runtime
-plug-in point:
-
-1. Add or reuse a `CommandType`.
-2. Decide role permissions in `COMMANDS_BY_ROLE`.
-3. Add a gated method to `iCommandGateway` when the operation is user-visible and should be direct.
-4. For tick-deferred custom payloads, add versioned portable dispatch logic in
-   the commands-family path used by `materialize`.
-5. Emit one audit row per gated call.
-
-Avoid bypassing the gate from runtime/API code. If the operation is external, route it through `iCommandGateway`.
-
-## RBAC and Quotas
-
-`CUSTOM` is permitted for `player`, `operator`, and `admin` by default. Custom command cost defaults to 10 tokens unless the guard cost table says otherwise.
-
-See [Command Gate](command-gate.md) and [Token Costs and Quotas](token-quotas.md).
-
-## Command Flow
-
-```text
-Client submits Command(type=CUSTOM, payload={...})
-    |
-iCommandGateway.submit(ctx, world_id, cmd)
-    |
-guardrail_allow
-    |
-RuntimeApplication.submit
-    |
-CommandScheduler.admit (durable)
-    |
-AsyncWorld construction-injected tick materializer
-    |
-CommandScheduler.materialize
-    |
-tick manifest + command settlement + outbox
-```
-
-## Example: Domain Action Payload
+The operation model and behavior belong to the family whose state they change.
+That family does not import `archetype.commands`.
 
 ```python
-spell_cmd = Command(
-    type=CommandType.CUSTOM,
-    payload={
-        "action": "cast_spell",
-        "caster_id": 42,
-        "spell": "fireball",
-        "target_ids": [7, 13],
-        "damage": 50,
-    },
-    tick=0,
-    priority=-10,
-)
+from typing import ClassVar, Literal
 
-await container.command_gateway.submit(ctx, world_id, spell_cmd)
+from pydantic import BaseModel, ConfigDict
+from uuid_utils import UUID
+
+
+class TriggerEvent(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    direct_only: ClassVar[bool] = True
+
+    operation: Literal["trigger_event"] = "trigger_event"
+    world_id: UUID
+    event_type: str
+
+
+async def trigger_event(operation: TriggerEvent) -> None:
+    ...
 ```
 
-Use `payload["action"]` as a sub-type discriminator when one `CUSTOM` command type supports many domain actions.
+Use `direct_only = True` whenever the request includes callbacks, clients,
+resources, credentials, or another live Python capability.
 
-User-facing history comes from `iCommandGateway.get_audit_history(...)`, not
-from command-ledger internals.
+## Register governed entry at composition
+
+The composition root imports the family model and behavior, then adds one
+exact `OperationSpec`:
+
+```python
+OperationSpec(
+    name="trigger_event",
+    model=TriggerEvent,
+    handler=trigger_event,
+    permission="trigger_event",
+    summarize=lambda op: {
+        "operation": op.operation,
+        "world_id": str(op.world_id),
+    },
+    quota_scope="live_world",
+    world_key=lambda op: op.world_id,
+    durable=None,
+)
+```
+
+Registration validates the literal discriminator, exact model identity,
+availability, quota coordinates, summarizer, and optional durability. It does
+not guess from base classes or caller-provided names.
+
+Adding a built-in operation also requires an explicit permission decision in
+`archetype.commands.policy.PERMISSIONS_BY_ROLE`. Unknown permissions are denied
+for every built-in role; admin does not automatically acquire them.
+
+## Direct versus durable
+
+Direct operations provide no `DurableOperation`. They enter through
+`CommandDispatcher.apply` or `apply_as` and fail if passed to `defer`.
+
+A durable operation must be portable and tick-local. Its registration adds:
+
+```python
+DurableOperation(
+    decode=TriggerEvent.model_validate_json,
+    materialize=materialize_trigger_event,
+)
+```
+
+The materializer receives the actual already-locked `AsyncWorld`. It must call
+family lock-held behavior directly, stage no separate commit, and never resolve
+the world again. The model must set `direct_only = False`.
+
+Durability metadata belongs in `DurableOptions`, not the family model:
+
+```python
+await dispatcher.defer_as(
+    actor,
+    operation,
+    DurableOptions(target_tick=12, priority=0, max_attempts=3),
+)
+```
+
+The scheduler canonicalizes the exact model, persists its identity, leases it
+in ledger order, calls the registered materializer, and settles only with the
+tick manifest.
+
+## Safety checklist
+
+Before adding an operation:
+
+1. Name the owning family and normative behavior.
+2. Use a frozen, extra-forbidden exact model with a literal discriminator.
+3. Decide trusted and untrusted availability.
+4. Add an explicit role permission and quota scope.
+5. Keep access metadata bounded and free of payloads, credentials, diffs, and
+   arbitrary results.
+6. Mark it direct-only unless portability and retry behavior are proven.
+7. For durable behavior, add canonical round-trip, actual-world
+   materialization, retry, and manifest-settlement contracts.
+8. Register it once at composition and update the registry coverage oracle.
+
+See [Command gate](command-gate.md) and
+[Durable commands](durable-commands.md).
