@@ -479,12 +479,15 @@ def test_workflow_materializes_large_diffs_from_inert_git_objects():
         Path(__file__).resolve().parents[2] / ".github" / "workflows" / "deterministic-review.yml"
     ).read_text(encoding="utf-8")
 
+    # Three independent materializations: every lens job (one matrix
+    # definition), the merging footgun-review job, and review-complete each
+    # rebuild the same inert scope from trusted git objects.
     assert "application/vnd.github.diff" not in workflow
-    assert workflow.count("fetch-depth: 0") == 2
-    assert workflow.count('git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"') == 2
-    assert workflow.count('if [[ "${FETCHED_HEAD}" != "${HEAD_SHA}" ]]') == 2
-    assert workflow.count("python3 scripts/footgun_review_gate.py scope") == 2
-    assert workflow.count('cmp --silent "${RUNNER_TEMP}/git-scope.json" "${SCOPE_FILE}"') == 2
+    assert workflow.count("fetch-depth: 0") == 3
+    assert workflow.count('git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"') == 3
+    assert workflow.count('if [[ "${FETCHED_HEAD}" != "${HEAD_SHA}" ]]') == 3
+    assert workflow.count("python3 scripts/footgun_review_gate.py scope") == 3
+    assert workflow.count('cmp --silent "${RUNNER_TEMP}/git-scope.json" "${SCOPE_FILE}"') == 3
 
 
 REVIEW_WORKFLOW = (
@@ -510,6 +513,7 @@ UNGATED_REVIEW_STEPS = frozenset(
 
 REAFFIRM_GATES = (
     "steps.reaffirm.outputs.reaffirmed != 'true'",
+    "needs.reaffirm.outputs.reaffirmed != 'true'",
     "needs.footgun-review.outputs.reaffirmed != 'true'",
 )
 
@@ -519,6 +523,19 @@ def _review_workflow_steps() -> list[tuple[str, str]]:
 
     chunks = re.split(r"\n      - name: ", REVIEW_WORKFLOW.read_text(encoding="utf-8"))[1:]
     return [(chunk.split("\n", 1)[0], chunk) for chunk in chunks]
+
+
+def _review_workflow_jobs() -> dict[str, str]:
+    """Return {job_id: job_body} for every job in the review workflow."""
+
+    jobs_block = REVIEW_WORKFLOW.read_text(encoding="utf-8").split("\njobs:\n", 1)[1]
+    headers = list(re.finditer(r"^  ([a-z][a-z-]*):$", jobs_block, re.MULTILINE))
+    return {
+        match.group(1): jobs_block[
+            match.start() : headers[index + 1].start() if index + 1 < len(headers) else None
+        ]
+        for index, match in enumerate(headers)
+    }
 
 
 def test_ready_for_review_never_cancels_the_running_review_of_the_same_head():
@@ -545,13 +562,34 @@ def test_reaffirm_accepts_only_a_completed_clean_review_of_the_exact_head():
 
 
 def test_reaffirmed_head_skips_every_spending_and_publishing_step():
-    ungated = [
-        name
-        for name, body in _review_workflow_steps()
-        if name not in UNGATED_REVIEW_STEPS and not any(gate in body for gate in REAFFIRM_GATES)
-    ]
+    # A job whose own `if:` carries a reaffirm gate (the lens matrix) skips
+    # wholesale; in every other job, each step must carry a gate itself.
+    ungated = []
+    for job_id, job_body in _review_workflow_jobs().items():
+        job_header = job_body.split("\n      - name: ", 1)[0]
+        if any(gate in job_header for gate in REAFFIRM_GATES):
+            continue
+        chunks = re.split(r"\n      - name: ", job_body)[1:]
+        for chunk in chunks:
+            name = chunk.split("\n", 1)[0]
+            if name not in UNGATED_REVIEW_STEPS and not any(
+                gate in chunk for gate in REAFFIRM_GATES
+            ):
+                ungated.append(f"{job_id}: {name}")
 
     assert ungated == []
+
+
+def test_lens_matrix_skips_wholesale_on_a_reaffirmed_head():
+    jobs = _review_workflow_jobs()
+
+    lens_header = jobs["lens-review"].split("\n      - name: ", 1)[0]
+    assert "needs.reaffirm.outputs.reaffirmed != 'true'" in lens_header
+    # The aggregate stays a required context, so it must run (and succeed by
+    # carrying the reaffirm decision forward) rather than skip.
+    footgun_header = jobs["footgun-review"].split("\n      - name: ", 1)[0]
+    assert "!cancelled()" in footgun_header
+    assert "reaffirmed: ${{ needs.reaffirm.outputs.reaffirmed }}" in footgun_header
 
 
 def test_reaffirmed_head_cannot_fire_the_empty_finding_count_steps():
@@ -687,3 +725,164 @@ def test_observability_categories_extend_failure_and_unwind_review():
     )
     assert "fail-open-failure-paths" in REQUIRED_CATEGORIES
     assert "error-path-unwind" in REQUIRED_CATEGORIES
+
+
+def _lens_result(lens: str, *, findings: list[dict] | None = None) -> dict:
+    result = _result(findings=findings)
+    result["reviewed_categories"] = list(reversed(gate.LENSES[lens]))
+    return result
+
+
+def test_lenses_partition_required_categories():
+    """Every required category belongs to exactly one non-empty lens.
+
+    The merge re-checks this at runtime, but drift should fail here first:
+    a category added to REQUIRED_CATEGORIES without a lens assignment would
+    otherwise only surface as a red merge on the next reviewed PR.
+    """
+    assigned = [category for categories in gate.LENSES.values() for category in categories]
+
+    assert all(gate.LENSES.values())
+    assert len(assigned) == len(set(assigned))
+    assert set(assigned) == set(REQUIRED_CATEGORIES)
+
+
+def test_lens_validation_requires_exactly_the_lens_categories():
+    validated = validate_result(
+        _lens_result("authority"), _scope(), DIFF, categories=gate.LENSES["authority"]
+    )
+
+    assert validated["reviewed_categories"] == sorted(gate.LENSES["authority"])
+    with pytest.raises(GateError, match="reviewed_categories does not match"):
+        validate_result(_result(), _scope(), DIFF, categories=gate.LENSES["authority"])
+
+
+def test_lens_validation_rejects_findings_outside_the_lens():
+    # fail-open-failure-paths belongs to the authority lens, not daft-shape.
+    result = _lens_result("daft-shape", findings=[_finding()])
+
+    with pytest.raises(GateError, match="not a reviewed category"):
+        validate_result(result, _scope(), DIFF, categories=gate.LENSES["daft-shape"])
+
+
+def test_lens_schema_narrows_the_category_enum():
+    schema = gate.result_schema(gate.LENSES["observability"])
+    enum = schema["properties"]["findings"]["items"]["properties"]["category"]["enum"]
+
+    assert enum == list(gate.LENSES["observability"])
+    assert gate.result_schema()["properties"]["findings"]["items"]["properties"]["category"][
+        "enum"
+    ] == list(REQUIRED_CATEGORIES)
+
+
+def test_merge_reassembles_one_full_coverage_review(tmp_path):
+    results_dir = tmp_path / "lenses"
+    results_dir.mkdir()
+    for lens in gate.LENSES:
+        findings = [_finding()] if lens == "authority" else None
+        (results_dir / f"{lens}.json").write_text(
+            json.dumps(_lens_result(lens, findings=findings)), encoding="utf-8"
+        )
+    scope_path = tmp_path / "scope.json"
+    diff_path = tmp_path / "review.diff"
+    output_path = tmp_path / "validated" / "normalized.json"
+    scope_path.write_text(json.dumps(_scope()), encoding="utf-8")
+    diff_path.write_text(DIFF, encoding="utf-8")
+
+    assert (
+        gate.main(
+            [
+                "merge",
+                "--scope",
+                str(scope_path),
+                "--diff",
+                str(diff_path),
+                "--results-dir",
+                str(results_dir),
+                "--output",
+                str(output_path),
+            ]
+        )
+        == 0
+    )
+
+    merged = json.loads(output_path.read_text(encoding="utf-8"))
+    # The merged result is itself a fully valid full-coverage review.
+    assert validate_result(merged, _scope(), DIFF) == merged
+    assert merged["reviewed_categories"] == sorted(REQUIRED_CATEGORIES)
+    assert [finding["category"] for finding in merged["findings"]] == ["fail-open-failure-paths"]
+    assert all(entry["area"].split(": ", 1)[0] in gate.LENSES for entry in merged["review_context"])
+    assert all(f"[{lens}]" in merged["summary"] for lens in gate.LENSES)
+
+
+def test_merge_fails_closed_on_a_missing_lens_result(tmp_path):
+    results_dir = tmp_path / "lenses"
+    results_dir.mkdir()
+    for lens in gate.LENSES:
+        if lens == "observability":
+            continue
+        (results_dir / f"{lens}.json").write_text(json.dumps(_lens_result(lens)), encoding="utf-8")
+    scope_path = tmp_path / "scope.json"
+    diff_path = tmp_path / "review.diff"
+    scope_path.write_text(json.dumps(_scope()), encoding="utf-8")
+    diff_path.write_text(DIFF, encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="missing validated lens result"):
+        gate.main(
+            [
+                "merge",
+                "--scope",
+                str(scope_path),
+                "--diff",
+                str(diff_path),
+                "--results-dir",
+                str(results_dir),
+                "--output",
+                str(tmp_path / "normalized.json"),
+            ]
+        )
+
+
+def test_merge_deduplicates_identical_findings_within_a_lens():
+    lens_results = {lens: _lens_result(lens) for lens in gate.LENSES}
+    lens_results["authority"]["findings"] = [_finding(), _finding()]
+
+    merged = gate.merge_lens_results(lens_results, _scope(), DIFF)
+
+    assert len(merged["findings"]) == 1
+
+
+def test_extract_recovers_the_structured_object_from_fenced_prose():
+    payload = _result()
+    raw = f"Here is my review.\n```json\n{json.dumps(payload)}\n```\nDone."
+
+    assert gate.extract_structured_json(raw) == payload
+
+
+def test_extract_prefers_the_last_head_bound_object():
+    raw = (
+        json.dumps({"head_sha": HEAD_SHA, "attempt": 1})
+        + "\nCorrection below.\n"
+        + json.dumps({"head_sha": HEAD_SHA, "attempt": 2})
+        + "\nTotals: "
+        + json.dumps({"files": 2})
+    )
+
+    assert gate.extract_structured_json(raw) == {"head_sha": HEAD_SHA, "attempt": 2}
+
+
+def test_extract_command_passes_unparsable_output_through(tmp_path):
+    raw_path = tmp_path / "raw.txt"
+    output_path = tmp_path / "extracted.json"
+    raw_path.write_text("no structured result here { broken", encoding="utf-8")
+
+    assert gate.main(["extract", "--raw", str(raw_path), "--output", str(output_path)]) == 0
+
+    assert output_path.read_text(encoding="utf-8") == "no structured result here { broken"
+
+
+def test_workflow_matrix_names_every_lens_exactly_once():
+    workflow = REVIEW_WORKFLOW.read_text(encoding="utf-8")
+    matrix_lenses = re.findall(r"- lens: ([a-z-]+)", workflow)
+
+    assert sorted(matrix_lenses) == sorted(gate.LENSES)
