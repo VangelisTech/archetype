@@ -192,6 +192,32 @@ class TestCommandRoutes:
         assert resp.status_code == 200
         assert resp.json()["type"] == "spawn"
 
+    def test_submit_command_rejects_caller_reserved_spawn_before_admission(
+        self,
+        client,
+        tmp_path,
+    ):
+        create_resp = client.post(
+            "/worlds",
+            json={"name": "reserved_cmd", "storage_uri": str(tmp_path / "store")},
+        )
+        world_id = create_resp.json()["world_id"]
+
+        resp = client.post(
+            f"/worlds/{world_id}/commands",
+            json={
+                "type": "spawn",
+                "payload": {"entity_id": 41, "components": []},
+            },
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == (
+            "spawn payload cannot supply entity_id; deferred spawn reservations are scheduler-owned"
+        )
+        history = client.get(f"/worlds/{world_id}/commands").json()
+        assert {row.get("type") for row in history}.isdisjoint({"spawn", "spawn_reserved"})
+
     def test_submit_unknown_world_is_not_found(self, client):
         resp = client.post(
             "/worlds/00000000-0000-0000-0000-000000000000/commands",
@@ -233,6 +259,37 @@ class TestCommandRoutes:
         ids = resp.json()["command_ids"]
         assert len(ids) == 2
         assert all(isinstance(i, str) for i in ids)
+
+    def test_submit_batch_rejects_caller_reserved_spawn_atomically(
+        self,
+        client,
+        tmp_path,
+    ):
+        create_resp = client.post(
+            "/worlds",
+            json={"name": "reserved_batch", "storage_uri": str(tmp_path / "store")},
+        )
+        world_id = create_resp.json()["world_id"]
+
+        resp = client.post(
+            f"/worlds/{world_id}/commands/batch",
+            json={
+                "commands": [
+                    {"type": "spawn", "payload": {"components": []}},
+                    {
+                        "type": "spawn",
+                        "payload": {"entity_id": "42", "components": []},
+                    },
+                ]
+            },
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == (
+            "spawn payload cannot supply entity_id; deferred spawn reservations are scheduler-owned"
+        )
+        history = client.get(f"/worlds/{world_id}/commands").json()
+        assert {row.get("type") for row in history}.isdisjoint({"spawn", "spawn_reserved"})
 
     def test_submit_batch_invalid_type(self, client, tmp_path):
         create_resp = client.post(

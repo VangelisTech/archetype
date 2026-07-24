@@ -38,7 +38,6 @@ from archetype.world.models import (
     Despawn,
     RemoveComponents,
     Spawn,
-    SpawnReserved,
     Update,
     WorldOperation,
 )
@@ -125,20 +124,18 @@ def _portable_request(
         )
 
     payload = request.payload
+    if request.type == "spawn" and "entity_id" in payload:
+        raise ValueError(
+            "spawn payload cannot supply entity_id; deferred spawn reservations are scheduler-owned"
+        )
+
     components = tuple(
         ComponentValue.from_component(_component(value)) for value in payload.get("components", ())
     )
 
     operation: WorldOperation
     if request.type == "spawn":
-        if "entity_id" in payload:
-            operation = SpawnReserved(
-                world_id=world_id,
-                entity_id=_entity_id(payload["entity_id"]),
-                components=components,
-            )
-        else:
-            operation = Spawn(world_id=world_id, components=components)
+        operation = Spawn(world_id=world_id, components=components)
     elif request.type == "despawn":
         operation = Despawn(
             world_id=world_id,
