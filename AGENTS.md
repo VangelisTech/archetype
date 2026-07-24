@@ -50,10 +50,9 @@ archetype/
 │   ├── world/          # Managed lifecycle, state behavior, reads + operation models
 │   ├── commands/       # Registry, policy, dispatch, scheduling + audit projection
 │   ├── evaluation/     # Grading, snapshot views, leases + durable receipts
+│   ├── artifacts/      # File ingestion, content objects + typed/common indexes
 │   ├── <family>/       # Reusable ECS/domain state and pure behavior
 │   ├── app/            # Internal application families
-│   │   ├── ingestion/   #   Live-storage selection + typed publication
-│   │   ├── artifacts/   #   File source policy + typed index publication
 │   │   ├── research/    #   Autoresearch workflows
 │   │   ├── missions/    #   Coding-agent workflow authority
 │   │   └── physical_ai/ #   Physical-evaluation workflow authority

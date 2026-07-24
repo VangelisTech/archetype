@@ -173,7 +173,8 @@ deliberately generalized under `archetype.prefabs`.
 3. Manifest models + schema-hash and required-library capture in the family
    (R3, R4, R6).
 4. Namespace directory in the control catalog + binding service under `app`
-   (§5.1); publish/lookup composes the artifact and ingestion services (R3).
+   (§5.1); publish/lookup composes the registered artifacts handler and
+   `StorageService` (R3).
 5. #604 MutationOutbox seam in core (rulings on the issue), then
    processor-native instantiate.
 6. Eval-binding conventions + library-world validations (R5).
