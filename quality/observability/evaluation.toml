@@ -2,12 +2,28 @@ version = 1
 owner = "evaluation"
 family = "evaluation"
 
+[[module_operation_surface]]
+qualified_scope = "archetype.evaluation.grading"
+
+[[module_operation_surface]]
+qualified_scope = "archetype.evaluation.handlers"
+
+[[module_operation_surface]]
+qualified_scope = "archetype.evaluation.views"
+
 [[disposition]]
 operations = [
+  "grading.run_graders",
+  "handlers.evaluate",
+  "handlers.run_graders",
   "interfaces.iEvaluationService.evaluate",
   "interfaces.iEvaluationService.query_components",
   "interfaces.iEvaluationService.query_episode",
   "interfaces.iEvaluationService.run_graders",
+  "models.FrameGrader.__call__",
+  "views.pin_snapshot",
+  "views.read_pinned_subject",
+  "views.read_result",
 ]
 signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome"]
@@ -16,5 +32,6 @@ evidence = [
   "docs/guide/service-protocols.md",
   "tests/app/test_eval_receipts.py",
   "tests/app/test_eval_service.py",
+  "tests/evaluation/test_handler_receipts.py",
 ]
-rationale = "Evaluation has no approved direct signal; receipts and typed grader outcomes carry product truth."
+rationale = "The family-owned free handlers and pinned views emit no independent signal; durable receipts and typed grader outcomes carry product truth. The temporary app protocol rows remain only until the shared integrator deletes that facade."
