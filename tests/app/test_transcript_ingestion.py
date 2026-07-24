@@ -12,15 +12,15 @@ from pathlib import Path
 import pytest
 
 from archetype import ArchetypeRuntime
-from archetype.app.container import ServiceContainer
-from archetype.app.redaction import SecretQuarantineError
+from archetype.artifacts.models import QueryArtifacts
 from archetype.core.config import StorageBackend, StorageConfig, WorldConfig
+from archetype.episodes.models import IngestClaudeTranscript, QueryTranscriptRows
 from archetype.missions.trajectories import (
-    CLAUDE_TRANSCRIPT_TABLE,
     ClaudeTranscriptSource,
 )
-
-_TRANSCRIPT_ROWS = CLAUDE_TRANSCRIPT_TABLE
+from archetype.redaction import SecretQuarantineError
+from archetype.world.models import CreateWorld
+from tests._runtime import build_test_runtime
 
 
 def _storage(tmp_path: Path, namespace: str) -> StorageConfig:
@@ -75,19 +75,41 @@ async def test_transcript_persists_sanitized_artifact_and_normalized_rows(
     raw_digest = hashlib.sha256(transcript.read_bytes()).hexdigest()
     source = ClaudeTranscriptSource(path=transcript, mission_id="mission-7")
     storage = _storage(tmp_path, "transcripts")
-    container = ServiceContainer()
+    resources = build_test_runtime(tmp_path)
+    dispatcher = resources.dispatcher
     try:
-        world = await container.world_lifecycle.create_world(
-            WorldConfig(name="transcript-ingestion"), storage
+        world = await dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name="transcript-ingestion"),
+                storage_config=storage,
+            )
         )
-        result = await container.transcript_ingestion_service.ingest(str(world.world_id), source)
+        result = await dispatcher.apply(
+            IngestClaudeTranscript(
+                world_id=world.world_id,
+                source=source,
+                storage_config=storage,
+            )
+        )
         rows = sorted(
             (
-                await container.ingestion_service.read(str(world.world_id), _TRANSCRIPT_ROWS)
+                await dispatcher.apply(
+                    QueryTranscriptRows(
+                        world_id=world.world_id,
+                        storage_config=storage,
+                    )
+                )
             ).to_pylist(),
             key=lambda row: row["seq"],
         )
-        artifacts = (await container.artifact_service.index(str(world.world_id))).to_pylist()
+        artifacts = (
+            await dispatcher.apply(
+                QueryArtifacts(
+                    world_id=world.world_id,
+                    storage_config=storage,
+                )
+            )
+        ).to_pylist()
 
         assert result.redaction_status == "redacted"
         assert result.redaction_count >= 1
@@ -112,7 +134,7 @@ async def test_transcript_persists_sanitized_artifact_and_normalized_rows(
         durable = json.dumps({"rows": rows, "artifacts": artifacts}, sort_keys=True, default=str)
         assert secret not in durable
     finally:
-        await container.shutdown()
+        await resources.aclose()
 
     # Sanitization snapshots; it never mutates the submitted source.
     assert secret in transcript.read_text(encoding="utf-8")
@@ -149,22 +171,45 @@ async def test_reingestion_records_a_new_artifact_occurrence(tmp_path: Path) -> 
     _write_transcript(transcript)
     source = ClaudeTranscriptSource(path=transcript)
     storage = _storage(tmp_path, "retry")
-    container = ServiceContainer()
+    resources = build_test_runtime(tmp_path)
+    dispatcher = resources.dispatcher
     try:
-        world = await container.world_lifecycle.create_world(WorldConfig(name="retry"), storage)
-        first = await container.transcript_ingestion_service.ingest(str(world.world_id), source)
-        second = await container.transcript_ingestion_service.ingest(str(world.world_id), source)
+        world = await dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name="retry"),
+                storage_config=storage,
+            )
+        )
+        operation = IngestClaudeTranscript(
+            world_id=world.world_id,
+            source=source,
+            storage_config=storage,
+        )
+        first = await dispatcher.apply(operation)
+        second = await dispatcher.apply(operation)
 
         assert first.artifact.artifact_id != second.artifact.artifact_id
         assert first.artifact.uri == second.artifact.uri
         assert first.artifact.sha256 == second.artifact.sha256
         assert first.rows_written == second.rows_written == 3
         assert (
-            await container.ingestion_service.read(str(world.world_id), _TRANSCRIPT_ROWS)
+            await dispatcher.apply(
+                QueryTranscriptRows(
+                    world_id=world.world_id,
+                    storage_config=storage,
+                )
+            )
         ).count_rows() == 6
-        assert (await container.artifact_service.index(str(world.world_id))).count_rows() == 2
+        assert (
+            await dispatcher.apply(
+                QueryArtifacts(
+                    world_id=world.world_id,
+                    storage_config=storage,
+                )
+            )
+        ).count_rows() == 2
     finally:
-        await container.shutdown()
+        await resources.aclose()
 
 
 def test_sync_runtime_mirrors_transcript_ingestion(tmp_path: Path) -> None:
