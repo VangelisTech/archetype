@@ -60,6 +60,7 @@ help:
 	@echo "  make eval-reliability  Blocking retry/crash/recovery profile"
 	@echo "  make eval-capability  Blocking architectural capability profile"
 	@echo "  make examples-local  Run Tier-1 semantic examples in isolated storage"
+	@echo "  make operational-runtime  Run the shipped runtime/API/CLI loopback scenario"
 	@echo "  make operational-wheel  Run representative scenarios against the built wheel"
 	@echo "  make operational-mission  Run the credential-free exact-head mission scenario"
 	@echo "  make operational-external  Require selected Tier-5/6 provider evidence"
@@ -378,6 +379,14 @@ OPERATIONAL_BUILD_COMMAND ?= $(MAKE) --no-print-directory build
 OPERATIONAL_DIST_DIR ?= dist
 OPERATIONAL_WHEEL_RESULTS ?= operational-results.json
 OPERATIONAL_COMMANDS_RESULTS ?= operational-commands-source-results.json
+OPERATIONAL_RUNTIME_RESULTS ?= operational-runtime-source-results.json
+
+.PHONY: operational-runtime
+operational-runtime:
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
+		--mode source --cadence pr --max-tier 1 --require-run \
+		--scenario dogfood.runtime.loopback \
+		--out "$(OPERATIONAL_RUNTIME_RESULTS)"
 
 .PHONY: operational-commands
 operational-commands:
@@ -402,10 +411,12 @@ operational-wheel:
 			--mode wheel --cadence pr --max-tier 1 --require-run \
 			--scenario example.00_quickstart \
 			--scenario example.01_world_mutations \
+			--scenario example.02_fork_counterfactual \
 			--scenario example.03_time_travel \
 			--scenario example.06_trajectory_analysis \
 			--scenario example.10_autoresearch \
 			--scenario example.14_physical_ai \
+			--scenario dogfood.runtime.loopback \
 			--scenario dogfood.commands.local \
 			--scenario dogfood.agent_mission.scripted \
 			--wheel "$$wheel" --out "$(OPERATIONAL_WHEEL_RESULTS)" || runner_status=$$?; \
@@ -428,7 +439,7 @@ operational-external:
 		--out operational-external-results.json
 
 .PHONY: verify-pr
-verify-pr: static test-cov eval-conformance eval-capability package-smoke examples-smoke operational-commands operational-wheel docs
+verify-pr: static test-cov eval-conformance eval-capability package-smoke examples-smoke operational-runtime operational-commands operational-wheel docs
 	@echo "PR verification profile passed"
 
 .PHONY: verify-full

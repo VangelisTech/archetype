@@ -351,6 +351,39 @@ artifact_schema = "archetype.operational-results/v1"
 required_cadence = ["pr", "main", "release"]
 
 [[scenario]]
+id = "dogfood.runtime.loopback"
+kind = "dogfood"
+owner = "runtime"
+owner_paths = [
+  "src/archetype/runtime",
+  "src/archetype/runtime_resources.py",
+  "src/archetype/wiring.py",
+  "src/archetype/api",
+  "src/archetype/commands",
+]
+source_path = "scripts/run_runtime_loopback.py"
+source_command = ["python", "scripts/run_runtime_loopback.py"]
+required_extras = []
+tier = 1
+applicability = ["source", "wheel"]
+timeout_seconds = 600
+prerequisites = []
+missing_prerequisite = "fail"
+semantic_oracle = { kind = "pytest", ref = "tests/integration/test_runtime_loopback_operational.py" }
+contracts = [
+  "runtime.trust.actor_free",
+  "runtime.lifecycle.single_flight_and_drain",
+  "runtime.lifecycle.retryable_teardown",
+  "gateway.authorization.rbac",
+  "world.fork.lineage",
+  "missions.sandbox.cleanup_ownership",
+]
+cleanup_policy = "isolated"
+artifact_policy = "receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["pr", "main", "release"]
+
+[[scenario]]
 id = "dogfood.commands.local"
 kind = "dogfood"
 owner = "commands"
