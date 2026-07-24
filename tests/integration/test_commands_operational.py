@@ -64,11 +64,7 @@ def test_actor_aware_api_denial_emits_one_bounded_redacted_access_row(
         backend=StorageBackend.ICEBERG,
     )
     container = ServiceContainer(audit_storage_config=audit_storage)
-
-    def deny_after_role_check(*_args, **_kwargs) -> None:
-        raise PermissionError("operational quota denial")
-
-    monkeypatch.setattr(container.policy, "authorize_application", deny_after_role_check)
+    monkeypatch.setattr(container.policy, "_max_tokens_per_day", 0)
     set_container(container)
     try:
         with TestClient(create_app()) as client:
@@ -82,7 +78,7 @@ def test_actor_aware_api_denial_emits_one_bounded_redacted_access_row(
             )
 
             assert response.status_code == 403
-            assert response.json() == {"detail": "operational quota denial"}
+            assert response.json() == {"detail": "actor exceeded daily token budget (0 tokens)"}
             (evidence,) = container.audit_log._pending  # noqa: SLF001 - exact receipt seam
             encoded = json.dumps(
                 evidence.model_dump(mode="python"),
