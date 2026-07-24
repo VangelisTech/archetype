@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
 
-from archetype.artifacts.contracts import ArtifactRef
+from archetype.artifacts.models import ArtifactRef
 
 
 @dataclass(frozen=True)

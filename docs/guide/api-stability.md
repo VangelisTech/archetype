@@ -48,7 +48,8 @@ family or application authority.
 in the `RuntimeWorld.ingest_claude_transcript()` signature. They remain
 namespaced under `archetype.missions.trajectories`; support does not require promotion to the
 root import surface. The parser's in-memory `LoadedSession` and the concrete
-artifact ingestion service remain implementation details.
+transcript composition plus artifact-family handlers remain implementation
+details.
 
 `archetype.physical_ai` is the reviewed owner for reusable physical state,
 policy contracts, external-step processors, typed evaluation values, and pure

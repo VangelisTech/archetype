@@ -52,11 +52,9 @@ FastAPI + ActorCtx -> commands.CommandDispatcher.apply_as / defer_as
 commands.CommandDispatcher -> OperationRegistry -> exact family handler
 
 evaluation.handlers -> iStorageService + archetype.world.query
-iIngestionService  -> iStorageService + iWorldRegistry
-iArtifactService   -> iIngestionService + iStorageService + iWorldRegistry
+artifacts.handlers + artifacts.views -> iStorageService
 iTranscriptIngestionService
-  -> iArtifactService + iIngestionService
-  -> redaction structural port + iStorageService + iWorldRegistry
+  -> artifacts.handlers + redaction structural port + iStorageService
 iWorldLifecycle    -> iWorldRegistry + iStorageService
 CommandDispatcher  -> OperationRegistry + Policy + CommandScheduler
                    -> AuditLog.record_access
@@ -86,12 +84,10 @@ through those handlers and its exact pre-reserved owner.
 
 | Port | Implementation | Principal consumers | Responsibility |
 |---|---|---|---|
-| `iStorageService` | `StorageService` | world, commands, ingestion, artifacts, evaluation, transcripts, research, physical AI | Store/session lifetime, control authority, physical visibility, world/run row envelope, terminal Daft execution, and app-table catalog/read/write/retry authority |
-| `iWorldRegistry` | `WorldRegistry` | lifecycle, mutation, simulation, ingestion, artifacts, transcripts, research, physical AI | Live identity, storage coordinates, exact-world synchronization, retryable close ownership, and committed-receipt retention |
+| `iStorageService` | `StorageService` | world, commands, artifacts, evaluation, transcripts, research, physical AI | Store/session lifetime, control authority, physical visibility, world/run row envelope, terminal Daft execution, and app-table catalog/read/write/retry authority |
+| `iWorldRegistry` | `WorldRegistry` | lifecycle, mutation, simulation, research, physical AI | Live identity, storage coordinates, exact-world synchronization, retryable close ownership, and committed-receipt retention |
 | `iWorldLifecycle` | `WorldLifecycle` | wiring, research, physical AI | Managed construction, durable discovery, readonly open, fenced mutable resume, fork, and close |
 | `iWorldCleanup` | `WorldCleanup` | reservation-owned mission cleanup | Exact-world, close-lease-bound retained updates, teardown staging, commit, and finish |
-| `iIngestionService` | `IngestionService` | artifacts, transcripts | Select live storage configuration and delegate typed row publication |
-| `iArtifactService` | `ArtifactService` | registered artifact handlers, transcript ingestion | Discover and scan files, persist content-addressed objects, publish typed media indexes, then expose the common file index |
 | `iTranscriptIngestionService` | `TranscriptIngestionService` | registered transcript handlers | Snapshot and redact a coding-agent transcript, ingest the sanitized file, and append normalized mission rows |
 | Structural `MissionRedactor` / `TranscriptRedactor` | canonical `archetype.redaction.RedactionService` | mission execution and transcript ingestion | Provider-neutral pre-durability scanning, deterministic redaction, safe receipts, and quarantine |
 | `iResearchService` | `AutoResearchService` | registered research handler | Multi-run autoresearch workflow and research ledger; rollout forks use the injected teardown path |
@@ -152,30 +148,33 @@ applied settlement. Neither is an application-family protocol.
 Wiring supplies only narrow materialization, cancellation, and teardown
 callbacks to lower owners; those families do not import or retain the concrete
 scheduler.
-`iIngestionService` owns the general typed-ingestion policy boundary: it
-selects the live storage configuration and delegates typed publication. It has
-no knowledge of files, media, transcripts, or graders. `iStorageService` owns
-the corresponding physical boundary: the catalog-derived world/run envelope,
-plain or caller-keyed conditional append, terminal Daft admission,
-`daft.Catalog` table registration, schema alignment, lazy table reads, Iceberg
-writes, and optimistic-conflict retry.
+The artifacts family exposes free storage-backed handlers and views rather
+than single-implementation application protocols. Exact operations carry
+explicit durable world and storage coordinates. The handlers verify the
+recorded run and published tick head before file effects, discover and scan
+sources, persist immutable content-addressed objects, write optional
+media-specific indexes, and publish the common file index last.
+`iStorageService` owns the corresponding physical boundary: the
+catalog-derived world/run envelope, plain or caller-keyed conditional append,
+terminal Daft admission, `daft.Catalog` table registration, schema alignment,
+lazy table reads, Iceberg writes, and optimistic-conflict retry.
 
-`iArtifactService` specializes that primitive for files. It discovers and
-scans sources, persists immutable content-addressed objects, writes optional
-media-specific indexes, and publishes the common file index last. There is no
-artifact claim, lease, receipt, or reconciliation protocol around that path.
+There is no artifact claim, lease, receipt, reconciliation protocol, generic
+ingestion facade, or live-registry fallback around that path.
 Provider checkpoints remain sandbox recovery objects rather than artifact
 workflow stages. Agent Missions does not implicitly crawl a sandbox after a
 task decision: a provider export must first select and sanitize declared files,
-then submit valid `ArtifactSource` values through this port. Future live-event,
+then submit valid `ArtifactSource` values through the registered artifact
+operation. Future live-event,
 OTel, and proxy exporters consume the same redaction port; they do not fork
 scanner policy.
 
 `iTranscriptIngestionService` is a composition port, not another storage
 authority. Its implementation snapshots and redacts through
 the canonical `RedactionService` through a narrow structural port, parses with
-the pure missions-family adapter, ingests the sanitized snapshot through
-`iArtifactService`, and appends normalized rows through `iIngestionService`.
+the pure missions-family adapter, redacts normalized rows, publishes the
+sanitized snapshot through the artifacts-family handler, verifies its digest,
+and appends normalized rows through `iStorageService`.
 Raw narrative never crosses a durability boundary.
 Each ingestion is a new artifact occurrence; normalized row identity is scoped
 to that source artifact. Commands-owned `AuditLog` is an analytical
@@ -288,12 +287,11 @@ never imports that port in return. Public classification is explicit and is
 not inferred from either side of the annotation.
 
 The artifacts family owns the supported `ArtifactSource`, `ArtifactRef`, and
-`ArtifactStoreConfig` file contracts. `archetype.ingestion` owns one reusable
-`FileIngestionPipeline` and its pure bounded scanners; application policy and
-authority remain under `archetype.app.ingestion`, `archetype.app.artifacts`,
-and the canonical `archetype.storage` family. Storage owns the generic durable
-world/run envelope; ingestion selects the live storage configuration rather
-than duplicating persistence mechanics. The evaluation family completed its
+`ArtifactStoreConfig` file contracts, one reusable `FileIngestionPipeline`, its
+pure bounded scanners, storage-backed views, and exact free handlers. The
+canonical `archetype.storage` family owns the generic durable world/run
+envelope, published-head authority, and physical execution. There are no
+application artifact or ingestion facades. The evaluation family completed its
 workflow pull-forward under issue #650: `EvalReceipt` lives in
 `archetype.evaluation.components`; grading values and identity digests live in
 `archetype.evaluation.models` and `contracts`; and free handlers pin, grade,

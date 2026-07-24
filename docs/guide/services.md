@@ -45,8 +45,8 @@ archetype.wiring
   +-> WorldRegistry + WorldLifecycle
   +-> CommandScheduler -> world.handlers.materialize_locked
   +-> AuditLog -> StorageService + scheduler outbox callbacks
-  +-> IngestionService -> storage/world ports
-  +-> ArtifactService -> ingestion/storage/world ports
+  +-> artifact handlers and views -> StorageService
+  +-> TranscriptIngestionService -> artifacts/redaction/storage
   +-> evaluation handlers -> storage + world.query
   +-> AutoResearchService -> storage/world ports
   +-> PhysicalAIService -> storage/world ports
@@ -100,20 +100,22 @@ Durable component, signature, and lineage reads belong to the world family.
 Audit history belongs to `AuditLog`; command outcome authority remains the
 command ledger/outbox.
 
-## Ingestion and artifact families
+## Artifacts family
 
-`IngestionService` selects the live storage configuration and delegates typed
-publication. `StorageService` resolves and stamps the durable world/run
-envelope, selects plain or caller-keyed conditional append, and owns table
-registration, schema comparison, Daft execution, and the Iceberg commit. The
-ingestion service does not know whether its rows describe files, transcripts,
-evaluations, or a future tabular source.
+`archetype.artifacts` owns file values, its cohesive lazy pipeline and bounded
+scanners, storage-backed views, and exact free handlers. Each operation carries
+explicit durable coordinates. Before file effects, the handler resolves the
+recorded run and verifies the catalog-published tick head; it never consults
+the live registry or invents default storage. It then scans declared sources,
+persists content-addressed objects, writes typed media metadata, and publishes
+the common artifact index last.
 
-`ArtifactService` is the one file-specialized workflow. It scans declared
-sources, persists content-addressed objects, writes typed media metadata, and
-publishes the common artifact index last. It composes `IngestionService`; it
-does not add a claim, lease, receipt, or reconciliation state machine. See
-[Artifacts](artifacts.md).
+`StorageService` stamps the durable world/run envelope, selects plain or
+caller-keyed conditional append, and owns table registration, schema
+comparison, Daft execution, and the Iceberg commit. Other owning families call
+that substrate directly for their typed rows. There is no general ingestion or
+application artifact facade and no artifact claim, lease, receipt, or
+reconciliation state machine. See [Artifacts](artifacts.md).
 
 ## Evaluation and research families
 
@@ -181,10 +183,7 @@ The CLI remains an HTTP client.
 - governed and durable commands: `src/archetype/commands/`
 - world family: `src/archetype/world/`
 - physical storage family: `src/archetype/storage/`
-- typed-publication routing: `src/archetype/app/ingestion/`
-- reusable file-ingestion pipeline and scanners: `src/archetype/ingestion/`
-- file artifacts: `src/archetype/app/artifacts/`
-- artifact file contracts: `src/archetype/artifacts/`
+- artifact values, pipeline, scanners, views, and handlers: `src/archetype/artifacts/`
 - evaluation values, grading, pinned views, handlers, and receipt schema: `src/archetype/evaluation/`
 - research: `src/archetype/app/research/`
 - command/access audit projection: `src/archetype/commands/audit.py`

@@ -535,13 +535,14 @@ sanitization or teardown can make them unavailable, and snapshots remove both
 current and execution-scoped raw output. The authoritative ECS copy of execution
 and validator output is bounded and redacted before persistence.
 Provider-native snapshots are recovery objects, not portable or sanitized
-artifact bundles. The consolidated `ArtifactService` accepts explicit file
-sources, but V1 intentionally does not crawl or publish arbitrary sandbox
-outputs as hidden mission post-processing. A later provider-export handoff may
-select declared files, sanitize or copy them into a valid `ArtifactSource`,
-invoke `ArtifactService`, and only then stage `FilesystemManifest` or
-`AgentArtifact` provenance. Provider checkpoints and live spools remain
-operational recovery objects until that explicit handoff occurs.
+artifact bundles. The artifacts family accepts explicit file sources through
+its registered operation, but V1 intentionally does not crawl or publish
+arbitrary sandbox outputs as hidden mission post-processing. A later
+provider-export handoff may select declared files, sanitize or copy them into a
+valid `ArtifactSource`, call `world.ingest_artifacts()`, and only then stage
+`FilesystemManifest` or `AgentArtifact` provenance. Provider checkpoints and
+live spools remain operational recovery objects until that explicit handoff
+occurs.
 
 ### Repository validators are authority
 
@@ -662,7 +663,7 @@ a separate, explicit migration decision.
 | Sandbox placement | Use a simple configured policy. | Add a scheduler only when multiple topologies require one. |
 | Task decomposition | Authors submit the graph. | Planner emits the same typed graph. |
 | Terminal interaction | `exec` is the required capability. | Add optional PTY/tmux/ttyd capabilities without widening workflow authority. |
-| Trace/artifact ingestion | Keep bounded redacted tails in ECS. Use the consolidated `ArtifactService` explicitly for caller-selected file sources; do not auto-emit `AgentArtifact` or `FilesystemManifest` from sandbox contents. | Add a provider-export adapter that selects declared files, sanitizes them, ingests them, and stages provenance as one explicit application workflow. |
+| Trace/artifact ingestion | Keep bounded redacted tails in ECS. Use the registered artifacts-family operation explicitly for caller-selected file sources; do not auto-emit `AgentArtifact` or `FilesystemManifest` from sandbox contents. | Add a provider-export adapter that selects declared files, sanitizes them, ingests them, and stages provenance as one explicit application workflow. |
 | Snapshot sanitization | Credentials are removed before capture; provider snapshots remain trusted recovery objects rather than published artifacts. | Quarantine/scan before any cross-provider or R2 publication. |
 | Prefab mission libraries | Direct materialization remains authoritative. | Author reusable graphs after generic prefab registry contracts settle. |
 
@@ -801,7 +802,7 @@ The orphan cleanup follows the same rule:
 |---|---|
 | Planning / former HTN | `archetype.missions.planning` |
 | Mission trajectories | `archetype.missions.trajectories` with app query/evaluation composition |
-| Artifact and transcript ingestion | `archetype.app.artifacts` consuming family-owned value contracts |
+| Artifact ingestion and transcript composition | `archetype.artifacts` owns file ingestion; `archetype.app.missions` composes transcript redaction and typed rows over its handler |
 | Physical-AI state and behavior | `archetype.physical_ai` |
 | Physical-AI workflows | `archetype.app.physical_ai` |
 | Research state and pure decoding | `archetype.research` |

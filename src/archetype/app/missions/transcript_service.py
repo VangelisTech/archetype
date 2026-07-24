@@ -16,9 +16,12 @@ import daft
 from daft import DataFrame
 from pydantic import JsonValue
 
-from archetype.app.artifacts.interfaces import iArtifactService
-from archetype.app.ingestion.interfaces import iIngestionService
-from archetype.artifacts.contracts import ArtifactSource
+from archetype.artifacts import handlers as artifact_handlers
+from archetype.artifacts.models import (
+    ArtifactSource,
+    ArtifactStoreConfig,
+    IngestArtifacts,
+)
 from archetype.core.config import StorageBackend, StorageConfig
 from archetype.missions.trajectories import (
     CLAUDE_TRANSCRIPT_TABLE,
@@ -33,7 +36,6 @@ from archetype.redaction import (
     RedactionReceipt,
 )
 from archetype.storage.interfaces import iStorageService
-from archetype.world.interfaces import iWorldRegistry
 
 _TRANSCRIPT_ROWS = CLAUDE_TRANSCRIPT_TABLE
 
@@ -228,17 +230,13 @@ class TranscriptIngestionService:
 
     def __init__(
         self,
-        artifact_service: iArtifactService,
-        ingestion_service: iIngestionService,
         redaction_service: TranscriptRedactor,
         storage_service: iStorageService,
-        world_registry: iWorldRegistry,
+        artifact_store_config: ArtifactStoreConfig | None = None,
     ) -> None:
-        self._artifacts = artifact_service
-        self._ingestion = ingestion_service
         self._redaction = redaction_service
         self._storage = storage_service
-        self._world_registry = world_registry
+        self._artifact_store_config = artifact_store_config
 
     async def ingest(
         self,
@@ -249,9 +247,8 @@ class TranscriptIngestionService:
     ) -> TranscriptIngestionResult:
         """Scan, parse, sanitize, and index one Claude JSONL source."""
 
-        effective = await self._resolve_storage(world_id, storage_config)
-        if effective.backend != StorageBackend.ICEBERG:
-            raise ValueError("transcript ingestion requires StorageBackend.ICEBERG")
+        effective = self._require_storage(storage_config)
+        wid = str(world_id)
 
         self._redaction.assert_safe_metadata(
             source.source_uri,
@@ -289,13 +286,19 @@ class TranscriptIngestionService:
             )
             logical_path = f"claude/{safe_project}/{source.session_id}.jsonl"
             sanitized_digest = _file_digest(sanitized.path)
-            (artifact,) = await self._artifacts.ingest(
-                world_id,
-                ArtifactSource(
-                    source_uri=str(sanitized.path),
-                    logical_path=logical_path,
+            (artifact,) = await artifact_handlers.ingest_artifacts(
+                self._storage,
+                IngestArtifacts(
+                    world_id=wid,
+                    sources=(
+                        ArtifactSource(
+                            source_uri=str(sanitized.path),
+                            logical_path=logical_path,
+                        ),
+                    ),
+                    storage_config=effective,
                 ),
-                storage_config=effective,
+                store_config=self._artifact_store_config,
             )
         if artifact.sha256 != sanitized_digest:
             raise RuntimeError("transcript artifact digest changed after sanitization")
@@ -306,15 +309,15 @@ class TranscriptIngestionService:
             source_receipt=sanitized.receipt,
             source_artifact_id=artifact.artifact_id,
         )
-        rows_written = await self._ingestion.append(
-            world_id,
+        rows_written = await self._storage.append_world_rows(
+            effective,
+            wid,
             _TRANSCRIPT_ROWS,
             daft.from_pylist(rows),
-            storage_config=effective,
         )
-        run_id = await self._run_id(world_id, effective)
+        run_id = await self._run_id(wid, effective)
         return TranscriptIngestionResult(
-            world_id=str(world_id),
+            world_id=wid,
             run_id=run_id,
             trajectory_id=trajectory.trajectory_id,
             mission_id=source.mission_id,
@@ -335,10 +338,11 @@ class TranscriptIngestionService:
     ) -> DataFrame:
         """Return normalized transcript rows for the current world run."""
 
-        return await self._ingestion.read(
+        effective = self._require_storage(storage_config)
+        return await self._storage.read_world_rows(
+            effective,
             str(world_id),
             _TRANSCRIPT_ROWS,
-            storage_config=storage_config,
         )
 
     async def _run_id(self, world_id: str, storage: StorageConfig) -> str:
@@ -347,12 +351,10 @@ class TranscriptIngestionService:
             raise RuntimeError(f"world {world_id} has no recorded run")
         return str(record.run_id)
 
-    async def _resolve_storage(
-        self,
-        world_id: str,
-        storage_config: StorageConfig | None,
-    ) -> StorageConfig:
-        if storage_config is not None:
-            return storage_config
-        live = await self._world_registry.storage_record(world_id)
-        return live[0] if live is not None else StorageConfig()
+    @staticmethod
+    def _require_storage(storage_config: StorageConfig | None) -> StorageConfig:
+        if not isinstance(storage_config, StorageConfig):
+            raise TypeError("transcript ingestion requires an explicit StorageConfig")
+        if storage_config.backend != StorageBackend.ICEBERG:
+            raise ValueError("transcript ingestion requires StorageBackend.ICEBERG")
+        return storage_config

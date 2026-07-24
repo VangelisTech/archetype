@@ -20,6 +20,7 @@ def test_sync_runtime_ingests_and_queries_common_artifact_index(tmp_path):
         artifact_store=ArtifactStoreConfig.local(tmp_path / "artifacts")
     ) as runtime:
         world = runtime.world("sync-artifacts", storage=storage)
+        world.step()
         (reference,) = world.ingest_artifacts(ArtifactSource(source_uri=str(source)))
 
         assert world.artifacts().select("artifact_id", "logical_path").to_pylist() == [

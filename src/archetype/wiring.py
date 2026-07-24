@@ -12,15 +12,14 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel
 
-from archetype.app.artifacts.service import ArtifactService
-from archetype.app.ingestion.service import IngestionService
 from archetype.app.missions.service import MissionService
 from archetype.app.missions.trajectory_service import TrajectoryService
 from archetype.app.missions.transcript_service import TranscriptIngestionService
 from archetype.app.physical_ai.service import PhysicalAIService
 from archetype.app.research.service import AutoResearchService
-from archetype.artifacts.contracts import ArtifactStoreConfig
+from archetype.artifacts import handlers as artifact_handlers
 from archetype.artifacts.models import (
+    ArtifactStoreConfig,
     IngestArtifacts,
     QueryArtifacts,
     summarize_artifact_operation,
@@ -164,7 +163,7 @@ _PULL_FORWARD_SCOPES: dict[str, Literal["application", "live_world", "durable_wo
     "evaluate": "durable_world",
     "evaluate_physical_task": "application",
     "grade_trajectory": "durable_world",
-    "ingest_artifacts": "live_world",
+    "ingest_artifacts": "durable_world",
     "ingest_claude_transcript": "live_world",
     "query_artifacts": "durable_world",
     "query_trajectory": "durable_world",
@@ -295,27 +294,6 @@ async def _query_audit(audit: AuditLog, operation: GetAuditHistory) -> Any:
         idempotency_key=operation.idempotency_key,
         status=operation.status,
         limit=operation.limit,
-    )
-
-
-async def _handle_ingest_artifacts(
-    service: ArtifactService,
-    operation: IngestArtifacts,
-) -> Any:
-    return await service.ingest(
-        str(operation.world_id),
-        operation.sources,
-        storage_config=operation.storage_config,
-    )
-
-
-async def _handle_query_artifacts(
-    service: ArtifactService,
-    operation: QueryArtifacts,
-) -> Any:
-    return await service.index(
-        str(operation.world_id),
-        storage_config=operation.storage_config,
     )
 
 
@@ -635,15 +613,22 @@ def _pull_forward_handler(
     scheduler: CommandScheduler,
     storage: StorageService,
     redaction: RedactionService,
-    artifacts: ArtifactService,
+    artifact_store_config: ArtifactStoreConfig | None,
     research: AutoResearchService,
     physical_ai: PhysicalAIService,
     transcripts: TranscriptIngestionService,
     trajectories: TrajectoryService,
 ) -> Callable[[BaseModel], Awaitable[Any]]:
     handlers: dict[type[BaseModel], Callable[[BaseModel], Awaitable[Any]]] = {
-        IngestArtifacts: cast(Any, partial(_handle_ingest_artifacts, artifacts)),
-        QueryArtifacts: cast(Any, partial(_handle_query_artifacts, artifacts)),
+        IngestArtifacts: cast(
+            Any,
+            partial(
+                artifact_handlers.ingest_artifacts,
+                storage,
+                store_config=artifact_store_config,
+            ),
+        ),
+        QueryArtifacts: cast(Any, partial(artifact_handlers.query_artifacts, storage)),
         RunGraders: cast(Any, evaluation_handlers.run_graders),
         Evaluate: cast(Any, partial(evaluation_handlers.evaluate, storage)),
         AutoResearch: cast(Any, partial(_handle_autoresearch, research)),
@@ -737,7 +722,7 @@ def _register_pull_forward_operations(
     scheduler: CommandScheduler,
     storage: StorageService,
     redaction: RedactionService,
-    artifacts: ArtifactService,
+    artifact_store_config: ArtifactStoreConfig | None,
     research: AutoResearchService,
     physical_ai: PhysicalAIService,
     transcripts: TranscriptIngestionService,
@@ -758,7 +743,7 @@ def _register_pull_forward_operations(
                     scheduler=scheduler,
                     storage=storage,
                     redaction=redaction,
-                    artifacts=artifacts,
+                    artifact_store_config=artifact_store_config,
                     research=research,
                     physical_ai=physical_ai,
                     transcripts=transcripts,
@@ -873,19 +858,10 @@ def build_runtime_resources(config: RuntimeBootstrapConfig) -> RuntimeResources:
         owns_storage=injected_storage is None,
     )
 
-    ingestion = IngestionService(storage, worlds)
-    artifacts = ArtifactService(
-        storage,
-        worlds,
-        ingestion,
-        config.artifact_store_config,
-    )
     transcripts = TranscriptIngestionService(
-        artifacts,
-        ingestion,
         redaction,
         storage,
-        worlds,
+        config.artifact_store_config,
     )
     trajectories = TrajectoryService(storage)
     physical_ai = PhysicalAIService(worlds, lifecycle, storage)
@@ -903,7 +879,7 @@ def build_runtime_resources(config: RuntimeBootstrapConfig) -> RuntimeResources:
         scheduler=scheduler,
         storage=storage,
         redaction=redaction,
-        artifacts=artifacts,
+        artifact_store_config=config.artifact_store_config,
         research=research,
         physical_ai=physical_ai,
         transcripts=transcripts,

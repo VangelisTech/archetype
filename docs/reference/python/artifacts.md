@@ -46,7 +46,7 @@
 | Field | Type | Default |
 | --- | --- | --- |
 | `object_uri` | `str \| Path \| None` | `None` |
-| `io_config` | `IOConfig \| None` | `None` |
+| `io_config` | `object \| None` | `None` |
 | `max_connections` | `int` | `32` |
 
 ::: archetype.artifacts.analyze_artifacts

@@ -243,9 +243,9 @@ preceding row; no unknown permission is inferred from a role name.
   transactional control authority for world records, fences, commands, and
   manifests. Iceberg is the data authority for atomic table snapshots and
   optimistic multi-writer commits. `StorageService` resolves and stamps the
-  durable world/run envelope and selects plain versus key-conditional append;
-  `IngestionService` selects the live storage configuration and delegates typed
-  publication.
+  durable world/run envelope and selects plain versus key-conditional append.
+  Artifact handlers require explicit durable coordinates and delegate typed
+  publication directly to that substrate.
 - A tick is a commit boundary: compute all archetypes before persistence, and
   do not consume staged mutations or advance the tick until durable visibility
   is published. Failed ticks must remain retryable.

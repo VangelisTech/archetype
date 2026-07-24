@@ -418,6 +418,8 @@ operational-wheel:
 			--scenario example.14_physical_ai \
 			--scenario dogfood.runtime.loopback \
 			--scenario dogfood.commands.local \
+			--scenario dogfood.evaluation.durable_receipt \
+			--scenario dogfood.artifacts.local \
 			--scenario dogfood.agent_mission.scripted \
 			--wheel "$$wheel" --out "$(OPERATIONAL_WHEEL_RESULTS)" || runner_status=$$?; \
 		if [ "$$build_status" -ne 0 ]; then \

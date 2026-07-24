@@ -274,12 +274,14 @@ async def test_artifact_index_does_not_advance_resume_tick(tmp_path):
         )
         output = tmp_path / "before-first-step.txt"
         output.write_text("artifact before the first tick")
-        await dispatcher.apply(
-            IngestArtifacts(
-                world_id=world.world_id,
-                sources=(ArtifactSource(source_uri=str(output)),),
+        with pytest.raises(RuntimeError, match="no published tick head"):
+            await dispatcher.apply(
+                IngestArtifacts(
+                    world_id=world.world_id,
+                    sources=(ArtifactSource(source_uri=str(output)),),
+                    storage_config=storage,
+                )
             )
-        )
         wid = str(world.world_id)
     finally:
         await resources.aclose()

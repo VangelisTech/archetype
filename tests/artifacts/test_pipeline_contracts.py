@@ -82,7 +82,8 @@ def test_family_pipeline_owns_scanners_without_legacy_imports() -> None:
     pipeline_source = Path(sys.modules[FileIngestionPipeline.__module__].__file__).read_text(
         encoding="utf-8"
     )
-    assert "archetype.ingestion" not in pipeline_source
+    retired_ingestion_package = ".".join(("archetype", "ingestion"))
+    assert retired_ingestion_package not in pipeline_source
 
     payload = b"one-pass artifact content"
     assert hash_file(BytesIO(payload)) == {

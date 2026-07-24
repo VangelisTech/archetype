@@ -66,14 +66,15 @@ persisted tables bites).
 
 ### R3 — The manifest is an artifact plus a typed registry row
 
-A registry entry stores its immutable manifest through `ArtifactService` and
-indexes its registry fields through `IngestionService` (per
-`docs/guide/artifacts.md`): name, source `(world_id, entity_id, tick)`, required
-behavior-module identities, the component set with **prefixed schema hashes**,
-the subtree inventory, the eval-suite reference, and evaluation-result
-identities. Publishing a prefab version creates one file occurrence plus one
-typed prefab-manifest row keyed to its `artifact_id`. No new storage system or
-artifact publication protocol is required.
+A registry entry stores its immutable manifest through the registered
+artifacts-family handler and lets the owning registry workflow publish its
+typed fields through `StorageService` (per `docs/guide/artifacts.md`): name,
+source `(world_id, entity_id, tick)`, required behavior-module identities, the
+component set with **prefixed schema hashes**, the subtree inventory, the
+eval-suite reference, and evaluation-result identities. Publishing a prefab
+version creates one file occurrence plus one typed prefab-manifest row keyed to
+its `artifact_id`. No new storage system, generic ingestion facade, or artifact
+publication protocol is required.
 
 ### R4 — Schema identity is the compatibility contract
 

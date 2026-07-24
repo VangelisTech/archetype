@@ -8,18 +8,22 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
+from uuid_utils import uuid7
 
 from archetype import ArchetypeRuntime
-from archetype.artifacts.models import QueryArtifacts
-from archetype.core.config import StorageBackend, StorageConfig, WorldConfig
+from archetype.app.missions.transcript_service import TranscriptIngestionService
+from archetype.artifacts.models import ArtifactRef, QueryArtifacts
+from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
 from archetype.episodes.models import IngestClaudeTranscript, QueryTranscriptRows
 from archetype.missions.trajectories import (
     ClaudeTranscriptSource,
 )
-from archetype.redaction import SecretQuarantineError
-from archetype.world.models import CreateWorld
+from archetype.redaction import RedactionService, SecretQuarantineError
+from archetype.storage.interfaces import iStorageService
+from archetype.world.models import CreateWorld, Run
 from tests._runtime import build_test_runtime
 
 
@@ -64,6 +68,150 @@ def _write_transcript(path: Path, *, user_text: str = "Fix the login regression"
     )
 
 
+def _artifact_ref(*, logical_path: str, sha256: str, size_bytes: int) -> ArtifactRef:
+    return ArtifactRef(
+        artifact_id=str(uuid7()),
+        logical_path=logical_path,
+        uri=f"file:///objects/{sha256}",
+        sha256=sha256,
+        xxhash3_64="0" * 16,
+        media_type="application/json",
+        size_bytes=size_bytes,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.contract("missions.transcripts.fail_closed")
+async def test_transcript_coordinates_fail_before_source_access(tmp_path: Path) -> None:
+    source = ClaudeTranscriptSource(path=tmp_path / "never-read.jsonl")
+    service = TranscriptIngestionService(
+        RedactionService(),
+        cast(iStorageService, object()),
+    )
+
+    with pytest.raises(TypeError, match="explicit StorageConfig"):
+        await service.ingest("world-1", source)
+    with pytest.raises(ValueError, match="StorageBackend.ICEBERG"):
+        await service.ingest("world-1", source, storage_config=StorageConfig())
+    with pytest.raises(TypeError, match="explicit StorageConfig"):
+        await service.read("world-1")
+
+    assert not source.path.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.contract("missions.transcripts.fail_closed")
+async def test_digest_mismatch_fails_after_artifact_before_transcript_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import archetype.app.missions.transcript_service as transcript_service
+
+    transcript = tmp_path / "project-digest" / "session.jsonl"
+    _write_transcript(transcript)
+    events: list[str] = []
+
+    class StorageTrap:
+        async def append_world_rows(self, *_args, **_kwargs) -> int:
+            events.append("rows")
+            raise AssertionError("digest mismatch must reject before transcript append")
+
+    async def publish_artifact(_storage, operation, *, store_config=None):
+        del _storage, store_config
+        events.append("artifact")
+        artifact_source = operation.sources[0]
+        return (
+            _artifact_ref(
+                logical_path=artifact_source.logical_path,
+                sha256="0" * 64,
+                size_bytes=Path(artifact_source.source_uri).stat().st_size,
+            ),
+        )
+
+    monkeypatch.setattr(
+        transcript_service.artifact_handlers,
+        "ingest_artifacts",
+        publish_artifact,
+    )
+    service = TranscriptIngestionService(
+        RedactionService(),
+        cast(iStorageService, StorageTrap()),
+    )
+
+    with pytest.raises(RuntimeError, match="digest changed after sanitization"):
+        await service.ingest(
+            "world-1",
+            ClaudeTranscriptSource(path=transcript),
+            storage_config=_storage(tmp_path, "digest_guard"),
+        )
+
+    assert events == ["artifact"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.contract("missions.transcripts.fail_closed")
+async def test_row_failure_reports_after_sanitized_artifact_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import archetype.app.missions.transcript_service as transcript_service
+
+    secret = "sk-proj-" + "R" * 32
+    transcript = tmp_path / "project-partial" / "session.jsonl"
+    _write_transcript(transcript, user_text=f"Use credential {secret}")
+    events: list[str] = []
+
+    class FailingRowStorage:
+        async def append_world_rows(
+            self,
+            _storage_config,
+            _world_id,
+            _table_name,
+            rows,
+            *,
+            key_columns=(),
+        ) -> int:
+            del key_columns
+            events.append("rows")
+            assert secret not in json.dumps(rows.to_pylist(), sort_keys=True)
+            raise RuntimeError("transcript rows unavailable")
+
+    async def publish_artifact(_storage, operation, *, store_config=None):
+        del _storage, store_config
+        artifact_source = operation.sources[0]
+        sanitized = Path(artifact_source.source_uri)
+        payload = sanitized.read_bytes()
+        assert secret.encode() not in payload
+        events.append("artifact")
+        return (
+            _artifact_ref(
+                logical_path=artifact_source.logical_path,
+                sha256=hashlib.sha256(payload).hexdigest(),
+                size_bytes=len(payload),
+            ),
+        )
+
+    monkeypatch.setattr(
+        transcript_service.artifact_handlers,
+        "ingest_artifacts",
+        publish_artifact,
+    )
+    service = TranscriptIngestionService(
+        RedactionService(),
+        cast(iStorageService, FailingRowStorage()),
+    )
+
+    with pytest.raises(RuntimeError, match="transcript rows unavailable"):
+        await service.ingest(
+            "world-1",
+            ClaudeTranscriptSource(path=transcript),
+            storage_config=_storage(tmp_path, "partial_commit"),
+        )
+
+    assert events == ["artifact", "rows"]
+    assert secret in transcript.read_text(encoding="utf-8")
+
+
 @pytest.mark.asyncio
 @pytest.mark.contract("missions.transcripts.redacted_ingestion")
 async def test_transcript_persists_sanitized_artifact_and_normalized_rows(
@@ -84,6 +232,7 @@ async def test_transcript_persists_sanitized_artifact_and_normalized_rows(
                 storage_config=storage,
             )
         )
+        await dispatcher.apply(Run(world_id=world.world_id, run_config=RunConfig(num_steps=1)))
         result = await dispatcher.apply(
             IngestClaudeTranscript(
                 world_id=world.world_id,
@@ -151,6 +300,7 @@ async def test_quarantine_and_parse_failure_publish_nothing(tmp_path: Path) -> N
 
     async with ArchetypeRuntime() as runtime:
         world = runtime.world("quarantined-transcript", storage=_storage(tmp_path, "quarantine"))
+        await world.run(steps=1)
         with pytest.raises(SecretQuarantineError, match="unsupported-source-file"):
             await world.ingest_claude_transcript(ClaudeTranscriptSource(path=symlink))
         with pytest.raises(KeyError):
@@ -180,6 +330,7 @@ async def test_reingestion_records_a_new_artifact_occurrence(tmp_path: Path) -> 
                 storage_config=storage,
             )
         )
+        await dispatcher.apply(Run(world_id=world.world_id, run_config=RunConfig(num_steps=1)))
         operation = IngestClaudeTranscript(
             world_id=world.world_id,
             source=source,
@@ -218,6 +369,7 @@ def test_sync_runtime_mirrors_transcript_ingestion(tmp_path: Path) -> None:
 
     with ArchetypeRuntime.sync() as runtime:
         world = runtime.world("sync-transcript", storage=_storage(tmp_path, "sync_transcript"))
+        world.run(steps=1)
         result = world.ingest_claude_transcript(ClaudeTranscriptSource(path=transcript))
 
         assert result.rows_written == 3

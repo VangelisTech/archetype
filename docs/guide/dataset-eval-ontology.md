@@ -168,15 +168,14 @@ runtime world, run, or `EpisodeResult` per trial.
 
 ## 5. Persistence in typed ingestion tables
 
-Dataset readers and exporters write domain rows through the app-layer typed
-Iceberg ingestion path. The division of
+Dataset readers and exporters write domain rows through an owning-family
+workflow over the storage-owned typed Iceberg path. The division of
 responsibility is strict:
 
 | Owner | Columns / concern |
 |---|---|
-| `IngestionService` | Live storage selection and typed-ingestion workflow delegation |
 | `StorageService` | Owning `world_id` / `run_id` envelope; plain/keyed append; Daft execution admission; Catalog table registration and reads; typed schema checks; Iceberg append, conflict refresh and retry |
-| Dataset adapter | Stable table name and optional logical key; `benchmark`, `suite`, `task_key`, `episode_id`, stream/timing fields, domain payload |
+| Dataset adapter / owning workflow | Explicit durable storage coordinates; stable table name and optional logical key; `benchmark`, `suite`, `task_key`, `episode_id`, stream/timing fields, domain payload |
 | Live-trial exporter | Optional source `RuntimeSlice` provenance in addition to dataset coordinates |
 
 **The StorageService envelope is durable ownership, not dataset identity.**
@@ -192,10 +191,11 @@ table rows, not a fictional original simulation. Conversely, exporting a live
 trial MAY persist its source `RuntimeSlice` as typed payload provenance.
 
 Typed tables fail on schema drift at the storage boundary. Adapters MUST
-normalize native vocabulary before the `IngestionService` boundary and MUST
-NOT depend on silent widening. Large media is ingested through the one
-`ArtifactService`, whose configured `FileIngestionPipeline` publishes common
-and specialized file indexes through the same ingestion and storage path.
+normalize native vocabulary before the storage boundary and MUST NOT depend on
+silent widening. Large media is ingested through the artifacts family's
+configured `FileIngestionPipeline`; its free handler publishes specialized and
+common file indexes through `StorageService` from explicit durable
+coordinates.
 Domain rows reference that evidence by `ArtifactRef` or `artifact_id` rather
 than by an opaque filesystem path.
 
