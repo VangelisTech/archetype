@@ -47,12 +47,32 @@ def _policy_document() -> dict[str, object]:
 def test_policy_loads_surface_dependencies_and_owner_types_from_data():
     assert _API_ROUTES_SURFACE.dependency_roots == {
         "archetype.app",
+        "archetype.commands",
+        "archetype.missions",
         "archetype.world",
     }
-    assert "archetype.app.gateway.interfaces" in _API_ROUTES_SURFACE.allowed_dependencies
-    assert "archetype.app.container" in _API_ROUTES_SURFACE.forbidden_dependencies
+    assert "archetype.commands.dispatch" in _API_ROUTES_SURFACE.allowed_dependencies
+    assert "archetype.commands.models" in _API_ROUTES_SURFACE.allowed_dependencies
+    assert "archetype.missions.components" in _API_ROUTES_SURFACE.allowed_dependencies
+    assert "archetype.missions.relations" in _API_ROUTES_SURFACE.allowed_dependencies
+    assert "archetype.commands.scheduler" in _API_ROUTES_SURFACE.forbidden_dependencies
     assert "archetype.world.models" in _API_ROUTES_SURFACE.allowed_dependencies
     assert "archetype.world.simulation" in _API_ROUTES_SURFACE.forbidden_dependencies
+    assert _API_COMPOSITION_SURFACE.dependency_roots == {
+        "archetype.app",
+        "archetype.commands",
+        "archetype.wiring",
+        "archetype.world",
+    }
+    assert set(_API_COMPOSITION_SURFACE.targets) == {
+        "src/archetype/api/app.py",
+        "src/archetype/api/deps.py",
+    }
+    assert {
+        "archetype.commands.dispatch",
+        "archetype.commands.models",
+        "archetype.wiring",
+    } <= _API_COMPOSITION_SURFACE.allowed_dependencies
     assert "WorldLifecycle" in _POLICY.public_api.forbidden_owner_types
     assert "MissionService" in _POLICY.public_api.forbidden_owner_types
     assert "mission_service" in _POLICY.public_api.forbidden_parameter_names
@@ -154,21 +174,27 @@ def test_api_scope_rejects_unapproved_application_imports(tmp_path):
     assert len(violations) == 1
 
 
-def test_only_api_composition_may_import_the_container(tmp_path: Path) -> None:
-    path = _write(tmp_path, "from archetype.app.container import ServiceContainer\n")
+def test_composition_surface_governs_process_wiring(tmp_path: Path) -> None:
+    path = _write(tmp_path, "from archetype.wiring import build_runtime_resources\n")
 
     assert checker._import_violations(path, _API_COMPOSITION_SURFACE, root=tmp_path) == []
-    violations = checker._import_violations(path, _API_ROUTES_SURFACE, root=tmp_path)
-    assert len(violations) == 1
-    assert "imports forbidden archetype.app.container" in violations[0]
+    assert "archetype.wiring" not in _API_ROUTES_SURFACE.dependency_roots
 
 
 @pytest.mark.parametrize(
     ("source", "governed_roots"),
     [
-        ("from ..app.container import ServiceContainer\n", ("archetype.app",)),
-        ("from archetype import app\n", ("archetype.app",)),
-        ("from archetype import *\n", ("archetype.app", "archetype.world")),
+        ("from ..commands.scheduler import CommandScheduler\n", ("archetype.commands",)),
+        ("from archetype import commands\n", ("archetype.commands",)),
+        (
+            "from archetype import *\n",
+            (
+                "archetype.app",
+                "archetype.commands",
+                "archetype.missions",
+                "archetype.world",
+            ),
+        ),
     ],
     ids=["relative", "root-parent", "root-star"],
 )
@@ -187,20 +213,20 @@ def test_governed_import_roots_cannot_be_bypassed_by_import_spelling(
 
 
 def test_import_policy_data_controls_allowed_dependency(tmp_path):
-    path = _write(tmp_path, "import archetype.app.future_models\n")
+    path = _write(tmp_path, "import archetype.commands.future_models\n")
     assert len(checker._import_violations(path, _API_ROUTES_SURFACE, root=tmp_path)) == 1
 
     updated = replace(
         _API_ROUTES_SURFACE,
         allowed_dependencies=(
-            _API_ROUTES_SURFACE.allowed_dependencies | {"archetype.app.future_models"}
+            _API_ROUTES_SURFACE.allowed_dependencies | {"archetype.commands.future_models"}
         ),
     )
     assert checker._import_violations(path, updated, root=tmp_path) == []
 
 
 def test_allowed_dependency_imported_from_parent_package_is_accepted(tmp_path: Path) -> None:
-    path = _write(tmp_path, "from archetype.app.gateway import interfaces\n")
+    path = _write(tmp_path, "from archetype.commands import dispatch\n")
 
     assert checker._import_violations(path, _API_ROUTES_SURFACE, root=tmp_path) == []
 
@@ -208,7 +234,7 @@ def test_allowed_dependency_imported_from_parent_package_is_accepted(tmp_path: P
 def test_symbol_import_from_allowed_leaf_stays_bound_to_the_leaf(tmp_path: Path) -> None:
     path = _write(
         tmp_path,
-        "from archetype.app.gateway.interfaces import iCommandGateway\n",
+        "from archetype.commands.dispatch import CommandDispatcher\n",
     )
 
     assert checker._import_violations(path, _API_ROUTES_SURFACE, root=tmp_path) == []
@@ -217,12 +243,12 @@ def test_symbol_import_from_allowed_leaf_stays_bound_to_the_leaf(tmp_path: Path)
 def test_forbidden_dependency_imported_from_parent_package_is_classified_exactly(
     tmp_path: Path,
 ) -> None:
-    path = _write(tmp_path, "from archetype.app import container\n")
+    path = _write(tmp_path, "from archetype.commands import scheduler\n")
 
     violations = checker._import_violations(path, _API_ROUTES_SURFACE, root=tmp_path)
 
     assert len(violations) == 1
-    assert "imports forbidden archetype.app.container" in violations[0]
+    assert "imports forbidden archetype.commands.scheduler" in violations[0]
 
 
 def test_owner_type_policy_data_controls_public_signature(tmp_path):
@@ -253,7 +279,7 @@ def test_policy_rejects_dependencies_outside_governed_roots():
                     {
                         "name": "api",
                         "targets": ["src/archetype/api/deps.py"],
-                        "dependency_roots": ["archetype.app"],
+                        "dependency_roots": ["archetype.commands"],
                         "allowed_dependencies": ["archetype.runtime"],
                         "forbidden_dependencies": [],
                         "rationale": "test boundary",
@@ -281,7 +307,7 @@ def test_policy_rejects_unknown_import_surface_keys():
     document = _policy_document()
     surfaces = document["import_surface"]
     assert isinstance(surfaces, list)
-    surfaces[0]["allowed_dependency"] = "archetype.app.container"
+    surfaces[0]["allowed_dependency"] = "archetype.commands.dispatch"
 
     with pytest.raises(
         checker.BoundaryPolicyError,
