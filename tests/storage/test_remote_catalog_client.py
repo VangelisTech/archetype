@@ -315,6 +315,53 @@ async def test_ambiguous_cleanup_only_registration_never_retires_conflicting_ide
         await catalog.close()
 
 
+async def test_ambiguous_cleanup_only_transport_error_tombstones_absent_identity():
+    requests: list[httpx.Request] = []
+    catalog = RemoteControlCatalog("https://catalog.invalid", "test")
+    await catalog._client.aclose()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/protocol"):
+            return httpx.Response(200, json={"catalog_protocol_version": 8})
+        if request.url.path.endswith("/protocol/v8/worlds"):
+            raise httpx.ReadError("registration response lost", request=request)
+        if request.method == "GET":
+            return httpx.Response(404, json={"error": "not_found"})
+        return httpx.Response(
+            200,
+            json={
+                **_cleanup_only_world_row(status="destroyed"),
+                "ok": True,
+                "disposition": "tombstoned",
+                "catalog_protocol_version": 8,
+                "gateway_protocol_version": 8,
+                "catalog_status": "destroyed",
+                "world_status": "destroyed",
+            },
+        )
+
+    catalog._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    record = WorldRecord(**_cleanup_only_world_row())
+    try:
+        with pytest.raises(httpx.ReadError, match="response lost"):
+            await catalog.register_world(record)
+        assert [(request.method, request.url.path) for request in requests[:3]] == [
+            ("GET", "/ns/test/protocol"),
+            ("POST", "/ns/test/protocol/v8/worlds"),
+            ("GET", "/ns/test/worlds/private"),
+        ]
+        retirement = requests[3]
+        assert retirement.method == "POST"
+        assert retirement.url.path.endswith("/retire")
+        assert json.loads(retirement.content) == {
+            **_cleanup_only_world_row(),
+            "status": "destroyed",
+        }
+    finally:
+        await catalog.close()
+
+
 async def test_ambiguous_cleanup_only_registration_cancellation_waits_for_exact_retirement():
     requests: list[httpx.Request] = []
     registration_committed = asyncio.Event()

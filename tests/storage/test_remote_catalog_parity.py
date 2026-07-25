@@ -269,6 +269,18 @@ async def test_remote_client_retires_directory_commit_after_status_mirror_reject
             )
         assert status.status_code == 200
         assert status.json()["status"] == "destroyed"
+
+        with pytest.raises(RuntimeError, match="active cleanup-only registration"):
+            await catalog.register_world(
+                _world(
+                    world.world_id,
+                    status="active",
+                    writer_mode="cleanup_only",
+                )
+            )
+        replayed = await catalog.get_world(world.world_id)
+        assert replayed is not None
+        assert replayed.status == "destroyed"
     finally:
         await catalog.close()
 

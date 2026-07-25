@@ -8,11 +8,13 @@ from __future__ import annotations
 import ast
 import asyncio
 import inspect
+import json
 from contextlib import asynccontextmanager
 from importlib import import_module
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 from archetype.core.config import StorageConfig
@@ -33,6 +35,9 @@ from archetype.physical_ai.models import (
     EvaluatePhysicalTask,
     SweepPhysicalInstructions,
 )
+from archetype.storage.catalog.remote import RemoteControlCatalog
+from archetype.storage.config import ControlCatalogConfig
+from archetype.wiring import RuntimeBootstrapConfig, build_runtime_resources
 from archetype.world.lifecycle import WorldLifecycle
 from tests._runtime import build_test_runtime
 
@@ -779,6 +784,105 @@ async def test_prebind_validation_failure_remains_owned_for_shutdown_retry(
     finally:
         await resources.aclose()
     assert provider.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_remote_registration_cleanup_is_owned_until_shutdown_retry(
+    tmp_path,
+) -> None:
+    resources = build_runtime_resources(
+        RuntimeBootstrapConfig(
+            control_catalog_config=ControlCatalogConfig(
+                remote_url="https://catalog.invalid",
+                remote_token="test-token",
+                catalog_dir=tmp_path / "catalogs",
+            )
+        )
+    )
+    handler = resources.dispatcher._registry.resolve_name("evaluate_physical_task").handler
+    _lifetimes, worlds, _lifecycle, storage_service = handler.args[:4]
+    storage = StorageConfig(
+        uri=str(tmp_path / "store"),
+        namespace="remote-registration-owner",
+    )
+    catalog = storage_service.get_control_catalog(storage)
+    assert isinstance(catalog, RemoteControlCatalog)
+    await catalog._client.aclose()
+
+    retained_row: dict[str, object] | None = None
+    retirement_attempts = 0
+    events: list[str] = []
+
+    async def transport(request: httpx.Request) -> httpx.Response:
+        nonlocal retained_row, retirement_attempts
+        if request.url.path.endswith("/protocol"):
+            return httpx.Response(200, json={"catalog_protocol_version": 8})
+        if request.url.path.endswith("/protocol/v8/worlds"):
+            retained_row = json.loads(request.content)
+            return httpx.Response(503, json={"error": "status_mirror_failed"})
+        if request.method == "GET":
+            if retained_row is None:
+                return httpx.Response(404, json={"error": "not_found"})
+            return httpx.Response(200, json=retained_row)
+        if request.url.path.endswith("/retire"):
+            retirement_attempts += 1
+            events.append(f"retire:{retirement_attempts}")
+            if retirement_attempts <= 2:
+                return httpx.Response(503, json={"error": "retirement_unavailable"})
+            assert retained_row is not None
+            retained_row = {**retained_row, "status": "destroyed"}
+            return httpx.Response(
+                200,
+                json={
+                    **retained_row,
+                    "ok": True,
+                    "disposition": "retired",
+                    "catalog_protocol_version": 8,
+                    "gateway_protocol_version": 8,
+                    "catalog_status": "destroyed",
+                    "world_status": "destroyed",
+                },
+            )
+        raise AssertionError(f"unexpected remote catalog request: {request.method} {request.url}")
+
+    catalog._client = httpx.AsyncClient(transport=httpx.MockTransport(transport))
+
+    class _OrderedProvider(_CloseableEnv):
+        async def aclose(self) -> None:
+            events.append("provider")
+            await super().aclose()
+
+    provider = _OrderedProvider()
+    operation = EvaluatePhysicalTask(
+        config=PhysicalTaskEvalConfig(
+            suite="remote-registration-owner",
+            task_id=1,
+            trials=1,
+            max_steps=1,
+            storage=storage,
+        ),
+        env_client=provider,
+        policy_client=provider,
+    )
+    try:
+        with pytest.raises(BaseExceptionGroup):
+            await resources.dispatcher.apply(operation)
+
+        assert retained_row is not None
+        assert retained_row["status"] == "active"
+        assert retained_row["writer_mode"] == "cleanup_only"
+        assert not await worlds.contains(str(retained_row["world_id"]))
+        assert len(_world_cleanup_owner_names(resources)) == 1
+        assert provider.close_calls == 0
+
+        await resources.aclose()
+
+        assert retained_row["status"] == "destroyed"
+        assert retirement_attempts == 3
+        assert events == ["retire:1", "retire:2", "retire:3", "provider"]
+        assert provider.close_calls == 1
+    finally:
+        await resources.aclose()
 
 
 @pytest.mark.asyncio
