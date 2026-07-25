@@ -236,7 +236,7 @@ class RemoteControlCatalog:
                     cleanup_failure,
                     asyncio.CancelledError,
                 ):
-                    raise registration_failure
+                    raise registration_failure from None
                 raise BaseExceptionGroup(
                     "remote world registration and fail-closed retirement failed",
                     [registration_failure, cleanup_failure],
