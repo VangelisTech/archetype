@@ -36,7 +36,10 @@ from archetype.storage.catalog import (
     WorldRecord,
 )
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.xdist_group(name="remote-control-catalog-worker"),
+]
 
 WORKER_DIR = Path(__file__).resolve().parents[2] / "infra" / "control-catalog"
 WORKER_TOKEN = "archetype-parity-token"
@@ -239,6 +242,8 @@ async def test_worker_rejects_public_directory_internal_route_without_effect(wor
 
         fetched = await client.get(f"/ns/{namespace}/worlds/{world.world_id}")
         assert fetched.status_code == 404
+        status = await client.get(f"/ns/{namespace}/w/{world.world_id}/status")
+        assert status.status_code == 404
 
 
 @pytest.mark.parametrize("writer_mode", [None, "future_mode"])
