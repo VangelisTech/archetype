@@ -85,11 +85,11 @@ Repository package ownership is normative:
 
 | Kind | Canonical location |
 |---|---|
-| Components, processors, pure DataFrame transforms, transition graphs, and reusable projections | `archetype.<family>` |
+| Components, processors, pure DataFrame transforms, transition graphs, reusable projections, and family-owned free workflows over declared lower-family ports | `archetype.<family>` |
 | Supported family value contracts | `archetype.<family>.contracts` or another specifically named family module |
 | Capability-scoped resources and provider adapters implementing a family-owned protocol | A named subpackage of `archetype.<family>` |
 | Physical storage, control catalogs, commit coordination, and generic durable world/run envelopes | `archetype.storage` |
-| Application workflow authority, cross-family orchestration, internal service ports, and concrete application services | `archetype.app.<family>` |
+| Application authority requiring app-family composition, internal service ports, and concrete application services | `archetype.app.<family>` |
 | Transport and authentication | `archetype.api` |
 | Process composition and lifetime | `archetype.wiring` and `archetype.runtime_resources` |
 
@@ -97,10 +97,11 @@ A top-level domain-family package owns reusable ECS state and pure domain
 behavior. It may depend on `archetype.core`, itself, third-party libraries, and
 only reviewed lower top-level family contracts declared in the merged
 architecture policy. It must not import `archetype.app`,
-`archetype.runtime`, `archetype.api`, or `archetype.cli`, and it does not
-configure process-global providers or exporters, storage backends, process
-hosts, or wiring. The application layer may import a registered top-level
-family contract; the reverse edge is forbidden. Undeclared top-level
+`archetype.runtime`, `archetype.runtime_resources`, `archetype.wiring`,
+`archetype.api`, or `archetype.cli`, and it does not configure process-global
+providers or exporters, storage backends, process hosts, or wiring. The
+application layer may import a registered top-level family contract; the
+reverse edge is forbidden. Undeclared top-level
 family-to-family dependencies are denied. Every first-party package or module
 directly beneath `archetype` is classified as reserved infrastructure or
 registered as a domain family with one exact dependency disposition.
@@ -129,6 +130,11 @@ Naming states semantic ownership:
   construction helpers;
 - `processors.py` contains processor implementations;
 - `contracts.py` contains supported Pydantic or dataclass value contracts;
+- `models.py` contains supported values and exact operation models when a
+  family has one canonical model surface;
+- `views.py` contains reusable storage-backed projections;
+- `handlers.py` contains family-owned free workflows over declared lower-family
+  ports;
 - `interfaces.py` contains internal application ports;
 - `transitions.py` contains pure typed transition graphs; and
 - `service.py` contains application authority or orchestration.
@@ -166,9 +172,9 @@ src/archetype/
   evaluation/        grading, snapshot pinning, leases and durable receipts
   artifacts/         file values, scans, immutable objects, indexes, views and handlers
   research/          AutoResearch values, ledger state, views and free workflow handler
+  physical_ai/       physical state, models, views and free workflow handlers
   app/
     missions/        mission graph and external-I/O composition
-    physical_ai/     batched evaluation and instruction-sweep workflow
   runtime_resources.py explicit process-lifetime owner
   wiring.py          sole concrete cross-family composition root
 ```
@@ -177,21 +183,34 @@ The mission-adjacent cleanup direction is recorded in
 [Agent Missions V1, section 9](agent-missions.md#9-family-direction-after-v1).
 Dataset evidence identity has moved into evaluation and the datasets umbrella
 is gone. HTN resolution now lives under `archetype.missions.planning`. The
-physical-AI Components, processors, policy contracts, and external-boundary
-helpers now live in the registered `archetype.physical_ai` family. Research
+physical-AI Components, internal provider processors, genuine protocols,
+models, views, free handlers, and external-boundary helpers now live in the registered
+`archetype.physical_ai` family. Research
 values, ledger Components, views, pure runner decoder, experiment admission,
 and the directly awaited workflow handler live in `archetype.research`; there
 is no application research facade or service protocol. Typed trajectory
 schemas and pure transforms live under `archetype.missions.trajectories`; the
 mission trajectory service composes world-query functions with the evaluation
-family's pure grader runner. Physical
-evaluation values and pure instruction optimization live under
-`archetype.physical_ai`, while `archetype.app.physical_ai` composes world
-registry/lifecycle and storage ports with world mutation, simulation, and query
-functions. Claude transcript parsing
+family's pure grader runner. Physical evaluation values, provider protocols,
+pure instruction optimization, terminal views, and the world/storage workflow
+handlers all live under `archetype.physical_ai`; there is no application
+physical-AI facade or service protocol. Claude transcript parsing
 now lives under `archetype.missions.trajectories`;
 `archetype.app.missions.transcript_service` owns its
 redact-before-durability workflow and consumes the artifacts family directly.
+
+Physical environment and policy providers transfer synchronously into
+`RuntimeResources`, and an identity-ordered exclusive lease covers every
+provider-backed workflow effect. Before releasing that lease, the handler must
+retire its live world writer through world lifecycle authority. The returned
+world/run coordinates remain durable read evidence; they do not authorize a
+later attach/step path to the internal provider processors.
+Composition coalesces retirement by the exact sticky world-cleanup lease and
+registers that complete transaction with `RuntimeResources`. A failed
+retirement remains process-owned for the `workflow-handles` retry phase. Each
+associated provider close first joins those exact retirements, so only
+successful world cleanup can release the cleanup owner and permit provider
+shutdown.
 The former
 production
 `archetype.experiments` umbrella is gone. The repository-root `experiments/`
@@ -288,7 +307,7 @@ or CLI boundary.
 | Evaluation | Snapshot pinning, grader contracts, grading, leasing, recovery, evidence and durable results | Storage port plus world-query functions; operations carry explicit world and storage coordinates |
 | Commands | Exact registration, authorization policy, governed direct/deferred entry, durable admission, order, leasing, lock-held materialization, retry, settlement, dead letters, transactional outbox and analytical audit projection | Storage/control catalog plus exact world handlers |
 | Research | AutoResearch values, ledger state, bounded persisted-control reads, experiment-keyed admission, and the directly awaited multi-run workflow | World registry/lifecycle and storage ports plus world simulation functions and explicit evaluator callbacks |
-| Physical AI | Batched evaluation and instruction-sweep workflows with typed terminal reports | World registry/lifecycle and storage ports plus world mutation/simulation/query functions |
+| Physical AI | Batched evaluation and instruction-sweep free workflows with typed terminal reports | World registry/lifecycle and storage ports plus world mutation/simulation/query functions |
 | Missions | Graph materialization, tick/external-I/O composition, terminal projection, transcript ingestion, and trajectory query/evaluation composition. Family processors retain transition authority; trajectory evidence cannot advance tasks. | Consumes a structural mission world, family-owned sandbox resource, artifact-family handlers plus redaction/storage ports for transcripts, and world-query plus pure evaluation-grading functions for trajectory reads. |
 | Runtime/API adapters | Construct exact family operations and select trusted or actor-aware dispatcher entry | Commands dispatcher plus family models |
 | `RuntimeResources` | Process admission, supervised work, handle ownership, and phased retryable teardown | Dispatcher, audit projection, storage, and registered owners |
@@ -631,7 +650,7 @@ dependency. `errors` is the exact common-family module; `runtime`, `api`,
 | `redaction` | none |
 | `evaluation` | `storage`, `world` |
 | `research` | `storage`, `world` |
-| `physical_ai` | none |
+| `physical_ai` | `storage`, `world` |
 | `episodes` | `artifacts`, `evaluation` |
 | `graph` | none |
 | `missions` | `artifacts`, `episodes`, `graph` |
@@ -644,6 +663,10 @@ cycle review. Family operation models do not import `commands`. `wiring.py` regi
 model/handler pairs and is the sole concrete cross-family composition root.
 `runtime` and `api` consume commands plus the family models and projections they
 expose; CLI remains an HTTP client except for server startup.
+
+The physical-AI handlers exercise exactly the `storage` and `world` edges.
+Physical task and sweep reports remain family-owned terminal projections; the
+workflow does not import or delegate report authority to `evaluation`.
 
 The current package ownership is:
 

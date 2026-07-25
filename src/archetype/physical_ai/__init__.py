@@ -1,14 +1,10 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Physical-AI state, execution boundaries, and evaluation contracts.
+"""Physical-AI state, provider boundaries, workflows, and evaluation values."""
 
-This family owns reusable simulation and policy state, typed workflow values,
-and pure optimization. Application workflows that create worlds, run episodes,
-query ledgers, or grade outcomes live in :mod:`archetype.app.physical_ai`.
-"""
-
-from archetype.physical_ai.contracts import (
+from archetype.physical_ai.interfaces import EnvClient, PolicyClient
+from archetype.physical_ai.models import (
     InstructionSweepConfig,
     InstructionSweepReport,
     PhysicalTaskEvalConfig,
@@ -25,12 +21,14 @@ from archetype.physical_ai.optimization import (
 )
 
 __all__ = [
+    "EnvClient",
     "InstructionSweepConfig",
     "InstructionSweepReport",
     "OptimizationResult",
     "PerturbationStrategy",
     "PhysicalTaskEvalConfig",
     "PhysicalTaskEvalReport",
+    "PolicyClient",
     "RoundRecord",
     "TemplatePerturbation",
     "TrialOutcome",

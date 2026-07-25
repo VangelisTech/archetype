@@ -16,6 +16,7 @@ from uuid_utils import UUID, uuid7
 
 from archetype.core.config import StorageConfig, WorldConfig
 from archetype.storage.catalog import WorldRecord
+from archetype.world.errors import WorldClosingError
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -158,11 +159,14 @@ class _Registry:
         storage_config: StorageConfig,
         cache_config: object | None,
         required_projector: object | None,
-    ) -> None:
+        closing: bool = False,
+    ) -> object | None:
         del storage_config, cache_config
+        assert not closing
         self.events.append(("insert", world.world_id, str(world.run_id)))
         self.world = world
         self.projector = required_projector
+        return None
 
 
 async def test_create_registers_final_uuid7_before_bound_construction(
@@ -232,6 +236,55 @@ async def test_create_registers_final_uuid7_before_bound_construction(
         ("insert", world_id, run_id),
         ("activation-exit", world_id),
     ]
+
+
+async def test_create_closing_world_is_atomically_non_public_and_exactly_cleanable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lifecycle_module = import_module("archetype.world.lifecycle")
+    registry_module = import_module("archetype.world.registry")
+    events: list[tuple[Any, ...]] = []
+    catalog = _Catalog(events)
+    storage = _Storage(catalog, events)
+    registry = registry_module.WorldRegistry()
+
+    def fake_build(
+        store: object,
+        config: WorldConfig,
+        *,
+        restored_run_id: UUID | None,
+        commit_coordinator: object,
+        materialize_commands: object | None,
+        system: object | None = None,
+    ) -> _World:
+        del store, commit_coordinator, materialize_commands, system
+        assert restored_run_id is not None
+        return _World(
+            world_id=str(config.world_id),
+            run_id=restored_run_id,
+            name=config.name,
+        )
+
+    monkeypatch.setattr(lifecycle_module, "build_world", fake_build)
+    lifecycle = lifecycle_module.WorldLifecycle(storage, registry)
+    world, lease = await lifecycle.create_closing_world(
+        WorldConfig(
+            world_id="00000000-0000-7000-8000-000000000075",
+            name="private-workflow",
+        ),
+        StorageConfig(),
+    )
+
+    assert await registry.begin_close(world.world_id) is lease
+    with pytest.raises(WorldClosingError, match=str(world.world_id)):
+        async with registry.operation(world.world_id):
+            pytest.fail("closing world admitted a public operation")
+    async with registry.cleanup_operation(lease) as exact_world:
+        assert exact_world is world
+
+    await lifecycle.destroy_world(world.world_id, lease=lease)
+    assert not await registry.contains(world.world_id)
+    assert ("status", str(world.world_id), "destroyed") in events
 
 
 async def test_create_failure_after_registration_is_not_activated(

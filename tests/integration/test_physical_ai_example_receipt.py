@@ -41,14 +41,35 @@ async def test_physical_ai_receipt_proves_eval_sweep_optimizer_and_telemetry(
 
     assert result == {
         "task_evaluation": {
+            "suite": "scripted-reach",
+            "task_id": 0,
+            "instruction": "reach",
             "trial_count": 2,
             "success_count": 1,
             "success_rate": 0.5,
-            "evidence_addressable": True,
+            "mean_length": 3.5,
+            "evidence_pair_verified": True,
+            "trials": [
+                {
+                    "trial_idx": 0,
+                    "env_key": 0,
+                    "seed": 0,
+                    "success": True,
+                    "episode_length": 3,
+                },
+                {
+                    "trial_idx": 1,
+                    "env_key": 1,
+                    "seed": 1,
+                    "success": False,
+                    "episode_length": 4,
+                },
+            ],
         },
         "telemetry": {
             "entity_count": 2,
             "row_count": 10,
+            "coordinate_pair_count": 1,
             "ticks": [0, 1, 2, 3, 4],
             "all_frame_refs_present": True,
             "reset_refs": [
@@ -65,9 +86,34 @@ async def test_physical_ai_receipt_proves_eval_sweep_optimizer_and_telemetry(
             ],
         },
         "instruction_sweep": {
+            "suite": "scripted-reach",
+            "task_id": 0,
             "seeds_per_variant": 2,
             "scores": {"": 0.0, "reach": 0.5, "reach red": 1.0},
             "best_instruction": "reach red",
+            "outcomes": [
+                {
+                    "instruction": "",
+                    "n_trials": 2,
+                    "n_success": 0,
+                    "success_rate": 0.0,
+                    "mean_length": 4.0,
+                },
+                {
+                    "instruction": "reach",
+                    "n_trials": 2,
+                    "n_success": 1,
+                    "success_rate": 0.5,
+                    "mean_length": 3.0,
+                },
+                {
+                    "instruction": "reach red",
+                    "n_trials": 2,
+                    "n_success": 2,
+                    "success_rate": 1.0,
+                    "mean_length": 2.5,
+                },
+            ],
         },
         "optimization": {
             "initial_success_rate": 0.0,
@@ -76,5 +122,12 @@ async def test_physical_ai_receipt_proves_eval_sweep_optimizer_and_telemetry(
             "trace": [0.0, 0.5, 1.0],
             "improved": True,
         },
-        "cleanup": {"runtime_context_completed": True},
+        "cleanup": {
+            "runtime_context_completed": True,
+            "unique_provider_count": 10,
+            "environment_count": 5,
+            "policy_count": 5,
+            "closed_once_count": 10,
+            "open_provider_count": 0,
+        },
     }

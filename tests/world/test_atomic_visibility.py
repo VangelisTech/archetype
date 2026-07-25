@@ -115,10 +115,13 @@ class _Registry:
         storage_config: StorageConfig,
         cache_config: object | None,
         required_projector: object | None,
-    ) -> None:
+        closing: bool = False,
+    ) -> object | None:
         del storage_config, cache_config, required_projector
+        assert not closing
         self.events.append(("insert", world.world_id))
         self.world = world
+        return None
 
 
 async def test_mutable_resume_preflights_then_fences_then_rescans_authoritatively(

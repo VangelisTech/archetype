@@ -182,6 +182,46 @@ class WorldLifecycle:
     ) -> AsyncWorld:
         """Create one managed world with immutable durable writer identity."""
 
+        world, _lease = await self._create_world(
+            config,
+            storage_config,
+            cache_config,
+            system,
+            closing=False,
+        )
+        return world
+
+    async def create_closing_world(
+        self,
+        config: WorldConfig,
+        storage_config: StorageConfig | None = None,
+        cache_config: CacheConfig | None = None,
+        system: iAsyncSystem | None = None,
+    ) -> tuple[AsyncWorld, WorldCleanupLease]:
+        """Create one world already under exact, non-public cleanup authority."""
+
+        world, lease = await self._create_world(
+            config,
+            storage_config,
+            cache_config,
+            system,
+            closing=True,
+        )
+        if lease is None:
+            raise RuntimeError("closing world construction did not return cleanup authority")
+        return world, lease
+
+    async def _create_world(
+        self,
+        config: WorldConfig,
+        storage_config: StorageConfig | None,
+        cache_config: CacheConfig | None,
+        system: iAsyncSystem | None,
+        *,
+        closing: bool,
+    ) -> tuple[AsyncWorld, WorldCleanupLease | None]:
+        """Construct one ordinary or atomically closing managed world."""
+
         if config.world_id is None:
             config = config.model_copy(update={"world_id": uuid7()})
         world_id = str(config.world_id)
@@ -191,7 +231,12 @@ class WorldLifecycle:
             async with self._registry.activation(world_id):
                 existing = await self._registry.live_world(world_id)
                 if existing is not None:
-                    return existing
+                    if closing:
+                        raise ValueError(
+                            f"World with ID '{world_id}' already exists and cannot "
+                            "be reused as a closing world."
+                        )
+                    return existing, None
                 if config.name and await self._registry.contains_name(config.name):
                     raise ValueError(f"World with name '{config.name}' already exists.")
 
@@ -230,17 +275,18 @@ class WorldLifecycle:
                         system=system,
                     )
                     projector = self._required_projector(world_id)
-                    await self._registry.insert(
+                    lease = await self._registry.insert(
                         world,
                         storage_config=storage_config,
                         cache_config=cache_config,
                         required_projector=projector,
+                        closing=closing,
                     )
                 except BaseException:
                     if registered:
                         await self._mark_failed_activation(catalog, world_id)
                     raise
-                return world
+                return world, lease
 
     async def fork_world(
         self,

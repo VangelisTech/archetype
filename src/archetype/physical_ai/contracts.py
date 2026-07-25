@@ -1,144 +1,26 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Typed requests and results for physical-AI evaluation workflows.
+"""Compatibility re-exports for physical-AI workflow values.
 
-The physical-AI family owns the values that describe a rollout experiment.
-Application services own the orchestration that turns these values into worlds,
-episodes, and persisted evidence.
+The canonical definitions moved to :mod:`archetype.physical_ai.models` in
+v0.5. This module preserves object identity for one release.
 """
 
-from __future__ import annotations
+from archetype.physical_ai.models import (
+    InstructionSweepConfig,
+    InstructionSweepReport,
+    PhysicalTaskEvalConfig,
+    PhysicalTaskEvalReport,
+    TrialOutcome,
+    VariantOutcome,
+)
 
-from dataclasses import dataclass, field
-
-from archetype.core.config import StorageConfig
-
-
-@dataclass(frozen=True)
-class PhysicalTaskEvalConfig:
-    """One instruction evaluated across multiple deterministic trial seeds."""
-
-    suite: str
-    task_id: int
-    trials: int
-    max_steps: int
-    storage: StorageConfig = field(default_factory=StorageConfig)
-    with_frames: bool = False
-    instruction: str = "reach"
-
-    def __post_init__(self) -> None:
-        if not self.suite.strip():
-            raise ValueError("suite must not be empty")
-        if self.trials < 1:
-            raise ValueError("trials must be at least 1")
-        if self.max_steps < 1:
-            raise ValueError("max_steps must be at least 1")
-
-
-@dataclass(frozen=True)
-class InstructionSweepConfig:
-    """Instruction variants evaluated on paired initial-state seeds."""
-
-    suite: str
-    task_id: int
-    variants: tuple[str, ...]
-    seeds_per_variant: int
-    max_steps: int
-    storage: StorageConfig = field(default_factory=StorageConfig)
-    with_frames: bool = False
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "variants", tuple(self.variants))
-        if not self.suite.strip():
-            raise ValueError("suite must not be empty")
-        if not self.variants:
-            raise ValueError("variants must contain at least one instruction")
-        if self.seeds_per_variant < 1:
-            raise ValueError("seeds_per_variant must be at least 1")
-        if self.max_steps < 1:
-            raise ValueError("max_steps must be at least 1")
-
-
-@dataclass(frozen=True)
-class TrialOutcome:
-    """Ledger-derived terminal outcome for one physical trial entity."""
-
-    trial_idx: int
-    env_key: int
-    seed: int
-    success: bool
-    episode_length: int
-
-
-@dataclass(frozen=True)
-class PhysicalTaskEvalReport:
-    """Ledger-derived result for one batched physical task evaluation."""
-
-    suite: str
-    task_id: int
-    instruction: str
-    world_id: str
-    run_id: str
-    trials: tuple[TrialOutcome, ...] = ()
-
-    @property
-    def success_rate(self) -> float:
-        """Fraction of trial entities whose terminal status latched success."""
-
-        return (
-            sum(trial.success for trial in self.trials) / len(self.trials) if self.trials else 0.0
-        )
-
-    @property
-    def mean_length(self) -> float:
-        """Mean terminal environment-step count across all trials."""
-
-        return (
-            sum(trial.episode_length for trial in self.trials) / len(self.trials)
-            if self.trials
-            else 0.0
-        )
-
-
-@dataclass(frozen=True)
-class VariantOutcome:
-    """Ledger-derived aggregate for one instruction variant."""
-
-    instruction: str
-    n_trials: int
-    n_success: int
-    success_rate: float
-    mean_length: float
-
-
-@dataclass(frozen=True)
-class InstructionSweepReport:
-    """All variants graded from one addressable physical evaluation run."""
-
-    suite: str
-    task_id: int
-    world_id: str
-    run_id: str
-    variants: tuple[VariantOutcome, ...] = ()
-
-    @property
-    def scores(self) -> dict[str, float]:
-        """Map each instruction to its success-rate objective."""
-
-        return {variant.instruction: variant.success_rate for variant in self.variants}
-
-    @property
-    def best(self) -> VariantOutcome | None:
-        """Best variant with deterministic shorter-then-lexical tie breaking."""
-
-        if not self.variants:
-            return None
-        return min(
-            self.variants,
-            key=lambda variant: (
-                -variant.success_rate,
-                len(variant.instruction),
-                variant.instruction,
-            ),
-        )
+__all__ = [
+    "InstructionSweepConfig",
+    "InstructionSweepReport",
+    "PhysicalTaskEvalConfig",
+    "PhysicalTaskEvalReport",
+    "TrialOutcome",
+    "VariantOutcome",
+]

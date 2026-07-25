@@ -5,17 +5,20 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+import asyncio
+import inspect
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel
+from uuid_utils import uuid7
 
 from archetype.app.missions.service import MissionService
 from archetype.app.missions.trajectory_service import TrajectoryService
 from archetype.app.missions.transcript_service import TranscriptIngestionService
-from archetype.app.physical_ai.service import PhysicalAIService
 from archetype.artifacts import handlers as artifact_handlers
 from archetype.artifacts.models import (
     ArtifactStoreConfig,
@@ -55,6 +58,14 @@ from archetype.missions.models import (
     summarize_mission_operation,
 )
 from archetype.missions.sandboxes.service import SandboxService
+from archetype.physical_ai import handlers as physical_ai_handlers
+from archetype.physical_ai.interfaces import (
+    EnvClient,
+    PhysicalClientLifetimeRegistrar,
+    PhysicalEvidenceWorldRetirement,
+    PhysicalWorkflowLifetime,
+    PolicyClient,
+)
 from archetype.physical_ai.models import (
     EvaluatePhysicalTask,
     SweepPhysicalInstructions,
@@ -63,7 +74,7 @@ from archetype.physical_ai.models import (
 from archetype.redaction.service import RedactionService
 from archetype.research import handlers as research_handlers
 from archetype.research.models import AutoResearch, summarize_research_operation
-from archetype.runtime_resources import RuntimeResources
+from archetype.runtime_resources import OwnerReservation, RuntimeResources
 from archetype.storage.config import ControlCatalogConfig
 from archetype.storage.service import StorageService
 from archetype.world import mutation, query, simulation
@@ -74,7 +85,7 @@ from archetype.world.models import (
     PORTABLE_TICK_OPERATION_TYPES,
     WORLD_OPERATION_TYPES,
 )
-from archetype.world.registry import WorldRegistry
+from archetype.world.registry import WorldCleanupLease, WorldRegistry
 
 _APPLICATION_SCOPED_OPERATIONS = frozenset(
     {
@@ -210,6 +221,309 @@ class RuntimeBootstrapConfig:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _PhysicalAIClientEntry:
+    """One identity-keyed provider owner and its operation lock."""
+
+    identity: int
+    client: object
+    reservation: OwnerReservation
+    lock: asyncio.Lock
+
+
+class _PhysicalAIClientLifetimes:
+    """Own providers and serialize operations that share their identities."""
+
+    def __init__(
+        self,
+        resources: RuntimeResources,
+        cleanup_lifetimes: _WorldCleanupLifetimes,
+    ) -> None:
+        self._resources = resources
+        self._cleanup_lifetimes = cleanup_lifetimes
+        self._entries: dict[int, _PhysicalAIClientEntry] = {}
+
+    def lease(
+        self,
+        env_client: EnvClient,
+        policy_client: PolicyClient | None = None,
+    ) -> AbstractAsyncContextManager[PhysicalWorkflowLifetime]:
+        """Synchronously own clients, then return their ordered async lease."""
+
+        self._require_role(
+            env_client,
+            role="environment",
+            methods=("reset", "step", "aclose"),
+        )
+        if policy_client is not None:
+            self._require_role(
+                policy_client,
+                role="policy",
+                methods=("act", "aclose"),
+            )
+        entries = self._entries_for((env_client, policy_client))
+        return self._hold(entries)
+
+    @staticmethod
+    def _require_role(
+        client: object,
+        *,
+        role: str,
+        methods: tuple[str, ...],
+    ) -> None:
+        for method in methods:
+            member = inspect.getattr_static(client, method, None)
+            target = member.__func__ if isinstance(member, (classmethod, staticmethod)) else member
+            if target is None or not callable(target):
+                expected = "async" if method == "aclose" else "synchronous"
+                raise TypeError(f"physical-AI {role} providers must define {expected} {method}()")
+            is_async = inspect.iscoroutinefunction(target)
+            if method == "aclose" and not is_async:
+                raise TypeError(f"physical-AI {role} providers must define async aclose()")
+            if method != "aclose" and is_async:
+                raise TypeError(f"physical-AI {role} providers must define synchronous {method}()")
+
+    def _entries_for(
+        self,
+        clients: tuple[Any | None, ...],
+    ) -> tuple[_PhysicalAIClientEntry, ...]:
+        unique: dict[int, object] = {}
+        for client in clients:
+            if client is None:
+                continue
+            identity = id(client)
+            selected = unique.get(identity)
+            if selected is not None:
+                if selected is not client:
+                    raise RuntimeError("physical-AI provider identity collision")
+                continue
+            retained = self._entries.get(identity)
+            if retained is not None and retained.client is not client:
+                raise RuntimeError("physical-AI provider identity collision")
+            unique[identity] = client
+
+        new_clients = tuple(
+            (identity, client)
+            for identity, client in unique.items()
+            if identity not in self._entries
+        )
+        for identity, client in new_clients:
+
+            async def close_client(
+                client: object = client,
+                identity: int = identity,
+            ) -> None:
+                await self._cleanup_lifetimes.close_for_provider(identity)
+                result = cast(Any, client).aclose()
+                if not inspect.isawaitable(result):
+                    raise TypeError("physical-AI provider aclose() must return an awaitable")
+                await result
+                retained = self._entries.get(identity)
+                if retained is not None and retained.client is client:
+                    self._entries.pop(identity)
+
+            reservation = self._resources.reserve_owner(
+                f"physical-ai:client:{uuid7()}",
+                phase="workflow-handles",
+                closed_message="physical-AI provider owner is closed",
+            )
+            reservation.bind(client, close=close_client)
+            self._entries[identity] = _PhysicalAIClientEntry(
+                identity=identity,
+                client=client,
+                reservation=reservation,
+                lock=asyncio.Lock(),
+            )
+
+        return tuple(self._entries[identity] for identity in sorted(unique))
+
+    @asynccontextmanager
+    async def _hold(
+        self,
+        entries: tuple[_PhysicalAIClientEntry, ...],
+    ) -> AsyncIterator[PhysicalWorkflowLifetime]:
+        acquired: list[_PhysicalAIClientEntry] = []
+        async with AsyncExitStack() as admissions:
+            for entry in entries:
+                await admissions.enter_async_context(
+                    self._resources.admit_owner_operation(entry.reservation)
+                )
+            try:
+                for entry in entries:
+                    await entry.lock.acquire()
+                    acquired.append(entry)
+                yield _PhysicalWorkflowLifetime(
+                    cleanup_lifetimes=self._cleanup_lifetimes,
+                    provider_ids=frozenset(entry.identity for entry in entries),
+                )
+            finally:
+                for entry in reversed(acquired):
+                    entry.lock.release()
+
+
+@dataclass(eq=False, slots=True)
+class _WorldCleanupEntry:
+    """One exact close lease retained by the process lifetime owner."""
+
+    world_id: str
+    lease: WorldCleanupLease
+    cleanup: WorldCleanup
+    reservation: OwnerReservation
+    provider_ids: set[int]
+
+
+@dataclass(frozen=True, slots=True)
+class _WorldCleanupHandle:
+    """A stale-safe join handle bound directly to one cleanup reservation."""
+
+    reservation: OwnerReservation
+
+    async def aclose(self) -> None:
+        """Join the reservation's shielded, retryable exact cleanup."""
+
+        await self.reservation.aclose()
+
+
+class _WorldCleanupLifetimes:
+    """Coalesce and retain complete world-close transactions by exact lease."""
+
+    def __init__(
+        self,
+        resources: RuntimeResources,
+        worlds: WorldRegistry,
+        lifecycle: WorldLifecycle,
+        scheduler: CommandScheduler,
+    ) -> None:
+        self._resources = resources
+        self._worlds = worlds
+        self._lifecycle = lifecycle
+        self._scheduler = scheduler
+        self._entries: dict[WorldCleanupLease, _WorldCleanupEntry] = {}
+        self._by_provider: dict[int, set[_WorldCleanupEntry]] = {}
+
+    def retain(
+        self,
+        world_id: object,
+        lease: WorldCleanupLease,
+        *,
+        provider_ids: frozenset[int] = frozenset(),
+    ) -> _WorldCleanupHandle:
+        """Synchronously retain one exact cleanup transaction before effects."""
+
+        exact_world_id = str(world_id)
+        self._worlds.validate_cleanup_lease(lease, world_id=exact_world_id)
+        retained = self._entries.get(lease)
+        if retained is not None:
+            if retained.world_id != exact_world_id:
+                raise RuntimeError("world cleanup entry is bound to another world")
+            self._associate_providers(retained, provider_ids)
+            return _WorldCleanupHandle(retained.reservation)
+
+        cleanup = WorldCleanup(
+            registry=self._worlds,
+            lifecycle=self._lifecycle,
+            world_id=exact_world_id,
+            lease=lease,
+            cancel_unsettled=self._scheduler.cancel_world,
+        )
+
+        async def close_cleanup() -> None:
+            await cleanup.finish()
+            self._release_entry(entry)
+
+        reservation = self._resources.reserve_owner(
+            f"world-cleanup:{uuid7()}",
+            phase="workflow-handles",
+            closed_message="world cleanup owner is closed",
+        )
+        reservation.bind(cleanup, close=close_cleanup)
+        entry = _WorldCleanupEntry(
+            world_id=exact_world_id,
+            lease=lease,
+            cleanup=cleanup,
+            reservation=reservation,
+            provider_ids=set(),
+        )
+        self._entries[lease] = entry
+        self._associate_providers(entry, provider_ids)
+        return _WorldCleanupHandle(reservation)
+
+    async def close_current(self, world_id: object) -> None:
+        """Join cleanup for the current exact world selected by public destroy."""
+
+        try:
+            lease = await self._worlds.begin_close(str(world_id))
+        except KeyError:
+            return
+        await self.retain(world_id, lease).aclose()
+
+    async def close_for_provider(self, provider_id: int) -> None:
+        """Finish every exact evidence world before closing its provider."""
+
+        entries = tuple(
+            sorted(
+                self._by_provider.get(provider_id, ()),
+                key=lambda entry: entry.world_id,
+            )
+        )
+        if not entries:
+            return
+        results = await asyncio.gather(
+            *(entry.reservation.aclose() for entry in entries),
+            return_exceptions=True,
+        )
+        failures = [result for result in results if isinstance(result, BaseException)]
+        if failures:
+            raise BaseExceptionGroup(
+                f"physical provider retains {len(failures)} failed evidence cleanup(s)",
+                failures,
+            )
+
+    def _associate_providers(
+        self,
+        entry: _WorldCleanupEntry,
+        provider_ids: frozenset[int],
+    ) -> None:
+        for provider_id in provider_ids:
+            if provider_id in entry.provider_ids:
+                continue
+            entry.provider_ids.add(provider_id)
+            self._by_provider.setdefault(provider_id, set()).add(entry)
+
+    def _release_entry(self, entry: _WorldCleanupEntry) -> None:
+        if self._entries.get(entry.lease) is entry:
+            self._entries.pop(entry.lease)
+        for provider_id in tuple(entry.provider_ids):
+            entries = self._by_provider.get(provider_id)
+            if entries is None:
+                continue
+            entries.discard(entry)
+            if not entries:
+                self._by_provider.pop(provider_id)
+        entry.provider_ids.clear()
+
+
+@dataclass(frozen=True, slots=True)
+class _PhysicalWorkflowLifetime:
+    """Concrete provider lease token injected into one physical workflow."""
+
+    cleanup_lifetimes: _WorldCleanupLifetimes
+    provider_ids: frozenset[int]
+
+    def retain_evidence_world(
+        self,
+        world_id: object,
+        lease: WorldCleanupLease,
+    ) -> PhysicalEvidenceWorldRetirement:
+        """Bind exact cleanup to every provider before the next await."""
+
+        return self.cleanup_lifetimes.retain(
+            world_id,
+            lease,
+            provider_ids=self.provider_ids,
+        )
+
+
 class _AdmissionGuardedCatalog:
     """Keep durable admission ordered with the exact world's close barrier."""
 
@@ -294,28 +608,6 @@ async def _query_audit(audit: AuditLog, operation: GetAuditHistory) -> Any:
         idempotency_key=operation.idempotency_key,
         status=operation.status,
         limit=operation.limit,
-    )
-
-
-async def _handle_evaluate_physical_task(
-    service: PhysicalAIService,
-    operation: EvaluatePhysicalTask,
-) -> Any:
-    return await service.evaluate_task(
-        operation.config,
-        env_client=operation.env_client,
-        policy_client=operation.policy_client,
-    )
-
-
-async def _handle_sweep_physical_instructions(
-    service: PhysicalAIService,
-    operation: SweepPhysicalInstructions,
-) -> Any:
-    return await service.sweep_instructions(
-        operation.config,
-        env_client=operation.env_client,
-        policy_client=operation.policy_client,
     )
 
 
@@ -602,7 +894,7 @@ def _pull_forward_handler(
     artifact_store_config: ArtifactStoreConfig | None,
     research_admissions: research_handlers.AutoResearchAdmissions,
     destroy_world: simulation.DestroyWorldCallable,
-    physical_ai: PhysicalAIService,
+    physical_ai_lifetimes: PhysicalClientLifetimeRegistrar,
     transcripts: TranscriptIngestionService,
     trajectories: TrajectoryService,
 ) -> Callable[[BaseModel], Awaitable[Any]]:
@@ -631,11 +923,23 @@ def _pull_forward_handler(
         ),
         EvaluatePhysicalTask: cast(
             Any,
-            partial(_handle_evaluate_physical_task, physical_ai),
+            partial(
+                physical_ai_handlers.evaluate_physical_task,
+                physical_ai_lifetimes,
+                worlds,
+                lifecycle,
+                storage,
+            ),
         ),
         SweepPhysicalInstructions: cast(
             Any,
-            partial(_handle_sweep_physical_instructions, physical_ai),
+            partial(
+                physical_ai_handlers.sweep_physical_instructions,
+                physical_ai_lifetimes,
+                worlds,
+                lifecycle,
+                storage,
+            ),
         ),
         IngestClaudeTranscript: cast(
             Any,
@@ -722,7 +1026,7 @@ def _register_pull_forward_operations(
     artifact_store_config: ArtifactStoreConfig | None,
     research_admissions: research_handlers.AutoResearchAdmissions,
     destroy_world: simulation.DestroyWorldCallable,
-    physical_ai: PhysicalAIService,
+    physical_ai_lifetimes: PhysicalClientLifetimeRegistrar,
     transcripts: TranscriptIngestionService,
     trajectories: TrajectoryService,
 ) -> None:
@@ -744,7 +1048,7 @@ def _register_pull_forward_operations(
                     artifact_store_config=artifact_store_config,
                     research_admissions=research_admissions,
                     destroy_world=destroy_world,
-                    physical_ai=physical_ai,
+                    physical_ai_lifetimes=physical_ai_lifetimes,
                     transcripts=transcripts,
                     trajectories=trajectories,
                 ),
@@ -816,19 +1120,13 @@ def build_runtime_resources(config: RuntimeBootstrapConfig) -> RuntimeResources:
         acknowledge_outbox=scheduler.acknowledge_outbox,
     )
 
+    cleanup_lifetimes: _WorldCleanupLifetimes | None = None
+
     async def destroy_owned_world(world_id: object) -> None:
-        try:
-            lease = await worlds.begin_close(str(world_id))
-        except KeyError:
-            return
-        async with worlds.cleanup_operation(lease) as world:
-            await simulation.reconcile_committed_work_locked(
-                worlds,
-                str(world_id),
-                world,
-            )
-            await scheduler.cancel_world(world_id)
-        await lifecycle.destroy_world(str(world_id), lease=lease)
+        lifetimes = cleanup_lifetimes
+        if lifetimes is None:
+            raise RuntimeError("world cleanup lifetime owner is not composed")
+        await lifetimes.close_current(world_id)
 
     async def fork_owned_world(*args: Any, **kwargs: Any) -> Any:
         return await lifecycle.fork_world(*args, **kwargs)
@@ -856,6 +1154,12 @@ def build_runtime_resources(config: RuntimeBootstrapConfig) -> RuntimeResources:
         storage=storage,
         owns_storage=injected_storage is None,
     )
+    cleanup_lifetimes = _WorldCleanupLifetimes(
+        resources,
+        worlds,
+        lifecycle,
+        scheduler,
+    )
 
     transcripts = TranscriptIngestionService(
         redaction,
@@ -863,7 +1167,10 @@ def build_runtime_resources(config: RuntimeBootstrapConfig) -> RuntimeResources:
         config.artifact_store_config,
     )
     trajectories = TrajectoryService(storage)
-    physical_ai = PhysicalAIService(worlds, lifecycle, storage)
+    physical_ai_lifetimes = _PhysicalAIClientLifetimes(
+        resources,
+        cleanup_lifetimes,
+    )
     research_admissions = research_handlers.AutoResearchAdmissions()
     _register_pull_forward_operations(
         registry,
@@ -876,7 +1183,7 @@ def build_runtime_resources(config: RuntimeBootstrapConfig) -> RuntimeResources:
         artifact_store_config=config.artifact_store_config,
         research_admissions=research_admissions,
         destroy_world=destroy_owned_world,
-        physical_ai=physical_ai,
+        physical_ai_lifetimes=physical_ai_lifetimes,
         transcripts=transcripts,
         trajectories=trajectories,
     )

@@ -48,8 +48,8 @@ method = "to_pylist"
 reason = "HTTP JSON response boundary: convert the already-collected Daft result into row dictionaries for FastAPI's JSON encoder at the terminal REST boundary."
 
 [[entries]]
-path = "src/archetype/app/physical_ai/service.py"
-symbol = "_latest_rows"
+path = "src/archetype/physical_ai/views.py"
+symbol = "latest_rows"
 expr = "materialized.to_pylist"
 method = "to_pylist"
 reason = "Physical-evaluation grading boundary: StorageService admits and materializes latest-tick ledger rows before bounded success and episode-length values become typed task or sweep reports."

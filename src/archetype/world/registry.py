@@ -33,9 +33,10 @@ class _RegistryEntry:
 class WorldCleanupLease:
     """Opaque authority to reconcile one exact world after close starts.
 
-    Instances are created only by :meth:`WorldRegistry.begin_close`.  The
-    registry validates object identity, registry identity, and entry identity
-    on every use, so a lease cannot authorize a replacement or sibling world.
+    Instances are created only by :meth:`WorldRegistry.begin_close` or an
+    atomic closing-world insertion. The registry validates object identity,
+    registry identity, and entry identity on every use, so a lease cannot
+    authorize a replacement or sibling world.
     """
 
     __slots__ = ("_entry", "_on_destroy_complete", "_registry")
@@ -48,7 +49,7 @@ class WorldCleanupLease:
         _key: object,
     ) -> None:
         if _key is not _LEASE_KEY:
-            raise TypeError("cleanup leases are created by WorldRegistry.begin_close()")
+            raise TypeError("cleanup leases are created by WorldRegistry")
         self._registry = registry
         self._entry = entry
         self._on_destroy_complete = False
@@ -94,14 +95,20 @@ class WorldRegistry:
         storage_config: StorageConfig | None = None,
         cache_config: CacheConfig | None = None,
         required_projector: Any | None = None,
-    ) -> None:
-        """Insert one live world without replacing an existing binding."""
+        closing: bool = False,
+    ) -> WorldCleanupLease | None:
+        """Insert one world, optionally already under sticky cleanup authority."""
 
         world_id = str(world.world_id)
         name = str(world.name) if getattr(world, "name", None) else None
         async with self._registry_lock:
             existing = self._worlds.get(world_id)
             if existing is not None:
+                if closing:
+                    raise ValueError(
+                        f"World with ID '{world_id}' already exists and cannot "
+                        "be converted to closing ownership."
+                    )
                 if existing.world is not world:
                     raise ValueError(f"World with ID '{world_id}' already exists.")
                 if (
@@ -116,7 +123,7 @@ class WorldRegistry:
                     storage_config,
                     cache_config,
                 )
-                return
+                return None
 
             if name is not None:
                 named_world_id = self._names.get(name)
@@ -131,6 +138,8 @@ class WorldRegistry:
                 lock=lock,
                 required_projector=required_projector,
             )
+            if closing:
+                entry.cleanup_lease = WorldCleanupLease(self, entry, _key=_LEASE_KEY)
             self._worlds[world_id] = entry
             if name is not None:
                 self._names[name] = world_id
@@ -147,6 +156,7 @@ class WorldRegistry:
                 if name is not None:
                     self._names.pop(name, None)
                 raise
+            return entry.cleanup_lease
 
     @asynccontextmanager
     async def activation(self, world_id: str | UUID) -> AsyncIterator[None]:
@@ -251,6 +261,12 @@ class WorldRegistry:
 
         async with self._registry_lock:
             return [self._worlds[world_id].world for world_id in sorted(self._worlds)]
+
+    def is_public_binding(self, world_id: str | UUID, world: object) -> bool:
+        """Linearize whether one exact binding remains live and non-closing."""
+
+        entry = self._worlds.get(str(world_id))
+        return entry is not None and entry.world is world and entry.cleanup_lease is None
 
     def target_tick(self, world_id: str | UUID) -> int:
         """Return a point-in-time target-tick key for synchronous quota scope.

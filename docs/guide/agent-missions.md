@@ -803,8 +803,7 @@ The orphan cleanup follows the same rule:
 | Planning / former HTN | `archetype.missions.planning` |
 | Mission trajectories | `archetype.missions.trajectories` with app query/evaluation composition |
 | Artifact ingestion and transcript composition | `archetype.artifacts` owns file ingestion; `archetype.app.missions` composes transcript redaction and typed rows over its handler |
-| Physical-AI state and behavior | `archetype.physical_ai` |
-| Physical-AI workflows | `archetype.app.physical_ai` |
+| Physical-AI state, models, views, and free workflows | `archetype.physical_ai` |
 | Research state, values, views, decoding, and AutoResearch workflow | `archetype.research` |
 | Vendor-neutral observability vocabulary | `archetype._obs` |
 

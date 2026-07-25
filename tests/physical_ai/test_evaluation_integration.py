@@ -34,12 +34,12 @@ from archetype.core.config import StorageConfig, WorldConfig
 from archetype.evaluation.models import RunGraders
 from archetype.physical_ai.manipulation import (
     ACTION_DIM,
-    EnvStepProcessor,
     ManipAction,
     ManipProprio,
     ManipStatus,
     ManipTask,
     ScriptedReachEnv,
+    _EnvStepProcessor,
 )
 from archetype.world.models import (
     AddProcessor,
@@ -124,7 +124,7 @@ async def test_eval_reproduces_success_and_length_from_raw_manipstatus(tmp_path)
             CreateWorld(config=WorldConfig(name="dogfood"), storage_config=storage)
         )
         await dispatcher.apply(
-            AddProcessor(world_id=world.world_id, processor=EnvStepProcessor(client))
+            AddProcessor(world_id=world.world_id, processor=_EnvStepProcessor(client))
         )
         eids = {key: await _spawn_trial(dispatcher, world.world_id, client, key) for key in targets}
 
@@ -208,7 +208,7 @@ async def test_eval_grades_a_failed_trial_and_fractional_success_rate(tmp_path):
             )
         )
         await dispatcher.apply(
-            AddProcessor(world_id=world.world_id, processor=EnvStepProcessor(client))
+            AddProcessor(world_id=world.world_id, processor=_EnvStepProcessor(client))
         )
         eids = {key: await _spawn_trial(dispatcher, world.world_id, client, key) for key in targets}
 

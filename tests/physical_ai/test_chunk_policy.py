@@ -12,10 +12,8 @@ Verifies three normative properties with strict equality (no Modal, CI-safe):
 2. **Done-row freezing**: once a row is done its action column is not
    updated even if a new chunk would normally be requested.
 
-3. **Resources-spec construction produces identical results to constructor
-   injection**: a processor built from an ``EnvClientSpec``/``PolicyClientSpec``
-   in Resources gives the same ledger rows as one built by passing the client
-   directly.
+3. **Explicit provider construction**: processors reject missing clients and
+   expose no worker-local provider-factory path that lacks teardown authority.
 
 ``FakeChunkPolicy`` is a deterministic in-process policy that returns
 arithmetic chunks so that all assertions can be expressed as closed-form
@@ -24,6 +22,7 @@ exact equalities without any floating-point tolerance.
 
 from __future__ import annotations
 
+from importlib import import_module
 from typing import Any
 
 import pytest
@@ -32,17 +31,15 @@ from archetype.core.aio import AsyncSystem
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.physical_ai.manipulation import (
     ACTION_DIM,
-    EnvClientSpec,
-    EnvStepProcessor,
     ManipAction,
     ManipProprio,
     ManipStatus,
     ManipTask,
     ScriptedReachEnv,
+    _EnvStepProcessor,
 )
 from archetype.physical_ai.policy import (
-    PolicyActionProcessor,
-    PolicyClientSpec,
+    _PolicyActionProcessor,
 )
 from tests.conftest import make_world_harness
 
@@ -107,6 +104,9 @@ class FakeChunkPolicy:
         base = obs["eef_pos"][0] * 100.0
         return [base + chunk_step * self.DIM_FACTOR + d * 0.01 for d in range(ACTION_DIM)]
 
+    async def aclose(self) -> None:
+        """Release this dependency-free provider (a deliberate no-op)."""
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -121,8 +121,8 @@ async def _build_world(tmp_path, policy, env):
     ws = make_world_harness()
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="chunk")
     system = AsyncSystem()
-    await system.add_processor(PolicyActionProcessor(policy))
-    await system.add_processor(EnvStepProcessor(env))
+    await system.add_processor(_PolicyActionProcessor(policy))
+    await system.add_processor(_EnvStepProcessor(env))
     world = await ws.lifecycle.create_world(
         WorldConfig(name="chunk-test"), storage_config=storage, system=system
     )
@@ -298,8 +298,8 @@ async def test_done_rows_freeze_action_and_no_refresh(tmp_path):
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="freeze")
         system = AsyncSystem()
-        await system.add_processor(PolicyActionProcessor(policy))
-        await system.add_processor(EnvStepProcessor(env))
+        await system.add_processor(_PolicyActionProcessor(policy))
+        await system.add_processor(_EnvStepProcessor(env))
         world = await ws.lifecycle.create_world(
             WorldConfig(name="freeze-test"), storage_config=storage, system=system
         )
@@ -349,128 +349,17 @@ async def test_done_rows_freeze_action_and_no_refresh(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Test 3: Resources-spec construction == constructor injection
+# Test 3: worker-local provider factories are unsupported
 # ---------------------------------------------------------------------------
 
 
-class _TestPolicySpec(PolicyClientSpec):
-    """Test subclass of PolicyClientSpec.
+def test_processors_require_explicit_runtime_owned_clients() -> None:
+    with pytest.raises(TypeError):
+        _EnvStepProcessor()  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        _PolicyActionProcessor()  # type: ignore[call-arg]
 
-    Overrides ``build()`` to return a pre-constructed ``FakeChunkPolicy``
-    instead of a live ``VlaJepaPolicyClient``.  Registered in Resources via
-    ``insert_as(spec, PolicyClientSpec)`` so that the production
-    ``PolicyActionProcessor._ensure_callers`` path is exercised without
-    requiring a deployed Modal worker.
-    """
-
-    def __init__(self, policy: Any) -> None:
-        self._policy = policy
-
-    def build(self) -> Any:  # type: ignore[override]
-        return self._policy
-
-
-class _TestEnvSpec(EnvClientSpec):
-    """Test subclass of EnvClientSpec.
-
-    Overrides ``build()`` to return a pre-constructed ``ScriptedReachEnv``
-    instead of a live ``ModalEnvClient``.  Registered via
-    ``insert_as(spec, EnvClientSpec)`` so that the production
-    ``EnvStepProcessor._ensure_stepper`` path is exercised.
-    """
-
-    def __init__(self, client: Any) -> None:
-        self._client = client
-
-    def build(self) -> Any:  # type: ignore[override]
-        return self._client
-
-
-@pytest.mark.asyncio
-async def test_resources_spec_produces_identical_results(tmp_path):
-    """A processor built from spec (via Resources) produces the same ledger
-    rows as one built by constructor injection.
-
-    This test exercises the **production** ``_ensure_callers`` /
-    ``_ensure_stepper`` code paths by registering ``_TestPolicySpec`` /
-    ``_TestEnvSpec`` (subclasses of ``PolicyClientSpec`` / ``EnvClientSpec``)
-    in Resources under the base types via ``resources.insert_as``.  The
-    production ``PolicyActionProcessor`` and ``EnvStepProcessor`` are used
-    directly (no test-only processor variants).
-
-    The driver/worker boundary rationale: in production the spec holds
-    picklable scalars; the live client is built in ``spec.build()`` inside the
-    processor (driver process for ``AsyncProcessor``, Daft worker process for
-    ``@daft.cls`` UDFs).  Here ``_TestPolicySpec.build()`` returns a
-    ``FakeChunkPolicy`` and ``_TestEnvSpec.build()`` returns a
-    ``ScriptedReachEnv`` so the test remains CI-safe with no Modal deployment.
-    """
-    TICKS_SPEC = CHUNK_LEN + 1
-
-    # --- World A: constructor injection ---
-    env_a = ScriptedReachEnv(targets=TARGETS, tolerance=0.02)
-    policy_a = FakeChunkPolicy(chunk_len=CHUNK_LEN)
-
-    ws_a = make_world_harness()
-    try:
-        storage_a = StorageConfig(uri=str(tmp_path / "store_a"), namespace="spec_a")
-        system_a = AsyncSystem()
-        await system_a.add_processor(PolicyActionProcessor(policy_a))
-        await system_a.add_processor(EnvStepProcessor(env_a))
-        world_a = await ws_a.lifecycle.create_world(
-            WorldConfig(name="spec-inject-a"), storage_config=storage_a, system=system_a
-        )
-        eids_a = await _spawn_envs(world_a, env_a, TARGETS)
-        await world_a.run(RunConfig(num_steps=TICKS_SPEC))
-        history_a = await _fetch_history(world_a, TICKS_SPEC)
-    finally:
-        await ws_a.close()
-
-    # --- World B: Resources-spec construction via production processors ---
-    # env_b and policy_b are fresh instances of the same types as world A.
-    # _TestPolicySpec.build() / _TestEnvSpec.build() return them on first
-    # process() call, exercising PolicyActionProcessor._ensure_callers and
-    # EnvStepProcessor._ensure_stepper.
-    env_b = ScriptedReachEnv(targets=TARGETS, tolerance=0.02)
-    policy_b = FakeChunkPolicy(chunk_len=CHUNK_LEN)
-
-    ws_b = make_world_harness()
-    try:
-        storage_b = StorageConfig(uri=str(tmp_path / "store_b"), namespace="spec_b")
-        system_b = AsyncSystem()
-        # Production processors — no test-only variants.
-        await system_b.add_processor(PolicyActionProcessor())
-        await system_b.add_processor(EnvStepProcessor())
-        world_b = await ws_b.lifecycle.create_world(
-            WorldConfig(name="spec-inject-b"), storage_config=storage_b, system=system_b
-        )
-        # Register specs under their base types so the production require()
-        # lookups in _ensure_callers / _ensure_stepper find them.
-        world_b.resources.insert_as(_TestPolicySpec(policy_b), PolicyClientSpec)
-        world_b.resources.insert_as(_TestEnvSpec(env_b), EnvClientSpec)
-        eids_b = await _spawn_envs(world_b, env_b, TARGETS)
-        await world_b.run(RunConfig(num_steps=TICKS_SPEC))
-        history_b = await _fetch_history(world_b, TICKS_SPEC)
-    finally:
-        await ws_b.close()
-
-    # --- Assert identical ledger rows ---
-    # Map env_key → (eid_a, eid_b) for comparison.
-    env_keys = list(TARGETS.keys())
-    for env_key in env_keys:
-        eid_a = eids_a[env_key]
-        eid_b = eids_b[env_key]
-        for tick in range(TICKS_SPEC):
-            row_a = history_a[tick][eid_a]
-            row_b = history_b[tick][eid_b]
-            assert row_a["manipaction__values"] == row_b["manipaction__values"], (
-                f"env {env_key} tick {tick}: action mismatch between inject and spec construction\n"
-                f"  inject: {row_a['manipaction__values']}\n"
-                f"  spec:   {row_b['manipaction__values']}"
-            )
-            assert row_a["manipproprio__eef_pos"] == row_b["manipproprio__eef_pos"], (
-                f"env {env_key} tick {tick}: eef_pos mismatch"
-            )
-            assert row_a["manipstatus__done"] == row_b["manipstatus__done"], (
-                f"env {env_key} tick {tick}: done mismatch"
-            )
+    manipulation = import_module("archetype.physical_ai.manipulation")
+    policy = import_module("archetype.physical_ai.policy")
+    assert not hasattr(manipulation, "EnvClientSpec")
+    assert not hasattr(policy, "PolicyClientSpec")

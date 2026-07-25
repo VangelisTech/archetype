@@ -31,7 +31,8 @@ class iWorldRegistry(Protocol):
         storage_config: StorageConfig | None = None,
         cache_config: CacheConfig | None = None,
         required_projector: Any | None = None,
-    ) -> None: ...
+        closing: bool = False,
+    ) -> WorldCleanupLease | None: ...
 
     def activation(
         self,
@@ -61,6 +62,8 @@ class iWorldRegistry(Protocol):
     async def world_id_for_name(self, name: str) -> str: ...
 
     async def list_worlds(self) -> list[Any]: ...
+
+    def is_public_binding(self, world_id: str | UUID, world: object) -> bool: ...
 
     def target_tick(self, world_id: str | UUID) -> int: ...
 
@@ -123,6 +126,14 @@ class iWorldLifecycle(Protocol):
         cache_config: CacheConfig | None = None,
         system: iAsyncSystem | None = None,
     ) -> AsyncWorld: ...
+
+    async def create_closing_world(
+        self,
+        config: WorldConfig,
+        storage_config: StorageConfig | None = None,
+        cache_config: CacheConfig | None = None,
+        system: iAsyncSystem | None = None,
+    ) -> tuple[AsyncWorld, WorldCleanupLease]: ...
 
     async def fork_world(
         self,

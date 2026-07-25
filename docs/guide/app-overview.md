@@ -94,11 +94,16 @@ tick-to-external-I/O loop. Process wiring registers exact submit, run, and
 restore handlers. `RuntimeMissions` constructs those models and retains no
 concrete service.
 
-**PhysicalAIService** turns typed task-evaluation and instruction-sweep
-requests into one batched world, drives a bounded episode, and projects
-terminal results from persisted `ManipStatus` rows. Environment and policy
-providers remain family-owned resources; callers reach this workflow through
-`ArchetypeRuntime`, never through raw service parameters.
+**Physical-AI handlers** turn typed task-evaluation and instruction-sweep
+operations into one batched world, drive a bounded episode, and project
+terminal results from persisted `ManipStatus` rows. They are family-owned free
+workflows over declared storage and world ports, not an application service.
+Environment and policy providers transfer to process ownership before the
+first effect, hold an exclusive identity lease for the workflow, and close
+through `RuntimeResources`; callers reach this workflow through
+`ArchetypeRuntime`. Each handler retires its live writer before releasing the
+lease, leaving durable query evidence rather than an attachable provider
+execution path.
 
 **RuntimeResources** is the explicit process owner. It owns dispatcher
 admission, supervised work, workflow and world handles, audit, and storage
@@ -178,6 +183,7 @@ See [API Layer](api-layer.md).
 - Process composition: `src/archetype/wiring.py`
 - Process lifetime: `src/archetype/runtime_resources.py`
 - Governed entry, scheduler, policy, and audit: `src/archetype/commands/`
+- Physical-AI models, state, views, and handlers: `src/archetype/physical_ai/`
 - Service protocols: `src/archetype/app/<family>/interfaces.py`
 - World ports: `src/archetype/world/interfaces.py`
 - Storage port: `src/archetype/storage/interfaces.py`

@@ -427,10 +427,38 @@ def test_old_supported_contract_paths_preserve_object_identity() -> None:
             "archetype.episodes.contracts",
             "TranscriptIngestionResult",
         ),
+        *(
+            (
+                "archetype.physical_ai.contracts",
+                name,
+                "archetype.physical_ai.models",
+                name,
+            )
+            for name in (
+                "InstructionSweepConfig",
+                "InstructionSweepReport",
+                "PhysicalTaskEvalConfig",
+                "PhysicalTaskEvalReport",
+                "TrialOutcome",
+                "VariantOutcome",
+            )
+        ),
+        (
+            "archetype.physical_ai.manipulation",
+            "EnvClient",
+            "archetype.physical_ai.interfaces",
+            "EnvClient",
+        ),
+        (
+            "archetype.physical_ai.policy",
+            "PolicyClient",
+            "archetype.physical_ai.interfaces",
+            "PolicyClient",
+        ),
     )
 
-    # The old paths are live on the PR-3 base; only the canonical destinations
-    # are intentionally absent.
+    # Compatibility paths remain live while canonical destinations are
+    # verified independently.
     old_values: dict[tuple[str, str], object] = {}
     for old_module_name, old_name, _new_module_name, _new_name in identity_pairs:
         old_module = import_module(old_module_name)
@@ -445,7 +473,7 @@ def test_old_supported_contract_paths_preserve_object_identity() -> None:
             errors.append(f"{new_module_name}.{new_name}: {type(error).__name__}")
             continue
         assert old_values[(old_module_name, old_name)] is new_value
-    assert errors == [], "PR-4 identity moves are incomplete:\n- " + "\n- ".join(errors)
+    assert errors == [], "supported identity moves are incomplete:\n- " + "\n- ".join(errors)
 
 
 @pytest.mark.asyncio

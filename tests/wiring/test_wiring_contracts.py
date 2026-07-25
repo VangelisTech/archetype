@@ -72,6 +72,7 @@ _DELETED_MODULES = (
     ".".join(("archetype", "app", "research")),
     ".".join(("archetype", "app", "artifacts")),
     ".".join(("archetype", "app", "ingestion")),
+    ".".join(("archetype", "app", "physical_ai")),
     ".".join(("archetype", "ingestion")),
 )
 _SETTER_NAMES = frozenset(
@@ -589,7 +590,6 @@ async def test_bootstrap_environment_is_resolved_once_before_family_construction
 ) -> None:
     from archetype.app.missions.trajectory_service import TrajectoryService
     from archetype.app.missions.transcript_service import TranscriptIngestionService
-    from archetype.app.physical_ai.service import PhysicalAIService
     from archetype.commands.audit import AuditLog
     from archetype.commands.policy import Policy
     from archetype.commands.scheduler import CommandScheduler
@@ -612,7 +612,6 @@ async def test_bootstrap_environment_is_resolved_once_before_family_construction
         Policy,
         TranscriptIngestionService,
         TrajectoryService,
-        PhysicalAIService,
         AutoResearchAdmissions,
     )
     constructor_modules = {
@@ -787,10 +786,10 @@ async def test_pull_forward_handlers_translate_exact_values_without_recursive_di
     from archetype.app.missions.service import MissionService
     from archetype.app.missions.trajectory_service import TrajectoryService
     from archetype.app.missions.transcript_service import TranscriptIngestionService
-    from archetype.app.physical_ai.service import PhysicalAIService
     from archetype.artifacts import handlers as artifact_handlers
     from archetype.evaluation import handlers as evaluation_handlers
     from archetype.missions.sandboxes.service import SandboxService
+    from archetype.physical_ai import handlers as physical_ai_handlers
     from archetype.research import handlers as research_handlers
     from archetype.world import query as world_query
 
@@ -812,8 +811,6 @@ async def test_pull_forward_handlers_translate_exact_values_without_recursive_di
         return handler
 
     method_bindings = (
-        (PhysicalAIService, "evaluate_task", "evaluate_physical_task"),
-        (PhysicalAIService, "sweep_instructions", "sweep_physical_instructions"),
         (TranscriptIngestionService, "ingest", "ingest_claude_transcript"),
         (TranscriptIngestionService, "read", "query_transcript_rows"),
         (TrajectoryService, "query", "query_trajectory"),
@@ -848,6 +845,16 @@ async def test_pull_forward_handlers_translate_exact_values_without_recursive_di
         research_handlers,
         "handle_autoresearch",
         record_free("autoresearch"),
+    )
+    monkeypatch.setattr(
+        physical_ai_handlers,
+        "evaluate_physical_task",
+        record_free("evaluate_physical_task"),
+    )
+    monkeypatch.setattr(
+        physical_ai_handlers,
+        "sweep_physical_instructions",
+        record_free("sweep_physical_instructions"),
     )
 
     mission_init: list[dict[str, object]] = []
@@ -1078,18 +1085,18 @@ async def test_pull_forward_handlers_translate_exact_values_without_recursive_di
                     {},
                 )
             ]
-            assert calls["evaluate_physical_task"] == [
-                (
-                    (physical_config,),
-                    {"env_client": env_client, "policy_client": policy_client},
-                )
-            ]
-            assert calls["sweep_physical_instructions"] == [
-                (
-                    (sweep_config,),
-                    {"env_client": env_client, "policy_client": policy_client},
-                )
-            ]
+            for name in (
+                "evaluate_physical_task",
+                "sweep_physical_instructions",
+            ):
+                registered_physical = specs[name].handler
+                assert isinstance(registered_physical, partial)
+                assert calls[name] == [
+                    (
+                        (*registered_physical.args, operations[name]),
+                        {},
+                    )
+                ]
             assert calls["ingest_claude_transcript"] == [
                 ((world_id, transcript), {"storage_config": storage})
             ]
@@ -1161,6 +1168,7 @@ async def test_compound_destroy_and_audit_handlers_preserve_owned_order(
 ) -> None:
     from archetype.commands.audit import AuditLog
     from archetype.commands.scheduler import CommandScheduler
+    from archetype.world import cleanup as world_cleanup
     from archetype.world import simulation
     from archetype.world.lifecycle import WorldLifecycle
     from archetype.world.models import DestroyWorld
@@ -1168,12 +1176,21 @@ async def test_compound_destroy_and_audit_handlers_preserve_owned_order(
 
     events: list[tuple[str, object]] = []
     lease = object()
-    world = object()
+    world = SimpleNamespace(world_id="world-1")
     audit_result = object()
 
     async def begin_close(_self: object, world_id: str) -> object:
         events.append(("begin", (_self, world_id)))
         return lease
+
+    def validate_cleanup_lease(
+        _self: object,
+        actual_lease: object,
+        *,
+        world_id: object,
+    ) -> None:
+        assert actual_lease is lease
+        assert world_id == "world-1"
 
     @asynccontextmanager
     async def cleanup_operation(_self: object, actual_lease: object):
@@ -1207,8 +1224,10 @@ async def test_compound_destroy_and_audit_handlers_preserve_owned_order(
         return audit_result
 
     monkeypatch.setattr(WorldRegistry, "begin_close", begin_close)
+    monkeypatch.setattr(WorldRegistry, "validate_cleanup_lease", validate_cleanup_lease)
     monkeypatch.setattr(WorldRegistry, "cleanup_operation", cleanup_operation)
     monkeypatch.setattr(simulation, "reconcile_committed_work_locked", reconcile)
+    monkeypatch.setattr(world_cleanup, "reconcile_committed_work_locked", reconcile)
     monkeypatch.setattr(CommandScheduler, "cancel_world", cancel_world)
     monkeypatch.setattr(WorldLifecycle, "destroy_world", destroy_world)
     monkeypatch.setattr(AuditLog, "query", query_audit)

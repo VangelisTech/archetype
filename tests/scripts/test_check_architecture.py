@@ -1004,7 +1004,7 @@ def test_ratified_v0_5_family_dag_is_complete_acyclic_and_exact(tmp_path: Path) 
         "redaction": (),
         "evaluation": ("storage", "world"),
         "research": ("storage", "world"),
-        "physical_ai": ("storage", "world", "evaluation"),
+        "physical_ai": ("storage", "world"),
         "episodes": ("storage", "world", "artifacts", "redaction", "evaluation"),
         "graph": (),
         "missions": ("storage", "world", "graph", "artifacts", "episodes", "redaction"),

@@ -1992,14 +1992,23 @@ class TestRollout:
             world = await _make_world(harness, tmp_path, "parallel-teardown-retry")
             commands = _queue_future_command_on_each_fork(harness, monkeypatch)
             cancel_world = harness.scheduler.cancel_world
+            cancel_attempts = 0
 
-            async def fail_cancel_world(_world_id):
-                raise failure
+            async def fail_once_cancel_world(
+                world_id,
+                *,
+                reason="world destroyed",
+            ):
+                nonlocal cancel_attempts
+                cancel_attempts += 1
+                if cancel_attempts == 1:
+                    raise failure
+                return await cancel_world(world_id, reason=reason)
 
             monkeypatch.setattr(
                 harness.scheduler,
                 "cancel_world",
-                fail_cancel_world,
+                fail_once_cancel_world,
             )
             with pytest.raises(RuntimeError) as raised:
                 await _run_rollout(
@@ -2021,13 +2030,10 @@ class TestRollout:
             (record,) = await harness.scheduler.records(fork_id)
             assert record.status == "PENDING"
             assert await harness.registry.contains(fork_id)
+            assert cancel_attempts == 1
 
-            monkeypatch.setattr(
-                harness.scheduler,
-                "cancel_world",
-                cancel_world,
-            )
             await harness.dispatcher.apply(DestroyWorld(world_id=fork_id))
+            assert cancel_attempts == 2
             (record,) = await harness.scheduler.records(fork_id)
             assert record.status == "REJECTED"
             assert record.last_error_code == "world_destroyed"

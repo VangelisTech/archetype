@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -157,6 +158,92 @@ async def test_list_worlds_awaits_registry_and_reconciles_sequentially(
 
     assert [str(info.world_id) for info in infos] == ["world-a", "world-b"]
     assert reconciled == ["world-a", "world-b"]
+
+
+async def test_list_worlds_omits_closing_entries_without_poisoning_siblings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = WorldRegistry()
+    available = _World("world-a", "available", 1, "run-a", [])
+    closing = _World("world-b", "closing", 2, "run-b", [])
+    await registry.insert(available)
+    await registry.insert(closing)
+    await registry.begin_close(closing.world_id)
+
+    async def reconcile(
+        actual_registry: WorldRegistry,
+        world_id: str,
+        actual_world: _World,
+    ) -> None:
+        assert actual_registry is registry
+        assert actual_world is available
+        assert world_id == available.world_id
+
+    monkeypatch.setattr(handlers.simulation, "reconcile_committed_work_locked", reconcile)
+
+    infos = await handlers.list_worlds(registry, ListWorlds())
+
+    assert [str(info.world_id) for info in infos] == [available.world_id]
+
+
+async def test_list_worlds_omits_world_that_begins_closing_during_reconcile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = WorldRegistry()
+    world = _World("world-race", "racing", 1, "run-race", [])
+    await registry.insert(world)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def reconcile(
+        actual_registry: WorldRegistry,
+        world_id: str,
+        actual_world: _World,
+    ) -> None:
+        assert actual_registry is registry
+        assert actual_world is world
+        assert world_id == world.world_id
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(handlers.simulation, "reconcile_committed_work_locked", reconcile)
+    listing = asyncio.create_task(handlers.list_worlds(registry, ListWorlds()))
+    await asyncio.wait_for(entered.wait(), timeout=1.0)
+
+    lease = await registry.begin_close(world.world_id)
+    release.set()
+
+    assert await asyncio.wait_for(listing, timeout=1.0) == []
+    await registry.finish_close(lease)
+
+
+async def test_list_worlds_omits_same_id_replacement_created_after_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = WorldRegistry()
+    original = _World("world-replaced", "original", 1, "run-original", [])
+    replacement = _World("world-replaced", "replacement", 2, "run-replacement", [])
+    await registry.insert(original)
+    original_list_worlds = registry.list_worlds
+
+    async def snapshot_then_replace() -> list[Any]:
+        snapshot = await original_list_worlds()
+        lease = await registry.begin_close(original.world_id)
+        await registry.finish_close(lease)
+        await registry.insert(replacement)
+        return snapshot
+
+    async def reconcile(
+        _registry: WorldRegistry,
+        _world_id: str,
+        _world: _World,
+    ) -> None:
+        pytest.fail("a same-ID replacement is outside the captured snapshot")
+
+    monkeypatch.setattr(registry, "list_worlds", snapshot_then_replace)
+    monkeypatch.setattr(handlers.simulation, "reconcile_committed_work_locked", reconcile)
+
+    assert await handlers.list_worlds(registry, ListWorlds()) == []
 
 
 async def test_world_signature_handler_resolves_registered_storage_identity(
