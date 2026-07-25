@@ -227,6 +227,52 @@ async def test_worker_confirms_v8_gateway_after_cleanup_only_status_mirror(worke
         assert status.json()["status"] == "active"
 
 
+async def test_remote_client_retires_directory_commit_after_status_mirror_rejection(
+    worker_url,
+):
+    import httpx
+
+    from archetype.storage.catalog.remote import RemoteControlCatalog
+
+    namespace = f"gateway-partial-commit-{uuid.uuid4().hex[:12]}"
+    world = _world(
+        "private",
+        status="mirror-rejected",
+        writer_mode="cleanup_only",
+    )
+    catalog = RemoteControlCatalog(worker_url, namespace, token=WORKER_TOKEN)
+    try:
+        with pytest.raises(httpx.HTTPStatusError) as caught:
+            await catalog.register_world(world)
+        assert caught.value.response.status_code == 422
+
+        retained = await catalog.get_world(world.world_id)
+        assert retained is not None
+        assert retained.status == "destroyed"
+        assert retained.writer_mode == "cleanup_only"
+        assert (
+            retained.world_id,
+            retained.name,
+            retained.run_id,
+            retained.parent_world_id,
+        ) == (
+            world.world_id,
+            world.name,
+            world.run_id,
+            world.parent_world_id,
+        )
+
+        headers = {"authorization": f"Bearer {WORKER_TOKEN}"}
+        async with httpx.AsyncClient(base_url=worker_url, headers=headers) as client:
+            status = await client.get(
+                f"/ns/{namespace}/w/{world.world_id}/status",
+            )
+        assert status.status_code == 200
+        assert status.json()["status"] == "destroyed"
+    finally:
+        await catalog.close()
+
+
 async def test_worker_rejects_public_directory_internal_route_without_effect(worker_url):
     import httpx
 
