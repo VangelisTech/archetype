@@ -95,17 +95,24 @@ published rows therefore remain discoverable and queryable, but the provider
 processors can never be reactivated through mutable resume.
 
 Physical workflow composition reserves a process-owned cleanup slot before it
-may create a closing world, then synchronously binds the returned exact cleanup
-lease into that slot before the next workflow await. The slot owns a deferred
-cleanup resource from reservation time. Normal retention selects a lazy
-canonical cleanup target before fallible exact-lease validation. If validation
-or metadata retention unexpectedly fails, a distinct compensation authority
-restores that same owner-bound target without repeating the failed gate.
-Cleanup revalidates and executes through the registered `WorldCleanup`; the
-handler never falls back to unregistered lifecycle destruction. A failed
-attempt remains process-owned for shutdown retry, provider close still joins
-it, and multiple failures are reported as an aggregate rather than abandoning
-any cause.
+may create a closing world. `create_closing_world(...)` synchronously binds the
+exact control catalog and complete cleanup-only `WorldRecord` into that slot
+before calling `register_world(...)`; there is no registration effect without
+an already-retained retirement owner. Immediately after registry insertion
+installs the sticky `WorldCleanupLease`, lifecycle promotes that same slot to
+the canonical exact-world cleanup target without awaiting or replacing its
+process owner.
+
+An activation failure invokes the currently bound owner cancellation-resistantly.
+Before promotion it performs identity-safe registration retirement, including
+an absent-row tombstone for an ambiguous remote write; after promotion it
+revalidates and executes through registered `WorldCleanup`. There is no
+unregistered lifecycle-destroy fallback. A failed attempt remains in the
+`workflow-handles` shutdown inventory for retry, associated provider close
+still joins it, and multiple failures are reported as an aggregate rather than
+abandoning any cause. See
+[Durable Discovery](durable-discovery.md#2-the-control-catalog) for the remote
+v8 retirement contract.
 
 Public `ListWorlds` omits closing entries, entries removed after its
 point-in-time snapshot, and same-ID replacement bindings created after that

@@ -140,72 +140,27 @@ class RemoteControlCatalog:
 
     async def register_world(self, record: WorldRecord) -> None:
         require_world_writer_mode(record.writer_mode)
-        if record.writer_mode == "cleanup_only":
-            protocol = await self._call(
-                "GET",
-                "/protocol",
-                ignore_status=(404,),
-            )
-            version = (
-                int(protocol.json().get("catalog_protocol_version", -1))
-                if protocol.status_code != 404
-                else -1
-            )
-            if version < _CLEANUP_ONLY_PROTOCOL_VERSION:
-                raise RuntimeError(
-                    "remote control catalog protocol v8 is required before "
-                    "registering cleanup-only worlds"
-                )
-        registration_path = (
-            "/protocol/v8/worlds" if record.writer_mode == "cleanup_only" else "/worlds"
-        )
-        response = await self._call(
-            "POST",
-            registration_path,
-            {
-                "world_id": record.world_id,
-                "name": record.name,
-                "run_id": record.run_id,
-                "parent_world_id": record.parent_world_id,
-                "status": record.status,
-                "tick_head": record.tick_head,
-                "writer_mode": record.writer_mode,
-            },
-        )
-        body = response.json()
-        response_mode = body.get("writer_mode", "resumable")
-        response_protocol = body.get("catalog_protocol_version")
-        response_gateway_protocol = body.get("gateway_protocol_version")
-        cleanup_only_catalog_confirmed = record.writer_mode != "cleanup_only" or (
-            isinstance(response_protocol, int)
-            and not isinstance(response_protocol, bool)
-            and response_protocol >= _CLEANUP_ONLY_PROTOCOL_VERSION
-        )
-        cleanup_only_gateway_confirmed = record.writer_mode != "cleanup_only" or (
-            isinstance(response_gateway_protocol, int)
-            and not isinstance(response_gateway_protocol, bool)
-            and response_gateway_protocol >= _CLEANUP_ONLY_PROTOCOL_VERSION
-        )
-        if (
-            response_mode != record.writer_mode
-            or not cleanup_only_catalog_confirmed
-            or not cleanup_only_gateway_confirmed
-        ):
-            mismatch = (
-                RuntimeError(
-                    "remote control catalog gateway protocol v8 did not confirm "
-                    "cleanup-only registration"
-                )
-                if not cleanup_only_gateway_confirmed
-                else RuntimeError(
-                    "remote control catalog protocol v8 did not preserve immutable "
-                    "world writer mode"
-                )
+        if record.writer_mode == "cleanup_only" and record.status != "active":
+            raise ValueError("cleanup-only world registration requires status='active'")
+        payload = {
+            "world_id": record.world_id,
+            "name": record.name,
+            "run_id": record.run_id,
+            "parent_world_id": record.parent_world_id,
+            "status": record.status,
+            "tick_head": record.tick_head,
+            "writer_mode": record.writer_mode,
+        }
+        if record.writer_mode != "cleanup_only":
+            response = await self._call("POST", "/worlds", payload)
+            body = response.json()
+            if body.get("writer_mode", "resumable") == record.writer_mode:
+                return
+            mismatch = RuntimeError(
+                "remote control catalog did not preserve immutable world writer mode"
             )
             try:
                 await _finish_uninterrupted(self.set_world_status(record.world_id, "destroyed"))
-            except asyncio.CancelledError:
-                raise
             except BaseException as cleanup_failure:
                 raise BaseExceptionGroup(
                     "remote world registration and fail-closed retirement failed",
@@ -213,7 +168,161 @@ class RemoteControlCatalog:
                 ) from None
             raise mismatch
 
+        protocol = await self._call(
+            "GET",
+            "/protocol",
+            ignore_status=(404,),
+        )
+        version = (
+            int(protocol.json().get("catalog_protocol_version", -1))
+            if protocol.status_code != 404
+            else -1
+        )
+        if version < _CLEANUP_ONLY_PROTOCOL_VERSION:
+            raise RuntimeError(
+                "remote control catalog protocol v8 is required before "
+                "registering cleanup-only worlds"
+            )
+
+        try:
+            response = await self._call(
+                "POST",
+                "/protocol/v8/worlds",
+                payload,
+            )
+            body = response.json()
+            response_mode = body.get("writer_mode")
+            response_status = body.get("status")
+            response_catalog_status = body.get("catalog_status")
+            response_world_status = body.get("world_status")
+            response_protocol = body.get("catalog_protocol_version")
+            response_gateway_protocol = body.get("gateway_protocol_version")
+            catalog_confirmed = (
+                isinstance(response_protocol, int)
+                and not isinstance(response_protocol, bool)
+                and response_protocol >= _CLEANUP_ONLY_PROTOCOL_VERSION
+            )
+            gateway_confirmed = (
+                isinstance(response_gateway_protocol, int)
+                and not isinstance(response_gateway_protocol, bool)
+                and response_gateway_protocol >= _CLEANUP_ONLY_PROTOCOL_VERSION
+            )
+            if not gateway_confirmed:
+                raise RuntimeError(
+                    "remote control catalog gateway protocol v8 did not confirm "
+                    "cleanup-only registration"
+                )
+            if response_mode != record.writer_mode or not catalog_confirmed:
+                raise RuntimeError(
+                    "remote control catalog protocol v8 did not preserve immutable "
+                    "world writer mode"
+                )
+            if (
+                response_status != "active"
+                or response_catalog_status != "active"
+                or response_world_status != "active"
+            ):
+                raise RuntimeError(
+                    "remote control catalog authorities did not both confirm "
+                    "active cleanup-only registration"
+                )
+        except BaseException as registration_failure:
+            try:
+                await _finish_uninterrupted(
+                    self._retire_ambiguous_cleanup_only_registration(record)
+                )
+            except BaseException as cleanup_failure:
+                if isinstance(registration_failure, asyncio.CancelledError) and isinstance(
+                    cleanup_failure,
+                    asyncio.CancelledError,
+                ):
+                    raise registration_failure
+                raise BaseExceptionGroup(
+                    "remote world registration and fail-closed retirement failed",
+                    [registration_failure, cleanup_failure],
+                ) from None
+            raise
+
+    async def _retire_ambiguous_cleanup_only_registration(
+        self,
+        record: WorldRecord,
+    ) -> None:
+        """Retire only this identity, tombstoning absence against a late write."""
+
+        observed = await self.get_world(record.world_id)
+        if observed is not None and (
+            observed.name,
+            observed.run_id,
+            observed.parent_world_id,
+            observed.writer_mode,
+        ) != (
+            record.name,
+            record.run_id,
+            record.parent_world_id,
+            record.writer_mode,
+        ):
+            return
+        await self.retire_world_registration(record)
+
+    async def retire_world_registration(self, record: WorldRecord) -> None:
+        """Atomically destroy or tombstone one exact cleanup-only identity."""
+
+        require_world_writer_mode(record.writer_mode)
+        if record.writer_mode != "cleanup_only":
+            raise ValueError("registration retirement requires writer_mode='cleanup_only'")
+        payload = {
+            "world_id": record.world_id,
+            "name": record.name,
+            "run_id": record.run_id,
+            "parent_world_id": record.parent_world_id,
+            "status": "destroyed",
+            "tick_head": record.tick_head,
+            "writer_mode": record.writer_mode,
+        }
+        try:
+            response = await self._call(
+                "POST",
+                f"/protocol/v8/worlds/{record.world_id}/retire",
+                payload,
+            )
+        except CatalogConflictError:
+            return
+        body = response.json()
+        exact_identity = (
+            body.get("world_id"),
+            body.get("name"),
+            body.get("run_id"),
+            body.get("parent_world_id"),
+            body.get("writer_mode"),
+        ) == (
+            record.world_id,
+            record.name,
+            record.run_id,
+            record.parent_world_id,
+            record.writer_mode,
+        )
+        versions_confirmed = all(
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and value >= _CLEANUP_ONLY_PROTOCOL_VERSION
+            for value in (
+                body.get("catalog_protocol_version"),
+                body.get("gateway_protocol_version"),
+            )
+        )
+        statuses_confirmed = (
+            body.get("status") == "destroyed"
+            and body.get("catalog_status") == "destroyed"
+            and body.get("world_status") == "destroyed"
+        )
+        if not exact_identity or not versions_confirmed or not statuses_confirmed:
+            raise RuntimeError(
+                "remote control catalog did not confirm exact cleanup-only registration retirement"
+            )
+
     async def set_world_status(self, world_id: str, status: str) -> None:
+        if status not in {"active", "destroyed"}:
+            raise ValueError("world status must be one of: active, destroyed")
         await self._call("PATCH", f"/worlds/{world_id}", {"status": status})
 
     async def get_world(self, world_id: str) -> WorldRecord | None:

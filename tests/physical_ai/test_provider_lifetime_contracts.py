@@ -575,7 +575,7 @@ async def test_retain_failure_compensates_the_exact_new_evidence_world(
 
 
 @pytest.mark.asyncio
-async def test_compensation_recovers_cleanup_bound_before_metadata_failure(
+async def test_activation_owner_recovers_cleanup_promoted_before_metadata_failure(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -592,8 +592,8 @@ async def test_compensation_recovers_cleanup_bound_before_metadata_failure(
     def fail_first_association(entry: Any, provider_ids: frozenset[int]) -> None:
         nonlocal associate_calls
         associate_calls += 1
-        if associate_calls == 1:
-            raise RuntimeError("provider association failed after exact bind")
+        if entry.lease is not None:
+            raise RuntimeError("provider association failed after exact promotion")
         original_associate(entry, provider_ids)
 
     monkeypatch.setattr(
@@ -616,7 +616,7 @@ async def test_compensation_recovers_cleanup_bound_before_metadata_failure(
     try:
         with pytest.raises(
             RuntimeError,
-            match="provider association failed after exact bind",
+            match="provider association failed after exact promotion",
         ):
             await resources.dispatcher.apply(operation)
 

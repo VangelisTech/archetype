@@ -57,6 +57,7 @@ artifacts.handlers + artifacts.views -> iStorageService
 iTranscriptIngestionService
   -> artifacts.handlers + redaction structural port + iStorageService
 iWorldLifecycle    -> iWorldRegistry + iStorageService
+iWorldLifecycle    -> iWorldActivationOwner (private cleanup-only creation)
 CommandDispatcher  -> OperationRegistry + Policy + CommandScheduler
                    -> AuditLog.record_access
 CommandScheduler   -> storage control catalog
@@ -89,6 +90,7 @@ through those handlers and its exact pre-reserved owner.
 | `iStorageService` | `StorageService` | world, commands, artifacts, evaluation, transcripts, research, physical AI | Store/session lifetime, control authority, physical visibility, world/run row envelope, terminal Daft execution, and app-table catalog/read/write/retry authority |
 | `iWorldRegistry` | `WorldRegistry` | lifecycle, mutation, simulation, research, physical AI | Live identity, storage coordinates, exact-world synchronization, retryable close ownership, and committed-receipt retention |
 | `iWorldLifecycle` | `WorldLifecycle` | wiring, research, physical AI | Managed construction, durable discovery, readonly open, fenced mutable resume, fork, and close |
+| `iWorldActivationOwner` | wiring-owned physical workflow lifetime | `WorldLifecycle.create_closing_world` | Bind exact catalog registration retirement before its first write, promote the same owner to the canonical sticky cleanup lease after registry insertion, and retain retryable activation cleanup |
 | `iWorldCleanup` | `WorldCleanup` | reservation-owned mission cleanup | Exact-world, close-lease-bound retained updates, teardown staging, commit, and finish |
 | `iTranscriptIngestionService` | `TranscriptIngestionService` | registered transcript handlers | Snapshot and redact a coding-agent transcript, ingest the sanitized file, and append normalized mission rows |
 | Structural `MissionRedactor` / `TranscriptRedactor` | canonical `archetype.redaction.RedactionService` | mission execution and transcript ingestion | Provider-neutral pre-durability scanning, deterministic redaction, safe receipts, and quarantine |
@@ -304,22 +306,23 @@ construction contract.
 
 The registrar pre-reserves a process-owned cleanup slot before the handler may
 create a private evidence world. That world is active for tick materialization
-but carries immutable `writer_mode="cleanup_only"`. Each handler synchronously
-binds its closing-world lease to the scoped lifetime token before the next
-workflow await, then retires that exact writer before releasing the provider
-lease. The reserved owner holds a deferred cleanup resource from the moment it
-is created. Normal retention binds a lazy canonical exact cleanup before
-fallible lease validation. If validation or metadata retention fails, the
-compensation authority restores that same already-owned target without
-repeating the failed gate. Cleanup revalidates through the retained
-`WorldCleanup` handle; there is no unregistered lifecycle-destroy fallback.
-A failed attempt remains process-owned, provider close joins its shutdown
-retry, and multiple failures preserve every cause, including distinct caller
-and cleanup-originated cancellation. Registered public destroy and the
-retained physical handle join one process-owned cleanup transaction. Returned
-world/run coordinates remain durable read evidence, while mutable resume
-rejects the cleanup-only identity before storage or fencing and cannot
-reactivate the provider processors.
+but carries immutable `writer_mode="cleanup_only"`. Before registration,
+`WorldLifecycle` synchronously binds the exact catalog and complete
+`WorldRecord` to the scoped lifetime token. Immediately after registry
+insertion, it promotes that same owner to the returned sticky cleanup lease
+without awaiting. The handler then retires that exact writer before releasing
+the provider lease.
+
+Activation cleanup is cancellation-resistant. Before promotion it executes
+identity-safe durable-registration retirement; after promotion it revalidates
+through retained `WorldCleanup`. There is no unregistered lifecycle-destroy
+fallback. A failed attempt remains process-owned, provider close joins its
+`workflow-handles` shutdown retry, and multiple failures preserve every cause,
+including distinct caller and cleanup-originated cancellation. Registered
+public destroy and the retained physical handle join one process-owned cleanup
+transaction. Returned world/run coordinates remain durable read evidence,
+while mutable resume rejects the cleanup-only identity before storage or
+fencing and cannot reactivate the provider processors.
 
 The credential-free contract tests prove provider transfer ordering, identity
 deduplication, cancellation retention, retryable close, paired seeds, complete

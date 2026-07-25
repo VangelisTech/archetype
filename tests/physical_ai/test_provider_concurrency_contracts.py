@@ -438,6 +438,7 @@ async def test_completed_physical_retirement_handle_cannot_close_replacement(
                 name="original",
             ),
             storage,
+            activation_owner=workflow_lifetime,
         )
         stale_retirement = workflow_lifetime.retain_evidence_world(
             world.world_id,

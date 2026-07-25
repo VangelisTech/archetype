@@ -76,6 +76,7 @@ from archetype.redaction.service import RedactionService
 from archetype.research import handlers as research_handlers
 from archetype.research.models import AutoResearch, summarize_research_operation
 from archetype.runtime_resources import OwnerReservation, RuntimeResources
+from archetype.storage.catalog import ControlCatalog, WorldRecord
 from archetype.storage.config import ControlCatalogConfig
 from archetype.storage.service import StorageService
 from archetype.world import mutation, query, simulation
@@ -265,20 +266,33 @@ class _LazyExactWorldCleanup:
         await cleanup.finish()
 
 
+@dataclass(frozen=True, slots=True)
+class _RegistrationWorldCleanup:
+    """Exact durable registration retirement owned before its first write."""
+
+    catalog: ControlCatalog
+    record: WorldRecord
+
+    async def finish(self) -> None:
+        """Destroy or tombstone only the attempted immutable registration."""
+
+        await self.catalog.retire_world_registration(self.record)
+
+
 @dataclass(slots=True)
 class _DeferredWorldCleanup:
-    """A process-owned cleanup target bound to its exact world synchronously."""
+    """A process-owned cleanup target promoted without changing its owner."""
 
-    cleanup: _LazyExactWorldCleanup | None = None
+    cleanup: _RegistrationWorldCleanup | _LazyExactWorldCleanup | None = None
     on_success: Callable[[], None] | None = None
 
-    def bind(
+    def bind_registration(
         self,
-        cleanup: _LazyExactWorldCleanup,
+        cleanup: _RegistrationWorldCleanup,
         *,
         on_success: Callable[[], None],
     ) -> None:
-        """Select the exact cleanup once, before any compensation await."""
+        """Select exact durable cleanup before registration may execute."""
 
         if self.cleanup is not None:
             if self.cleanup is cleanup and self.on_success is on_success:
@@ -287,8 +301,32 @@ class _DeferredWorldCleanup:
         self.cleanup = cleanup
         self.on_success = on_success
 
+    def bind_exact(
+        self,
+        cleanup: _LazyExactWorldCleanup,
+        *,
+        on_success: Callable[[], None],
+    ) -> None:
+        """Select canonical cleanup directly for non-provisional callers."""
+
+        if self.cleanup is not None:
+            if self.cleanup is cleanup and self.on_success is on_success:
+                return
+            raise RuntimeError("deferred world cleanup is already bound")
+        self.cleanup = cleanup
+        self.on_success = on_success
+
+    def promote(self, cleanup: _LazyExactWorldCleanup) -> None:
+        """Replace provisional retirement with canonical exact-world cleanup."""
+
+        if not isinstance(self.cleanup, _RegistrationWorldCleanup):
+            if self.cleanup is cleanup:
+                return
+            raise RuntimeError("deferred world cleanup has no provisional registration")
+        self.cleanup = cleanup
+
     async def finish(self) -> None:
-        """Finish the exact target, or release an unused reservation as a no-op."""
+        """Finish the current exact target, releasing only after success."""
 
         cleanup = self.cleanup
         if cleanup is None:
@@ -444,10 +482,10 @@ class _PhysicalAIClientLifetimes:
 
 @dataclass(eq=False, slots=True)
 class _WorldCleanupEntry:
-    """One exact close lease retained by the process lifetime owner."""
+    """One provisional or canonical cleanup retained by the process owner."""
 
     world_id: str
-    lease: WorldCleanupLease
+    lease: WorldCleanupLease | None
     reservation: OwnerReservation
     provider_ids: set[int]
 
@@ -513,6 +551,92 @@ class _WorldCleanupLifetimes:
             reservation=reservation,
         )
 
+    def retain_registration(
+        self,
+        catalog: ControlCatalog,
+        record: WorldRecord,
+        *,
+        provider_ids: frozenset[int],
+        reservation: _WorldCleanupReservation,
+    ) -> None:
+        """Bind exact durable retirement before registration can execute."""
+
+        if record.writer_mode != "cleanup_only":
+            raise ValueError("provisional cleanup requires writer_mode='cleanup_only'")
+        exact_world_id = str(record.world_id)
+        if reservation.bound:
+            entry = reservation.entry
+            if entry is None:
+                raise RuntimeError("bound world cleanup reservation has no exact entry")
+            if entry.world_id != exact_world_id:
+                raise RuntimeError("world cleanup reservation is bound to another world")
+            cleanup = reservation.deferred.cleanup
+            if (
+                not isinstance(cleanup, _RegistrationWorldCleanup)
+                or cleanup.catalog is not catalog
+                or cleanup.record != record
+            ):
+                raise RuntimeError("world cleanup reservation is bound to another registration")
+            self._associate_providers(entry, provider_ids)
+            return
+        if reservation.reservation.released:
+            raise RuntimeError("world cleanup reservation is already released")
+        entry = _WorldCleanupEntry(
+            world_id=exact_world_id,
+            lease=None,
+            reservation=reservation.reservation,
+            provider_ids=set(),
+        )
+        cleanup = _RegistrationWorldCleanup(catalog=catalog, record=record)
+        reservation.deferred.bind_registration(
+            cleanup,
+            on_success=partial(self._release_entry, entry),
+        )
+        reservation.entry = entry
+        reservation.bound = True
+        self._associate_providers(entry, provider_ids)
+
+    def promote_registration(
+        self,
+        world_id: object,
+        lease: WorldCleanupLease,
+        *,
+        provider_ids: frozenset[int],
+        reservation: _WorldCleanupReservation,
+    ) -> _WorldCleanupHandle:
+        """Promote the same provisional owner to canonical registry cleanup."""
+
+        exact_world_id = str(world_id)
+        entry = reservation.entry
+        if not reservation.bound or entry is None:
+            raise RuntimeError("world cleanup reservation has no provisional registration")
+        if entry.world_id != exact_world_id:
+            raise RuntimeError("world cleanup reservation is bound to another world")
+        if entry.lease is not None:
+            if entry.lease != lease:
+                raise RuntimeError("world cleanup reservation is bound to another lease")
+            retained = self._entries.get(lease)
+            if retained is not None and retained is not entry:
+                raise RuntimeError("world cleanup lease has another retained owner")
+            self._entries[lease] = entry
+            self._associate_providers(entry, provider_ids)
+            return _WorldCleanupHandle(entry.reservation)
+        retained = self._entries.get(lease)
+        if retained is not None and retained is not entry:
+            raise RuntimeError("world cleanup lease has another retained owner")
+        cleanup = _LazyExactWorldCleanup(
+            registry=self._worlds,
+            lifecycle=self._lifecycle,
+            scheduler=self._scheduler,
+            world_id=exact_world_id,
+            lease=lease,
+        )
+        reservation.deferred.promote(cleanup)
+        entry.lease = lease
+        self._entries[lease] = entry
+        self._associate_providers(entry, provider_ids)
+        return _WorldCleanupHandle(entry.reservation)
+
     def retain_reserved(
         self,
         world_id: object,
@@ -562,7 +686,16 @@ class _WorldCleanupLifetimes:
             entry = reservation.entry
             if entry is None:
                 raise RuntimeError("bound world cleanup reservation has no exact entry")
-            if entry.world_id != exact_world_id or entry.lease != lease:
+            if entry.world_id != exact_world_id:
+                raise RuntimeError("world cleanup reservation is bound to another world")
+            if entry.lease is None:
+                return self.promote_registration(
+                    exact_world_id,
+                    lease,
+                    provider_ids=provider_ids,
+                    reservation=reservation,
+                )
+            if entry.lease != lease:
                 raise RuntimeError("world cleanup reservation is bound to another world")
             retained = self._entries.get(lease)
             if retained is not None and retained is not entry:
@@ -596,7 +729,7 @@ class _WorldCleanupLifetimes:
             reservation=selected.reservation,
             provider_ids=set(),
         )
-        selected.deferred.bind(
+        selected.deferred.bind_exact(
             cleanup,
             on_success=partial(self._release_entry, entry),
         )
@@ -649,8 +782,9 @@ class _WorldCleanupLifetimes:
             self._by_provider.setdefault(provider_id, set()).add(entry)
 
     def _release_entry(self, entry: _WorldCleanupEntry) -> None:
-        if self._entries.get(entry.lease) is entry:
-            self._entries.pop(entry.lease)
+        lease = entry.lease
+        if lease is not None and self._entries.get(lease) is entry:
+            self._entries.pop(lease)
         for provider_id in tuple(entry.provider_ids):
             entries = self._by_provider.get(provider_id)
             if entries is None:
@@ -668,6 +802,39 @@ class _PhysicalWorkflowLifetime:
     cleanup_lifetimes: _WorldCleanupLifetimes
     cleanup_reservation: _WorldCleanupReservation
     provider_ids: frozenset[int]
+
+    def bind_registration(
+        self,
+        catalog: ControlCatalog,
+        record: WorldRecord,
+    ) -> None:
+        """Own exact durable retirement before registration may execute."""
+
+        self.cleanup_lifetimes.retain_registration(
+            catalog,
+            record,
+            provider_ids=self.provider_ids,
+            reservation=self.cleanup_reservation,
+        )
+
+    def promote(
+        self,
+        world_id: object,
+        lease: WorldCleanupLease,
+    ) -> None:
+        """Promote provisional retirement to canonical exact-world cleanup."""
+
+        self.cleanup_lifetimes.promote_registration(
+            world_id,
+            lease,
+            provider_ids=self.provider_ids,
+            reservation=self.cleanup_reservation,
+        )
+
+    async def aclose(self) -> None:
+        """Join or retry the currently bound cleanup transaction."""
+
+        await self.cleanup_reservation.reservation.aclose()
 
     def retain_evidence_world(
         self,

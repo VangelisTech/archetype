@@ -10,6 +10,7 @@ from typing import Any, Protocol
 
 from uuid_utils import UUID
 
+from archetype.world.interfaces import iWorldActivationOwner
 from archetype.world.registry import WorldCleanupLease
 
 
@@ -87,7 +88,7 @@ class PhysicalEvidenceWorldRetirement(Protocol):
         ...
 
 
-class PhysicalWorkflowLifetime(Protocol):
+class PhysicalWorkflowLifetime(iWorldActivationOwner, Protocol):
     """Provider-scoped, pre-reserved authority for exact evidence cleanup."""
 
     def retain_evidence_world(

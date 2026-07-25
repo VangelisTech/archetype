@@ -64,9 +64,32 @@ Directory recognizes, so either direction of rollout skew rejects before the
 Directory mutates SQL. After the Directory write, the outer Worker MUST mirror
 the status into the per-world control authority before returning separate
 catalog-v8 and gateway-v8 confirmations. A client accepts the record only when
-both confirmations and the exact `writer_mode="cleanup_only"` marker are
-present; otherwise it retires the record fail-closed without allowing caller
-cancellation to interrupt that retirement.
+the Directory and per-world authority both confirm `status="active"`, both
+protocol confirmations are present, and the exact
+`writer_mode="cleanup_only"` marker is present.
+
+Once the registration `POST` is issued, every uncertain outcome is treated as
+possibly committed. This includes a non-success response, transport failure,
+unparseable or incomplete response, and caller cancellation. The client MUST
+finish cancellation-resistant reconciliation and exact retirement before
+propagating the original outcome. Retirement uses the v8 exact-world route and
+carries the complete `WorldRecord`: the immutable identity above, requested
+`status="destroyed"`, and the exact tick head.
+
+The Directory applies retirement as one identity-checked transaction:
+
+- an absent row becomes a destroyed tombstone for the supplied identity;
+- the exact active row becomes destroyed;
+- the exact destroyed row is an idempotent success; and
+- a different immutable identity conflicts without mutation.
+
+The destroyed state is monotonic in both the Directory and per-world authority.
+The Worker mirrors the Directory result and returns success only when both
+authorities confirm destroyed. Therefore an absent reconciliation read cannot
+open a race with a delayed registration write: the tombstone prevents that
+write from resurrecting the cleanup-only writer. This exact retirement
+contract is part of protocol v8 and introduces no later protocol version or
+additional data migration.
 
 ## 3. Governed discovery operations
 

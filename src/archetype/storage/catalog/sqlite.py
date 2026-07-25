@@ -300,6 +300,8 @@ class SqliteControlCatalog:
 
     async def register_world(self, record: WorldRecord) -> None:
         require_world_writer_mode(record.writer_mode)
+        if record.writer_mode == "cleanup_only" and record.status != "active":
+            raise ValueError("cleanup-only world registration requires status='active'")
 
         def _register() -> None:
             conn = self._connect_sync()
@@ -326,6 +328,10 @@ class SqliteControlCatalog:
                             f"world {record.world_id} already registered with "
                             f"different identity in catalog {self.path}"
                         )
+                    if record.writer_mode == "cleanup_only" and existing.status != "active":
+                        raise RuntimeError(
+                            "control catalog did not confirm active cleanup-only registration"
+                        )
                     return
                 conn.execute(
                     "INSERT INTO worlds "
@@ -344,11 +350,77 @@ class SqliteControlCatalog:
 
         await self._run(_register)
 
+    async def retire_world_registration(self, record: WorldRecord) -> None:
+        """Atomically destroy or tombstone one exact cleanup-only identity."""
+
+        require_world_writer_mode(record.writer_mode)
+        if record.writer_mode != "cleanup_only":
+            raise ValueError("registration retirement requires writer_mode='cleanup_only'")
+
+        def _retire() -> None:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT * FROM worlds WHERE world_id=?",
+                    (record.world_id,),
+                ).fetchone()
+                if row is None:
+                    conn.execute(
+                        "INSERT INTO worlds "
+                        "(world_id, name, run_id, parent_world_id, status, tick_head, "
+                        "writer_mode) VALUES (?, ?, ?, ?, 'destroyed', ?, ?)",
+                        (
+                            record.world_id,
+                            record.name,
+                            record.run_id,
+                            record.parent_world_id,
+                            record.tick_head,
+                            record.writer_mode,
+                        ),
+                    )
+                    return
+                existing = _world_from_row(row)
+                if (
+                    existing.name,
+                    existing.run_id,
+                    existing.parent_world_id,
+                    existing.writer_mode,
+                ) != (
+                    record.name,
+                    record.run_id,
+                    record.parent_world_id,
+                    record.writer_mode,
+                ):
+                    return
+                conn.execute(
+                    "UPDATE worlds SET status='destroyed' WHERE world_id=?",
+                    (record.world_id,),
+                )
+                _reject_unsettled_commands(
+                    conn,
+                    world_id=record.world_id,
+                    reason="world registration retired before activation",
+                )
+
+        await self._run(_retire)
+
     async def set_world_status(self, world_id: str, status: str) -> None:
+        if status not in {"active", "destroyed"}:
+            raise ValueError("world status must be one of: active, destroyed")
+
         def _set() -> None:
             conn = self._connect_sync()
             with conn:
                 conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT status FROM worlds WHERE world_id=?",
+                    (world_id,),
+                ).fetchone()
+                if row is not None and row["status"] == "destroyed" and status == "active":
+                    raise CatalogConflictError(
+                        f"world {world_id} cannot transition from destroyed to active"
+                    )
                 conn.execute("UPDATE worlds SET status=? WHERE world_id=?", (status, world_id))
                 if status != "active":
                     _reject_unsettled_commands(

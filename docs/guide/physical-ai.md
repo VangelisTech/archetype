@@ -241,14 +241,20 @@ execute the retained provider processors because no live writer remains.
 The provider-scoped token contains a cleanup-owner reservation created before
 the handler may create its private evidence world. World creation durably marks
 the identity `writer_mode="cleanup_only"` while leaving it active for tick
-materialization. The reservation holds a deferred cleanup resource immediately.
-The handler binds a lazy canonical cleanup target synchronously before
-fallible exact-lease validation. If validation or provider metadata retention
-unexpectedly fails, a compensation-only authority restores that same
-owner-bound target without repeating the failed gate. Cancellation-resistant
-cleanup revalidates and executes only through canonical `WorldCleanup`; there
-is no direct lifecycle-destroy bypass. A failed attempt remains owned for
-shutdown retry and provider close joins it.
+materialization. Before the first registration write, world lifecycle
+synchronously binds the exact catalog and complete cleanup-only `WorldRecord`
+to that reservation. Immediately after the private binding is inserted into
+the registry, lifecycle promotes the same owner to its sticky
+`WorldCleanupLease` without awaiting. The handler therefore never crosses a
+durable or live ownership boundary without retained cleanup authority.
+
+Activation cleanup is cancellation-resistant and retryable. Before promotion
+it performs exact identity-safe registration retirement, including a destroyed
+tombstone when an ambiguous remote write is absent at reconciliation; after
+promotion it revalidates and executes only through canonical `WorldCleanup`.
+There is no direct lifecycle-destroy bypass. A failed attempt remains owned in
+the `workflow-handles` shutdown phase, and provider close joins it before any
+backing resource is released.
 Caller cancellation and cleanup-originated cancellation remain distinguishable
 when cleanup also fails; multiple failures preserve all causes. A hard process
 crash can leave active evidence rows, but mutable resume rejects their
@@ -325,6 +331,8 @@ The workflow enforces these contracts:
    exact-world cleanup, and remains owned across cancellation until
    authoritative host shutdown succeeds.
 9. Cleanup ownership is reserved before private-world creation, and the
+   exact catalog registration is bound before its first write. The same owner
+   is promoted to canonical world cleanup after registry insertion, and the
    world's immutable cleanup-only writer mode prevents crash recovery from
    reactivating provider processors.
 10. Every physical-AI `@daft.cls` constructor is covered by the closed lifetime

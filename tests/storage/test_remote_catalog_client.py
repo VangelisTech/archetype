@@ -51,6 +51,25 @@ def _cleanup_only_world_row(**overrides: object) -> dict[str, object]:
     return row
 
 
+def _retirement_receipt(**overrides: object) -> dict[str, object]:
+    return {
+        **_cleanup_only_world_row(status="destroyed"),
+        "ok": True,
+        "disposition": "retired",
+        "catalog_protocol_version": 8,
+        "gateway_protocol_version": 8,
+        "catalog_status": "destroyed",
+        "world_status": "destroyed",
+        **overrides,
+    }
+
+
+def _exception_leaves(error: BaseException) -> list[BaseException]:
+    if isinstance(error, BaseExceptionGroup):
+        return [leaf for child in error.exceptions for leaf in _exception_leaves(child)]
+    return [error]
+
+
 async def test_remote_catalog_configuration_requires_token(monkeypatch):
     monkeypatch.setenv("ARCHETYPE_CONTROL_CATALOG_URL", "https://catalog.invalid")
     monkeypatch.delenv("ARCHETYPE_CONTROL_CATALOG_TOKEN", raising=False)
@@ -119,6 +138,8 @@ async def test_cleanup_only_registration_sends_marker_after_v8_preflight():
                 json={
                     "ok": True,
                     "status": "active",
+                    "catalog_status": "active",
+                    "world_status": "active",
                     "writer_mode": "cleanup_only",
                     "catalog_protocol_version": 8,
                     "gateway_protocol_version": 8,
@@ -147,6 +168,38 @@ async def test_cleanup_only_registration_sends_marker_after_v8_preflight():
         await catalog.close()
 
 
+@pytest.mark.parametrize("missing_status", ["catalog_status", "world_status"])
+async def test_cleanup_only_registration_requires_both_active_authorities(
+    missing_status: str,
+):
+    requests: list[httpx.Request] = []
+    registration = {
+        "ok": True,
+        "status": "active",
+        "catalog_status": "active",
+        "world_status": "active",
+        "writer_mode": "cleanup_only",
+        "catalog_protocol_version": 8,
+        "gateway_protocol_version": 8,
+    }
+    registration.pop(missing_status)
+    catalog = await _catalog_with(
+        [
+            httpx.Response(200, json={"catalog_protocol_version": 8}),
+            httpx.Response(200, json=registration),
+            httpx.Response(200, json=_cleanup_only_world_row()),
+            httpx.Response(200, json=_retirement_receipt()),
+        ],
+        requests,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="authorities.*active"):
+            await catalog.register_world(WorldRecord(**_cleanup_only_world_row()))
+        assert requests[-1].url.path.endswith("/retire")
+    finally:
+        await catalog.close()
+
+
 async def test_cleanup_only_registration_requires_v8_gateway_confirmation():
     requests: list[httpx.Request] = []
     catalog = await _catalog_with(
@@ -162,7 +215,7 @@ async def test_cleanup_only_registration_requires_v8_gateway_confirmation():
                 },
             ),
             httpx.Response(200, json=_cleanup_only_world_row()),
-            httpx.Response(200, json={"ok": True}),
+            httpx.Response(200, json=_retirement_receipt()),
         ],
         requests,
     )
@@ -182,7 +235,7 @@ async def test_cleanup_only_registration_requires_v8_gateway_confirmation():
             ("GET", "/ns/test/protocol"),
             ("POST", "/ns/test/protocol/v8/worlds"),
             ("GET", "/ns/test/worlds/private"),
-            ("PATCH", "/ns/test/worlds/private"),
+            ("POST", "/ns/test/protocol/v8/worlds/private/retire"),
         ]
     finally:
         await catalog.close()
@@ -195,6 +248,7 @@ async def test_cleanup_only_registration_never_falls_back_after_versioned_reject
             httpx.Response(200, json={"catalog_protocol_version": 8}),
             httpx.Response(404, json={"error": "bad_route"}),
             httpx.Response(404, json={"error": "not_found"}),
+            httpx.Response(200, json=_retirement_receipt(disposition="tombstoned")),
         ],
         requests,
     )
@@ -214,6 +268,7 @@ async def test_cleanup_only_registration_never_falls_back_after_versioned_reject
             ("GET", "/ns/test/protocol"),
             ("POST", "/ns/test/protocol/v8/worlds"),
             ("GET", "/ns/test/worlds/private"),
+            ("POST", "/ns/test/protocol/v8/worlds/private/retire"),
         ]
     finally:
         await catalog.close()
@@ -235,7 +290,7 @@ async def test_cleanup_only_registration_requires_exact_v8_response():
                 },
             ),
             httpx.Response(200, json=_cleanup_only_world_row()),
-            httpx.Response(200, json={"ok": True}),
+            httpx.Response(200, json=_retirement_receipt()),
         ],
         requests,
     )
@@ -255,7 +310,7 @@ async def test_cleanup_only_registration_requires_exact_v8_response():
             ("GET", "/ns/test/protocol"),
             ("POST", "/ns/test/protocol/v8/worlds"),
             ("GET", "/ns/test/worlds/private"),
-            ("PATCH", "/ns/test/worlds/private"),
+            ("POST", "/ns/test/protocol/v8/worlds/private/retire"),
         ]
     finally:
         await catalog.close()
@@ -268,7 +323,7 @@ async def test_ambiguous_cleanup_only_registration_retires_exact_committed_ident
             httpx.Response(200, json={"catalog_protocol_version": 8}),
             httpx.Response(503, json={"error": "status_mirror_failed"}),
             httpx.Response(200, json=_cleanup_only_world_row()),
-            httpx.Response(200, json={"ok": True}),
+            httpx.Response(200, json=_retirement_receipt()),
         ],
         requests,
     )
@@ -281,9 +336,12 @@ async def test_ambiguous_cleanup_only_registration_retires_exact_committed_ident
             ("GET", "/ns/test/protocol"),
             ("POST", "/ns/test/protocol/v8/worlds"),
             ("GET", "/ns/test/worlds/private"),
-            ("PATCH", "/ns/test/worlds/private"),
+            ("POST", "/ns/test/protocol/v8/worlds/private/retire"),
         ]
-        assert json.loads(requests[-1].content) == {"status": "destroyed"}
+        assert json.loads(requests[-1].content) == {
+            **_cleanup_only_world_row(),
+            "status": "destroyed",
+        }
     finally:
         await catalog.close()
 
@@ -375,16 +433,18 @@ async def test_ambiguous_cleanup_only_registration_cancellation_waits_for_exact_
         requests.append(request)
         if request.url.path.endswith("/protocol"):
             return httpx.Response(200, json={"catalog_protocol_version": 8})
-        if request.method == "POST":
+        if request.url.path.endswith("/protocol/v8/worlds"):
             registration_committed.set()
             await asyncio.Event().wait()
             raise AssertionError("cancelled registration unexpectedly resumed")
         if request.method == "GET":
             return httpx.Response(200, json=_cleanup_only_world_row())
-        retirement_entered.set()
-        await release_retirement.wait()
-        retirement_finished.set()
-        return httpx.Response(200, json={"ok": True})
+        if request.url.path.endswith("/retire"):
+            retirement_entered.set()
+            await release_retirement.wait()
+            retirement_finished.set()
+            return httpx.Response(200, json=_retirement_receipt())
+        raise AssertionError(f"unexpected request: {request.method} {request.url.path}")
 
     catalog._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     record = WorldRecord(**_cleanup_only_world_row())
@@ -403,7 +463,7 @@ async def test_ambiguous_cleanup_only_registration_cancellation_waits_for_exact_
             ("GET", "/ns/test/protocol"),
             ("POST", "/ns/test/protocol/v8/worlds"),
             ("GET", "/ns/test/worlds/private"),
-            ("PATCH", "/ns/test/worlds/private"),
+            ("POST", "/ns/test/protocol/v8/worlds/private/retire"),
         ]
     finally:
         release_retirement.set()
@@ -460,7 +520,7 @@ async def test_registration_mismatch_retirement_finishes_before_cancellation():
         requests.append(request)
         if request.url.path.endswith("/protocol"):
             return httpx.Response(200, json={"catalog_protocol_version": 8})
-        if request.method == "POST":
+        if request.url.path.endswith("/protocol/v8/worlds"):
             return httpx.Response(
                 200,
                 json={
@@ -473,10 +533,12 @@ async def test_registration_mismatch_retirement_finishes_before_cancellation():
             )
         if request.method == "GET":
             return httpx.Response(200, json=_cleanup_only_world_row())
-        retirement_entered.set()
-        await release_retirement.wait()
-        retirement_finished.set()
-        return httpx.Response(200, json={"ok": True})
+        if request.url.path.endswith("/retire"):
+            retirement_entered.set()
+            await release_retirement.wait()
+            retirement_finished.set()
+            return httpx.Response(200, json=_retirement_receipt())
+        raise AssertionError(f"unexpected request: {request.method} {request.url.path}")
 
     catalog._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     record = WorldRecord(
@@ -495,14 +557,23 @@ async def test_registration_mismatch_retirement_finishes_before_cancellation():
         await asyncio.sleep(0)
         assert not task.done()
         release_retirement.set()
-        with pytest.raises(asyncio.CancelledError):
+        with pytest.raises(BaseExceptionGroup) as caught:
             await asyncio.wait_for(task, timeout=1.0)
+        failures = _exception_leaves(caught.value)
+        assert [type(failure) for failure in failures] == [
+            RuntimeError,
+            asyncio.CancelledError,
+        ]
+        assert (
+            str(failures[0])
+            == "remote control catalog protocol v8 did not preserve immutable world writer mode"
+        )
         assert retirement_finished.is_set()
         assert [(request.method, request.url.path) for request in requests] == [
             ("GET", "/ns/test/protocol"),
             ("POST", "/ns/test/protocol/v8/worlds"),
             ("GET", "/ns/test/worlds/private"),
-            ("PATCH", "/ns/test/worlds/private"),
+            ("POST", "/ns/test/protocol/v8/worlds/private/retire"),
         ]
     finally:
         release_retirement.set()
@@ -521,7 +592,7 @@ async def test_registration_mismatch_preserves_cancellation_and_retirement_failu
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/protocol"):
             return httpx.Response(200, json={"catalog_protocol_version": 8})
-        if request.method == "POST":
+        if request.url.path.endswith("/protocol/v8/worlds"):
             return httpx.Response(
                 200,
                 json={
@@ -534,9 +605,11 @@ async def test_registration_mismatch_preserves_cancellation_and_retirement_failu
             )
         if request.method == "GET":
             return httpx.Response(200, json=_cleanup_only_world_row())
-        retirement_entered.set()
-        await release_retirement.wait()
-        raise RuntimeError("fail-closed retirement failed")
+        if request.url.path.endswith("/retire"):
+            retirement_entered.set()
+            await release_retirement.wait()
+            raise RuntimeError("fail-closed retirement failed")
+        raise AssertionError(f"unexpected request: {request.method} {request.url.path}")
 
     catalog._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     record = WorldRecord(
@@ -556,12 +629,7 @@ async def test_registration_mismatch_preserves_cancellation_and_retirement_failu
         with pytest.raises(BaseExceptionGroup) as caught:
             await asyncio.wait_for(task, timeout=1.0)
 
-        def leaves(error: BaseException) -> list[BaseException]:
-            if isinstance(error, BaseExceptionGroup):
-                return [leaf for child in error.exceptions for leaf in leaves(child)]
-            return [error]
-
-        failures = leaves(caught.value)
+        failures = _exception_leaves(caught.value)
         assert [type(failure) for failure in failures] == [
             RuntimeError,
             RuntimeError,

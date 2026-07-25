@@ -9,6 +9,7 @@ replaces = ["interfaces.iStorageService"]
 [[disposition]]
 operations = [
   "catalog.interface.ControlCatalog.register_world",
+  "catalog.interface.ControlCatalog.retire_world_registration",
   "catalog.interface.ControlCatalog.set_world_status",
   "catalog.interface.ControlCatalog.get_world",
   "catalog.interface.ControlCatalog.list_worlds",

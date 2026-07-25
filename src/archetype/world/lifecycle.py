@@ -9,7 +9,7 @@ import asyncio
 import logging
 import os
 import socket
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 from uuid_utils import UUID, uuid7
@@ -28,7 +28,7 @@ from archetype.core.lineage import load_lineage, persist_lineage
 from archetype.core.resources import Resources
 from archetype.storage.catalog import ControlCatalog, WorldRecord, storage_fingerprint
 from archetype.storage.service import PinnedVisibility
-from archetype.world.interfaces import iWorldRegistry
+from archetype.world.interfaces import iWorldActivationOwner, iWorldRegistry
 from archetype.world.registry import WorldCleanupLease
 from archetype.world.resume import (
     ResumeStorage,
@@ -40,6 +40,44 @@ from archetype.world.simulation import reconcile_committed_work_locked
 logger = logging.getLogger(__name__)
 
 RequiredProjectorFactory = Callable[[str], Any | None]
+
+
+async def _finish_activation_cleanup_uninterrupted(
+    cleanup: Awaitable[None],
+) -> None:
+    """Join activation cleanup without losing failure or cancellation provenance."""
+
+    close_task = asyncio.ensure_future(cleanup)
+    caller_cancellation: asyncio.CancelledError | None = None
+    while not close_task.done():
+        try:
+            await asyncio.shield(close_task)
+        except asyncio.CancelledError as interrupted:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                caller_cancellation = caller_cancellation or interrupted
+        except BaseException:
+            break
+
+    try:
+        close_task.result()
+    except asyncio.CancelledError as cleanup_cancellation:
+        failures: list[BaseException] = [cleanup_cancellation]
+        if caller_cancellation is not None:
+            failures.append(caller_cancellation)
+        raise BaseExceptionGroup(
+            "closing-world activation cleanup was cancelled",
+            failures,
+        ) from None
+    except BaseException as cleanup_failure:
+        if caller_cancellation is not None:
+            raise BaseExceptionGroup(
+                "closing-world activation cleanup failed while its caller was cancelled",
+                [cleanup_failure, caller_cancellation],
+            ) from None
+        raise
+    if caller_cancellation is not None:
+        raise caller_cancellation
 
 
 class LifecycleStorage(ResumeStorage, Protocol):
@@ -197,18 +235,33 @@ class WorldLifecycle:
         storage_config: StorageConfig | None = None,
         cache_config: CacheConfig | None = None,
         system: iAsyncSystem | None = None,
+        *,
+        activation_owner: iWorldActivationOwner,
     ) -> tuple[AsyncWorld, WorldCleanupLease]:
-        """Create one world already under exact, non-public cleanup authority."""
+        """Create one world already under exact, process-owned cleanup authority."""
 
-        world, lease = await self._create_world(
-            config,
-            storage_config,
-            cache_config,
-            system,
-            closing=True,
-        )
-        if lease is None:
-            raise RuntimeError("closing world construction did not return cleanup authority")
+        try:
+            world, lease = await self._create_world(
+                config,
+                storage_config,
+                cache_config,
+                system,
+                closing=True,
+                activation_owner=activation_owner,
+            )
+            if lease is None:
+                raise RuntimeError("closing world construction did not return cleanup authority")
+        except BaseException as activation_failure:
+            try:
+                await _finish_activation_cleanup_uninterrupted(
+                    activation_owner.aclose(),
+                )
+            except BaseException as cleanup_failure:
+                raise BaseExceptionGroup(
+                    "closing-world activation and owned cleanup failed",
+                    [activation_failure, cleanup_failure],
+                ) from None
+            raise
         return world, lease
 
     async def _create_world(
@@ -219,6 +272,7 @@ class WorldLifecycle:
         system: iAsyncSystem | None,
         *,
         closing: bool,
+        activation_owner: iWorldActivationOwner | None = None,
     ) -> tuple[AsyncWorld, WorldCleanupLease | None]:
         """Construct one ordinary or atomically closing managed world."""
 
@@ -246,19 +300,24 @@ class WorldLifecycle:
                 )
                 catalog = self._storage.get_control_catalog(storage_config)
                 run_id = uuid7()
+                record = WorldRecord(
+                    world_id=world_id,
+                    name=config.name,
+                    run_id=str(run_id),
+                    parent_world_id=None,
+                    status="active",
+                    tick_head=config.tick,
+                    writer_mode=("cleanup_only" if closing else "resumable"),
+                )
                 registered = False
                 try:
-                    await catalog.register_world(
-                        WorldRecord(
-                            world_id=world_id,
-                            name=config.name,
-                            run_id=str(run_id),
-                            parent_world_id=None,
-                            status="active",
-                            tick_head=config.tick,
-                            writer_mode=("cleanup_only" if closing else "resumable"),
-                        )
-                    )
+                    if closing:
+                        if activation_owner is None:
+                            raise RuntimeError(
+                                "closing world construction requires an activation owner"
+                            )
+                        activation_owner.bind_registration(catalog, record)
+                    await catalog.register_world(record)
                     registered = True
                     epoch = await catalog.acquire_fence(world_id, _writer_holder())
                     coordinator = self._storage.bind_commit_coordinator(
@@ -283,8 +342,14 @@ class WorldLifecycle:
                         required_projector=projector,
                         closing=closing,
                     )
+                    if closing:
+                        if lease is None or activation_owner is None:
+                            raise RuntimeError(
+                                "closing world insertion did not return cleanup authority"
+                            )
+                        activation_owner.promote(world_id, lease)
                 except BaseException:
-                    if registered:
+                    if registered and not closing:
                         await self._mark_failed_activation(catalog, world_id)
                     raise
                 return world, lease

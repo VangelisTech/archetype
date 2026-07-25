@@ -221,6 +221,8 @@ async def test_worker_confirms_v8_gateway_after_cleanup_only_status_mirror(worke
         assert registered.status_code == 200
         assert registered.json()["catalog_protocol_version"] == 8
         assert registered.json()["gateway_protocol_version"] == 8
+        assert registered.json()["catalog_status"] == "active"
+        assert registered.json()["world_status"] == "active"
 
         status = await client.get(f"/ns/{namespace}/w/{world.world_id}/status")
         assert status.status_code == 200
@@ -237,14 +239,20 @@ async def test_remote_client_retires_directory_commit_after_status_mirror_reject
     namespace = f"gateway-partial-commit-{uuid.uuid4().hex[:12]}"
     world = _world(
         "private",
-        status="mirror-rejected",
         writer_mode="cleanup_only",
     )
     catalog = RemoteControlCatalog(worker_url, namespace, token=WORKER_TOKEN)
     try:
-        with pytest.raises(httpx.HTTPStatusError) as caught:
+        headers = {"authorization": f"Bearer {WORKER_TOKEN}"}
+        async with httpx.AsyncClient(base_url=worker_url, headers=headers) as client:
+            preexisting_status = await client.patch(
+                f"/ns/{namespace}/w/{world.world_id}/status",
+                json={"status": "destroyed"},
+            )
+        assert preexisting_status.status_code == 200
+
+        with pytest.raises(CatalogConflictError):
             await catalog.register_world(world)
-        assert caught.value.response.status_code == 422
 
         retained = await catalog.get_world(world.world_id)
         assert retained is not None
@@ -262,7 +270,6 @@ async def test_remote_client_retires_directory_commit_after_status_mirror_reject
             world.parent_world_id,
         )
 
-        headers = {"authorization": f"Bearer {WORKER_TOKEN}"}
         async with httpx.AsyncClient(base_url=worker_url, headers=headers) as client:
             status = await client.get(
                 f"/ns/{namespace}/w/{world.world_id}/status",
@@ -345,13 +352,43 @@ async def test_world_registration_parity(tmp_path, worker_url):
 
 async def test_cleanup_only_world_registration_parity(tmp_path, worker_url):
     for catalog in await _both(tmp_path, worker_url):
-        await catalog.register_world(_world("private", writer_mode="cleanup_only"))
+        private = _world("private", writer_mode="cleanup_only")
+        with pytest.raises(ValueError, match="requires status='active'"):
+            await catalog.register_world(
+                _world("invalid-private", status="destroyed", writer_mode="cleanup_only")
+            )
+        await catalog.register_world(private)
         record = await catalog.get_world("private")
         assert record is not None
         assert record.status == "active"
         assert record.writer_mode == "cleanup_only"
         with pytest.raises(CatalogConflictError):
             await catalog.register_world(_world("private", writer_mode="resumable"))
+
+        await catalog.retire_world_registration(private)
+        await catalog.retire_world_registration(private)
+        retired = await catalog.get_world("private")
+        assert retired is not None and retired.status == "destroyed"
+        with pytest.raises(CatalogConflictError):
+            await catalog.set_world_status("private", "active")
+        with pytest.raises(RuntimeError, match="active cleanup-only registration"):
+            await catalog.register_world(private)
+        still_retired = await catalog.get_world("private")
+        assert still_retired is not None and still_retired.status == "destroyed"
+
+        late = _world("late", writer_mode="cleanup_only")
+        await catalog.retire_world_registration(late)
+        tombstone = await catalog.get_world("late")
+        assert tombstone is not None and tombstone.status == "destroyed"
+        with pytest.raises(RuntimeError, match="active cleanup-only registration"):
+            await catalog.register_world(late)
+        await catalog.retire_world_registration(
+            _world("late", run_id="foreign", writer_mode="cleanup_only")
+        )
+        unchanged = await catalog.get_world("late")
+        assert unchanged is not None
+        assert unchanged.status == "destroyed"
+        assert unchanged.run_id == "r1"
         await catalog.close()
 
 

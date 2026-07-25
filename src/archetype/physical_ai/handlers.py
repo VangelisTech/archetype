@@ -222,6 +222,7 @@ async def _evaluate_physical_task(
     world, cleanup_lease = await world_lifecycle.create_closing_world(
         WorldConfig(name=f"physical-eval:{config.suite}:t{config.task_id}:{uuid7()}"),
         config.storage,
+        activation_owner=workflow_lifetime,
     )
     world_id = world.world_id
     retirement = await _retain_or_compensate_evidence_world(
@@ -373,6 +374,7 @@ async def _sweep_physical_instructions(
     world, cleanup_lease = await world_lifecycle.create_closing_world(
         WorldConfig(name=f"physical-sweep:{config.suite}:t{config.task_id}:{uuid7()}"),
         config.storage,
+        activation_owner=workflow_lifetime,
     )
     world_id = world.world_id
     retirement = await _retain_or_compensate_evidence_world(
