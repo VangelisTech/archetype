@@ -242,10 +242,13 @@ The provider-scoped token contains a cleanup-owner reservation created before
 the handler may create its private evidence world. World creation durably marks
 the identity `writer_mode="cleanup_only"` while leaving it active for tick
 materialization. The reservation holds a deferred cleanup resource immediately.
-The handler binds the exact cleanup lease synchronously; if normal retention
-unexpectedly fails, a compensation-only authority binds that same pre-owned
-resource before cancellation-resistant exact-lease destruction. A failed
-compensation remains owned for shutdown retry and provider close joins it.
+The handler binds a lazy canonical cleanup target synchronously before
+fallible exact-lease validation. If validation or provider metadata retention
+unexpectedly fails, a compensation-only authority restores that same
+owner-bound target without repeating the failed gate. Cancellation-resistant
+cleanup revalidates and executes only through canonical `WorldCleanup`; there
+is no direct lifecycle-destroy bypass. A failed attempt remains owned for
+shutdown retry and provider close joins it.
 Caller cancellation and cleanup-originated cancellation remain distinguishable
 when cleanup also fails; multiple failures preserve all causes. A hard process
 crash can leave active evidence rows, but mutable resume rejects their
@@ -324,6 +327,10 @@ The workflow enforces these contracts:
 9. Cleanup ownership is reserved before private-world creation, and the
    world's immutable cleanup-only writer mode prevents crash recovery from
    reactivating provider processors.
+10. Every physical-AI `@daft.cls` constructor is covered by the closed lifetime
+    inventory: host-backed classes only retain an admitted serialized client
+    handle, and `_CartpoleStepper` is the sole reviewed worker-local
+    constructor, limited to embedded-XML MuJoCo model/data scratch.
 
 The credential-free contracts live under `tests/physical_ai/`. Real LIBERO,
 VLA, GPU, and Modal adapters remain external provider implementations and paid

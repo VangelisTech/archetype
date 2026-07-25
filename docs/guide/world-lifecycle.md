@@ -97,13 +97,15 @@ processors can never be reactivated through mutable resume.
 Physical workflow composition reserves a process-owned cleanup slot before it
 may create a closing world, then synchronously binds the returned exact cleanup
 lease into that slot before the next workflow await. The slot owns a deferred
-cleanup resource from reservation time. If normal retention unexpectedly
-fails, a distinct compensation authority binds that same pre-owned resource
-before awaiting cleanup, so a failed cleanup remains process-owned for shutdown
-retry and provider close still joins it. If exact binding itself cannot be
-recovered, the handler completes direct exact-lease destruction despite
-cancellation. Multiple failures are reported as an aggregate rather than
-abandoning any cause.
+cleanup resource from reservation time. Normal retention selects a lazy
+canonical cleanup target before fallible exact-lease validation. If validation
+or metadata retention unexpectedly fails, a distinct compensation authority
+restores that same owner-bound target without repeating the failed gate.
+Cleanup revalidates and executes through the registered `WorldCleanup`; the
+handler never falls back to unregistered lifecycle destruction. A failed
+attempt remains process-owned for shutdown retry, provider close still joins
+it, and multiple failures are reported as an aggregate rather than abandoning
+any cause.
 
 Public `ListWorlds` omits closing entries, entries removed after its
 point-in-time snapshot, and same-ID replacement bindings created after that

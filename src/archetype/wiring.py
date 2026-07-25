@@ -242,16 +242,39 @@ class _WorldCleanupReservation:
     entry: _WorldCleanupEntry | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _LazyExactWorldCleanup:
+    """Canonical exact cleanup selected now and constructed only when joined."""
+
+    registry: WorldRegistry
+    lifecycle: WorldLifecycle
+    scheduler: CommandScheduler
+    world_id: str
+    lease: WorldCleanupLease
+
+    async def finish(self) -> None:
+        """Revalidate and run the canonical cleanup inside its retained owner."""
+
+        cleanup = WorldCleanup(
+            registry=self.registry,
+            lifecycle=self.lifecycle,
+            world_id=self.world_id,
+            lease=self.lease,
+            cancel_unsettled=self.scheduler.cancel_world,
+        )
+        await cleanup.finish()
+
+
 @dataclass(slots=True)
 class _DeferredWorldCleanup:
     """A process-owned cleanup target bound to its exact world synchronously."""
 
-    cleanup: WorldCleanup | None = None
+    cleanup: _LazyExactWorldCleanup | None = None
     on_success: Callable[[], None] | None = None
 
     def bind(
         self,
-        cleanup: WorldCleanup,
+        cleanup: _LazyExactWorldCleanup,
         *,
         on_success: Callable[[], None],
     ) -> None:
@@ -498,10 +521,10 @@ class _WorldCleanupLifetimes:
         provider_ids: frozenset[int],
         reservation: _WorldCleanupReservation,
     ) -> _WorldCleanupHandle:
-        """Recover the same pre-owned slot after normal retention failed."""
+        """Restore the same pre-owned slot without repeating normal validation."""
 
-        return self._retain_exact(
-            world_id,
+        return self._bind_or_restore_exact(
+            str(world_id),
             lease,
             provider_ids=provider_ids,
             reservation=reservation,
@@ -516,7 +539,25 @@ class _WorldCleanupLifetimes:
         reservation: _WorldCleanupReservation | None,
     ) -> _WorldCleanupHandle:
         exact_world_id = str(world_id)
+        retained = self._bind_or_restore_exact(
+            exact_world_id,
+            lease,
+            provider_ids=provider_ids,
+            reservation=reservation,
+        )
         self._worlds.validate_cleanup_lease(lease, world_id=exact_world_id)
+        return retained
+
+    def _bind_or_restore_exact(
+        self,
+        exact_world_id: str,
+        lease: WorldCleanupLease,
+        *,
+        provider_ids: frozenset[int],
+        reservation: _WorldCleanupReservation | None,
+    ) -> _WorldCleanupHandle:
+        """Bind lazy canonical cleanup before any fallible lease validation."""
+
         if reservation is not None and reservation.bound:
             entry = reservation.entry
             if entry is None:
@@ -542,12 +583,12 @@ class _WorldCleanupLifetimes:
             raise RuntimeError("world cleanup reservation is already bound")
         if selected.reservation.released:
             raise RuntimeError("world cleanup reservation is already released")
-        cleanup = WorldCleanup(
+        cleanup = _LazyExactWorldCleanup(
             registry=self._worlds,
             lifecycle=self._lifecycle,
+            scheduler=self._scheduler,
             world_id=exact_world_id,
             lease=lease,
-            cancel_unsettled=self._scheduler.cancel_world,
         )
         entry = _WorldCleanupEntry(
             world_id=exact_world_id,

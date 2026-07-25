@@ -308,12 +308,14 @@ but carries immutable `writer_mode="cleanup_only"`. Each handler synchronously
 binds its closing-world lease to the scoped lifetime token before the next
 workflow await, then retires that exact writer before releasing the provider
 lease. The reserved owner holds a deferred cleanup resource from the moment it
-is created. If normal retention fails, the compensation authority binds that
-same already-owned resource to the exact lease before any cleanup await, so a
-failed compensation remains process-owned and provider close joins its
-shutdown retry. Failure to recover the binding falls back to direct exact-lease
-destruction, and multiple failures preserve every cause, including distinct
-caller and cleanup-originated cancellation. Registered public destroy and the
+is created. Normal retention binds a lazy canonical exact cleanup before
+fallible lease validation. If validation or metadata retention fails, the
+compensation authority restores that same already-owned target without
+repeating the failed gate. Cleanup revalidates through the retained
+`WorldCleanup` handle; there is no unregistered lifecycle-destroy fallback.
+A failed attempt remains process-owned, provider close joins its shutdown
+retry, and multiple failures preserve every cause, including distinct caller
+and cleanup-originated cancellation. Registered public destroy and the
 retained physical handle join one process-owned cleanup transaction. Returned
 world/run coordinates remain durable read evidence, while mutable resume
 rejects the cleanup-only identity before storage or fencing and cannot

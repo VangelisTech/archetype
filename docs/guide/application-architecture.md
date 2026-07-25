@@ -210,7 +210,9 @@ registers that complete transaction with `RuntimeResources`. A failed
 retirement remains process-owned for the `workflow-handles` retry phase. Each
 associated provider close first joins those exact retirements, so only
 successful world cleanup can release the cleanup owner and permit provider
-shutdown.
+shutdown. Normal retention selects the lazy canonical cleanup target before
+fallible lease validation; compensation restores that same target, and no
+handler may bypass its registered owner with direct lifecycle destruction.
 The former
 production
 `archetype.experiments` umbrella is gone. The repository-root `experiments/`

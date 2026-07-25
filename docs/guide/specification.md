@@ -713,12 +713,14 @@ retryable failures remain recoverable and exhausted failures become terminal.
   contract.
 - Physical workflow composition MUST reserve process-owned cleanup before
   private-world creation. The reservation MUST immediately own a deferred
-  cleanup resource, and the scoped lifetime MUST synchronously bind the exact
-  returned lease into that resource. If normal retention fails, a distinct
-  compensation authority MUST bind the same pre-owned resource before awaiting
-  cleanup, so compensation failure remains owned for shutdown retry and
-  provider close joins it. Direct exact-lease fallback MUST complete despite
-  cancellation when binding cannot be recovered. Every retention and
+  cleanup resource. Once world creation returns, normal retention MUST bind a
+  lazy canonical cleanup target into that resource before fallible exact-lease
+  validation. If validation or metadata retention fails, a distinct
+  compensation authority MUST restore that same owner-bound target without
+  repeating the failed admission gate. Every cleanup attempt MUST revalidate
+  and execute through the registered canonical `WorldCleanup`; handlers MUST
+  NOT bypass it with direct lifecycle destruction. A failed attempt remains
+  owned for shutdown retry and provider close joins it. Every retention and
   compensation failure MUST remain visible; caller cancellation and
   cleanup-originated cancellation MUST NOT be conflated.
 - Shutdown stops and drains dispatcher admission, joins supervised work, then

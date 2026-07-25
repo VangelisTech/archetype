@@ -153,7 +153,6 @@ async def _retire_evidence_world(
 
 async def _retain_or_compensate_evidence_world(
     workflow_lifetime: PhysicalWorkflowLifetime,
-    world_lifecycle: iWorldLifecycle,
     world_id: str | UUID,
     cleanup_lease: WorldCleanupLease,
     *,
@@ -173,17 +172,8 @@ async def _retain_or_compensate_evidence_world(
                 cleanup_lease,
             )
         except BaseException as retry_failure:
-            try:
-                await _finish_cleanup_uninterrupted(
-                    world_lifecycle.destroy_world(world_id, lease=cleanup_lease)
-                )
-            except BaseException as cleanup_failure:
-                raise BaseExceptionGroup(
-                    f"{label} retention retries and exact-world compensation failed",
-                    [retain_failure, retry_failure, cleanup_failure],
-                ) from None
             raise BaseExceptionGroup(
-                f"{label} evidence-world retention failed twice",
+                f"{label} evidence-world retention and compensation binding failed",
                 [retain_failure, retry_failure],
             ) from None
 
@@ -236,7 +226,6 @@ async def _evaluate_physical_task(
     world_id = world.world_id
     retirement = await _retain_or_compensate_evidence_world(
         workflow_lifetime,
-        world_lifecycle,
         world_id,
         cleanup_lease,
         label="physical evaluation",
@@ -388,7 +377,6 @@ async def _sweep_physical_instructions(
     world_id = world.world_id
     retirement = await _retain_or_compensate_evidence_world(
         workflow_lifetime,
-        world_lifecycle,
         world_id,
         cleanup_lease,
         label="physical sweep",

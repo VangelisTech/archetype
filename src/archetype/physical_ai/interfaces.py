@@ -104,7 +104,7 @@ class PhysicalWorkflowLifetime(Protocol):
         world_id: str | UUID,
         lease: WorldCleanupLease,
     ) -> PhysicalEvidenceWorldRetirement:
-        """Recover the same pre-owned exact cleanup after retention failure."""
+        """Restore owner-bound lazy cleanup without repeating exact validation."""
 
         ...
 

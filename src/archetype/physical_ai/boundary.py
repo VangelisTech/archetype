@@ -79,8 +79,6 @@ from typing import Any
 
 from daft import Series
 
-WORKER_LOCAL_SCRATCH_EXCEPTIONS = ("archetype.physical_ai.mujoco_cartpole._CartpoleStepper",)
-
 
 def series_to_rows(col_names: list[str], *series_args: Series) -> list[dict[str, Any]]:
     """Convert ordered Series arguments into a list of row dicts.

@@ -5,6 +5,9 @@ family = "physical_ai"
 [[module_operation_surface]]
 qualified_scope = "archetype.physical_ai.handlers"
 
+[[module_operation_surface]]
+qualified_scope = "archetype.physical_ai.views"
+
 [[disposition]]
 operations = [
   "handlers.evaluate_physical_task",
@@ -13,6 +16,7 @@ operations = [
   "interfaces.PhysicalEvidenceWorldRetirement.aclose",
   "interfaces.PhysicalWorkflowLifetime.retain_evidence_world",
   "interfaces.PhysicalWorkflowLifetime.retain_evidence_world_for_compensation",
+  "views.latest_rows",
 ]
 signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome"]
