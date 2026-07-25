@@ -17,7 +17,9 @@ class EnvClient(Protocol):
     """Boundary to an external manipulation simulator.
 
     Construction must be inert. A registered physical operation transfers the
-    exact object to process ownership before its first effect.
+    exact object to process ownership before its first effect. The object must
+    be serializable by Daft as a non-owning handle to the same host-owned
+    backing authority; it may not create an independently owned worker resource.
     """
 
     def reset(self, env_id: int, seed: int) -> dict[str, Any]:
@@ -41,7 +43,11 @@ class EnvClient(Protocol):
 
 
 class PolicyClient(Protocol):
-    """Boundary to a policy with explicitly host-owned live state."""
+    """Boundary to a policy with explicitly host-owned live state.
+
+    The object must be serializable by Daft as a non-owning handle to that
+    authority; independently owned worker-local resources remain unsupported.
+    """
 
     def act(
         self,
@@ -60,14 +66,14 @@ class PolicyClient(Protocol):
 
 
 class PhysicalClientLifetimeRegistrar(Protocol):
-    """Transfer provider ownership and serialize each identity's workflows."""
+    """Validate/own provider handles and serialize each identity's workflows."""
 
     def lease(
         self,
         env_client: EnvClient,
         policy_client: PolicyClient | None,
     ) -> AbstractAsyncContextManager[PhysicalWorkflowLifetime]:
-        """Own unique providers synchronously, then lease them for one workflow."""
+        """Validate Daft serialization, own providers, then lease one workflow."""
 
         ...
 
@@ -82,7 +88,7 @@ class PhysicalEvidenceWorldRetirement(Protocol):
 
 
 class PhysicalWorkflowLifetime(Protocol):
-    """Provider-scoped authority to retain exact evidence-world cleanup."""
+    """Provider-scoped, pre-reserved authority for exact evidence cleanup."""
 
     def retain_evidence_world(
         self,
@@ -90,6 +96,15 @@ class PhysicalWorkflowLifetime(Protocol):
         lease: WorldCleanupLease,
     ) -> PhysicalEvidenceWorldRetirement:
         """Synchronously bind cleanup before the workflow's next await."""
+
+        ...
+
+    def retain_evidence_world_for_compensation(
+        self,
+        world_id: str | UUID,
+        lease: WorldCleanupLease,
+    ) -> PhysicalEvidenceWorldRetirement:
+        """Recover the same pre-owned exact cleanup after retention failure."""
 
         ...
 

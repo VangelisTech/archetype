@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any, Literal, cast
 
+from daft.pickle import dumps as daft_dumps
 from pydantic import BaseModel
 from uuid_utils import uuid7
 
@@ -231,6 +232,50 @@ class _PhysicalAIClientEntry:
     lock: asyncio.Lock
 
 
+@dataclass(slots=True)
+class _WorldCleanupReservation:
+    """One pre-effect process-owner slot for an eventual exact-world cleanup."""
+
+    reservation: OwnerReservation
+    deferred: _DeferredWorldCleanup
+    bound: bool = False
+    entry: _WorldCleanupEntry | None = None
+
+
+@dataclass(slots=True)
+class _DeferredWorldCleanup:
+    """A process-owned cleanup target bound to its exact world synchronously."""
+
+    cleanup: WorldCleanup | None = None
+    on_success: Callable[[], None] | None = None
+
+    def bind(
+        self,
+        cleanup: WorldCleanup,
+        *,
+        on_success: Callable[[], None],
+    ) -> None:
+        """Select the exact cleanup once, before any compensation await."""
+
+        if self.cleanup is not None:
+            if self.cleanup is cleanup and self.on_success is on_success:
+                return
+            raise RuntimeError("deferred world cleanup is already bound")
+        self.cleanup = cleanup
+        self.on_success = on_success
+
+    async def finish(self) -> None:
+        """Finish the exact target, or release an unused reservation as a no-op."""
+
+        cleanup = self.cleanup
+        if cleanup is None:
+            return
+        await cleanup.finish()
+        on_success = self.on_success
+        if on_success is not None:
+            on_success()
+
+
 class _PhysicalAIClientLifetimes:
     """Own providers and serialize operations that share their identities."""
 
@@ -282,6 +327,12 @@ class _PhysicalAIClientLifetimes:
                 raise TypeError(f"physical-AI {role} providers must define async aclose()")
             if method != "aclose" and is_async:
                 raise TypeError(f"physical-AI {role} providers must define synchronous {method}()")
+        try:
+            daft_dumps(client)
+        except Exception as exc:
+            raise TypeError(
+                f"physical-AI {role} provider must be serializable by Daft as a non-owning handle"
+            ) from exc
 
     def _entries_for(
         self,
@@ -343,6 +394,7 @@ class _PhysicalAIClientLifetimes:
         entries: tuple[_PhysicalAIClientEntry, ...],
     ) -> AsyncIterator[PhysicalWorkflowLifetime]:
         acquired: list[_PhysicalAIClientEntry] = []
+        cleanup_reservation: _WorldCleanupReservation | None = None
         async with AsyncExitStack() as admissions:
             for entry in entries:
                 await admissions.enter_async_context(
@@ -352,13 +404,19 @@ class _PhysicalAIClientLifetimes:
                 for entry in entries:
                     await entry.lock.acquire()
                     acquired.append(entry)
+                cleanup_reservation = self._cleanup_lifetimes.reserve()
                 yield _PhysicalWorkflowLifetime(
                     cleanup_lifetimes=self._cleanup_lifetimes,
+                    cleanup_reservation=cleanup_reservation,
                     provider_ids=frozenset(entry.identity for entry in entries),
                 )
             finally:
-                for entry in reversed(acquired):
-                    entry.lock.release()
+                try:
+                    if cleanup_reservation is not None and not cleanup_reservation.bound:
+                        await cleanup_reservation.reservation.aclose()
+                finally:
+                    for entry in reversed(acquired):
+                        entry.lock.release()
 
 
 @dataclass(eq=False, slots=True)
@@ -367,7 +425,6 @@ class _WorldCleanupEntry:
 
     world_id: str
     lease: WorldCleanupLease
-    cleanup: WorldCleanup
     reservation: OwnerReservation
     provider_ids: set[int]
 
@@ -401,17 +458,78 @@ class _WorldCleanupLifetimes:
         self._entries: dict[WorldCleanupLease, _WorldCleanupEntry] = {}
         self._by_provider: dict[int, set[_WorldCleanupEntry]] = {}
 
+    def reserve(self) -> _WorldCleanupReservation:
+        """Reserve cleanup ownership before a workflow may create its world."""
+
+        reservation = self._resources.reserve_owner(
+            f"world-cleanup:{uuid7()}",
+            phase="workflow-handles",
+            closed_message="world cleanup owner is closed",
+        )
+        deferred = _DeferredWorldCleanup()
+        reservation.bind(deferred, close=deferred.finish)
+        return _WorldCleanupReservation(
+            reservation=reservation,
+            deferred=deferred,
+        )
+
     def retain(
         self,
         world_id: object,
         lease: WorldCleanupLease,
         *,
         provider_ids: frozenset[int] = frozenset(),
+        reservation: _WorldCleanupReservation | None = None,
     ) -> _WorldCleanupHandle:
         """Synchronously retain one exact cleanup transaction before effects."""
 
+        return self._retain_exact(
+            world_id,
+            lease,
+            provider_ids=provider_ids,
+            reservation=reservation,
+        )
+
+    def retain_reserved(
+        self,
+        world_id: object,
+        lease: WorldCleanupLease,
+        *,
+        provider_ids: frozenset[int],
+        reservation: _WorldCleanupReservation,
+    ) -> _WorldCleanupHandle:
+        """Recover the same pre-owned slot after normal retention failed."""
+
+        return self._retain_exact(
+            world_id,
+            lease,
+            provider_ids=provider_ids,
+            reservation=reservation,
+        )
+
+    def _retain_exact(
+        self,
+        world_id: object,
+        lease: WorldCleanupLease,
+        *,
+        provider_ids: frozenset[int],
+        reservation: _WorldCleanupReservation | None,
+    ) -> _WorldCleanupHandle:
         exact_world_id = str(world_id)
         self._worlds.validate_cleanup_lease(lease, world_id=exact_world_id)
+        if reservation is not None and reservation.bound:
+            entry = reservation.entry
+            if entry is None:
+                raise RuntimeError("bound world cleanup reservation has no exact entry")
+            if entry.world_id != exact_world_id or entry.lease != lease:
+                raise RuntimeError("world cleanup reservation is bound to another world")
+            retained = self._entries.get(lease)
+            if retained is not None and retained is not entry:
+                raise RuntimeError("world cleanup lease has another retained owner")
+            self._entries[lease] = entry
+            self._associate_providers(entry, provider_ids)
+            return _WorldCleanupHandle(entry.reservation)
+
         retained = self._entries.get(lease)
         if retained is not None:
             if retained.world_id != exact_world_id:
@@ -419,6 +537,11 @@ class _WorldCleanupLifetimes:
             self._associate_providers(retained, provider_ids)
             return _WorldCleanupHandle(retained.reservation)
 
+        selected = reservation or self.reserve()
+        if selected.bound:
+            raise RuntimeError("world cleanup reservation is already bound")
+        if selected.reservation.released:
+            raise RuntimeError("world cleanup reservation is already released")
         cleanup = WorldCleanup(
             registry=self._worlds,
             lifecycle=self._lifecycle,
@@ -426,27 +549,21 @@ class _WorldCleanupLifetimes:
             lease=lease,
             cancel_unsettled=self._scheduler.cancel_world,
         )
-
-        async def close_cleanup() -> None:
-            await cleanup.finish()
-            self._release_entry(entry)
-
-        reservation = self._resources.reserve_owner(
-            f"world-cleanup:{uuid7()}",
-            phase="workflow-handles",
-            closed_message="world cleanup owner is closed",
-        )
-        reservation.bind(cleanup, close=close_cleanup)
         entry = _WorldCleanupEntry(
             world_id=exact_world_id,
             lease=lease,
-            cleanup=cleanup,
-            reservation=reservation,
+            reservation=selected.reservation,
             provider_ids=set(),
         )
+        selected.deferred.bind(
+            cleanup,
+            on_success=partial(self._release_entry, entry),
+        )
+        selected.entry = entry
+        selected.bound = True
         self._entries[lease] = entry
         self._associate_providers(entry, provider_ids)
-        return _WorldCleanupHandle(reservation)
+        return _WorldCleanupHandle(selected.reservation)
 
     async def close_current(self, world_id: object) -> None:
         """Join cleanup for the current exact world selected by public destroy."""
@@ -508,6 +625,7 @@ class _PhysicalWorkflowLifetime:
     """Concrete provider lease token injected into one physical workflow."""
 
     cleanup_lifetimes: _WorldCleanupLifetimes
+    cleanup_reservation: _WorldCleanupReservation
     provider_ids: frozenset[int]
 
     def retain_evidence_world(
@@ -521,6 +639,21 @@ class _PhysicalWorkflowLifetime:
             world_id,
             lease,
             provider_ids=self.provider_ids,
+            reservation=self.cleanup_reservation,
+        )
+
+    def retain_evidence_world_for_compensation(
+        self,
+        world_id: object,
+        lease: WorldCleanupLease,
+    ) -> PhysicalEvidenceWorldRetirement:
+        """Recover the pre-owned exact cleanup without normal admission."""
+
+        return self.cleanup_lifetimes.retain_reserved(
+            world_id,
+            lease,
+            provider_ids=self.provider_ids,
+            reservation=self.cleanup_reservation,
         )
 
 

@@ -6,10 +6,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Awaitable, Mapping
 from typing import Any
 
-from uuid_utils import uuid7
+from uuid_utils import UUID, uuid7
 
 from archetype.core.aio import AsyncWorld
 from archetype.core.component import Component
@@ -45,6 +45,7 @@ from archetype.storage.interfaces import iStorageService
 from archetype.world import mutation, query, simulation
 from archetype.world.interfaces import iWorldLifecycle, iWorldRegistry
 from archetype.world.models import EpisodeConfig
+from archetype.world.registry import WorldCleanupLease
 
 
 def _instruction_for(env_client: EnvClient, fallback: str) -> str:
@@ -104,24 +105,96 @@ def _reset_policy(
         reset()
 
 
+async def _finish_cleanup_uninterrupted(
+    cleanup: Awaitable[None],
+) -> None:
+    """Join exact cleanup and preserve caller-vs-cleanup failure provenance."""
+
+    retire = asyncio.ensure_future(cleanup)
+    caller_cancellation: asyncio.CancelledError | None = None
+    while not retire.done():
+        try:
+            await asyncio.shield(retire)
+        except asyncio.CancelledError as interrupted:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                caller_cancellation = caller_cancellation or interrupted
+        except BaseException:
+            break
+
+    try:
+        retire.result()
+    except asyncio.CancelledError as cleanup_cancellation:
+        failures: list[BaseException] = [cleanup_cancellation]
+        if caller_cancellation is not None:
+            failures.append(caller_cancellation)
+        raise BaseExceptionGroup(
+            "exact cleanup was cancelled",
+            failures,
+        ) from None
+    except BaseException as cleanup_failure:
+        if caller_cancellation is not None:
+            raise BaseExceptionGroup(
+                "exact cleanup failed while its caller was cancelled",
+                [cleanup_failure, caller_cancellation],
+            ) from None
+        raise
+    if caller_cancellation is not None:
+        raise caller_cancellation
+
+
 async def _retire_evidence_world(
     retirement: PhysicalEvidenceWorldRetirement,
 ) -> None:
     """Cancel commands and retire one provider-backed writer despite cancellation."""
 
-    retire = asyncio.ensure_future(retirement.aclose())
-    interrupted = False
-    while True:
+    await _finish_cleanup_uninterrupted(retirement.aclose())
+
+
+async def _retain_or_compensate_evidence_world(
+    workflow_lifetime: PhysicalWorkflowLifetime,
+    world_lifecycle: iWorldLifecycle,
+    world_id: str | UUID,
+    cleanup_lease: WorldCleanupLease,
+    *,
+    label: str,
+) -> PhysicalEvidenceWorldRetirement:
+    """Retain exact cleanup through the pre-owned compensation authority."""
+
+    try:
+        return workflow_lifetime.retain_evidence_world(
+            world_id,
+            cleanup_lease,
+        )
+    except BaseException as retain_failure:
         try:
-            await asyncio.shield(retire)
-            break
-        except asyncio.CancelledError:
-            interrupted = True
-            if retire.done():
-                break
-    retire.result()
-    if interrupted:
-        raise asyncio.CancelledError
+            compensation = workflow_lifetime.retain_evidence_world_for_compensation(
+                world_id,
+                cleanup_lease,
+            )
+        except BaseException as retry_failure:
+            try:
+                await _finish_cleanup_uninterrupted(
+                    world_lifecycle.destroy_world(world_id, lease=cleanup_lease)
+                )
+            except BaseException as cleanup_failure:
+                raise BaseExceptionGroup(
+                    f"{label} retention retries and exact-world compensation failed",
+                    [retain_failure, retry_failure, cleanup_failure],
+                ) from None
+            raise BaseExceptionGroup(
+                f"{label} evidence-world retention failed twice",
+                [retain_failure, retry_failure],
+            ) from None
+
+        try:
+            await _finish_cleanup_uninterrupted(compensation.aclose())
+        except BaseException as cleanup_failure:
+            raise BaseExceptionGroup(
+                f"{label} retention and exact-world compensation failed",
+                [retain_failure, cleanup_failure],
+            ) from None
+        raise
 
 
 async def evaluate_physical_task(
@@ -161,9 +234,12 @@ async def _evaluate_physical_task(
         config.storage,
     )
     world_id = world.world_id
-    retirement = workflow_lifetime.retain_evidence_world(
+    retirement = await _retain_or_compensate_evidence_world(
+        workflow_lifetime,
+        world_lifecycle,
         world_id,
         cleanup_lease,
+        label="physical evaluation",
     )
     try:
         async with world_registry.cleanup_operation(cleanup_lease) as exact_world:
@@ -310,9 +386,12 @@ async def _sweep_physical_instructions(
         config.storage,
     )
     world_id = world.world_id
-    retirement = workflow_lifetime.retain_evidence_world(
+    retirement = await _retain_or_compensate_evidence_world(
+        workflow_lifetime,
+        world_lifecycle,
         world_id,
         cleanup_lease,
+        label="physical sweep",
     )
     try:
         async with world_registry.cleanup_operation(cleanup_lease) as exact_world:

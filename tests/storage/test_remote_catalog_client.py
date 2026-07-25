@@ -3,13 +3,18 @@
 
 """Transport behavior for the remote control-catalog client."""
 
+import asyncio
 import json
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 
-from archetype.storage.catalog import CommandAdmission, RemoteControlCatalog
+from archetype.storage.catalog import (
+    CommandAdmission,
+    RemoteControlCatalog,
+    WorldRecord,
+)
 from archetype.storage.catalog import remote as _remote_catalog
 from archetype.storage.config import ControlCatalogConfig
 from archetype.storage.service import StorageService
@@ -62,8 +67,303 @@ async def test_get_world_retries_transient_server_errors(monkeypatch):
     try:
         world = await catalog.get_world("w1")
         assert world is not None and world.tick_head == 3
+        assert world.writer_mode == "resumable"
         sleep.assert_awaited_once_with(0.5)
     finally:
+        await catalog.close()
+
+
+async def test_cleanup_only_registration_requires_v8_before_any_write():
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with([httpx.Response(404)], requests)
+    record = WorldRecord(
+        world_id="private",
+        name="private",
+        run_id="run",
+        parent_world_id=None,
+        status="active",
+        tick_head=0,
+        writer_mode="cleanup_only",
+    )
+    try:
+        with pytest.raises(RuntimeError, match="protocol v8"):
+            await catalog.register_world(record)
+        assert [(request.method, request.url.path) for request in requests] == [
+            ("GET", "/ns/test/protocol")
+        ]
+    finally:
+        await catalog.close()
+
+
+async def test_cleanup_only_registration_sends_marker_after_v8_preflight():
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with(
+        [
+            httpx.Response(200, json={"catalog_protocol_version": 8}),
+            httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "status": "active",
+                    "writer_mode": "cleanup_only",
+                    "catalog_protocol_version": 8,
+                    "gateway_protocol_version": 8,
+                },
+            ),
+        ],
+        requests,
+    )
+    record = WorldRecord(
+        world_id="private",
+        name="private",
+        run_id="run",
+        parent_world_id=None,
+        status="active",
+        tick_head=0,
+        writer_mode="cleanup_only",
+    )
+    try:
+        await catalog.register_world(record)
+        assert [(request.method, request.url.path) for request in requests] == [
+            ("GET", "/ns/test/protocol"),
+            ("POST", "/ns/test/protocol/v8/worlds"),
+        ]
+        assert json.loads(requests[1].content)["writer_mode"] == "cleanup_only"
+    finally:
+        await catalog.close()
+
+
+async def test_cleanup_only_registration_requires_v8_gateway_confirmation():
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with(
+        [
+            httpx.Response(200, json={"catalog_protocol_version": 8}),
+            httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "status": "active",
+                    "writer_mode": "cleanup_only",
+                    "catalog_protocol_version": 8,
+                },
+            ),
+            httpx.Response(200, json={"ok": True}),
+        ],
+        requests,
+    )
+    record = WorldRecord(
+        world_id="private",
+        name="private",
+        run_id="run",
+        parent_world_id=None,
+        status="active",
+        tick_head=0,
+        writer_mode="cleanup_only",
+    )
+    try:
+        with pytest.raises(RuntimeError, match="gateway protocol v8"):
+            await catalog.register_world(record)
+        assert [(request.method, request.url.path) for request in requests] == [
+            ("GET", "/ns/test/protocol"),
+            ("POST", "/ns/test/protocol/v8/worlds"),
+            ("PATCH", "/ns/test/worlds/private"),
+        ]
+    finally:
+        await catalog.close()
+
+
+async def test_cleanup_only_registration_never_falls_back_after_versioned_rejection():
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with(
+        [
+            httpx.Response(200, json={"catalog_protocol_version": 8}),
+            httpx.Response(404, json={"error": "bad_route"}),
+        ],
+        requests,
+    )
+    record = WorldRecord(
+        world_id="private",
+        name="private",
+        run_id="run",
+        parent_world_id=None,
+        status="active",
+        tick_head=0,
+        writer_mode="cleanup_only",
+    )
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            await catalog.register_world(record)
+        assert [(request.method, request.url.path) for request in requests] == [
+            ("GET", "/ns/test/protocol"),
+            ("POST", "/ns/test/protocol/v8/worlds"),
+        ]
+    finally:
+        await catalog.close()
+
+
+async def test_cleanup_only_registration_requires_exact_v8_response():
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with(
+        [
+            httpx.Response(200, json={"catalog_protocol_version": 8}),
+            httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "status": "active",
+                    "writer_mode": "cleanup_only",
+                    "catalog_protocol_version": 7,
+                    "gateway_protocol_version": 8,
+                },
+            ),
+            httpx.Response(200, json={"ok": True}),
+        ],
+        requests,
+    )
+    record = WorldRecord(
+        world_id="private",
+        name="private",
+        run_id="run",
+        parent_world_id=None,
+        status="active",
+        tick_head=0,
+        writer_mode="cleanup_only",
+    )
+    try:
+        with pytest.raises(RuntimeError, match="protocol v8"):
+            await catalog.register_world(record)
+        assert [(request.method, request.url.path) for request in requests] == [
+            ("GET", "/ns/test/protocol"),
+            ("POST", "/ns/test/protocol/v8/worlds"),
+            ("PATCH", "/ns/test/worlds/private"),
+        ]
+    finally:
+        await catalog.close()
+
+
+async def test_registration_mismatch_retirement_finishes_before_cancellation():
+    requests: list[httpx.Request] = []
+    retirement_entered = asyncio.Event()
+    release_retirement = asyncio.Event()
+    retirement_finished = asyncio.Event()
+    catalog = RemoteControlCatalog("https://catalog.invalid", "test")
+    await catalog._client.aclose()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(200, json={"catalog_protocol_version": 8})
+        if request.method == "POST":
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "status": "active",
+                    "writer_mode": "resumable",
+                    "catalog_protocol_version": 8,
+                    "gateway_protocol_version": 8,
+                },
+            )
+        retirement_entered.set()
+        await release_retirement.wait()
+        retirement_finished.set()
+        return httpx.Response(200, json={"ok": True})
+
+    catalog._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    record = WorldRecord(
+        world_id="private",
+        name="private",
+        run_id="run",
+        parent_world_id=None,
+        status="active",
+        tick_head=0,
+        writer_mode="cleanup_only",
+    )
+    task = asyncio.create_task(catalog.register_world(record))
+    try:
+        await asyncio.wait_for(retirement_entered.wait(), timeout=1.0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release_retirement.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=1.0)
+        assert retirement_finished.is_set()
+        assert [(request.method, request.url.path) for request in requests] == [
+            ("GET", "/ns/test/protocol"),
+            ("POST", "/ns/test/protocol/v8/worlds"),
+            ("PATCH", "/ns/test/worlds/private"),
+        ]
+    finally:
+        release_retirement.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await catalog.close()
+
+
+async def test_registration_mismatch_preserves_cancellation_and_retirement_failure():
+    retirement_entered = asyncio.Event()
+    release_retirement = asyncio.Event()
+    catalog = RemoteControlCatalog("https://catalog.invalid", "test")
+    await catalog._client.aclose()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"catalog_protocol_version": 8})
+        if request.method == "POST":
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "status": "active",
+                    "writer_mode": "resumable",
+                    "catalog_protocol_version": 8,
+                    "gateway_protocol_version": 8,
+                },
+            )
+        retirement_entered.set()
+        await release_retirement.wait()
+        raise RuntimeError("fail-closed retirement failed")
+
+    catalog._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    record = WorldRecord(
+        world_id="private",
+        name="private",
+        run_id="run",
+        parent_world_id=None,
+        status="active",
+        tick_head=0,
+        writer_mode="cleanup_only",
+    )
+    task = asyncio.create_task(catalog.register_world(record))
+    try:
+        await asyncio.wait_for(retirement_entered.wait(), timeout=1.0)
+        task.cancel()
+        release_retirement.set()
+        with pytest.raises(BaseExceptionGroup) as caught:
+            await asyncio.wait_for(task, timeout=1.0)
+
+        def leaves(error: BaseException) -> list[BaseException]:
+            if isinstance(error, BaseExceptionGroup):
+                return [leaf for child in error.exceptions for leaf in leaves(child)]
+            return [error]
+
+        failures = leaves(caught.value)
+        assert [type(failure) for failure in failures] == [
+            RuntimeError,
+            RuntimeError,
+            asyncio.CancelledError,
+        ]
+        assert [str(failure) for failure in failures[:2]] == [
+            "remote control catalog protocol v8 did not preserve immutable world writer mode",
+            "fail-closed retirement failed",
+        ]
+    finally:
+        release_retirement.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
         await catalog.close()
 
 

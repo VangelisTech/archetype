@@ -284,30 +284,40 @@ direct, non-durable, application-scoped registrations. The handlers accept no
 actor context and emit no parallel summary Component. They return typed reports
 carrying the authoritative `(world_id, run_id)` coordinates.
 
-Each live provider must expose `async aclose()`. A construction-injected
-registrar transfers every unique provider identity to `RuntimeResources`
-synchronously before world creation or a provider call, then holds an
-identity-ordered exclusive lease through the complete workflow. Reuse and
-dual-role clients are deduplicated for the process lifetime; operations that
-share any provider serialize, while disjoint providers may proceed
-concurrently. Cancellation retains ownership; failed closes retain only the
-failed owner for retry. Raw-client processors are internal and cannot be
-installed as a supported ownership bypass. Daft 0.7.19 has no deterministic
+Each live provider must expose `async aclose()`. Before ownership or effects, a
+construction-injected registrar validates every supplied role with Daft's exact
+serializer; accepted providers are serializable non-owning handles to
+host-owned backing resources. It then transfers every unique provider identity
+to `RuntimeResources` synchronously before world creation or a provider call
+and holds an identity-ordered exclusive lease through the complete workflow.
+Reuse and dual-role clients are deduplicated for the process lifetime;
+operations that share any provider serialize, while disjoint providers may
+proceed concurrently. Cancellation retains ownership; failed closes retain
+only the failed owner for retry. Raw-client processors are internal and cannot
+be installed as a supported ownership bypass. Daft 0.7.19 has no deterministic
 `@daft.cls` teardown hook, so worker-local provider Specs are unsupported. The
 host-owned provider close is authoritative; serialized processor handles may
 reconnect but may not own independent closeable or I/O-backed worker-local
-resources. The exact in-memory MuJoCo cartpole scratch exception is
-non-I/O and has no application-controlled close. Issue #667 tracks a future
-safe provider construction contract.
+resources. The exact in-memory MuJoCo cartpole scratch exception is non-I/O and
+has no application-controlled close. Issue #667 tracks a future safe provider
+construction contract.
 
-Each handler synchronously binds its closing world lease to the scoped lifetime
-token before the next workflow await, then retires that exact writer before
-releasing the provider lease. Registered public destroy and the retained
-physical handle join one process-owned cleanup transaction, and provider close
-waits for every associated retirement. A failure retains the exact cleanup and
-provider owners for later shutdown retry. Returned world/run coordinates remain
-durable read evidence, while ordinary attach/step operations cannot reactivate
-the provider processors.
+The registrar pre-reserves a process-owned cleanup slot before the handler may
+create a private evidence world. That world is active for tick materialization
+but carries immutable `writer_mode="cleanup_only"`. Each handler synchronously
+binds its closing-world lease to the scoped lifetime token before the next
+workflow await, then retires that exact writer before releasing the provider
+lease. The reserved owner holds a deferred cleanup resource from the moment it
+is created. If normal retention fails, the compensation authority binds that
+same already-owned resource to the exact lease before any cleanup await, so a
+failed compensation remains process-owned and provider close joins its
+shutdown retry. Failure to recover the binding falls back to direct exact-lease
+destruction, and multiple failures preserve every cause, including distinct
+caller and cleanup-originated cancellation. Registered public destroy and the
+retained physical handle join one process-owned cleanup transaction. Returned
+world/run coordinates remain durable read evidence, while mutable resume
+rejects the cleanup-only identity before storage or fencing and cannot
+reactivate the provider processors.
 
 The credential-free contract tests prove provider transfer ordering, identity
 deduplication, cancellation retention, retryable close, paired seeds, complete

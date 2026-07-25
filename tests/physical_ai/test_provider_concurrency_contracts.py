@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import asyncio
+import pickle
+import threading
 from typing import Any
 
 import pytest
@@ -31,8 +33,9 @@ class _StopWorkflow(Exception):
 
 
 class _Provider:
-    def __init__(self) -> None:
+    def __init__(self, *, close_events: list[str] | None = None) -> None:
         self.close_calls = 0
+        self.close_events = close_events
 
     def task_language(self) -> str:
         return "reach"
@@ -60,6 +63,14 @@ class _Provider:
 
     async def aclose(self) -> None:
         self.close_calls += 1
+        if self.close_events is not None:
+            self.close_events.append("provider")
+
+
+class _UnserializableProvider(_Provider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.live_handle = threading.Lock()
 
 
 class _NonCallableEnvClose:
@@ -151,12 +162,40 @@ async def test_lease_creation_validates_all_clients_before_atomic_registration(
         lifetimes.lease(env, _PropertyPolicyAct())
     assert _physical_owner_clients(resources) == ()
 
+    with pytest.raises(TypeError, match=r"environment.*serializable by Daft"):
+        lifetimes.lease(_UnserializableProvider())
+    assert _physical_owner_clients(resources) == ()
+    with pytest.raises(TypeError, match=r"policy.*serializable by Daft"):
+        lifetimes.lease(env, _UnserializableProvider())
+    assert _physical_owner_clients(resources) == ()
+
     lifetimes.lease(env, policy)
     assert set(_physical_owner_clients(resources)) == {env, policy}
 
     await resources.aclose()
     assert env.close_calls == 1
     assert policy.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_lease_accepts_the_exact_broader_daft_serialization_contract(
+    tmp_path,
+) -> None:
+    class _LocalProvider(_Provider):
+        pass
+
+    provider = _LocalProvider()
+    with pytest.raises((AttributeError, pickle.PicklingError)):
+        pickle.dumps(provider)
+
+    resources = build_test_runtime(tmp_path)
+    handler = resources.dispatcher._registry.resolve_name("evaluate_physical_task").handler
+    lifetimes = handler.args[0]
+    lifetimes.lease(provider, provider)
+
+    assert _physical_owner_clients(resources) == (provider,)
+    await resources.aclose()
+    assert provider.close_calls == 1
 
 
 @pytest.mark.asyncio
@@ -337,15 +376,14 @@ async def test_failed_retirement_is_process_owned_and_retried_before_close(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     resources = build_test_runtime(tmp_path)
-    provider = _Provider()
+    close_events: list[str] = []
+    provider = _Provider(close_events=close_events)
     dispatcher = resources.dispatcher
     physical = dispatcher._registry.resolve_name("evaluate_physical_task").handler
     worlds = physical.args[1]
     scheduler = dispatcher._scheduler
     original_cancel_world = scheduler.cancel_world
-    original_provider_close = provider.aclose
     cancel_calls = 0
-    close_events: list[str] = []
 
     async def fail_once(world_id: object) -> int:
         nonlocal cancel_calls
@@ -355,12 +393,7 @@ async def test_failed_retirement_is_process_owned_and_retried_before_close(
             raise RuntimeError("cancel failed once")
         return await original_cancel_world(world_id)
 
-    async def close_provider() -> None:
-        close_events.append("provider")
-        await original_provider_close()
-
     monkeypatch.setattr(scheduler, "cancel_world", fail_once)
-    monkeypatch.setattr(provider, "aclose", close_provider)
     with pytest.raises(RuntimeError, match="cancel failed once"):
         await dispatcher.apply(
             EvaluatePhysicalTask(

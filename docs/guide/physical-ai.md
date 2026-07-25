@@ -202,10 +202,14 @@ runtime method as an authentication boundary.
 
 `EnvClient` and `PolicyClient` are live host resources, not portable command
 payloads. Construction must be inert, and every provider must expose
-`async aclose()`. Passing a provider to either registered physical operation
-transfers that exact object to the runtime's process owner synchronously before
-world creation, policy reset, environment reset, or any other workflow or
-provider effect.
+`async aclose()`. Before any ownership transfer or effect, admission validates
+every supplied role and serializes the exact object with Daft's serializer.
+Accepted objects are serializable non-owning handles to host-owned backing
+resources; an opaque failure later in tick execution is not the admission
+boundary. Passing accepted providers to either registered physical operation
+then transfers those exact objects to the runtime's process owner synchronously
+before world creation, policy reset, environment reset, or any other workflow
+or provider effect.
 
 Ownership is deduplicated by object identity for the runtime lifetime. Reusing
 one provider across operations, or supplying the same object as both
@@ -233,6 +237,19 @@ so failed cleanup retains both owners for shutdown retry. The returned
 `world_id` and `run_id` remain valid durable query coordinates, including for
 nonterminal trials that hit `max_steps`, but attaching that identity cannot
 execute the retained provider processors because no live writer remains.
+
+The provider-scoped token contains a cleanup-owner reservation created before
+the handler may create its private evidence world. World creation durably marks
+the identity `writer_mode="cleanup_only"` while leaving it active for tick
+materialization. The reservation holds a deferred cleanup resource immediately.
+The handler binds the exact cleanup lease synchronously; if normal retention
+unexpectedly fails, a compensation-only authority binds that same pre-owned
+resource before cancellation-resistant exact-lease destruction. A failed
+compensation remains owned for shutdown retry and provider close joins it.
+Caller cancellation and cleanup-originated cancellation remain distinguishable
+when cleanup also fails; multiple failures preserve all causes. A hard process
+crash can leave active evidence rows, but mutable resume rejects their
+cleanup-only identity before storage or fence effects.
 
 Daft 0.7.19 provides no deterministic teardown hook for `@daft.cls` instances.
 Consequently, worker-local environment or policy Specs are unsupported and
@@ -299,10 +316,14 @@ The workflow enforces these contracts:
 7. The workflow binds and retires its exact live writer before releasing
    provider leases while preserving durable evidence addressable by the
    returned identifiers.
-8. Every unique provider identity transfers to process ownership before the
-   first effect, is exclusively leased for the full workflow, waits for its
-   associated exact-world cleanup, and remains owned across cancellation until
+8. Every provider passes exact Daft-serialization admission before ownership or
+   effects. Every unique accepted identity then transfers to process ownership,
+   is exclusively leased for the full workflow, waits for its associated
+   exact-world cleanup, and remains owned across cancellation until
    authoritative host shutdown succeeds.
+9. Cleanup ownership is reserved before private-world creation, and the
+   world's immutable cleanup-only writer mode prevents crash recovery from
+   reactivating provider processors.
 
 The credential-free contracts live under `tests/physical_ai/`. Real LIBERO,
 VLA, GPU, and Modal adapters remain external provider implementations and paid

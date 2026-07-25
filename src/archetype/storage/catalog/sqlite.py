@@ -67,13 +67,14 @@ from archetype.storage.catalog.records import (
     OutboxRecord,
     SignatureRecord,
     WorldRecord,
+    require_world_writer_mode,
     storage_fingerprint,
 )
 from archetype.storage.config import ControlCatalogConfig
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 9
+_SCHEMA_VERSION = 10
 
 
 def catalog_path_for(
@@ -109,7 +110,8 @@ CREATE TABLE IF NOT EXISTS worlds (
     run_id TEXT,
     parent_world_id TEXT,
     status TEXT NOT NULL,
-    tick_head INTEGER NOT NULL DEFAULT 0
+    tick_head INTEGER NOT NULL DEFAULT 0,
+    writer_mode TEXT NOT NULL DEFAULT 'resumable'
 );
 CREATE TABLE IF NOT EXISTS signatures (
     table_id TEXT PRIMARY KEY,
@@ -231,22 +233,43 @@ class SqliteControlCatalog:
                     )
                 conn.execute("PRAGMA synchronous=FULL")
                 conn.executescript(_DDL)
-                version = int(
-                    conn.execute(
-                        "SELECT value FROM catalog_meta WHERE key='schema_version'"
-                    ).fetchone()[0]
-                )
-                if version > _SCHEMA_VERSION:
-                    raise CatalogSchemaMismatchError(
-                        f"catalog {self.path} has schema_version={version}, "
-                        f"this build expects {_SCHEMA_VERSION}"
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    version = int(
+                        conn.execute(
+                            "SELECT value FROM catalog_meta WHERE key='schema_version'"
+                        ).fetchone()[0]
                     )
-                if version < _SCHEMA_VERSION:
-                    conn.execute(
-                        "UPDATE catalog_meta SET value=? WHERE key='schema_version'",
-                        (str(_SCHEMA_VERSION),),
-                    )
-                conn.commit()
+                    if version > _SCHEMA_VERSION:
+                        raise CatalogSchemaMismatchError(
+                            f"catalog {self.path} has schema_version={version}, "
+                            f"this build expects {_SCHEMA_VERSION}"
+                        )
+                    columns = {
+                        str(row["name"])
+                        for row in conn.execute("PRAGMA table_info(worlds)").fetchall()
+                    }
+                    if version < 10 and "writer_mode" not in columns:
+                        conn.execute(
+                            "ALTER TABLE worlds ADD COLUMN writer_mode TEXT "
+                            "NOT NULL DEFAULT 'resumable'"
+                        )
+                        columns.add("writer_mode")
+                    if "writer_mode" not in columns:
+                        raise CatalogSchemaMismatchError(
+                            f"catalog {self.path} schema_version={version} "
+                            "does not contain worlds.writer_mode"
+                        )
+                    if version < _SCHEMA_VERSION:
+                        conn.execute(
+                            "UPDATE catalog_meta SET value=? WHERE key='schema_version'",
+                            (str(_SCHEMA_VERSION),),
+                        )
+                except BaseException:
+                    conn.rollback()
+                    raise
+                else:
+                    conn.commit()
                 self._conn = conn
                 return conn
             except sqlite3.OperationalError as exc:
@@ -276,6 +299,8 @@ class SqliteControlCatalog:
     # ── worlds ───────────────────────────────────────────────────────────────
 
     async def register_world(self, record: WorldRecord) -> None:
+        require_world_writer_mode(record.writer_mode)
+
         def _register() -> None:
             conn = self._connect_sync()
             with conn:
@@ -286,10 +311,16 @@ class SqliteControlCatalog:
                 if row is not None:
                     existing = _world_from_row(row)
                     # Identity fields must agree; status/tick may have advanced.
-                    if (existing.name, existing.run_id, existing.parent_world_id) != (
+                    if (
+                        existing.name,
+                        existing.run_id,
+                        existing.parent_world_id,
+                        existing.writer_mode,
+                    ) != (
                         record.name,
                         record.run_id,
                         record.parent_world_id,
+                        record.writer_mode,
                     ):
                         raise CatalogConflictError(
                             f"world {record.world_id} already registered with "
@@ -298,8 +329,8 @@ class SqliteControlCatalog:
                     return
                 conn.execute(
                     "INSERT INTO worlds "
-                    "(world_id, name, run_id, parent_world_id, status, tick_head) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    "(world_id, name, run_id, parent_world_id, status, tick_head, "
+                    "writer_mode) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
                         record.world_id,
                         record.name,
@@ -307,6 +338,7 @@ class SqliteControlCatalog:
                         record.parent_world_id,
                         record.status,
                         record.tick_head,
+                        record.writer_mode,
                     ),
                 )
 
@@ -1307,4 +1339,5 @@ def _world_from_row(row: sqlite3.Row) -> WorldRecord:
         parent_world_id=row["parent_world_id"],
         status=row["status"],
         tick_head=int(row["tick_head"]),
+        writer_mode=row["writer_mode"],
     )

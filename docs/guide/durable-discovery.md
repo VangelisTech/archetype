@@ -29,6 +29,7 @@ lifts the single-host limit. The catalog is
 |---|---|
 | World identity (`world_id`, `name`, `run_id`, `parent_world_id`) | Authoritative. Registration failure fails `create_world`/`fork_world`. |
 | World status (`active`, `destroyed`) | Authoritative for catalog state; destroyed worlds stay discoverable (their rows are still queryable; append-only). |
+| Immutable writer mode (`resumable`, `cleanup_only`) | Authoritative for mutable reconstruction. Legacy rows default to `resumable`; cleanup-only and unknown future modes remain discoverable and queryable but fail closed before mutable resume opens storage or fences a writer. |
 | Tick head | Advisory until A2 manifests land. Post-step updates log loudly on failure but never fail a tick whose data-plane writes succeeded. |
 | Archetype signatures (component names, schema descriptor, fingerprint) | Authoritative descriptor for cold reads; guarded by fingerprint check (section 5). |
 
@@ -52,8 +53,20 @@ other.
 The catalog opens with WAL journaling, `synchronous=FULL`, a busy timeout,
 and `BEGIN IMMEDIATE` transactions. Concurrent processes racing to register
 the same world converge on exactly one row: identical re-registration is a
-no-op; a differing record for the same `world_id` raises
+no-op; a differing immutable identity, including writer mode, for the same
+`world_id` raises
 `CatalogConflictError`.
+
+Remote cleanup-only registration is a versioned deployment handshake, not an
+ordinary Directory write. The public v8 Worker route is rewritten to a
+Directory-internal host and route that no older outer Worker or older resident
+Directory recognizes, so either direction of rollout skew rejects before the
+Directory mutates SQL. After the Directory write, the outer Worker MUST mirror
+the status into the per-world control authority before returning separate
+catalog-v8 and gateway-v8 confirmations. A client accepts the record only when
+both confirmations and the exact `writer_mode="cleanup_only"` marker are
+present; otherwise it retires the record fail-closed without allowing caller
+cancellation to interrupt that retirement.
 
 ## 3. Governed discovery operations
 

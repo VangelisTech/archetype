@@ -12,6 +12,7 @@ operations = [
   "interfaces.PhysicalClientLifetimeRegistrar.lease",
   "interfaces.PhysicalEvidenceWorldRetirement.aclose",
   "interfaces.PhysicalWorkflowLifetime.retain_evidence_world",
+  "interfaces.PhysicalWorkflowLifetime.retain_evidence_world_for_compensation",
 ]
 signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome"]
@@ -21,6 +22,7 @@ evidence = [
   "tests/physical_ai/test_task_evaluation.py",
   "tests/physical_ai/test_instruction_sweep.py",
   "tests/physical_ai/test_provider_concurrency_contracts.py",
+  "tests/physical_ai/test_provider_lifetime_contracts.py",
 ]
 rationale = "Physical evaluation produces queryable ledger evidence; a second workflow signal would duplicate rather than strengthen that authority."
 

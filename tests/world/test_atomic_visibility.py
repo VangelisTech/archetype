@@ -333,6 +333,34 @@ async def test_cold_resume_retains_exact_manifest_head_for_fresh_projector(
     assert registry.required_projector(world_id) is projector
 
 
+@pytest.mark.parametrize("writer_mode", ["cleanup_only", "future_mode"])
+async def test_mutable_resume_rejects_every_nonresumable_writer_mode_before_fencing(
+    writer_mode: str,
+) -> None:
+    lifecycle_module = import_module("archetype.world.lifecycle")
+    events: list[tuple[Any, ...]] = []
+    world_id = "00000000-0000-7000-8000-000000000084"
+    record = WorldRecord(
+        world_id=world_id,
+        name="private-evidence",
+        run_id=str(uuid7()),
+        parent_world_id=None,
+        status="active",
+        tick_head=1,
+        writer_mode=writer_mode,
+    )
+    lifecycle = lifecycle_module.WorldLifecycle(
+        _Storage(_Catalog(record, events), events),
+        _Registry(events),
+    )
+
+    with pytest.raises(RuntimeError, match=rf"{writer_mode}.*not resumable"):
+        await lifecycle.open_world_mutable(StorageConfig(), world_id)
+
+    assert not any(event[0] == "fence" for event in events)
+    assert not any(event[0] == "store" for event in events)
+
+
 @pytest.mark.parametrize("recorded_run_id", [None, "not-a-uuid", str(UUID(int=1))])
 async def test_resume_rejects_missing_or_non_uuid7_identity_before_fencing(
     recorded_run_id: str | None,

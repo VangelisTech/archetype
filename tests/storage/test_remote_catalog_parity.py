@@ -175,6 +175,94 @@ async def test_worker_rejects_run_identity_patch_atomically(worker_url):
         assert fetched.json()["run_id"] == world.run_id
         assert fetched.json()["status"] == world.status
 
+        rejected_mode = await client.patch(
+            f"/ns/{namespace}/worlds/{world.world_id}",
+            json={"writer_mode": "cleanup_only", "status": "destroyed"},
+        )
+        assert rejected_mode.status_code == 422
+        assert rejected_mode.json()["error"] == "immutable_identity"
+
+        fetched = await client.get(f"/ns/{namespace}/worlds/{world.world_id}")
+        assert fetched.status_code == 200
+        assert fetched.json()["writer_mode"] == "resumable"
+        assert fetched.json()["status"] == world.status
+
+
+async def test_worker_rejects_unversioned_cleanup_only_without_effect(worker_url):
+    import httpx
+
+    namespace = f"unversioned-cleanup-{uuid.uuid4().hex[:12]}"
+    headers = {"authorization": f"Bearer {WORKER_TOKEN}"}
+    world = _world("private", writer_mode="cleanup_only")
+    async with httpx.AsyncClient(base_url=worker_url, headers=headers) as client:
+        rejected = await client.post(f"/ns/{namespace}/worlds", json=world.__dict__)
+        assert rejected.status_code == 422
+
+        fetched = await client.get(f"/ns/{namespace}/worlds/{world.world_id}")
+        assert fetched.status_code == 404
+        status = await client.get(f"/ns/{namespace}/w/{world.world_id}/status")
+        assert status.status_code == 404
+
+
+async def test_worker_confirms_v8_gateway_after_cleanup_only_status_mirror(worker_url):
+    import httpx
+
+    namespace = f"gateway-confirmation-{uuid.uuid4().hex[:12]}"
+    headers = {"authorization": f"Bearer {WORKER_TOKEN}"}
+    world = _world("private", writer_mode="cleanup_only")
+    async with httpx.AsyncClient(base_url=worker_url, headers=headers) as client:
+        registered = await client.post(
+            f"/ns/{namespace}/protocol/v8/worlds",
+            json=world.__dict__,
+        )
+        assert registered.status_code == 200
+        assert registered.json()["catalog_protocol_version"] == 8
+        assert registered.json()["gateway_protocol_version"] == 8
+
+        status = await client.get(f"/ns/{namespace}/w/{world.world_id}/status")
+        assert status.status_code == 200
+        assert status.json()["status"] == "active"
+
+
+async def test_worker_rejects_public_directory_internal_route_without_effect(worker_url):
+    import httpx
+
+    namespace = f"internal-route-{uuid.uuid4().hex[:12]}"
+    headers = {"authorization": f"Bearer {WORKER_TOKEN}"}
+    world = _world("private", writer_mode="cleanup_only")
+    async with httpx.AsyncClient(base_url=worker_url, headers=headers) as client:
+        rejected = await client.post(
+            f"/ns/{namespace}/_gateway/v8/worlds",
+            json=world.__dict__,
+        )
+        assert rejected.status_code == 404
+
+        fetched = await client.get(f"/ns/{namespace}/worlds/{world.world_id}")
+        assert fetched.status_code == 404
+
+
+@pytest.mark.parametrize("writer_mode", [None, "future_mode"])
+async def test_worker_rejects_invalid_writer_mode_without_effect(
+    worker_url,
+    writer_mode,
+):
+    import httpx
+
+    namespace = f"invalid-writer-mode-{uuid.uuid4().hex[:12]}"
+    headers = {"authorization": f"Bearer {WORKER_TOKEN}"}
+    payload = _world("invalid").__dict__ | {"writer_mode": writer_mode}
+    async with httpx.AsyncClient(base_url=worker_url, headers=headers) as client:
+        rejected = await client.post(
+            f"/ns/{namespace}/protocol/v8/worlds",
+            json=payload,
+        )
+        assert rejected.status_code == 422
+
+        fetched = await client.get(f"/ns/{namespace}/worlds/invalid")
+        assert fetched.status_code == 404
+        status = await client.get(f"/ns/{namespace}/w/invalid/status")
+        assert status.status_code == 404
+
 
 async def test_world_registration_parity(tmp_path, worker_url):
     for catalog in await _both(tmp_path, worker_url):
@@ -189,6 +277,18 @@ async def test_world_registration_parity(tmp_path, worker_url):
         assert (await catalog.get_world("w1")).status == "destroyed"
         listed = await catalog.list_worlds()
         assert [w.world_id for w in listed] == ["w1"]
+        await catalog.close()
+
+
+async def test_cleanup_only_world_registration_parity(tmp_path, worker_url):
+    for catalog in await _both(tmp_path, worker_url):
+        await catalog.register_world(_world("private", writer_mode="cleanup_only"))
+        record = await catalog.get_world("private")
+        assert record is not None
+        assert record.status == "active"
+        assert record.writer_mode == "cleanup_only"
+        with pytest.raises(CatalogConflictError):
+            await catalog.register_world(_world("private", writer_mode="resumable"))
         await catalog.close()
 
 

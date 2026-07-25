@@ -59,7 +59,8 @@ Creation:
 1. serializes activation for the exact `world_id`;
 2. validates the live ID and name indexes;
 3. resolves the storage backend through `iStorageService`;
-4. registers an active durable world with a fresh immutable UUIDv7 `run_id`;
+4. registers an active, `resumable` durable world with a fresh immutable UUIDv7
+   `run_id`;
 5. acquires a writer fence;
 6. binds a commit coordinator to world, run, and writer epoch;
 7. calls the module-level `build_world(...)` constructor with the scheduler
@@ -84,6 +85,26 @@ ever becoming public live work. It performs the same durable construction as
 `WorldCleanupLease` and returns `(world, lease)`. There is no interval in which
 another public operation can acquire the world lock: `registry.operation(...)`
 rejects with `WorldClosingError` from the first visible binding.
+
+The catalog records these worlds as `status="active"` with immutable
+`writer_mode="cleanup_only"` from their first registration. Active status is
+required while the scheduler materializes commands at tick boundaries;
+`cleanup_only` is the orthogonal crash rule that prevents a fresh process from
+reconstructing the writer as ordinary mutable work. A crashed workflow's
+published rows therefore remain discoverable and queryable, but the provider
+processors can never be reactivated through mutable resume.
+
+Physical workflow composition reserves a process-owned cleanup slot before it
+may create a closing world, then synchronously binds the returned exact cleanup
+lease into that slot before the next workflow await. The slot owns a deferred
+cleanup resource from reservation time. If normal retention unexpectedly
+fails, a distinct compensation authority binds that same pre-owned resource
+before awaiting cleanup, so a failed cleanup remains process-owned for shutdown
+retry and provider close still joins it. If exact binding itself cannot be
+recovered, the handler completes direct exact-lease destruction despite
+cancellation. Multiple failures are reported as an aggregate rather than
+abandoning any cause.
+
 Public `ListWorlds` omits closing entries, entries removed after its
 point-in-time snapshot, and same-ID replacement bindings created after that
 snapshot, so one private or concurrently retiring writer cannot make unrelated
@@ -227,10 +248,12 @@ unreconstructable. Once the fence is acquired, any failure is
 operator-visible: the prior writer is stale and the caller must correct the
 cause before retrying.
 
-Resume refuses unknown, destroyed, already-live, corrupt-lineage, missing-run,
-and unresolved-or-schema-drifted worlds. It never guesses. Processors,
-resources, and hooks are code rather than rows and must be reattached by the
-caller.
+Resume requires both `status="active"` and `writer_mode="resumable"`. It
+refuses destroyed worlds, `cleanup_only` evidence worlds, unknown future writer
+modes, already-live worlds, corrupt lineage, missing runs, and unresolved or
+schema-drifted worlds. Status and writer-mode refusal happens before opening a
+store or acquiring a writer fence. Resume never guesses. Processors, resources,
+and hooks are code rather than rows and must be reattached by the caller.
 
 When a required projector is configured, resume reconstructs the manifest-head
 `CommittedTickReceipt` and retains it for idempotent acknowledgment before a

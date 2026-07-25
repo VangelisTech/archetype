@@ -225,6 +225,7 @@ async def test_create_registers_final_uuid7_before_bound_construction(
     assert registry.projector is projector
     world_id = str(world.world_id)
     run_id = str(world.run_id)
+    assert catalog.records[world_id].writer_mode == "resumable"
     assert events == [
         ("activation-enter", world_id),
         ("store",),
@@ -282,6 +283,8 @@ async def test_create_closing_world_is_atomically_non_public_and_exactly_cleanab
     async with registry.cleanup_operation(lease) as exact_world:
         assert exact_world is world
 
+    assert catalog.records[str(world.world_id)].status == "active"
+    assert catalog.records[str(world.world_id)].writer_mode == "cleanup_only"
     await lifecycle.destroy_world(world.world_id, lease=lease)
     assert not await registry.contains(world.world_id)
     assert ("status", str(world.world_id), "destroyed") in events
@@ -419,6 +422,8 @@ async def test_fork_mints_identity_and_wires_fresh_projector_binding() -> None:
     assert fork._materialize_commands is materialize_commands
     assert len(projectors) == 2
     assert projectors[0] is not projectors[1]
+    assert catalog.records[str(source.world_id)].writer_mode == "resumable"
+    assert catalog.records[str(fork.world_id)].writer_mode == "resumable"
     assert registry.required_projector(str(source.world_id)) is projectors[0]
     assert registry.required_projector(str(fork.world_id)) is projectors[1]
 

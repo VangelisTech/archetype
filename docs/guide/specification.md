@@ -641,6 +641,11 @@ retryable failures remain recoverable and exhausted failures become terminal.
 - Managed `step()` MUST receive an explicit `RunConfig` from the caller; it
   MUST NOT mint a fresh `RunConfig` per call. The world's active `run_id`, not
   reuse of a particular config object, provides continuity across calls.
+- Private physical-evidence worlds MUST remain `status="active"` while they
+  materialize ticks and MUST carry immutable `writer_mode="cleanup_only"` from
+  first durable registration. Mutable resume MUST require both active status
+  and `writer_mode="resumable"` and refuse cleanup-only or unknown future modes
+  before opening storage or acquiring a writer fence.
 - `run()` MUST thread the caller's `RunConfig` into every `step()` call while
   preserving and reporting the world's active `run_id`.
 - After publication, a configured required projector MUST consume and
@@ -701,6 +706,21 @@ retryable failures remain recoverable and exhausted failures become terminal.
   `AuditLog`, `CommandDispatcher`, world graph, and application service graph,
   then returns one `RuntimeResources`.
 - Process shutdown MUST be explicit and distinct from per-world removal.
+- Physical-provider admission MUST validate each supplied role with Daft's
+  exact serializer before ownership transfer, world creation, or provider
+  effects. Accepted providers are serializable non-owning handles; independently
+  owned closeable worker resources require a separate executor-teardown
+  contract.
+- Physical workflow composition MUST reserve process-owned cleanup before
+  private-world creation. The reservation MUST immediately own a deferred
+  cleanup resource, and the scoped lifetime MUST synchronously bind the exact
+  returned lease into that resource. If normal retention fails, a distinct
+  compensation authority MUST bind the same pre-owned resource before awaiting
+  cleanup, so compensation failure remains owned for shutdown retry and
+  provider close joins it. Direct exact-lease fallback MUST complete despite
+  cancellation when binding cannot be recovered. Every retention and
+  compensation failure MUST remain visible; caller cancellation and
+  cleanup-originated cancellation MUST NOT be conflated.
 - Shutdown stops and drains dispatcher admission, joins supervised work, then
   closes workflow handles, world handles, audit, and owned storage in that
   order. It attempts every owner in a phase, aggregates labelled original

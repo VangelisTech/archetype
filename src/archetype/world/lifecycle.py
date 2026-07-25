@@ -256,6 +256,7 @@ class WorldLifecycle:
                             parent_world_id=None,
                             status="active",
                             tick_head=config.tick,
+                            writer_mode=("cleanup_only" if closing else "resumable"),
                         )
                     )
                     registered = True
@@ -382,6 +383,7 @@ class WorldLifecycle:
                         parent_world_id=str(source_world_id),
                         status="active",
                         tick_head=source.tick,
+                        writer_mode="resumable",
                     )
                 )
                 registered = True
@@ -472,9 +474,15 @@ class WorldLifecycle:
             record = await catalog.get_world(key)
             if record is None:
                 raise KeyError(f"world {key} is not recorded in catalog for {storage_config.uri}")
-            if record.status == "destroyed":
+            if record.status != "active":
                 raise RuntimeError(
-                    f"world {key} is destroyed: queryable through read paths, not resumable"
+                    f"world {key} has catalog status {record.status!r}: "
+                    "queryable through read paths, not resumable"
+                )
+            if record.writer_mode != "resumable":
+                raise RuntimeError(
+                    f"world {key} has writer mode {record.writer_mode!r} and is not resumable; "
+                    "cleanup-only evidence remains queryable through read paths"
                 )
             if record.name and await self._registry.contains_name(record.name):
                 raise RuntimeError(

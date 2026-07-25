@@ -164,7 +164,10 @@ is what makes maintenance safe:
 
 - No physical resumability: a crashed MuJoCo (or any external-process)
   execution is queryable up to its last published tick, not resumable
-  mid-physics.
+  mid-physics. Physical evidence worlds are durably registered with immutable
+  `writer_mode="cleanup_only"` while retaining `status="active"` for ordinary
+  tick materialization. Mutable resume requires `writer_mode="resumable"`, so
+  a process crash cannot reactivate the serialized provider processors.
 - Cross-host fencing requires the remote control catalog
   (``ARCHETYPE_CONTROL_CATALOG_URL`` plus
   ``ARCHETYPE_CONTROL_CATALOG_TOKEN``, captured once by the application

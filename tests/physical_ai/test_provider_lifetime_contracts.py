@@ -186,6 +186,16 @@ def _physical_lifetime_clients(lifetimes: Any) -> tuple[object, ...]:
     return tuple(entry.client for entry in lifetimes._entries.values())
 
 
+def _world_cleanup_owner_names(resources: Any) -> tuple[str, ...]:
+    return tuple(owner for owner in resources._owners if owner.startswith("world-cleanup:"))
+
+
+def _exception_leaves(error: BaseException) -> list[BaseException]:
+    if isinstance(error, BaseExceptionGroup):
+        return [leaf for child in error.exceptions for leaf in _exception_leaves(child)]
+    return [error]
+
+
 def test_family_lifetime_boundary_has_no_process_owner_import_or_durable_metadata() -> None:
     forbidden_prefixes = (
         "archetype.app",
@@ -364,6 +374,468 @@ async def test_missing_async_close_rejects_before_workflow_effect(
         assert _physical_owner_clients(resources) == ()
     finally:
         await resources.aclose()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_owner_reservation_failure_precedes_world_creation(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    effects: list[str] = []
+
+    async def forbidden_effect(
+        _self: WorldLifecycle,
+        *_args: object,
+        **_kwargs: object,
+    ) -> None:
+        effects.append("create_closing_world")
+        raise _StopWorkflow
+
+    def fail_reservation() -> None:
+        raise RuntimeError("cleanup reservation unavailable")
+
+    monkeypatch.setattr(WorldLifecycle, "create_closing_world", forbidden_effect)
+    resources = build_test_runtime(tmp_path)
+    handler = resources.dispatcher._registry.resolve_name("evaluate_physical_task").handler
+    lifetimes = handler.args[0]
+    monkeypatch.setattr(
+        lifetimes._cleanup_lifetimes,
+        "reserve",
+        fail_reservation,
+        raising=False,
+    )
+    provider = _CloseableEnv()
+    operation = EvaluatePhysicalTask(
+        config=PhysicalTaskEvalConfig(
+            suite="reservation",
+            task_id=1,
+            trials=1,
+            max_steps=1,
+        ),
+        env_client=provider,
+        policy_client=provider,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="cleanup reservation unavailable"):
+            await resources.dispatcher.apply(operation)
+        assert effects == []
+        assert _world_cleanup_owner_names(resources) == ()
+    finally:
+        await resources.aclose()
+    assert provider.close_calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation_name", ["evaluate", "sweep"])
+async def test_retain_failure_compensates_the_exact_new_evidence_world(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation_name: str,
+) -> None:
+    storage = StorageConfig(
+        uri=str(tmp_path / "store"),
+        namespace=f"retain-failure-{operation_name}",
+    )
+    resources = build_test_runtime(tmp_path)
+    handler = resources.dispatcher._registry.resolve_name("evaluate_physical_task").handler
+    lifetimes, worlds, _lifecycle, storage_service = handler.args[:4]
+
+    def fail_retain(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("retain failed after create")
+
+    monkeypatch.setattr(lifetimes._cleanup_lifetimes, "retain", fail_retain)
+    provider = _CloseableEnv()
+    if operation_name == "evaluate":
+        operation = EvaluatePhysicalTask(
+            config=PhysicalTaskEvalConfig(
+                suite="retain-failure",
+                task_id=1,
+                trials=1,
+                max_steps=1,
+                storage=storage,
+            ),
+            env_client=provider,
+            policy_client=provider,
+        )
+    else:
+        operation = SweepPhysicalInstructions(
+            config=InstructionSweepConfig(
+                suite="retain-failure",
+                task_id=1,
+                variants=("reach",),
+                seeds_per_variant=1,
+                max_steps=1,
+                storage=storage,
+            ),
+            env_client=provider,
+            policy_client=provider,
+        )
+
+    try:
+        with pytest.raises(RuntimeError, match="retain failed after create"):
+            await resources.dispatcher.apply(operation)
+
+        assert await worlds.list_worlds() == []
+        records = await storage_service.get_control_catalog(storage).list_worlds()
+        assert len(records) == 1
+        assert records[0].writer_mode == "cleanup_only"
+        assert records[0].status == "destroyed"
+        assert _world_cleanup_owner_names(resources) == ()
+    finally:
+        await resources.aclose()
+    assert provider.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_compensation_recovers_cleanup_bound_before_metadata_failure(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = StorageConfig(
+        uri=str(tmp_path / "store"),
+        namespace="retain-partial-bind",
+    )
+    resources = build_test_runtime(tmp_path)
+    handler = resources.dispatcher._registry.resolve_name("evaluate_physical_task").handler
+    lifetimes, worlds, _lifecycle, storage_service = handler.args[:4]
+    original_associate = lifetimes._cleanup_lifetimes._associate_providers
+    associate_calls = 0
+
+    def fail_first_association(entry: Any, provider_ids: frozenset[int]) -> None:
+        nonlocal associate_calls
+        associate_calls += 1
+        if associate_calls == 1:
+            raise RuntimeError("provider association failed after exact bind")
+        original_associate(entry, provider_ids)
+
+    monkeypatch.setattr(
+        lifetimes._cleanup_lifetimes,
+        "_associate_providers",
+        fail_first_association,
+    )
+    provider = _CloseableEnv()
+    operation = EvaluatePhysicalTask(
+        config=PhysicalTaskEvalConfig(
+            suite="retain-partial-bind",
+            task_id=1,
+            trials=1,
+            max_steps=1,
+            storage=storage,
+        ),
+        env_client=provider,
+        policy_client=provider,
+    )
+    try:
+        with pytest.raises(
+            RuntimeError,
+            match="provider association failed after exact bind",
+        ):
+            await resources.dispatcher.apply(operation)
+
+        assert associate_calls == 2
+        assert await worlds.list_worlds() == []
+        records = await storage_service.get_control_catalog(storage).list_worlds()
+        assert len(records) == 1
+        assert records[0].writer_mode == "cleanup_only"
+        assert records[0].status == "destroyed"
+        assert _world_cleanup_owner_names(resources) == ()
+    finally:
+        await resources.aclose()
+    assert provider.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_cancellation_waits_for_retain_failure_compensation(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = StorageConfig(
+        uri=str(tmp_path / "store"),
+        namespace="retain-cancel",
+    )
+    resources = build_test_runtime(tmp_path)
+    handler = resources.dispatcher._registry.resolve_name("evaluate_physical_task").handler
+    lifetimes, worlds, lifecycle, storage_service = handler.args[:4]
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    original_destroy = lifecycle.destroy_world
+
+    def fail_retain(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("retain failed before cancellation")
+
+    async def blocked_destroy(
+        world_id: object,
+        *,
+        lease: Any | None = None,
+    ) -> None:
+        entered.set()
+        await release.wait()
+        await original_destroy(world_id, lease=lease)
+
+    monkeypatch.setattr(lifetimes._cleanup_lifetimes, "retain", fail_retain)
+    monkeypatch.setattr(lifecycle, "destroy_world", blocked_destroy)
+    provider = _CloseableEnv()
+    operation = EvaluatePhysicalTask(
+        config=PhysicalTaskEvalConfig(
+            suite="retain-cancel",
+            task_id=1,
+            trials=1,
+            max_steps=1,
+            storage=storage,
+        ),
+        env_client=provider,
+        policy_client=provider,
+    )
+    task = asyncio.create_task(resources.dispatcher.apply(operation))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=1.0)
+        task.cancel()
+        release.set()
+        with pytest.raises(BaseExceptionGroup) as caught:
+            await asyncio.wait_for(task, timeout=1.0)
+        leaves = _exception_leaves(caught.value)
+        assert [type(leaf) for leaf in leaves] == [RuntimeError, asyncio.CancelledError]
+        assert str(leaves[0]) == "retain failed before cancellation"
+
+        assert await worlds.list_worlds() == []
+        records = await storage_service.get_control_catalog(storage).list_worlds()
+        assert len(records) == 1
+        assert records[0].writer_mode == "cleanup_only"
+        assert records[0].status == "destroyed"
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await resources.aclose()
+    assert provider.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_direct_fallback_cancellation_preserves_both_retain_failures(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = StorageConfig(
+        uri=str(tmp_path / "store"),
+        namespace="retain-direct-cancel",
+    )
+    resources = build_test_runtime(tmp_path)
+    handler = resources.dispatcher._registry.resolve_name("evaluate_physical_task").handler
+    lifetimes, worlds, lifecycle, storage_service = handler.args[:4]
+    original_destroy = lifecycle.destroy_world
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    def fail_retain(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("retain failed 1")
+
+    def fail_reserved(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("retain failed 2")
+
+    async def blocked_destroy(
+        world_id: object,
+        *,
+        lease: Any | None = None,
+    ) -> None:
+        entered.set()
+        await release.wait()
+        await original_destroy(world_id, lease=lease)
+
+    monkeypatch.setattr(lifetimes._cleanup_lifetimes, "retain", fail_retain)
+    monkeypatch.setattr(
+        lifetimes._cleanup_lifetimes,
+        "retain_reserved",
+        fail_reserved,
+        raising=False,
+    )
+    monkeypatch.setattr(lifecycle, "destroy_world", blocked_destroy)
+    provider = _CloseableEnv()
+    operation = EvaluatePhysicalTask(
+        config=PhysicalTaskEvalConfig(
+            suite="retain-direct-cancel",
+            task_id=1,
+            trials=1,
+            max_steps=1,
+            storage=storage,
+        ),
+        env_client=provider,
+        policy_client=provider,
+    )
+    task = asyncio.create_task(resources.dispatcher.apply(operation))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=1.0)
+        task.cancel()
+        release.set()
+        with pytest.raises(BaseExceptionGroup) as caught:
+            await asyncio.wait_for(task, timeout=1.0)
+        leaves = _exception_leaves(caught.value)
+        assert [type(leaf) for leaf in leaves] == [
+            RuntimeError,
+            RuntimeError,
+            asyncio.CancelledError,
+        ]
+        assert [str(leaf) for leaf in leaves[:2]] == [
+            "retain failed 1",
+            "retain failed 2",
+        ]
+
+        records = await storage_service.get_control_catalog(storage).list_worlds()
+        assert len(records) == 1
+        assert records[0].status == "destroyed"
+        assert records[0].writer_mode == "cleanup_only"
+        assert not await worlds.contains(records[0].world_id)
+        assert _world_cleanup_owner_names(resources) == ()
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await resources.aclose()
+    assert provider.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_retain_compensation_remains_owned_for_shutdown_retry(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = StorageConfig(
+        uri=str(tmp_path / "store"),
+        namespace="retain-compensation-retry",
+    )
+    resources = build_test_runtime(tmp_path)
+    handler = resources.dispatcher._registry.resolve_name("evaluate_physical_task").handler
+    lifetimes, worlds, lifecycle, storage_service = handler.args[:4]
+    original_destroy = lifecycle.destroy_world
+    events: list[str] = []
+    destroy_calls = 0
+
+    class _OrderedProvider(_CloseableEnv):
+        async def aclose(self) -> None:
+            events.append("provider")
+            await super().aclose()
+
+    def fail_retain(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("retain failed after create")
+
+    async def fail_destroy_once(
+        world_id: object,
+        *,
+        lease: Any | None = None,
+    ) -> None:
+        nonlocal destroy_calls
+        destroy_calls += 1
+        events.append(f"destroy:{destroy_calls}")
+        if destroy_calls == 1:
+            raise RuntimeError("destroy failed once")
+        await original_destroy(world_id, lease=lease)
+
+    monkeypatch.setattr(lifetimes._cleanup_lifetimes, "retain", fail_retain)
+    monkeypatch.setattr(lifecycle, "destroy_world", fail_destroy_once)
+    provider = _OrderedProvider()
+    operation = EvaluatePhysicalTask(
+        config=PhysicalTaskEvalConfig(
+            suite="retain-compensation-retry",
+            task_id=1,
+            trials=1,
+            max_steps=1,
+            storage=storage,
+        ),
+        env_client=provider,
+        policy_client=provider,
+    )
+
+    with pytest.raises(BaseExceptionGroup) as caught:
+        await resources.dispatcher.apply(operation)
+    assert [str(exc) for exc in caught.value.exceptions] == [
+        "retain failed after create",
+        "destroy failed once",
+    ]
+
+    records = await storage_service.get_control_catalog(storage).list_worlds()
+    assert len(records) == 1
+    world_id = records[0].world_id
+    assert records[0].writer_mode == "cleanup_only"
+    assert records[0].status == "active"
+    assert await worlds.contains(world_id)
+    assert len(_world_cleanup_owner_names(resources)) == 1
+
+    await resources.aclose()
+
+    assert destroy_calls == 2
+    assert not await worlds.contains(world_id)
+    assert provider.close_calls == 1
+    assert events == ["destroy:1", "destroy:2", "provider"]
+    final_record = await storage_service.get_control_catalog(storage).get_world(world_id)
+    assert final_record is not None
+    assert final_record.status == "destroyed"
+
+
+@pytest.mark.asyncio
+async def test_cleanup_originated_cancellation_preserves_retain_failure_and_retry(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = StorageConfig(
+        uri=str(tmp_path / "store"),
+        namespace="retain-cleanup-cancel",
+    )
+    resources = build_test_runtime(tmp_path)
+    handler = resources.dispatcher._registry.resolve_name("evaluate_physical_task").handler
+    lifetimes, worlds, lifecycle, storage_service = handler.args[:4]
+    original_destroy = lifecycle.destroy_world
+    destroy_calls = 0
+
+    def fail_retain(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("retain failed after create")
+
+    async def cancel_destroy_once(
+        world_id: object,
+        *,
+        lease: Any | None = None,
+    ) -> None:
+        nonlocal destroy_calls
+        destroy_calls += 1
+        if destroy_calls == 1:
+            raise asyncio.CancelledError("cleanup cancelled internally")
+        await original_destroy(world_id, lease=lease)
+
+    monkeypatch.setattr(lifetimes._cleanup_lifetimes, "retain", fail_retain)
+    monkeypatch.setattr(lifecycle, "destroy_world", cancel_destroy_once)
+    provider = _CloseableEnv()
+    operation = EvaluatePhysicalTask(
+        config=PhysicalTaskEvalConfig(
+            suite="retain-cleanup-cancel",
+            task_id=1,
+            trials=1,
+            max_steps=1,
+            storage=storage,
+        ),
+        env_client=provider,
+        policy_client=provider,
+    )
+
+    with pytest.raises(BaseExceptionGroup) as caught:
+        await resources.dispatcher.apply(operation)
+    leaves = _exception_leaves(caught.value)
+    assert [type(leaf) for leaf in leaves] == [RuntimeError, asyncio.CancelledError]
+    assert [str(leaf) for leaf in leaves] == [
+        "retain failed after create",
+        "cleanup cancelled internally",
+    ]
+
+    record = (await storage_service.get_control_catalog(storage).list_worlds())[0]
+    assert record.status == "active"
+    assert record.writer_mode == "cleanup_only"
+    assert await worlds.contains(record.world_id)
+    assert len(_world_cleanup_owner_names(resources)) == 1
+
+    await resources.aclose()
+
+    assert destroy_calls == 2
+    assert not await worlds.contains(record.world_id)
+    assert provider.close_calls == 1
 
 
 @pytest.mark.asyncio
