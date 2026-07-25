@@ -70,7 +70,7 @@ protocol confirmations are present, and the exact
 
 Once the registration `POST` is issued, every uncertain outcome is treated as
 possibly committed. This includes a non-success response, transport failure,
-unparseable or incomplete response, and caller cancellation. The client MUST
+unparsable or incomplete response, and caller cancellation. The client MUST
 finish cancellation-resistant reconciliation and exact retirement before
 propagating the original outcome. Retirement uses the v8 exact-world route and
 carries the complete `WorldRecord`: the immutable identity above, requested
