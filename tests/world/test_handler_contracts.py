@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -224,14 +225,19 @@ async def test_list_worlds_omits_same_id_replacement_created_after_snapshot(
     original = _World("world-replaced", "original", 1, "run-original", [])
     replacement = _World("world-replaced", "replacement", 2, "run-replacement", [])
     await registry.insert(original)
-    original_list_worlds = registry.list_worlds
+    original_operation = registry.operation
+    replaced = False
 
-    async def snapshot_then_replace() -> list[Any]:
-        snapshot = await original_list_worlds()
-        lease = await registry.begin_close(original.world_id)
-        await registry.finish_close(lease)
-        await registry.insert(replacement)
-        return snapshot
+    @asynccontextmanager
+    async def replace_before_admission(world_id: str):
+        nonlocal replaced
+        if str(world_id) == original.world_id and not replaced:
+            lease = await registry.begin_close(original.world_id)
+            await registry.finish_close(lease)
+            await registry.insert(replacement)
+            replaced = True
+        async with original_operation(world_id) as world:
+            yield world
 
     async def reconcile(
         _registry: WorldRegistry,
@@ -240,10 +246,125 @@ async def test_list_worlds_omits_same_id_replacement_created_after_snapshot(
     ) -> None:
         pytest.fail("a same-ID replacement is outside the captured snapshot")
 
-    monkeypatch.setattr(registry, "list_worlds", snapshot_then_replace)
+    monkeypatch.setattr(registry, "operation", replace_before_admission)
     monkeypatch.setattr(handlers.simulation, "reconcile_committed_work_locked", reconcile)
 
     assert await handlers.list_worlds(registry, ListWorlds()) == []
+
+
+async def test_list_worlds_omits_same_object_rebound_after_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = WorldRegistry()
+    world = _World("world-reused", "reused", 1, "run-reused", [])
+    await registry.insert(world)
+    original_operation = registry.operation
+    rebound = False
+
+    @asynccontextmanager
+    async def rebind_before_admission(world_id: str):
+        nonlocal rebound
+        if str(world_id) == world.world_id and not rebound:
+            lease = await registry.begin_close(world.world_id)
+            await registry.finish_close(lease)
+            await registry.insert(world)
+            rebound = True
+        async with original_operation(world_id) as admitted_world:
+            yield admitted_world
+
+    async def reconcile(
+        _registry: WorldRegistry,
+        _world_id: str,
+        _world: _World,
+    ) -> None:
+        pytest.fail("a fresh registry binding is outside the captured snapshot")
+
+    monkeypatch.setattr(registry, "operation", rebind_before_admission)
+    monkeypatch.setattr(handlers.simulation, "reconcile_committed_work_locked", reconcile)
+
+    assert await handlers.list_worlds(registry, ListWorlds()) == []
+    assert await registry.live_world(world.world_id) is world
+
+
+async def test_list_worlds_stale_admission_does_not_observe_late_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = WorldRegistry()
+    stale = _World("world-a", "stale", 1, "run-stale", [])
+    sibling = _World("world-b", "sibling", 2, "run-sibling", [])
+    replacement = _World("world-a", "replacement", 3, "run-replacement", [])
+    await registry.insert(stale)
+    await registry.insert(sibling)
+    original_operation = registry.operation
+    original_contains = registry.contains
+    stale_removed = False
+    replacement_inserted = False
+    contains_calls: list[str] = []
+
+    @asynccontextmanager
+    async def race_admission(world_id: str):
+        nonlocal replacement_inserted, stale_removed
+        key = str(world_id)
+        if key == stale.world_id and not stale_removed:
+            lease = await registry.begin_close(stale.world_id)
+            await registry.finish_close(lease)
+            stale_removed = True
+            raise KeyError(f"World with ID '{key}' not found.")
+        if key == sibling.world_id and not replacement_inserted:
+            await registry.insert(replacement)
+            replacement_inserted = True
+        async with original_operation(key) as world:
+            yield world
+
+    async def contains_after_replacement(world_id: str) -> bool:
+        nonlocal replacement_inserted
+        key = str(world_id)
+        contains_calls.append(key)
+        if key == stale.world_id and not replacement_inserted:
+            await registry.insert(replacement)
+            replacement_inserted = True
+        return await original_contains(key)
+
+    reconciled: list[str] = []
+
+    async def reconcile(
+        _registry: WorldRegistry,
+        world_id: str,
+        actual_world: _World,
+    ) -> None:
+        assert actual_world is sibling
+        reconciled.append(world_id)
+
+    monkeypatch.setattr(registry, "operation", race_admission)
+    monkeypatch.setattr(registry, "contains", contains_after_replacement)
+    monkeypatch.setattr(handlers.simulation, "reconcile_committed_work_locked", reconcile)
+
+    infos = await handlers.list_worlds(registry, ListWorlds())
+
+    assert [str(info.world_id) for info in infos] == [sibling.world_id]
+    assert reconciled == [sibling.world_id]
+    assert contains_calls == []
+    assert await registry.live_world(stale.world_id) is replacement
+
+
+async def test_list_worlds_propagates_key_error_after_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = WorldRegistry()
+    world = _World("world-admitted", "admitted", 1, "run-admitted", [])
+    await registry.insert(world)
+
+    async def reconcile(
+        _registry: WorldRegistry,
+        _world_id: str,
+        _world: _World,
+    ) -> None:
+        raise KeyError("recovery hook failed")
+
+    monkeypatch.setattr(handlers.simulation, "reconcile_committed_work_locked", reconcile)
+
+    with pytest.raises(KeyError, match="recovery hook failed"):
+        await handlers.list_worlds(registry, ListWorlds())
 
 
 async def test_world_signature_handler_resolves_registered_storage_identity(

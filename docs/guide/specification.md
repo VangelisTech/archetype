@@ -547,8 +547,10 @@ boundary.
   and assemble an `AsyncWorld` with a system, querier, updater, commit
   coordinator, and construction-injected command materializer.
 - `WorldRegistry` owns the in-memory catalog of active worlds, exact-world
-  locks, storage coordinates, cleanup leases, and required-projection receipt
-  retention.
+  locks, point-in-time exact-binding listing references, storage coordinates,
+  cleanup leases, and required-projection receipt retention. Rebinding even
+  the same Python world object creates a replacement authority outside an
+  earlier listing snapshot.
 - `WorldLifecycle.create_world()` MUST be idempotent by explicit `world_id`.
 - Name lookup is a convenience index; names are unique, but they are not the
   idempotency key.

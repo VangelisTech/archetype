@@ -30,6 +30,35 @@ class _RegistryEntry:
     cleanup_lease: WorldCleanupLease | None = None
 
 
+class WorldBindingRef:
+    """Opaque point-in-time reference to one exact live-world binding.
+
+    The reference retains registry-entry identity rather than only the Python
+    world object. Rebinding that same object under a new entry therefore
+    creates a replacement that this reference cannot match.
+    """
+
+    __slots__ = ("_entry", "_registry")
+
+    def __init__(
+        self,
+        registry: WorldRegistry,
+        entry: _RegistryEntry,
+        *,
+        _key: object,
+    ) -> None:
+        if _key is not _BINDING_REF_KEY:
+            raise TypeError("binding references are created by WorldRegistry")
+        self._registry = registry
+        self._entry = entry
+
+    @property
+    def world_id(self) -> str:
+        """Return the durable ID captured for this exact registry entry."""
+
+        return self._entry.world_id
+
+
 class WorldCleanupLease:
     """Opaque authority to reconcile one exact world after close starts.
 
@@ -66,6 +95,7 @@ class WorldCleanupLease:
         self._on_destroy_complete = True
 
 
+_BINDING_REF_KEY = object()
 _LEASE_KEY = object()
 
 
@@ -262,11 +292,34 @@ class WorldRegistry:
         async with self._registry_lock:
             return [self._worlds[world_id].world for world_id in sorted(self._worlds)]
 
-    def is_public_binding(self, world_id: str | UUID, world: object) -> bool:
-        """Linearize whether one exact binding remains live and non-closing."""
+    async def snapshot_world_bindings(self) -> list[WorldBindingRef]:
+        """Return deterministic point-in-time references to exact live bindings."""
 
-        entry = self._worlds.get(str(world_id))
-        return entry is not None and entry.world is world and entry.cleanup_lease is None
+        async with self._registry_lock:
+            return [
+                WorldBindingRef(
+                    self,
+                    self._worlds[world_id],
+                    _key=_BINDING_REF_KEY,
+                )
+                for world_id in sorted(self._worlds)
+            ]
+
+    def is_public_binding(
+        self,
+        binding: WorldBindingRef,
+        world: object,
+    ) -> bool:
+        """Linearize whether one captured binding remains live and non-closing."""
+
+        if not isinstance(binding, WorldBindingRef) or binding._registry is not self:
+            raise ValueError("binding reference does not belong to this registry")
+        entry = binding._entry
+        return (
+            self._worlds.get(entry.world_id) is entry
+            and entry.world is world
+            and entry.cleanup_lease is None
+        )
 
     def target_tick(self, world_id: str | UUID) -> int:
         """Return a point-in-time target-tick key for synchronous quota scope.

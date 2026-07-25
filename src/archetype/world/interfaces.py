@@ -17,7 +17,7 @@ from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldCo
 from archetype.core.interfaces import CommittedTickReceipt, iAsyncSystem
 
 if TYPE_CHECKING:
-    from archetype.world.registry import WorldCleanupLease
+    from archetype.world.registry import WorldBindingRef, WorldCleanupLease
 
 
 @runtime_checkable
@@ -63,7 +63,13 @@ class iWorldRegistry(Protocol):
 
     async def list_worlds(self) -> list[Any]: ...
 
-    def is_public_binding(self, world_id: str | UUID, world: object) -> bool: ...
+    async def snapshot_world_bindings(self) -> list[WorldBindingRef]: ...
+
+    def is_public_binding(
+        self,
+        binding: WorldBindingRef,
+        world: object,
+    ) -> bool: ...
 
     def target_tick(self, world_id: str | UUID) -> int: ...
 

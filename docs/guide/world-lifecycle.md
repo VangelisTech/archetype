@@ -87,12 +87,20 @@ rejects with `WorldClosingError` from the first visible binding.
 Public `ListWorlds` omits closing entries, entries removed after its
 point-in-time snapshot, and same-ID replacement bindings created after that
 snapshot, so one private or concurrently retiring writer cannot make unrelated
-live worlds unlistable. It admits only the exact object captured in the
-snapshot. After reconciling each admitted candidate it linearizes
-`is_public_binding(world_id, world)` without another await before capturing
-`WorldInfo`; a close that became sticky during reconciliation is therefore
-omitted, while a later close occurs after that candidate's valid snapshot
-point.
+live worlds unlistable. `snapshot_world_bindings()` captures opaque exact-entry
+references, not only world-object identity: removing an entry and reinserting
+even the same Python world object creates a replacement binding outside that
+snapshot. A binding reference is only a comparison witness; public admission
+authority remains `registry.operation(...)`. Listing admits each captured ID
+independently and synchronously proves the admitted world still belongs to
+that exact binding before reconciliation. A `KeyError` before
+`registry.operation(...)` yields is a stale snapshot omission; once admission
+yields, a `KeyError` from reconciliation propagates and is never reclassified
+from a later ambient `contains(...)` observation. After reconciling each
+admitted candidate, listing linearizes `is_public_binding(binding, world)`
+without another await before capturing `WorldInfo`; a close that became sticky
+during reconciliation is therefore omitted, while a later close occurs after
+that candidate's valid snapshot point.
 
 The owning workflow executes state changes only inside
 `registry.cleanup_operation(lease)` and through lock-held world functions. On

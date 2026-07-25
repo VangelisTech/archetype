@@ -323,29 +323,31 @@ async def list_worlds(
     operation: ListWorlds,
 ) -> list[WorldInfo]:
     del operation
-    snapshot = await registry.list_worlds()
+    snapshot = await registry.snapshot_world_bindings()
     infos: list[WorldInfo] = []
     # Recovery may invoke user hooks or required projectors that target a
     # sibling. Acquire only one exact-world lock at a time. A close racing the
     # snapshot makes that entry non-public; omit it without poisoning siblings.
-    for snapshot_world in snapshot:
-        world_id = str(snapshot_world.world_id)
+    for binding in snapshot:
+        world_id = binding.world_id
+        admitted = False
         try:
             async with registry.operation(world_id) as world:
-                if world is not snapshot_world:
+                admitted = True
+                if not registry.is_public_binding(binding, world):
                     continue
                 await simulation.reconcile_committed_work_locked(
                     registry,
                     world_id,
                     world,
                 )
-                if not registry.is_public_binding(world_id, world):
+                if not registry.is_public_binding(binding, world):
                     continue
                 infos.append(_world_info(world))
         except WorldClosingError:
             continue
         except KeyError:
-            if await registry.contains(world_id):
+            if admitted:
                 raise
     return infos
 
