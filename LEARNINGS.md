@@ -396,7 +396,13 @@ This means:
 
 2. **Use `@daft.func` (row-wise) by default.** If your "batch" UDF is just a for-loop over `Series.to_pylist()`, it should be `@daft.func`. Daft supports async `@daft.func` natively.
 
-3. **Use `@daft.cls()` for non-serializable state.** API clients, model weights, DB connections — anything that can't be pickled goes in `@daft.cls().__init__()`. Methods are row-wise. Daft recreates the class per worker.
+3. **Use `@daft.cls()` for worker-local state derived from serializable
+   configuration.** Daft serializes the decorated class and its constructor
+   arguments before recreating it per worker. Constructor code may build
+   non-I/O scratch from serializable values; passing an unpicklable live client,
+   model, or connection as an argument does not bypass serialization.
+   Independently owned closeable or I/O-backed worker resources also require a
+   deterministic executor-teardown contract.
 
 4. **Only `.collect()` for cross-row context or a narrow reusable execution
    boundary.** Message routing and name lookups require global visibility. A
@@ -429,22 +435,29 @@ async def think_and_respond(name: str, role: str, inbox: list[str]) -> list[str]
 df = df.with_column("outbox__messages", think_and_respond(col("agent__name"), ...))
 ```
 
-**The serialization constraint:** `@daft.func` closures must be picklable. API clients, mocks, and anything with network state are NOT picklable. Use `@daft.cls()` for these — the client lives in `__init__`, reconstructed per worker, never serialized.
+**The serialization constraint:** `@daft.func` closures and `@daft.cls`
+constructor arguments pass through Daft's serializer. Use serializable
+configuration and construct only lifetime-safe worker-local scratch inside
+`__init__`. A live provider may instead expose a Daft-serializable, non-owning
+reconnect handle to a resource owned and closed at the host boundary. Do not
+construct an independently owned socket, process, or closeable client per
+worker unless the executor contract provides deterministic teardown.
 
 ```python
-# ✅ Production pattern: @daft.cls() for non-serializable clients
+# ✅ Worker-local non-I/O scratch from serializable configuration
 @daft.cls()
-class ClaudeAgent:
-    def __init__(self):
-        import anthropic
-        self.client = anthropic.AsyncAnthropic()
+class Normalizer:
+    def __init__(self, prefix: str):
+        import re
 
-    async def respond(self, name: str, role: str, inbox: list[str]) -> list[str]:
-        response = await self.client.messages.create(model="claude-sonnet-4-6", ...)
-        return [json.dumps({...})]
+        self.prefix = prefix
+        self.whitespace = re.compile(r"\s+")
 
-agent = ClaudeAgent()
-df = df.with_column("outbox__messages", agent.respond(col("agent__name"), ...))
+    def normalize(self, value: str) -> str:
+        return self.prefix + self.whitespace.sub(" ", value).strip()
+
+normalizer = Normalizer(prefix="agent:")
+df = df.with_column("agent__normalized", normalizer.normalize(col("agent__name")))
 ```
 
 ---

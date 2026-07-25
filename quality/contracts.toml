@@ -545,8 +545,10 @@ section = "Evidence invariants"
 owner = "physical_ai"
 risk = "high"
 pytest = [
-  "tests/app/physical_ai/test_task_evaluation.py",
-  "tests/app/physical_ai/test_instruction_sweep.py",
+  "tests/physical_ai/test_task_evaluation.py",
+  "tests/physical_ai/test_instruction_sweep.py",
+  "tests/physical_ai/test_provider_concurrency_contracts.py",
+  "tests/physical_ai/test_provider_lifetime_contracts.py",
   "tests/physical_ai/test_frame_ref_carriage.py",
   "tests/integration/test_physical_ai_example_receipt.py::test_physical_ai_receipt_proves_eval_sweep_optimizer_and_telemetry",
 ]

@@ -185,7 +185,64 @@ async def test_register_world_is_idempotent_and_conflicts_loudly(tmp_path):
                 tick_head=0,
             )
         )
+    with pytest.raises(CatalogConflictError):
+        await catalog.register_world(
+            WorldRecord(
+                world_id="w1",
+                name="alpha",
+                run_id="r1",
+                parent_world_id=None,
+                status="active",
+                tick_head=0,
+                writer_mode="cleanup_only",
+            )
+        )
     await catalog.close()
+
+
+@pytest.mark.asyncio
+async def test_catalog_migrates_legacy_worlds_to_resumable_writer_mode(tmp_path):
+    path = tmp_path / "legacy-cat.db"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE catalog_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT INTO catalog_meta (key, value)
+            VALUES ('schema_version', '9');
+            CREATE TABLE worlds (
+                world_id TEXT PRIMARY KEY,
+                name TEXT,
+                run_id TEXT,
+                parent_world_id TEXT,
+                status TEXT NOT NULL,
+                tick_head INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO worlds (
+                world_id, name, run_id, parent_world_id, status, tick_head
+            ) VALUES ('legacy', 'legacy', 'run', NULL, 'active', 3);
+            """
+        )
+
+    catalog = SqliteControlCatalog(path)
+    try:
+        record = await catalog.get_world("legacy")
+        assert record is not None
+        assert record.writer_mode == "resumable"
+    finally:
+        await catalog.close()
+
+    with sqlite3.connect(path) as connection:
+        columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(worlds)").fetchall()
+        }
+        version = connection.execute(
+            "SELECT value FROM catalog_meta WHERE key='schema_version'"
+        ).fetchone()[0]
+    assert "writer_mode" in columns
+    assert version == "10"
 
 
 def _register_world_proc(path: str, result_queue) -> None:

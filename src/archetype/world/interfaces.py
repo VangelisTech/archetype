@@ -17,7 +17,8 @@ from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldCo
 from archetype.core.interfaces import CommittedTickReceipt, iAsyncSystem
 
 if TYPE_CHECKING:
-    from archetype.world.registry import WorldCleanupLease
+    from archetype.storage.catalog import ControlCatalog, WorldRecord
+    from archetype.world.registry import WorldBindingRef, WorldCleanupLease
 
 
 @runtime_checkable
@@ -31,7 +32,8 @@ class iWorldRegistry(Protocol):
         storage_config: StorageConfig | None = None,
         cache_config: CacheConfig | None = None,
         required_projector: Any | None = None,
-    ) -> None: ...
+        closing: bool = False,
+    ) -> WorldCleanupLease | None: ...
 
     def activation(
         self,
@@ -61,6 +63,14 @@ class iWorldRegistry(Protocol):
     async def world_id_for_name(self, name: str) -> str: ...
 
     async def list_worlds(self) -> list[Any]: ...
+
+    async def snapshot_world_bindings(self) -> list[WorldBindingRef]: ...
+
+    def is_public_binding(
+        self,
+        binding: WorldBindingRef,
+        world: object,
+    ) -> bool: ...
 
     def target_tick(self, world_id: str | UUID) -> int: ...
 
@@ -113,6 +123,41 @@ class iWorldRegistry(Protocol):
 
 
 @runtime_checkable
+class iWorldActivationOwner(Protocol):
+    """Pre-reserved process owner for one cleanup-only world activation.
+
+    Both state changes are synchronous so cancellation cannot land between a
+    durable registration or live-registry insertion and retained cleanup
+    authority. Implementations must make ``promote`` failure-atomic: after it
+    is called, ``aclose`` must still be able to retire the exact registration
+    or the exact live-world lease even when promotion raises.
+    """
+
+    def bind_registration(
+        self,
+        catalog: ControlCatalog,
+        record: WorldRecord,
+    ) -> None:
+        """Bind exact durable cleanup before registration may have an effect."""
+
+        ...
+
+    def promote(
+        self,
+        world_id: str | UUID,
+        lease: WorldCleanupLease,
+    ) -> None:
+        """Promote the same owner to exact live-world cleanup without awaiting."""
+
+        ...
+
+    async def aclose(self) -> None:
+        """Join or retry cleanup for the currently bound exact authority."""
+
+        ...
+
+
+@runtime_checkable
 class iWorldLifecycle(Protocol):
     """Construct, discover, resume, fork, and close managed worlds."""
 
@@ -123,6 +168,16 @@ class iWorldLifecycle(Protocol):
         cache_config: CacheConfig | None = None,
         system: iAsyncSystem | None = None,
     ) -> AsyncWorld: ...
+
+    async def create_closing_world(
+        self,
+        config: WorldConfig,
+        storage_config: StorageConfig | None = None,
+        cache_config: CacheConfig | None = None,
+        system: iAsyncSystem | None = None,
+        *,
+        activation_owner: iWorldActivationOwner,
+    ) -> tuple[AsyncWorld, WorldCleanupLease]: ...
 
     async def fork_world(
         self,
@@ -181,4 +236,9 @@ class iWorldCleanup(Protocol):
     async def finish(self) -> None: ...
 
 
-__all__ = ["iWorldCleanup", "iWorldLifecycle", "iWorldRegistry"]
+__all__ = [
+    "iWorldActivationOwner",
+    "iWorldCleanup",
+    "iWorldLifecycle",
+    "iWorldRegistry",
+]

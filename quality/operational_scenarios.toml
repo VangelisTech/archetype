@@ -330,8 +330,8 @@ kind = "example"
 owner = "physical_ai"
 owner_paths = [
   "src/archetype/physical_ai",
-  "src/archetype/app/physical_ai",
   "src/archetype/runtime",
+  "src/archetype/wiring.py",
 ]
 source_path = "examples/14_physical_ai.py"
 source_command = ["python", "examples/14_physical_ai.py"]

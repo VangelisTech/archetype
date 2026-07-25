@@ -4,8 +4,8 @@
 
 Archetype treats a physical-policy evaluation as one durable world containing
 many trial entities. The runtime submits a typed request; the physical-AI
-application service creates the world, installs the standard processors, runs
-the episode, and derives a report from persisted state.
+family handler creates the world, installs the standard processors, runs the
+episode, and derives a report from persisted state.
 
 ```text
 one evaluation request
@@ -130,7 +130,8 @@ sequenceDiagram
     participant Host
     participant Runtime as ArchetypeRuntime
     participant Dispatcher as CommandDispatcher
-    participant Physical as PhysicalAIService
+    participant Owner as RuntimeResources
+    participant Physical as physical_ai.handlers
     participant Providers as Env + Policy Providers
     participant World as World + Processors
     participant Simulation as world.simulation
@@ -139,6 +140,7 @@ sequenceDiagram
     Host->>Runtime: evaluate request + env/policy providers
     Runtime->>Dispatcher: apply(EvaluatePhysicalTask)
     Dispatcher->>Physical: registered handler
+    Physical->>Owner: register + lease each unique provider identity
     Physical->>World: create one uniquely named world
     Physical->>World: install policy and environment processors
     Physical->>Providers: reset each environment by seed
@@ -150,21 +152,29 @@ sequenceDiagram
     end
     Physical->>Query: query ManipStatus + ManipTask by world/run
     Query-->>Physical: lazy persisted frame
+    Physical->>World: retire live writer; retain durable rows
     Physical-->>Dispatcher: ledger-derived typed report
     Dispatcher-->>Runtime: report
     Runtime-->>Host: report with world_id + run_id
+    Host->>Runtime: exit runtime context
+    Runtime->>Owner: aclose()
+    Owner->>Providers: async aclose once per identity
 ```
 
 ## Ownership
 
 | Location | Responsibility |
 | --- | --- |
-| `archetype.physical_ai.contracts` | Supported request, outcome, and report values |
-| `archetype.physical_ai.manipulation` | ECS Components, environment boundary, and environment-step processors |
-| `archetype.physical_ai.policy` | Policy boundary and action processor |
+| `archetype.physical_ai.interfaces` | Canonical environment, policy, and lifetime-registration protocols |
+| `archetype.physical_ai.models` | Operation models, configuration values, outcomes, and reports |
+| `archetype.physical_ai.contracts` | One-release object-identical compatibility re-exports for moved value contracts |
+| `archetype.physical_ai.manipulation` | ECS Components, scripted environment, and internal environment-step processors |
+| `archetype.physical_ai.policy` | Scripted policy and internal action processor |
 | `archetype.physical_ai.optimization` | Pure, callback-driven instruction search |
-| `archetype.app.physical_ai` | Internal world/process/episode/query orchestration |
+| `archetype.physical_ai.views` | Storage-backed terminal report projection |
+| `archetype.physical_ai.handlers` | Free world/processor/episode/query workflows over declared storage and world ports |
 | `CommandDispatcher` | Exact-operation admission and registered handler dispatch |
+| `RuntimeResources` | Process-scoped ownership and retryable close of live providers |
 | `ArchetypeRuntime` | Supported trusted Python entry point and sync parity |
 | world/simulation/storage families | Lifecycle, tick execution, and persisted reads |
 
@@ -173,17 +183,92 @@ The separation is intentional:
 - Components and processors decide per-tick state transitions.
 - `archetype.world.simulation` owns episode execution and value-based
   termination.
-- `PhysicalAIService` owns the multi-service workflow but no component schema.
-- External simulator and model implementations own provider resources, not ECS
-  transition authority.
+- `archetype.physical_ai.handlers` owns the workflow meaning but delegates
+  lifecycle, mutation, simulation, query, and physical execution to the
+  declared world and storage ports.
+- External simulator and model implementations own their resource behavior,
+  while `RuntimeResources` owns their process lifetime after transfer.
 - The runtime exposes the capability without exposing a concrete service or
   live `AsyncWorld`.
 
-There is currently no REST operation for physical evaluation. The Python
-runtime is a trusted in-process host; an untrusted host must not reach the
-concrete service directly. A future remote surface must add an explicit
-actor-aware operation registration and API contract rather than treating the
+`EvaluatePhysicalTask` and `SweepPhysicalInstructions` are exact,
+application-scoped registrations. Both are trusted-only, direct,
+non-durable, and zero-token operations. There is currently no REST operation
+for physical evaluation. A future remote surface must add an explicit
+actor-aware registration and API contract rather than treating the trusted
 runtime method as an authentication boundary.
+
+## Provider lifetime
+
+`EnvClient` and `PolicyClient` are live host resources, not portable command
+payloads. Construction must be inert, and every provider must expose
+`async aclose()`. Before any ownership transfer or effect, admission validates
+every supplied role and serializes the exact object with Daft's serializer.
+Accepted objects are serializable non-owning handles to host-owned backing
+resources; an opaque failure later in tick execution is not the admission
+boundary. Passing accepted providers to either registered physical operation
+then transfers those exact objects to the runtime's process owner synchronously
+before world creation, policy reset, environment reset, or any other workflow
+or provider effect.
+
+Ownership is deduplicated by object identity for the runtime lifetime. Reusing
+one provider across operations, or supplying the same object as both
+environment and policy, creates one owner and one close. Cancelling the
+operation does not discard that ownership. `RuntimeResources.aclose()` is the
+authoritative host-side close boundary; if a provider close fails, the failed
+owner is retained and retried on the next close while providers that closed
+successfully are not repeated.
+
+The registrar also returns an exclusive, identity-ordered lease held for the
+complete evaluation or sweep. Two operations sharing an environment, a policy,
+or a dual-role provider therefore cannot overlap mutable provider state.
+Operations whose provider identity sets are disjoint may still progress
+concurrently. Raw-client step/action processors are internal implementation
+details, so generic processor installation is not a supported route around the
+lease and ownership boundary.
+
+Before either handler releases its provider lease, it retires the live world
+writer through an exact-lease retirement handle returned by the provider-scoped
+lifetime token. Registered `DestroyWorld` and that handle join the same
+process-owned reconcile, command-cancel, and lifecycle-close transaction; the
+handle never resolves a later replacement by world ID. A provider close first
+joins every evidence-world retirement associated with that provider identity,
+so failed cleanup retains both owners for shutdown retry. The returned
+`world_id` and `run_id` remain valid durable query coordinates, including for
+nonterminal trials that hit `max_steps`, but attaching that identity cannot
+execute the retained provider processors because no live writer remains.
+
+The provider-scoped token contains a cleanup-owner reservation created before
+the handler may create its private evidence world. World creation durably marks
+the identity `writer_mode="cleanup_only"` while leaving it active for tick
+materialization. Before the first registration write, world lifecycle
+synchronously binds the exact catalog and complete cleanup-only `WorldRecord`
+to that reservation. Immediately after the private binding is inserted into
+the registry, lifecycle promotes the same owner to its sticky
+`WorldCleanupLease` without awaiting. The handler therefore never crosses a
+durable or live ownership boundary without retained cleanup authority.
+
+Activation cleanup is cancellation-resistant and retryable. Before promotion
+it performs exact identity-safe registration retirement, including a destroyed
+tombstone when an ambiguous remote write is absent at reconciliation; after
+promotion it revalidates and executes only through canonical `WorldCleanup`.
+There is no direct lifecycle-destroy bypass. A failed attempt remains owned in
+the `workflow-handles` shutdown phase, and provider close joins it before any
+backing resource is released.
+Caller cancellation and cleanup-originated cancellation remain distinguishable
+when cleanup also fails; multiple failures preserve all causes. A hard process
+crash can leave active evidence rows, but mutable resume rejects their
+cleanup-only identity before storage or fence effects.
+
+Daft 0.7.19 provides no deterministic teardown hook for `@daft.cls` instances.
+Consequently, worker-local environment or policy Specs are unsupported and
+have been removed. A serialized processor handle may reconnect to the
+host-owned backing resource, but it must not construct an independently owned
+closeable or I/O-backed worker-local provider, socket, or process. The exact
+`_CartpoleStepper` exception constructs only non-I/O MuJoCo model/data scratch
+from embedded XML, exposes no application-controlled close, and dies with the
+worker. A future safe worker-local provider construction contract is tracked
+separately in issue #667.
 
 ## Instruction optimization
 
@@ -220,7 +305,7 @@ result = await optimize_instruction(
 )
 ```
 
-The callback is the boundary. It can execute real paired rollouts, or a future
+The callback is the boundary. It can execute real paired episodes, or a future
 model-based scorer can evaluate candidates without changing the search
 algorithm. The deterministic template strategy exists to verify the mechanism;
 it is not evidence that language optimization improves a real policy.
@@ -237,9 +322,24 @@ The workflow enforces these contracts:
 5. Stateful policy clients are reset at each evaluation boundary when they
    expose `reset()`.
 6. Success and episode length come from the latest persisted `ManipStatus` row.
-7. The workflow never destroys its world after grading, so evidence remains
-   addressable by the returned identifiers.
+7. The workflow binds and retires its exact live writer before releasing
+   provider leases while preserving durable evidence addressable by the
+   returned identifiers.
+8. Every provider passes exact Daft-serialization admission before ownership or
+   effects. Every unique accepted identity then transfers to process ownership,
+   is exclusively leased for the full workflow, waits for its associated
+   exact-world cleanup, and remains owned across cancellation until
+   authoritative host shutdown succeeds.
+9. Cleanup ownership is reserved before private-world creation, and the
+   exact catalog registration is bound before its first write. The same owner
+   is promoted to canonical world cleanup after registry insertion, and the
+   world's immutable cleanup-only writer mode prevents crash recovery from
+   reactivating provider processors.
+10. Every physical-AI `@daft.cls` constructor is covered by the closed lifetime
+    inventory: host-backed classes only retain an admitted serialized client
+    handle, and `_CartpoleStepper` is the sole reviewed worker-local
+    constructor, limited to embedded-XML MuJoCo model/data scratch.
 
-The credential-free contracts live under `tests/app/physical_ai/`. Real LIBERO,
+The credential-free contracts live under `tests/physical_ai/`. Real LIBERO,
 VLA, GPU, and Modal adapters remain external provider implementations and paid
-dogfoods; the application workflow does not import them.
+dogfoods; the physical-AI family does not import them.

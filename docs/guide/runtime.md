@@ -201,7 +201,10 @@ a research-owned task, owner reservation, or finalizer.
 registered physical-AI handler. The runtime does not install processors,
 reset provider state, spawn trial entities, run episodes, or collect terminal
 rows itself. Returned reports carry the durable world/run identity from which
-their values were derived. The sync runtime exposes the same operations.
+their values were derived. Each call pre-reserves process-owned lazy canonical
+cleanup before private-world creation; validation, compensation, and retry all
+remain on that exact owner rather than invoking lifecycle destruction through a
+parallel fallback. The sync runtime exposes the same operations.
 
 ### R12 — Typed artifacts and transcript evidence
 

@@ -17,8 +17,8 @@
 Every external boundary in Archetype (MuJoCo physics, robosuite/LIBERO env
 step, policy inference) shares a structural pattern:
 
-1. A ``@daft.cls`` with an ``__init__`` that loads expensive state once per
-   Daft worker (model, network handle, etc.).
+1. A ``@daft.cls`` with an ``__init__`` that receives a serialized handle to
+   a host-owned backing resource.
 2. A ``@daft.method.batch`` that converts each input ``Series`` to a Python
    list, calls the external system, and returns a struct ``Series``.
 3. An ``AsyncProcessor.process()`` that calls the UDF via ``col(...)``
@@ -52,17 +52,19 @@ attempt to create ``@daft.cls`` instances dynamically; instead, each boundary
 module defines its own ``@daft.cls`` subclass (module-level, importable) and
 delegates boilerplate to these two utilities.
 
-Pickling invariants:
+Pickling and lifetime invariants:
 - ``series_to_rows`` is a plain function — no state.
 - ``unpack_struct`` is a plain function — operates on the DataFrame at the
   processor (driver) side, never serialised to a worker.
-- The ``config`` passed to each ``@daft.cls.__init__`` must be picklable
-  (scalars, dataclasses, tuples); live handles belong in ``__init__`` itself.
-
-Once-per-worker init invariants:
-- Each ``@daft.cls.__init__`` (in the boundary modules) is called once per
-  Daft worker.  Expensive state (MuJoCo model, Modal stub, network socket)
-  is created there, after any unpickling of config scalars.
+- Every handle passed to ``@daft.cls.__init__`` must be serializable and refer
+  to backing state whose registered host provider closes authoritatively.
+- Daft 0.7.19 exposes no deterministic user teardown callback for class UDF
+  instances. A UDF must not construct an independently owned closeable or
+  I/O-backed worker-local provider, socket, or process.
+- The exact ``_CartpoleStepper`` exception constructs only in-memory MuJoCo
+  model/data scratch from embedded XML. It opens no provider session, socket,
+  file, or child process and exposes no application-controlled close. The
+  scratch dies with its Daft worker and is not a provider-lifetime alternative.
 
 Inactive/done-row freeze and pass-through:
 - Each stateful UDF receives ``is_active`` and ``done`` (or an equivalent

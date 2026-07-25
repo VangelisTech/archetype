@@ -67,13 +67,14 @@ from archetype.storage.catalog.records import (
     OutboxRecord,
     SignatureRecord,
     WorldRecord,
+    require_world_writer_mode,
     storage_fingerprint,
 )
 from archetype.storage.config import ControlCatalogConfig
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 9
+_SCHEMA_VERSION = 10
 
 
 def catalog_path_for(
@@ -109,7 +110,8 @@ CREATE TABLE IF NOT EXISTS worlds (
     run_id TEXT,
     parent_world_id TEXT,
     status TEXT NOT NULL,
-    tick_head INTEGER NOT NULL DEFAULT 0
+    tick_head INTEGER NOT NULL DEFAULT 0,
+    writer_mode TEXT NOT NULL DEFAULT 'resumable'
 );
 CREATE TABLE IF NOT EXISTS signatures (
     table_id TEXT PRIMARY KEY,
@@ -231,22 +233,43 @@ class SqliteControlCatalog:
                     )
                 conn.execute("PRAGMA synchronous=FULL")
                 conn.executescript(_DDL)
-                version = int(
-                    conn.execute(
-                        "SELECT value FROM catalog_meta WHERE key='schema_version'"
-                    ).fetchone()[0]
-                )
-                if version > _SCHEMA_VERSION:
-                    raise CatalogSchemaMismatchError(
-                        f"catalog {self.path} has schema_version={version}, "
-                        f"this build expects {_SCHEMA_VERSION}"
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    version = int(
+                        conn.execute(
+                            "SELECT value FROM catalog_meta WHERE key='schema_version'"
+                        ).fetchone()[0]
                     )
-                if version < _SCHEMA_VERSION:
-                    conn.execute(
-                        "UPDATE catalog_meta SET value=? WHERE key='schema_version'",
-                        (str(_SCHEMA_VERSION),),
-                    )
-                conn.commit()
+                    if version > _SCHEMA_VERSION:
+                        raise CatalogSchemaMismatchError(
+                            f"catalog {self.path} has schema_version={version}, "
+                            f"this build expects {_SCHEMA_VERSION}"
+                        )
+                    columns = {
+                        str(row["name"])
+                        for row in conn.execute("PRAGMA table_info(worlds)").fetchall()
+                    }
+                    if version < 10 and "writer_mode" not in columns:
+                        conn.execute(
+                            "ALTER TABLE worlds ADD COLUMN writer_mode TEXT "
+                            "NOT NULL DEFAULT 'resumable'"
+                        )
+                        columns.add("writer_mode")
+                    if "writer_mode" not in columns:
+                        raise CatalogSchemaMismatchError(
+                            f"catalog {self.path} schema_version={version} "
+                            "does not contain worlds.writer_mode"
+                        )
+                    if version < _SCHEMA_VERSION:
+                        conn.execute(
+                            "UPDATE catalog_meta SET value=? WHERE key='schema_version'",
+                            (str(_SCHEMA_VERSION),),
+                        )
+                except BaseException:
+                    conn.rollback()
+                    raise
+                else:
+                    conn.commit()
                 self._conn = conn
                 return conn
             except sqlite3.OperationalError as exc:
@@ -276,6 +299,10 @@ class SqliteControlCatalog:
     # ── worlds ───────────────────────────────────────────────────────────────
 
     async def register_world(self, record: WorldRecord) -> None:
+        require_world_writer_mode(record.writer_mode)
+        if record.writer_mode == "cleanup_only" and record.status != "active":
+            raise ValueError("cleanup-only world registration requires status='active'")
+
         def _register() -> None:
             conn = self._connect_sync()
             with conn:
@@ -286,20 +313,30 @@ class SqliteControlCatalog:
                 if row is not None:
                     existing = _world_from_row(row)
                     # Identity fields must agree; status/tick may have advanced.
-                    if (existing.name, existing.run_id, existing.parent_world_id) != (
+                    if (
+                        existing.name,
+                        existing.run_id,
+                        existing.parent_world_id,
+                        existing.writer_mode,
+                    ) != (
                         record.name,
                         record.run_id,
                         record.parent_world_id,
+                        record.writer_mode,
                     ):
                         raise CatalogConflictError(
                             f"world {record.world_id} already registered with "
                             f"different identity in catalog {self.path}"
                         )
+                    if record.writer_mode == "cleanup_only" and existing.status != "active":
+                        raise RuntimeError(
+                            "control catalog did not confirm active cleanup-only registration"
+                        )
                     return
                 conn.execute(
                     "INSERT INTO worlds "
-                    "(world_id, name, run_id, parent_world_id, status, tick_head) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    "(world_id, name, run_id, parent_world_id, status, tick_head, "
+                    "writer_mode) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
                         record.world_id,
                         record.name,
@@ -307,16 +344,83 @@ class SqliteControlCatalog:
                         record.parent_world_id,
                         record.status,
                         record.tick_head,
+                        record.writer_mode,
                     ),
                 )
 
         await self._run(_register)
 
+    async def retire_world_registration(self, record: WorldRecord) -> None:
+        """Atomically destroy or tombstone one exact cleanup-only identity."""
+
+        require_world_writer_mode(record.writer_mode)
+        if record.writer_mode != "cleanup_only":
+            raise ValueError("registration retirement requires writer_mode='cleanup_only'")
+
+        def _retire() -> None:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT * FROM worlds WHERE world_id=?",
+                    (record.world_id,),
+                ).fetchone()
+                if row is None:
+                    conn.execute(
+                        "INSERT INTO worlds "
+                        "(world_id, name, run_id, parent_world_id, status, tick_head, "
+                        "writer_mode) VALUES (?, ?, ?, ?, 'destroyed', ?, ?)",
+                        (
+                            record.world_id,
+                            record.name,
+                            record.run_id,
+                            record.parent_world_id,
+                            record.tick_head,
+                            record.writer_mode,
+                        ),
+                    )
+                    return
+                existing = _world_from_row(row)
+                if (
+                    existing.name,
+                    existing.run_id,
+                    existing.parent_world_id,
+                    existing.writer_mode,
+                ) != (
+                    record.name,
+                    record.run_id,
+                    record.parent_world_id,
+                    record.writer_mode,
+                ):
+                    return
+                conn.execute(
+                    "UPDATE worlds SET status='destroyed' WHERE world_id=?",
+                    (record.world_id,),
+                )
+                _reject_unsettled_commands(
+                    conn,
+                    world_id=record.world_id,
+                    reason="world registration retired before activation",
+                )
+
+        await self._run(_retire)
+
     async def set_world_status(self, world_id: str, status: str) -> None:
+        if status not in {"active", "destroyed"}:
+            raise ValueError("world status must be one of: active, destroyed")
+
         def _set() -> None:
             conn = self._connect_sync()
             with conn:
                 conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT status FROM worlds WHERE world_id=?",
+                    (world_id,),
+                ).fetchone()
+                if row is not None and row["status"] == "destroyed" and status == "active":
+                    raise CatalogConflictError(
+                        f"world {world_id} cannot transition from destroyed to active"
+                    )
                 conn.execute("UPDATE worlds SET status=? WHERE world_id=?", (status, world_id))
                 if status != "active":
                     _reject_unsettled_commands(
@@ -1307,4 +1411,5 @@ def _world_from_row(row: sqlite3.Row) -> WorldRecord:
         parent_world_id=row["parent_world_id"],
         status=row["status"],
         tick_head=int(row["tick_head"]),
+        writer_mode=row["writer_mode"],
     )

@@ -5,4 +5,7 @@
 [[top_level_family_rule]]
 name = "physical-ai-domain-family"
 consumer = "archetype.physical_ai"
-allowed_families = []
+allowed_families = [
+  "archetype.storage",
+  "archetype.world",
+]

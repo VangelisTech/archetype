@@ -8,7 +8,7 @@ Verifies the two normative guarantees from the spec:
 1. Tick-0 refs are the refs returned by ``env.reset()`` — they land raw on
    the spawn row (initial-conditions contract).
 2. Tick t refs are the refs returned by ``env.step()`` at step t — written by
-   ``FramedEnvStepProcessor`` each tick (step-ref carriage contract).
+   the framed environment-step processor each tick (step-ref carriage contract).
 
 Uses ``ScriptedFramedReachEnv`` which emits deterministic fake refs so the
 test runs entirely in-process without a Modal volume or LIBERO installation.
@@ -20,13 +20,13 @@ from archetype.core.aio import AsyncSystem
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.physical_ai.manipulation import (
     ACTION_DIM,
-    FramedEnvStepProcessor,
     ManipAction,
     ManipFrameRef,
     ManipProprio,
     ManipStatus,
     ManipTask,
     ScriptedFramedReachEnv,
+    _FramedEnvStepProcessor,
 )
 from tests.conftest import make_world_harness
 
@@ -89,7 +89,7 @@ async def test_reset_refs_raw_at_tick0_and_step_refs_carried(tmp_path):
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="frame_ref")
         system = AsyncSystem()
-        await system.add_processor(FramedEnvStepProcessor(client))
+        await system.add_processor(_FramedEnvStepProcessor(client))
         world = await ws.lifecycle.create_world(
             WorldConfig(name="frame-ref-test"), storage_config=storage, system=system
         )
@@ -178,7 +178,7 @@ async def test_gripper_qpos_carried_end_to_end(tmp_path):
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="gripper_qpos")
         system = AsyncSystem()
-        await system.add_processor(FramedEnvStepProcessor(client))
+        await system.add_processor(_FramedEnvStepProcessor(client))
         world = await ws.lifecycle.create_world(
             WorldConfig(name="gripper-qpos-test"), storage_config=storage, system=system
         )
@@ -209,7 +209,7 @@ async def test_done_rows_freeze_refs(tmp_path):
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="done_freeze_refs")
         system = AsyncSystem()
-        await system.add_processor(FramedEnvStepProcessor(client))
+        await system.add_processor(_FramedEnvStepProcessor(client))
         world = await ws.lifecycle.create_world(
             WorldConfig(name="done-refs-test"), storage_config=storage, system=system
         )
@@ -248,7 +248,7 @@ async def test_despawned_framed_episode_never_steps_external_env(tmp_path):
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="framed_despawn")
         system = AsyncSystem()
-        await system.add_processor(FramedEnvStepProcessor(client))
+        await system.add_processor(_FramedEnvStepProcessor(client))
         world = await ws.lifecycle.create_world(
             WorldConfig(name="framed-despawn"), storage_config=storage, system=system
         )

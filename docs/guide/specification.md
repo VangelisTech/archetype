@@ -535,6 +535,19 @@ boundary.
   control authority atomically combines manifest publication, command
   settlement, and durable control-outbox append after data flush; directory
   discovery and Iceberg commits remain separate authorities.
+- Remote cleanup-only registration MUST use protocol v8 and succeed only when
+  both the Directory and per-world authority confirm active status and the
+  exact cleanup-only writer marker. After issuing the registration `POST`, a
+  non-success response, transport failure, response parse or confirmation
+  failure, or cancellation MUST trigger cancellation-resistant exact
+  retirement before the original outcome propagates.
+- Exact v8 retirement MUST carry the complete cleanup-only `WorldRecord`.
+  Directory retirement MUST atomically create a destroyed tombstone when
+  absent, destroy the exact active row, accept the exact destroyed row
+  idempotently, and leave a conflicting identity unchanged. Destroyed status
+  MUST be monotonic in both remote authorities so a delayed registration cannot
+  resurrect the writer. These rules remain protocol v8 and require neither a
+  version bump nor an additional data migration.
 - The LanceDB path MUST NOT construct a Daft `Session` or Daft `Catalog`.
 - Service shutdown MUST shut down every managed backend exactly once per
   instance.
@@ -547,8 +560,10 @@ boundary.
   and assemble an `AsyncWorld` with a system, querier, updater, commit
   coordinator, and construction-injected command materializer.
 - `WorldRegistry` owns the in-memory catalog of active worlds, exact-world
-  locks, storage coordinates, cleanup leases, and required-projection receipt
-  retention.
+  locks, point-in-time exact-binding listing references, storage coordinates,
+  cleanup leases, and required-projection receipt retention. Rebinding even
+  the same Python world object creates a replacement authority outside an
+  earlier listing snapshot.
 - `WorldLifecycle.create_world()` MUST be idempotent by explicit `world_id`.
 - Name lookup is a convenience index; names are unique, but they are not the
   idempotency key.
@@ -558,6 +573,12 @@ boundary.
 - If durable catalog registration or writer-fence acquisition fails after
   construction, `create_world()` MUST remove the new live world before
   propagating the failure.
+- `create_closing_world()` MUST require a pre-reserved activation owner. It
+  MUST synchronously bind the exact catalog and cleanup-only `WorldRecord` to
+  that owner before registration, then synchronously promote the same owner to
+  the canonical sticky cleanup lease immediately after registry insertion.
+  Activation failure MUST finish the currently bound cleanup
+  cancellation-resistantly; failed cleanup remains owned and retryable.
 - Live resource injection is an application-layer responsibility.
 - `destroy_world()` SHOULD be safe to call on a missing world.
 - `fork_world()` MUST create a new `world_id`, clone the source world's visible
@@ -639,6 +660,11 @@ retryable failures remain recoverable and exhausted failures become terminal.
 - Managed `step()` MUST receive an explicit `RunConfig` from the caller; it
   MUST NOT mint a fresh `RunConfig` per call. The world's active `run_id`, not
   reuse of a particular config object, provides continuity across calls.
+- Private physical-evidence worlds MUST remain `status="active"` while they
+  materialize ticks and MUST carry immutable `writer_mode="cleanup_only"` from
+  first durable registration. Mutable resume MUST require both active status
+  and `writer_mode="resumable"` and refuse cleanup-only or unknown future modes
+  before opening storage or acquiring a writer fence.
 - `run()` MUST thread the caller's `RunConfig` into every `step()` call while
   preserving and reporting the world's active `run_id`.
 - After publication, a configured required projector MUST consume and
@@ -699,6 +725,23 @@ retryable failures remain recoverable and exhausted failures become terminal.
   `AuditLog`, `CommandDispatcher`, world graph, and application service graph,
   then returns one `RuntimeResources`.
 - Process shutdown MUST be explicit and distinct from per-world removal.
+- Physical-provider admission MUST validate each supplied role with Daft's
+  exact serializer before ownership transfer, world creation, or provider
+  effects. Accepted providers are serializable non-owning handles; independently
+  owned closeable worker resources require a separate executor-teardown
+  contract.
+- Physical workflow composition MUST reserve process-owned cleanup before
+  private-world creation. The reservation MUST immediately own a deferred
+  cleanup resource. Before registration, lifecycle MUST bind the exact catalog
+  and complete cleanup-only `WorldRecord` to that resource. Immediately after
+  registry insertion it MUST promote the same owner, without awaiting, to the
+  canonical exact `WorldCleanup` lease. Activation cleanup before promotion
+  uses exact registration retirement; cleanup after promotion MUST revalidate
+  and execute through registered canonical `WorldCleanup`. Handlers MUST NOT
+  bypass either path with direct lifecycle destruction. A failed attempt
+  remains owned for shutdown retry and provider close joins it. Every failure
+  MUST remain visible; caller cancellation and cleanup-originated cancellation
+  MUST NOT be conflated.
 - Shutdown stops and drains dispatcher admission, joins supervised work, then
   closes workflow handles, world handles, audit, and owned storage in that
   order. It attempts every owner in a phase, aggregates labelled original

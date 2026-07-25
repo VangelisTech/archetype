@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Batched physical-task evaluation through the application/runtime boundary.
+"""Batched physical-task evaluation through the registered runtime boundary.
 
 Proves the redesign that replaces the old per-trial-world driver, using the
 in-process scripted env+policy (no Modal, no LIBERO) — the exact same
@@ -22,12 +22,20 @@ orchestration that the in-process LIBERO client will run unchanged:
 
 from __future__ import annotations
 
+from dataclasses import fields
+
 import pytest
 
 from archetype import ArchetypeRuntime, PhysicalTaskEvalConfig
 from archetype.core.config import StorageConfig
 from archetype.physical_ai.manipulation import ManipStatus, ManipTask, ScriptedReachEnv
-from archetype.physical_ai.models import EvaluatePhysicalTask
+from archetype.physical_ai.models import (
+    EvaluatePhysicalTask,
+    InstructionSweepReport,
+    PhysicalTaskEvalReport,
+    TrialOutcome,
+    VariantOutcome,
+)
 from archetype.physical_ai.policy import ScriptedReachPolicy
 from archetype.world.models import ComponentTypeRef, QueryComponents
 from tests._runtime import build_test_runtime
@@ -65,6 +73,52 @@ def _simulate(target: tuple[float, float, float], seed: int) -> tuple[bool, int]
     return False, MAX_STEPS
 
 
+def test_physical_report_shapes_and_derived_lengths_are_exact() -> None:
+    assert tuple(field.name for field in fields(TrialOutcome)) == (
+        "trial_idx",
+        "env_key",
+        "seed",
+        "success",
+        "episode_length",
+    )
+    assert tuple(field.name for field in fields(PhysicalTaskEvalReport)) == (
+        "suite",
+        "task_id",
+        "instruction",
+        "world_id",
+        "run_id",
+        "trials",
+    )
+    assert tuple(field.name for field in fields(VariantOutcome)) == (
+        "instruction",
+        "n_trials",
+        "n_success",
+        "success_rate",
+        "mean_length",
+    )
+    assert tuple(field.name for field in fields(InstructionSweepReport)) == (
+        "suite",
+        "task_id",
+        "world_id",
+        "run_id",
+        "variants",
+    )
+
+    report = PhysicalTaskEvalReport(
+        suite="shape",
+        task_id=1,
+        instruction="reach",
+        world_id="world",
+        run_id="run",
+        trials=(
+            TrialOutcome(0, 0, 1000, True, 2),
+            TrialOutcome(1, 1, 1001, False, 6),
+        ),
+    )
+    assert report.success_rate == 0.5
+    assert report.mean_length == 4.0
+
+
 @pytest.mark.asyncio
 async def test_batched_control_plane_eval_is_addressable_and_graded(tmp_path):
     resources = build_test_runtime(tmp_path)
@@ -87,6 +141,17 @@ async def test_batched_control_plane_eval_is_addressable_and_graded(tmp_path):
                 policy_client=policy,
             )
         )
+
+        assert report.suite == "scripted"
+        assert report.task_id == 0
+        assert report.instruction == "reach"
+        assert report.trials == (
+            TrialOutcome(0, 0, 0, True, 3),
+            TrialOutcome(1, 1, 1, True, 5),
+            TrialOutcome(2, 2, 2, True, 7),
+            TrialOutcome(3, 3, 3, False, 39),
+        )
+        assert report.mean_length == 13.5
 
         # Independent replay (seed = task_id*1000 + env_key = env_key for task 0).
         expected = {ek: _simulate(TARGETS[ek], ek) for ek in TARGETS}

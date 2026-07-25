@@ -12,7 +12,7 @@ Choose the owning package before adding a type or behavior:
 | Supported family value contracts | `archetype.<family>.contracts` or another specifically named family module |
 | Capability-scoped resources and provider adapters implementing a family-owned protocol | A named subpackage of `archetype.<family>` |
 | Physical storage, control catalogs, commit coordination, and generic durable world/run envelopes | `archetype.storage` |
-| Application workflow authority, cross-family orchestration, internal service ports, and concrete application services | `archetype.app.<family>` |
+| Application authority requiring app-family composition, internal service ports, and concrete application services | `archetype.app.<family>` |
 | Transport and authentication | `archetype.api` |
 | Concrete composition and process lifetime | `archetype.wiring` and `archetype.runtime_resources` |
 
@@ -57,10 +57,10 @@ archetype/
 │   ├── evaluation/     # Grading, snapshot views, leases + durable receipts
 │   ├── artifacts/      # File ingestion, content objects + typed/common indexes
 │   ├── research/       # AutoResearch values, ledger views + free workflow handler
-│   ├── <family>/       # Reusable ECS/domain state and pure behavior
+│   ├── physical_ai/    # Physical state, models, views + free workflow handlers
+│   ├── <family>/       # Reusable domain state, behavior + declared workflows
 │   ├── app/            # Internal application families
-│   │   ├── missions/    #   Coding-agent workflow authority
-│   │   └── physical_ai/ #   Physical-evaluation workflow authority
+│   │   └── missions/    #   Coding-agent workflow authority
 │   ├── redaction/      # Canonical pre-durability redaction family
 │   ├── api/            # FastAPI REST layer
 │   ├── cli/            # Typer CLI (thin HTTP client)
@@ -77,7 +77,7 @@ archetype/
 | Layer | Access |
 |-------|--------|
 | `core/` | Modify only after discussion. It holds the hard invariants; breakage there cascades everywhere. |
-| `<family>/` | Reusable domain contracts and pure behavior. Follow the declared top-level family DAG. |
+| `<family>/` | Reusable domain contracts, behavior, and family-owned workflows. Follow the declared top-level family DAG. |
 | `app/` | Extend carefully. Internal authority, orchestration, service ports, and concrete implementations. |
 | `runtime/` | Recommended top-level API (`ArchetypeRuntime`). Contract changes require focused specs/tests. |
 | `api/`, `cli/` | Write freely, subject to the contracts they wrap. |

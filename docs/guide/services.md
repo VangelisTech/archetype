@@ -49,7 +49,7 @@ archetype.wiring
   +-> TranscriptIngestionService -> artifacts/redaction/storage
   +-> evaluation handlers -> storage + world.query
   +-> research handler + shared admissions -> storage/world ports
-  +-> PhysicalAIService -> storage/world ports
+  +-> physical_ai handlers -> storage/world ports + provider-lifetime registrar
 ```
 
 Wiring injects `CommandScheduler.materialize` when lifecycle constructs
@@ -117,7 +117,7 @@ that substrate directly for their typed rows. There is no general ingestion or
 application artifact facade and no artifact claim, lease, receipt, or
 reconciliation state machine. See [Artifacts](artifacts.md).
 
-## Evaluation and research families
+## Evaluation, research, and physical-AI families
 
 The top-level evaluation family pins persisted world state through storage and
 world-query authority, executes caller-provided graders, validates typed
@@ -136,10 +136,24 @@ the handler inside its existing admission, so shutdown drains it without a
 second owner reservation or detached task. Scoring remains an explicit
 callback contract.
 
-`PhysicalAIService` composes world registry/lifecycle and storage ports and
-calls world mutation, simulation, and durable query functions. It uses storage
-to materialize the bounded terminal projection from which it builds a typed
-report; the report is not a second state authority.
+The top-level physical-AI family owns canonical provider protocols in
+`interfaces.py`, operation models in `models.py`, storage-backed views, and
+free evaluation/sweep handlers. The handlers compose world
+registry/lifecycle and storage ports and call world mutation, simulation, and
+durable query functions. They materialize the bounded terminal projection from
+which they build a typed report; the report is not a second state authority.
+
+The exact physical operations are trusted-only, direct, and non-durable.
+Before their first effect, a wiring-injected registrar transfers every unique
+provider identity to `RuntimeResources` and acquires an identity-ordered lease
+for the complete workflow. Concurrent operations sharing any provider
+serialize; operations with disjoint providers may proceed concurrently.
+Providers expose `async aclose()`; runtime shutdown deduplicates identities,
+retains ownership across operation cancellation, and retries failed closes
+without repeating successful ones. Raw-client processors are internal so
+generic processor installation cannot bypass that ownership boundary. Before
+releasing the lease, each handler retires its live writer; returned world/run
+coordinates remain durably readable but cannot execute provider work.
 
 ## Commands family
 
@@ -189,4 +203,5 @@ The CLI remains an HTTP client.
 - artifact values, pipeline, scanners, views, and handlers: `src/archetype/artifacts/`
 - evaluation values, grading, pinned views, handlers, and receipt schema: `src/archetype/evaluation/`
 - research values, ledger, views, admission, and handler: `src/archetype/research/`
+- physical-AI models, state, views, and handlers: `src/archetype/physical_ai/`
 - command/access audit projection: `src/archetype/commands/audit.py`

@@ -36,3 +36,39 @@ when the URL is configured without the matching token. Parity with the
 SQLite reference is enforced by `tests/storage/test_remote_catalog_parity.py`
 (runs the worker under `wrangler dev`); the owner-facing end-to-end proof
 is `scripts/validate_r2_substrate.py`.
+
+Catalog protocol v8 adds immutable world `writer_mode`. Existing directory rows
+migrate in place and default to `resumable`; physical evidence registers as
+`cleanup_only`. The Python client performs an authenticated `/protocol`
+preflight and then uses the versioned `POST /protocol/v8/worlds` route for every
+cleanup-only write. Both an older outer Worker and an older resident Directory
+Durable Object reject that route before SQL: the v8 outer Worker rewrites the
+public route to the Directory-only
+`https://catalog-directory.internal/ns/<namespace>/_gateway/v8/worlds` route,
+and the v8 Directory accepts versioned registration only on that internal host
+and path. A v7 outer Worker therefore cannot pass the public route to a v8
+Directory, and a v8 outer Worker cannot pass the internal route to a v7
+Directory. Deploy the v8 Worker before a host that can create those worlds.
+
+After the Directory write succeeds, the outer Worker mirrors status into the
+per-world `WorldCommitDO` and only then adds
+`gateway_protocol_version: 8` to the response. The client never falls back to
+unversioned registration and requires the response to confirm catalog protocol
+v8, gateway protocol v8, the exact cleanup-only writer marker, and active
+status from both authorities.
+
+Once the registration `POST` is issued, any non-success response, transport
+failure, parse or confirmation failure, or cancellation is ambiguous. The
+client reconciles and calls the exact
+`POST /protocol/v8/worlds/<world_id>/retire` route
+cancellation-resistantly. Its payload is the complete `WorldRecord`, with the
+requested status set to `destroyed`. In one Directory transaction, an absent
+row becomes an exact destroyed tombstone, an exact active row becomes
+destroyed, an exact destroyed row succeeds idempotently, and a conflicting
+immutable identity is left unchanged. The Worker mirrors destroyed status to
+`WorldCommitDO` and returns only after both authorities confirm it.
+
+Destroyed status is monotonic in the Directory and `WorldCommitDO`, so the
+tombstone prevents a delayed registration write from reactivating a
+cleanup-only writer. This retirement handshake extends the still-unlanded v8
+contract in place; it adds no protocol version or additional data migration.

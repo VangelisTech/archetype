@@ -184,23 +184,23 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "ArtifactStoreConfig": ("archetype.artifacts.models", "ArtifactStoreConfig"),
     # Physical-AI workflow values
     "PhysicalTaskEvalConfig": (
-        "archetype.physical_ai.contracts",
+        "archetype.physical_ai.models",
         "PhysicalTaskEvalConfig",
     ),
     "PhysicalTaskEvalReport": (
-        "archetype.physical_ai.contracts",
+        "archetype.physical_ai.models",
         "PhysicalTaskEvalReport",
     ),
     "InstructionSweepConfig": (
-        "archetype.physical_ai.contracts",
+        "archetype.physical_ai.models",
         "InstructionSweepConfig",
     ),
     "InstructionSweepReport": (
-        "archetype.physical_ai.contracts",
+        "archetype.physical_ai.models",
         "InstructionSweepReport",
     ),
-    "TrialOutcome": ("archetype.physical_ai.contracts", "TrialOutcome"),
-    "VariantOutcome": ("archetype.physical_ai.contracts", "VariantOutcome"),
+    "TrialOutcome": ("archetype.physical_ai.models", "TrialOutcome"),
+    "VariantOutcome": ("archetype.physical_ai.models", "VariantOutcome"),
     # AutoResearch
     "AutoResearchConfig": ("archetype.research.models", "AutoResearchConfig"),
     "AutoResearchResult": ("archetype.research.models", "AutoResearchResult"),
