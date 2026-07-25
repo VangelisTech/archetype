@@ -278,6 +278,12 @@ jobs:
             entry; a file may appear in more than one area when it genuinely
             spans concerns.
 
+            `summary` is capped at 600 characters and every `assessment` at 300;
+            over-length output is rejected. Spend them on what you observed in
+            this diff. Do not enumerate the categories that did not apply, and
+            do not restate the change — findings carry their own detail and
+            post as separate threads.
+
             `review_context.files` is changed-file coverage metadata and may
             contain only paths listed in `.footgun-review-scope.json`. If you
             inspect other protected-base files as evidence, name those paths in
@@ -377,6 +383,12 @@ jobs:
           paths listed in `.footgun-review-scope.json`; name other evidence paths
           in assessment prose instead. Never return schema examples or
           placeholder values as live output.
+
+          `summary` is capped at 600 characters and every `assessment` at 300;
+          over-length output is rejected. Spend them on what you observed in
+          this diff. Do not enumerate the categories that did not apply, and do
+          not restate the change — findings carry their own detail and post as
+          separate threads.
 
           Use only the read, grep, glob, and list tools. Do not run shell
           commands, edit files, or fetch URLs. Do not post comments or reviews.
@@ -575,7 +587,7 @@ jobs:
           if-no-files-found: error
           name: footgun-review-lens-${{ matrix.lens }}-${{ github.run_id }}
           path: ${{ github.workspace }}/.footgun-review-output/validated/normalized.json
-          retention-days: 1
+          retention-days: 90
 
   footgun-review:
     name: footgun-review
@@ -706,7 +718,7 @@ jobs:
           if-no-files-found: error
           name: footgun-review-validated-${{ github.run_id }}
           path: ${{ github.workspace }}/.footgun-review-output/validated/normalized.json
-          retention-days: 1
+          retention-days: 90
 
   review-complete:
     name: review-complete

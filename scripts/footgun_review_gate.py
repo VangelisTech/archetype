@@ -68,6 +68,24 @@ SEVERITIES = (
     "advisory",
 )
 
+# Prose ceilings, enforced by the validator and mirrored into the constrained
+# schema. `review_context` must cover every changed file and every lens covers
+# the whole diff, so unbounded prose grows the published evidence as
+# files x lenses: a 71-file diff produced a 51KB comment whose content was
+# mostly per-lens narration of the categories that did not apply. Findings
+# carry their own detail and post as threads, so bounding narration here costs
+# no finding fidelity.
+SUMMARY_MAX = 600
+ASSESSMENT_MAX = 300
+
+# Retention for the uploaded validated artifact. Every elision in the
+# published comment points at that artifact as the complete record, so this
+# must outlive the review it explains; at the previous 1 day, a degraded
+# comment became a permanent record pointing at a dead link the next morning.
+# `retention-days` in the review workflow mirrors this value and a drift test
+# holds the two together.
+ARTIFACT_RETENTION_DAYS = 90
+
 # The parallel review matrix runs one detector job per lens. Every lens
 # reviews the full diff against its category subset; `merge` reassembles the
 # lens results into one full-coverage review. The partition invariant —
@@ -308,10 +326,16 @@ def _expect_list(value: Any, label: str) -> list[Any]:
     return value
 
 
-def _text(value: Any, label: str, *, minimum: int) -> str:
+def _text(value: Any, label: str, *, minimum: int, maximum: int | None = None) -> str:
     if not isinstance(value, str) or len(value.strip()) < minimum:
         raise GateError(f"{label} must contain at least {minimum} non-whitespace characters")
-    return value.strip()
+    stripped = value.strip()
+    if maximum is not None and len(stripped) > maximum:
+        raise GateError(
+            f"{label} must contain at most {maximum} characters; got {len(stripped)}. "
+            "State the concrete observation, not the categories that did not apply."
+        )
+    return stripped
 
 
 def _exact_unique_strings(value: Any, expected: Sequence[str], label: str) -> list[str]:
@@ -340,11 +364,14 @@ def validate_result(
     diff: str,
     *,
     categories: Sequence[str] = REQUIRED_CATEGORIES,
+    summary_maximum: int = SUMMARY_MAX,
 ) -> dict[str, Any]:
     """Validate and normalize model output against the exact reviewed diff.
 
     ``categories`` narrows the required coverage to one lens's subset; the
-    default demands the full detector category list.
+    default demands the full detector category list. ``summary_maximum``
+    scales for the merged review, which concatenates one bounded summary per
+    lens.
     """
     head_sha = scope.get("head_sha")
     if raw_result.get("head_sha") != head_sha:
@@ -359,7 +386,7 @@ def validate_result(
         categories,
         "reviewed_categories",
     )
-    summary = _text(raw_result.get("summary"), "summary", minimum=80)
+    summary = _text(raw_result.get("summary"), "summary", minimum=80, maximum=summary_maximum)
 
     context_entries = _expect_list(raw_result.get("review_context"), "review_context")
     if not context_entries:
@@ -383,6 +410,7 @@ def validate_result(
                     entry.get("assessment"),
                     f"review_context[{index}].assessment",
                     minimum=30,
+                    maximum=ASSESSMENT_MAX,
                 ),
             }
         )
@@ -449,6 +477,18 @@ def validate_result(
     }
 
 
+def merged_summary_maximum() -> int:
+    """Return the merged-summary ceiling derived from the lens partition.
+
+    The merge joins one ``[lens] <summary>`` segment per lens with single
+    spaces, so the merged ceiling follows from the per-lens ceiling rather
+    than being a second independently-tuned number.
+    """
+    prefixes = sum(len(f"[{lens}] ") for lens in LENSES)
+    separators = max(0, len(LENSES) - 1)
+    return prefixes + separators + SUMMARY_MAX * len(LENSES)
+
+
 def merge_lens_results(
     lens_results: Mapping[str, Mapping[str, Any]], scope: Mapping[str, Any], diff: str
 ) -> dict[str, Any]:
@@ -504,7 +544,7 @@ def merge_lens_results(
         "review_context": merged_context,
         "findings": merged_findings,
     }
-    return validate_result(merged, scope, diff)
+    return validate_result(merged, scope, diff, summary_maximum=merged_summary_maximum())
 
 
 def extract_structured_json(raw: str) -> dict[str, Any] | None:
@@ -563,7 +603,7 @@ def result_schema(categories: Sequence[str] = REQUIRED_CATEGORIES) -> dict[str, 
         "type": "object",
         "properties": {
             "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-            "summary": {"type": "string", "minLength": 80},
+            "summary": {"type": "string", "minLength": 80, "maxLength": SUMMARY_MAX},
             "reviewed_files": {"type": "array", "items": text, "minItems": 1},
             "reviewed_categories": {"type": "array", "items": text, "minItems": 1},
             "review_context": {
@@ -574,7 +614,11 @@ def result_schema(categories: Sequence[str] = REQUIRED_CATEGORIES) -> dict[str, 
                     "properties": {
                         "area": {"type": "string", "minLength": 3},
                         "files": {"type": "array", "items": text, "minItems": 1},
-                        "assessment": {"type": "string", "minLength": 30},
+                        "assessment": {
+                            "type": "string",
+                            "minLength": 30,
+                            "maxLength": ASSESSMENT_MAX,
+                        },
                     },
                     "required": ["area", "files", "assessment"],
                     "additionalProperties": False,
@@ -634,17 +678,6 @@ def _markdown_code(value: str) -> str:
 
 
 _PUBLISHED_BODY_LIMIT = 60000
-_SUMMARY_BUDGET = 6000
-
-
-def _elided(text: str, budget: int | None, label: str) -> str:
-    """Return ``text`` bounded to ``budget`` characters, saying so when cut."""
-    if budget is None or len(text) <= budget:
-        return text
-    return (
-        f"{text[:budget].rstrip()}\n\n_({label} truncated at {budget} characters to fit the "
-        "published comment budget; the complete text is in the validated artifact below.)_"
-    )
 
 
 def _artifact_section(
@@ -679,7 +712,8 @@ def _artifact_section(
     if run_url and artifact_name:
         lines.extend(
             [
-                f"Validated artifact: [{artifact_name}]({run_url}#artifacts) (1-day retention).",
+                f"Validated artifact: [{artifact_name}]({run_url}#artifacts) "
+                f"({ARTIFACT_RETENTION_DAYS}-day retention).",
                 "",
             ]
         )
@@ -714,15 +748,15 @@ def render_evidence(
     )
     marker = evidence_marker(head_sha, finding_count, digest)
 
-    def prose(*, summary_budget: int | None, context_detail: bool) -> list[str]:
+    def prose(*, context_detail: bool) -> list[str]:
         rendered_lines = [
             f"## Footgun review — {outcome}",
             "",
             f"**Exact head:** `{head_sha}`  ",
             f"**Validated scope:** {len(files)} changed file(s), "
-            f"{len(categories)} detector categories",
+            f"{len(categories)} detector categories assigned across {len(LENSES)} lenses",
             "",
-            _elided(str(result["summary"]), summary_budget, "summary"),
+            str(result["summary"]),
             "",
             "<details>",
             "<summary>Context reviewed</summary>",
@@ -752,7 +786,7 @@ def render_evidence(
                 "</details>",
                 "",
                 "<details>",
-                "<summary>Detector categories completed</summary>",
+                "<summary>Detector categories assigned</summary>",
                 "",
                 *[f"- `{category}`" for category in categories],
                 "",
@@ -762,30 +796,30 @@ def render_evidence(
         )
         return rendered_lines
 
-    def body(*, inline: bool, summary_budget: int | None, context_detail: bool) -> str:
+    def body(*, inline: bool, context_detail: bool) -> str:
         return "\n".join(
             [
-                *prose(summary_budget=summary_budget, context_detail=context_detail),
+                *prose(context_detail=context_detail),
                 *_artifact_section(result, run_url, artifact_name, inline=inline),
                 "",
                 marker,
             ]
         )
 
-    # Degrade in a fixed order, cheapest loss first, and never silently: the
-    # validated artifact keeps the complete text, every elision says so, and
-    # the digest is computed over the result rather than this rendering, so
-    # shrinking the body cannot weaken the evidence `verify` matches. A
-    # merged lens review carries one summary and one context set per lens, so
-    # a wide diff overruns the comment limit on prose alone — dropping only
-    # the inline artifact (the pre-matrix ladder) is not enough.
-    for inline, summary_budget, context_detail in (
-        (True, None, True),
-        (False, None, True),
-        (False, _SUMMARY_BUDGET, True),
-        (False, _SUMMARY_BUDGET, False),
+    # Summary and assessment prose is bounded by the validator (SUMMARY_MAX,
+    # ASSESSMENT_MAX), so the only term that still scales without limit is
+    # per-area context: every lens must cover every changed file, making the
+    # context section grow as files x lenses. Degrade that, then the inline
+    # artifact, and never silently — the elision says so and points at a
+    # retained artifact. The digest is computed over the result rather than
+    # this rendering, so shrinking the body cannot weaken the evidence
+    # `verify` matches.
+    for inline, context_detail in (
+        (True, True),
+        (False, True),
+        (False, False),
     ):
-        rendered = body(inline=inline, summary_budget=summary_budget, context_detail=context_detail)
+        rendered = body(inline=inline, context_detail=context_detail)
         if len(rendered.encode("utf-8")) <= _PUBLISHED_BODY_LIMIT:
             return rendered
     raise GateError("rendered review evidence exceeds the published body limit")

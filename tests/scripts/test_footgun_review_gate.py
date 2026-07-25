@@ -517,8 +517,8 @@ def test_oversized_evidence_without_named_validated_artifact_fails_closed():
 
 def test_normalize_command_does_not_render_unpublished_evidence(tmp_path):
     result = _result()
-    result["summary"] = "s" * 40000
-    result["review_context"][0]["assessment"] = "c" * 40000
+    result["summary"] = "s" * gate.SUMMARY_MAX
+    result["review_context"][0]["assessment"] = "c" * gate.ASSESSMENT_MAX
     scope_path = tmp_path / "scope.json"
     diff_path = tmp_path / "review.diff"
     result_path = tmp_path / "result.json"
@@ -544,7 +544,7 @@ def test_normalize_command_does_not_render_unpublished_evidence(tmp_path):
         == 0
     )
 
-    assert json.loads(output_path.read_text(encoding="utf-8"))["summary"] == "s" * 40000
+    assert json.loads(output_path.read_text(encoding="utf-8"))["summary"] == "s" * gate.SUMMARY_MAX
     assert list(output_path.parent.iterdir()) == [output_path]
 
 
@@ -585,6 +585,83 @@ def test_workflow_has_one_bounded_validator_feedback_retry():
     assert "steps.first_validation.outputs.valid != 'true'" in workflow
     assert ".footgun-review-validation.txt" in workflow
     assert "Require detector completion" not in workflow
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (
+            lambda result: result.update(summary="s" * (gate.SUMMARY_MAX + 1)),
+            f"summary must contain at most {gate.SUMMARY_MAX} characters",
+        ),
+        (
+            lambda result: result["review_context"][0].update(
+                assessment="c" * (gate.ASSESSMENT_MAX + 1)
+            ),
+            f"assessment must contain at most {gate.ASSESSMENT_MAX} characters",
+        ),
+    ],
+)
+def test_narration_over_the_prose_ceiling_is_rejected(mutation, message):
+    """Bound the prose at the source, not at render time.
+
+    `review_context` must cover every changed file and every lens reviews the
+    whole diff, so unbounded narration grows the published evidence as
+    files x lenses. #663 (71 files) rendered a 51KB comment that was mostly
+    per-lens narration of the categories that did not apply, and the head
+    before it overran the 60KB limit outright.
+    """
+    result = _result()
+    mutation(result)
+
+    with pytest.raises(GateError) as error:
+        validate_result(result, _scope(), DIFF)
+
+    assert message in str(error.value)
+
+
+def test_constrained_schema_mirrors_the_validator_prose_ceilings():
+    """Claude Code decodes against this schema; drift would spend a retry."""
+    schema = gate.result_schema()
+    properties = schema["properties"]
+
+    assert properties["summary"]["maxLength"] == gate.SUMMARY_MAX
+    context_item = properties["review_context"]["items"]["properties"]
+    assert context_item["assessment"]["maxLength"] == gate.ASSESSMENT_MAX
+
+
+def test_merged_summary_ceiling_is_derived_from_the_lens_partition():
+    """The merged ceiling follows from the per-lens one, not a second knob."""
+    merged = gate.merge_lens_results(
+        {lens: _lens_result(lens) for lens in gate.LENSES}, _scope(), DIFF
+    )
+
+    assert len(merged["summary"]) <= gate.merged_summary_maximum()
+    # Derived, not a tuned literal: adding a lens moves the ceiling with it.
+    assert gate.merged_summary_maximum() >= gate.SUMMARY_MAX * len(gate.LENSES)
+
+
+def test_published_artifact_outlives_the_elisions_that_point_at_it():
+    """Every degraded rung says "read the complete text in the artifact".
+
+    At the previous `retention-days: 1`, a degraded comment became a permanent
+    record pointing at a link that died the next morning, and
+    `verify_posted_evidence` only checks the marker, so nothing noticed.
+    """
+    workflow = REVIEW_WORKFLOW.read_text(encoding="utf-8")
+
+    assert gate.ARTIFACT_RETENTION_DAYS > 1
+    uploads = workflow.count("uses: actions/upload-artifact@")
+    assert uploads == 2
+    assert workflow.count(f"retention-days: {gate.ARTIFACT_RETENTION_DAYS}") == uploads
+
+
+def test_workflow_prompts_state_the_prose_ceilings_to_both_backends():
+    """OpenCode has no constrained decoding; an unstated cap burns the retry."""
+    workflow = REVIEW_WORKFLOW.read_text(encoding="utf-8")
+
+    assert workflow.count(f"`summary` is capped at {gate.SUMMARY_MAX} characters") == 2
+    assert workflow.count(f"every `assessment` at {gate.ASSESSMENT_MAX}") == 2
 
 
 def test_workflow_materializes_large_diffs_from_inert_git_objects():
@@ -921,7 +998,12 @@ def test_merge_reassembles_one_full_coverage_review(tmp_path):
 
     merged = json.loads(output_path.read_text(encoding="utf-8"))
     # The merged result is itself a fully valid full-coverage review.
-    assert validate_result(merged, _scope(), DIFF) == merged
+    # The merged result is itself a fully valid full-coverage review, under the
+    # ceiling that matches its shape: one bounded summary per lens.
+    assert (
+        validate_result(merged, _scope(), DIFF, summary_maximum=gate.merged_summary_maximum())
+        == merged
+    )
     assert merged["reviewed_categories"] == sorted(REQUIRED_CATEGORIES)
     assert [finding["category"] for finding in merged["findings"]] == ["fail-open-failure-paths"]
     assert all(entry["area"].split(": ", 1)[0] in gate.LENSES for entry in merged["review_context"])
@@ -1023,10 +1105,18 @@ def test_wide_merged_lens_evidence_degrades_instead_of_failing_closed():
     posting an incomplete verdict for a review that had actually succeeded.
     """
     normalized = validate_result(_result(), _scope(), DIFF)
-    normalized["summary"] = "s" * 30000
+    # Every value here is within the per-field ceilings the validator now
+    # enforces: the overflow is the files-times-lenses count of legitimately
+    # bounded entries, not one runaway string.
+    summary = normalized["summary"]
+    normalized["summary"] = summary + "s" * (gate.merged_summary_maximum() - len(summary))
     normalized["review_context"] = [
-        {"area": f"lens-{index}: area", "files": ["old.py"], "assessment": "c" * 20000}
-        for index in range(5)
+        {
+            "area": f"lens-{index % len(gate.LENSES)}: area {index}",
+            "files": ["old.py" if index % 2 else "new.py"],
+            "assessment": "c" * gate.ASSESSMENT_MAX,
+        }
+        for index in range(200)
     ]
     digest = artifact_digest(normalized)
 
@@ -1038,12 +1128,15 @@ def test_wide_merged_lens_evidence_degrades_instead_of_failing_closed():
     )
 
     assert len(rendered.encode("utf-8")) <= gate._PUBLISHED_BODY_LIMIT
-    # Degraded, but never silently: both elisions say what was cut and where
-    # the complete text lives.
-    assert f"summary truncated at {gate._SUMMARY_BUDGET} characters" in rendered
-    assert "5 reviewed area(s) covering 2 changed file(s)" in rendered
+    # Degraded, but never silently: the elision says what was cut and where the
+    # complete text lives.
+    assert "200 reviewed area(s) covering 2 changed file(s)" in rendered
     assert "exceed the published comment budget" in rendered
     assert "[footgun-review-validated-9](https://example.test/runs/9#artifacts)" in rendered
+    assert f"({gate.ARTIFACT_RETENTION_DAYS}-day retention)" in rendered
+    # The summary is bounded at the source, so it survives degradation whole —
+    # no lens loses its narrative to a character cut on the joined string.
+    assert normalized["summary"] in rendered
     # The digest binds the result, not this rendering, so `verify` still
     # matches the exact evidence marker.
     assert evidence_marker(HEAD_SHA, 0, digest) in rendered
