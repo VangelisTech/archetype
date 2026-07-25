@@ -37,8 +37,10 @@ from footgun_review_gate import (  # noqa: E402
     changed_line_anchors,
     evidence_marker,
     render_evidence,
+    review_bundle_findings,
     review_payload,
     validate_result,
+    validate_review_bundle,
     verify_posted_evidence,
 )
 
@@ -127,6 +129,17 @@ def _finding(**overrides) -> dict:
     }
     finding.update(overrides)
     return finding
+
+
+def _lens_result(lens: str, *, findings: list[dict] | None = None) -> dict:
+    result = _result(findings=findings)
+    result["reviewed_categories"] = list(reversed(gate.LENSES[lens]))
+    return result
+
+
+def _bundle(*, lens_results: dict[str, dict] | None = None) -> dict:
+    results = lens_results or {lens: _lens_result(lens) for lens in gate.LENSES}
+    return gate.merge_lens_results(results, _scope(), DIFF)
 
 
 def _run_attempt(tmp_path: Path, result: dict | None) -> tuple[Path, Path, Path]:
@@ -366,7 +379,10 @@ def test_prepare_reports_blocking_and_total_finding_counts(tmp_path):
         what_goes_wrong="Readers assume the field is wired to behavior when nothing consumes it.",
         fix="Wire the value to its consumer or remove the assignment.",
     )
-    result = _result(findings=[_finding(), advisory])
+    lens_results = {lens: _lens_result(lens) for lens in gate.LENSES}
+    lens_results["authority"]["findings"] = [_finding()]
+    lens_results["contracts"]["findings"] = [advisory]
+    bundle = _bundle(lens_results=lens_results)
     scope_path = tmp_path / "scope.json"
     diff_path = tmp_path / "review.diff"
     result_path = tmp_path / "result.json"
@@ -374,7 +390,7 @@ def test_prepare_reports_blocking_and_total_finding_counts(tmp_path):
     github_output = tmp_path / "github-output.txt"
     scope_path.write_text(json.dumps(_scope()), encoding="utf-8")
     diff_path.write_text(DIFF, encoding="utf-8")
-    result_path.write_text(json.dumps(result), encoding="utf-8")
+    result_path.write_text(json.dumps(bundle), encoding="utf-8")
 
     assert (
         gate.main(
@@ -400,6 +416,7 @@ def test_prepare_reports_blocking_and_total_finding_counts(tmp_path):
     assert "blocking_finding_count=1\n" in outputs
     evidence = (output_dir / "evidence.md").read_text(encoding="utf-8")
     assert "2 finding(s) — 1 blocking, 1 advisory" in evidence
+    assert json.loads((output_dir / "review-bundle.json").read_text(encoding="utf-8")) == bundle
 
 
 def test_block_step_fires_only_on_blocking_findings():
@@ -446,79 +463,83 @@ def test_finding_can_anchor_to_the_removed_side():
 
 
 def test_rendered_no_findings_evidence_is_specific_and_digest_bound():
-    normalized = validate_result(_result(), _scope(), DIFF)
-    digest = artifact_digest(normalized)
-    rendered = render_evidence(normalized, digest)
+    bundle = _bundle()
+    digest = artifact_digest(bundle)
+    rendered = render_evidence(bundle, digest)
 
     assert "no findings" in rendered
-    assert "2 changed file(s), 24 detector categories" in rendered
-    assert "old.py" in rendered
+    assert "2 changed file(s), 24 detector categories, 5/5 lenses" in rendered
+    assert "| `daft-shape` | `opencode` | validated |" in rendered
+    assert "| `authority` | `claude-code` | validated |" in rendered
+    assert "The change replaces an unsafe call" not in rendered
     assert evidence_marker(HEAD_SHA, 0, digest) in rendered
 
 
-def test_rendered_evidence_inlines_validated_artifact_and_run_link():
-    normalized = validate_result(_result(), _scope(), DIFF)
-    digest = artifact_digest(normalized)
+def test_rendered_evidence_links_to_operational_bundle_without_inlining_it():
+    bundle = _bundle()
+    digest = artifact_digest(bundle)
     rendered = render_evidence(
-        normalized,
+        bundle,
         digest,
         run_url="https://example.test/runs/7",
         artifact_name="footgun-review-validated-7",
     )
 
-    assert "<summary>Validated review artifact</summary>" in rendered
-    start = rendered.index("```json\n") + len("```json\n")
-    end = rendered.index("\n```\n", start)
-    assert json.loads(rendered[start:end]) == normalized
-    assert "[footgun-review-validated-7](https://example.test/runs/7#artifacts)" in rendered
-
-
-def test_inline_artifact_fence_outruns_backticks_in_findings():
-    finding = _finding(fix="Replace the call:\n```python\nsafe_call()\n```\nand keep the guard.")
-    normalized = validate_result(_result(findings=[finding]), _scope(), DIFF)
-    digest = artifact_digest(normalized)
-    rendered = render_evidence(normalized, digest)
-
-    assert "````json\n" in rendered
-    assert rendered.count("````") == 2
-
-
-def test_full_published_body_budget_defers_duplicated_artifact_to_workflow_run():
-    normalized = validate_result(_result(), _scope(), DIFF)
-    normalized["summary"] = "s" * 20000
-    normalized["review_context"][0]["assessment"] = "c" * 20000
-    digest = artifact_digest(normalized)
-    rendered = render_evidence(
-        normalized,
-        digest,
-        run_url="https://example.test/runs/7",
-        artifact_name="footgun-review-validated-7",
-    )
-
-    assert (
-        len(json.dumps(normalized, ensure_ascii=False).encode("utf-8")) < gate._PUBLISHED_BODY_LIMIT
-    )
-    assert len(rendered.encode("utf-8")) <= gate._PUBLISHED_BODY_LIMIT
-    assert "exceeds the inline comment budget" in rendered
     assert "```json" not in rendered
-    assert "[footgun-review-validated-7](https://example.test/runs/7#artifacts)" in rendered
+    assert "[workflow artifact](https://example.test/runs/7#artifacts)" in rendered
+    assert "`footgun-review-validated-7`" in rendered
+    assert f"{gate.FINAL_ARTIFACT_RETENTION_DAYS}-day operational retention" in rendered
+    assert f"`sha256:{digest}`" in rendered
+
+
+def test_receipt_size_is_independent_of_unbounded_lens_narration():
+    lens_results = {lens: _lens_result(lens) for lens in gate.LENSES}
+    for result in lens_results.values():
+        result["summary"] = "summary-" + "s" * 20000
+        result["review_context"][0]["assessment"] = "assessment-" + "c" * 20000
+    bundle = _bundle(lens_results=lens_results)
+    digest = artifact_digest(bundle)
+    rendered = render_evidence(
+        bundle,
+        digest,
+        run_url="https://example.test/runs/7",
+        artifact_name="footgun-review-validated-7",
+    )
+
+    assert len(json.dumps(bundle, ensure_ascii=False).encode("utf-8")) > gate._PUBLISHED_BODY_LIMIT
+    assert len(rendered.encode("utf-8")) <= gate._PUBLISHED_BODY_LIMIT
+    assert "summary-" not in rendered
+    assert "assessment-" not in rendered
+    assert "[workflow artifact](https://example.test/runs/7#artifacts)" in rendered
     assert evidence_marker(HEAD_SHA, 0, digest) in rendered
 
 
-def test_oversized_evidence_without_named_validated_artifact_fails_closed():
-    normalized = validate_result(_result(), _scope(), DIFF)
-    normalized["summary"] = "s" * 20000
-    normalized["review_context"][0]["assessment"] = "c" * 20000
-    digest = artifact_digest(normalized)
+def test_untrusted_artifact_metadata_cannot_turn_a_completed_review_incomplete():
+    bundle = _bundle()
+    digest = artifact_digest(bundle)
+    rendered = render_evidence(
+        bundle,
+        digest,
+        run_url=f"https://example.test/{'r' * 70000}",
+        artifact_name="a" * 70000,
+    )
 
-    with pytest.raises(GateError, match="named validated artifact"):
-        render_evidence(normalized, digest, run_url="https://example.test/runs/7")
+    assert len(rendered.encode("utf-8")) <= gate._PUBLISHED_BODY_LIMIT
+    assert "artifact link unavailable in this rendering" in rendered
+    assert evidence_marker(HEAD_SHA, 0, digest) in rendered
+
+
+def test_receipt_rejects_a_digest_that_does_not_bind_its_bundle():
+    bundle = _bundle()
+
+    with pytest.raises(GateError, match="digest does not match"):
+        render_evidence(bundle, "0" * 64)
 
 
 def test_normalize_command_does_not_render_unpublished_evidence(tmp_path):
     result = _result()
-    result["summary"] = "s" * gate.SUMMARY_MAX
-    result["review_context"][0]["assessment"] = "c" * gate.ASSESSMENT_MAX
+    result["summary"] = "summary-" + "s" * 20000
+    result["review_context"][0]["assessment"] = "assessment-" + "c" * 20000
     scope_path = tmp_path / "scope.json"
     diff_path = tmp_path / "review.diff"
     result_path = tmp_path / "result.json"
@@ -544,7 +565,11 @@ def test_normalize_command_does_not_render_unpublished_evidence(tmp_path):
         == 0
     )
 
-    assert json.loads(output_path.read_text(encoding="utf-8"))["summary"] == "s" * gate.SUMMARY_MAX
+    normalized = json.loads(output_path.read_text(encoding="utf-8"))
+    assert normalized["summary"] == result["summary"]
+    assert (
+        normalized["review_context"][0]["assessment"] == result["review_context"][0]["assessment"]
+    )
     assert list(output_path.parent.iterdir()) == [output_path]
 
 
@@ -587,81 +612,59 @@ def test_workflow_has_one_bounded_validator_feedback_retry():
     assert "Require detector completion" not in workflow
 
 
-@pytest.mark.parametrize(
-    ("mutation", "message"),
-    [
-        (
-            lambda result: result.update(summary="s" * (gate.SUMMARY_MAX + 1)),
-            f"summary must contain at most {gate.SUMMARY_MAX} characters",
-        ),
-        (
-            lambda result: result["review_context"][0].update(
-                assessment="c" * (gate.ASSESSMENT_MAX + 1)
-            ),
-            f"assessment must contain at most {gate.ASSESSMENT_MAX} characters",
-        ),
-    ],
-)
-def test_narration_over_the_prose_ceiling_is_rejected(mutation, message):
-    """Bound the prose at the source, not at render time.
-
-    `review_context` must cover every changed file and every lens reviews the
-    whole diff, so unbounded narration grows the published evidence as
-    files x lenses. #663 (71 files) rendered a 51KB comment that was mostly
-    per-lens narration of the categories that did not apply, and the head
-    before it overran the 60KB limit outright.
-    """
+def test_review_narration_is_not_generation_capped_without_quality_evidence():
     result = _result()
-    mutation(result)
+    result["summary"] = "summary-" + "s" * 20000
+    result["review_context"][0]["assessment"] = "assessment-" + "c" * 20000
 
-    with pytest.raises(GateError) as error:
-        validate_result(result, _scope(), DIFF)
+    normalized = validate_result(result, _scope(), DIFF)
 
-    assert message in str(error.value)
+    assert normalized["summary"] == result["summary"]
+    assert (
+        normalized["review_context"][0]["assessment"] == result["review_context"][0]["assessment"]
+    )
 
 
-def test_constrained_schema_mirrors_the_validator_prose_ceilings():
-    """Claude Code decodes against this schema; drift would spend a retry."""
+def test_constrained_schema_does_not_turn_publication_budget_into_model_policy():
     schema = gate.result_schema()
     properties = schema["properties"]
 
-    assert properties["summary"]["maxLength"] == gate.SUMMARY_MAX
+    assert "maxLength" not in properties["summary"]
     context_item = properties["review_context"]["items"]["properties"]
-    assert context_item["assessment"]["maxLength"] == gate.ASSESSMENT_MAX
+    assert "maxLength" not in context_item["assessment"]
 
 
-def test_merged_summary_ceiling_is_derived_from_the_lens_partition():
-    """The merged ceiling follows from the per-lens one, not a second knob."""
-    merged = gate.merge_lens_results(
-        {lens: _lens_result(lens) for lens in gate.LENSES}, _scope(), DIFF
+def test_bundle_preserves_each_lens_without_concatenating_narration():
+    lens_results = {lens: _lens_result(lens) for lens in gate.LENSES}
+    for lens, result in lens_results.items():
+        result["summary"] = f"{lens} " + "s" * 100
+
+    bundle = _bundle(lens_results=lens_results)
+
+    assert "summary" not in bundle
+    assert "review_context" not in bundle
+    assert [receipt["result"]["summary"] for receipt in bundle["lenses"]] == [
+        lens_results[lens]["summary"] for lens in gate.LENSES
+    ]
+
+
+def test_workflow_retains_the_complete_bundle_as_operational_evidence():
+    workflow = REVIEW_WORKFLOW.read_text(encoding="utf-8")
+
+    assert workflow.count("retention-days: 1") == 1
+    assert workflow.count(f"retention-days: {gate.FINAL_ARTIFACT_RETENTION_DAYS}") == 1
+    assert "path: ${{ github.workspace }}/.footgun-review-output/validated/review-bundle.json" in (
+        workflow
     )
-
-    assert len(merged["summary"]) <= gate.merged_summary_maximum()
-    # Derived, not a tuned literal: adding a lens moves the ceiling with it.
-    assert gate.merged_summary_maximum() >= gate.SUMMARY_MAX * len(gate.LENSES)
+    assert '--output "${REVIEW_DIR}/validated/review-bundle.json"' in workflow
+    assert '--result "${RUNNER_TEMP}/detector-result/review-bundle.json"' in workflow
 
 
-def test_published_artifact_outlives_the_elisions_that_point_at_it():
-    """Every degraded rung says "read the complete text in the artifact".
-
-    At the previous `retention-days: 1`, a degraded comment became a permanent
-    record pointing at a link that died the next morning, and
-    `verify_posted_evidence` only checks the marker, so nothing noticed.
-    """
+def test_workflow_prompts_do_not_impose_unevaluated_prose_caps():
     workflow = REVIEW_WORKFLOW.read_text(encoding="utf-8")
 
-    assert gate.ARTIFACT_RETENTION_DAYS > 1
-    uploads = workflow.count("uses: actions/upload-artifact@")
-    assert uploads == 2
-    assert workflow.count(f"retention-days: {gate.ARTIFACT_RETENTION_DAYS}") == uploads
-
-
-def test_workflow_prompts_state_the_prose_ceilings_to_both_backends():
-    """OpenCode has no constrained decoding; an unstated cap burns the retry."""
-    workflow = REVIEW_WORKFLOW.read_text(encoding="utf-8")
-
-    assert workflow.count(f"`summary` is capped at {gate.SUMMARY_MAX} characters") == 2
-    assert workflow.count(f"every `assessment` at {gate.ASSESSMENT_MAX}") == 2
+    assert "`summary` is capped at" not in workflow
+    assert "every `assessment` at" not in workflow
 
 
 def test_workflow_materializes_large_diffs_from_inert_git_objects():
@@ -804,9 +807,11 @@ def test_a_superseded_review_never_publishes_an_incomplete_verdict():
 
 
 def test_review_payload_batches_each_finding_as_an_inline_thread():
-    normalized = validate_result(_result(findings=[_finding()]), _scope(), DIFF)
-    digest = artifact_digest(normalized)
-    payload = review_payload(normalized, digest)
+    lens_results = {lens: _lens_result(lens) for lens in gate.LENSES}
+    lens_results["authority"]["findings"] = [_finding()]
+    bundle = _bundle(lens_results=lens_results)
+    digest = artifact_digest(bundle)
+    payload = review_payload(bundle, digest)
 
     assert payload["commit_id"] == HEAD_SHA
     assert payload["event"] == "COMMENT"
@@ -917,12 +922,6 @@ def test_observability_categories_extend_failure_and_unwind_review():
     assert "error-path-unwind" in REQUIRED_CATEGORIES
 
 
-def _lens_result(lens: str, *, findings: list[dict] | None = None) -> dict:
-    result = _result(findings=findings)
-    result["reviewed_categories"] = list(reversed(gate.LENSES[lens]))
-    return result
-
-
 def test_lenses_partition_required_categories():
     """Every required category belongs to exactly one non-empty lens.
 
@@ -965,7 +964,7 @@ def test_lens_schema_narrows_the_category_enum():
     ] == list(REQUIRED_CATEGORIES)
 
 
-def test_merge_reassembles_one_full_coverage_review(tmp_path):
+def test_merge_packages_one_full_coverage_review_bundle(tmp_path):
     results_dir = tmp_path / "lenses"
     results_dir.mkdir()
     for lens in gate.LENSES:
@@ -975,7 +974,7 @@ def test_merge_reassembles_one_full_coverage_review(tmp_path):
         )
     scope_path = tmp_path / "scope.json"
     diff_path = tmp_path / "review.diff"
-    output_path = tmp_path / "validated" / "normalized.json"
+    output_path = tmp_path / "validated" / "review-bundle.json"
     scope_path.write_text(json.dumps(_scope()), encoding="utf-8")
     diff_path.write_text(DIFF, encoding="utf-8")
 
@@ -996,18 +995,56 @@ def test_merge_reassembles_one_full_coverage_review(tmp_path):
         == 0
     )
 
-    merged = json.loads(output_path.read_text(encoding="utf-8"))
-    # The merged result is itself a fully valid full-coverage review.
-    # The merged result is itself a fully valid full-coverage review, under the
-    # ceiling that matches its shape: one bounded summary per lens.
-    assert (
-        validate_result(merged, _scope(), DIFF, summary_maximum=gate.merged_summary_maximum())
-        == merged
+    bundle = json.loads(output_path.read_text(encoding="utf-8"))
+    assert validate_review_bundle(bundle, _scope(), DIFF) == bundle
+    assert bundle["kind"] == gate.REVIEW_BUNDLE_KIND
+    assert bundle["reviewed_categories"] == sorted(REQUIRED_CATEGORIES)
+    assert "summary" not in bundle
+    assert "review_context" not in bundle
+    assert "findings" not in bundle
+    assert [receipt["lens"] for receipt in bundle["lenses"]] == list(gate.LENSES)
+    assert [receipt["backend"] for receipt in bundle["lenses"]] == [
+        gate.LENS_BACKENDS[lens] for lens in gate.LENSES
+    ]
+    assert all(receipt["status"] == "validated" for receipt in bundle["lenses"])
+    assert all(
+        receipt["artifact_digest"] == artifact_digest(receipt["result"])
+        for receipt in bundle["lenses"]
     )
-    assert merged["reviewed_categories"] == sorted(REQUIRED_CATEGORIES)
-    assert [finding["category"] for finding in merged["findings"]] == ["fail-open-failure-paths"]
-    assert all(entry["area"].split(": ", 1)[0] in gate.LENSES for entry in merged["review_context"])
-    assert all(f"[{lens}]" in merged["summary"] for lens in gate.LENSES)
+    assert [finding["category"] for finding in review_bundle_findings(bundle)] == [
+        "fail-open-failure-paths"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (
+            lambda bundle: bundle["lenses"][0].update(backend="claude-code"),
+            "backend must be",
+        ),
+        (
+            lambda bundle: bundle["lenses"][0].update(status="failed"),
+            "status must be 'validated'",
+        ),
+        (
+            lambda bundle: bundle["lenses"][0]["result"].update(
+                summary=bundle["lenses"][0]["result"]["summary"] + " tampered"
+            ),
+            "digest does not match",
+        ),
+        (
+            lambda bundle: bundle["lenses"].pop(),
+            "lenses do not match",
+        ),
+    ],
+)
+def test_review_bundle_rejects_completion_metadata_or_evidence_tampering(mutation, message):
+    bundle = json.loads(json.dumps(_bundle()))
+    mutation(bundle)
+
+    with pytest.raises(GateError, match=message):
+        validate_review_bundle(bundle, _scope(), DIFF)
 
 
 def test_merge_fails_closed_on_a_missing_lens_result(tmp_path):
@@ -1042,9 +1079,9 @@ def test_merge_deduplicates_identical_findings_within_a_lens():
     lens_results = {lens: _lens_result(lens) for lens in gate.LENSES}
     lens_results["authority"]["findings"] = [_finding(), _finding()]
 
-    merged = gate.merge_lens_results(lens_results, _scope(), DIFF)
+    bundle = gate.merge_lens_results(lens_results, _scope(), DIFF)
 
-    assert len(merged["findings"]) == 1
+    assert len(review_bundle_findings(bundle)) == 1
 
 
 def test_extract_recovers_the_structured_object_from_fenced_prose():
@@ -1076,11 +1113,14 @@ def test_extract_command_passes_unparsable_output_through(tmp_path):
     assert output_path.read_text(encoding="utf-8") == "no structured result here { broken"
 
 
-def test_workflow_matrix_names_every_lens_exactly_once():
+def test_workflow_matrix_names_every_lens_and_backend_exactly_once():
     workflow = REVIEW_WORKFLOW.read_text(encoding="utf-8")
-    matrix_lenses = re.findall(r"- lens: ([a-z-]+)", workflow)
+    matrix_entries = re.findall(
+        r"- lens: ([a-z-]+)\n\s+backend: ([a-z-]+)",
+        workflow,
+    )
 
-    assert sorted(matrix_lenses) == sorted(gate.LENSES)
+    assert dict(matrix_entries) == gate.LENS_BACKENDS
 
 
 def test_merge_dedupe_never_softens_a_blocking_finding():
@@ -1089,66 +1129,113 @@ def test_merge_dedupe_never_softens_a_blocking_finding():
     lens_results = {lens: _lens_result(lens) for lens in gate.LENSES}
     lens_results["authority"]["findings"] = [_finding(severity="advisory"), _finding()]
 
-    merged = gate.merge_lens_results(lens_results, _scope(), DIFF)
+    bundle = gate.merge_lens_results(lens_results, _scope(), DIFF)
 
-    assert [finding["severity"] for finding in merged["findings"]] == ["blocking"]
+    assert [finding["severity"] for finding in review_bundle_findings(bundle)] == ["blocking"]
 
 
-def test_wide_merged_lens_evidence_degrades_instead_of_failing_closed():
-    """A merged lens review over a wide diff must still publish.
+def test_merge_prepare_publish_contract_is_independent_of_narration_size(tmp_path):
+    """Exercise the workflow's real merge → prepare → publish identity path."""
+    results_dir = tmp_path / "lenses"
+    results_dir.mkdir()
+    for lens in gate.LENSES:
+        findings = [_finding()] if lens == "authority" else None
+        result = _lens_result(lens, findings=findings)
+        result["summary"] = f"summary-{lens}-" + "s" * 20000
+        for entry in result["review_context"]:
+            entry["assessment"] = f"assessment-{lens}-" + "a" * 20000
+        (results_dir / f"{lens}.json").write_text(json.dumps(result), encoding="utf-8")
 
-    Every lens contributes its own summary and its own context entry per
-    changed file, so the merged prose is roughly lens-count times a single
-    detector's. On PR #663 (61 files) that overran GitHub's comment limit on
-    prose alone and the pre-matrix ladder — which only dropped the inline
-    artifact — failed the whole gate with "exceeds the published body limit",
-    posting an incomplete verdict for a review that had actually succeeded.
-    """
-    normalized = validate_result(_result(), _scope(), DIFF)
-    # Every value here is within the per-field ceilings the validator now
-    # enforces: the overflow is the files-times-lenses count of legitimately
-    # bounded entries, not one runaway string.
-    summary = normalized["summary"]
-    normalized["summary"] = summary + "s" * (gate.merged_summary_maximum() - len(summary))
-    normalized["review_context"] = [
-        {
-            "area": f"lens-{index % len(gate.LENSES)}: area {index}",
-            "files": ["old.py" if index % 2 else "new.py"],
-            "assessment": "c" * gate.ASSESSMENT_MAX,
-        }
-        for index in range(200)
-    ]
-    digest = artifact_digest(normalized)
+    scope_path = tmp_path / "scope.json"
+    diff_path = tmp_path / "review.diff"
+    bundle_path = tmp_path / "merge-output" / "review-bundle.json"
+    output_dir = tmp_path / "prepare-output"
+    github_output = tmp_path / "github-output.txt"
+    scope_path.write_text(json.dumps(_scope()), encoding="utf-8")
+    diff_path.write_text(DIFF, encoding="utf-8")
 
-    rendered = render_evidence(
-        normalized,
-        digest,
-        run_url="https://example.test/runs/9",
-        artifact_name="footgun-review-validated-9",
+    assert (
+        gate.main(
+            [
+                "merge",
+                "--scope",
+                str(scope_path),
+                "--diff",
+                str(diff_path),
+                "--results-dir",
+                str(results_dir),
+                "--output",
+                str(bundle_path),
+            ]
+        )
+        == 0
+    )
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    assert len(json.dumps(bundle).encode("utf-8")) > gate._PUBLISHED_BODY_LIMIT
+
+    assert (
+        gate.main(
+            [
+                "prepare",
+                "--scope",
+                str(scope_path),
+                "--diff",
+                str(diff_path),
+                "--result",
+                str(bundle_path),
+                "--output-dir",
+                str(output_dir),
+                "--github-output",
+                str(github_output),
+                "--artifact-name",
+                "footgun-review-validated-9",
+                "--run-url",
+                "https://example.test/runs/9",
+            ]
+        )
+        == 0
     )
 
-    assert len(rendered.encode("utf-8")) <= gate._PUBLISHED_BODY_LIMIT
-    # Degraded, but never silently: the elision says what was cut and where the
-    # complete text lives.
-    assert "200 reviewed area(s) covering 2 changed file(s)" in rendered
-    assert "exceed the published comment budget" in rendered
-    assert "[footgun-review-validated-9](https://example.test/runs/9#artifacts)" in rendered
-    assert f"({gate.ARTIFACT_RETENTION_DAYS}-day retention)" in rendered
-    # The summary is bounded at the source, so it survives degradation whole —
-    # no lens loses its narrative to a character cut on the joined string.
-    assert normalized["summary"] in rendered
-    # The digest binds the result, not this rendering, so `verify` still
-    # matches the exact evidence marker.
-    assert evidence_marker(HEAD_SHA, 0, digest) in rendered
+    prepared_bundle = json.loads((output_dir / "review-bundle.json").read_text(encoding="utf-8"))
+    assert prepared_bundle == bundle
+    digest = artifact_digest(bundle)
+    outputs = github_output.read_text(encoding="utf-8")
+    assert f"artifact_digest={digest}\n" in outputs
+    assert "finding_count=1\n" in outputs
+    assert "blocking_finding_count=1\n" in outputs
+
+    evidence = (output_dir / "evidence.md").read_text(encoding="utf-8")
+    assert len(evidence.encode("utf-8")) <= gate._PUBLISHED_BODY_LIMIT
+    assert "summary-authority-" not in evidence
+    assert "assessment-authority-" not in evidence
+    assert "[workflow artifact](https://example.test/runs/9#artifacts)" in evidence
+    assert evidence_marker(HEAD_SHA, 1, digest) in evidence
+
+    payload = json.loads((output_dir / "review.json").read_text(encoding="utf-8"))
+    assert payload["body"] == evidence.rstrip("\n")
+    assert len(payload["comments"]) == 1
+    review = _bot_item(id=17, commit_id=HEAD_SHA, body=payload["body"])
+    comments = [
+        _bot_item(pull_request_review_id=17, body=comment["body"])
+        for comment in payload["comments"]
+    ]
+    verify_posted_evidence(
+        issue_comments=[],
+        reviews=[review],
+        review_comments=comments,
+        head_sha=HEAD_SHA,
+        finding_count=1,
+        digest=digest,
+    )
 
 
-def test_evidence_degradation_keeps_full_prose_whenever_it_fits():
-    normalized = validate_result(_result(), _scope(), DIFF)
-    digest = artifact_digest(normalized)
+def test_compact_receipt_omits_model_narration_even_when_it_would_fit():
+    bundle = _bundle()
+    digest = artifact_digest(bundle)
 
-    rendered = render_evidence(normalized, digest)
+    rendered = render_evidence(bundle, digest)
 
-    assert "truncated at" not in rendered
-    assert "reviewed area(s) covering" not in rendered
-    assert normalized["summary"] in rendered
-    assert normalized["review_context"][0]["assessment"] in rendered
+    for receipt in bundle["lenses"]:
+        assert receipt["result"]["summary"] not in rendered
+        for entry in receipt["result"]["review_context"]:
+            assert entry["assessment"] not in rendered

@@ -68,27 +68,16 @@ SEVERITIES = (
     "advisory",
 )
 
-# Prose ceilings, enforced by the validator and mirrored into the constrained
-# schema. `review_context` must cover every changed file and every lens covers
-# the whole diff, so unbounded prose grows the published evidence as
-# files x lenses: a 71-file diff produced a 51KB comment whose content was
-# mostly per-lens narration of the categories that did not apply. Findings
-# carry their own detail and post as threads, so bounding narration here costs
-# no finding fidelity.
-SUMMARY_MAX = 600
-ASSESSMENT_MAX = 300
-
-# Retention for the uploaded validated artifact. Every elision in the
-# published comment points at that artifact as the complete record, so this
-# must outlive the review it explains; at the previous 1 day, a degraded
-# comment became a permanent record pointing at a dead link the next morning.
-# `retention-days` in the review workflow mirrors this value and a drift test
-# holds the two together.
-ARTIFACT_RETENTION_DAYS = 90
+REVIEW_BUNDLE_KIND = "archetype-footgun-review-bundle"
+REVIEW_BUNDLE_VERSION = 1
+# The final bundle is operational workflow evidence, not permanent history.
+# Its digest remains in the PR receipt after GitHub expires the artifact.
+FINAL_ARTIFACT_RETENTION_DAYS = 90
 
 # The parallel review matrix runs one detector job per lens. Every lens
-# reviews the full diff against its category subset; `merge` reassembles the
-# lens results into one full-coverage review. The partition invariant —
+# reviews the full diff against its category subset; `merge` packages the
+# complete validated lens results without concatenating their narration.
+# The partition invariant —
 # every required category assigned to exactly one lens — is enforced by
 # merge_lens_results, so a category added to REQUIRED_CATEGORIES without a
 # lens assignment fails the gate closed rather than silently going
@@ -130,8 +119,20 @@ LENSES: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# This mirrors the workflow matrix and is held against it by a drift test.
+# The final receipt records who performed each validated lens without making
+# backend identity part of the model-authored result.
+LENS_BACKENDS: dict[str, str] = {
+    "daft-shape": "opencode",
+    "state-lifecycle": "claude-code",
+    "contracts": "claude-code",
+    "authority": "claude-code",
+    "observability": "opencode",
+}
+
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$")
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class GateError(ValueError):
@@ -326,16 +327,10 @@ def _expect_list(value: Any, label: str) -> list[Any]:
     return value
 
 
-def _text(value: Any, label: str, *, minimum: int, maximum: int | None = None) -> str:
+def _text(value: Any, label: str, *, minimum: int) -> str:
     if not isinstance(value, str) or len(value.strip()) < minimum:
         raise GateError(f"{label} must contain at least {minimum} non-whitespace characters")
-    stripped = value.strip()
-    if maximum is not None and len(stripped) > maximum:
-        raise GateError(
-            f"{label} must contain at most {maximum} characters; got {len(stripped)}. "
-            "State the concrete observation, not the categories that did not apply."
-        )
-    return stripped
+    return value.strip()
 
 
 def _exact_unique_strings(value: Any, expected: Sequence[str], label: str) -> list[str]:
@@ -364,14 +359,11 @@ def validate_result(
     diff: str,
     *,
     categories: Sequence[str] = REQUIRED_CATEGORIES,
-    summary_maximum: int = SUMMARY_MAX,
 ) -> dict[str, Any]:
     """Validate and normalize model output against the exact reviewed diff.
 
     ``categories`` narrows the required coverage to one lens's subset; the
-    default demands the full detector category list. ``summary_maximum``
-    scales for the merged review, which concatenates one bounded summary per
-    lens.
+    default demands the full detector category list.
     """
     head_sha = scope.get("head_sha")
     if raw_result.get("head_sha") != head_sha:
@@ -386,7 +378,7 @@ def validate_result(
         categories,
         "reviewed_categories",
     )
-    summary = _text(raw_result.get("summary"), "summary", minimum=80, maximum=summary_maximum)
+    summary = _text(raw_result.get("summary"), "summary", minimum=80)
 
     context_entries = _expect_list(raw_result.get("review_context"), "review_context")
     if not context_entries:
@@ -410,7 +402,6 @@ def validate_result(
                     entry.get("assessment"),
                     f"review_context[{index}].assessment",
                     minimum=30,
-                    maximum=ASSESSMENT_MAX,
                 ),
             }
         )
@@ -477,29 +468,13 @@ def validate_result(
     }
 
 
-def merged_summary_maximum() -> int:
-    """Return the merged-summary ceiling derived from the lens partition.
-
-    The merge joins one ``[lens] <summary>`` segment per lens with single
-    spaces, so the merged ceiling follows from the per-lens ceiling rather
-    than being a second independently-tuned number.
-    """
-    prefixes = sum(len(f"[{lens}] ") for lens in LENSES)
-    separators = max(0, len(LENSES) - 1)
-    return prefixes + separators + SUMMARY_MAX * len(LENSES)
+def artifact_digest(result: Mapping[str, Any]) -> str:
+    """Return the digest of one canonical structured review value."""
+    canonical = json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def merge_lens_results(
-    lens_results: Mapping[str, Mapping[str, Any]], scope: Mapping[str, Any], diff: str
-) -> dict[str, Any]:
-    """Reassemble per-lens reviews into one full-coverage validated review.
-
-    Fails closed unless every lens is present, every lens result validates
-    against its own category subset, and the lens partition covers
-    REQUIRED_CATEGORIES exactly — so a category without a lens assignment,
-    or a missing lens artifact, blocks the merge rather than shrinking the
-    reviewed surface.
-    """
+def _validate_lens_partition() -> None:
     assigned = [category for categories in LENSES.values() for category in categories]
     if len(assigned) != len(set(assigned)):
         raise GateError("the lens partition assigns a category to more than one lens")
@@ -507,9 +482,179 @@ def merge_lens_results(
         missing = sorted(set(REQUIRED_CATEGORIES) - set(assigned))
         extra = sorted(set(assigned) - set(REQUIRED_CATEGORIES))
         raise GateError(
-            f"the lens partition does not cover the required categories; "
+            "the lens partition does not cover the required categories; "
             f"missing={missing}, extra={extra}"
         )
+    if set(LENS_BACKENDS) != set(LENSES):
+        missing = sorted(set(LENSES) - set(LENS_BACKENDS))
+        extra = sorted(set(LENS_BACKENDS) - set(LENSES))
+        raise GateError(
+            "the lens backend map does not match the lens partition; "
+            f"missing={missing}, extra={extra}"
+        )
+
+
+def _deduplicate_findings(results: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Combine validated findings without letting dedupe soften severity."""
+    findings_by_key: dict[tuple[str, str, str, int], dict[str, Any]] = {}
+    for result in results:
+        for raw_finding in _expect_list(result.get("findings"), "findings"):
+            finding = dict(_expect_mapping(raw_finding, "findings entry"))
+            key = (finding["category"], finding["path"], finding["side"], finding["line"])
+            kept = findings_by_key.get(key)
+            if kept is None or (
+                kept["severity"] == "advisory" and finding["severity"] == "blocking"
+            ):
+                findings_by_key[key] = finding
+    return list(findings_by_key.values())
+
+
+def validate_review_bundle(
+    raw_bundle: Mapping[str, Any],
+    scope: Mapping[str, Any],
+    diff: str,
+) -> dict[str, Any]:
+    """Validate and normalize the machine-produced full review bundle.
+
+    The bundle keeps every complete per-lens result as the audit artifact.
+    Narration is not concatenated into a second model-shaped result; the
+    human-facing publication is derived later as a compact receipt.
+    """
+    _validate_lens_partition()
+    if raw_bundle.get("kind") != REVIEW_BUNDLE_KIND:
+        raise GateError(f"review bundle kind must be {REVIEW_BUNDLE_KIND!r}")
+    if raw_bundle.get("schema_version") != REVIEW_BUNDLE_VERSION:
+        raise GateError(f"review bundle schema_version must be {REVIEW_BUNDLE_VERSION}")
+
+    head_sha = scope.get("head_sha")
+    if raw_bundle.get("head_sha") != head_sha:
+        raise GateError("review bundle head_sha does not match the pull request head")
+    scoped_files = _expect_list(scope.get("files"), "scope.files")
+    if any(not isinstance(item, str) for item in scoped_files):
+        raise GateError("scope.files must contain only strings")
+    files = _exact_unique_strings(
+        raw_bundle.get("reviewed_files"),
+        scoped_files,
+        "review bundle reviewed_files",
+    )
+    categories = _exact_unique_strings(
+        raw_bundle.get("reviewed_categories"),
+        REQUIRED_CATEGORIES,
+        "review bundle reviewed_categories",
+    )
+
+    raw_receipts = _expect_list(raw_bundle.get("lenses"), "review bundle lenses")
+    receipts_by_lens: dict[str, Mapping[str, Any]] = {}
+    for index, raw_receipt in enumerate(raw_receipts):
+        receipt = _expect_mapping(raw_receipt, f"review bundle lenses[{index}]")
+        lens = receipt.get("lens")
+        if not isinstance(lens, str) or lens not in LENSES:
+            raise GateError(f"review bundle lenses[{index}].lens is not a configured lens")
+        if lens in receipts_by_lens:
+            raise GateError(f"review bundle contains duplicate lens {lens!r}")
+        receipts_by_lens[lens] = receipt
+    if set(receipts_by_lens) != set(LENSES):
+        missing = sorted(set(LENSES) - set(receipts_by_lens))
+        extra = sorted(set(receipts_by_lens) - set(LENSES))
+        raise GateError(
+            f"review bundle lenses do not match the partition; missing={missing}, extra={extra}"
+        )
+
+    normalized_receipts: list[dict[str, Any]] = []
+    for lens in LENSES:
+        receipt = receipts_by_lens[lens]
+        backend = receipt.get("backend")
+        if backend != LENS_BACKENDS[lens]:
+            raise GateError(f"review bundle lens {lens!r} backend must be {LENS_BACKENDS[lens]!r}")
+        if receipt.get("status") != "validated":
+            raise GateError(f"review bundle lens {lens!r} status must be 'validated'")
+        result = validate_result(
+            _expect_mapping(receipt.get("result"), f"review bundle lens {lens!r} result"),
+            scope,
+            diff,
+            categories=LENSES[lens],
+        )
+        digest = artifact_digest(result)
+        if receipt.get("artifact_digest") != digest:
+            raise GateError(f"review bundle lens {lens!r} digest does not match its result")
+        normalized_receipts.append(
+            {
+                "lens": lens,
+                "backend": backend,
+                "status": "validated",
+                "artifact_digest": digest,
+                "result": result,
+            }
+        )
+
+    return {
+        "kind": REVIEW_BUNDLE_KIND,
+        "schema_version": REVIEW_BUNDLE_VERSION,
+        "head_sha": head_sha,
+        "reviewed_files": files,
+        "reviewed_categories": categories,
+        "lenses": normalized_receipts,
+    }
+
+
+def _bundle_receipts(bundle: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """Return ordered receipts after checking self-contained bundle integrity."""
+    if bundle.get("kind") != REVIEW_BUNDLE_KIND:
+        raise GateError("published evidence requires a validated review bundle")
+    if bundle.get("schema_version") != REVIEW_BUNDLE_VERSION:
+        raise GateError("published evidence has an unsupported review bundle version")
+    head_sha = bundle.get("head_sha")
+    if not isinstance(head_sha, str) or not _SHA_RE.fullmatch(head_sha):
+        raise GateError("review bundle head_sha must be a full lowercase Git SHA")
+
+    raw_receipts = _expect_list(bundle.get("lenses"), "review bundle lenses")
+    receipts_by_lens: dict[str, Mapping[str, Any]] = {}
+    for raw_receipt in raw_receipts:
+        receipt = _expect_mapping(raw_receipt, "review bundle lens receipt")
+        lens = receipt.get("lens")
+        if not isinstance(lens, str) or lens in receipts_by_lens:
+            raise GateError("review bundle lens receipts must have unique string names")
+        receipts_by_lens[lens] = receipt
+    if set(receipts_by_lens) != set(LENSES):
+        raise GateError("review bundle lens receipts do not match the configured partition")
+
+    ordered: list[Mapping[str, Any]] = []
+    for lens in LENSES:
+        receipt = receipts_by_lens[lens]
+        if receipt.get("backend") != LENS_BACKENDS[lens] or receipt.get("status") != "validated":
+            raise GateError(f"review bundle lens {lens!r} has invalid completion metadata")
+        result = _expect_mapping(receipt.get("result"), f"review bundle lens {lens!r} result")
+        if result.get("head_sha") != head_sha:
+            raise GateError(f"review bundle lens {lens!r} is bound to a different head")
+        digest = receipt.get("artifact_digest")
+        if not isinstance(digest, str) or not _DIGEST_RE.fullmatch(digest):
+            raise GateError(f"review bundle lens {lens!r} has an invalid digest")
+        if artifact_digest(result) != digest:
+            raise GateError(f"review bundle lens {lens!r} digest does not match its result")
+        ordered.append(receipt)
+    return ordered
+
+
+def review_bundle_findings(bundle: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Return the bundle's deterministic, severity-preserving finding set."""
+    return _deduplicate_findings(
+        _expect_mapping(receipt["result"], "review bundle lens result")
+        for receipt in _bundle_receipts(bundle)
+    )
+
+
+def merge_lens_results(
+    lens_results: Mapping[str, Mapping[str, Any]], scope: Mapping[str, Any], diff: str
+) -> dict[str, Any]:
+    """Package per-lens reviews into one full-coverage validated bundle.
+
+    Fails closed unless every lens is present, every lens result validates
+    against its own category subset, and the lens partition covers
+    REQUIRED_CATEGORIES exactly — so a category without a lens assignment,
+    or a missing lens artifact, blocks the merge rather than shrinking the
+    reviewed surface.
+    """
+    _validate_lens_partition()
     if set(lens_results) != set(LENSES):
         missing = sorted(set(LENSES) - set(lens_results))
         extra = sorted(set(lens_results) - set(LENSES))
@@ -517,34 +662,28 @@ def merge_lens_results(
             f"lens results do not match the lens partition; missing={missing}, extra={extra}"
         )
 
-    merged_context: list[dict[str, Any]] = []
-    summaries: list[str] = []
-    # Dedupe on the anchoring identity; when duplicates disagree on severity,
-    # the blocking one wins — a dedupe must never soften the gate.
-    findings_by_key: dict[tuple[str, str, str, int], dict[str, Any]] = {}
+    receipts: list[dict[str, Any]] = []
     for lens in LENSES:
         validated = validate_result(lens_results[lens], scope, diff, categories=LENSES[lens])
-        summaries.append(f"[{lens}] {validated['summary']}")
-        for entry in validated["review_context"]:
-            merged_context.append({**entry, "area": f"{lens}: {entry['area']}"})
-        for finding in validated["findings"]:
-            key = (finding["category"], finding["path"], finding["side"], finding["line"])
-            kept = findings_by_key.get(key)
-            if kept is None or (
-                kept["severity"] == "advisory" and finding["severity"] == "blocking"
-            ):
-                findings_by_key[key] = finding
-    merged_findings = list(findings_by_key.values())
+        receipts.append(
+            {
+                "lens": lens,
+                "backend": LENS_BACKENDS[lens],
+                "status": "validated",
+                "artifact_digest": artifact_digest(validated),
+                "result": validated,
+            }
+        )
 
-    merged = {
+    bundle = {
+        "kind": REVIEW_BUNDLE_KIND,
+        "schema_version": REVIEW_BUNDLE_VERSION,
         "head_sha": scope.get("head_sha"),
-        "summary": " ".join(summaries),
         "reviewed_files": list(scope.get("files") or []),
         "reviewed_categories": list(REQUIRED_CATEGORIES),
-        "review_context": merged_context,
-        "findings": merged_findings,
+        "lenses": receipts,
     }
-    return validate_result(merged, scope, diff, summary_maximum=merged_summary_maximum())
+    return validate_review_bundle(bundle, scope, diff)
 
 
 def extract_structured_json(raw: str) -> dict[str, Any] | None:
@@ -591,11 +730,6 @@ def retry_feedback(error: GateError) -> str:
     )
 
 
-def artifact_digest(result: Mapping[str, Any]) -> str:
-    canonical = json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
 def result_schema(categories: Sequence[str] = REQUIRED_CATEGORIES) -> dict[str, Any]:
     """Return the constrained-output schema used by Claude Code."""
     text = {"type": "string", "minLength": 1}
@@ -603,7 +737,7 @@ def result_schema(categories: Sequence[str] = REQUIRED_CATEGORIES) -> dict[str, 
         "type": "object",
         "properties": {
             "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-            "summary": {"type": "string", "minLength": 80, "maxLength": SUMMARY_MAX},
+            "summary": {"type": "string", "minLength": 80},
             "reviewed_files": {"type": "array", "items": text, "minItems": 1},
             "reviewed_categories": {"type": "array", "items": text, "minItems": 1},
             "review_context": {
@@ -614,11 +748,7 @@ def result_schema(categories: Sequence[str] = REQUIRED_CATEGORIES) -> dict[str, 
                     "properties": {
                         "area": {"type": "string", "minLength": 3},
                         "files": {"type": "array", "items": text, "minItems": 1},
-                        "assessment": {
-                            "type": "string",
-                            "minLength": 30,
-                            "maxLength": ASSESSMENT_MAX,
-                        },
+                        "assessment": {"type": "string", "minLength": 30},
                     },
                     "required": ["area", "files", "assessment"],
                     "additionalProperties": False,
@@ -669,7 +799,8 @@ def result_schema(categories: Sequence[str] = REQUIRED_CATEGORIES) -> dict[str, 
 def evidence_marker(head_sha: str, finding_count: int, digest: str) -> str:
     return (
         "<!-- archetype-footgun-review "
-        f"schema={SCHEMA_VERSION} head={head_sha} findings={finding_count} digest={digest} -->"
+        f"schema={REVIEW_BUNDLE_VERSION} head={head_sha} "
+        f"findings={finding_count} digest={digest} -->"
     )
 
 
@@ -680,64 +811,58 @@ def _markdown_code(value: str) -> str:
 _PUBLISHED_BODY_LIMIT = 60000
 
 
-def _artifact_section(
-    result: Mapping[str, Any],
-    run_url: str | None,
-    artifact_name: str | None,
-    *,
-    inline: bool,
-) -> list[str]:
-    lines = [
-        "<details>",
-        "<summary>Validated review artifact</summary>",
-        "",
-    ]
-    if inline:
-        payload = json.dumps(result, indent=2, ensure_ascii=False)
-        # Findings may quote code fences; the outer fence must be longer than
-        # any backtick run inside the payload.
-        longest_run = max((len(match.group(0)) for match in re.finditer(r"`+", payload)), default=0)
-        fence = "`" * max(3, longest_run + 1)
-        lines.extend([f"{fence}json", payload, fence, ""])
-    else:
-        if not run_url or not artifact_name:
-            raise GateError("oversized review evidence requires a named validated artifact")
-        lines.extend(
-            [
-                "The validated structured output exceeds the inline comment budget; "
-                "download the named validated artifact instead.",
-                "",
-            ]
+def _artifact_reference(run_url: str | None, artifact_name: str | None) -> str:
+    """Render controlled artifact metadata without letting it consume the receipt."""
+    linkable = (
+        isinstance(run_url, str)
+        and run_url.startswith("https://")
+        and len(run_url) <= 2048
+        and not any(character.isspace() for character in run_url)
+        and isinstance(artifact_name, str)
+        and 0 < len(artifact_name) <= 256
+        and "\n" not in artifact_name
+        and "\r" not in artifact_name
+    )
+    if linkable:
+        return (
+            f"**Review bundle:** [workflow artifact]({run_url}#artifacts) "
+            f"(`{_markdown_code(artifact_name)}`; "
+            f"{FINAL_ARTIFACT_RETENTION_DAYS}-day operational retention)."
         )
-    if run_url and artifact_name:
-        lines.extend(
-            [
-                f"Validated artifact: [{artifact_name}]({run_url}#artifacts) "
-                f"({ARTIFACT_RETENTION_DAYS}-day retention).",
-                "",
-            ]
-        )
-    lines.append("</details>")
-    return lines
+    return (
+        "**Review bundle:** artifact link unavailable in this rendering; "
+        "the receipt remains bound to the bundle digest."
+    )
 
 
 def render_evidence(
-    result: Mapping[str, Any],
+    bundle: Mapping[str, Any],
     digest: str,
     run_url: str | None = None,
     artifact_name: str | None = None,
 ) -> str:
-    findings = _expect_list(result.get("findings"), "findings")
-    files = _expect_list(result.get("reviewed_files"), "reviewed_files")
-    categories = _expect_list(result.get("reviewed_categories"), "reviewed_categories")
-    context = _expect_list(result.get("review_context"), "review_context")
-    head_sha = str(result["head_sha"])
-    finding_count = len(findings)
-    blocking_count = sum(
-        1
-        for finding in findings
-        if _expect_mapping(finding, "findings entry").get("severity") == "blocking"
+    """Render a compact receipt; complete lens narration stays in the bundle.
+
+    Publication capacity is deliberately not part of the review oracle. The
+    model-authored summaries and context can grow without growing this body,
+    and untrusted artifact metadata falls back to a fixed-size receipt rather
+    than converting completed analysis into an incomplete review.
+    """
+    receipts = _bundle_receipts(bundle)
+    if not isinstance(digest, str) or not _DIGEST_RE.fullmatch(digest):
+        raise GateError("review bundle digest must be a lowercase SHA-256 value")
+    if artifact_digest(bundle) != digest:
+        raise GateError("published review digest does not match the review bundle")
+
+    files = _expect_list(bundle.get("reviewed_files"), "review bundle reviewed_files")
+    categories = _expect_list(
+        bundle.get("reviewed_categories"),
+        "review bundle reviewed_categories",
     )
+    findings = review_bundle_findings(bundle)
+    head_sha = str(bundle["head_sha"])
+    finding_count = len(findings)
+    blocking_count = sum(1 for finding in findings if finding.get("severity") == "blocking")
     outcome = (
         "no findings"
         if finding_count == 0
@@ -748,81 +873,59 @@ def render_evidence(
     )
     marker = evidence_marker(head_sha, finding_count, digest)
 
-    def prose(*, context_detail: bool) -> list[str]:
-        rendered_lines = [
+    lens_rows: list[str] = []
+    for receipt in receipts:
+        lens_result = _expect_mapping(receipt["result"], "review bundle lens result")
+        lens_findings = _deduplicate_findings([lens_result])
+        lens_blocking = sum(1 for finding in lens_findings if finding.get("severity") == "blocking")
+        lens_rows.append(
+            f"| `{receipt['lens']}` | `{receipt['backend']}` | {receipt['status']} | "
+            f"{len(lens_findings)} ({lens_blocking} blocking, "
+            f"{len(lens_findings) - lens_blocking} advisory) | "
+            f"`sha256:{receipt['artifact_digest']}` |"
+        )
+
+    rendered = "\n".join(
+        [
             f"## Footgun review — {outcome}",
             "",
             f"**Exact head:** `{head_sha}`  ",
             f"**Validated scope:** {len(files)} changed file(s), "
-            f"{len(categories)} detector categories assigned across {len(LENSES)} lenses",
+            f"{len(categories)} detector categories, {len(receipts)}/{len(LENSES)} lenses  ",
+            f"**Bundle digest:** `sha256:{digest}`",
             "",
-            str(result["summary"]),
+            "| Lens | Backend | Status | Findings | Lens evidence digest |",
+            "|---|---|---:|---:|---|",
+            *lens_rows,
             "",
-            "<details>",
-            "<summary>Context reviewed</summary>",
+            "Complete per-lens summaries, reviewed context, and structured findings "
+            "are retained in the digest-bound bundle; they are not duplicated in this receipt.",
             "",
+            _artifact_reference(run_url, artifact_name),
+            "",
+            marker,
         ]
-        if context_detail:
-            for raw_entry in context:
-                entry = _expect_mapping(raw_entry, "review_context entry")
-                entry_files = ", ".join(
-                    f"`{_markdown_code(str(path))}`"
-                    for path in _expect_list(entry["files"], "files")
-                )
-                rendered_lines.extend(
-                    [f"- **{entry['area']}** ({entry_files}): {entry['assessment']}", ""]
-                )
-        else:
-            rendered_lines.extend(
-                [
-                    f"{len(context)} reviewed area(s) covering {len(files)} changed file(s). "
-                    "The per-area assessments exceed the published comment budget; read them "
-                    "in the validated artifact below.",
-                    "",
-                ]
-            )
-        rendered_lines.extend(
-            [
-                "</details>",
-                "",
-                "<details>",
-                "<summary>Detector categories assigned</summary>",
-                "",
-                *[f"- `{category}`" for category in categories],
-                "",
-                "</details>",
-                "",
-            ]
-        )
-        return rendered_lines
+    )
+    if len(rendered.encode("utf-8")) <= _PUBLISHED_BODY_LIMIT:
+        return rendered
 
-    def body(*, inline: bool, context_detail: bool) -> str:
-        return "\n".join(
-            [
-                *prose(context_detail=context_detail),
-                *_artifact_section(result, run_url, artifact_name, inline=inline),
-                "",
-                marker,
-            ]
-        )
-
-    # Summary and assessment prose is bounded by the validator (SUMMARY_MAX,
-    # ASSESSMENT_MAX), so the only term that still scales without limit is
-    # per-area context: every lens must cover every changed file, making the
-    # context section grow as files x lenses. Degrade that, then the inline
-    # artifact, and never silently — the elision says so and points at a
-    # retained artifact. The digest is computed over the result rather than
-    # this rendering, so shrinking the body cannot weaken the evidence
-    # `verify` matches.
-    for inline, context_detail in (
-        (True, True),
-        (False, True),
-        (False, False),
-    ):
-        rendered = body(inline=inline, context_detail=context_detail)
-        if len(rendered.encode("utf-8")) <= _PUBLISHED_BODY_LIMIT:
-            return rendered
-    raise GateError("rendered review evidence exceeds the published body limit")
+    # All remaining fields are fixed-size validated values. This rung cannot
+    # be inflated by model prose, file names, artifact names, or URLs.
+    return "\n".join(
+        [
+            f"## Footgun review — {outcome}",
+            "",
+            f"**Exact head:** `{head_sha}`  ",
+            f"**Validated lenses:** {len(receipts)}/{len(LENSES)}  ",
+            f"**Findings:** {finding_count} total; {blocking_count} blocking  ",
+            f"**Bundle digest:** `sha256:{digest}`",
+            "",
+            "The detailed receipt exceeded the publication budget; complete evidence "
+            "remains in the workflow's digest-bound review bundle.",
+            "",
+            marker,
+        ]
+    )
 
 
 def render_finding(finding: Mapping[str, Any], head_sha: str) -> str:
@@ -851,19 +954,19 @@ def render_finding(finding: Mapping[str, Any], head_sha: str) -> str:
 
 
 def review_payload(
-    result: Mapping[str, Any],
+    bundle: Mapping[str, Any],
     digest: str,
     run_url: str | None = None,
     artifact_name: str | None = None,
 ) -> dict[str, Any]:
-    head_sha = str(result["head_sha"])
-    findings = _expect_list(result.get("findings"), "findings")
+    head_sha = str(bundle["head_sha"])
+    findings = review_bundle_findings(bundle)
     if not findings:
         raise GateError("a review payload requires at least one finding")
     return {
         "commit_id": head_sha,
         "event": "COMMENT",
-        "body": render_evidence(result, digest, run_url, artifact_name),
+        "body": render_evidence(bundle, digest, run_url, artifact_name),
         "comments": [
             {
                 "path": finding["path"],
@@ -991,6 +1094,13 @@ def _validated_result(args: argparse.Namespace) -> dict[str, Any]:
     return validate_result(raw_result, scope, diff, categories=_selected_categories(args))
 
 
+def _validated_review_bundle(args: argparse.Namespace) -> dict[str, Any]:
+    scope = _expect_mapping(_load_json(args.scope), "scope")
+    raw_bundle = _expect_mapping(_load_json(args.result), "review bundle")
+    diff = args.diff.read_text(encoding="utf-8")
+    return validate_review_bundle(raw_bundle, scope, diff)
+
+
 def _normalize_command(args: argparse.Namespace) -> None:
     result = _validated_result(args)
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -1015,29 +1125,28 @@ def _attempt_command(args: argparse.Namespace) -> None:
 
 
 def _prepare_command(args: argparse.Namespace) -> None:
-    result = _validated_result(args)
-    digest = artifact_digest(result)
-    finding_count = len(result["findings"])
-    blocking_finding_count = sum(
-        1 for finding in result["findings"] if finding["severity"] == "blocking"
-    )
+    bundle = _validated_review_bundle(args)
+    digest = artifact_digest(bundle)
+    findings = review_bundle_findings(bundle)
+    finding_count = len(findings)
+    blocking_finding_count = sum(1 for finding in findings if finding["severity"] == "blocking")
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    _write_json(args.output_dir / "normalized.json", result)
+    _write_json(args.output_dir / "review-bundle.json", bundle)
     (args.output_dir / "evidence.md").write_text(
-        render_evidence(result, digest, args.run_url, args.artifact_name) + "\n",
+        render_evidence(bundle, digest, args.run_url, args.artifact_name) + "\n",
         encoding="utf-8",
     )
     if finding_count:
         _write_json(
             args.output_dir / "review.json",
-            review_payload(result, digest, args.run_url, args.artifact_name),
+            review_payload(bundle, digest, args.run_url, args.artifact_name),
         )
 
     _append_github_outputs(
         args.github_output,
         {
-            "head_sha": str(result["head_sha"]),
+            "head_sha": str(bundle["head_sha"]),
             "finding_count": finding_count,
             "blocking_finding_count": blocking_finding_count,
             "artifact_digest": digest,
@@ -1113,7 +1222,7 @@ def _parser() -> argparse.ArgumentParser:
     extract.set_defaults(handler=_extract_command)
 
     merge = subparsers.add_parser(
-        "merge", help="merge validated per-lens results into one full-coverage review"
+        "merge", help="package validated per-lens results into one full-coverage bundle"
     )
     merge.add_argument("--scope", type=Path, required=True)
     merge.add_argument("--diff", type=Path, required=True)
@@ -1165,7 +1274,9 @@ def _parser() -> argparse.ArgumentParser:
     attempt.add_argument("--lens", default=None)
     attempt.set_defaults(handler=_attempt_command)
 
-    prepare = subparsers.add_parser("prepare", help="validate and render structured output")
+    prepare = subparsers.add_parser(
+        "prepare", help="validate a review bundle and render its receipt"
+    )
     prepare.add_argument("--scope", type=Path, required=True)
     prepare.add_argument("--diff", type=Path, required=True)
     prepare.add_argument("--result", type=Path, required=True)

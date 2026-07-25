@@ -37,10 +37,12 @@ concurrency:
 
 # The review runs as a lens matrix: `lens-review` fans one detector job out
 # per lens (a category subset from LENSES in scripts/footgun_review_gate.py),
-# each on its own backend, and `footgun-review` deterministically merges the
-# validated lens results back into the one full-coverage artifact that
-# `review-complete` publishes. The two required contexts — `footgun-review`
-# and `review-complete` — keep their names and semantics; lens jobs are not
+# each on its own backend. `footgun-review` retains those complete validated
+# results in one digest-bound bundle; `review-complete` publishes only a small
+# lens/backend/status receipt plus finding threads. Model narration is never
+# duplicated into the PR comment, so publication capacity is not part of the
+# review oracle. The two required contexts — `footgun-review` and
+# `review-complete` — keep their names and semantics; lens jobs are not
 # required contexts, and any lens failure fails `footgun-review` closed.
 jobs:
   reaffirm:
@@ -278,12 +280,6 @@ jobs:
             entry; a file may appear in more than one area when it genuinely
             spans concerns.
 
-            `summary` is capped at 600 characters and every `assessment` at 300;
-            over-length output is rejected. Spend them on what you observed in
-            this diff. Do not enumerate the categories that did not apply, and
-            do not restate the change — findings carry their own detail and
-            post as separate threads.
-
             `review_context.files` is changed-file coverage metadata and may
             contain only paths listed in `.footgun-review-scope.json`. If you
             inspect other protected-base files as evidence, name those paths in
@@ -383,12 +379,6 @@ jobs:
           paths listed in `.footgun-review-scope.json`; name other evidence paths
           in assessment prose instead. Never return schema examples or
           placeholder values as live output.
-
-          `summary` is capped at 600 characters and every `assessment` at 300;
-          over-length output is rejected. Spend them on what you observed in
-          this diff. Do not enumerate the categories that did not apply, and do
-          not restate the change — findings carry their own detail and post as
-          separate threads.
 
           Use only the read, grep, glob, and list tools. Do not run shell
           commands, edit files, or fetch URLs. Do not post comments or reviews.
@@ -587,7 +577,9 @@ jobs:
           if-no-files-found: error
           name: footgun-review-lens-${{ matrix.lens }}-${{ github.run_id }}
           path: ${{ github.workspace }}/.footgun-review-output/validated/normalized.json
-          retention-days: 90
+          # The final bundle below retains every complete result for the review
+          # window; these transport artifacts only bridge the matrix to merge.
+          retention-days: 1
 
   footgun-review:
     name: footgun-review
@@ -693,7 +685,7 @@ jobs:
           pattern: footgun-review-lens-*-${{ github.run_id }}
           path: ${{ runner.temp }}/lens-results
 
-      - name: Merge lens results into one full-coverage review
+      - name: Package lens results into one full-coverage review bundle
         if: needs.reaffirm.outputs.reaffirmed != 'true'
         run: |
           mkdir -p "${RUNNER_TEMP}/lens-normalized"
@@ -709,7 +701,7 @@ jobs:
             --scope "${SCOPE_FILE}" \
             --diff "${DIFF_FILE}" \
             --results-dir "${RUNNER_TEMP}/lens-normalized" \
-            --output "${REVIEW_DIR}/validated/normalized.json"
+            --output "${REVIEW_DIR}/validated/review-bundle.json"
 
       - name: Upload validated detector result
         if: needs.reaffirm.outputs.reaffirmed != 'true'
@@ -717,7 +709,9 @@ jobs:
         with:
           if-no-files-found: error
           name: footgun-review-validated-${{ github.run_id }}
-          path: ${{ github.workspace }}/.footgun-review-output/validated/normalized.json
+          path: ${{ github.workspace }}/.footgun-review-output/validated/review-bundle.json
+          # Operational evidence, not permanent history. The PR receipt keeps
+          # the bundle digest after GitHub expires this artifact.
           retention-days: 90
 
   review-complete:
@@ -818,7 +812,7 @@ jobs:
             exit 1
           fi
 
-      - name: Download detector result
+      - name: Download validated review bundle
         if: needs.footgun-review.outputs.reaffirmed != 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -836,7 +830,7 @@ jobs:
           python3 scripts/footgun_review_gate.py prepare \
             --scope "${SCOPE_FILE}" \
             --diff "${DIFF_FILE}" \
-            --result "${RUNNER_TEMP}/detector-result/normalized.json" \
+            --result "${RUNNER_TEMP}/detector-result/review-bundle.json" \
             --output-dir "${REVIEW_DIR}" \
             --github-output "${GITHUB_OUTPUT}" \
             --artifact-name "${ARTIFACT_NAME}" \
