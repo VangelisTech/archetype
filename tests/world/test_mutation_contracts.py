@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 import pytest
+from pydantic import create_model
 
 from archetype.core.component import Component
 from archetype.world import mutation
@@ -127,6 +128,44 @@ async def test_public_and_lock_held_paths_preserve_batch_order() -> None:
         "create_entities",
         "create_entities",
     ]
+
+
+async def test_pending_component_reader_uses_schema_membership_not_column_subset() -> None:
+    twin = create_model(
+        Marker.__name__,
+        __base__=Component,
+        __module__="tests.pending_component_twins",
+        **{name: (field.annotation, field) for name, field in Marker.model_fields.items()},
+    )
+    collision = create_model(
+        Marker.__name__,
+        __base__=Component,
+        __module__="tests.pending_component_collision",
+        value=(int, 0),
+        note=(str, ""),
+    )
+
+    class _PendingWorld:
+        next_entity_id = 3
+        spawn_cache = {
+            (twin,): [{"entity_id": 1, "marker__value": 7}],
+            (collision,): [
+                {
+                    "entity_id": 2,
+                    "marker__value": 8,
+                    "marker__note": "shape collision",
+                }
+            ],
+        }
+        entity2sig = {1: (twin,), 2: (collision,)}
+
+    world = _PendingWorld()
+
+    assert mutation.preview_entity_ids_locked(world, 2) == (3, 4)  # type: ignore[arg-type]
+    assert mutation.pending_components_locked(  # type: ignore[arg-type]
+        world,
+        Marker,
+    ) == ((1, Marker(value=7)),)
 
 
 async def test_atomic_batch_rolls_back_after_a_prior_spawn_hook_ran() -> None:

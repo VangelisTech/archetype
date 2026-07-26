@@ -433,6 +433,8 @@ class WorldRegistry:
 
         async with self._registry_lock:
             entry = self._validate_lease_locked(lease)
+            if not lease.reopenable_activity_gate:
+                raise RuntimeError("cleanup lease is not reopenable")
             if lease.on_destroy_complete:
                 raise RuntimeError("cannot abort close after OnDestroy completed")
             entry.cleanup_lease = None

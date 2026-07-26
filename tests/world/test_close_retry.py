@@ -13,7 +13,7 @@ import pytest
 
 from archetype.core.config import RunConfig, StorageConfig
 from archetype.core.hooks import HookRegistry, OnDestroy
-from archetype.world.errors import WorldHasUnsettledWorkError
+from archetype.world.errors import WorldClosingError, WorldHasUnsettledWorkError
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -775,3 +775,25 @@ async def test_cleanup_lease_cannot_authorize_a_sibling_world() -> None:
 
     await registry.finish_close(second_lease)
     await registry.finish_close(first_lease)
+
+
+async def test_abort_close_rejects_a_non_reopenable_cleanup_lease() -> None:
+    registry_module, _simulation_module = _managed_api()
+    from archetype.core.interfaces import CommittedTickReceipt
+
+    world = _ReceiptWorld(
+        world_id="00000000-0000-7000-8000-000000000070",
+        name="sticky-close",
+        receipt_type=CommittedTickReceipt,
+    )
+    registry = registry_module.WorldRegistry()
+    await registry.insert(world)
+    lease = await registry.begin_close(world.world_id)
+
+    with pytest.raises(RuntimeError, match="not reopenable"):
+        await registry.abort_close(lease)
+    with pytest.raises(WorldClosingError):
+        async with registry.operation(world.world_id):
+            pytest.fail("a rejected abort must leave close sticky")
+
+    await registry.finish_close(lease)

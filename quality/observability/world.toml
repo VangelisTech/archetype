@@ -141,6 +141,8 @@ operations = [
   "mutation.create_entities",
   "mutation.create_entities_atomically",
   "mutation.create_entity",
+  "mutation.pending_components_locked",
+  "mutation.preview_entity_ids_locked",
   "mutation.remove_components",
   "mutation.remove_entity",
   "mutation.remove_hook",

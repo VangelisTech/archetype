@@ -12,12 +12,14 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from pydantic import create_model
 
 from archetype.app.missions.activity_world import (
     MissionAuthorActivityBinding,
     StorageMissionCommittedIntentReader,
     WorldMissionAuthorObservationStager,
 )
+from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.core.hooks import OnSpawn
 from archetype.missions.activities import (
@@ -71,6 +73,17 @@ from archetype.wiring import RuntimeBootstrapConfig, build_runtime_resources
 from archetype.world.lifecycle import WorldLifecycle
 from archetype.world.registry import WorldRegistry
 from archetype.world.simulation import step
+
+
+def _component_twin(component_type: type[Component]) -> type[Component]:
+    """Model one cold-resume class with the same portable schema identity."""
+
+    return create_model(
+        component_type.__name__,
+        __base__=Component,
+        __module__="tests.pending_component_twins",
+        **{name: (field.annotation, field) for name, field in component_type.model_fields.items()},
+    )
 
 
 def _critic_component(policy: CriticPolicy) -> TaskCriticPolicy:
@@ -345,14 +358,11 @@ async def test_complete_author_observation_survives_restart_without_duplicates(
         first_spawn_count = len(spawn_order)
 
         # Resumed worlds may intern schema-identical component twins. Pending
-        # idempotency therefore keys from canonical row columns, not Python
-        # class identity in the signature tuple.
+        # idempotency uses the same name-plus-schema identity as durable tables,
+        # not Python class identity or a coincidental column subset.
         signature_aliases = {}
-        for index, (signature, rows) in enumerate(tuple(world.spawn_cache.items())):
-            alias = tuple(
-                type(f"PendingAlias{index}_{position}", (), {})
-                for position, _component in enumerate(signature)
-            )
+        for signature, rows in tuple(world.spawn_cache.items()):
+            alias = tuple(_component_twin(component) for component in signature)
             signature_aliases[alias] = signature
             world.spawn_cache[alias] = world.spawn_cache.pop(signature)
             for row in rows:

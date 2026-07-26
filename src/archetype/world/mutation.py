@@ -24,6 +24,7 @@ from archetype.core.hooks import (
     HookEvent,
     HookHandle,
 )
+from archetype.world.models import ComponentTypeRef
 
 if TYPE_CHECKING:
     from archetype.world.interfaces import iWorldRegistry
@@ -117,6 +118,51 @@ async def _create_entities_atomically_locked(
         # can safely reuse it. Do not couple world-owned rollback to a private
         # AsyncWorld cache representation.
         raise
+
+
+def preview_entity_ids_locked(world: AsyncWorld, n: int) -> tuple[int, ...]:
+    """Preview the exact IDs an atomic spawn will reserve under the world lock."""
+
+    if n < 0:
+        raise ValueError("entity ID preview count must be non-negative")
+    start = int(world.next_entity_id)
+    return tuple(range(start, start + n))
+
+
+def pending_components_locked(
+    world: AsyncWorld,
+    component_type: type[Component],
+) -> tuple[tuple[int, Component], ...]:
+    """Read staged components by durable schema identity under the world lock.
+
+    Mutation-cache representation stays owned here. Schema-identical component
+    twins from cold resume match, while a column-shape collision alone does
+    not establish component membership.
+    """
+
+    expected = ComponentTypeRef.from_type(component_type)
+    prefix = component_type.get_prefix()
+    values: list[tuple[int, Component]] = []
+    for signature, rows in world.spawn_cache.items():
+        if not any(
+            ComponentTypeRef.from_type(member).type_name == expected.type_name
+            and ComponentTypeRef.from_type(member).schema_fingerprint == expected.schema_fingerprint
+            for member in signature
+        ):
+            continue
+        for row in rows:
+            entity_id = int(row["entity_id"])
+            if world.entity2sig.get(entity_id) != signature:
+                continue
+            values.append(
+                (
+                    entity_id,
+                    component_type(
+                        **{field: row[f"{prefix}{field}"] for field in component_type.model_fields}
+                    ),
+                )
+            )
+    return tuple(values)
 
 
 async def reserve_entity_ids(

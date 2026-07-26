@@ -61,7 +61,11 @@ from archetype.projections import latest
 from archetype.storage.catalog import SignatureRecord
 from archetype.storage.interfaces import iStorageService
 from archetype.world.interfaces import iWorldRegistry
-from archetype.world.mutation import _create_entities_atomically_locked
+from archetype.world.mutation import (
+    _create_entities_atomically_locked,
+    pending_components_locked,
+    preview_entity_ids_locked,
+)
 from archetype.world.query import (
     PinnedWorldQuerySnapshot,
     pin_query_snapshot,
@@ -186,23 +190,10 @@ def _pending_component_facts(
     world: AsyncWorld,
     component_type: type[Component],
 ) -> tuple[AuthorActivityEntityFact, ...]:
-    facts: list[AuthorActivityEntityFact] = []
-    prefix = component_type.get_prefix()
-    required_columns = {f"{prefix}{field}" for field in component_type.model_fields}
-    for signature, rows in world.spawn_cache.items():
-        for row in rows:
-            if not required_columns.issubset(row):
-                continue
-            entity_id = int(row["entity_id"])
-            if world.entity2sig.get(entity_id) != signature:
-                continue
-            facts.append(
-                AuthorActivityEntityFact(
-                    entity_id=entity_id,
-                    component=_component_from_row(component_type, row),
-                )
-            )
-    return tuple(facts)
+    return tuple(
+        AuthorActivityEntityFact(entity_id=entity_id, component=component)
+        for entity_id, component in pending_components_locked(world, component_type)
+    )
 
 
 def _pending_author_bundle(
@@ -331,9 +322,9 @@ class WorldMissionAuthorObservationStager:
                 observation,
                 prior_candidate_id=prior_candidate_id,
             )
-            first_entity_id = int(world.next_entity_id)
-            fact_ids = tuple(range(first_entity_id, first_entity_id + fact_count))
-            marker_entity_id = first_entity_id + fact_count
+            staged_ids = preview_entity_ids_locked(world, fact_count + 1)
+            fact_ids = staged_ids[:-1]
+            marker_entity_id = staged_ids[-1]
             bundle = complete_author_activity_fact_bundle(
                 request,
                 observation,
