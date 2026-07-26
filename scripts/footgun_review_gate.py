@@ -123,11 +123,11 @@ LENSES: dict[str, tuple[str, ...]] = {
 # The final receipt records who performed each validated lens without making
 # backend identity part of the model-authored result.
 LENS_BACKENDS: dict[str, str] = {
-    "daft-shape": "claude-code",
-    "state-lifecycle": "claude-code",
-    "contracts": "claude-code",
-    "authority": "claude-code",
-    "observability": "claude-code",
+    "daft-shape": "codex",
+    "state-lifecycle": "codex",
+    "contracts": "codex",
+    "authority": "codex",
+    "observability": "codex",
 }
 
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$")
