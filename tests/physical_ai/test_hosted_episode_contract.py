@@ -209,6 +209,8 @@ def test_request_digest_is_contract_and_payload_domain_separated() -> None:
         ({"frames": {"host_path": "/tmp/frame.png"}}, "config_json.frames.host_path"),
         ({"facts": {"Created-At": "later"}}, "config_json.facts.Created-At"),
         ({"metrics": {"requestTimestampNs": 3}}, "config_json.metrics.requestTimestampNs"),
+        ({"metrics": {"time_stamp": 3}}, "config_json.metrics.time_stamp"),
+        ({"metrics": {"lastTimeStamp": 3}}, "config_json.metrics.lastTimeStamp"),
         ({"metrics": {"LATENCY-MS": 4}}, "config_json.metrics.LATENCY-MS"),
         ({"placement": {"device": "cuda:0"}}, "config_json.placement"),
         ({"runtime": {"Cuda-Device": 0}}, "config_json.runtime.Cuda-Device"),

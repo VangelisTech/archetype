@@ -282,7 +282,7 @@ def _quarantined_config_path(value: Any, path: str = "config_json") -> str | Non
                 normalized_key in _QUARANTINED_CONFIG_KEYS
                 or normalized_key.startswith(_QUARANTINED_CONFIG_PREFIXES)
                 or normalized_key.endswith(_QUARANTINED_CONFIG_SUFFIXES)
-                or "timestamp" in normalized_key
+                or "timestamp" in normalized_key.replace("_", "")
                 or any(
                     token in {"latency", "elapsed", "duration", "key", "secret", "token"}
                     for token in normalized_key.split("_")
