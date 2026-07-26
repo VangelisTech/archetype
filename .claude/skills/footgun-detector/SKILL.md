@@ -106,13 +106,16 @@ source's `Resources` container. Confusing those lifetimes causes cross-world
 mutation, incorrect visibility, or duplicate cleanup.
 
 #### Store vs live reads
-Querying the persistent store when the live world (`get_components()`, the
-public `spawn_cache` / `despawn_cache` / `entity2sig` caches) has the correct
-in-memory data. After `fork_world`, pre-fork ticks resolve through the fork's
-`lineage` (ancestor world/run segments), but only on lineage-aware paths such
-as `AsyncWorld.query_archetype`, `get_components`, and
-`archetype.world.query`. Raw reads by the fork's `(world_id, run_id)` alone
-still miss pre-fork history.
+Reading committed component values through raw `(world_id, run_id)` storage
+queries instead of the lineage-aware world facade. `AsyncWorld.get_components`
+and `query_archetype` delegate to the world's querier and resolve pre-fork
+ticks through the fork's `lineage` (ancestor world/run segments); raw reads by
+the fork's `(world_id, run_id)` alone miss pre-fork history. The facade paths
+are NOT in-memory caches: `spawn_cache` / `despawn_cache` hold only pending
+mutations and `entity2sig` holds only signatures, so none of them is a
+complete source of committed values — flag code that treats a pending cache
+as one, and flag raw storage reads where the lineage-aware facade is the
+correct source.
 
 #### Governance bypass
 Runtime or API code invoking lifecycle, mutation, simulation, or an application
