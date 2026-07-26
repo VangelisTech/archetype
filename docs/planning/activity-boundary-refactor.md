@@ -46,7 +46,8 @@ shared substrate; they do not expand A2 speculatively.
 | A5a — Mission critic value contract | Family-owned `missions.critic` request/result/receipt values, deterministic bounded redacted codecs, explicit domain-review attempt identity, and a digest-bound byte-budgeted subject transport contract | Canonical round trips preserve exact base/head/diff/policy/validator and separate-sandbox identity; diff bytes never enter the command line; over-budget subjects fail closed before inference |
 | A5b — Mission critic Activity integration | Purely project exact-current-candidate intent, execute/reconcile it through generic Activities, stage a complete result-bound critic fact bundle, and settle its exact later receipt; retain legacy delivery until A8 | Real Git and managed-world crash/restart oracles prove one provider execution, exact file-bound subject identity, fresh critic sandbox, marker-last atomic staging, idempotent redelivery, and exact-receipt settlement without `CriticReviewOutbox` |
 | A6 — Hosted Physical-AI contract | Reconcile one canonical whole-episode Arrow request/result schema and result publication contract before cutover | Robot adapter and simulator agree on episode/trial cardinality, transition budget, terminal meaning, and canonical digests |
-| A7 — Hosted Physical-AI Activity | Add family-owned choreography under `archetype.physical_ai`, execute a whole seeded episode locally and on Modal, publish the full trajectory, and stage its factual observation | First result is recovered by operation identity; correctness does not depend on byte-identical GPU replay |
+| A7 — Hosted Physical-AI Activity | Add provider-neutral family choreography under `archetype.physical_ai`, execute one seeded batch of whole episodes locally, publish the complete trajectory/results/manifest, and stage its factual observation | Cold reconstruction crosses provider publication, generic result recording, staging, and later settlement without a second episode; start-without-result remains unknown |
+| A7b — Hosted Physical-AI Modal parity | Bind the same family provider protocol to the reviewed generic operation/start/result mechanics after the Modal author safety dependency lands; do not copy Mission barriers | Real Modal/GPU execution recovers its first complete result by stable operation identity and uses the exact A6 request/result contract |
 | A8 — Consolidation and refactor resume | Extract only mechanics shared by author, critic, and Physical AI; delete superseded outboxes and distributed per-step effect paths; reconcile broad docs and topology plan | No duplicate authority, no process-local durable queue, full release verification, and three end-to-end traces remain recognizable |
 
 ### A1 — Contract and plan
@@ -256,6 +257,41 @@ built for a partial trajectory. Replay configuration recursively rejects
 activation, placement, timing, credential, and host-path facts, and frame
 evidence crosses the boundary only as content-addressed references. A7 may
 execute this contract but may not redefine it.
+
+### A7 and A7b — Hosted Physical-AI execution
+
+A7 creates the hosted choreography directly in `archetype.physical_ai`; it
+does not create an `archetype.app.physical_ai` mirror. A committed
+`HostedEpisodeIntent` references the canonical A6 request. The required
+projector admits `kind="physical_ai.hosted_episode"`, and the out-of-lock
+worker binds the world-scoped stable provider operation before execution or
+reconciliation. Complete request, trajectory, derived episode results, and
+manifest bytes are content-addressed before the generic catalog records one
+bounded descriptor. `HostedEpisodeObservation` binds all four payloads and
+their exact completeness counts, and only a later matching committed receipt
+settles the Activity.
+
+The local restart oracle destroys and reconstructs the SQLite catalog,
+coordinator, value store, worker, and provider adapter across four separate
+windows:
+
+1. provider result published before generic result recording;
+2. generic result recorded before observation staging;
+3. observation staged before its tick commits; and
+4. provider start present without a complete result.
+
+The first three redeliver without a second episode. The fourth remains
+permanently unknown; lease expiry and deterministic seeds are not replay
+authority. Partial trajectory publication cannot produce a manifest or
+Activity result. The existing direct per-step path remains supported through
+this slice.
+
+A7 deliberately leaves the remote provider fail-closed behind the same family
+protocol. The safe operation/start/result barrier is genuinely shared
+mechanics, but its recovery meaning remains provider- and family-owned. A7b
+therefore reuses the reviewed generic extraction after the Modal author safety
+dependency rather than importing or duplicating Mission-owned barriers. Only
+A7b may claim real Modal/GPU parity.
 
 ## Authority and dependency target
 

@@ -3,10 +3,11 @@
 **Document type:** Normative accepted-target contract.
 
 **Status:** The boundary and migration order are ratified. The generic local
-catalog, canonical hosted Physical-AI data contract, and opt-in Mission
-author/critic integrations are implemented. Hosted Physical-AI execution and
-final topology consolidation remain separate slices. Each implementation
-slice must land its executable oracle with the behavior it enables.
+catalog, canonical hosted Physical-AI data contract, opt-in Mission
+author/critic integrations, and family-owned local hosted Activity
+choreography are implemented. Remote hosted-provider parity and final
+topology consolidation remain separate slices. Each implementation slice
+must land its executable oracle with the behavior it enables.
 
 **Scope:** Durable work admitted after one committed tick and observed by a
 later committed tick. This specification refines the required-projector rule
@@ -72,7 +73,7 @@ family adapter executes or reconciles provider work
 bounded result reference and digest become durable
         |
         v
-application workflow stages factual observations
+owning family stages factual observations
         |
         v
 tick U commits those observations
@@ -375,7 +376,40 @@ projector settles only against the exact receipt of the tick that committed
 that bundle. Processors alone decide acceptance, repair, failure, or another
 review.
 
-## 7. Resource-spike disposition
+## 7. Hosted Physical-AI crash matrix
+
+The hosted Physical-AI consumer uses
+`kind="physical_ai.hosted_episode"`. Its committed `HostedEpisodeIntent`
+contains only a family-local Activity identity, the world-scoped stable
+provider operation identity, and the exact content-addressed request identity.
+Its later `HostedEpisodeObservation` binds the bounded Activity result
+descriptor to the request, complete trajectory, derived episode results,
+manifest, and exact completeness counts.
+
+| Crash window | Durable evidence after restart | Required behavior |
+|---|---|---|
+| After intent commit, before projection | Exact receipt and request reference | Retry required projection; admit the same immutable Activity. |
+| After provider result publication, before generic result recording | Permanent operation start plus complete provider result index | Reconcile by operation identity, publish the same family payloads, and do not execute another episode. |
+| After generic result recording, before observation staging | Bounded descriptor plus complete content-addressed payloads | Reconstruct and restage the exact marker without provider work. |
+| After staging, before observation commit | Result remains unobserved; staged mutation may be lost | Restage the same marker idempotently until a tick commits it. |
+| After observation commit, before settlement | Exact later receipt contains the complete marker | Settle against that receipt without provider work or another tick. |
+| Permanent provider start exists without a complete result | Stable operation identity but ambiguous external truth | Remain unknown. Lease expiry and deterministic seeds do not authorize replay. |
+| Provider returns a partial trajectory | No valid complete manifest can be built | Publish no Activity result; remain unknown after the permanent start. |
+
+The local provider proof uses an atomic permanent start marker and a
+provider-durable first-result index. It deliberately sacrifices liveness after
+an ambiguous start rather than assume a seeded GPU rerun is equivalent.
+Remote/Modal adapters implement the same `HostedEpisodeProvider` protocol but
+remain fail-closed until they can reuse the reviewed generic provider
+operation/start/result mechanics. Provider placement and recovery records never
+enter Components.
+
+The local value store and SQLite Activity catalog are executable proof
+substrates, not claims of remote storage parity. Production trajectory and
+frame publication still belongs in Iceberg or the artifact substrate, while a
+remote control-catalog implementation is its own parity slice.
+
+## 8. Resource-spike disposition
 
 The `AsyncResources`/WorldHost prototype is retained as architecture evidence
 and is frozen. It is not the implementation path for Agent Missions or
@@ -392,7 +426,7 @@ handled as read-only, reconstructible, safely idempotent access or as an
 Activity. Evidence from the frozen spike should inform that proposal rather
 than silently entering the current refactor.
 
-## 8. Verification gates
+## 9. Verification gates
 
 The Activity migration is conforming only when focused contracts prove:
 
