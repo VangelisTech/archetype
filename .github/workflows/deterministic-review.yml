@@ -429,7 +429,12 @@ jobs:
           npm install -g "@openai/codex@${CODEX_VERSION}"
           printf '%s' "${SCHEMA}" > "${RUNNER_TEMP}/lens-schema.json"
           python3 - <<'EOF'
+          import json
           import os
+
+          scoped_files = json.dumps(
+              json.load(open(os.environ["SCOPE_FILE"]))["files"]
+          )
 
           prompt = f"""Review PR #{os.environ["PR_NUMBER"]} at exact head
           {os.environ["HEAD_SHA"]} for archetype-specific footguns through the
@@ -444,6 +449,12 @@ jobs:
           `.footgun-review-scope.json` and `.footgun-review.diff` are the
           authoritative scope and diff. Inspect every change plus relevant
           protected-base context through your lens.
+
+          The scope manifest for this review is exactly these changed files:
+          {scoped_files}
+          Your `reviewed_files` array must equal exactly that list — NOT the
+          skill file, the diff file, or anything else you merely opened while
+          reviewing.
 
           The gate rejects the result unless it binds to the exact head, lists
           every scoped file exactly once, lists exactly your lens's categories as
@@ -664,7 +675,12 @@ jobs:
           npm install -g "@openai/codex@${CODEX_VERSION}"
           printf '%s' "${SCHEMA}" > "${RUNNER_TEMP}/lens-schema.json"
           python3 - <<'EOF'
+          import json
           import os
+
+          scoped_files = json.dumps(
+              json.load(open(os.environ["SCOPE_FILE"]))["files"]
+          )
 
           prompt = f"""Correct or replace the first structured review response
           for PR #{os.environ["PR_NUMBER"]} at exact head
@@ -681,7 +697,12 @@ jobs:
 
           Follow the trusted `.claude/skills/footgun-detector/SKILL.md` from the
           protected base, restricted to exactly these detector categories:
-          {os.environ["CATEGORIES"]}. The corrected result must bind to the
+          {os.environ["CATEGORIES"]}. The scope manifest for this review is
+          exactly these changed files:
+          {scoped_files}
+          Your `reviewed_files` array must equal exactly that list — NOT the
+          skill file, the diff file, or anything else you merely opened.
+          The corrected result must bind to the
           exact head, list every scoped file exactly once, list exactly your
           lens's categories as `reviewed_categories`, cover every changed file
           in `review_context`, anchor findings to changed lines, and give every
