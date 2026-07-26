@@ -18,4 +18,14 @@ class WorldClosingError(ConflictError):
         self.world_id = world_id
 
 
-__all__ = ["WorldClosingError"]
+class WorldHasUnsettledWorkError(ConflictError):
+    """Raised when lineage or destruction would orphan durable external work."""
+
+    public_detail = "World has unsettled work"
+
+    def __init__(self, world_id: object) -> None:
+        super().__init__(f"world {world_id} has unsettled durable work")
+        self.world_id = world_id
+
+
+__all__ = ["WorldClosingError", "WorldHasUnsettledWorkError"]

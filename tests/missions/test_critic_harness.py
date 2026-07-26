@@ -108,6 +108,37 @@ class _LocalSession:
         return None
 
 
+class _MalformedMktempSession(_LocalSession):
+    def __init__(self) -> None:
+        super().__init__()
+        self.subject_directory: Path | None = None
+
+    async def exec(self, request: ProcessRequest) -> ProcessResult:
+        result = await super().exec(request)
+        if request.argv[:2] == ("mktemp", "-d"):
+            self.subject_directory = Path(result.stdout.strip())
+            return ProcessResult(
+                result.argv,
+                result.returncode,
+                result.stdout + "unexpected-provider-output\n",
+                result.stderr,
+            )
+        return result
+
+
+class _ReportedCleanupFailureSession(_LocalSession):
+    async def exec(self, request: ProcessRequest) -> ProcessResult:
+        result = await super().exec(request)
+        if request.argv[:3] == ("rm", "-rf", "--"):
+            return ProcessResult(
+                result.argv,
+                9,
+                result.stdout,
+                "provider reported cleanup failure",
+            )
+        return result
+
+
 class _Driver:
     def __init__(self, output: str) -> None:
         self.output = output
@@ -118,7 +149,12 @@ class _Driver:
         del session
         self.calls += 1
         self.prompts.append(prompt)
-        assert request.diff in prompt
+        assert request.diff == ""
+        assert request.subject_transport == "sandbox_file"
+        assert request.subject_ref in prompt
+        assert request.subject_size_bytes > 0
+        assert request.subject_digest
+        assert "diff --git" not in prompt
         return CriticProcessObservation(0, stdout=self.output)
 
 
@@ -225,14 +261,68 @@ async def test_exact_head_review_is_independent_secret_negative_and_immutable(
     assert result.receipt.conclusion is CriticConclusion.APPROVED
     assert result.receipt.candidate_digest == request.candidate_digest
     assert result.receipt.policy_digest == request.policy.digest
+    assert result.receipt.reviewed_base_revision == base
+    assert result.receipt.reviewed_head_revision == head
+    assert result.receipt.reviewed_diff_digest == request.diff_digest
+    assert result.receipt.validator_bundle_digest == request.validator_bundle_digest
+    assert result.receipt.subject_content_size_bytes == len(diff.encode())
+    assert result.receipt.subject_size_bytes <= request.policy.max_subject_bytes
+    assert result.receipt.subject_transport == "sandbox_file"
+    assert not Path(result.receipt.subject_ref).exists()
     assert result.head_ready_at_ms <= result.critic_started_at_ms <= result.ended_at_ms
     assert "Policy perspective: repository-correctness" in driver.prompts[0]
     assert "Policy information view: task-diff-validators" in driver.prompts[0]
     assert "Policy driver: codex" in driver.prompts[0]
     assert "Policy sampling: provider-default" in driver.prompts[0]
+    assert "Exact diff file:" in driver.prompts[0]
+    assert diff not in driver.prompts[0]
     assert all(not item.secret_names for item in session.requests)
+    assert any(item.argv[:3] == ("rm", "-rf", "--") for item in session.requests)
+    diff_request = next(item for item in session.requests if item.argv[:2] == ("git", "diff"))
+    assert diff_request.argv[2:5] == (
+        "--no-ext-diff",
+        "--no-textconv",
+        "--binary",
+    )
     assert later_head != head
     assert _git("--git-dir", str(remote), "merge-base", "--is-ancestor", head, later_head) == ""
+
+
+@pytest.mark.asyncio
+async def test_candidate_symlink_cannot_redirect_critic_subject_output(
+    tmp_path: Path,
+) -> None:
+    remote, base, head, diff = _repository(tmp_path)
+    session = _LocalSession()
+    driver = _Driver(
+        '{"schema_version":1,"conclusion":"approved",'
+        '"reviewed_scope":"exact task diff","findings":[]}'
+    )
+    workspace = tmp_path / "review"
+    harness = CriticHarness(
+        driver,
+        CriticHarnessConfig(workspace=str(workspace)),
+    )
+    await harness.prewarm(
+        session,
+        CriticPrewarmRequest(1, 2, "dispatch-1", str(remote), "agent/review", "main"),
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    redirected = outside / "critic-subject.diff"
+    redirected.write_text("sentinel", encoding="utf-8")
+    (workspace / ".archetype").symlink_to(outside, target_is_directory=True)
+
+    result = await harness.execute(session, _request(remote, base, head, diff))
+
+    assert result.status is CriticExecutionStatus.EXITED
+    assert result.receipt is not None
+    assert redirected.read_text(encoding="utf-8") == "sentinel"
+    subject = Path(result.receipt.subject_ref)
+    assert subject.parent.parent == Path("/tmp")
+    assert not subject.is_relative_to(workspace)
+    assert not subject.exists()
+    assert not subject.parent.exists()
 
 
 @pytest.mark.asyncio
@@ -264,6 +354,96 @@ async def test_wrong_remote_head_and_malformed_output_fail_closed(
     assert malformed.status is CriticExecutionStatus.MALFORMED
     assert malformed.receipt is None
     assert driver.calls == 1
+    assert any(item.argv[:3] == ("rm", "-rf", "--") for item in session.requests)
+
+
+@pytest.mark.asyncio
+async def test_over_budget_exact_subject_fails_closed_before_critic(
+    tmp_path: Path,
+) -> None:
+    remote, base, head, diff = _repository(tmp_path)
+    session = _LocalSession()
+    driver = _Driver(
+        '{"schema_version":1,"conclusion":"approved",'
+        '"reviewed_scope":"exact task diff","findings":[]}'
+    )
+    harness = CriticHarness(
+        driver,
+        CriticHarnessConfig(workspace=str(tmp_path / "review")),
+    )
+    await harness.prewarm(
+        session,
+        CriticPrewarmRequest(1, 2, "dispatch-1", str(remote), "agent/review", "main"),
+    )
+    request = replace(
+        _request(remote, base, head, diff),
+        policy=CriticPolicy(max_subject_bytes=1),
+    )
+
+    result = await harness.execute(session, request)
+
+    assert result.status is CriticExecutionStatus.UNVERIFIABLE
+    assert result.receipt is None
+    assert driver.calls == 0
+    assert request.diff_digest in result.error
+    assert "observed_bytes=" in result.error
+    assert diff not in result.error
+    assert any(item.argv[:3] == ("rm", "-rf", "--") for item in session.requests)
+
+
+@pytest.mark.asyncio
+async def test_cleanup_failure_does_not_mask_unverifiable_subject_failure(
+    tmp_path: Path,
+) -> None:
+    remote, base, head, diff = _repository(tmp_path)
+    session = _ReportedCleanupFailureSession()
+    driver = _Driver("{}")
+    harness = CriticHarness(
+        driver,
+        CriticHarnessConfig(workspace=str(tmp_path / "review")),
+    )
+    await harness.prewarm(
+        session,
+        CriticPrewarmRequest(1, 2, "dispatch-1", str(remote), "agent/review", "main"),
+    )
+    request = replace(
+        _request(remote, base, head, diff),
+        policy=CriticPolicy(max_subject_bytes=1),
+    )
+
+    result = await harness.execute(session, request)
+
+    assert result.status is CriticExecutionStatus.UNVERIFIABLE
+    assert request.diff_digest in result.error
+    assert "observed_bytes=" in result.error
+    assert "cleanup failure" not in result.error
+    assert driver.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_subject_directory_is_cleaned_when_provider_output_is_malformed(
+    tmp_path: Path,
+) -> None:
+    remote, base, head, diff = _repository(tmp_path)
+    session = _MalformedMktempSession()
+    driver = _Driver("{}")
+    harness = CriticHarness(
+        driver,
+        CriticHarnessConfig(workspace=str(tmp_path / "review")),
+    )
+    await harness.prewarm(
+        session,
+        CriticPrewarmRequest(1, 2, "dispatch-1", str(remote), "agent/review", "main"),
+    )
+
+    result = await harness.execute(session, _request(remote, base, head, diff))
+
+    assert result.status is CriticExecutionStatus.UNVERIFIABLE
+    assert "directory allocation is invalid" in result.error
+    assert driver.calls == 0
+    assert session.subject_directory is not None
+    assert not session.subject_directory.exists()
+    assert any(item.argv[:3] == ("rm", "-rf", "--") for item in session.requests)
 
 
 class _CaptureSession:

@@ -465,6 +465,24 @@ consume an author dispatch. When that bounded budget is exhausted,
 `missions.run()` reports the candidate as still pending review instead of
 turning reviewer failure into task failure or implicit approval.
 
+The opt-in Activity-backed critic path makes that post-commit boundary durable.
+It projects the exact current candidate without relying on the process-local
+`CriticReviewOutbox`, admits `kind="missions.critic"` under the stable
+`review_id`, and executes or reconciles outside the world lock. The admitted
+value contains no diff bytes; the provider binds the recomputed binary diff
+through a bounded provider-owned file or stdin and cleans temporary subject
+storage on success and failure.
+
+The returned observation is one atomic fact bundle: a fresh critic `Sandbox`,
+`CriticExecution`, `Reviews`/`RunsIn`, findings and provenance, an optional
+existing-v1 `CriticReceipt`, and a `CompleteCriticActivityObservation` marker
+staged last. The marker, rather than a process-local queue or the receipt row
+alone, binds the exact durable result and full subject evidence to the later
+committed tick. Generic Activity retries never increment Mission review
+attempts; only committed `CriticExecution` facts do. The legacy delivery path
+remains available until final consolidation, but correctness of this path does
+not depend on it.
+
 A blocking receipt moves the task back to `READY` only after its findings are
 durable. The next author request contains those findings. Any repair produces
 a new head, candidate identity, and receipt subject; evidence for the old head
@@ -668,7 +686,7 @@ Component.
 
 | Gap | V1 treatment | Later seam |
 |---|---|---|
-| Cold process resume | Authors may explicitly replace a sandbox from a recorded checkpoint inside an already-known mission; no process-restart reconciliation, fleet claim, or automatic supervisor is implied. | Migrate author delivery through the Activity contract and prove local process reconstruction plus provider reconciliation before exposing cold mission continuation. |
+| Cold process resume | The supported Modal author path uses exact-receipt Activity admission, provider reconciliation, complete atomic ECS staging, and no-op redelivery after world reconstruction. A real Modal mission and separate cold process recovered the exact provider result without another sandbox start. | Apply the same seam to critic work; non-Modal authors retain the direct local path. |
 | Private-repository critic materialization | V1 proves public repositories and gives critic processes no Git publication secret. | Add a distinct read-only Git capability without widening critic publication authority. |
 | Sandbox placement | Use a simple configured policy. | Add a scheduler only when multiple topologies require one. |
 | Task decomposition | Authors submit the graph. | Planner emits the same typed graph. |
@@ -681,8 +699,8 @@ Component.
 
 This subsection is normative for the v0.5 migration and deliberately describes
 the accepted target, not the current `archetype.app.missions` implementation.
-The current implementation and its exact-head critic remain the preservation
-baseline until the Activity cutover.
+The supported Modal author uses this Activity contract. The exact-head critic
+remains on the preservation path until A5 completes its corresponding cutover.
 
 Agent Missions has three cooperating concerns with distinct authority:
 
@@ -722,10 +740,24 @@ evidence bound to the exact recorded result reference/digest. A dispatch or
 review ID alone cannot settle partial facts. Neither a callback nor Activity
 catalog state directly advances task state.
 
+For author results, that completeness evidence is schema v2. One atomic
+mutation-cache batch stages sandbox identity and optional mission membership,
+execution/task/sandbox provenance, every output and its producer edge, and
+exactly one immutable candidate only when the durable result is authored-green.
+The digest-bound completion marker is last. A failed hook or cancellation
+restores the entire world mutation prefix; hook side effects are advisory and
+cannot own task-state correctness. Fresh stager instances inspect that pending
+world mutation state directly, including schema-identical resumed signatures,
+and the committed `TaskDispatchRequest.prior_candidate_entity_id` fixes the
+exact predecessor before either result is delivered. Delivery order therefore
+cannot change or omit the new candidate's `Supersedes` edge.
+
 Mission V1 does not fork or destroy through an in-flight author or critic
 Activity. Once this bridge is wired, the application lifecycle path holds the
 source exact-world lock, reconciles required projection, and refuses either
 operation until every source Activity has an exact later-receipt settlement.
+Public destroy rolls back only its provisional close on this refusal so the
+Activity worker can commit that observation; pre-owned cleanup remains sticky.
 The eventual fork inherits the complete committed Mission observation through
 ordinary lineage; it does not inherit, adopt, or recreate the source Activity.
 This is distinct from the normal lineage visibility of already-committed
@@ -867,10 +899,12 @@ The credential-free contract lane must prove:
 The dedicated Docker parity lane builds the shared image and proves real
 session-filesystem checkpoint/restore only when the dogfood example changes or
 an operator dispatches it manually; it is not part of ordinary CI. The live
-Modal dogfood must additionally prove real
-repository preparation, agent execution, direct monitoring, validation,
-commit/push publication, checkpoint/restore, and teardown. Modal is paid and
-credentialed, so it remains an explicit operation rather than ordinary CI.
+Modal dogfood must additionally prove real repository preparation, agent
+execution, direct monitoring, validation, commit/push publication, and
+teardown. Checkpoint/restore remains a separate sandbox-capability lane; the
+Activity author result closes its execution sandbox after publishing exact
+evidence. Modal is paid and credentialed, so it remains an explicit operation
+rather than ordinary CI.
 
 ## Companion contracts
 

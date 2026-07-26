@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Protocol, runtime_checkable
 
 from archetype.missions.contracts import CriticPolicy
@@ -16,6 +18,8 @@ from archetype.missions.transitions import (
     CriticConclusion,
     CriticExecutionStatus,
 )
+
+_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 
 def canonical_digest(value: object) -> str:
@@ -133,6 +137,10 @@ class CandidateReviewRequest:
     candidate_published_at_ms: int
     attempt: int
     diff: str = ""
+    subject_ref: str = ""
+    subject_transport: str = ""
+    subject_size_bytes: int = 0
+    subject_digest: str = ""
 
     def __post_init__(self) -> None:
         required = (
@@ -151,6 +159,34 @@ class CandidateReviewRequest:
             raise ValueError("critic request exact-subject fields must not be empty")
         if self.dispatch_sequence < 1 or self.attempt < 1:
             raise ValueError("critic dispatch sequence and attempt must be positive")
+        if self.subject_size_bytes < 0:
+            raise ValueError("critic subject size must not be negative")
+        subject_fields = (
+            bool(self.subject_ref),
+            bool(self.subject_transport),
+            self.subject_size_bytes > 0,
+            bool(self.subject_digest),
+        )
+        if any(subject_fields) and not all(subject_fields):
+            raise ValueError("critic subject transport binding must be complete")
+        if all(subject_fields):
+            if self.subject_transport not in {"sandbox_file", "stdin"}:
+                raise ValueError("critic subject transport is invalid")
+            if not _DIGEST.fullmatch(self.subject_digest):
+                raise ValueError("critic subject digest must be lowercase SHA-256")
+            if self.subject_transport == "sandbox_file":
+                path = PurePosixPath(self.subject_ref)
+                if (
+                    not path.is_absolute()
+                    or str(path) in {"/", "."}
+                    or ".." in path.parts
+                    or "\x00" in self.subject_ref
+                ):
+                    raise ValueError(
+                        "critic sandbox-file subject requires a safe non-root absolute path"
+                    )
+            elif self.subject_ref != "stdin":
+                raise ValueError("critic stdin subject reference must be 'stdin'")
 
     @property
     def review_id(self) -> str:
@@ -222,6 +258,18 @@ class CriticReceiptValue:
     candidate_digest: str
     policy_digest: str
     evidence_digest: str
+    reviewed_base_revision: str
+    reviewed_head_revision: str
+    reviewed_diff_digest: str
+    validator_bundle_digest: str
+    subject_metadata_digest: str
+    subject_digest: str
+    subject_content_size_bytes: int
+    subject_metadata_size_bytes: int
+    subject_size_bytes: int
+    subject_media_type: str
+    subject_transport: str
+    subject_ref: str
     reviewed_scope: str
     finding_count: int
     blocking_count: int
