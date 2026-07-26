@@ -465,6 +465,24 @@ consume an author dispatch. When that bounded budget is exhausted,
 `missions.run()` reports the candidate as still pending review instead of
 turning reviewer failure into task failure or implicit approval.
 
+The opt-in Activity-backed critic path makes that post-commit boundary durable.
+It projects the exact current candidate without relying on the process-local
+`CriticReviewOutbox`, admits `kind="missions.critic"` under the stable
+`review_id`, and executes or reconciles outside the world lock. The admitted
+value contains no diff bytes; the provider binds the recomputed binary diff
+through a bounded provider-owned file or stdin and cleans temporary subject
+storage on success and failure.
+
+The returned observation is one atomic fact bundle: a fresh critic `Sandbox`,
+`CriticExecution`, `Reviews`/`RunsIn`, findings and provenance, an optional
+existing-v1 `CriticReceipt`, and a `CompleteCriticActivityObservation` marker
+staged last. The marker, rather than a process-local queue or the receipt row
+alone, binds the exact durable result and full subject evidence to the later
+committed tick. Generic Activity retries never increment Mission review
+attempts; only committed `CriticExecution` facts do. The legacy delivery path
+remains available until final consolidation, but correctness of this path does
+not depend on it.
+
 A blocking receipt moves the task back to `READY` only after its findings are
 durable. The next author request contains those findings. Any repair produces
 a new head, candidate identity, and receipt subject; evidence for the old head

@@ -11,11 +11,13 @@ from dataclasses import fields, replace
 import pytest
 
 from archetype.missions import CriticPolicy
+from archetype.missions.components import CriticExecution, CriticReceipt
 from archetype.missions.critics import (
     CRITIC_ACTIVITY_KIND,
     CandidateReviewRequest,
     CriticActivityCodec,
     CriticActivityRequest,
+    CriticActivityResultRef,
     CriticExecutionResult,
     CriticFindingValue,
     CriticReceiptValue,
@@ -24,6 +26,8 @@ from archetype.missions.critics import (
     CriticSubjectTransport,
     CriticValidationEvidence,
     bind_critic_subject,
+    complete_critic_activity_fact_bundle,
+    complete_critic_activity_fact_count,
 )
 from archetype.missions.sandboxes import SandboxIdentity, SandboxStatus
 from archetype.missions.transitions import (
@@ -167,6 +171,48 @@ def test_domain_review_attempt_is_not_generic_activity_delivery_attempt() -> Non
     assert "activity_attempt" not in {field.name for field in fields(CriticActivityRequest)}
     assert len({request.review_id for _ in repeated_delivery_attempts}) == 1
     assert replace(request, domain_review_attempt=3).review_id != request.review_id
+
+
+def test_receipt_free_failure_is_a_complete_domain_attempt_fact_bundle() -> None:
+    codec = CriticActivityCodec(RedactionService())
+    raw_request = _request()
+    request = codec.prepare_request(raw_request)
+    raw_result = _result(raw_request)
+    failure = replace(
+        raw_result,
+        status=CriticExecutionStatus.ERRORED,
+        sandbox_status=SandboxStatus.ERRORED,
+        findings=(),
+        receipt=None,
+        error="critic failed",
+    )
+    result = codec.prepare_result(failure, request)
+    count = complete_critic_activity_fact_count(result)
+    bundle = complete_critic_activity_fact_bundle(
+        request,
+        result,
+        entity_ids=tuple(range(1, count + 1)),
+        receipt_staged_at_ms=0,
+    )
+    encoded = codec.encode_result(result)
+    marker = bundle.marker(
+        request=request,
+        result=result,
+        result_ref=CriticActivityResultRef(
+            ref=encoded.ref,
+            digest=encoded.digest,
+            media_type=encoded.media_type,
+            size_bytes=encoded.size_bytes,
+        ),
+    )
+
+    executions = bundle.components(CriticExecution)
+    assert len(executions) == 1
+    assert executions[0].component.attempt == request.domain_review_attempt
+    assert executions[0].component.receipt_staged_at_ms == 0
+    assert bundle.components(CriticReceipt) == ()
+    assert marker.receipt_count == 0
+    assert marker.subject_digest == ""
 
 
 def test_codec_rejects_bypassed_redaction_and_policy_mismatch() -> None:
