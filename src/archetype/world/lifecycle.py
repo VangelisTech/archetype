@@ -28,6 +28,7 @@ from archetype.core.lineage import load_lineage, persist_lineage
 from archetype.core.resources import Resources
 from archetype.storage.catalog import ControlCatalog, WorldRecord, storage_fingerprint
 from archetype.storage.service import PinnedVisibility
+from archetype.world.errors import WorldHasUnsettledWorkError
 from archetype.world.interfaces import iWorldActivationOwner, iWorldRegistry
 from archetype.world.registry import WorldCleanupLease
 from archetype.world.resume import (
@@ -40,6 +41,7 @@ from archetype.world.simulation import reconcile_committed_work_locked
 logger = logging.getLogger(__name__)
 
 RequiredProjectorFactory = Callable[[str], Any | None]
+UnsettledWorldOracle = Callable[[str], Awaitable[bool]]
 
 
 async def _finish_activation_cleanup_uninterrupted(
@@ -185,11 +187,13 @@ class WorldLifecycle:
         *,
         materialize_commands: CommandMaterializer | None = None,
         required_projector_factory: RequiredProjectorFactory | None = None,
+        unsettled_world_oracle: UnsettledWorldOracle | None = None,
     ) -> None:
         self._storage = storage
         self._registry = registry
         self._materialize_commands = materialize_commands
         self._required_projector_factory = required_projector_factory
+        self._unsettled_world_oracle = unsettled_world_oracle
         # Lifecycle is the canonical direct operation dependency, so it
         # serializes the pre-registration name check itself.
         self._create_lock = asyncio.Lock()
@@ -197,6 +201,11 @@ class WorldLifecycle:
     def _required_projector(self, world_id: str) -> Any | None:
         factory = self._required_projector_factory
         return factory(world_id) if factory is not None else None
+
+    async def _refuse_unsettled(self, world_id: str) -> None:
+        oracle = self._unsettled_world_oracle
+        if oracle is not None and await oracle(world_id):
+            raise WorldHasUnsettledWorkError(world_id)
 
     async def _mark_failed_activation(
         self,
@@ -374,6 +383,7 @@ class WorldLifecycle:
                 str(source_world_id),
                 source,
             )
+            await self._refuse_unsettled(str(source_world_id))
 
             source_storage = await self._registry.storage_record(str(source_world_id))
             source_storage_config = (
@@ -676,7 +686,7 @@ class WorldLifecycle:
         key = str(world_id)
         if lease is None:
             try:
-                lease = await self._registry.begin_close(key)
+                lease = await self.begin_close(key)
             except KeyError:
                 return
         else:
@@ -689,6 +699,8 @@ class WorldLifecycle:
                     key,
                     world,
                 )
+            await self._refuse_unsettled(key)
+            if isinstance(world, AsyncWorld):
                 if not lease.on_destroy_complete:
                     await world.hooks.fire(OnDestroy(world_id=world.world_id))
                     lease._complete_on_destroy()
@@ -697,3 +709,39 @@ class WorldLifecycle:
                 catalog = self._storage.get_control_catalog(storage_record[0])
                 await catalog.set_world_status(key, "destroyed")
         await self._registry.finish_close(lease)
+
+    async def begin_close(
+        self,
+        world_id: str | UUID,
+    ) -> WorldCleanupLease:
+        """Reconcile and gate one world before making close sticky.
+
+        The Activity/work oracle runs while the source's exact operation lock
+        is held. ``begin_close`` then flips the sticky close bit before that
+        lock is released, so no tick or admission can race between the check
+        and the lifecycle transition.
+        """
+
+        key = str(world_id)
+        lease, _started = await self._registry.begin_close_attempt(
+            key,
+            reopenable_activity_gate=True,
+        )
+        async with self._registry.cleanup_operation(lease) as world:
+            try:
+                if isinstance(world, AsyncWorld):
+                    await reconcile_committed_work_locked(
+                        self._registry,
+                        key,
+                        world,
+                    )
+                await self._refuse_unsettled(key)
+            except WorldHasUnsettledWorkError:
+                if lease.reopenable_activity_gate:
+                    # Clear the provisional close while this attempt still
+                    # holds exact cleanup authority. Any concurrent joiner
+                    # then revalidates the invalidated lease after we release.
+                    await self._registry.abort_close(lease)
+                raise
+            lease._complete_activity_gate()
+        return lease

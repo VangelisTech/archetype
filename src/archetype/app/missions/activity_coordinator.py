@@ -88,6 +88,7 @@ class MissionAuthorActivityCoordinator:
         pending = await self._coordinator.pending(
             kind=AUTHOR_ACTIVITY_KIND,
             world_id=world_id,
+            limit=10_000,
         )
         for snapshot in pending:
             generic = await self._coordinator.claim(
@@ -193,6 +194,11 @@ class MissionAuthorActivityCoordinator:
                 result_digest=result_digest,
             ),
         )
+
+    async def has_unsettled_work(self, world_id: str) -> bool:
+        """Expose the generic world-scoped orphan-prevention oracle."""
+
+        return await self._coordinator.has_unsettled(world_id)
 
     def _remember(self, claim: ActivityClaim) -> AuthorActivityClaim:
         if not claim.acquired or claim.attempt is None or claim.fence is None:

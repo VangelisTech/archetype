@@ -216,12 +216,12 @@ cardinality violations. It consumes the literal vocabulary in
 `archetype._obs`; it does not copy an allowlist, inspect exported telemetry, or
 require a live collector.
 
-The existing footgun reviewer owns the semantic remainder: whether telemetry
+The observability footgun lens owns the semantic remainder: whether telemetry
 has become authority, whether a value is unsafe despite using an approved key,
-and whether dimensions are bounded in the actual workflow. It adds that review
-to the current reviewer rather than introducing a second model, check, or
-required context. Focused contract tests remain the oracle for durable outcome
-authority and retry/failure behavior.
+and whether dimensions are bounded in the actual workflow. Two independent
+reviewer receipts feed the shared deterministic aggregate without adding a
+second required context. Focused contract tests remain the oracle for durable
+outcome authority and retry/failure behavior.
 
 ## Gate ownership
 

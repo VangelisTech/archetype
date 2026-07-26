@@ -13,6 +13,7 @@ import pytest
 
 from archetype.core.archetype import Archetype
 from archetype.core.config import StorageConfig
+from archetype.core.interfaces import CommittedTickReceipt
 from archetype.core.lineage import LINEAGE_SIG
 from archetype.world import query
 
@@ -90,6 +91,124 @@ async def test_root_snapshot_never_reads_or_creates_lineage(monkeypatch) -> None
     assert (snapshot.world_id, snapshot.run_id) == ("root", "root-run")
     assert (snapshot.head_tick, snapshot.head_tokens) == (0, ("root-head",))
     assert snapshot.lineage == ()
+
+
+@pytest.mark.asyncio
+async def test_receipt_pinned_snapshot_requires_the_exact_sole_current_head() -> None:
+    @dataclass(frozen=True)
+    class _Record:
+        run_id: str = "run-a"
+        parent_world_id: None = None
+
+    @dataclass(frozen=True)
+    class _Visibility:
+        run_id: str = "run-a"
+        head_tick: int = 3
+        head_tokens: tuple[str, ...] = ("token-3",)
+        visibility_tokens: tuple[str, ...] = ("token-1", "token-2", "token-3")
+
+    class _Catalog:
+        async def get_world(self, world_id):
+            return _Record() if world_id == "world-a" else None
+
+    class _Storage:
+        def __init__(self) -> None:
+            self.visibility = _Visibility()
+
+        def get_control_catalog(self, _storage_config):
+            return _Catalog()
+
+        async def pin_visibility(self, *_args, **_kwargs):
+            assert _kwargs.get("max_tick") is None
+            return self.visibility
+
+    storage = _Storage()
+    receipt = CommittedTickReceipt("world-a", "run-a", 3, "token-3", 0)
+    snapshot = await query.pin_query_snapshot_for_receipt(
+        storage,  # type: ignore[arg-type]
+        receipt,
+        StorageConfig(),
+    )
+    assert (snapshot.head_tick, snapshot.head_tokens) == (3, ("token-3",))
+
+    storage.visibility = _Visibility(head_tick=4, head_tokens=("token-4",))
+    with pytest.raises(ValueError, match="expected tick 3, found 4"):
+        await query.pin_query_snapshot_for_receipt(
+            storage,  # type: ignore[arg-type]
+            receipt,
+            StorageConfig(),
+        )
+
+    storage.visibility = _Visibility(head_tokens=("sibling-token",))
+    with pytest.raises(ValueError, match="sole token"):
+        await query.pin_query_snapshot_for_receipt(
+            storage,  # type: ignore[arg-type]
+            receipt,
+            StorageConfig(),
+        )
+
+    storage.visibility = _Visibility(head_tokens=("token-3", "sibling-token"))
+    with pytest.raises(ValueError, match="sole token"):
+        await query.pin_query_snapshot_for_receipt(
+            storage,  # type: ignore[arg-type]
+            receipt,
+            StorageConfig(),
+        )
+
+    storage.visibility = _Visibility(visibility_tokens=("token-1", "token-2"))
+    with pytest.raises(ValueError, match="absent from the pinned visibility"):
+        await query.pin_query_snapshot_for_receipt(
+            storage,  # type: ignore[arg-type]
+            receipt,
+            StorageConfig(),
+        )
+
+    storage.visibility = _Visibility(visibility_tokens=None)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="absent from the pinned visibility"):
+        await query.pin_query_snapshot_for_receipt(
+            storage,  # type: ignore[arg-type]
+            receipt,
+            StorageConfig(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_receipt_pinned_snapshot_rejects_tokenless_wrong_world_and_run() -> None:
+    @dataclass(frozen=True)
+    class _Record:
+        run_id: str = "run-a"
+        parent_world_id: None = None
+
+    class _Catalog:
+        async def get_world(self, world_id):
+            return _Record() if world_id == "world-a" else None
+
+    class _Storage:
+        def get_control_catalog(self, _storage_config):
+            return _Catalog()
+
+        async def pin_visibility(self, *_args, **_kwargs):
+            raise AssertionError("identity rejection must precede visibility")
+
+    storage = _Storage()
+    with pytest.raises(ValueError, match="visibility token"):
+        await query.pin_query_snapshot_for_receipt(
+            storage,  # type: ignore[arg-type]
+            CommittedTickReceipt("world-a", "run-a", 3, None, 0),
+            StorageConfig(),
+        )
+    with pytest.raises(KeyError, match="world-b"):
+        await query.pin_query_snapshot_for_receipt(
+            storage,  # type: ignore[arg-type]
+            CommittedTickReceipt("world-b", "run-a", 3, "token-3", 0),
+            StorageConfig(),
+        )
+    with pytest.raises(ValueError, match="records run run-a"):
+        await query.pin_query_snapshot_for_receipt(
+            storage,  # type: ignore[arg-type]
+            CommittedTickReceipt("world-a", "run-b", 3, "token-3", 0),
+            StorageConfig(),
+        )
 
 
 @pytest.mark.asyncio
@@ -262,6 +381,76 @@ async def test_nested_fresh_fork_snapshot_uses_last_widening_head(monkeypatch) -
     assert storage.calls == [
         ("child", "child-run", None),
         ("source", "source-run", 2),
+        ("parent", "parent-run", 2),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_fork_snapshot_max_tick_clips_every_inherited_segment(monkeypatch) -> None:
+    @dataclass(frozen=True)
+    class _Record:
+        run_id: str = "child-run"
+        parent_world_id: str = "parent"
+
+    @dataclass(frozen=True)
+    class _Visibility:
+        run_id: str
+        head_tick: int | None
+        head_tokens: tuple[str, ...]
+        visibility_tokens: tuple[str, ...] | None
+
+    class _Storage:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str | None, int | None]] = []
+
+        def get_control_catalog(self, storage_config):
+            del storage_config
+
+            class _Catalog:
+                async def get_world(self, world_id):
+                    assert world_id == "child"
+                    return _Record()
+
+            return _Catalog()
+
+        async def pin_visibility(
+            self,
+            storage_config,
+            world_id,
+            *,
+            run_id=None,
+            max_tick=None,
+        ):
+            del storage_config
+            self.calls.append((world_id, run_id, max_tick))
+            if world_id == "child":
+                return _Visibility("child-run", None, (), ())
+            return _Visibility(
+                str(run_id),
+                int(max_tick),
+                (f"{world_id}-{max_tick}",),
+                tuple(f"{world_id}-{tick}" for tick in range(int(max_tick) + 1)),
+            )
+
+    async def lineage(*_args):
+        return [("root", "root-run", 3), ("parent", "parent-run", 5)]
+
+    storage = _Storage()
+    monkeypatch.setattr(query, "get_lineage", lineage)
+
+    snapshot = await query.pin_query_snapshot(
+        storage,  # type: ignore[arg-type]
+        "child",
+        storage_config=StorageConfig(),
+        max_tick=2,
+    )
+
+    assert snapshot.head_tick == 2
+    assert [segment.up_to_tick for segment in snapshot.lineage] == [2, 2]
+    assert snapshot.effective_lineage == (snapshot.lineage[0],)
+    assert storage.calls == [
+        ("child", "child-run", 2),
+        ("root", "root-run", 2),
         ("parent", "parent-run", 2),
     ]
 

@@ -68,7 +68,12 @@ class WorldCleanupLease:
     authorize a replacement or sibling world.
     """
 
-    __slots__ = ("_entry", "_on_destroy_complete", "_registry")
+    __slots__ = (
+        "_entry",
+        "_on_destroy_complete",
+        "_registry",
+        "_reopenable_activity_gate",
+    )
 
     def __init__(
         self,
@@ -76,12 +81,14 @@ class WorldCleanupLease:
         entry: _RegistryEntry,
         *,
         _key: object,
+        _reopenable_activity_gate: bool = False,
     ) -> None:
         if _key is not _LEASE_KEY:
             raise TypeError("cleanup leases are created by WorldRegistry")
         self._registry = registry
         self._entry = entry
         self._on_destroy_complete = False
+        self._reopenable_activity_gate = _reopenable_activity_gate
 
     @property
     def on_destroy_complete(self) -> bool:
@@ -93,6 +100,17 @@ class WorldCleanupLease:
         """Checkpoint successful advisory destroy dispatch for later retries."""
 
         self._on_destroy_complete = True
+
+    @property
+    def reopenable_activity_gate(self) -> bool:
+        """Whether a public pre-destroy gate may still reopen this world."""
+
+        return self._reopenable_activity_gate
+
+    def _complete_activity_gate(self) -> None:
+        """Make close permanently sticky after its public pre-destroy gate."""
+
+        self._reopenable_activity_gate = False
 
 
 _BINDING_REF_KEY = object()
@@ -386,12 +404,40 @@ class WorldRegistry:
     async def begin_close(self, world_id: str | UUID) -> WorldCleanupLease:
         """Make close sticky and return its retained exact-world authority."""
 
+        lease, _started = await self.begin_close_attempt(world_id)
+        return lease
+
+    async def begin_close_attempt(
+        self,
+        world_id: str | UUID,
+        *,
+        reopenable_activity_gate: bool = False,
+    ) -> tuple[WorldCleanupLease, bool]:
+        """Make close sticky and report whether this call began the transition."""
+
         key = str(world_id)
         async with self._registry_lock:
             entry = self._entry_locked(key)
+            started = entry.cleanup_lease is None
             if entry.cleanup_lease is None:
-                entry.cleanup_lease = WorldCleanupLease(self, entry, _key=_LEASE_KEY)
-            return entry.cleanup_lease
+                entry.cleanup_lease = WorldCleanupLease(
+                    self,
+                    entry,
+                    _key=_LEASE_KEY,
+                    _reopenable_activity_gate=reopenable_activity_gate,
+                )
+            return entry.cleanup_lease, started
+
+    async def abort_close(self, lease: WorldCleanupLease) -> None:
+        """Reopen a newly gated world while its cleanup operation is held."""
+
+        async with self._registry_lock:
+            entry = self._validate_lease_locked(lease)
+            if not lease.reopenable_activity_gate:
+                raise RuntimeError("cleanup lease is not reopenable")
+            if lease.on_destroy_complete:
+                raise RuntimeError("cannot abort close after OnDestroy completed")
+            entry.cleanup_lease = None
 
     @asynccontextmanager
     async def cleanup_operation(
@@ -441,6 +487,43 @@ class WorldRegistry:
 
         entry = self._worlds.get(str(world_id))
         return entry.required_projector if entry is not None else None
+
+    async def bind_required_projector(
+        self,
+        world_id: str | UUID,
+        projector: Any,
+    ) -> None:
+        """Attach one projector before the world's first managed tick.
+
+        Some application workflows learn their durable world identity only
+        during lazy activation. They may bind their already-constructed
+        projector immediately afterwards, while the exact-world lock proves
+        that no tick or cleanup can race the transition.
+        """
+
+        if projector is None:
+            raise TypeError("required projector cannot be None")
+        key = str(world_id)
+        async with self._registry_lock:
+            entry = self._entry_locked(key)
+        await entry.lock.acquire()
+        try:
+            async with self._registry_lock:
+                self._validate_current_entry_locked(entry)
+                if entry.cleanup_lease is not None:
+                    raise WorldClosingError(key)
+                if entry.pending_receipt is not None:
+                    raise RuntimeError(
+                        f"world {key} already has a pending required-projection receipt"
+                    )
+                existing = entry.required_projector
+                if existing is not None and existing is not projector:
+                    raise ValueError(
+                        f"World with ID '{key}' already has a different required projector."
+                    )
+                entry.required_projector = projector
+        finally:
+            entry.lock.release()
 
     def retain_receipt(self, world_id: str | UUID, receipt: Any) -> None:
         """Retain one exact manifest-bound receipt until acknowledgment."""

@@ -126,6 +126,33 @@ Before writing processors or Daft UDFs, `LEARNINGS.md` is also mandatory; it
 records execution-model footguns that are too implementation-specific for the
 normative contracts.
 
+## Deterministic review fan-out
+
+The PR review gate runs six named lenses with two independent reviewers per
+lens. Five lenses cover the footgun rulebook; `design-coherence` separately
+covers clean code, local pattern consistency, and concrete-over-abstract
+design. Design-coherence findings are advisory-only.
+
+The review surface is intentionally split by ownership:
+
+- `.github/review/prompts/` contains the exact model prompts as plain Markdown.
+- `scripts/review_contracts.py` contains lens assignments, reviewer policy,
+  typed model return values, adjacent JSON Schemas, and normalizers.
+- `scripts/review_aggregation.py` clusters only exact
+  `(lens, category, path, side, line)` matches and preserves every original
+  finding in its reviewer receipt.
+- `scripts/footgun_review_gate.py` binds evidence to the exact PR scope,
+  orchestrates selective adjudication, and renders GitHub evidence.
+
+Two distinct reviewers reporting the same exact anchor corroborate a claim.
+Silence from the other reviewer is not disagreement. A singleton blocking
+claim or severity conflict receives a targeted falsification pass.
+Adjudication may confirm, refute, or leave the claim unresolved; it never
+deletes the original evidence. Refuted and unresolved claims become explicit
+human-decision threads. The final human design-review brief organizes the
+change into a suggested reading order and presents design notes, affected
+invariants, validation evidence, and decisions without claiming approval.
+
 ## Contribution Policy
 
 This repository is opinionated about where changes should land.
