@@ -157,6 +157,22 @@ cannot replay the start—even after the live sandbox names have been released.
 
 Modal supplies placement, sandbox lifetime, and process execution behind the
 same Activity request/result contract. It does not become workflow authority.
+Before starting a sandbox pair, the adapter opens one namespace-complete named
+Modal Dict that acts as the provider-native first-result register. Raw harness
+output never enters it: the Mission-owned codec first redacts, bounds, and
+canonically encodes the observation, then the adapter publishes it with an
+atomic first-write operation. An ambiguous write is successful only when an
+exact read returns the same operation-bound, request-bound value. The result
+Dict is durable protocol state and, like the permanent start markers, must not
+be deleted or recreated.
+
+Read-only marker absence is not provider execution authority. It permits the
+Activity catalog to mint a fresh workflow fence and route one attempt back
+through `start_retry`; that method still must atomically create the permanent
+operation and run markers and immediately start the sandbox pair. A permanent
+start marker without an exact provider result remains unknown forever. No
+worker may infer replay permission from stopped or missing sandbox names.
+
 The PR must preserve exact task base, validator, candidate, publication, and
 cleanup behavior and must not add Modal-specific state to world Components.
 

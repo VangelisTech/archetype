@@ -4,6 +4,9 @@ family = "missions"
 
 [[disposition]]
 operations = [
+  "activity_values.AuthorValueRedactor.assert_safe_metadata",
+  "activity_values.AuthorValueRedactor.policy_id",
+  "activity_values.AuthorValueRedactor.redact_text",
   "activities.MissionAuthorActivityCatalog.admit_author",
   "activities.MissionAuthorActivityCatalog.bind_provider_operation",
   "activities.MissionAuthorActivityCatalog.claim_author",

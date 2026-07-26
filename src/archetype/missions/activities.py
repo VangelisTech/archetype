@@ -94,7 +94,12 @@ class AuthorActivityResultRef:
 
 @dataclass(frozen=True, slots=True)
 class AuthorActivityRetryGuard:
-    """Provider-side barrier authorizing one safe replay attempt."""
+    """Workflow binding for one provider adapter's atomic retry route.
+
+    This value is never transferable provider execution authority. The
+    adapter must still acquire its own non-transferable provider barrier while
+    performing the retry.
+    """
 
     ref: str
     digest: str
@@ -140,7 +145,7 @@ class AuthorRecovered:
 
 @dataclass(frozen=True, slots=True)
 class AuthorConfirmedAbsent:
-    """Provider evidence proves absence behind an atomic replay barrier."""
+    """Provider evidence permits an attempt through an atomic retry route."""
 
     guard: AuthorActivityRetryGuard
 
