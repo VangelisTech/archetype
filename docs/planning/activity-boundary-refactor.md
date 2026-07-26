@@ -132,7 +132,11 @@ authority only for Activities admitted under that barrier-aware epoch from
 birth. Missing markers for legacy or already-in-flight Missions are unknown,
 never confirmed absence. Marker objects must not be deleted or recreated.
 Ambiguous creation and lost winners deliberately sacrifice liveness rather
-than permit duplicate starts.
+than permit duplicate starts. The public initial and retry paths each couple
+acknowledged operation-marker creation, run-marker creation, and the single
+named-sandbox start in one coroutine. No structural guard or permit is accepted
+as execution authority, and reconstruction after either success or ambiguity
+cannot replay the start—even after the live sandbox names have been released.
 
 Modal supplies placement, sandbox lifetime, and process execution behind the
 same Activity request/result contract. It does not become workflow authority.

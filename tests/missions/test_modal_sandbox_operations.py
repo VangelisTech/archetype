@@ -15,6 +15,12 @@ import pytest
 
 from archetype.missions.sandboxes import (
     MODAL_ACTIVITY_PROTOCOL_EPOCH,
+    ModalPersistentDictMarker,
+    ModalProviderBarrierUnknown,
+    ModalProviderMarkerExists,
+    ModalProviderOperationGuard,
+    ModalProviderStartBarrier,
+    ModalProviderStarted,
     ModalSandboxBackend,
     ModalSandboxConfig,
     ModalSandboxOperationCapability,
@@ -58,6 +64,33 @@ class _WorkspaceHandle:
     @property
     def client(self) -> object:
         return self._registry.client
+
+
+class _PersistentDictObject:
+    def __init__(self, object_id: str) -> None:
+        self.object_id = object_id
+
+
+class _PersistentDictHandle:
+    def __init__(
+        self,
+        registry: _ModalRegistry,
+        *,
+        environment_name: str,
+        name: str,
+    ) -> None:
+        self._registry = registry
+        self._key = (environment_name, name)
+        self.object_id = ""
+        self.hydrate = _AsyncCall(self._hydrate)
+
+    def _hydrate(self) -> _PersistentDictHandle:
+        try:
+            value = self._registry.persistent_objects[self._key]
+        except KeyError as exc:
+            raise _NotFoundError(self._key) from exc
+        self.object_id = value.object_id
+        return self
 
 
 class _RemoteApp:
@@ -129,11 +162,63 @@ class _ModalRegistry:
         self.app_calls: list[dict[str, Any]] = []
         self.volume_calls: list[dict[str, Any]] = []
         self.secret_calls: list[dict[str, Any]] = []
+        self.persistent_objects: dict[tuple[str, str], _PersistentDictObject] = {}
+        self.dict_create_calls: list[dict[str, Any]] = []
+        self.dict_lookup_calls: list[dict[str, Any]] = []
         self.lookup_errors: dict[str, Exception] = {}
         self.raise_after_create: set[str] = set()
         self.workspace_name = "vangelis"
         self.client = object()
         self._sequence = 0
+        self._dict_sequence = 0
+
+    def create_dict(
+        self,
+        name: str,
+        *,
+        allow_existing: bool,
+        environment_name: str,
+        client: object,
+    ) -> None:
+        assert allow_existing is False
+        assert client is self.client
+        key = (environment_name, name)
+        self.dict_create_calls.append(
+            {
+                "name": name,
+                "allow_existing": allow_existing,
+                "environment_name": environment_name,
+                "client": client,
+            }
+        )
+        if key in self.persistent_objects:
+            raise _AlreadyExistsError(key)
+        self._dict_sequence += 1
+        self.persistent_objects[key] = _PersistentDictObject(f"di-{self._dict_sequence}")
+
+    def dict_from_name(
+        self,
+        name: str,
+        *,
+        create_if_missing: bool,
+        environment_name: str,
+        client: object,
+    ) -> _PersistentDictHandle:
+        assert create_if_missing is False
+        assert client is self.client
+        self.dict_lookup_calls.append(
+            {
+                "name": name,
+                "create_if_missing": create_if_missing,
+                "environment_name": environment_name,
+                "client": client,
+            }
+        )
+        return _PersistentDictHandle(
+            self,
+            environment_name=environment_name,
+            name=name,
+        )
 
     def app_lookup(
         self,
@@ -246,6 +331,10 @@ def _fake_modal(registry: _ModalRegistry) -> object:
             create=_AsyncCall(registry.create),
             from_name=_AsyncCall(registry.lookup),
         ),
+        Dict=SimpleNamespace(
+            objects=SimpleNamespace(create=_AsyncCall(registry.create_dict)),
+            from_name=registry.dict_from_name,
+        ),
     )
 
 
@@ -306,6 +395,33 @@ def _operation_identity(
         operation_id=operation_id,
         protocol_epoch=protocol_epoch,
     )
+
+
+def _provider_barrier(
+    identity: ModalSandboxOperationIdentity,
+) -> ModalProviderStartBarrier:
+    return ModalProviderStartBarrier(
+        workspace_name=identity.workspace_name,
+        environment_name=identity.environment_name,
+        app_name=identity.app_name,
+        protocol_epoch=identity.protocol_epoch,
+    )
+
+
+async def _start_once(
+    capability: ModalSandboxOperationCapability,
+    spec: SandboxSpec,
+    operation_id: str,
+) -> tuple[ModalProviderStartBarrier, ModalProviderStarted]:
+    identity = capability.identity(operation_id)
+    barrier = _provider_barrier(identity)
+    started = await barrier.start_initial(
+        identity=identity,
+        capability=capability,
+        spec=spec,
+    )
+    assert isinstance(started, ModalProviderStarted)
+    return barrier, started
 
 
 def _remote_sandbox(
@@ -405,6 +521,79 @@ def test_modal_operation_names_are_stable_safe_and_world_isolated() -> None:
 
 
 @pytest.mark.asyncio
+async def test_lost_operation_guard_cannot_be_reconstructed_into_start_authority(
+    modal_operation,
+) -> None:
+    registry, _backend, capability, spec = modal_operation
+    operation_id = "missions.author:world-a:dispatch-permit"
+    identity = capability.identity(operation_id)
+    barrier = _provider_barrier(identity)
+    issued = await barrier._acquire_initial(identity=identity)
+    assert isinstance(issued, ModalProviderOperationGuard)
+    reconstructed = ModalProviderOperationGuard(
+        identity,
+        ModalPersistentDictMarker(
+            workspace_name=issued.marker.workspace_name,
+            environment_name=issued.marker.environment_name,
+            app_name=issued.marker.app_name,
+            protocol_epoch=issued.marker.protocol_epoch,
+            name=issued.marker.name,
+            object_id=issued.marker.object_id,
+        ),
+    )
+
+    assert not hasattr(capability, "start")
+    assert not hasattr(barrier, "start_once")
+    assert not hasattr(barrier, "acquire_initial")
+    assert reconstructed == issued
+    assert reconstructed is not issued
+    rejected = await _provider_barrier(identity).start_retry(
+        identity=identity,
+        capability=capability,
+        spec=spec,
+    )
+
+    assert isinstance(rejected, ModalProviderMarkerExists)
+    assert rejected.phase == "operation"
+    assert len(registry.persistent_objects) == 1
+    assert registry.lookup_calls == []
+    assert registry.create_calls == []
+    assert registry.app_calls == []
+    assert registry.volume_calls == []
+    assert registry.secret_calls == []
+
+
+@pytest.mark.asyncio
+async def test_retry_start_wins_only_by_creating_both_markers_in_one_coroutine(
+    modal_operation,
+) -> None:
+    registry, backend, capability, spec = modal_operation
+    operation_id = "missions.author:world-a:dispatch-safe-retry"
+    identity = capability.identity(operation_id)
+
+    started = await _provider_barrier(identity).start_retry(
+        identity=identity,
+        capability=capability,
+        spec=spec,
+    )
+
+    assert isinstance(started, ModalProviderStarted)
+    assert len(registry.persistent_objects) == 2
+    assert len(registry.create_calls) == 2
+    await started.session.close()
+
+    creates_before_reconstruction = len(registry.create_calls)
+    reconstructed = await _provider_barrier(identity).start_retry(
+        identity=identity,
+        capability=ModalSandboxOperationCapability(ModalSandboxBackend(backend.config)),
+        spec=spec,
+    )
+    assert isinstance(reconstructed, ModalProviderMarkerExists)
+    assert reconstructed.phase == "operation"
+    assert len(registry.create_calls) == creates_before_reconstruction
+
+
+@pytest.mark.asyncio
 async def test_named_modal_operation_reports_running_without_sharing_execution_handle(
     modal_operation,
 ) -> None:
@@ -412,10 +601,14 @@ async def test_named_modal_operation_reports_running_without_sharing_execution_h
     operation_id = "missions.author:world-a:dispatch-1"
     identity = capability.identity(operation_id)
 
-    created = await capability.start(operation_id=operation_id, spec=spec)
+    _barrier, started = await _start_once(capability, spec, operation_id)
+    created = started.session
     mission = registry.resources[identity.mission_sandbox_name]
     auth = registry.resources[identity.auth_sandbox_name]
 
+    assert started.identity == identity
+    assert started.run_marker_reference.startswith("modal-dict://")
+    assert started.run_marker_digest.startswith("sha256:")
     assert created.operation_identity == identity
     assert created.identity.sandbox_id == mission.object_id
     assert len(registry.create_calls) == 2
@@ -454,10 +647,15 @@ async def test_named_modal_operation_reports_running_without_sharing_execution_h
     assert not hasattr(running, "retry_guard")
     assert len(registry.create_calls) == 2
 
-    # A newer claimant cannot acquire the live provider name and reconcile
-    # does not hand it a session through which to invoke a second inner exec.
-    with pytest.raises(_AlreadyExistsError):
-        await restarted.start(operation_id=operation_id, spec=spec)
+    # Reconstructing both substrate objects cannot replay the acknowledged
+    # marker, even after the process-local objects that created it are gone.
+    restarted_barrier = _provider_barrier(identity)
+    blocked_live = await restarted_barrier.start_retry(
+        identity=identity,
+        capability=restarted,
+        spec=spec,
+    )
+    assert isinstance(blocked_live, ModalProviderMarkerExists)
     assert len(registry.resources) == 2
     assert not hasattr(restarted, "cleanup")
 
@@ -465,6 +663,16 @@ async def test_named_modal_operation_reports_running_without_sharing_execution_h
     assert registry.resources == {}
     assert mission.terminated == auth.terminated == 1
     assert mission.detached == auth.detached == 1
+
+    creates_before_delayed_replay = len(registry.create_calls)
+    blocked_after_close = await _provider_barrier(identity).start_retry(
+        identity=identity,
+        capability=ModalSandboxOperationCapability(ModalSandboxBackend(backend.config)),
+        spec=spec,
+    )
+    assert isinstance(blocked_after_close, ModalProviderMarkerExists)
+    assert len(registry.create_calls) == creates_before_delayed_replay
+    assert len(registry.persistent_objects) == 2
 
 
 @pytest.mark.asyncio
@@ -579,9 +787,14 @@ async def test_ambiguous_create_is_reconciled_as_partial_without_unsafe_name_cle
     operation_id = "missions.author:world-a:dispatch-crash"
     identity = capability.identity(operation_id)
     registry.raise_after_create.add(identity.mission_sandbox_name)
+    barrier = _provider_barrier(identity)
 
     with pytest.raises(_ConnectionError, match="response lost"):
-        await capability.start(operation_id=operation_id, spec=spec)
+        await barrier.start_initial(
+            identity=identity,
+            capability=capability,
+            spec=spec,
+        )
 
     # The auth handle was known and compensated. The mission create response
     # was lost, so its surviving name cannot be treated as safe absence.
@@ -603,26 +816,34 @@ async def test_atomic_live_name_allows_only_one_concurrent_pair_owner(
 ) -> None:
     registry, _backend, capability, spec = modal_operation
     operation_id = "missions.author:world-a:dispatch-race"
+    identity = capability.identity(operation_id)
+    barrier = _provider_barrier(identity)
 
     first, second = await asyncio.gather(
-        capability.start(operation_id=operation_id, spec=spec),
-        capability.start(operation_id=operation_id, spec=spec),
-        return_exceptions=True,
+        barrier.start_initial(
+            identity=identity,
+            capability=capability,
+            spec=spec,
+        ),
+        barrier.start_initial(
+            identity=identity,
+            capability=capability,
+            spec=spec,
+        ),
     )
 
     outcomes = (first, second)
-    winners = [outcome for outcome in outcomes if not isinstance(outcome, BaseException)]
-    losers = [outcome for outcome in outcomes if isinstance(outcome, BaseException)]
+    winners = [outcome for outcome in outcomes if isinstance(outcome, ModalProviderStarted)]
+    losers = [outcome for outcome in outcomes if isinstance(outcome, ModalProviderMarkerExists)]
     assert len(winners) == 1
     assert len(losers) == 1
-    assert isinstance(losers[0], _AlreadyExistsError)
     assert len(registry.resources) == 2
 
     running = await capability.reconcile(operation_id=operation_id, spec=spec)
     assert isinstance(running, ModalSandboxOperationRunning)
     assert not hasattr(running, "session")
-    assert isinstance(winners[0], ModalSandboxSession)
-    await winners[0].close()
+    assert isinstance(winners[0].session, ModalSandboxSession)
+    await winners[0].session.close()
 
 
 @pytest.mark.asyncio
@@ -632,10 +853,15 @@ async def test_ambiguous_first_name_acquisition_never_authorizes_another_start(
     registry, _backend, capability, spec = modal_operation
     operation_id = "missions.author:world-a:dispatch-auth-crash"
     identity = capability.identity(operation_id)
+    barrier = _provider_barrier(identity)
     registry.raise_after_create.add(identity.auth_sandbox_name)
 
     with pytest.raises(_ConnectionError, match="response lost"):
-        await capability.start(operation_id=operation_id, spec=spec)
+        await barrier.start_initial(
+            identity=identity,
+            capability=capability,
+            spec=spec,
+        )
 
     assert set(registry.resources) == {identity.auth_sandbox_name}
     unknown = await capability.reconcile(operation_id=operation_id, spec=spec)
@@ -646,9 +872,13 @@ async def test_ambiguous_first_name_acquisition_never_authorizes_another_start(
     # The provider response was ambiguous, but its live name still fences a
     # delayed claimant. Neither reconciliation nor the conflict yields a
     # session or retry guard.
-    with pytest.raises(_AlreadyExistsError):
-        await capability.start(operation_id=operation_id, spec=spec)
-    assert len(registry.create_calls) == calls_after_reconcile + 1
+    blocked = await _provider_barrier(identity).start_retry(
+        identity=identity,
+        capability=ModalSandboxOperationCapability(ModalSandboxBackend(_backend.config)),
+        spec=spec,
+    )
+    assert isinstance(blocked, ModalProviderMarkerExists)
+    assert len(registry.create_calls) == calls_after_reconcile
     assert not hasattr(unknown, "session")
     assert not hasattr(unknown, "retry_guard")
 
@@ -662,7 +892,8 @@ async def test_exact_session_close_cannot_terminate_a_reused_name_generation(
     registry, _backend, capability, spec = modal_operation
     operation_id = "missions.author:world-a:dispatch-late-close"
     identity = capability.identity(operation_id)
-    session = await capability.start(operation_id=operation_id, spec=spec)
+    _barrier, started = await _start_once(capability, spec, operation_id)
+    session = started.session
     old_mission = registry.resources[identity.mission_sandbox_name]
     old_auth = registry.resources[identity.auth_sandbox_name]
 
@@ -700,8 +931,18 @@ async def test_named_modal_operations_isolate_same_dispatch_across_worlds(
     world_a = "missions.author:world-a:same-dispatch"
     world_b = "missions.author:world-b:same-dispatch"
 
-    first = await capability.start(operation_id=world_a, spec=spec)
-    second = await capability.start(operation_id=world_b, spec=spec)
+    _first_barrier, first_started = await _start_once(
+        capability,
+        spec,
+        world_a,
+    )
+    _second_barrier, second_started = await _start_once(
+        capability,
+        spec,
+        world_b,
+    )
+    first = first_started.session
+    second = second_started.session
     first_id = first.identity.sandbox_id
     second_id = second.identity.sandbox_id
 
@@ -797,12 +1038,18 @@ async def test_modal_operation_namespace_is_explicit_and_ambient_mismatch_fails_
 
     lookups_before_mismatch = len(registry.lookup_calls)
     creates_before_mismatch = len(registry.create_calls)
+    barrier = _provider_barrier(identity)
     registry.workspace_name = "unexpected-workspace"
     mismatch = await capability.reconcile(operation_id=operation_id, spec=spec)
     assert isinstance(mismatch, ModalSandboxOperationUnknown)
     assert "workspace identity" in mismatch.reason
-    with pytest.raises(RuntimeError, match="workspace identity"):
-        await capability.start(operation_id=operation_id, spec=spec)
+    start_mismatch = await barrier.start_initial(
+        identity=identity,
+        capability=capability,
+        spec=spec,
+    )
+    assert isinstance(start_mismatch, ModalProviderBarrierUnknown)
+    assert "workspace" in start_mismatch.reason
     assert len(registry.lookup_calls) == lookups_before_mismatch
     assert len(registry.create_calls) == creates_before_mismatch
     assert registry.app_calls == []

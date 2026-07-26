@@ -52,6 +52,8 @@ from archetype.missions.sandboxes.modal_barrier import (
     ModalProviderOperationGuard,
     ModalProviderRunPermit,
     ModalProviderStartBarrier,
+    ModalProviderStarted,
+    ModalProviderStartOutcome,
     ModalRunPermitAcquisition,
 )
 from archetype.missions.sandboxes.service import SandboxService
@@ -80,6 +82,8 @@ __all__ = [
     "ModalProviderMarkerExists",
     "ModalProviderOperationGuard",
     "ModalProviderRunPermit",
+    "ModalProviderStartOutcome",
+    "ModalProviderStarted",
     "ModalProviderStartBarrier",
     "ModalRunPermitAcquisition",
     "ProcessRequest",

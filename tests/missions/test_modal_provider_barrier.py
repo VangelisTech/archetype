@@ -260,8 +260,8 @@ async def test_two_tier_persistent_barrier_selects_one_owner_at_each_race(
 
     first, second = await asyncio.wait_for(
         asyncio.gather(
-            barrier.acquire_initial(identity=identity),
-            barrier.acquire_initial(identity=identity),
+            barrier._acquire_initial(identity=identity),
+            barrier._acquire_initial(identity=identity),
         ),
         timeout=1,
     )
@@ -284,8 +284,8 @@ async def test_two_tier_persistent_barrier_selects_one_owner_at_each_race(
     )
     run_first, run_second = await asyncio.wait_for(
         asyncio.gather(
-            barrier.acquire_run(guard=guard),
-            barrier.acquire_run(guard=guard),
+            barrier._acquire_run(guard=guard),
+            barrier._acquire_run(guard=guard),
         ),
         timeout=1,
     )
@@ -318,14 +318,14 @@ async def test_retry_guard_winner_permanently_blocks_a_delayed_initial_worker(
     operation_id = "missions.author:world-a:dispatch-retry-wins"
     identity = _identity(operation_id)
 
-    retry_guard = await barrier.acquire_retry_guard(identity=identity)
+    retry_guard = await barrier._acquire_retry_guard(identity=identity)
     assert isinstance(retry_guard, ModalProviderOperationGuard)
 
-    stale_initial = await barrier.acquire_initial(identity=identity)
+    stale_initial = await barrier._acquire_initial(identity=identity)
     assert isinstance(stale_initial, ModalProviderMarkerExists)
     assert stale_initial.phase == "operation"
 
-    run = await barrier.acquire_run(guard=retry_guard)
+    run = await barrier._acquire_run(guard=retry_guard)
     assert isinstance(run, ModalProviderRunPermit)
     assert len(registry.objects) == 2
 
@@ -338,11 +338,11 @@ async def test_stale_initial_winner_blocks_retry_without_handoff_or_replay(
     operation_id = "missions.author:world-a:dispatch-stale-wins"
     identity = _identity(operation_id)
 
-    stale_guard = await barrier.acquire_initial(identity=identity)
+    stale_guard = await barrier._acquire_initial(identity=identity)
     assert isinstance(stale_guard, ModalProviderOperationGuard)
 
-    retry = await barrier.acquire_retry_guard(identity=identity)
-    repeated_retry = await barrier.acquire_retry_guard(identity=identity)
+    retry = await barrier._acquire_retry_guard(identity=identity)
+    repeated_retry = await barrier._acquire_retry_guard(identity=identity)
     assert isinstance(retry, ModalProviderMarkerExists)
     assert isinstance(repeated_retry, ModalProviderMarkerExists)
     assert len(registry.objects) == 1
@@ -359,13 +359,13 @@ async def test_ambiguous_operation_marker_create_is_unknown_forever(
     marker_name = barrier.operation_marker_name(identity)
     registry.raise_after_create.add(("main", marker_name))
 
-    ambiguous = await barrier.acquire_initial(identity=identity)
+    ambiguous = await barrier._acquire_initial(identity=identity)
     assert isinstance(ambiguous, ModalProviderBarrierUnknown)
     assert ambiguous.phase == "operation"
     assert "ConnectionError" in ambiguous.reason
     assert "provider response lost" not in ambiguous.reason
 
-    retry = await barrier.acquire_retry_guard(identity=identity)
+    retry = await barrier._acquire_retry_guard(identity=identity)
     assert isinstance(retry, ModalProviderMarkerExists)
     assert len(registry.objects) == 1
 
@@ -377,16 +377,16 @@ async def test_ambiguous_run_marker_never_reconstructs_a_permit(
     registry, barrier = provider_barrier
     operation_id = "missions.author:world-a:dispatch-ambiguous-run"
     identity = _identity(operation_id)
-    guard = await barrier.acquire_initial(identity=identity)
+    guard = await barrier._acquire_initial(identity=identity)
     assert isinstance(guard, ModalProviderOperationGuard)
     run_name = barrier.run_marker_name(guard)
     registry.raise_after_create.add(("main", run_name))
 
-    ambiguous = await barrier.acquire_run(guard=guard)
+    ambiguous = await barrier._acquire_run(guard=guard)
     assert isinstance(ambiguous, ModalProviderBarrierUnknown)
     assert ambiguous.phase == "run"
 
-    repeated = await barrier.acquire_run(guard=guard)
+    repeated = await barrier._acquire_run(guard=guard)
     assert isinstance(repeated, ModalProviderMarkerExists)
     assert repeated.phase == "run"
     assert len(registry.objects) == 2
@@ -399,14 +399,14 @@ async def test_acknowledged_run_winner_loss_is_safe_but_permanently_stuck(
     registry, barrier = provider_barrier
     operation_id = "missions.author:world-a:dispatch-run-winner-lost"
     identity = _identity(operation_id)
-    guard = await barrier.acquire_initial(identity=identity)
+    guard = await barrier._acquire_initial(identity=identity)
     assert isinstance(guard, ModalProviderOperationGuard)
-    permit = await barrier.acquire_run(guard=guard)
+    permit = await barrier._acquire_run(guard=guard)
     assert isinstance(permit, ModalProviderRunPermit)
 
     # Simulate loss before the effect starts. Provider lookup can establish
     # that a winner existed, but no later claimant reconstructs its permit.
-    repeated = await barrier.acquire_run(guard=guard)
+    repeated = await barrier._acquire_run(guard=guard)
     assert isinstance(repeated, ModalProviderMarkerExists)
     assert repeated.phase == "run"
     assert len(registry.objects) == 2
@@ -419,7 +419,7 @@ async def test_run_requires_exact_guard_object_and_provider_environment(
     registry, barrier = provider_barrier
     operation_id = "missions.author:world-a:dispatch-exact-guard"
     identity = _identity(operation_id)
-    guard = await barrier.acquire_initial(identity=identity)
+    guard = await barrier._acquire_initial(identity=identity)
     assert isinstance(guard, ModalProviderOperationGuard)
 
     wrong_object = ModalProviderOperationGuard(
@@ -433,7 +433,7 @@ async def test_run_requires_exact_guard_object_and_provider_environment(
             object_id="di-another-object",
         ),
     )
-    rejected_object = await barrier.acquire_run(guard=wrong_object)
+    rejected_object = await barrier._acquire_run(guard=wrong_object)
     assert isinstance(rejected_object, ModalProviderBarrierUnknown)
     assert "identity changed" in rejected_object.reason
 
@@ -443,7 +443,7 @@ async def test_run_requires_exact_guard_object_and_provider_environment(
         app_name="archetype-agent-missions-test",
         protocol_epoch=MODAL_ACTIVITY_PROTOCOL_EPOCH,
     )
-    rejected_environment = await other_environment.acquire_run(guard=guard)
+    rejected_environment = await other_environment._acquire_run(guard=guard)
     assert isinstance(rejected_environment, ModalProviderBarrierUnknown)
     assert "another Modal environment" in rejected_environment.reason
     assert len(registry.objects) == 1
@@ -454,7 +454,7 @@ async def test_run_requires_exact_guard_object_and_provider_environment(
         app_name="archetype-agent-missions-test",
         protocol_epoch=MODAL_ACTIVITY_PROTOCOL_EPOCH,
     )
-    rejected_workspace = await other_workspace.acquire_run(guard=guard)
+    rejected_workspace = await other_workspace._acquire_run(guard=guard)
     assert isinstance(rejected_workspace, ModalProviderBarrierUnknown)
     assert "another Modal workspace" in rejected_workspace.reason
     assert len(registry.objects) == 1
@@ -465,7 +465,7 @@ async def test_run_requires_exact_guard_object_and_provider_environment(
         app_name="another-app",
         protocol_epoch=MODAL_ACTIVITY_PROTOCOL_EPOCH,
     )
-    rejected_app = await other_app.acquire_run(guard=guard)
+    rejected_app = await other_app._acquire_run(guard=guard)
     assert isinstance(rejected_app, ModalProviderBarrierUnknown)
     assert "another Modal app" in rejected_app.reason
     assert len(registry.objects) == 1
@@ -481,7 +481,7 @@ async def test_provider_failures_are_bounded_unknowns_without_secret_text(
     marker_name = barrier.operation_marker_name(identity)
     registry.create_errors[("main", marker_name)] = _ConnectionError("credential-canary")
 
-    outcome = await barrier.acquire_initial(identity=identity)
+    outcome = await barrier._acquire_initial(identity=identity)
     assert isinstance(outcome, ModalProviderBarrierUnknown)
     assert "ConnectionError" in outcome.reason
     assert "credential-canary" not in outcome.reason
@@ -495,7 +495,7 @@ async def test_authenticated_workspace_mismatch_fails_before_provider_create(
     registry, barrier = provider_barrier
     registry.workspace_name = "unexpected-workspace"
 
-    outcome = await barrier.acquire_initial(
+    outcome = await barrier._acquire_initial(
         identity=_identity("missions.author:world-a:dispatch-wrong-workspace")
     )
 
@@ -515,7 +515,7 @@ async def test_pre_barrier_and_in_flight_legacy_operations_never_gain_retry_auth
         protocol_epoch=0,
     )
 
-    outcome = await barrier.acquire_retry_guard(identity=legacy)
+    outcome = await barrier._acquire_retry_guard(identity=legacy)
 
     assert isinstance(outcome, ModalProviderBarrierUnknown)
     assert "predates the barrier-aware protocol epoch" in outcome.reason
