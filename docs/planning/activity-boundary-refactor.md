@@ -187,6 +187,12 @@ above. An over-budget subject fails closed with only its digest and sizes; it
 is never truncated into a potentially approving review. Free text is redacted
 and bounded before result or receipt durability.
 
+A5a intentionally leaves the existing `CriticReceipt` v1 ECS schema unchanged.
+The live legacy stager therefore does not persist the new subject-binding
+fields. A5b owns a separately versioned complete Activity fact bundle and
+marker that makes those fields durable without changing the identity of
+already-recorded v1 receipt tables.
+
 A5b adds the required projector, fenced worker, provider reconciliation,
 idempotent complete observation stager, and exact-receipt settlement. The
 critic still receives a fresh sandbox distinct from the author sandbox and no

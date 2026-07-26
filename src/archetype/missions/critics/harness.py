@@ -251,62 +251,73 @@ class CriticHarness:
             ):
                 raise _UnverifiableReview("critic subject directory escaped provider ownership")
             subject_path = str(subject_directory / "subject.diff")
-            await self._git(
-                session,
-                "diff",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--binary",
-                f"--output={subject_path}",
-                request.base_revision,
-                request.head_revision,
-            )
-            measured = await self._run(
-                session,
-                "python",
-                "-c",
-                _SUBJECT_MEASUREMENT_SCRIPT,
-                subject_path,
-                workdir=self.config.workspace,
-            )
-            self._raise(measured, "critic subject measurement")
             try:
-                measurement = json.loads(measured.stdout)
-                observed_diff_digest = str(measurement["digest"])
-                observed_diff_size = int(measurement["size_bytes"])
-            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-                raise _UnverifiableReview("critic subject measurement is invalid") from exc
-            if observed_diff_digest != request.diff_digest:
-                raise _UnverifiableReview(
-                    "exact base/head diff does not match the candidate digest"
+                await self._git(
+                    session,
+                    "diff",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--binary",
+                    f"--output={subject_path}",
+                    request.base_revision,
+                    request.head_revision,
                 )
-            prompt = self._prompt(request, subject_path=subject_path)
-            subject = bind_critic_subject_observation(
-                CriticSubjectPolicy(
-                    digest=request.diff_digest,
-                    max_bytes=request.policy.max_subject_bytes,
-                ),
-                metadata=prompt.encode(),
-                content_digest=observed_diff_digest,
-                content_size_bytes=observed_diff_size,
-                transport=CriticSubjectTransport.SANDBOX_FILE,
-                ref=subject_path,
-            )
-            head_ready_at_ms = self._now_ms()
-            bound_request = replace(
-                request,
-                diff="",
-                subject_ref=subject.ref,
-                subject_transport=subject.transport.value,
-                subject_size_bytes=subject.total_size_bytes,
-                subject_digest=subject.subject_digest,
-            )
-            critic_started_at_ms = self._now_ms()
-            process = await self._driver.run(
-                session,
-                bound_request,
-                prompt,
-            )
+                measured = await self._run(
+                    session,
+                    "python",
+                    "-c",
+                    _SUBJECT_MEASUREMENT_SCRIPT,
+                    subject_path,
+                    workdir=self.config.workspace,
+                )
+                self._raise(measured, "critic subject measurement")
+                try:
+                    measurement = json.loads(measured.stdout)
+                    observed_diff_digest = str(measurement["digest"])
+                    observed_diff_size = int(measurement["size_bytes"])
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise _UnverifiableReview("critic subject measurement is invalid") from exc
+                if observed_diff_digest != request.diff_digest:
+                    raise _UnverifiableReview(
+                        "exact base/head diff does not match the candidate digest"
+                    )
+                prompt = self._prompt(request, subject_path=subject_path)
+                subject = bind_critic_subject_observation(
+                    CriticSubjectPolicy(
+                        digest=request.diff_digest,
+                        max_bytes=request.policy.max_subject_bytes,
+                    ),
+                    metadata=prompt.encode(),
+                    content_digest=observed_diff_digest,
+                    content_size_bytes=observed_diff_size,
+                    transport=CriticSubjectTransport.SANDBOX_FILE,
+                    ref=subject_path,
+                )
+                head_ready_at_ms = self._now_ms()
+                bound_request = replace(
+                    request,
+                    diff="",
+                    subject_ref=subject.ref,
+                    subject_transport=subject.transport.value,
+                    subject_size_bytes=subject.total_size_bytes,
+                    subject_digest=subject.subject_digest,
+                )
+                critic_started_at_ms = self._now_ms()
+                process = await self._driver.run(
+                    session,
+                    bound_request,
+                    prompt,
+                )
+            finally:
+                cleanup = await self._run(
+                    session,
+                    "rm",
+                    "-rf",
+                    "--",
+                    str(subject_directory),
+                    workdir="/tmp",
+                )
+                self._raise(cleanup, "critic subject cleanup")
             raw_output = process.stdout
             trace_uri = process.trace_uri
             if process.returncode != 0:

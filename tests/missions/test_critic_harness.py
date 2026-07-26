@@ -237,7 +237,7 @@ async def test_exact_head_review_is_independent_secret_negative_and_immutable(
     assert result.receipt.subject_content_size_bytes == len(diff.encode())
     assert result.receipt.subject_size_bytes <= request.policy.max_subject_bytes
     assert result.receipt.subject_transport == "sandbox_file"
-    assert Path(result.receipt.subject_ref).read_text() == diff
+    assert not Path(result.receipt.subject_ref).exists()
     assert result.head_ready_at_ms <= result.critic_started_at_ms <= result.ended_at_ms
     assert "Policy perspective: repository-correctness" in driver.prompts[0]
     assert "Policy information view: task-diff-validators" in driver.prompts[0]
@@ -246,6 +246,7 @@ async def test_exact_head_review_is_independent_secret_negative_and_immutable(
     assert "Exact diff file:" in driver.prompts[0]
     assert diff not in driver.prompts[0]
     assert all(not item.secret_names for item in session.requests)
+    assert any(item.argv[:3] == ("rm", "-rf", "--") for item in session.requests)
     assert later_head != head
     assert _git("--git-dir", str(remote), "merge-base", "--is-ancestor", head, later_head) == ""
 
@@ -283,9 +284,8 @@ async def test_candidate_symlink_cannot_redirect_critic_subject_output(
     subject = Path(result.receipt.subject_ref)
     assert subject.parent.parent == Path("/tmp")
     assert not subject.is_relative_to(workspace)
-    assert subject.read_text(encoding="utf-8") == diff
-    subject.unlink()
-    subject.parent.rmdir()
+    assert not subject.exists()
+    assert not subject.parent.exists()
 
 
 @pytest.mark.asyncio
@@ -317,6 +317,7 @@ async def test_wrong_remote_head_and_malformed_output_fail_closed(
     assert malformed.status is CriticExecutionStatus.MALFORMED
     assert malformed.receipt is None
     assert driver.calls == 1
+    assert any(item.argv[:3] == ("rm", "-rf", "--") for item in session.requests)
 
 
 @pytest.mark.asyncio
@@ -350,6 +351,7 @@ async def test_over_budget_exact_subject_fails_closed_before_critic(
     assert request.diff_digest in result.error
     assert "observed_bytes=" in result.error
     assert diff not in result.error
+    assert any(item.argv[:3] == ("rm", "-rf", "--") for item in session.requests)
 
 
 class _CaptureSession:
