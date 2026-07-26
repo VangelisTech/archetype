@@ -132,7 +132,7 @@ df = df.with_columns({
 
 #### Images
 
-Prefer standalone `daft.functions.*` or direct Expression methods for image operations. The legacy `.image.*` accessor still works but is deprecated.
+Prefer standalone `daft.functions.*` or direct Expression methods for image operations. The legacy `.image.*` accessor is removed in the pinned daft 0.7.x — it raises `AttributeError`.
 
 ```python
 from daft.functions import download, decode_image, resize, crop, encode_image
@@ -215,7 +215,7 @@ df = df.unnest("decision")
 
 ### String, numeric, and utility functions
 
-Replaces: most simple `@daft.func` string/math UDFs. Prefer standalone `daft.functions.*` or direct Expression methods. The legacy `.str.*` accessor still works but is deprecated — use the flat API instead.
+Replaces: most simple `@daft.func` string/math UDFs. Prefer standalone `daft.functions.*` or direct Expression methods. The legacy `.str.*` accessor is removed in the pinned daft 0.7.x (`AttributeError`) — use the flat API.
 
 ```python
 from daft.functions import (
@@ -399,7 +399,7 @@ false-flag `_EnvStepper` / `_PolicyCaller` / `_CartpoleStepper` style UDFs.
 ### 3. Struct access
 
 ```python
-# WRONG — deprecated
+# WRONG — removed in daft 0.7.x; raises AttributeError at plan build
 col("result").struct.get("field")
 
 # RIGHT

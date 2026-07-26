@@ -88,7 +88,12 @@ Serialized component dictionaries passed to `Component.from_dict()` require a
 the correct Component subclass.
 
 #### Private API coupling
-Code outside `core/` accessing private attributes: `_live`, `_spawn_cache`, `_despawn_cache`, `_entity2sig`, `_next_entity_id`. Use the public API (`get_components()`, `spawn()`, `despawn()`).
+Code outside `core/` accessing private world internals — the commit machinery
+(`_commit_coordinator`, `_commit_ctx`, `_prepared_tick_commit`) or interning
+state (`_sig_intern`, `_querier_caps`). Reads go through `get_components()` /
+`query_archetype()`; mutation goes through `spawn()` / `despawn()` and the
+command path. The `entity2sig` / `spawn_cache` / `despawn_cache` caches are
+public to read, but mutating them directly bypasses that path.
 
 #### Monotonic state
 Boolean or filter columns that AND onto existing state instead of recomputing from config each tick. This causes state to monotonically narrow (e.g., once `sampled=False`, always False). The fix: recompute predicates from source data each tick.
@@ -101,7 +106,8 @@ source's `Resources` container. Confusing those lifetimes causes cross-world
 mutation, incorrect visibility, or duplicate cleanup.
 
 #### Store vs live reads
-Querying the persistent store when `_live` / `get_components()` has the correct
+Querying the persistent store when the live world (`get_components()`, the
+public `spawn_cache` / `despawn_cache` / `entity2sig` caches) has the correct
 in-memory data. After `fork_world`, pre-fork ticks resolve through the fork's
 `lineage` (ancestor world/run segments), but only on lineage-aware paths such
 as `AsyncWorld.query_archetype`, `get_components`, and
@@ -147,7 +153,10 @@ Returning indices, booleans, or placeholder values instead of actual identifiers
 Using `df.with_columns(expr1, expr2)` with multiple positional args — raises `TypeError` in Daft 0.7.x. Use `df.with_columns({...})` dict form or chain `df.with_column()`.
 
 #### Deprecated Daft APIs
-Using `@daft.udf` (removed in 0.8.0), `.struct.get()` (use `[]` indexing), or `Expression.if_else()` (use `@daft.func`).
+Using `@daft.udf` — deprecated, removed in 0.8.0; migrate to `@daft.func` /
+`@daft.cls`. Do not report `.struct.get()` or `Expression.if_else()`: both are
+already removed in the pinned daft 0.7.x and raise `AttributeError` when the
+plan is built — loud build failures, not footguns.
 
 #### Arrow serialization violations
 Component fields containing `dict`, `list[dict]`, custom objects, or other non-Arrow types without JSON encoding. Must use `_json: str` suffix pattern.
