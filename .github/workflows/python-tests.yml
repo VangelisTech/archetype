@@ -115,7 +115,12 @@ jobs:
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Budget covers BOTH scenario attempts at their full 600s
+    # timeout_seconds plus setup and the idempotency test (~4 min): a
+    # 10-minute budget made the retry unreachable exactly when the first
+    # attempt was the 600s stall the retry exists to absorb — GitHub
+    # cancelled the job mid-timeout and the queue entry was still evicted.
+    timeout-minutes: 30
     env:
       R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -172,7 +177,17 @@ jobs:
           if run_r2_scenario; then
             exit 0
           fi
-          [ -f r2-operational-results.json ] && mv r2-operational-results.json r2-operational-results.attempt1.json
+          # Rename attempt 1's evidence AND rewrite the log paths inside its
+          # receipt: the JSON references logs under r2-operational-results.d/,
+          # which the retry recreates — without the rewrite the retained
+          # receipt would resolve to attempt 2's logs. Only path strings
+          # change; the log files move with the directory, so their recorded
+          # digests still match their contents.
+          if [ -f r2-operational-results.json ]; then
+            jq '(.. | strings) |= gsub("r2-operational-results\\.d"; "r2-operational-results.attempt1.d")' \
+              r2-operational-results.json > r2-operational-results.attempt1.json
+            rm r2-operational-results.json
+          fi
           [ -d r2-operational-results.d ] && mv r2-operational-results.d r2-operational-results.attempt1.d
           echo "::warning::R2 scenario failed once; retrying. Attempt 1's receipt is retained in the artifact."
           run_r2_scenario

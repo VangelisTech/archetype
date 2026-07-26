@@ -189,8 +189,25 @@ def test_r2_job_runs_each_oracle_once_and_retains_the_redacted_receipt() -> None
         "the scenario must be invoked exactly twice: first attempt and one retry"
     )
     assert "r2-operational-results.attempt1.json" in code
-    assert re.search(r"mv r2-operational-results\.json r2-operational-results\.attempt1\.json", code)
+    # Attempt 1's receipt must reference its OWN logs after the rename: the
+    # retry recreates r2-operational-results.d, so without the path rewrite
+    # the retained receipt resolves to attempt 2's logs.
+    assert re.search(
+        r"jq .+gsub\(\"r2-operational-results\\\\\.d\"; "
+        r"\"r2-operational-results\.attempt1\.d\"\)",
+        code,
+    ), "the retained attempt-1 receipt must have its log paths rewritten"
     assert "::warning::" in infrastructure, "a silent retry hides the flake it absorbed"
+
+    # The job budget must cover BOTH attempts at the scenario's full
+    # timeout plus setup overhead, or the retry is unreachable exactly when
+    # the first attempt is the stall it exists to absorb.
+    timeout_match = re.search(r"timeout-minutes: (\d+)", infrastructure)
+    assert timeout_match is not None, "the R2 job lost its timeout"
+    scenario_seconds = scenario["timeout_seconds"]
+    assert int(timeout_match.group(1)) * 60 >= 2 * scenario_seconds + 240, (
+        "job timeout must cover two scenario attempts plus ~4 min overhead"
+    )
 
 
 def test_observability_audit_uses_the_existing_required_format_context() -> None:
