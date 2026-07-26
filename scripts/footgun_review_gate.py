@@ -32,12 +32,14 @@ from pathlib import Path
 from typing import Any
 
 from review_aggregation import (
+    INFRA_FAILURE_CLASSES,
     assemble_preliminary_bundle,
     blocking_finding_count,
     design_bundle_findings,
     finalize_review_bundle,
     human_decision_count,
     make_adjudication_receipt,
+    make_infra_failure_receipt,
     make_reviewer_receipt,
     review_bundle_findings,
 )
@@ -429,20 +431,55 @@ def render_evidence(
     for raw_group in _expect_list(bundle.get("lenses"), "review bundle lenses"):
         group = _expect_mapping(raw_group, "review bundle lens")
         reviewers = _expect_list(group.get("reviewers"), "review bundle reviewers")
-        reviewer_names = ", ".join(
-            f"`{_expect_mapping(item, 'reviewer').get('reviewer_id')}`" for item in reviewers
-        )
-        member_count = sum(
-            len(
+        names: list[str] = []
+        live = 0
+        member_count = 0
+        for item in reviewers:
+            receipt = _expect_mapping(item, "reviewer")
+            if receipt.get("status") == "infra_failed":
+                # A neutral seat is provenance, not a verdict: name the seat
+                # and why it sat out, count nothing from it.
+                names.append(
+                    f"`{receipt.get('reviewer_id')}` (neutral: {receipt.get('failure_class')})"
+                )
+                continue
+            names.append(f"`{receipt.get('reviewer_id')}`")
+            live += 1
+            member_count += len(
                 _expect_list(
-                    _expect_mapping(item, "reviewer").get("result", {}).get("findings"),
+                    receipt.get("result", {}).get("findings"),
                     "reviewer findings",
                 )
             )
-            for item in reviewers
-        )
         lens_rows.append(
-            f"| `{group['lens']}` | {reviewer_names} | {len(reviewers)}/2 | {member_count} |"
+            f"| `{group['lens']}` | {', '.join(names)} | {live}/{len(reviewers)} | {member_count} |"
+        )
+
+    # Advisory findings publish HERE, in the non-gating receipt, not as
+    # review threads. Advisory threads were the documented arming livelock:
+    # queue-ready counts every unresolved thread, so a gate rerun on a green
+    # head republished its own advisory findings and un-queued the PR it had
+    # just passed. Visibility without gating breaks the loop; anyone may
+    # still open a thread by hand if an advisory note deserves one.
+    advisory_lines: list[str] = []
+    advisory_findings = [
+        finding for finding in findings if finding.get("gate_disposition") == "advisory"
+    ]
+    if advisory_findings:
+        advisory_lines.extend(["", "### Advisory findings (non-gating)", ""])
+        for finding in advisory_findings:
+            advisory_lines.append(
+                f"- **{finding['category']}** — {finding['title']} "
+                f"(`{finding['path']}:{finding['line']}`, {finding['corroboration']}): "
+                f"{finding['what_goes_wrong']}"
+            )
+        advisory_lines.extend(
+            [
+                "",
+                "Advisory findings do not block the queue and are not published "
+                "as threads. Fix them, or record a written disposition in the "
+                "PR conversation.",
+            ]
         )
 
     marker = evidence_marker(head_sha, len(findings), digest)
@@ -458,6 +495,7 @@ def render_evidence(
             "| Lens | Reviewers | Complete | Original findings |",
             "|---|---|---:|---:|",
             *lens_rows,
+            *advisory_lines,
             "",
             "Every original result, prompt digest, finding, cluster member, and adjudication "
             "is retained in the digest-bound bundle.",
@@ -513,15 +551,29 @@ def render_finding(finding: Mapping[str, Any], head_sha: str) -> str:
     )
 
 
+def gating_findings(bundle: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Findings that publish as threads: blocking and human-decision only.
+
+    Advisory findings render inside the receipt comment instead. A thread
+    gates arming (queue-ready counts every unresolved thread), so a thread
+    must exist only for findings whose disposition actually demands one.
+    """
+    return [
+        finding
+        for finding in review_bundle_findings(bundle)
+        if finding.get("gate_disposition") in ("blocking", "human-decision")
+    ]
+
+
 def review_payload(
     bundle: Mapping[str, Any],
     digest: str,
     run_url: str | None = None,
     artifact_name: str | None = None,
 ) -> dict[str, Any]:
-    findings = review_bundle_findings(bundle)
+    findings = gating_findings(bundle)
     if not findings:
-        raise GateError("a review payload requires at least one footgun finding")
+        raise GateError("a review payload requires at least one gating footgun finding")
     head_sha = str(bundle["head_sha"])
     return {
         "commit_id": head_sha,
@@ -702,10 +754,20 @@ def verify_posted_evidence(
     review_comments: Any,
     head_sha: str,
     finding_count: int,
+    gating_count: int,
     digest: str,
     brief_digest: str,
 ) -> None:
-    """Verify both exact footgun evidence and the human design-review surface."""
+    """Verify both exact footgun evidence and the human design-review surface.
+
+    The marker carries the TOTAL finding count (receipt integrity), but the
+    publication surface is chosen by the GATING count: advisory findings live
+    inside the evidence comment and never become threads, so a head whose
+    findings are all advisory publishes on the comment path exactly like a
+    clean head.
+    """
+    if gating_count > finding_count:
+        raise GateError("gating findings cannot exceed total findings")
     footgun_marker = evidence_marker(head_sha, finding_count, digest)
     design_marker = design_review_marker(head_sha, digest, brief_digest)
     issues = _flatten_pages(issue_comments, "issue_comments")
@@ -717,13 +779,13 @@ def verify_posted_evidence(
     ):
         raise GateError("the exact human design-review brief was not posted by GitHub Actions")
 
-    if finding_count == 0:
+    if gating_count == 0:
         if not any(
             _is_bot_authored(item) and footgun_marker in str(item.get("body") or "")
             for item in issues
         ):
             raise GateError(
-                "the exact no-findings footgun evidence was not posted by GitHub Actions"
+                "the exact no-gating-findings footgun evidence was not posted by GitHub Actions"
             )
         return
 
@@ -743,7 +805,7 @@ def verify_posted_evidence(
             and _is_bot_authored(comment)
             and f"head={head_sha}" in str(comment.get("body") or "")
         ]
-        if len(matching_inline) == finding_count:
+        if len(matching_inline) == gating_count:
             return
     raise GateError(
         "the exact findings review and its inline review threads were not posted by GitHub Actions"
@@ -991,7 +1053,10 @@ def _prepare_command(args: argparse.Namespace) -> None:
         + "\n",
         encoding="utf-8",
     )
-    if findings:
+    # Threads exist only for gating findings; advisory findings ride inside
+    # evidence.md (see render_evidence) so they never hold queue-readiness.
+    gating = gating_findings(bundle)
+    if gating:
         _write_json(
             args.output_dir / "review.json",
             review_payload(bundle, bundle_digest, args.run_url, args.artifact_name),
@@ -1001,6 +1066,7 @@ def _prepare_command(args: argparse.Namespace) -> None:
         {
             "head_sha": str(bundle["head_sha"]),
             "finding_count": len(findings),
+            "gating_finding_count": len(gating),
             "blocking_finding_count": blocking_finding_count(bundle),
             "human_decision_count": human_decision_count(bundle),
             "artifact_digest": bundle_digest,
@@ -1016,8 +1082,22 @@ def _verify_command(args: argparse.Namespace) -> None:
         review_comments=_load_json(args.review_comments),
         head_sha=args.head,
         finding_count=args.finding_count,
+        gating_count=args.gating_count,
         digest=args.digest,
         brief_digest=args.brief_digest,
+    )
+
+
+def _infra_receipt_command(args: argparse.Namespace) -> None:
+    _write_json(
+        args.output,
+        make_infra_failure_receipt(
+            lens=args.lens,
+            reviewer_id=args.reviewer,
+            head_sha=args.head,
+            failure_class=args.failure_class,
+            detail=args.detail,
+        ),
     )
 
 
@@ -1241,9 +1321,22 @@ def _parser() -> argparse.ArgumentParser:
     verify.add_argument("--review-comments", type=Path, required=True)
     verify.add_argument("--head", required=True)
     verify.add_argument("--finding-count", type=int, required=True)
+    verify.add_argument("--gating-count", type=int, required=True)
     verify.add_argument("--digest", required=True)
     verify.add_argument("--brief-digest", required=True)
     verify.set_defaults(handler=_verify_command)
+
+    infra = subparsers.add_parser(
+        "infra-receipt",
+        help="record a seat's infrastructure failure instead of a verdict",
+    )
+    infra.add_argument("--lens", required=True)
+    infra.add_argument("--reviewer", required=True)
+    infra.add_argument("--head", required=True)
+    infra.add_argument("--failure-class", required=True, choices=INFRA_FAILURE_CLASSES)
+    infra.add_argument("--detail", required=True)
+    infra.add_argument("--output", type=Path, required=True)
+    infra.set_defaults(handler=_infra_receipt_command)
     return parser
 
 

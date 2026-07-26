@@ -34,8 +34,11 @@ from review_aggregation import (  # noqa: E402
     finalize_review_bundle,
     human_decision_count,
     make_adjudication_receipt,
+    make_infra_failure_receipt,
+    neutral_seats,
     review_bundle_findings,
     validate_review_bundle,
+    validate_reviewer_receipt,
 )
 from review_contracts import (  # noqa: E402
     ReviewError,
@@ -280,3 +283,138 @@ def test_final_bundle_rejects_cluster_or_receipt_tampering():
             scoped_files=FILES,
             anchors=ANCHORS,
         )
+
+
+# ---------------------------------------------------------------------------
+# Infra-failure isolation: a seat that failed for provider reasons is
+# provenance, never a verdict. Motivated by the 2026-07-26 kimi quota
+# exhaustion, which bricked every PR because seat failure and review verdict
+# shared one exit code.
+# ---------------------------------------------------------------------------
+
+
+def _with_neutral_seat(
+    receipts: list[dict[str, Any]],
+    *,
+    lens: str,
+    reviewer_id: str,
+    failure_class: str = "quota",
+) -> list[dict[str, Any]]:
+    swapped = [
+        receipt
+        for receipt in receipts
+        if not (receipt["lens"] == lens and receipt["reviewer_id"] == reviewer_id)
+    ]
+    swapped.append(
+        dict(
+            make_infra_failure_receipt(
+                lens=lens,
+                reviewer_id=reviewer_id,
+                head_sha=HEAD_SHA,
+                failure_class=failure_class,
+                detail="provider quota/rate limit: usage limit for this billing cycle",
+            )
+        )
+    )
+    return swapped
+
+
+def test_infra_receipt_round_trips_and_never_carries_a_result():
+    receipt = make_infra_failure_receipt(
+        lens="observability",
+        reviewer_id="kimi",
+        head_sha=HEAD_SHA,
+        failure_class="quota",
+        detail="usage limit for this billing cycle",
+    )
+
+    assert receipt["status"] == "infra_failed"
+    assert "result" not in receipt
+    assert "artifact_digest" not in receipt
+    validated = validate_reviewer_receipt(
+        receipt,
+        head_sha=HEAD_SHA,
+        scoped_files=FILES,
+        anchors=ANCHORS,
+    )
+    assert validated["failure_class"] == "quota"
+
+
+def test_unknown_failure_class_is_rejected():
+    with pytest.raises(ReviewError, match="failure class"):
+        make_infra_failure_receipt(
+            lens="observability",
+            reviewer_id="kimi",
+            head_sha=HEAD_SHA,
+            failure_class="vibes",
+            detail="anything",
+        )
+
+
+def test_one_neutral_seat_leaves_the_lens_verdict_to_the_survivor():
+    def findings_for(lens: str, reviewer: str) -> list[dict[str, Any]]:
+        if lens == "observability" and reviewer == "claude":
+            return [footgun_finding(category="observability-boundary-and-authority")]
+        return []
+
+    receipts = _with_neutral_seat(
+        reviewer_receipts(findings_for),
+        lens="observability",
+        reviewer_id="kimi",
+    )
+    bundle = assemble_preliminary_bundle(
+        receipts,
+        head_sha=HEAD_SHA,
+        scoped_files=FILES,
+        anchors=ANCHORS,
+    )
+
+    assert neutral_seats(bundle) == [
+        {"lens": "observability", "reviewer_id": "kimi", "failure_class": "quota"}
+    ]
+    clusters = bundle["clusters"]
+    assert len(clusters) == 1
+    # The survivor's blocking claim is a singleton, so it routes to
+    # adjudication: a degraded bench earns more scrutiny, not less.
+    assert clusters[0]["corroboration"] == "singleton"
+    assert clusters[0]["cluster_id"] in bundle["adjudication_targets"]
+
+
+def test_a_lens_whose_entire_bench_failed_fails_closed():
+    receipts = reviewer_receipts()
+    receipts = _with_neutral_seat(receipts, lens="observability", reviewer_id="kimi")
+    receipts = _with_neutral_seat(
+        receipts, lens="observability", reviewer_id="claude", failure_class="schema"
+    )
+
+    with pytest.raises(ReviewError, match="every seat for lens 'observability'"):
+        assemble_preliminary_bundle(
+            receipts,
+            head_sha=HEAD_SHA,
+            scoped_files=FILES,
+            anchors=ANCHORS,
+        )
+
+
+def test_neutral_seats_cannot_corroborate():
+    """An infra receipt must never lend a second reviewer id to a cluster."""
+
+    def findings_for(lens: str, reviewer: str) -> list[dict[str, Any]]:
+        if lens == "daft-shape" and reviewer == "claude":
+            return [footgun_finding(category="dag-breaking-collects")]
+        return []
+
+    receipts = _with_neutral_seat(
+        reviewer_receipts(findings_for),
+        lens="daft-shape",
+        reviewer_id="kimi",
+    )
+    bundle = assemble_preliminary_bundle(
+        receipts,
+        head_sha=HEAD_SHA,
+        scoped_files=FILES,
+        anchors=ANCHORS,
+    )
+
+    (cluster,) = bundle["clusters"]
+    assert cluster["reviewer_ids"] == ["claude"]

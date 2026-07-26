@@ -76,6 +76,28 @@ _RECEIPT_FIELDS = (
     "artifact_digest",
     "result",
 )
+# A seat whose provider failed outside the review's semantics (quota
+# exhaustion, schema-invalid output after the bounded retry, runner fault)
+# records that fact instead of failing the whole gate. The 2026-07-26 kimi
+# billing-cycle exhaustion turned two seats into a repository-wide merge
+# brick precisely because seat failure and review verdict shared one exit
+# code. An infra receipt is provenance, not a verdict: it carries no model
+# result and can never corroborate or contribute findings.
+INFRA_FAILURE_CLASSES = ("quota", "schema", "runner")
+_INFRA_RECEIPT_FIELDS = (
+    "kind",
+    "schema_version",
+    "head_sha",
+    "lens",
+    "lens_kind",
+    "categories",
+    "reviewer_id",
+    "backend",
+    "model",
+    "status",
+    "failure_class",
+    "detail",
+)
 _ADJUDICATION_RECEIPT_FIELDS = (
     "kind",
     "schema_version",
@@ -168,6 +190,41 @@ def make_reviewer_receipt(
     )
 
 
+def make_infra_failure_receipt(
+    *,
+    lens: str,
+    reviewer_id: str,
+    head_sha: str,
+    failure_class: str,
+    detail: str,
+) -> ReviewerReceipt:
+    """Record that a seat failed for infrastructure reasons, not verdict ones."""
+    if reviewer_id not in LENS_REVIEWERS.get(lens, ()):
+        raise ReviewError(f"reviewer {reviewer_id!r} is not assigned to lens {lens!r}")
+    if failure_class not in INFRA_FAILURE_CLASSES:
+        raise ReviewError(f"unknown infra failure class {failure_class!r}")
+    if not isinstance(detail, str) or not detail.strip():
+        raise ReviewError("infra failure detail must be a non-empty string")
+    spec = reviewer_spec(reviewer_id)
+    return cast(
+        ReviewerReceipt,
+        {
+            "kind": REVIEWER_RECEIPT_KIND,
+            "schema_version": REVIEWER_RECEIPT_VERSION,
+            "head_sha": head_sha,
+            "lens": lens,
+            "lens_kind": lens_kind(lens),
+            "categories": list(lens_categories(lens)),
+            "reviewer_id": reviewer_id,
+            "backend": spec["backend"],
+            "model": spec["model"],
+            "status": "infra_failed",
+            "failure_class": failure_class,
+            "detail": detail.strip()[:500],
+        },
+    )
+
+
 def validate_reviewer_receipt(
     raw_receipt: Mapping[str, Any],
     *,
@@ -176,6 +233,8 @@ def validate_reviewer_receipt(
     anchors: set[tuple[str, str, int]],
 ) -> ReviewerReceipt:
     """Validate provenance and re-normalize the bound model result."""
+    if raw_receipt.get("status") == "infra_failed":
+        return _validate_infra_receipt(raw_receipt, head_sha=head_sha)
     _exact_keys(raw_receipt, _RECEIPT_FIELDS, "reviewer receipt")
     if raw_receipt.get("kind") != REVIEWER_RECEIPT_KIND:
         raise ReviewError("reviewer receipt kind is invalid")
@@ -227,6 +286,57 @@ def validate_reviewer_receipt(
             "result": normalized,
         },
     )
+
+
+def _validate_infra_receipt(
+    raw_receipt: Mapping[str, Any],
+    *,
+    head_sha: str,
+) -> ReviewerReceipt:
+    """Validate an infra-failure receipt's binding without inventing a verdict."""
+    _exact_keys(raw_receipt, _INFRA_RECEIPT_FIELDS, "infra-failure receipt")
+    if raw_receipt.get("kind") != REVIEWER_RECEIPT_KIND:
+        raise ReviewError("infra-failure receipt kind is invalid")
+    if raw_receipt.get("schema_version") != REVIEWER_RECEIPT_VERSION:
+        raise ReviewError("infra-failure receipt schema version is invalid")
+    if raw_receipt.get("head_sha") != head_sha:
+        raise ReviewError("infra-failure receipt is bound to a different head")
+    lens = raw_receipt.get("lens")
+    reviewer_id = raw_receipt.get("reviewer_id")
+    if not isinstance(lens, str) or lens not in LENSES:
+        raise ReviewError("infra-failure receipt lens is invalid")
+    if not isinstance(reviewer_id, str) or reviewer_id not in LENS_REVIEWERS[lens]:
+        raise ReviewError(f"infra-failure receipt has an unassigned reviewer for lens {lens!r}")
+    spec = reviewer_spec(reviewer_id)
+    expected_metadata = {
+        "lens_kind": lens_kind(lens),
+        "categories": list(lens_categories(lens)),
+        "backend": spec["backend"],
+        "model": spec["model"],
+    }
+    for field, expected in expected_metadata.items():
+        if raw_receipt.get(field) != expected:
+            raise ReviewError(f"infra-failure receipt {field} does not match trusted policy")
+    if raw_receipt.get("failure_class") not in INFRA_FAILURE_CLASSES:
+        raise ReviewError("infra-failure receipt failure_class is invalid")
+    detail = raw_receipt.get("detail")
+    if not isinstance(detail, str) or not detail.strip():
+        raise ReviewError("infra-failure receipt detail must be a non-empty string")
+    return cast(ReviewerReceipt, dict(raw_receipt))
+
+
+def neutral_seats(bundle: Mapping[str, Any]) -> list[dict[str, str]]:
+    """Seats that recorded an infra failure instead of a verdict."""
+    return [
+        {
+            "lens": group["lens"],
+            "reviewer_id": receipt["reviewer_id"],
+            "failure_class": receipt["failure_class"],
+        }
+        for group in bundle.get("lenses", ())
+        for receipt in group.get("reviewers", ())
+        if receipt.get("status") == "infra_failed"
+    ]
 
 
 def _cluster_id(key: tuple[str, str, str, str, int]) -> str:
@@ -371,7 +481,27 @@ def assemble_preliminary_bundle(
             f"missing={missing}, extra={extra}"
         )
 
-    ordered_receipts = [validated[pair] for pair in expected_review_pairs()]
+    # An infra-failed seat is neutral: it contributes provenance, never a
+    # verdict. Every lens still needs at least one live seat — a lens whose
+    # entire bench failed has no verdict at all, and that fails closed.
+    # A survivor's blocking findings become singletons, which routes them
+    # to adjudication: a degraded bench earns MORE scrutiny, not less.
+    for lens, reviewer_ids in LENS_REVIEWERS.items():
+        statuses = [validated[(lens, rid)].get("status") for rid in reviewer_ids]
+        if "validated" not in statuses:
+            failures = ", ".join(
+                f"{rid}={validated[(lens, rid)].get('failure_class')}" for rid in reviewer_ids
+            )
+            raise ReviewError(
+                f"every seat for lens {lens!r} failed for infrastructure reasons "
+                f"({failures}); no verdict exists, refusing to proceed"
+            )
+
+    ordered_receipts = [
+        validated[pair]
+        for pair in expected_review_pairs()
+        if validated[pair].get("status") == "validated"
+    ]
     lens_groups: list[LensReceiptGroup] = []
     for lens, reviewer_ids in LENS_REVIEWERS.items():
         lens_groups.append(

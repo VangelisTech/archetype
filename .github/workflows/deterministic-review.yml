@@ -358,17 +358,10 @@ jobs:
             --raw "${RUNNER_TEMP}/opencode-retry-raw.txt" \
             --output "${REVIEW_DIR}/retry-structured-output.json"
 
-      - name: Require retry completion
-        if: >-
-          steps.first_validation.outputs.valid != 'true' &&
-          ((matrix.backend == 'claude-code' && steps.detector_retry.outcome != 'success') ||
-           (matrix.backend == 'opencode' && steps.detector_opencode_retry.outcome != 'success'))
-        run: |
-          echo "The bounded reviewer retry did not return structured output."
-          exit 1
-
       - name: Validate bounded retry
+        id: retry_validation
         if: steps.first_validation.outputs.valid != 'true'
+        continue-on-error: true
         run: |
           python3 scripts/footgun_review_gate.py normalize \
             --scope "${SCOPE_FILE}" \
@@ -378,6 +371,44 @@ jobs:
             --output "${REVIEW_DIR}/validated/receipt.json" \
             --lens "${LENS}" \
             --reviewer "${REVIEWER_ID}"
+
+      # A seat that produced no validated result records WHY instead of
+      # failing the whole gate. The 2026-07-26 kimi billing-cycle exhaustion
+      # turned two seats into a repository-wide merge brick because seat
+      # failure and review verdict shared one exit code. Aggregation treats
+      # an infra receipt as a neutral seat: the lens verdict rests on its
+      # surviving reviewer, whose blocking findings become singletons and
+      # route to adjudication — a degraded bench earns more scrutiny. A lens
+      # whose entire bench records infra failure still fails the gate closed
+      # at aggregation. Steps before the detector (checkout, scope) failing
+      # still fail this job: an infra receipt is only honest when the seat
+      # actually saw the diff.
+      - name: Record infra failure when no validated receipt exists
+        if: ${{ !cancelled() && steps.contract.outcome == 'success' }}
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ -f "${REVIEW_DIR}/validated/receipt.json" ]; then
+            exit 0
+          fi
+          failure_class=schema
+          detail="reviewer produced no schema-valid structured output after the bounded retry"
+          for raw in "${RUNNER_TEMP}/opencode-raw.txt" "${RUNNER_TEMP}/opencode-retry-raw.txt" \
+                     "${REVIEW_DIR}/first-structured-output.json" "${REVIEW_DIR}/retry-structured-output.json"; do
+            if [ -f "$raw" ] && grep -qiE "usage limit|spend limit|rate.?limit|\b429\b|quota" "$raw"; then
+              failure_class=quota
+              detail="provider quota/rate limit: $(grep -ioE '[^\n]{0,160}(usage limit|spend limit|rate.?limit|quota)[^\n]{0,160}' "$raw" | head -1)"
+              break
+            fi
+          done
+          python3 scripts/footgun_review_gate.py infra-receipt \
+            --lens "${LENS}" \
+            --reviewer "${REVIEWER_ID}" \
+            --head "${HEAD_SHA}" \
+            --failure-class "$failure_class" \
+            --detail "$detail" \
+            --output "${REVIEW_DIR}/validated/receipt.json"
+          echo "::warning::lens ${LENS} seat ${REVIEWER_ID} recorded ${failure_class} infra failure; verdict rests on the surviving seat."
 
       - name: Upload validated reviewer receipt
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -842,10 +873,13 @@ jobs:
             --artifact-name "${ARTIFACT_NAME}" \
             --run-url "${RUN_URL}"
 
+      # "No gating findings": advisory findings ride inside evidence.md and
+      # never publish as threads (the arming-livelock fix), so the comment
+      # path also serves heads whose only findings are advisory.
       - name: Publish contextual no-findings evidence
         if: >-
           needs.footgun-review.outputs.reaffirmed != 'true' &&
-          steps.prepare.outputs.finding_count == '0'
+          steps.prepare.outputs.gating_finding_count == '0'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -854,7 +888,7 @@ jobs:
       - name: Publish footgun findings as review threads
         if: >-
           needs.footgun-review.outputs.reaffirmed != 'true' &&
-          steps.prepare.outputs.finding_count != '0'
+          steps.prepare.outputs.gating_finding_count != '0'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -894,6 +928,7 @@ jobs:
           ARTIFACT_DIGEST: ${{ steps.prepare.outputs.artifact_digest }}
           BRIEF_DIGEST: ${{ steps.prepare.outputs.design_brief_digest }}
           FINDING_COUNT: ${{ steps.prepare.outputs.finding_count }}
+          GATING_FINDING_COUNT: ${{ steps.prepare.outputs.gating_finding_count }}
           HEAD_SHA: ${{ steps.prepare.outputs.head_sha }}
         run: |
           python3 scripts/footgun_review_gate.py verify \
@@ -902,6 +937,7 @@ jobs:
             --review-comments "${RUNNER_TEMP}/review-comments.json" \
             --head "${HEAD_SHA}" \
             --finding-count "${FINDING_COUNT}" \
+            --gating-count "${GATING_FINDING_COUNT}" \
             --digest "${ARTIFACT_DIGEST}" \
             --brief-digest "${BRIEF_DIGEST}"
 
@@ -915,7 +951,7 @@ jobs:
           FINDING_COUNT: ${{ steps.prepare.outputs.finding_count }}
         run: |
           echo "Review reported ${BLOCKING_FINDING_COUNT} blocking finding(s) of ${FINDING_COUNT} total."
-          echo "Fix blocking findings and push. Advisory or human-decision threads require a written disposition."
+          echo "Fix blocking findings and push. Human-decision threads need the decision recorded; advisory findings are in the receipt comment, not threads."
           exit 1
 
       - name: Report incomplete review

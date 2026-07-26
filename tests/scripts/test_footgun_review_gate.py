@@ -38,13 +38,18 @@ from footgun_review_gate import (  # noqa: E402
     design_review_marker,
     evidence_marker,
     extract_structured_json,
+    gating_findings,
     render_evidence,
     render_human_design_brief,
     review_payload,
     validate_result,
     verify_posted_evidence,
 )
-from review_aggregation import finalize_review_bundle  # noqa: E402
+from review_aggregation import (  # noqa: E402
+    assemble_preliminary_bundle,
+    finalize_review_bundle,
+    make_infra_failure_receipt,
+)
 from review_contracts import artifact_digest  # noqa: E402
 from review_test_support import (  # noqa: E402
     ANCHORS,
@@ -58,6 +63,7 @@ from review_test_support import (  # noqa: E402
     normalized_design_brief,
     preliminary_bundle,
     raw_result,
+    reviewer_receipts,
     scope,
 )
 
@@ -234,6 +240,7 @@ def test_verification_requires_both_footgun_and_design_evidence():
         review_comments=[[]],
         head_sha=HEAD_SHA,
         finding_count=0,
+        gating_count=0,
         digest=digest,
         brief_digest=brief_digest,
     )
@@ -245,6 +252,7 @@ def test_verification_requires_both_footgun_and_design_evidence():
             review_comments=[[]],
             head_sha=HEAD_SHA,
             finding_count=0,
+            gating_count=0,
             digest=digest,
             brief_digest=brief_digest,
         )
@@ -267,6 +275,7 @@ def test_verification_binds_findings_to_exact_review_and_thread_count():
         review_comments=[inline],
         head_sha=HEAD_SHA,
         finding_count=1,
+        gating_count=1,
         digest=digest,
         brief_digest=brief_digest,
     )
@@ -389,3 +398,156 @@ def test_final_artifact_retains_bundle_and_design_brief_together():
     assert "validated/review-bundle.json" in workflow
     assert "validated/human-design-brief.json" in workflow
     assert f"retention-days: {gate.FINAL_ARTIFACT_RETENTION_DAYS}" in workflow
+
+
+# ---------------------------------------------------------------------------
+# Advisory findings publish inside the receipt, never as threads. Advisory
+# threads were the documented arming livelock: queue-ready counts every
+# unresolved thread, so a gate rerun on a green head republished its own
+# advisory findings and un-queued the PR it had just passed.
+# ---------------------------------------------------------------------------
+
+
+def _advisory_only(lens: str, reviewer: str):
+    if lens == "authority":
+        return [footgun_finding(severity="advisory")]
+    return []
+
+
+def _blocking_and_advisory(lens: str, reviewer: str):
+    if lens == "authority":
+        return [
+            footgun_finding(severity="blocking"),
+            footgun_finding(severity="advisory", path="new.py", line=1),
+        ]
+    return []
+
+
+def test_advisory_findings_render_in_evidence_but_never_as_threads():
+    bundle = _final_with(_advisory_only)
+    digest = artifact_digest(bundle)
+
+    body = render_evidence(bundle, digest)
+    assert "### Advisory findings (non-gating)" in body
+    assert "do not block the queue" in body
+
+    assert gating_findings(bundle) == []
+    with pytest.raises(GateError, match="gating"):
+        review_payload(bundle, digest)
+
+
+def test_gating_findings_keep_blocking_threads_and_drop_advisory_ones():
+    bundle = _final_with(_blocking_and_advisory)
+    digest = artifact_digest(bundle)
+
+    gating = gating_findings(bundle)
+    assert [finding["gate_disposition"] for finding in gating] == ["blocking"]
+
+    payload = review_payload(bundle, digest)
+    assert len(payload["comments"]) == 1
+    assert "blocking" in payload["comments"][0]["body"]
+    # The receipt body inside the same review still carries the advisory
+    # finding, so nothing is hidden — it just is not a thread.
+    assert "### Advisory findings (non-gating)" in payload["body"]
+
+
+def test_verification_accepts_the_comment_path_for_advisory_only_heads():
+    """finding_count stays in the marker; the surface is chosen by gating."""
+    bundle = _final_with(_advisory_only)
+    digest = artifact_digest(bundle)
+    brief = normalized_design_brief(bundle)
+    brief_digest = artifact_digest(brief)
+    marker = evidence_marker(HEAD_SHA, 1, digest)
+    design = design_review_marker(HEAD_SHA, digest, artifact_digest(brief))
+
+    verify_posted_evidence(
+        issue_comments=[
+            [
+                {"user": {"login": BOT_LOGIN}, "body": f"receipt {marker}"},
+                {"user": {"login": BOT_LOGIN}, "body": f"brief {design}"},
+            ]
+        ],
+        reviews=[[]],
+        review_comments=[[]],
+        head_sha=HEAD_SHA,
+        finding_count=1,
+        gating_count=0,
+        digest=digest,
+        brief_digest=brief_digest,
+    )
+
+    with pytest.raises(GateError, match="gating findings cannot exceed"):
+        verify_posted_evidence(
+            issue_comments=[[]],
+            reviews=[[]],
+            review_comments=[[]],
+            head_sha=HEAD_SHA,
+            finding_count=0,
+            gating_count=1,
+            digest=digest,
+            brief_digest=brief_digest,
+        )
+
+
+def test_rendered_receipt_names_neutral_seats():
+    def findings_for(lens: str, reviewer: str):
+        return []
+
+    receipts = reviewer_receipts(findings_for)
+    receipts = [
+        receipt
+        for receipt in receipts
+        if not (receipt["lens"] == "observability" and receipt["reviewer_id"] == "kimi")
+    ]
+    receipts.append(
+        dict(
+            make_infra_failure_receipt(
+                lens="observability",
+                reviewer_id="kimi",
+                head_sha=HEAD_SHA,
+                failure_class="quota",
+                detail="usage limit for this billing cycle",
+            )
+        )
+    )
+    preliminary = assemble_preliminary_bundle(
+        receipts,
+        head_sha=HEAD_SHA,
+        scoped_files=FILES,
+        anchors=ANCHORS,
+    )
+    bundle = dict(
+        finalize_review_bundle(
+            preliminary,
+            [],
+            head_sha=HEAD_SHA,
+            scoped_files=FILES,
+            anchors=ANCHORS,
+        )
+    )
+    digest = artifact_digest(bundle)
+
+    body = render_evidence(bundle, digest)
+    assert "`kimi` (neutral: quota)" in body
+    assert "| 1/2 |" in body
+
+
+def test_publication_steps_key_on_the_gating_count():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "steps.prepare.outputs.gating_finding_count == '0'" in workflow
+    assert "steps.prepare.outputs.gating_finding_count != '0'" in workflow
+    assert '--gating-count "${GATING_FINDING_COUNT}"' in workflow
+    # The merge block still keys on blocking findings alone.
+    assert "steps.prepare.outputs.blocking_finding_count != '0'" in workflow
+
+
+def test_lens_seat_failure_records_an_infra_receipt_instead_of_failing():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "Record infra failure when no validated receipt exists" in workflow
+    assert "infra-receipt" in workflow
+    # Quota classification must recognize the exact 2026-07-26 error shape.
+    assert "usage limit|spend limit|rate.?limit" in workflow
+    # The bounded retry no longer hard-fails the job; the receipt decides.
+    assert "Require retry completion" not in workflow
