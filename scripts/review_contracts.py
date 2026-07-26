@@ -479,7 +479,6 @@ def _review_context_schema() -> dict[str, Any]:
                     "type": "array",
                     "items": _text_schema(),
                     "minItems": 1,
-                    "uniqueItems": True,
                 },
                 "assessment": _text_schema(30),
             },
@@ -627,7 +626,6 @@ def human_design_brief_schema() -> dict[str, Any]:
                 "type": "array",
                 "items": _text_schema(),
                 "minItems": 1,
-                "uniqueItems": True,
             },
             "summary": _text_schema(30),
             "reading_order": {"type": "integer", "minimum": 1},
@@ -659,7 +657,6 @@ def human_design_brief_schema() -> dict[str, Any]:
             "related_cluster_ids": {
                 "type": "array",
                 "items": {"type": "string", "pattern": _DIGEST_RE},
-                "uniqueItems": True,
             },
         },
         ("question", "why_now", "options", "related_cluster_ids"),
