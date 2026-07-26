@@ -26,8 +26,9 @@ committed decision
 ```
 
 Processors remain DataFrame state transitions. Resources remain tick-time
-capabilities whose process-local lifetime is not correctness state. Application
-families compose Activities around family-owned intent and observations.
+capabilities whose process-local lifetime is not correctness state. Owning
+top-level families compose Activities around family-owned intent and
+observations.
 
 ## Atomic pull-request stack
 
@@ -44,7 +45,7 @@ shared substrate; they do not expand A2 speculatively.
 | A4 — Modal parity | Run the same complete author Activity through the guarded Modal sandbox capability, with stable provider operation identity and reconciliation | Real Modal mission proves the same request/result/settlement contract, exact Git head, cleanup, and installed-artifact path |
 | A5 — Mission critic | Project and execute exact-candidate critic work through the proven Activity seam; remove only critic process-local delivery after parity | Existing exact-head, separate-sandbox, bounded-subject, and fail-closed critic oracles pass through restart |
 | A6 — Hosted Physical-AI contract | Reconcile one canonical whole-episode Arrow request/result schema and result publication contract before cutover | Robot adapter and simulator agree on episode/trial cardinality, transition budget, terminal meaning, and canonical digests |
-| A7 — Hosted Physical-AI Activity | Add `archetype.app.physical_ai` choreography, execute a whole seeded episode locally and on Modal, publish the full trajectory, and stage its factual observation | First result is recovered by operation identity; correctness does not depend on byte-identical GPU replay |
+| A7 — Hosted Physical-AI Activity | Add family-owned choreography under `archetype.physical_ai`, execute a whole seeded episode locally and on Modal, publish the full trajectory, and stage its factual observation | First result is recovered by operation identity; correctness does not depend on byte-identical GPU replay |
 | A8 — Consolidation and refactor resume | Extract only mechanics shared by author, critic, and Physical AI; delete superseded outboxes and distributed per-step effect paths; reconcile broad docs and topology plan | No duplicate authority, no process-local durable queue, full release verification, and three end-to-end traces remain recognizable |
 
 ### A1 — Contract and plan
@@ -147,21 +148,40 @@ The supported Mission cutover occurs only after local restart and real Modal
 parity both pass. If A4 misses the release cut, the existing supported path
 remains in place rather than shipping a half-cut-over workflow.
 
+### A6 — Hosted Physical-AI contract
+
+`archetype.physical_ai.hosted_episode` is the one provider-neutral v1 data
+boundary shared by the local simulator and external robot adapters. One request
+row is one logical trial, seed, and episode; one stable `operation_id` may
+transport a batch of episodes without becoming their episode identity.
+
+Reset is trajectory row zero. `max_transitions` counts only subsequent actions,
+and the direct-path bridge is `max_transitions = max_steps - 1`. Provider
+`environment_done` remains distinct from the complete-episode `terminal`
+decision. Per-step `step_id` and per-episode `episode_result_id` make both
+publication levels idempotent.
+
+Request, complete trajectory, derived per-episode results, and the batch
+manifest use deterministic Arrow IPC with contract- and payload-domain-separated
+digests. The manifest validates exact episode coverage and counts; it cannot be
+built for a partial trajectory. Replay configuration recursively rejects
+activation, placement, timing, credential, and host-path facts, and frame
+evidence crosses the boundary only as content-addressed references. A7 may
+execute this contract but may not redefine it.
+
 ## Authority and dependency target
 
 | Area | Target |
 |---|---|
 | `archetype.activities` | Generic Activity contracts, coordinator port/service, and mechanics only |
 | `archetype.storage.activity_catalog` | Flattened physical records, structural catalog port, and local SQLite implementation; remote parity remains a later slice |
-| `archetype.missions` | Mission state, processors, harness contracts, provider-specific facts and reconciliation |
-| `archetype.app.missions` | Mission intent projection, Activity execution choreography, observation staging and result composition |
-| `archetype.physical_ai` | Physical schemas, processors, providers, hosted-episode request/result meaning and reconciliation |
-| `archetype.app.physical_ai` | Hosted intent-to-Activity-to-observation choreography |
+| `archetype.missions` | Mission state, processors, harness contracts, provider-specific facts and reconciliation, Activity choreography, observation staging, and result composition |
+| `archetype.physical_ai` | Physical schemas, processors, providers, hosted-episode request/result meaning and reconciliation, and hosted intent-to-Activity-to-observation choreography |
 | `RuntimeResources` / `wiring` | Worker process lifetime and concrete executor composition |
 
 `archetype.activities` consumes only the lower physical-storage port it needs;
-storage never gains Mission or Physical-AI meaning. Application families may
-consume Activity and domain-family contracts in the outer direction.
+storage never gains Mission or Physical-AI meaning. Owning top-level families
+may consume Activity and lower-family contracts through declared DAG edges.
 Architecture policy changes land in the PR that creates each package or edge.
 
 ## Disposition of the paused v0.5 plan
@@ -170,8 +190,8 @@ Architecture policy changes land in the PR that creates each package or edge.
 |---|---|
 | Resource contract/WorldHost implementation gate | **Frozen.** Preserve branches and reports as evidence; do not merge the `AsyncResources` prototype into the Activity path. |
 | PR-9 episodes and transcripts | **Split and reassessed.** Activity work does not depend on transcript migration. Preserve the current transcript contract until its own owning slice; episode schema reconciliation becomes A6. |
-| PR-10 Missions family move and committed projection | **Superseded.** The family/app split remains; A3–A5 replace process-local author and critic delivery with Activities. |
-| PR-11 delete all remaining `app/` packages | **Canceled.** `archetype.app.missions` remains, and `archetype.app.physical_ai` is the accepted hosted-workflow owner. |
+| PR-10 Missions family move and committed projection | **Superseded.** A3–A5 replace process-local author and critic delivery with family-owned Activities. |
+| PR-11 delete all remaining `app/` packages | **Restored as A8.** Mission choreography moves under `archetype.missions`; hosted Physical-AI choreography is born under `archetype.physical_ai`; single-implementation facades and compatibility packages do not survive. |
 | Broad final topology cleanup | **Deferred to A8.** It may consolidate or delete proven duplication but may not invent another execution model. |
 
 The `everettVT/resource-world-host-spike` branch and the Resource dossier at
@@ -210,8 +230,8 @@ a provider path that treats lease expiry as replay permission.
 6. Fences reject stale control writes; adapters reconcile external truth.
 7. Local and Modal workers consume the same immutable request and produce the
    same typed result contract.
-8. Preserve application-family workflow owners where cross-family choreography
-   is real.
+8. Preserve family-owned workflow meaning where declared lower-family
+   choreography is real; do not recreate an `archetype.app` layer.
 9. Run focused contracts first, then architecture, lazy-boundary, docs, typing,
    and the appropriate release profile.
 10. Open each PR and stop; never arm or merge it manually.

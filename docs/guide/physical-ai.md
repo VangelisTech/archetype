@@ -120,8 +120,13 @@ it does not choose the initial state. Reordering variants therefore cannot
 change the seeds used to grade one instruction. Duplicate instruction strings
 collapse to one condition.
 
-`max_steps` includes the raw reset-observation tick. A budget of `N` therefore
-permits at most `N - 1` policy-controlled environment steps.
+The direct path's `max_steps` includes the raw reset-observation tick. A budget
+of `N` therefore permits at most `N - 1` policy-controlled environment
+transitions. The hosted whole-episode contract names that action budget
+`max_transitions` instead: reset is trajectory row `0`, and transitions are
+rows `1..max_transitions`. The exact bridge is therefore
+`max_transitions = max_steps - 1` (and `max_steps = max_transitions + 1`).
+A zero-transition hosted request is valid and produces one terminal reset row.
 
 ## Execution sequence
 
@@ -173,7 +178,7 @@ sequenceDiagram
 | `archetype.physical_ai.optimization` | Pure, callback-driven instruction search |
 | `archetype.physical_ai.views` | Storage-backed terminal report projection |
 | `archetype.physical_ai.handlers` | Free world/processor/episode/query workflows over declared storage and world ports |
-| `archetype.app.physical_ai` *(accepted hosted target)* | Intent-to-Activity-to-observation choreography for whole hosted episodes |
+| `archetype.physical_ai.hosted_episode` | Canonical whole-episode Arrow schemas, codecs, identities, digests, completeness validation, and the family-owned hosted choreography target |
 | `CommandDispatcher` | Exact-operation admission and registered handler dispatch |
 | `RuntimeResources` | Process-scoped ownership and retryable close of live providers |
 | `ArchetypeRuntime` | Supported trusted Python entry point and sync parity |
@@ -218,17 +223,68 @@ later committed physical observation
 pure terminal projection and report
 ```
 
-`archetype.physical_ai` retains request/result schemas, physical meaning,
-provider protocols, pure processors, views, and adapter-specific recovery.
-`archetype.app.physical_ai` owns the cross-family choreography that projects
-committed intent, invokes the Activity coordinator, publishes large results,
-stages factual observations, and binds settlement to the later committed
-receipt.
+`archetype.physical_ai` owns request/result schemas, physical meaning, provider
+protocols, pure processors, views, adapter-specific recovery, and the
+choreography that projects committed intent, invokes the Activity coordinator,
+publishes large results, stages factual observations, and binds settlement to
+the later committed receipt. It declares the lower-family ports that
+choreography needs; no parallel application-layer mirror is created.
 
-The hosted result contract is not yet canonized. Before implementation, one
-focused schema slice must reconcile episode/trial cardinality, transition
-budget versus reset observation, provider termination versus Archetype terminal
-state, per-step publication identity, and canonical request/result digests.
+The family-owned hosted data contract is
+`archetype.physical_ai.hosted_episode`, version
+`archetype.physical-ai.hosted-episode/v1`. It contains four canonical Arrow IPC
+payloads:
+
+| Payload | Cardinality and authority |
+| --- | --- |
+| Request | One row per logical trial, seed, and physical episode; one operation may batch many episodes |
+| Trajectory | Reset row `0` plus at most `max_transitions` action rows for every admitted episode |
+| Episode results | One terminal row derived from each complete episode trajectory |
+| Manifest | One row binding all request, trajectory, and episode-result digests and exact completeness counts |
+
+`operation_id` is the caller-stable provider-operation identity shared by the
+batch. `episode_id` is derived separately from `(operation_id, trial_id)`, so a
+batched provider operation never collapses several trials into one episode.
+`episode_result_id` identifies the complete result for one episode, while
+`step_id` independently identifies every trajectory row. Both identities are
+contract-version-domain-separated.
+
+Reset has a null action and does not consume the transition budget. Actions,
+end-effector position and quaternion, and gripper joint position use fixed-size
+vectors. Provider termination is recorded as `environment_done`; Archetype's
+complete-episode terminal is separate and uses the closed reason vocabulary
+`success`, `environment_done`, or `transition_budget`. Success may terminate a
+physical evaluation even when a provider does not also assert its own
+`environment_done` signal.
+
+Configuration is finite canonical JSON. Recursive activation, placement,
+timing, credential, and host-path metadata is rejected rather than admitted to
+replay identity. Optional camera evidence uses content-addressed frame
+references (`sha256:<digest>`, media type, and size), never provider-local
+paths. Schemas carry the contract version and payload domain in Arrow metadata;
+request, trajectory, per-episode result, and manifest digests additionally
+domain-separate the exact canonical IPC bytes.
+
+The completeness validator accepts a result only when every admitted episode
+appears exactly once, its rows are contiguous from reset through exactly one
+terminal row, no row exceeds its transition budget, every echoed request field
+and digest agrees, the per-episode results are the exact trajectory derivation,
+and the one manifest binds the other three payloads and their counts. The
+validator then requires that exact canonical manifest as the fourth payload. A7
+must publish the complete trajectory and manifest before recording a bounded
+Activity result reference; a partial trajectory is never a settleable result.
+
+External simulator and robot adapters should migrate to this module rather than
+copying its schemas. The proof-era names map as follows:
+
+| Proof-era field | Canonical v1 field or rule |
+| --- | --- |
+| `max_steps` | `max_transitions`; reset is not charged |
+| `done` | `environment_done`; not the same as Archetype `terminal` |
+| per-episode `publication_id` | `episode_result_id` |
+| per-step `publication_id` | `step_id` |
+| frame path or bare frame hash | nullable content-addressed frame reference |
+| raw SHA-256 of IPC | version- and payload-domain-separated canonical IPC digest |
 
 A seeded simulator may retrieve the first durable result by stable provider
 operation identity. Correctness must not depend on a second GPU execution being

@@ -2,10 +2,10 @@
 
 **Document type:** Normative accepted-target contract.
 
-**Status:** The boundary and migration order are ratified. The generic catalog,
-Mission cutover, and hosted Physical-AI path are not implemented on the
-baseline described here. Each implementation slice must land its executable
-oracle with the behavior it enables.
+**Status:** The boundary and migration order are ratified. The generic catalog
+and canonical hosted Physical-AI data contract exist; Mission cutover and
+hosted Activity execution remain migration slices. Each implementation slice
+must land its executable oracle with the behavior it enables.
 
 **Scope:** Durable work admitted after one committed tick and observed by a
 later committed tick. This specification refines the required-projector rule
@@ -161,8 +161,7 @@ ordering, and settlement boundaries.
 |---|---|
 | `archetype.activities` | Generic contracts, coordinator port/service, logical identity, immutable admission, claims, attempts, leases, fences, bounded provider retry-guard and result references/digests, and observation settlement |
 | `archetype.storage.activity_catalog` | Flattened physical records, structural catalog port, and local SQLite implementation; a future remote implementation is a separate parity slice |
-| Owning top-level family | Semantic intent and observation schemas, provider protocol, and provider-specific reconciliation facts |
-| `archetype.app.<family>` | Intent-to-Activity projection, worker choreography, observation staging, and cross-family composition |
+| Owning top-level family | Semantic intent and observation schemas, provider protocol and reconciliation facts, intent-to-Activity projection, worker choreography, observation staging, and declared lower-family composition |
 | `RuntimeResources` and `archetype.wiring` | Process-lifetime worker ownership, admission/drain, construction, and executor binding |
 | Iceberg or `archetype.artifacts` | Large or unbounded result payloads published before their bounded Activity reference |
 
@@ -183,12 +182,11 @@ transitions required by the crash oracles. Shared vocabulary may be extracted
 after the Mission author, critic, and hosted Physical-AI consumers demonstrate
 that it has the same meaning.
 
-`archetype.app.missions` remains the Agent Missions workflow authority.
-`archetype.app.physical_ai` owns the accepted hosted-physical
-intent-to-Activity-to-observation choreography. The reusable
-`archetype.missions` and `archetype.physical_ai` families retain their
+`archetype.missions` owns Agent Missions workflow authority, including its
+intent-to-Activity-to-observation choreography. `archetype.physical_ai` owns
+the corresponding hosted-physical choreography. Both families retain their
 Components, processors, value contracts, provider protocols, and recovery
-meaning.
+meaning; neither requires an `archetype.app` mirror.
 
 ## 5. Identity and bounded durability
 
@@ -293,7 +291,7 @@ For the Mission author slice:
 - an unbound no-effect attempt may be reclaimed under a new fence, while every
   provider-bound reclaimed attempt reconciles;
 - completed-but-unobserved results are repeatedly restaged through an
-  idempotent application-owned stager; and
+  idempotent family-owned stager; and
 - Mission readiness, candidate creation, repair, acceptance, and rollup remain
   processor decisions.
 
