@@ -220,6 +220,42 @@ also holds: a
 review submitted on an armed PR that is no longer queue-ready disarms it
 (best-effort — the merge queue may already hold the PR).
 
+### Harness tooling
+
+Two scripts replace hand-rolled `gh` polling and raw GraphQL:
+
+```bash
+scripts/gh_pr_state.sh OWNER/REPO PR [--watch [SECONDS]]
+  # one line: head, merge state, review-complete on that head, unresolved/
+  # outdated thread counts, armed?, queue position/ETA. --watch prints only
+  # on change and exits at MERGED/CLOSED. Covers what `gh pr view --json`
+  # cannot (mergeQueueEntry) and what reads UNKNOWN mid-queue.
+scripts/gh_dispose_thread.sh OWNER/REPO PR --list
+scripts/gh_dispose_thread.sh OWNER/REPO PR THREAD_ID "what changed"
+scripts/gh_dispose_thread.sh OWNER/REPO PR --signal
+  # list unresolved threads; reply-and-resolve one; then, after the LAST
+  # thread only, submit the queue-readiness re-evaluation review.
+```
+
+Do not reimplement these as inline polling loops or ad-hoc GraphQL; if a
+state field is missing, extend the script.
+
+### Rerun policy
+
+- A required-check failure gets **one** authorized rerun, and only after a
+  concrete classification (read the log or receipt first — never
+  rerun-and-hope). A second failure of the same kind is a harness defect:
+  stop, file it, do not keep rerunning.
+- A failed **Deterministic Review Gate** run is never manually re-run to
+  chase a verdict. If the failure is infrastructure (invalid lens payload,
+  runner fault), push the head again or a corrected head — a new head earns
+  a fresh review. If it is a real finding, fix it.
+- Before pushing a risky diff, run local reviewer fan-out (independent
+  reviewer subagents over the diff). Hosted review green is necessary, not
+  sufficient: the lens matrix deliberately narrows each reviewer's
+  attention, and local fan-out has caught races the gate passed. This is
+  part of the process, not a workaround.
+
 ## Application flow
 
 ```text
