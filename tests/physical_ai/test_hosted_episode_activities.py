@@ -557,8 +557,10 @@ async def test_lease_expiry_does_not_replay_an_ambiguous_provider_start(
         ),
         stager=_ObservationStager(),
     )
-    with pytest.raises(HostedEpisodeReconciliationRequired):
+    with pytest.raises(HostedEpisodeReconciliationRequired) as exc_info:
         await recovered.run_once()
+    assert exc_info.value.reason == "provider start exists without a complete result index"
+    assert exc_info.value.reason in str(exc_info.value)
     assert healthy_runner.execution_count == 1
     await recovered_physical.close()
 
@@ -676,6 +678,122 @@ async def test_committed_reader_excludes_inherited_intent_from_child_projection(
     assert query_calls == [(world_id, run_id, ("child-token",))]
     assert result.visibility_token == "child-token"
     assert set(result.results) == {(HostedEpisodeIntent,)}
+
+
+@pytest.mark.asyncio
+async def test_world_stager_scopes_idempotency_to_child_activity_control(
+    monkeypatch,
+) -> None:
+    digest = "0" * 64
+    observation = HostedEpisodeObservation(
+        activity_id="reused-family-id",
+        operation_id="physical-episode:" + digest,
+        request_ref=f"{HOSTED_EPISODE_REQUEST_REF_PREFIX}{digest}",
+        request_digest=digest,
+        result_ref=f"physical-episode-result+json:sha256:{digest}",
+        result_digest=digest,
+        trajectory_ref=f"physical-episode-trajectory+arrow:sha256:{digest}",
+        trajectory_digest=digest,
+        episode_results_ref=f"physical-episode-results+arrow:sha256:{digest}",
+        episode_results_digest=digest,
+        manifest_ref=f"physical-episode-manifest+arrow:sha256:{digest}",
+        manifest_digest=digest,
+        episode_count=1,
+        trajectory_row_count=2,
+        transition_count=1,
+        success_count=1,
+    )
+    snapshot = PinnedWorldQuerySnapshot(
+        world_id="physical-world",
+        run_id="run-a",
+        head_tick=7,
+        head_tokens=("child-token",),
+        current=PinnedQuerySegment(
+            world_id="physical-world",
+            run_id="run-a",
+            up_to_tick=None,
+            head_tick=7,
+            head_tokens=("child-token",),
+            visibility_tokens=("child-token",),
+        ),
+        lineage=(
+            PinnedQuerySegment(
+                world_id="parent-world",
+                run_id="parent-run",
+                up_to_tick=6,
+                head_tick=6,
+                head_tokens=("parent-token",),
+                visibility_tokens=("parent-token",),
+            ),
+        ),
+    )
+    query_calls: list[tuple[str, str, tuple[str, ...]]] = []
+
+    class ObservationControlCatalog:
+        async def list_signatures(self):
+            return [
+                SignatureRecord(
+                    table_id="hosted-observation",
+                    component_names=("HostedEpisodeObservation",),
+                    schema_json="{}",
+                    fingerprint="hosted-observation",
+                )
+            ]
+
+    class ObservationStorage:
+        def get_control_catalog(self, storage_config):
+            return ObservationControlCatalog()
+
+        async def materialize(self, frame):
+            return frame
+
+    async def pinned(*_args, **_kwargs):
+        return snapshot
+
+    async def queried(
+        _storage,
+        _components,
+        queried_world_id,
+        queried_run_id,
+        _storage_config,
+        *,
+        visibility_tokens,
+    ):
+        tokens = tuple(visibility_tokens)
+        query_calls.append((queried_world_id, queried_run_id, tokens))
+        if tokens == ("parent-token",):
+            return _frame(
+                1,
+                6,
+                observation.model_copy(update={"success_count": 0}),
+            )
+        return _frame(
+            2,
+            7,
+            observation.model_copy(update={"activity_id": "unrelated"}),
+        )
+
+    monkeypatch.setattr(
+        "archetype.physical_ai.hosted_activity_world.pin_query_snapshot",
+        pinned,
+    )
+    monkeypatch.setattr(
+        "archetype.physical_ai.hosted_activity_world.query_components",
+        queried,
+    )
+    world = _PendingWorld()
+    stager = WorldHostedEpisodeObservationStager(
+        storage=ObservationStorage(),  # type: ignore[arg-type]
+        registry=_PendingRegistry(world),  # type: ignore[arg-type]
+    )
+
+    await stager.stage_hosted_episode_observation(
+        world_id="physical-world",
+        observation=observation,
+    )
+
+    assert query_calls == [("physical-world", "run-a", ("child-token",))]
+    assert sum(len(rows) for rows in world.spawn_cache.values()) == 1
 
 
 def test_provider_operation_identity_is_world_scoped_and_matches_request() -> None:

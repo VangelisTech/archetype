@@ -57,6 +57,9 @@ async def _query_groups(
     snapshot: PinnedWorldQuerySnapshot,
     groups: tuple[tuple[type[Component], ...], ...],
 ) -> Mapping[ArchetypeSignature, DataFrame]:
+    # Activity delivery control is exact-world state. A child may observe a
+    # settled parent fact through ordinary lineage queries, but it must never
+    # read and re-admit the parent's intent as a child-world Activity.
     visibility = snapshot.current.visibility_tokens
     if visibility is None:
         raise ValueError("physical Activity reads require coordinated visibility")
@@ -204,6 +207,9 @@ class WorldHostedEpisodeObservationStager:
             str(world.run_id),
             storage_config,
         )
+        # Idempotency is scoped to the world-qualified Activity key. An
+        # inherited parent observation is an ordinary fact, not settlement for
+        # a child-world Activity with the same family-local activity_id.
         visibility = snapshot.current.visibility_tokens
         if visibility is None:
             raise ValueError("hosted observation staging requires coordinated visibility")
