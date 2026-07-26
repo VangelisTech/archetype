@@ -64,6 +64,7 @@ query($owner: String!, $name: String!, $pr: Int!) {
       autoMergeRequest { enabledAt }
       mergeQueueEntry { position estimatedTimeToMerge state }
       reviewThreads(first: 100) {
+        pageInfo { hasNextPage }
         nodes { isResolved isOutdated }
       }
       commits(last: 1) {
@@ -72,7 +73,7 @@ query($owner: String!, $name: String!, $pr: Int!) {
             statusCheckRollup {
               contexts(first: 100) {
                 nodes {
-                  ... on CheckRun { name conclusion status }
+                  ... on CheckRun { name conclusion status startedAt }
                 }
               }
             }
@@ -96,8 +97,13 @@ snapshot() {
     | ($p.reviewThreads.nodes // []) as $threads
     | ($threads | map(select(.isResolved | not))) as $open
     | ($open | map(select(.isOutdated))) as $outdated
+    # Newest run wins: review-complete can be re-run on an unchanged head,
+    # and connection order is unspecified — sort by start time like the
+    # queue-ready oracle does, so a stale success never outvotes a newer
+    # failure.
     | ([$p.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[]?
-        | select(.name == "review-complete")] | last) as $rc
+        | select(.name == "review-complete")]
+       | sort_by(.startedAt) | last) as $rc
     | "pr=\($pr) head=\($p.headRefOid[0:8])"
       + " state=\($p.state)"
       + " draft=\($p.isDraft)"
@@ -105,7 +111,12 @@ snapshot() {
       + " review-complete=\(if $rc == null then "absent"
           elif $rc.conclusion != null then $rc.conclusion
           else $rc.status end)"
-      + " threads=\($open | length)/\($threads | length)-unresolved(\($outdated | length)-outdated)"
+      # Past 100 threads the counts are computed from an incomplete page;
+      # say so instead of printing confident wrong numbers.
+      + " threads=\(if $p.reviewThreads.pageInfo.hasNextPage
+          then "TRUNCATED(>100)"
+          else "\($open | length)/\($threads | length)-unresolved(\($outdated | length)-outdated)"
+          end)"
       + " armed=\($p.autoMergeRequest != null)"
       + " queue=\(if $p.mergeQueueEntry == null then "none"
           else "pos-\($p.mergeQueueEntry.position)"
