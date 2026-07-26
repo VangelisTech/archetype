@@ -46,7 +46,7 @@ shared substrate; they do not expand A2 speculatively.
 | A5 — Mission critic | Project and execute exact-candidate critic work through the proven Activity seam; remove only critic process-local delivery after parity | Existing exact-head, separate-sandbox, bounded-subject, and fail-closed critic oracles pass through restart |
 | A6 — Hosted Physical-AI contract | Reconcile one canonical whole-episode Arrow request/result schema and result publication contract before cutover | Robot adapter and simulator agree on episode/trial cardinality, transition budget, terminal meaning, and canonical digests |
 | A7 — Hosted Physical-AI Activity | Add provider-neutral family choreography under `archetype.physical_ai`, execute one seeded batch of whole episodes locally, publish the complete trajectory/results/manifest, and stage its factual observation | Cold reconstruction crosses provider publication, generic result recording, staging, and later settlement without a second episode; start-without-result remains unknown |
-| A7b — Hosted Physical-AI Modal parity | Bind the same family provider protocol to the reviewed generic operation/start/result mechanics after the Modal author safety dependency lands; do not copy Mission barriers | Real Modal/GPU execution recovers its first complete result by stable operation identity and uses the exact A6 request/result contract |
+| A7b — Hosted Physical-AI Modal parity | Bind the same family provider protocol to exact Modal namespace identity, atomic start admission, and provider-durable first-result publication without importing Mission barriers | Real Modal/GPU execution recovers its first complete result by stable operation identity and uses the exact A6 request/result contract |
 | A8 — Consolidation and refactor resume | Extract only mechanics shared by author, critic, and Physical AI; delete superseded outboxes and distributed per-step effect paths; reconcile broad docs and topology plan | No duplicate authority, no process-local durable queue, full release verification, and three end-to-end traces remain recognizable |
 
 ### A1 — Contract and plan
@@ -199,11 +199,30 @@ Activity result. The existing direct per-step path remains supported through
 this slice.
 
 A7 deliberately leaves the remote provider fail-closed behind the same family
-protocol. The safe operation/start/result barrier is genuinely shared
-mechanics, but its recovery meaning remains provider- and family-owned. A7b
-therefore reuses the reviewed generic extraction after the Modal author safety
-dependency rather than importing or duplicating Mission-owned barriers. Only
-A7b may claim real Modal/GPU parity.
+protocol. A7b supplies the Modal implementation under an exact workspace,
+Environment, App, Function, named Dict, named Volume, and protocol epoch. One
+atomic Dict put selects the start winner; canonical A6 payloads are committed
+to the Volume before the bounded first-result index is atomically installed in
+the Dict. Completion-response loss and worker reconstruction recover that
+first result without a second episode. Start-without-result remains unknown.
+
+The adapter does not import Mission-owned barriers or move Physical-AI
+recovery meaning into generic mechanics. A8 may extract only the identity,
+atomic-admission, and immutable-result mechanics that the completed Mission
+and Physical-AI implementations actually prove to be shared.
+
+Paid A7b evidence on 2026-07-26 used one L40S-backed function in stopped Modal
+App `ap-nXLKIwCqS18C4j6UuGFMSU`. The remote completion reported one visible GPU
+and first-result index digest
+`ad70beb7153d4b83cd0c12fb6218b1e312a265199e5013eae8d94f6f42327fb0`.
+After an injected worker failure before generic Activity result recording, a
+separate process recovered the exact two-episode result without another Modal
+call and staged result digest
+`784811d10f376faf3b45284c5f2b180ba179f4a35f9575b7af37444d08678cf9`.
+Provider evidence remains in named Dict
+`arch-a7b-results-20260726-185158-c3261f` and named Volume
+`arch-a7b-values-20260726-185158-c3261f` in workspace/environment
+`vangelis-tech/main`.
 
 ## Authority and dependency target
 
