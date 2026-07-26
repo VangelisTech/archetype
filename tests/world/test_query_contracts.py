@@ -385,6 +385,76 @@ async def test_nested_fresh_fork_snapshot_uses_last_widening_head(monkeypatch) -
     ]
 
 
+@pytest.mark.asyncio
+async def test_fork_snapshot_max_tick_clips_every_inherited_segment(monkeypatch) -> None:
+    @dataclass(frozen=True)
+    class _Record:
+        run_id: str = "child-run"
+        parent_world_id: str = "parent"
+
+    @dataclass(frozen=True)
+    class _Visibility:
+        run_id: str
+        head_tick: int | None
+        head_tokens: tuple[str, ...]
+        visibility_tokens: tuple[str, ...] | None
+
+    class _Storage:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str | None, int | None]] = []
+
+        def get_control_catalog(self, storage_config):
+            del storage_config
+
+            class _Catalog:
+                async def get_world(self, world_id):
+                    assert world_id == "child"
+                    return _Record()
+
+            return _Catalog()
+
+        async def pin_visibility(
+            self,
+            storage_config,
+            world_id,
+            *,
+            run_id=None,
+            max_tick=None,
+        ):
+            del storage_config
+            self.calls.append((world_id, run_id, max_tick))
+            if world_id == "child":
+                return _Visibility("child-run", None, (), ())
+            return _Visibility(
+                str(run_id),
+                int(max_tick),
+                (f"{world_id}-{max_tick}",),
+                tuple(f"{world_id}-{tick}" for tick in range(int(max_tick) + 1)),
+            )
+
+    async def lineage(*_args):
+        return [("root", "root-run", 3), ("parent", "parent-run", 5)]
+
+    storage = _Storage()
+    monkeypatch.setattr(query, "get_lineage", lineage)
+
+    snapshot = await query.pin_query_snapshot(
+        storage,  # type: ignore[arg-type]
+        "child",
+        storage_config=StorageConfig(),
+        max_tick=2,
+    )
+
+    assert snapshot.head_tick == 2
+    assert [segment.up_to_tick for segment in snapshot.lineage] == [2, 2]
+    assert snapshot.effective_lineage == (snapshot.lineage[0],)
+    assert storage.calls == [
+        ("child", "child-run", 2),
+        ("root", "root-run", 2),
+        ("parent", "parent-run", 2),
+    ]
+
+
 @pytest.mark.parametrize(
     ("ancestor_tokens", "accepted"),
     [(None, True), ((), False)],

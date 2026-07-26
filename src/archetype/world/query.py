@@ -155,14 +155,17 @@ async def pin_query_snapshot(
             )
     pinned_lineage: list[PinnedQuerySegment] = []
     previous_up_to = -1
+    previous_recorded_cap = -1
     logical_lineage_head: PinnedQuerySegment | None = None
     for ancestor_world, ancestor_run, up_to_tick in lineage or ():
-        cap = int(up_to_tick)
-        if cap < previous_up_to:
+        recorded_cap = int(up_to_tick)
+        if recorded_cap < previous_recorded_cap:
             raise RuntimeError(
                 "fork lineage tick caps must be monotonic: "
-                f"{ancestor_world}/{ancestor_run} ends at {cap} after {previous_up_to}"
+                f"{ancestor_world}/{ancestor_run} ends at {recorded_cap} "
+                f"after {previous_recorded_cap}"
             )
+        cap = min(recorded_cap, max_tick) if max_tick is not None else recorded_cap
         widens_visible_interval = cap > previous_up_to
         visibility = await storage.pin_visibility(
             effective,
@@ -175,7 +178,7 @@ async def pin_query_snapshot(
             raise RuntimeError(
                 "fork lineage visibility is incomplete: "
                 f"{ancestor_world}/{ancestor_run} publishes through "
-                f"{visibility.head_tick}, expected {up_to_tick}"
+                f"{visibility.head_tick}, expected {cap}"
             )
         segment = PinnedQuerySegment(
             world_id=str(ancestor_world),
@@ -189,6 +192,7 @@ async def pin_query_snapshot(
         if widens_visible_interval:
             logical_lineage_head = segment
         previous_up_to = cap
+        previous_recorded_cap = recorded_cap
 
     if current.head_tick is not None and current.head_tick <= previous_up_to:
         raise RuntimeError(
