@@ -44,7 +44,7 @@ shared substrate; they do not expand A2 speculatively.
 | A4a — Modal provider safety | Namespace-complete operation identity plus permanent operation/run markers that select one hosted-start winner and fail closed after ambiguous creation | Real Modal races prove one winner under the exact workspace, Environment, App, and protocol epoch; legacy/pre-barrier operations remain unknown |
 | A4 — Modal parity | Run the same complete author Activity through the guarded Modal sandbox capability, with stable provider operation identity and reconciliation | Real Modal mission proves the same request/result/settlement contract, exact Git head, cleanup, and installed-artifact path |
 | A5a — Mission critic value contract | Family-owned `missions.critic` request/result/receipt values, deterministic bounded redacted codecs, explicit domain-review attempt identity, and a digest-bound byte-budgeted subject transport contract | Canonical round trips preserve exact base/head/diff/policy/validator and separate-sandbox identity; diff bytes never enter the command line; over-budget subjects fail closed before inference |
-| A5b — Mission critic cutover | Project and execute exact-candidate critic work through the proven Activity seam; remove only critic process-local delivery after parity | Existing exact-head, separate-sandbox, bounded-subject, and fail-closed critic oracles pass through restart |
+| A5b — Mission critic Activity integration | Purely project exact-current-candidate intent, execute/reconcile it through generic Activities, stage a complete result-bound critic fact bundle, and settle its exact later receipt; retain legacy delivery until A8 | Real Git and managed-world crash/restart oracles prove one provider execution, exact file-bound subject identity, fresh critic sandbox, marker-last atomic staging, idempotent redelivery, and exact-receipt settlement without `CriticReviewOutbox` |
 | A6 — Hosted Physical-AI contract | Reconcile one canonical whole-episode Arrow request/result schema and result publication contract before cutover | Robot adapter and simulator agree on episode/trial cardinality, transition budget, terminal meaning, and canonical digests |
 | A7 — Hosted Physical-AI Activity | Add family-owned choreography under `archetype.physical_ai`, execute a whole seeded episode locally and on Modal, publish the full trajectory, and stage its factual observation | First result is recovered by operation identity; correctness does not depend on byte-identical GPU replay |
 | A8 — Consolidation and refactor resume | Extract only mechanics shared by author, critic, and Physical AI; delete superseded outboxes and distributed per-step effect paths; reconcile broad docs and topology plan | No duplicate authority, no process-local durable queue, full release verification, and three end-to-end traces remain recognizable |
@@ -193,13 +193,29 @@ fields. A5b owns a separately versioned complete Activity fact bundle and
 marker that makes those fields durable without changing the identity of
 already-recorded v1 receipt tables.
 
-A5b adds the required projector, fenced worker, provider reconciliation,
-idempotent complete observation stager, and exact-receipt settlement. The
-critic still receives a fresh sandbox distinct from the author sandbox and no
-Git publication secret. Existing processors remain the sole task-transition
-authority. `CriticReviewOutbox` and its process-local queued sets are deleted
-only after local restart and hosted parity prove the Activity path; critic
-prewarm may remain only as a correctness-independent Resource optimization.
+The subject-size budget participates in the current critic-policy digest.
+A persisted candidate whose legacy digest did not bind that budget is not
+silently reinterpreted: committed-intent projection fails closed until an
+explicit migration or a newly admitted candidate supplies the current digest.
+
+A5b adds the opt-in required projector, fenced worker, provider reconciliation,
+content-addressed value store, idempotent complete observation stager, and
+exact-receipt settlement. Its pure committed-intent projection does not
+instantiate or depend on `CriticReviewOutbox`. One atomic world mutation batch
+contains a fresh critic `Sandbox`, `CriticExecution`, exact `Reviews` and
+`RunsIn` edges, every `CriticFinding`/`ProducedBy` pair, the optional v1
+`CriticReceipt`/`ProducedBy` pair, and a separately versioned
+`CompleteCriticActivityObservation` marker staged last. That marker binds the
+complete fact digest and durable result reference/digest, including exact
+subject evidence when a receipt exists.
+
+The critic still receives a fresh sandbox distinct from the author sandbox and
+no Git publication secret. A generic claim retry never consumes Mission review
+budget; only a later committed `CriticExecution` advances the domain review
+attempt. Existing processors remain the sole task-transition authority.
+`CriticReviewOutbox` and its process-local queued sets remain compatibility
+machinery through A3–A7 and are deleted during A8 consolidation; critic prewarm
+may remain only as a correctness-independent Resource optimization.
 
 ### A6 — Hosted Physical-AI contract
 
