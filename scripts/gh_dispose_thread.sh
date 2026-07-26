@@ -132,8 +132,17 @@ case "$MODE" in
       exit 1
     fi
     head_sha=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq '.headRefOid')
-    gh pr review "$PR" --repo "$REPO" --comment \
-      --body "Queue-readiness re-evaluation on exact head ${head_sha}: review threads addressed and resolved."
+    # Pin the review to the head we just judged: a push racing this call
+    # would otherwise associate the review event with the NEWER head while
+    # the body names the old one — the same check-then-use race the arm
+    # reconcile closes with --match-head-commit. The REST API accepts an
+    # explicit commit_id; GitHub rejects the call if that sha is no longer
+    # a commit of the PR.
+    gh api --method POST "repos/${REPO}/pulls/${PR}/reviews" \
+      -f commit_id="$head_sha" \
+      -f event="COMMENT" \
+      -f body="Queue-readiness re-evaluation on exact head ${head_sha}: review threads addressed and resolved." \
+      --jq '.id' >/dev/null
     echo "re-evaluation review submitted for head ${head_sha}."
     ;;
 
