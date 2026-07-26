@@ -499,8 +499,6 @@ class LocalDurableHostedEpisodeProvider:
     seeds authorize a replay.
     """
 
-    provider = "local-seeded-hosted-episode"
-
     def __init__(
         self,
         root: str | Path,
@@ -508,9 +506,18 @@ class LocalDurableHostedEpisodeProvider:
         runner: HostedEpisodeRunner,
         crash_after_publish: bool = False,
     ) -> None:
-        self._root = Path(root)
+        self._root = Path(root).resolve()
+        self._provider = (
+            "local-seeded-hosted-episode:" + hashlib.sha256(str(self._root).encode()).hexdigest()
+        )
         self._runner = runner
         self._crash_after_publish = crash_after_publish
+
+    @property
+    def provider(self) -> str:
+        """Bind generic Activity ownership to this exact durable namespace."""
+
+        return self._provider
 
     async def execute(
         self,

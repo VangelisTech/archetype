@@ -280,6 +280,53 @@ def _open_catalog(
     )
 
 
+def test_local_provider_identity_binds_its_exact_durable_root(tmp_path: Path) -> None:
+    runner = SeededHostedEpisodeRunner(tmp_path / "counter.json")
+    first = LocalDurableHostedEpisodeProvider(tmp_path / "provider-a", runner=runner)
+    same = LocalDurableHostedEpisodeProvider(tmp_path / "provider-a", runner=runner)
+    other = LocalDurableHostedEpisodeProvider(tmp_path / "provider-b", runner=runner)
+
+    assert first.provider == same.provider
+    assert first.provider != other.provider
+    assert first.provider.startswith("local-seeded-hosted-episode:")
+
+
+@pytest.mark.asyncio
+async def test_hosted_claim_searches_beyond_one_hundred_live_claims(tmp_path: Path) -> None:
+    world_id = "physical-world"
+    values = LocalHostedEpisodeValueStore(tmp_path / "values")
+    physical, generic, catalog = _open_catalog(
+        tmp_path / "activities.db",
+        lease_seconds=300,
+    )
+    receipt = CommittedTickReceipt(world_id, "run-a", 1, "token-1", 0)
+
+    activity_ids = [f"episode-{position:03d}" for position in range(101)]
+    for activity_id in activity_ids:
+        request = await values.put_request(_request(world_id, activity_id))
+        await catalog.admit_episode(
+            world_id=world_id,
+            receipt=receipt,
+            activity_id=activity_id,
+            request=request,
+        )
+    for activity_id in activity_ids[:100]:
+        claim = await generic.claim(
+            world_id,
+            HOSTED_EPISODE_ACTIVITY_KIND,
+            activity_id,
+            f"busy-{activity_id}",
+            lease_seconds=300,
+        )
+        assert claim.acquired
+
+    claim = await catalog.claim_episode(world_id=world_id, owner="available-worker")
+
+    assert claim is not None
+    assert claim.activity_id == activity_ids[-1]
+    await physical.close()
+
+
 @pytest.mark.asyncio
 async def test_cold_restart_recovers_first_provider_result_without_second_episode(
     tmp_path: Path,
