@@ -221,12 +221,13 @@ class HostedEpisodeReconciliationRequired(AvailabilityError):
 
     public_detail = "Hosted episode provider state is temporarily unavailable"
 
-    def __init__(self, activity_id: str, operation_id: str) -> None:
+    def __init__(self, activity_id: str, operation_id: str, reason: str) -> None:
         self.activity_id = activity_id
         self.operation_id = operation_id
+        self.reason = reason
         super().__init__(
             f"hosted episode {activity_id!r} requires provider reconciliation "
-            f"for operation {operation_id!r}"
+            f"for operation {operation_id!r}: {reason}"
         )
 
 
@@ -698,6 +699,7 @@ class PhysicalHostedActivityWorker:
                 raise HostedEpisodeReconciliationRequired(
                     claim.activity_id,
                     claim.provider_operation_id,
+                    reconciliation.reason,
                 )
             raise TypeError("hosted provider returned invalid reconciliation evidence")
 

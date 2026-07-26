@@ -261,6 +261,13 @@ world-scoped unsettled-work check without creating an
 path remains supported and unchanged until consolidation; this Activity slice
 does not silently cut over runtime operations.
 
+Both Activity admission reads and observation-idempotency reads intentionally
+use only the current world's coordinated segment. Settled parent observations
+remain visible through ordinary lineage queries, but a fork neither re-admits
+the parent's intent nor treats a parent observation as settlement for a
+world-qualified child Activity. The lifecycle unsettled-work gate is what makes
+that exact-world rule safe.
+
 The local filesystem value store and SQLite Activity catalog are restart
 oracles. They do not claim remote storage parity. Large production trajectories
 and frames belong in Iceberg/artifacts, and a Modal provider remains
