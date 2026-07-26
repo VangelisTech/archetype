@@ -108,6 +108,24 @@ class _LocalSession:
         return None
 
 
+class _MalformedMktempSession(_LocalSession):
+    def __init__(self) -> None:
+        super().__init__()
+        self.subject_directory: Path | None = None
+
+    async def exec(self, request: ProcessRequest) -> ProcessResult:
+        result = await super().exec(request)
+        if request.argv[:2] == ("mktemp", "-d"):
+            self.subject_directory = Path(result.stdout.strip())
+            return ProcessResult(
+                result.argv,
+                result.returncode,
+                result.stdout + "unexpected-provider-output\n",
+                result.stderr,
+            )
+        return result
+
+
 class _Driver:
     def __init__(self, output: str) -> None:
         self.output = output
@@ -247,6 +265,12 @@ async def test_exact_head_review_is_independent_secret_negative_and_immutable(
     assert diff not in driver.prompts[0]
     assert all(not item.secret_names for item in session.requests)
     assert any(item.argv[:3] == ("rm", "-rf", "--") for item in session.requests)
+    diff_request = next(item for item in session.requests if item.argv[:2] == ("git", "diff"))
+    assert diff_request.argv[2:5] == (
+        "--no-ext-diff",
+        "--no-textconv",
+        "--binary",
+    )
     assert later_head != head
     assert _git("--git-dir", str(remote), "merge-base", "--is-ancestor", head, later_head) == ""
 
@@ -351,6 +375,32 @@ async def test_over_budget_exact_subject_fails_closed_before_critic(
     assert request.diff_digest in result.error
     assert "observed_bytes=" in result.error
     assert diff not in result.error
+    assert any(item.argv[:3] == ("rm", "-rf", "--") for item in session.requests)
+
+
+@pytest.mark.asyncio
+async def test_subject_directory_is_cleaned_when_provider_output_is_malformed(
+    tmp_path: Path,
+) -> None:
+    remote, base, head, diff = _repository(tmp_path)
+    session = _MalformedMktempSession()
+    driver = _Driver("{}")
+    harness = CriticHarness(
+        driver,
+        CriticHarnessConfig(workspace=str(tmp_path / "review")),
+    )
+    await harness.prewarm(
+        session,
+        CriticPrewarmRequest(1, 2, "dispatch-1", str(remote), "agent/review", "main"),
+    )
+
+    result = await harness.execute(session, _request(remote, base, head, diff))
+
+    assert result.status is CriticExecutionStatus.UNVERIFIABLE
+    assert "directory allocation is invalid" in result.error
+    assert driver.calls == 0
+    assert session.subject_directory is not None
+    assert not session.subject_directory.exists()
     assert any(item.argv[:3] == ("rm", "-rf", "--") for item in session.requests)
 
 

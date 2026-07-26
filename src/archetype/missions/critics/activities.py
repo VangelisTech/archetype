@@ -502,10 +502,8 @@ class CriticActivityResult:
             ("redaction_policy_id", self.redaction_policy_id),
         ):
             _require_text(value, field=f"critic result {field}")
-        if self.sandbox.sandbox_id == self.author_sandbox_id and (
-            self.status is CriticExecutionStatus.EXITED or self.receipt is not None
-        ):
-            raise ValueError("completed critic result reused the author sandbox identity")
+        if self.sandbox.sandbox_id == self.author_sandbox_id:
+            raise ValueError("critic result reused the author sandbox identity")
         if (
             min(
                 self.started_at_ms,
@@ -696,8 +694,8 @@ class CriticActivityCodec:
         if result.sandbox.sandbox_id in {
             request.author_sandbox_id,
             raw_request.author_sandbox_id,
-        } and (result.status is CriticExecutionStatus.EXITED or result.receipt is not None):
-            raise ValueError("completed critic result reused an author sandbox identity")
+        }:
+            raise ValueError("critic result reused an author sandbox identity")
         for field, value in (
             ("sandbox.provider", result.sandbox.provider),
             ("sandbox.id", result.sandbox.sandbox_id),

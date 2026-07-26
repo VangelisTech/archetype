@@ -383,6 +383,46 @@ def test_result_rejects_author_sandbox_and_receipt_identity_drift() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "status",
+    (
+        CriticExecutionStatus.TIMED_OUT,
+        CriticExecutionStatus.ERRORED,
+        CriticExecutionStatus.MALFORMED,
+        CriticExecutionStatus.UNVERIFIABLE,
+    ),
+)
+def test_every_failure_status_rejects_author_sandbox_reuse(
+    status: CriticExecutionStatus,
+) -> None:
+    codec = CriticActivityCodec(RedactionService())
+    raw_request = _request()
+    request = codec.prepare_request(raw_request)
+    raw_failure = replace(
+        _result(raw_request),
+        status=status,
+        sandbox=SandboxIdentity("local", raw_request.author_sandbox_id, "critic"),
+        findings=(),
+        receipt=None,
+    )
+
+    with pytest.raises(ValueError, match="author sandbox"):
+        codec.prepare_result(raw_failure, request)
+
+    durable = codec.prepare_result(
+        replace(
+            raw_failure,
+            sandbox=SandboxIdentity("local", "critic-sandbox", "critic"),
+        ),
+        request,
+    )
+    with pytest.raises(ValueError, match="author sandbox"):
+        replace(
+            durable,
+            sandbox=SandboxIdentity("local", request.author_sandbox_id, "critic"),
+        )
+
+
 def test_receipt_rejects_unadmitted_subject_media_type() -> None:
     codec = CriticActivityCodec(RedactionService())
     raw_request = _request()

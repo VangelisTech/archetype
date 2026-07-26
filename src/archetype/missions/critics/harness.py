@@ -28,6 +28,7 @@ from archetype.missions.critics.contracts import (
     CriticReceiptValue,
     canonical_digest,
 )
+from archetype.missions.diff_identity import GIT_DIFF_IDENTITY_FLAGS
 from archetype.missions.sandboxes import (
     ProcessRequest,
     ProcessResult,
@@ -240,24 +241,22 @@ class CriticHarness:
             )
             self._raise(subject_directory_result, "critic subject directory")
             subject_directories = subject_directory_result.stdout.splitlines()
-            if len(subject_directories) != 1:
-                raise _UnverifiableReview("critic subject directory allocation is invalid")
-            subject_directory = PurePosixPath(subject_directories[0])
-            if (
-                not subject_directory.is_absolute()
-                or subject_directory.parent != PurePosixPath("/tmp")
-                or not subject_directory.name.startswith("archetype-critic-subject.")
-                or ".." in subject_directory.parts
-            ):
-                raise _UnverifiableReview("critic subject directory escaped provider ownership")
-            subject_path = str(subject_directory / "subject.diff")
+            owned_directories = tuple(
+                candidate
+                for value in subject_directories
+                if (candidate := self._owned_subject_directory(value)) is not None
+            )
+            cleanup_directory = owned_directories[0] if len(owned_directories) == 1 else None
             try:
+                if len(subject_directories) != 1:
+                    raise _UnverifiableReview("critic subject directory allocation is invalid")
+                if cleanup_directory is None or str(cleanup_directory) != subject_directories[0]:
+                    raise _UnverifiableReview("critic subject directory escaped provider ownership")
+                subject_path = str(cleanup_directory / "subject.diff")
                 await self._git(
                     session,
                     "diff",
-                    "--no-ext-diff",
-                    "--no-textconv",
-                    "--binary",
+                    *GIT_DIFF_IDENTITY_FLAGS,
                     f"--output={subject_path}",
                     request.base_revision,
                     request.head_revision,
@@ -309,15 +308,16 @@ class CriticHarness:
                     prompt,
                 )
             finally:
-                cleanup = await self._run(
-                    session,
-                    "rm",
-                    "-rf",
-                    "--",
-                    str(subject_directory),
-                    workdir="/tmp",
-                )
-                self._raise(cleanup, "critic subject cleanup")
+                if cleanup_directory is not None:
+                    cleanup = await self._run(
+                        session,
+                        "rm",
+                        "-rf",
+                        "--",
+                        str(cleanup_directory),
+                        workdir="/tmp",
+                    )
+                    self._raise(cleanup, "critic subject cleanup")
             raw_output = process.stdout
             trace_uri = process.trace_uri
             if process.returncode != 0:
@@ -541,6 +541,18 @@ class CriticHarness:
             "Read that file for the exact binary diff. Do not substitute the current "
             "branch head or another working-tree view."
         )
+
+    @staticmethod
+    def _owned_subject_directory(value: str) -> PurePosixPath | None:
+        candidate = PurePosixPath(value)
+        if (
+            candidate.is_absolute()
+            and candidate.parent == PurePosixPath("/tmp")
+            and candidate.name.startswith("archetype-critic-subject.")
+            and ".." not in candidate.parts
+        ):
+            return candidate
+        return None
 
     @staticmethod
     def _public_repository(repository: str) -> str:

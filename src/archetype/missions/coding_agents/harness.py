@@ -22,6 +22,7 @@ from archetype.missions.coding_agents.contracts import (
 )
 from archetype.missions.contracts import RepositoryPublicationPolicy
 from archetype.missions.critics.contracts import validator_bundle_digest
+from archetype.missions.diff_identity import GIT_DIFF_IDENTITY_FLAGS
 from archetype.missions.sandboxes import ProcessRequest, ProcessResult, SandboxSession
 from archetype.missions.transitions import AgentExecutionStatus
 
@@ -217,7 +218,7 @@ class CodingAgentHarness:
                     await self._git(
                         session,
                         "diff",
-                        "--binary",
+                        *GIT_DIFF_IDENTITY_FLAGS,
                         starting_revision,
                         final_revision,
                     )
