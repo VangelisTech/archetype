@@ -81,7 +81,10 @@ def test_reconcile_script_delegates_to_the_one_queue_ready_oracle() -> None:
     # Postcondition over exit code, both directions.
     assert "autoMergeRequest != null" in script
     assert "--disable-auto" in script
-    assert "--auto --squash" in script
+    # Arming is pinned to the head the oracle judged: without
+    # --match-head-commit, a push racing the readiness read would arm the
+    # new, unreviewed head on a stale verdict.
+    assert '--auto --squash --match-head-commit "$head_sha"' in _code_only(script)
 
 
 def test_eligibility_filter_mirrors_the_automerge_arm_job() -> None:
@@ -256,7 +259,10 @@ def test_ready_and_unarmed_arms_with_postcondition(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "armed auto-merge" in result.stdout
-    assert any("--auto" in call and "--squash" in call for call in calls)
+    assert any(
+        "--auto" in call and "--squash" in call and f"--match-head-commit {_STUB_HEAD}" in call
+        for call in calls
+    ), f"arming must be pinned to the judged head; calls: {calls}"
 
 
 def test_not_ready_and_armed_disarms(tmp_path: Path) -> None:

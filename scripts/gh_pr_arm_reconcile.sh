@@ -127,7 +127,11 @@ reconcile() {
 }
 
 if [[ "$ready" -eq 0 && "$armed" != "true" ]]; then
-  if reconcile true --auto --squash; then
+  # --match-head-commit closes the read-arm race: if a push lands after the
+  # readiness read, the arm applies to a head the oracle never judged. With
+  # the pin, GitHub rejects the arm for any head other than the reviewed
+  # one; the retry re-fails and the next cron cycle judges the new head.
+  if reconcile true --auto --squash --match-head-commit "$head_sha"; then
     echo "PR #${PR} is queue-ready on ${head_sha}; armed auto-merge."
     exit 0
   fi
