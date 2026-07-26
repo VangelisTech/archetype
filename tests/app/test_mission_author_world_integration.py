@@ -14,6 +14,7 @@ from typing import Any, cast
 import pytest
 from pydantic import create_model
 
+import archetype.wiring as wiring
 from archetype.app.missions.activity_world import (
     MissionAuthorActivityBinding,
     StorageMissionCommittedIntentReader,
@@ -50,7 +51,14 @@ from archetype.missions.components import (
     TaskWorkspace,
     ValidationResult,
 )
-from archetype.missions.contracts import CriticPolicy
+from archetype.missions.contracts import (
+    AgentMissionConfig,
+    AgentTask,
+    CommandValidator,
+    CriticPolicy,
+    MissionSubmission,
+)
+from archetype.missions.models import SubmitMission
 from archetype.missions.projections import (
     project_complete_author_activity_fact_bundles,
     project_task_dispatch_requests,
@@ -66,6 +74,11 @@ from archetype.missions.relations import (
     Supersedes,
 )
 from archetype.missions.sandboxes import SandboxIdentity, SandboxStatus
+from archetype.missions.sandboxes.modal import (
+    MODAL_ACTIVITY_PROTOCOL_EPOCH,
+    ModalSandboxBackend,
+    ModalSandboxConfig,
+)
 from archetype.missions.transitions import AgentExecutionStatus, TaskStatus
 from archetype.storage.config import ControlCatalogConfig
 from archetype.storage.service import StorageService
@@ -147,6 +160,74 @@ async def test_author_binding_composes_with_the_exact_injected_runtime_registry(
         assert lifecycle._required_projector("other-world") is None
         assert await binding.has_unsettled_work("bound-world")
         assert not await binding.has_unsettled_work("other-world")
+    finally:
+        await resources.aclose()
+        await storage.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_modal_mission_submit_binds_required_activity_before_first_tick(
+    tmp_path: Path,
+) -> None:
+    control = ControlCatalogConfig(catalog_dir=tmp_path / "control")
+    storage = StorageService(control_catalog_config=control)
+    registry = WorldRegistry()
+    resources = build_runtime_resources(
+        RuntimeBootstrapConfig(
+            control_catalog_config=control,
+            storage_service=storage,
+            world_registry=registry,
+        )
+    )
+    backend = ModalSandboxBackend(
+        ModalSandboxConfig(
+            workspace_name="test-workspace",
+            environment_name="test-environment",
+            operation_protocol_epoch=MODAL_ACTIVITY_PROTOCOL_EPOCH,
+        )
+    )
+    owner_id = "modal-mission-owner"
+    resources.reserve_owner(owner_id, phase="workflow-handles")
+    try:
+        await resources.dispatcher.apply(
+            SubmitMission(
+                owner_id=owner_id,
+                name="modal-activity-cutover",
+                config=AgentMissionConfig(
+                    sandbox_backend=backend,
+                    sandbox_environment=backend.environment,
+                    workspace="/workspace/repo",
+                    critic_workspace="/workspace/review",
+                ),
+                storage=StorageConfig(
+                    uri=str(tmp_path / "world"),
+                    namespace="modal-activity-cutover",
+                ),
+                submission=MissionSubmission(
+                    repository="https://github.com/example/repository.git",
+                    branch="agent/modal-cutover",
+                    tasks=(
+                        AgentTask(
+                            name="prove-cutover",
+                            prompt="Prove the Activity cutover.",
+                            validators=(
+                                CommandValidator(
+                                    name="focused",
+                                    command=("pytest", "-q"),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        )
+
+        service = cast(Any, resources.owner(owner_id).require_bound())
+        world_id = str(service.world_id)
+        projector = registry.required_projector(world_id)
+        assert projector is not None
+        assert projector.consumer_name == "missions.author-activities"
+        assert registry.pending_receipt(world_id) is None
     finally:
         await resources.aclose()
         await storage.shutdown()
@@ -494,3 +575,30 @@ async def test_complete_author_observation_survives_restart_without_duplicates(
             )
     finally:
         await recovered_storage.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cold_activity_router_fails_closed_until_family_binding_returns() -> None:
+    async def durable_unsettled(world_id: str) -> bool:
+        assert world_id == "cold-world"
+        return True
+
+    router = wiring._UnsettledWorldRouter(durable_unsettled)  # noqa: SLF001
+    projector = router.required_projector_for("cold-world")
+
+    with pytest.raises(RuntimeError, match="no executable binding"):
+        await projector.project(object())  # type: ignore[arg-type]
+
+    delegated: list[object] = []
+
+    async def project(receipt: object) -> None:
+        delegated.append(receipt)
+
+    binding = SimpleNamespace(
+        required_projector=SimpleNamespace(project=project),
+        has_unsettled_work=durable_unsettled,
+    )
+    await router.bind("cold-world", binding)
+    receipt = object()
+    await projector.project(receipt)  # type: ignore[arg-type]
+    assert delegated == [receipt]

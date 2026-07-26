@@ -30,6 +30,7 @@ from archetype.missions.components import (
     AgentExecution,
     AuthorActivityObservation,
     Candidate,
+    Checkpoint,
     Commit,
     CompleteAuthorActivityObservation,
     CompleteCriticActivityObservation,
@@ -551,6 +552,7 @@ COMPLETE_AUTHOR_ACTIVITY_FACT_TYPES: tuple[type[Component], ...] = (
     AgentExecution,
     ValidationResult,
     Commit,
+    Checkpoint,
     FrictionLog,
     Candidate,
     PartOfMission,
@@ -615,6 +617,7 @@ def reconstruct_complete_author_activity_fact_bundle(
         (ValidationResult, marker.validation_count),
         (Commit, marker.commit_count),
         (FrictionLog, marker.friction_count),
+        (Checkpoint, marker.checkpoint_count),
     )
     output_facts: list[AuthorActivityEntityFact] = []
     for component_type, expected_count in output_groups:
@@ -699,6 +702,7 @@ def reconstruct_complete_author_activity_fact_bundle(
             execution_id=marker.execution_id,
             sandbox_entity_id=marker.sandbox_entity_id,
             candidate_entity_id=marker.candidate_entity_id,
+            checkpoint_entity_id=marker.checkpoint_entity_id,
         )
     except ValueError:
         return None

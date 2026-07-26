@@ -4,6 +4,9 @@ family = "missions"
 
 [[disposition]]
 operations = [
+  "activity_values.AuthorValueRedactor.assert_safe_metadata",
+  "activity_values.AuthorValueRedactor.policy_id",
+  "activity_values.AuthorValueRedactor.redact_text",
   "activities.MissionAuthorActivityCatalog.admit_author",
   "activities.MissionAuthorActivityCatalog.bind_provider_operation",
   "activities.MissionAuthorActivityCatalog.claim_author",
@@ -70,6 +73,10 @@ operations = [
   "service.MissionCleanup.stage_teardown",
   "service.MissionCleanup.update_retained",
   "service.MissionCleanup.world_id",
+  "service.MissionAuthorActivityRuntime.aclose",
+  "service.MissionAuthorActivityRuntime.worker",
+  "service.MissionAuthorActivityWorker.run_once",
+  "service.MissionAuthorActivityWorker.run_until_idle",
   "service.MissionRedactor.assert_safe_metadata",
   "service.MissionRedactor.policy_id",
   "service.MissionRedactor.redact_text",

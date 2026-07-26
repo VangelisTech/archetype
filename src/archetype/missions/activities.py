@@ -21,6 +21,7 @@ from archetype.missions.components import (
     AgentExecution,
     AuthorActivityObservation,
     Candidate,
+    Checkpoint,
     Commit,
     CompleteAuthorActivityObservation,
     FrictionLog,
@@ -40,7 +41,7 @@ from archetype.missions.relations import (
     RunsIn,
     Supersedes,
 )
-from archetype.missions.sandboxes import SandboxStatus
+from archetype.missions.sandboxes import CheckpointRef, SandboxStatus
 from archetype.missions.transitions import AgentExecutionStatus
 
 AUTHOR_ACTIVITY_KIND = "missions.author"
@@ -94,7 +95,12 @@ class AuthorActivityResultRef:
 
 @dataclass(frozen=True, slots=True)
 class AuthorActivityRetryGuard:
-    """Provider-side barrier authorizing one safe replay attempt."""
+    """Workflow binding for one provider adapter's atomic retry route.
+
+    This value is never transferable provider execution authority. The
+    adapter must still acquire its own non-transferable provider barrier while
+    performing the retry.
+    """
 
     ref: str
     digest: str
@@ -111,6 +117,7 @@ class AuthorExecutionObservation:
     result: AgentExecutionResult
     sandbox_status: SandboxStatus
     bind_mission: bool = True
+    checkpoint: CheckpointRef | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "sandbox_status", SandboxStatus(self.sandbox_status))
@@ -124,6 +131,7 @@ class DurableAuthorExecutionObservation:
     sandbox_status: SandboxStatus
     redaction_policy_id: str
     bind_mission: bool = True
+    checkpoint: CheckpointRef | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "sandbox_status", SandboxStatus(self.sandbox_status))
@@ -140,7 +148,7 @@ class AuthorRecovered:
 
 @dataclass(frozen=True, slots=True)
 class AuthorConfirmedAbsent:
-    """Provider evidence proves absence behind an atomic replay barrier."""
+    """Provider evidence permits an attempt through an atomic retry route."""
 
     guard: AuthorActivityRetryGuard
 
@@ -303,6 +311,7 @@ class CompleteAuthorActivityFactBundle:
     execution_id: int
     sandbox_entity_id: int
     candidate_entity_id: int = 0
+    checkpoint_entity_id: int = 0
 
     def __post_init__(self) -> None:
         identities = [fact.entity_id for fact in self.facts]
@@ -312,6 +321,8 @@ class CompleteAuthorActivityFactBundle:
             raise ValueError("complete author activity facts require execution and sandbox ids")
         if self.candidate_entity_id < 0:
             raise ValueError("complete author activity candidate identity cannot be negative")
+        if self.checkpoint_entity_id < 0:
+            raise ValueError("complete author activity checkpoint identity cannot be negative")
         by_id = {fact.entity_id: fact.component for fact in self.facts}
         if not isinstance(by_id.get(self.execution_id), AgentExecution):
             raise ValueError("complete author activity execution identity is not an execution")
@@ -322,6 +333,11 @@ class CompleteAuthorActivityFactBundle:
             Candidate,
         ):
             raise ValueError("complete author activity candidate identity is not a candidate")
+        if self.checkpoint_entity_id and not isinstance(
+            by_id.get(self.checkpoint_entity_id),
+            Checkpoint,
+        ):
+            raise ValueError("complete author activity checkpoint identity is not a checkpoint")
 
     def components(self, component_type: type[Component]) -> tuple[AuthorActivityEntityFact, ...]:
         """Return facts of one exact component type in stable entity order."""
@@ -378,6 +394,8 @@ class CompleteAuthorActivityFactBundle:
             validation_count=len(self.components(ValidationResult)),
             commit_count=len(self.components(Commit)),
             friction_count=len(self.components(FrictionLog)),
+            checkpoint_count=len(self.components(Checkpoint)),
+            checkpoint_entity_id=self.checkpoint_entity_id,
             sandbox_entity_id=self.sandbox_entity_id,
             sandbox_bound=bool(self.components(PartOfMission)),
             candidate_entity_id=self.candidate_entity_id,
@@ -452,6 +470,7 @@ def complete_author_activity_fact_count(
         len(observation.result.validation)
         + len(observation.result.commits)
         + len(observation.result.friction)
+        + int(observation.checkpoint is not None)
     )
     base = 4 + int(observation.bind_mission)  # sandbox, execution, Executes, RunsIn
     candidate = (
@@ -537,6 +556,38 @@ def complete_author_activity_fact_bundle(
             AuthorActivityEntityFact(
                 next(selected),
                 ProducedBy(source=output_id, target=execution_id),
+            )
+        )
+
+    checkpoint_entity_id = 0
+    if observation.checkpoint is not None:
+        checkpoint = observation.checkpoint
+        checkpoint_entity_id = next(selected)
+        facts.append(
+            AuthorActivityEntityFact(
+                checkpoint_entity_id,
+                Checkpoint(
+                    task_id=result.task_id,
+                    execution_id=execution_id,
+                    dispatch_id=result.dispatch_id,
+                    provider=checkpoint.provider,
+                    checkpoint_id=checkpoint.checkpoint_id,
+                    uri=checkpoint.uri,
+                    created_at_ms=checkpoint.created_at_ms,
+                    environment=checkpoint.environment,
+                    source_sandbox_id=checkpoint.source_sandbox_id,
+                    owner_id=checkpoint.owner_id,
+                    locality=checkpoint.locality.value,
+                    expires_at_ms=checkpoint.expires_at_ms or 0,
+                    integrity=checkpoint.integrity,
+                    restorable=checkpoint.restorable,
+                ),
+            )
+        )
+        facts.append(
+            AuthorActivityEntityFact(
+                next(selected),
+                ProducedBy(source=checkpoint_entity_id, target=execution_id),
             )
         )
 
@@ -630,6 +681,7 @@ def complete_author_activity_fact_bundle(
         execution_id=execution_id,
         sandbox_entity_id=sandbox_entity_id,
         candidate_entity_id=candidate_entity_id,
+        checkpoint_entity_id=checkpoint_entity_id,
     )
 
 

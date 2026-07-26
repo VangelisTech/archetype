@@ -25,6 +25,7 @@ from pydantic import TypeAdapter
 
 from archetype.activities import ActivityCoordinator
 from archetype.app.missions.activities import (
+    AuthorActivityClaim,
     AuthorActivityReconciliationRequired,
     CommittedMissionSnapshot,
     MissionAuthorActivityProjector,
@@ -938,6 +939,104 @@ def _raw_observation(dispatch_id: str) -> AuthorExecutionObservation:
         ),
         sandbox_status=SandboxStatus.READY,
     )
+
+
+@pytest.mark.asyncio
+async def test_worker_drains_every_claimable_author_from_one_committed_tick() -> None:
+    request_refs = (
+        AuthorActivityRequestRef("request://dispatch-a", "a" * 64),
+        AuthorActivityRequestRef("request://dispatch-b", "b" * 64),
+    )
+    requests = {
+        ref.ref: TaskDispatchRequest(
+            mission_id=3,
+            task_id=7,
+            task_name="drain",
+            dispatch_id="dispatch-a" if position == 0 else "dispatch-b",
+            dispatch_sequence=1,
+            repository="owner/repo",
+            branch="proof/activity",
+            base_ref="main",
+            prompt="drain every admitted author",
+            validators=(
+                DispatchedValidator(
+                    validator_id=11,
+                    spec=CommandValidator(
+                        name="test",
+                        command=("pytest", "-q"),
+                    ),
+                ),
+            ),
+            publication_policy=RepositoryPublicationPolicy.COMMIT_AND_PUSH,
+        )
+        for position, ref in enumerate(request_refs)
+    }
+    claims = [
+        AuthorActivityClaim(
+            world_id="world-a",
+            activity_id=request.dispatch_id,
+            attempt=1,
+            fence=position + 1,
+            request=ref,
+        )
+        for position, (ref, request) in enumerate(zip(request_refs, requests.values(), strict=True))
+    ]
+
+    class _Catalog:
+        async def pending_author_results(self, *, world_id: str):
+            assert world_id == "world-a"
+            return ()
+
+        async def claim_author(self, *, world_id: str, owner: str):
+            assert (world_id, owner) == ("world-a", "drain-worker")
+            return claims.pop(0) if claims else None
+
+        async def bind_provider_operation(self, claim, *, provider: str, operation_id: str):
+            return replace(
+                claim,
+                provider=provider,
+                provider_operation_id=operation_id,
+            )
+
+        async def record_author_result(self, claim, result) -> None:
+            del claim, result
+
+    class _Values:
+        async def get_request(self, ref):
+            return requests[ref.ref]
+
+        async def put_result(self, observation):
+            return AuthorActivityResultRef(
+                ref=f"result://{observation.result.dispatch_id}",
+                digest=hashlib.sha256(observation.result.dispatch_id.encode()).hexdigest(),
+            )
+
+    class _Executor:
+        provider = "drain-provider"
+
+        def __init__(self) -> None:
+            self.executed: list[str] = []
+
+        async def execute(self, *, operation_id, request, attempt, fence, retry_guard):
+            del operation_id, attempt, fence, retry_guard
+            self.executed.append(request.dispatch_id)
+            return _raw_observation(request.dispatch_id)
+
+        async def reconcile(self, *, operation_id, request):
+            raise AssertionError((operation_id, request))
+
+    executor = _Executor()
+    worker = MissionAuthorActivityWorker(
+        world_id="world-a",
+        owner="drain-worker",
+        catalog=_Catalog(),  # type: ignore[arg-type]
+        values=_Values(),  # type: ignore[arg-type]
+        executor=executor,
+        stager=_CrashOnceStager(crash=False),
+    )
+
+    assert await worker.run_until_idle()
+    assert executor.executed == ["dispatch-a", "dispatch-b"]
 
 
 @pytest.mark.asyncio

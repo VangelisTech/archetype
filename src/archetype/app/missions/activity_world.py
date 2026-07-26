@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 
 from daft import DataFrame
 
@@ -27,6 +27,7 @@ from archetype.missions.components import (
     AgentExecution,
     AuthorActivityObservation,
     Candidate,
+    Checkpoint,
     Commit,
     CompleteAuthorActivityObservation,
     CompleteCriticActivityObservation,
@@ -103,6 +104,7 @@ _MISSION_QUERY_GROUPS: tuple[tuple[type[Component], ...], ...] = (
     (AgentExecution,),
     (ValidationResult,),
     (Commit,),
+    (Checkpoint,),
     (FrictionLog,),
     (Sandbox,),
     (Candidate,),
@@ -435,13 +437,12 @@ class WorldMissionAuthorObservationStager:
 
 
 class MissionAuthorActivityBinding:
-    """Opt one exact world into the Activity-backed author choreography.
+    """Bind one exact world to the Activity-backed author choreography.
 
-    The default Mission service remains untouched. Hosts explicitly pass
-    ``required_projector_for`` and ``has_unsettled_work`` into their world
-    lifecycle composition, inject the stager's exact ``WorldRegistry`` into
-    ``RuntimeBootstrapConfig``, and drive ``worker.run_once`` outside tick
-    locks.
+    Runtime composition installs this binding for supported Modal Missions.
+    Maintainer hosts may also pass ``required_projector_for`` and
+    ``has_unsettled_work`` into world lifecycle composition explicitly. The
+    worker always runs outside tick locks.
     """
 
     def __init__(
@@ -454,6 +455,7 @@ class MissionAuthorActivityBinding:
         values: MissionAuthorValueStore,
         executor: MissionAuthorExecutor,
         stager: WorldMissionAuthorObservationStager,
+        close: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         if not world_id.strip():
             raise ValueError("mission author binding requires a world identity")
@@ -476,6 +478,8 @@ class MissionAuthorActivityBinding:
             stager=stager,
         )
         self._catalog = catalog
+        self._close = close
+        self._closed = False
 
     def required_projector_for(self, world_id: str) -> RequiredProjector | None:
         """Bind the sole projector slot only for this explicitly selected world."""
@@ -488,6 +492,15 @@ class MissionAuthorActivityBinding:
         if str(world_id) != self.world_id:
             return False
         return await self._catalog.has_unsettled_work(self.world_id)
+
+    async def aclose(self) -> None:
+        """Release the concrete catalog only after its world has closed."""
+
+        if self._closed:
+            return
+        if self._close is not None:
+            await self._close()
+        self._closed = True
 
 
 __all__ = [

@@ -488,6 +488,43 @@ class WorldRegistry:
         entry = self._worlds.get(str(world_id))
         return entry.required_projector if entry is not None else None
 
+    async def bind_required_projector(
+        self,
+        world_id: str | UUID,
+        projector: Any,
+    ) -> None:
+        """Attach one projector before the world's first managed tick.
+
+        Some application workflows learn their durable world identity only
+        during lazy activation. They may bind their already-constructed
+        projector immediately afterwards, while the exact-world lock proves
+        that no tick or cleanup can race the transition.
+        """
+
+        if projector is None:
+            raise TypeError("required projector cannot be None")
+        key = str(world_id)
+        async with self._registry_lock:
+            entry = self._entry_locked(key)
+        await entry.lock.acquire()
+        try:
+            async with self._registry_lock:
+                self._validate_current_entry_locked(entry)
+                if entry.cleanup_lease is not None:
+                    raise WorldClosingError(key)
+                if entry.pending_receipt is not None:
+                    raise RuntimeError(
+                        f"world {key} already has a pending required-projection receipt"
+                    )
+                existing = entry.required_projector
+                if existing is not None and existing is not projector:
+                    raise ValueError(
+                        f"World with ID '{key}' already has a different required projector."
+                    )
+                entry.required_projector = projector
+        finally:
+            entry.lock.release()
+
     def retain_receipt(self, world_id: str | UUID, receipt: Any) -> None:
         """Retain one exact manifest-bound receipt until acknowledgment."""
 

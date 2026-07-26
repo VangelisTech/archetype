@@ -88,6 +88,7 @@ class MissionAuthorActivityCoordinator:
         pending = await self._coordinator.pending(
             kind=AUTHOR_ACTIVITY_KIND,
             world_id=world_id,
+            limit=10_000,
         )
         for snapshot in pending:
             generic = await self._coordinator.claim(

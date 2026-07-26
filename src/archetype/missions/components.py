@@ -264,6 +264,8 @@ class CompleteAuthorActivityObservation(Component):
     validation_count: int = 0
     commit_count: int = 0
     friction_count: int = 0
+    checkpoint_count: int = 0
+    checkpoint_entity_id: int = 0
     sandbox_entity_id: int = 0
     sandbox_bound: bool = False
     candidate_entity_id: int = 0
@@ -288,6 +290,10 @@ class CompleteAuthorActivityObservation(Component):
             )
         if min(self.validation_count, self.commit_count, self.friction_count) < 0:
             raise ValueError("complete author activity observation counts cannot be negative")
+        if self.checkpoint_count not in {0, 1}:
+            raise ValueError("complete author activity observation has at most one checkpoint")
+        if self.checkpoint_count != int(self.checkpoint_entity_id > 0):
+            raise ValueError("complete author activity checkpoint identity is inconsistent")
         if self.schema_version != 2:
             raise ValueError("complete author activity observation requires schema version 2")
         if self.candidate_count not in {0, 1}:
