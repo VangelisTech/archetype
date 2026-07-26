@@ -614,6 +614,7 @@ jobs:
           printf '%s' "${STRUCTURED_OUTPUT}" \
             > "${REVIEW_DIR}/adjudication/result.json"
           python3 scripts/footgun_review_gate.py normalize-adjudication \
+            --scope "${SCOPE_FILE}" \
             --head "${HEAD_SHA}" \
             --cluster "${CLUSTER_ID}" \
             --reviewer claude \

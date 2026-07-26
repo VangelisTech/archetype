@@ -984,6 +984,7 @@ def normalize_adjudication_result(
     *,
     head_sha: str,
     cluster_id: str,
+    scoped_files: Sequence[str] = (),
 ) -> AdjudicationResult:
     required = (
         "head_sha",
@@ -1016,9 +1017,21 @@ def normalize_adjudication_result(
         label = f"adjudication evidence[{index}]"
         item = _expect_mapping(raw_evidence, label)
         _exact_keys(item, ("path", "explanation"), label)
+        path = _text(item.get("path"), f"{label}.path")
+        # An adjudication can downgrade a blocking claim to advisory — and
+        # advisory findings no longer publish as threads — so a hallucinated
+        # evidence path would make a blocking claim silently disappear from
+        # review. Evidence must name a file the adjudicator could actually
+        # have seen: a scoped changed file or a real protected-base file
+        # (the gate runs with the protected base as the working directory).
+        if path not in scoped_files and not Path(path).is_file():
+            raise ReviewError(
+                f"{label}.path {path!r} is neither a scoped file nor a "
+                "protected-base file; severity-changing evidence must be real"
+            )
         evidence.append(
             {
-                "path": _text(item.get("path"), f"{label}.path"),
+                "path": path,
                 "explanation": _text(item.get("explanation"), f"{label}.explanation", 20),
             }
         )

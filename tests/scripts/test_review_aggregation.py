@@ -88,6 +88,7 @@ def _adjudication(
         raw,
         head_sha=HEAD_SHA,
         cluster_id=cluster_id,
+        scoped_files=FILES,
     )
     prompt = render_adjudication_prompt(
         pr_number=7,

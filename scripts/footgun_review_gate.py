@@ -953,10 +953,13 @@ def _adjudication_matrix_command(args: argparse.Namespace) -> None:
 
 def _normalize_adjudication_command(args: argparse.Namespace) -> None:
     raw = _expect_mapping(_load_json(args.result), "adjudication result")
+    scope = _load_json(args.scope)
+    _, files = _scope_values(scope)
     normalized = normalize_adjudication_result(
         raw,
         head_sha=args.head,
         cluster_id=args.cluster,
+        scoped_files=files,
     )
     receipt = make_adjudication_receipt(
         normalized,
@@ -1274,6 +1277,7 @@ def _parser() -> argparse.ArgumentParser:
         "normalize-adjudication",
         help="validate one adjudication into a receipt",
     )
+    normalize_adjudication.add_argument("--scope", type=Path, required=True)
     normalize_adjudication.add_argument("--head", required=True)
     normalize_adjudication.add_argument("--cluster", required=True)
     normalize_adjudication.add_argument("--reviewer", required=True)

@@ -38,6 +38,7 @@ from review_contracts import (  # noqa: E402
     expected_review_pairs,
     human_design_brief_schema,
     lens_result_schema,
+    normalize_adjudication_result,
     normalize_human_design_brief,
     normalize_lens_result,
     render_adjudication_prompt,
@@ -253,3 +254,61 @@ def test_human_brief_must_surface_every_required_decision_cluster():
             cluster_ids={cluster_id},
             required_decision_cluster_ids={cluster_id},
         )
+
+
+def test_adjudication_evidence_paths_must_be_real():
+    """A hallucinated evidence path must not downgrade a blocking claim.
+
+    An adjudication can turn blocking into advisory, and advisory findings no
+    longer publish as threads — so fabricated evidence would make a blocking
+    claim silently disappear from review.
+    """
+    raw = {
+        "head_sha": HEAD_SHA,
+        "cluster_id": "cluster-1",
+        "disposition": "confirmed",
+        "recommended_severity": "advisory",
+        "evidence": [
+            {
+                "path": "src/archetype/definitely_not_a_real_module.py",
+                "explanation": (
+                    "This confidently cited file does not exist anywhere in the "
+                    "repository or the scoped diff."
+                ),
+            }
+        ],
+        "rationale": (
+            "The claim is judged advisory based on evidence that cannot actually "
+            "be inspected by anyone verifying this adjudication."
+        ),
+        "recommended_action": "Downgrade the claim to advisory in the receipt.",
+    }
+
+    with pytest.raises(ReviewError, match="must be real"):
+        normalize_adjudication_result(
+            raw,
+            head_sha=HEAD_SHA,
+            cluster_id="cluster-1",
+            scoped_files=["new.py", "old.py"],
+        )
+
+    # A scoped file passes without touching the filesystem.
+    raw["evidence"][0]["path"] = "old.py"
+    normalized = normalize_adjudication_result(
+        raw,
+        head_sha=HEAD_SHA,
+        cluster_id="cluster-1",
+        scoped_files=["new.py", "old.py"],
+    )
+    assert normalized["evidence"][0]["path"] == "old.py"
+
+    # A real protected-base file also passes (the gate runs with the
+    # protected base as its working directory).
+    raw["evidence"][0]["path"] = "pyproject.toml"
+    normalized = normalize_adjudication_result(
+        raw,
+        head_sha=HEAD_SHA,
+        cluster_id="cluster-1",
+        scoped_files=["new.py", "old.py"],
+    )
+    assert normalized["evidence"][0]["path"] == "pyproject.toml"

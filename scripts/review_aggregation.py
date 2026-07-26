@@ -613,6 +613,7 @@ def validate_adjudication_receipt(
     *,
     head_sha: str,
     cluster_id: str,
+    scoped_files: Sequence[str] = (),
 ) -> AdjudicationReceipt:
     _exact_keys(
         raw_receipt,
@@ -649,6 +650,7 @@ def validate_adjudication_receipt(
         model_result,
         head_sha=head_sha,
         cluster_id=cluster_id,
+        scoped_files=scoped_files,
     )
     if normalized != result:
         raise ReviewError("adjudication result is not canonically normalized")
@@ -691,6 +693,7 @@ def finalize_review_bundle(
             raw_receipt,
             head_sha=head_sha,
             cluster_id=cluster_id,
+            scoped_files=scoped_files,
         )
     if set(receipts_by_cluster) != set(targets):
         missing = sorted(set(targets) - set(receipts_by_cluster))

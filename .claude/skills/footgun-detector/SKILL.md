@@ -189,9 +189,10 @@ Every finding carries exactly one severity:
   state, or sequence under which the change misbehaves. In deterministic CI,
   blocking findings fail the merge gate until the code changes.
 - **advisory** — a real risk whose harm depends on judgment, convention, or
-  context the diff cannot settle. Advisory findings post as review threads
-  and must be resolved before merge, but resolving one with a written
-  disposition — no code change — is a sanctioned outcome.
+  context the diff cannot settle. Advisory findings publish inside the
+  review's receipt comment, not as review threads, and never block the
+  merge queue: fixing one or recording a written disposition in the PR
+  conversation are both sanctioned outcomes.
 
 Reserve `blocking` for findings you would stake the review on: if you cannot
 name the failing input or sequence, it is advisory. A finding too speculative
