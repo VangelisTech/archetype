@@ -55,18 +55,19 @@ In deterministic CI, the working tree is the protected base. Use it for
 surrounding context and `.footgun-review.diff` for the exact candidate changes;
 a newly added file is represented in full by its diff.
 
-When deterministic CI requests structured output, `reviewed_files` and every
-`review_context.files` array are changed-file coverage fields: they may contain
-only paths from `.footgun-review-scope.json`. Name any protected-base files used
-as implementation evidence in the assessment prose instead. Never substitute
-schema examples or placeholder paths/categories for the authoritative scope.
+When deterministic CI requests structured output, every
+`review_context.files` array is changed-file coverage metadata and may contain
+only paths from `.footgun-review-scope.json`. Name protected-base evidence
+paths in assessment or finding prose instead. Reviewer identity, category
+assignment, and the exact file manifest are trusted orchestration provenance;
+do not echo them as model-authored completion claims.
 
-Deterministic CI reviews these categories as parallel lens jobs, each
-covering a subset and each on its own backend; the lens partition lives in
-`scripts/footgun_review_gate.py` (`LENSES`), and the merge fails closed if a
-category below is not assigned to exactly one lens. When a CI prompt names a
-lens, report findings only in that lens's categories. Local and interactive
-runs review all categories in one pass.
+Deterministic CI reviews these categories as five parallel footgun lenses with
+two independent reviewers each. The lens partition and reviewer policy live in
+`scripts/review_contracts.py`; aggregation fails closed if either receipt is
+missing or a category below is unassigned. When a CI prompt names a lens,
+report findings only in that lens's categories. Local and interactive runs
+review all categories in one pass.
 
 ### Footgun categories
 
@@ -173,6 +174,8 @@ For each footgun found, output exactly this format:
 **What it does:** <one sentence describing the code>
 
 **What goes wrong:** <the runtime consequence — data loss, silent wrong results, crash, cost waste>
+
+**Failing input or sequence:** <the concrete input, state, or ordered events that reproduce it>
 
 **Fix:**
 <concrete code suggestion or description of the fix>
