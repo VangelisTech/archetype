@@ -172,9 +172,25 @@ def test_r2_job_runs_each_oracle_once_and_retains_the_redacted_receipt() -> None
         r"\s+path: \|\n"
         r"\s+r2-operational-results\.json\n"
         r"\s+r2-operational-results\.d/\n"
+        r"\s+r2-operational-results\.attempt1\.json\n"
+        r"\s+r2-operational-results\.attempt1\.d/\n"
         r"\s+if-no-files-found: error",
         infrastructure,
     )
+
+    # One sanctioned in-job retry: the scenario command is defined once
+    # (count above), invoked through a function, and a failed first attempt
+    # keeps its receipt as the classification record before the single
+    # retry. Nothing may retry more than once, and the retry must not
+    # discard attempt 1's evidence.
+    code = _code_only(infrastructure)
+    assert code.count("run_r2_scenario()") == 1, "scenario command must be defined exactly once"
+    assert code.count("run_r2_scenario\n") + code.count("run_r2_scenario;") == 2, (
+        "the scenario must be invoked exactly twice: first attempt and one retry"
+    )
+    assert "r2-operational-results.attempt1.json" in code
+    assert re.search(r"mv r2-operational-results\.json r2-operational-results\.attempt1\.json", code)
+    assert "::warning::" in infrastructure, "a silent retry hides the flake it absorbed"
 
 
 def test_observability_audit_uses_the_existing_required_format_context() -> None:

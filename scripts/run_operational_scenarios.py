@@ -292,14 +292,80 @@ def _stop_timed_out_process(process: subprocess.Popen[bytes]) -> tuple[int | Non
     return returncode, group_closed
 
 
+def _process_group_snapshot(process_group: int) -> str:
+    """One line per still-running group member: pid, age, command.
+
+    Best-effort diagnostics only — a snapshot failure must never mask the
+    timeout it is trying to explain.
+    """
+    try:
+        listing = subprocess.run(
+            ["ps", "-eo", "pid=,pgid=,etime=,command="],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"(snapshot unavailable: {type(exc).__name__}: {exc})"
+    members = []
+    for line in listing.splitlines():
+        fields = line.split(maxsplit=3)
+        if len(fields) == 4 and fields[1] == str(process_group):
+            pid, _, etime, command = fields
+            members.append(f"  pid={pid} age={etime} cmd={command}")
+    return "\n".join(members) if members else "(no group members visible)"
+
+
+_FAILURE_TAIL_BYTES = 16_384
+_SECRET_ENV_NAME = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL")
+_SECRET_MIN_LENGTH = 8
+
+
+def _secret_environment_values(env: dict[str, str]) -> list[tuple[str, str]]:
+    """Env values that must never appear in retained output, longest first.
+
+    Longest-first so a value that contains another (a token embedding a key
+    id) is masked before its substring turns the remainder unrecognizable.
+    Short values are excluded: masking every 3-character string would
+    destroy the log, and no real credential is that short.
+    """
+    values = [
+        (name, value)
+        for name, value in env.items()
+        if _SECRET_ENV_NAME.search(name) and len(value) >= _SECRET_MIN_LENGTH
+    ]
+    return sorted(values, key=lambda item: len(item[1]), reverse=True)
+
+
 def _write_captured_log(
     *,
     raw: bytes,
     destination: Path,
     redacted: bool,
+    failed: bool = False,
+    secret_values: list[tuple[str, str]] | None = None,
 ) -> dict[str, object]:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if redacted:
+    failure_tail_retained = False
+    if redacted and failed and raw:
+        # Redact secrets, not the assertion: a redacted receipt on a FAILED
+        # run previously discarded the entire output, which made the two R2
+        # incidents on #675/#678 undiagnosable ("exact assertion is
+        # unrecoverable"). Retain a bounded tail with credential values
+        # masked; digest and byte count still describe the full raw output.
+        tail = raw[-_FAILURE_TAIL_BYTES:]
+        text = tail.decode("utf-8", errors="replace")
+        for name, value in secret_values or ():
+            text = text.replace(value, f"***{name}***")
+        destination.write_text(
+            "Redacted receipt: run FAILED, so the output tail is retained "
+            "with credential values masked.\n"
+            f"(last {len(tail)} of {len(raw)} bytes)\n---\n" + text,
+            encoding="utf-8",
+        )
+        failure_tail_retained = True
+    elif redacted:
         destination.write_text(
             "Output omitted by redacted_receipt policy.\n",
             encoding="utf-8",
@@ -311,6 +377,7 @@ def _write_captured_log(
         "bytes": len(raw),
         "digest": _sha256_bytes(raw),
         "redacted": redacted,
+        "failure_tail_retained": failure_tail_retained,
     }
 
 
@@ -349,6 +416,11 @@ def _run_process(
                     returncode = process.wait(timeout=timeout_seconds)
                 except subprocess.TimeoutExpired:
                     timed_out = True
+                    # Photograph the group BEFORE killing it: a scenario that
+                    # hangs silently for its whole budget (#678's 600s R2
+                    # stall) otherwise leaves a receipt naming nothing. The
+                    # snapshot names the processes that were still running.
+                    timeout_snapshot = _process_group_snapshot(process.pid)
                     returncode, group_closed = _stop_timed_out_process(process)
                     process_group_leaked = not group_closed
 
@@ -356,6 +428,11 @@ def _run_process(
         stderr_raw = stderr_path.read_bytes()
         if launch_error is not None:
             stderr_raw += f"\noperational launch error: {launch_error}\n".encode()
+        if timed_out:
+            stderr_raw += (
+                f"\noperational timeout: no exit within {timeout_seconds}s; "
+                f"process-group snapshot at SIGTERM:\n{timeout_snapshot}\n"
+            ).encode()
         if process is not None and not timed_out:
             # Give well-behaved children a short exit window. Anything retaining
             # the scenario's process group afterward is owned cleanup debt even
@@ -370,6 +447,8 @@ def _run_process(
                 if not cleanup_succeeded:
                     launch_error = "process group survived SIGTERM and SIGKILL"
 
+    failed = timed_out or launch_error is not None or returncode != 0
+    secret_values = _secret_environment_values(env)
     return {
         "command": command,
         "returncode": returncode,
@@ -380,11 +459,15 @@ def _run_process(
             raw=stdout_raw,
             destination=log_prefix.with_suffix(".stdout.log"),
             redacted=redacted,
+            failed=failed,
+            secret_values=secret_values,
         ),
         "stderr": _write_captured_log(
             raw=stderr_raw,
             destination=log_prefix.with_suffix(".stderr.log"),
             redacted=redacted,
+            failed=failed,
+            secret_values=secret_values,
         ),
         "stdout_text": stdout_raw.decode("utf-8", errors="replace"),
         "process_group_leaked": process_group_leaked,
