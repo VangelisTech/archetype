@@ -469,8 +469,8 @@ def test_rendered_no_findings_evidence_is_specific_and_digest_bound():
 
     assert "no findings" in rendered
     assert "2 changed file(s), 24 detector categories, 5/5 lenses" in rendered
-    assert "| `daft-shape` | `claude-code` | validated |" in rendered
-    assert "| `authority` | `claude-code` | validated |" in rendered
+    assert "| `daft-shape` | `codex` | validated |" in rendered
+    assert "| `authority` | `codex` | validated |" in rendered
     assert "The change replaces an unsafe call" not in rendered
     assert evidence_marker(HEAD_SHA, 0, digest) in rendered
 
