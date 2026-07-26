@@ -17,10 +17,12 @@
 # merge-group run.
 #
 # Two event legs:
-# - merge_group: the real re-check. The PR number is parsed from the queue
-#   ref (gh-readonly-queue/<base>/pr-N-<base-sha> — the trailing sha is the
-#   BASE main was at, NOT the PR head, so the live head is fetched from the
-#   API; pushes are blocked while queued, so the live head is the queued
+# - merge_group: the real re-check, for EVERY member of the group. The queue
+#   can batch several PRs into one group and the ref names only the last
+#   member (gh-readonly-queue/<base>/pr-N-<base-sha> — the trailing sha is
+#   the BASE main was at, NOT the PR head), so members are enumerated from
+#   the group's own commits and each one is re-checked; live heads come from
+#   the API (pushes are blocked while queued, so the live head is the queued
 #   head). Readiness is judged by scripts/gh_pr_queue_ready.sh — the same
 #   oracle the arm/guard/dequeue jobs use. One oracle, no drift.
 # - pull_request_target: a trivial pass so the required context exists on PR
@@ -74,38 +76,65 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           QUEUE_REF: ${{ github.event.merge_group.head_ref }}
+          GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
         run: |
           chmod +x scripts/gh_pr_queue_ready.sh
 
-          pr=$(printf '%s\n' "$QUEUE_REF" | sed -nE 's|.*/pr-([0-9]+)-[0-9a-f]{40}$|\1|p')
-          if [ -z "$pr" ]; then
+          # The queue can BATCH several PRs into one merge group; the ref
+          # names only the last member. Enumerate every member by walking the
+          # group's commits (base..head) and parsing the squash subjects the
+          # queue writes ("<PR title> (#N)"), then union with the ref-named
+          # PR. A group member that cannot be enumerated would silently skip
+          # its re-check, so enumeration failure is a hard failure.
+          ref_pr=$(printf '%s\n' "$QUEUE_REF" | sed -nE 's|.*/pr-([0-9]+)-[0-9a-f]{40}$|\1|p')
+          if [ -z "$ref_pr" ]; then
             echo "::error::could not parse a PR number from merge-group ref '${QUEUE_REF}'." \
                  "The queue ref naming convention may have changed; failing closed."
             exit 1
           fi
 
-          head_sha=$(gh pr view "$pr" --repo "${GITHUB_REPOSITORY}" \
-            --json headRefOid --jq '.headRefOid')
-          if [ -z "$head_sha" ]; then
-            echo "::error::could not resolve the live head of PR #${pr}; failing closed."
+          if ! commits=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/compare/${GROUP_BASE_SHA}...${GROUP_HEAD_SHA}" \
+              --jq '.commits[].commit.message | split("\n")[0]'); then
+            echo "::error::could not enumerate the merge group's commits; failing closed."
             exit 1
           fi
+          batch_prs=$(printf '%s\n' "$commits" | sed -nE 's|.*\(#([0-9]+)\)$|\1|p')
+          prs=$(printf '%s\n%s\n' "$batch_prs" "$ref_pr" | sort -un)
+          echo "merge group contains PR(s): $(echo $prs | tr '\n' ' ')"
 
-          set +e
-          reason=$(scripts/gh_pr_queue_ready.sh "${GITHUB_REPOSITORY}" "$pr" "$head_sha")
-          status=$?
-          set -e
-          if [ "$status" -eq 0 ]; then
-            echo "PR #${pr} is still queue-ready on ${head_sha}; merge may proceed."
-            exit 0
-          fi
-          if [ "$status" -ne 1 ]; then
-            echo "::error::queue-ready helper failed (exit ${status}): ${reason}"
+          failed=0
+          for pr in $prs; do
+            head_sha=$(gh pr view "$pr" --repo "${GITHUB_REPOSITORY}" \
+              --json headRefOid --jq '.headRefOid')
+            if [ -z "$head_sha" ]; then
+              echo "::error::could not resolve the live head of PR #${pr}; failing closed."
+              failed=$((failed + 1))
+              continue
+            fi
+
+            set +e
+            reason=$(scripts/gh_pr_queue_ready.sh "${GITHUB_REPOSITORY}" "$pr" "$head_sha")
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then
+              echo "PR #${pr} is still queue-ready on ${head_sha}."
+              continue
+            fi
+            if [ "$rc" -ne 1 ]; then
+              echo "::error::queue-ready helper failed for PR #${pr} (exit ${rc}): ${reason}"
+              failed=$((failed + 1))
+              continue
+            fi
+            echo "::error::PR #${pr} is no longer queue-ready (${reason})." \
+                 "This eviction is intentional: findings arrived after queue entry." \
+                 "Resolve the threads, run scripts/gh_dispose_thread.sh ${GITHUB_REPOSITORY} ${pr} --signal," \
+                 "and let automerge re-arm — do NOT rerun this merge-group run."
+            failed=$((failed + 1))
+          done
+
+          if [ "$failed" -gt 0 ]; then
             exit 1
           fi
-
-          echo "::error::PR #${pr} is no longer queue-ready (${reason})." \
-               "This eviction is intentional: findings arrived after queue entry." \
-               "Resolve the threads, run scripts/gh_dispose_thread.sh ${GITHUB_REPOSITORY} ${pr} --signal," \
-               "and let automerge re-arm — do NOT rerun this merge-group run."
-          exit 1
+          echo "every PR in the merge group is queue-ready; merge may proceed."
