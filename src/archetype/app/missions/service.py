@@ -371,6 +371,7 @@ class MissionService:
                     timeout_seconds=task.critic_policy.timeout_seconds,
                     output_schema_version=task.critic_policy.output_schema_version,
                     max_output_chars=task.critic_policy.max_output_chars,
+                    max_subject_bytes=task.critic_policy.max_subject_bytes,
                 ),
                 TaskState(),
                 TaskDispatch(),

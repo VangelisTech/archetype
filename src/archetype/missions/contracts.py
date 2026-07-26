@@ -56,6 +56,7 @@ class CriticPolicy:
     timeout_seconds: int = 45 * 60
     output_schema_version: int = 1
     max_output_chars: int = 16_000
+    max_subject_bytes: int = 4 << 20
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -76,6 +77,8 @@ class CriticPolicy:
             raise ValueError("critic output_schema_version must be positive")
         if self.max_output_chars < 1:
             raise ValueError("critic max_output_chars must be positive")
+        if self.max_subject_bytes < 1:
+            raise ValueError("critic max_subject_bytes must be positive")
         if self.information_view != "task-diff-validators":
             raise ValueError("unsupported critic information_view")
         if self.sampling != "provider-default":

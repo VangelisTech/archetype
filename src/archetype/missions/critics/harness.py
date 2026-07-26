@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import time
 from dataclasses import asdict, dataclass, replace
@@ -13,6 +12,12 @@ from pathlib import PurePosixPath
 from typing import Any, ClassVar
 from urllib.parse import urlsplit
 
+from archetype.missions.critics.activities import (
+    CriticSubjectPolicy,
+    CriticSubjectTooLarge,
+    CriticSubjectTransport,
+    bind_critic_subject_observation,
+)
 from archetype.missions.critics.contracts import (
     CandidateReviewRequest,
     CriticDriver,
@@ -30,6 +35,20 @@ from archetype.missions.sandboxes import (
     SandboxStatus,
 )
 from archetype.missions.transitions import CriticConclusion, CriticExecutionStatus
+
+_SUBJECT_MEASUREMENT_SCRIPT = """\
+import hashlib
+import json
+import sys
+
+digest = hashlib.sha256()
+size = 0
+with open(sys.argv[1], "rb") as source:
+    for chunk in iter(lambda: source.read(1 << 20), b""):
+        digest.update(chunk)
+        size += len(chunk)
+print(json.dumps({"digest": digest.hexdigest(), "size_bytes": size}, sort_keys=True))
+"""
 
 
 @dataclass(frozen=True)
@@ -212,27 +231,81 @@ class CriticHarness:
                 raise _UnverifiableReview(
                     f"checked-out head is {checked_out}, expected {request.head_revision}"
                 )
-            diff = (
-                await self._git(
-                    session,
-                    "diff",
-                    "--binary",
-                    request.base_revision,
-                    request.head_revision,
-                )
-            ).stdout
-            observed_diff_digest = hashlib.sha256(diff.encode()).hexdigest()
+            subject_directory_result = await self._run(
+                session,
+                "mktemp",
+                "-d",
+                "/tmp/archetype-critic-subject.XXXXXXXXXX",
+                workdir="/tmp",
+            )
+            self._raise(subject_directory_result, "critic subject directory")
+            subject_directories = subject_directory_result.stdout.splitlines()
+            if len(subject_directories) != 1:
+                raise _UnverifiableReview("critic subject directory allocation is invalid")
+            subject_directory = PurePosixPath(subject_directories[0])
+            if (
+                not subject_directory.is_absolute()
+                or subject_directory.parent != PurePosixPath("/tmp")
+                or not subject_directory.name.startswith("archetype-critic-subject.")
+                or ".." in subject_directory.parts
+            ):
+                raise _UnverifiableReview("critic subject directory escaped provider ownership")
+            subject_path = str(subject_directory / "subject.diff")
+            await self._git(
+                session,
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--binary",
+                f"--output={subject_path}",
+                request.base_revision,
+                request.head_revision,
+            )
+            measured = await self._run(
+                session,
+                "python",
+                "-c",
+                _SUBJECT_MEASUREMENT_SCRIPT,
+                subject_path,
+                workdir=self.config.workspace,
+            )
+            self._raise(measured, "critic subject measurement")
+            try:
+                measurement = json.loads(measured.stdout)
+                observed_diff_digest = str(measurement["digest"])
+                observed_diff_size = int(measurement["size_bytes"])
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise _UnverifiableReview("critic subject measurement is invalid") from exc
             if observed_diff_digest != request.diff_digest:
                 raise _UnverifiableReview(
                     "exact base/head diff does not match the candidate digest"
                 )
+            prompt = self._prompt(request, subject_path=subject_path)
+            subject = bind_critic_subject_observation(
+                CriticSubjectPolicy(
+                    digest=request.diff_digest,
+                    max_bytes=request.policy.max_subject_bytes,
+                ),
+                metadata=prompt.encode(),
+                content_digest=observed_diff_digest,
+                content_size_bytes=observed_diff_size,
+                transport=CriticSubjectTransport.SANDBOX_FILE,
+                ref=subject_path,
+            )
             head_ready_at_ms = self._now_ms()
-            bound_request = replace(request, diff=diff)
+            bound_request = replace(
+                request,
+                diff="",
+                subject_ref=subject.ref,
+                subject_transport=subject.transport.value,
+                subject_size_bytes=subject.total_size_bytes,
+                subject_digest=subject.subject_digest,
+            )
             critic_started_at_ms = self._now_ms()
             process = await self._driver.run(
                 session,
                 bound_request,
-                self._prompt(bound_request),
+                prompt,
             )
             raw_output = process.stdout
             trace_uri = process.trace_uri
@@ -275,6 +348,18 @@ class CriticHarness:
                 candidate_digest=request.candidate_digest,
                 policy_digest=request.policy.digest,
                 evidence_digest=canonical_digest(payload),
+                reviewed_base_revision=request.base_revision,
+                reviewed_head_revision=request.head_revision,
+                reviewed_diff_digest=request.diff_digest,
+                validator_bundle_digest=request.validator_bundle_digest,
+                subject_metadata_digest=subject.metadata_digest,
+                subject_digest=subject.subject_digest,
+                subject_content_size_bytes=subject.content_size_bytes,
+                subject_metadata_size_bytes=subject.metadata_size_bytes,
+                subject_size_bytes=subject.total_size_bytes,
+                subject_media_type=subject.media_type,
+                subject_transport=subject.transport.value,
+                subject_ref=subject.ref,
                 reviewed_scope=str(payload.get("reviewed_scope", "exact task diff")),
                 finding_count=len(findings),
                 blocking_count=blocking_count,
@@ -299,7 +384,7 @@ class CriticHarness:
                 findings=findings,
                 receipt=receipt,
             )
-        except _UnverifiableReview as exc:
+        except (CriticSubjectTooLarge, _UnverifiableReview) as exc:
             return self._failure(
                 request,
                 session,
@@ -402,7 +487,11 @@ class CriticHarness:
         return []
 
     @staticmethod
-    def _prompt(request: CandidateReviewRequest) -> str:
+    def _prompt(
+        request: CandidateReviewRequest,
+        *,
+        subject_path: str,
+    ) -> str:
         evidence = [asdict(item) for item in request.validation]
         schema = {
             "schema_version": request.policy.output_schema_version,
@@ -437,7 +526,9 @@ class CriticHarness:
             f"Validator bundle SHA-256: {request.validator_bundle_digest}\n"
             f"Policy SHA-256: {request.policy.digest}\n"
             f"Validator evidence:\n{json.dumps(evidence, indent=2)}\n\n"
-            f"Exact diff:\n{request.diff}"
+            f"Exact diff file: {subject_path}\n"
+            "Read that file for the exact binary diff. Do not substitute the current "
+            "branch head or another working-tree view."
         )
 
     @staticmethod

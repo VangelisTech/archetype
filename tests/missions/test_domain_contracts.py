@@ -198,6 +198,16 @@ def test_critic_policy_rejects_unimplemented_behavior_axes(
         CriticPolicy(**overrides)
 
 
+def test_critic_subject_budget_is_positive_and_identity_bound() -> None:
+    baseline = CriticPolicy()
+    bounded = CriticPolicy(max_subject_bytes=baseline.max_subject_bytes + 1)
+
+    assert baseline.max_subject_bytes > 0
+    assert bounded.digest != baseline.digest
+    with pytest.raises(ValueError, match="max_subject_bytes"):
+        CriticPolicy(max_subject_bytes=0)
+
+
 def test_critic_receipt_schema_contains_only_varying_evidence() -> None:
     assert "complete" not in CriticReceipt.model_fields
     assert "verifiable" not in CriticReceipt.model_fields

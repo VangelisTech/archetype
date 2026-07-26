@@ -3,6 +3,22 @@
 
 """Independent exact-head critic resources for Agent Missions."""
 
+from archetype.missions.critics.activities import (
+    CRITIC_ACTIVITY_KIND,
+    CRITIC_ACTIVITY_MEDIA_TYPE,
+    CriticActivityCodec,
+    CriticActivityReceipt,
+    CriticActivityRedactor,
+    CriticActivityRequest,
+    CriticActivityResult,
+    CriticActivityValue,
+    CriticSubjectBinding,
+    CriticSubjectPolicy,
+    CriticSubjectTooLarge,
+    CriticSubjectTransport,
+    bind_critic_subject,
+    bind_critic_subject_observation,
+)
 from archetype.missions.critics.contracts import (
     CandidateReviewRequest,
     CriticDriver,
@@ -20,8 +36,16 @@ from archetype.missions.critics.harness import (
 )
 
 __all__ = [
+    "CRITIC_ACTIVITY_KIND",
+    "CRITIC_ACTIVITY_MEDIA_TYPE",
     "CandidateReviewRequest",
     "CodexCriticDriver",
+    "CriticActivityCodec",
+    "CriticActivityReceipt",
+    "CriticActivityRedactor",
+    "CriticActivityRequest",
+    "CriticActivityResult",
+    "CriticActivityValue",
     "CriticDriver",
     "CriticExecutionResult",
     "CriticFindingValue",
@@ -30,5 +54,11 @@ __all__ = [
     "CriticPrewarmRequest",
     "CriticProcessObservation",
     "CriticReceiptValue",
+    "CriticSubjectBinding",
+    "CriticSubjectPolicy",
+    "CriticSubjectTooLarge",
+    "CriticSubjectTransport",
     "CriticValidationEvidence",
+    "bind_critic_subject",
+    "bind_critic_subject_observation",
 ]

@@ -310,6 +310,7 @@ class TaskDispatchOutbox:
                         timeout_seconds=int(row[f"{critic_policy}timeout_seconds"]),
                         output_schema_version=int(row[f"{critic_policy}output_schema_version"]),
                         max_output_chars=int(row[f"{critic_policy}max_output_chars"]),
+                        max_subject_bytes=int(row[f"{critic_policy}max_subject_bytes"]),
                     ),
                     prior_candidate_entity_id=(
                         int(prior_candidate["entity_id"]) if prior_candidate is not None else 0
@@ -825,6 +826,7 @@ class CriticReviewOutbox:
                 timeout_seconds=int(row[f"{policy}timeout_seconds"]),
                 output_schema_version=int(row[f"{policy}output_schema_version"]),
                 max_output_chars=int(row[f"{policy}max_output_chars"]),
+                max_subject_bytes=int(row[f"{policy}max_subject_bytes"]),
             )
             author_execution_id = int(row[f"{candidate}author_execution_id"])
             author_row = author_rows[author_execution_id]
