@@ -14,9 +14,12 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
+from archetype.missions.sandboxes.contracts import SandboxSpec
 from archetype.missions.sandboxes.modal import (
     MODAL_ACTIVITY_PROTOCOL_EPOCH,
+    ModalSandboxOperationCapability,
     ModalSandboxOperationIdentity,
+    ModalSandboxSession,
 )
 
 _MAX_NAMESPACE_NAME_LENGTH = 63
@@ -155,11 +158,16 @@ class ModalProviderOperationGuard:
 
 @dataclass(frozen=True, slots=True)
 class ModalProviderRunPermit:
-    """One-winner evidence returned only by acknowledged run-marker creation.
+    """Evidence created inside the acknowledged run-marker/start transaction.
 
     The marker is permanent and must never be deleted. Losing this value after
     marker creation leaves the operation Unknown forever; another claimant may
     not reconstruct execution authority from provider lookup alone.
+
+    This frozen value is evidence, not transferable authority. Public provider
+    execution accepts no run-permit argument. Only
+    ``ModalProviderStartBarrier`` may interpret the instance it receives
+    directly from its own acknowledged marker create.
     """
 
     guard: ModalProviderOperationGuard
@@ -232,6 +240,35 @@ type ModalRunPermitAcquisition = (
 
 
 @dataclass(frozen=True, slots=True)
+class ModalProviderStarted:
+    """Exact acknowledged run-marker evidence paired with its live session."""
+
+    permit: ModalProviderRunPermit
+    session: ModalSandboxSession
+
+    def __post_init__(self) -> None:
+        if self.session.operation_identity != self.permit.guard.identity:
+            raise ValueError("Modal provider session does not match its run marker")
+
+    @property
+    def identity(self) -> ModalSandboxOperationIdentity:
+        return self.permit.guard.identity
+
+    @property
+    def run_marker_reference(self) -> str:
+        return self.permit.reference
+
+    @property
+    def run_marker_digest(self) -> str:
+        return self.permit.digest
+
+
+type ModalProviderStartOutcome = (
+    ModalProviderStarted | ModalProviderMarkerExists | ModalProviderBarrierUnknown
+)
+
+
+@dataclass(frozen=True, slots=True)
 class _MarkerLookupFailure:
     reason: str
 
@@ -253,8 +290,11 @@ class ModalProviderStartBarrier:
     marker exists.
 
     Safety is fail-closed. An ambiguous create, a winner lost before effect,
-    or a winner lost between tiers remains Unknown forever. This capability
-    provides no lease, handoff, takeover, replay, or liveness promise.
+    or a winner lost between tiers remains Unknown forever. The public start
+    path couples acknowledged operation-marker creation, run-marker creation,
+    and exactly one provider start in this same coroutine; it never releases
+    transferable execution authority. This capability provides no lease,
+    handoff, takeover, replay, or liveness promise.
     """
 
     def __init__(
@@ -311,7 +351,7 @@ class ModalProviderStartBarrier:
 
         return _run_marker_name(guard.digest)
 
-    async def acquire_initial(
+    async def _acquire_initial(
         self,
         *,
         identity: ModalSandboxOperationIdentity,
@@ -323,7 +363,7 @@ class ModalProviderStartBarrier:
             return ModalProviderBarrierUnknown(identity, "operation", failure)
         return await self._create_operation_guard(identity)
 
-    async def acquire_retry_guard(
+    async def _acquire_retry_guard(
         self,
         *,
         identity: ModalSandboxOperationIdentity,
@@ -341,7 +381,103 @@ class ModalProviderStartBarrier:
             return ModalProviderBarrierUnknown(identity, "operation", observed.reason)
         return await self._create_operation_guard(identity)
 
-    async def acquire_run(
+    async def start_initial(
+        self,
+        *,
+        identity: ModalSandboxOperationIdentity,
+        capability: ModalSandboxOperationCapability,
+        spec: SandboxSpec,
+    ) -> ModalProviderStartOutcome:
+        """Acquire both permanent markers and immediately start one pair.
+
+        No operation guard or run permit crosses this public boundary.
+        Cancellation, local failure, or an ambiguous provider response after
+        either acknowledged marker permanently sacrifices replay.
+        """
+
+        invalid = self._validate_start_request(
+            identity=identity,
+            capability=capability,
+            spec=spec,
+        )
+        if invalid is not None:
+            return invalid
+        guard = await self._acquire_initial(identity=identity)
+        if not isinstance(guard, ModalProviderOperationGuard):
+            return guard
+        return await self._start_after_guard(
+            guard=guard,
+            capability=capability,
+            spec=spec,
+        )
+
+    async def start_retry(
+        self,
+        *,
+        identity: ModalSandboxOperationIdentity,
+        capability: ModalSandboxOperationCapability,
+        spec: SandboxSpec,
+    ) -> ModalProviderStartOutcome:
+        """Start only when retry atomically creates the still-missing guard.
+
+        Exact persistent operation-marker existence never reconstructs
+        authority. A retry claimant must be the acknowledged creator returned
+        in this coroutine, after a provider lookup established safe absence.
+        """
+
+        invalid = self._validate_start_request(
+            identity=identity,
+            capability=capability,
+            spec=spec,
+        )
+        if invalid is not None:
+            return invalid
+        guard = await self._acquire_retry_guard(identity=identity)
+        if not isinstance(guard, ModalProviderOperationGuard):
+            return guard
+        return await self._start_after_guard(
+            guard=guard,
+            capability=capability,
+            spec=spec,
+        )
+
+    async def _start_after_guard(
+        self,
+        *,
+        guard: ModalProviderOperationGuard,
+        capability: ModalSandboxOperationCapability,
+        spec: SandboxSpec,
+    ) -> ModalProviderStartOutcome:
+        permit = await self._acquire_run(guard=guard)
+        if not isinstance(permit, ModalProviderRunPermit):
+            return permit
+        session = await capability._start_after_provider_barrier(
+            identity=guard.identity,
+            spec=spec,
+        )
+        return ModalProviderStarted(permit, session)
+
+    def _validate_start_request(
+        self,
+        *,
+        identity: ModalSandboxOperationIdentity,
+        capability: ModalSandboxOperationCapability,
+        spec: SandboxSpec,
+    ) -> ModalProviderBarrierUnknown | None:
+        failure = self._identity_failure(identity)
+        if failure is not None:
+            return ModalProviderBarrierUnknown(identity, "operation", failure)
+        capability_identity = capability.identity(identity.operation_id)
+        if capability_identity != identity:
+            return ModalProviderBarrierUnknown(
+                identity,
+                "operation",
+                "operation capability belongs to another Modal provider namespace",
+            )
+        capability._validate_spec(spec)
+        return None
+
+    async def _acquire_run(
         self,
         *,
         guard: ModalProviderOperationGuard,
@@ -578,6 +714,8 @@ __all__ = [
     "ModalProviderMarkerExists",
     "ModalProviderOperationGuard",
     "ModalProviderRunPermit",
+    "ModalProviderStartOutcome",
+    "ModalProviderStarted",
     "ModalProviderStartBarrier",
     "ModalRunPermitAcquisition",
 ]

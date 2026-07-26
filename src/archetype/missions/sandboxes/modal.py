@@ -1217,10 +1217,11 @@ class ModalSandboxOperationCapability:
 
     This is provider-resource substrate, not full Activity parity. The current
     multi-step author harness still invokes inner processes after pair
-    creation; those invocations are not one atomic named Modal operation. A
-    future Activity adapter must first acquire the persistent provider guard
-    and run marker from ``ModalProviderStartBarrier``. This low-level method
-    does not yet accept or verify that permit.
+    creation; those invocations are not one atomic named Modal operation. An
+    Activity adapter must use ``ModalProviderStartBarrier.start_initial`` or
+    ``start_retry``. The barrier owns both acknowledged marker acquisitions and
+    the one allowed call into this capability; no structural value is accepted
+    as start authority.
     """
 
     def __init__(self, backend: ModalSandboxBackend) -> None:
@@ -1254,22 +1255,23 @@ class ModalSandboxOperationCapability:
             protocol_epoch=config.operation_protocol_epoch,
         )
 
-    async def start(
+    async def _start_after_provider_barrier(
         self,
         *,
-        operation_id: str,
+        identity: ModalSandboxOperationIdentity,
         spec: SandboxSpec,
     ) -> ModalSandboxSession:
-        """Create a fresh named pair for one execution-authorized claim.
+        """Create the pair after the barrier acknowledged its permanent marker.
 
-        The first named create serializes live pair acquisition. It is not a
-        durable author-execution retry guard because Modal releases the name
-        when the sandbox stops. Callers that lose the live-name race must
-        reconcile; they must not attach and invoke ``exec`` through the
-        winning worker's sandbox.
+        This is deliberately private. The ``ModalProviderStartBarrier`` start
+        methods are the public family contract and never release transferable
+        start authority. The first named sandbox create additionally
+        serializes the live provider cohort, but it is not a retry guard
+        because Modal releases sandbox names when they stop.
         """
 
-        identity = self.identity(operation_id)
+        if self.identity(identity.operation_id) != identity:
+            raise ValueError("Modal provider barrier belongs to another operation capability")
         self._validate_spec(spec)
         modal = self._load_modal()
         client = await self._verified_client(modal, phase="start")
