@@ -267,8 +267,11 @@ sequenceDiagram
     Service-->>Author: terminal projection
 ```
 
-The PostTick boundary is a safety property: no sandbox sees speculative work.
-If tick persistence fails, its dispatch cannot leak an external side effect.
+The current PostTick boundary establishes one safety property: no sandbox sees
+speculative work. If tick persistence fails, its dispatch cannot leak an
+external side effect. The accepted [Activity](activities.md) target replaces
+process-local delivery after that boundary with exact-receipt projection,
+durable admission, and later-receipt settlement.
 
 ### Task state
 
@@ -298,6 +301,8 @@ The built-in pipeline has four concerns:
 
 There is no durable `Attempt` aggregate. Retrying produces a new
 `TaskDispatch`; history preserves every prior dispatch and observation.
+Generic Activity attempts are control-plane delivery records, not Mission
+Components or task retries, so they do not change this semantic model.
 
 ### Intent, observation, decision
 
@@ -654,11 +659,16 @@ this contract. Cleanup stops creating or consuming its tables and routes while
 leaving existing persisted tables inert; deleting historical operator data is
 a separate, explicit migration decision.
 
+This list describes the shipped V1 Mission/ECS model. The accepted Activity
+target adds generic claim, attempt, and fence mechanics outside that model; it
+does not restore the retired mission-specific subsystem or create an `Attempt`
+Component.
+
 ### Current hardening gaps
 
 | Gap | V1 treatment | Later seam |
 |---|---|---|
-| Cold process resume | Authors may explicitly replace a sandbox from a recorded checkpoint inside an already-known mission; no process-restart reconciliation, fleet claim, or automatic supervisor is implied. | Specify interrupted-dispatch reconciliation before exposing cold mission continuation. |
+| Cold process resume | Authors may explicitly replace a sandbox from a recorded checkpoint inside an already-known mission; no process-restart reconciliation, fleet claim, or automatic supervisor is implied. | Migrate author delivery through the Activity contract and prove local process reconstruction plus provider reconciliation before exposing cold mission continuation. |
 | Private-repository critic materialization | V1 proves public repositories and gives critic processes no Git publication secret. | Add a distinct read-only Git capability without widening critic publication authority. |
 | Sandbox placement | Use a simple configured policy. | Add a scheduler only when multiple topologies require one. |
 | Task decomposition | Authors submit the graph. | Planner emits the same typed graph. |
@@ -672,34 +682,54 @@ a separate, explicit migration decision.
 This subsection is normative for the v0.5 migration and deliberately describes
 the accepted target, not the current `archetype.app.missions` implementation.
 The current implementation and its exact-head critic remain the preservation
-baseline until the owning family move.
+baseline until the Activity cutover.
 
-Agent Missions has two cooperating planes with distinct authority:
+Agent Missions has three cooperating concerns with distinct authority:
 
 - live sandboxes, provider processes, repository workspaces, checkpoints,
-  artifact publication, supervision, and cleanup belong to explicit resource
+  artifact publication, supervision, and cleanup belong to explicit process
   owners; live handles never become Components;
 - mission, task, policy, dependency, dispatch, execution, validation,
   candidate, critic, finding, receipt, checkpoint, and artifact-reference
   Components form the durable workflow record; processors alone decide
-  readiness, priority, repair, acceptance, exhaustion, and mission rollup.
+  readiness, priority, repair, acceptance, exhaustion, and mission rollup; and
+- generic Activity control records coordinate delivery between committed
+  intent and a later committed observation without becoming Mission
+  Components or transition authority.
 
 The bridge is a required committed-tick projector outside the public hook bus.
 After manifest publication it reads the exact pinned visibility snapshot and
-writes one durable author-dispatch or critic-review intent keyed by the
-processor-created identity. A retry or cold reconstruction produces that same
+writes one durable author-dispatch or critic-review Activity keyed by the
+processor-created identity. `dispatch_id` is currently world-local, so its
+control identity is `(world_id, kind, activity_id)` with immutable source run
+and committed-receipt binding. Provider operation identity must namespace the
+world and the Activity kind (`missions.author` or `missions.critic`) with the
+dispatch or review identity. A retry or cold reconstruction produces that same
 identity, preserves the original task base, and selects repair input from the
 newest superseded candidate's durable blocking findings. Projection failure is
 workflow failure; it is never swallowed as an advisory `PostTick` failure and
 never reruns the committed tick.
 
-Only after durable intent exists may the resource consumer start provider work.
-It uses the same dispatch/review identity for provider idempotency or
-reconciliation. Failure after provider start but before observation must
-reconcile that identity or fail closed; a durable claim or process-local seen
-set is not proof of exactly-once provider effects. Provider results are bounded
-factual observations staged for a later tick. Neither a callback nor a resource
-status directly advances task state.
+Only after durable Activity intent exists and a namespaced logical provider
+operation identity is durably bound may its worker start provider work. An
+adapter that cannot bind that identity fails closed before effect. Failure
+after binding but before observation must reconcile that identity or fail
+closed; a missing provider-returned handle, durable claim, expired lease, or
+process-local seen set is not proof of exactly-once provider effects. Provider
+results are bounded factual observations staged for a later tick, and the
+Activity settles only when that tick contains Mission-owned completeness
+evidence bound to the exact recorded result reference/digest. A dispatch or
+review ID alone cannot settle partial facts. Neither a callback nor Activity
+catalog state directly advances task state.
+
+Mission V1 does not fork or destroy through an in-flight author or critic
+Activity. Once this bridge is wired, the application lifecycle path holds the
+source exact-world lock, reconciles required projection, and refuses either
+operation until every source Activity has an exact later-receipt settlement.
+The eventual fork inherits the complete committed Mission observation through
+ordinary lineage; it does not inherit, adopt, or recreate the source Activity.
+This is distinct from the normal lineage visibility of already-committed
+Mission graph edges.
 
 The review subject has an explicit byte budget bound into critic policy. The
 binary diff digest always identifies the complete subject, but large content is
