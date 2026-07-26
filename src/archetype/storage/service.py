@@ -29,7 +29,7 @@ from daft import DataFrame, DataType, col, lit, read_iceberg
 from daft.catalog import Catalog, Table
 from daft.io import IOConfig
 from daft.session import Session
-from pyiceberg.exceptions import CommitFailedException
+from pyiceberg.exceptions import CommitFailedException, TableAlreadyExistsError
 
 from archetype.core.aio import AsyncCachedStore, AsyncLancedbStore, AsyncStore
 from archetype.core.config import CacheConfig, StorageBackend, StorageConfig
@@ -843,7 +843,15 @@ class StorageService:
         schema,
     ) -> Table:
         catalog, identifier = cls._catalog_identity(store, table_name)
-        return catalog.create_table_if_not_exists(identifier, schema)
+        try:
+            return catalog.create_table_if_not_exists(identifier, schema)
+        except TableAlreadyExistsError:
+            # Daft's helper checks for existence before creating, so a
+            # concurrent first-use creator can win between those operations.
+            # The winning catalog row is authoritative; resolve it and let the
+            # caller's normal schema-alignment check reject any incompatible
+            # concurrent definition before writing.
+            return catalog.get_table(identifier)
 
     @staticmethod
     def _read_table(table: Table, io_config: IOConfig | None) -> DataFrame:
