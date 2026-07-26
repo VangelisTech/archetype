@@ -234,6 +234,14 @@ def test_request_digest_is_contract_and_payload_domain_separated() -> None:
         ({"auth": {"session_token": "secret"}}, "config_json.auth.session_token"),
         ({"auth": {"accessKey": "secret"}}, "config_json.auth.accessKey"),
         ({"auth": {"secretKeyId": "secret"}}, "config_json.auth.secretKeyId"),
+        ({"auth": {"dbpassword": "secret"}}, "config_json.auth.dbpassword"),
+        ({"auth": {"apitoken": "secret"}}, "config_json.auth.apitoken"),
+        ({"auth": {"clientsecret": "secret"}}, "config_json.auth.clientsecret"),
+        (
+            {"auth": {"credentialbundle": "secret"}},
+            "config_json.auth.credentialbundle",
+        ),
+        ({"frames": {"hostpathroot": "/tmp"}}, "config_json.frames.hostpathroot"),
     ],
 )
 def test_config_quarantine_is_recursive_and_case_insensitive(config: dict, path: str) -> None:

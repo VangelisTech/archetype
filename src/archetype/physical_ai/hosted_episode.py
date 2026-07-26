@@ -132,6 +132,14 @@ _QUARANTINED_CONFIG_SUFFIXES: Final = (
     "_token",
     "_zone",
 )
+_QUARANTINED_CONFIG_COMPOUND_TERMS: Final = (
+    "apikey",
+    "credential",
+    "hostpath",
+    "password",
+    "secret",
+    "token",
+)
 
 _VEC2: Final = pa.list_(pa.float64(), 2)
 _VEC3: Final = pa.list_(pa.float64(), 3)
@@ -285,8 +293,15 @@ def _quarantined_config_path(value: Any, path: str = "config_json") -> str | Non
                 or normalized_key.endswith(_QUARANTINED_CONFIG_SUFFIXES)
                 or "timestamp" in normalized_key.replace("_", "")
                 or any(
+                    token != "tokens"
+                    and any(term in token for term in _QUARANTINED_CONFIG_COMPOUND_TERMS)
+                    for token in key_tokens
+                )
+                or any(
                     token
                     in {
+                        "credential",
+                        "password",
                         "latency",
                         "elapsed",
                         "duration",
