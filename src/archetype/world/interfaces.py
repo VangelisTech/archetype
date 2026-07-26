@@ -104,6 +104,12 @@ class iWorldRegistry(Protocol):
 
     def required_projector(self, world_id: str | UUID) -> Any | None: ...
 
+    async def bind_required_projector(
+        self,
+        world_id: str | UUID,
+        projector: Any,
+    ) -> None: ...
+
     def retain_receipt(
         self,
         world_id: str | UUID,

@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 
 from daft import DataFrame
 
@@ -444,6 +444,7 @@ class MissionAuthorActivityBinding:
         values: MissionAuthorValueStore,
         executor: MissionAuthorExecutor,
         stager: WorldMissionAuthorObservationStager,
+        close: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         if not world_id.strip():
             raise ValueError("mission author binding requires a world identity")
@@ -466,6 +467,8 @@ class MissionAuthorActivityBinding:
             stager=stager,
         )
         self._catalog = catalog
+        self._close = close
+        self._closed = False
 
     def required_projector_for(self, world_id: str) -> RequiredProjector | None:
         """Bind the sole projector slot only for this explicitly selected world."""
@@ -478,6 +481,15 @@ class MissionAuthorActivityBinding:
         if str(world_id) != self.world_id:
             return False
         return await self._catalog.has_unsettled_work(self.world_id)
+
+    async def aclose(self) -> None:
+        """Release the concrete catalog only after its world has closed."""
+
+        if self._closed:
+            return
+        if self._close is not None:
+            await self._close()
+        self._closed = True
 
 
 __all__ = [
