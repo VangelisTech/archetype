@@ -14,6 +14,7 @@ import asyncio
 import math
 import sqlite3
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -119,11 +120,18 @@ def activity_catalog_path_for(
 class SqliteActivityCatalog:
     """Single-host durable authority for activity claims and settlement."""
 
-    def __init__(self, path: Path, *, busy_timeout_ms: int = 5000) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        busy_timeout_ms: int = 5000,
+        now_seconds: Callable[[], float] = time.time,
+    ) -> None:
         if busy_timeout_ms < 0:
             raise ValueError("busy_timeout_ms must be non-negative")
         self.path = Path(path)
         self._busy_timeout_ms = busy_timeout_ms
+        self._now_seconds = now_seconds
         self._conn: sqlite3.Connection | None = None
         self._lock = asyncio.Lock()
 
@@ -311,9 +319,11 @@ class SqliteActivityCatalog:
 
         def _claim() -> ActivityClaimRecord:
             conn = self._connect_sync()
-            now_seconds = time.time()
             with conn:
                 conn.execute("BEGIN IMMEDIATE")
+                # BEGIN may wait behind another writer; lease decisions and
+                # newly minted expiry must use time observed after that wait.
+                now_seconds = self._now_seconds()
                 activity_row = _select_activity(conn, world_id, kind, activity_id)
                 if activity_row is None:
                     raise ActivityCatalogNotFoundError((world_id, kind, activity_id))
@@ -434,7 +444,11 @@ class SqliteActivityCatalog:
                     claim.activity.kind,
                     claim.activity.activity_id,
                 )
-                row = _require_live_claim(conn, claim)
+                row = _require_live_claim(
+                    conn,
+                    claim,
+                    now_seconds=self._now_seconds(),
+                )
                 if row["reconciles_attempt"] is not None:
                     raise ActivityCatalogClaimError(
                         "a reconciliation claim cannot invoke a new provider operation"
@@ -546,9 +560,11 @@ class SqliteActivityCatalog:
 
         def _confirm() -> ActivityClaimRecord:
             conn = self._connect_sync()
-            now_seconds = time.time()
             with conn:
                 conn.execute("BEGIN IMMEDIATE")
+                # Exact-retry liveness, renewal, and replay authorization all
+                # use one timestamp sampled after the write lock is held.
+                now_seconds = self._now_seconds()
                 activity = _require_activity(
                     conn,
                     claim.activity.source_world_id,
@@ -637,7 +653,11 @@ class SqliteActivityCatalog:
                         )
                     raise ActivityCatalogClaimError("provider-absence confirmation claim is stale")
 
-                reconciliation = _require_live_claim(conn, claim)
+                reconciliation = _require_live_claim(
+                    conn,
+                    claim,
+                    now_seconds=now_seconds,
+                )
                 reconciles_attempt = reconciliation["reconciles_attempt"]
                 if reconciles_attempt is None:
                     raise ActivityCatalogClaimError(
@@ -761,7 +781,11 @@ class SqliteActivityCatalog:
                         )
                     return activity
 
-                attempt_row = _require_live_claim(conn, claim)
+                attempt_row = _require_live_claim(
+                    conn,
+                    claim,
+                    now_seconds=self._now_seconds(),
+                )
                 if (
                     attempt_row["provider_operation_id"] is None
                     and attempt_row["reconciles_attempt"] is None
@@ -829,7 +853,11 @@ class SqliteActivityCatalog:
                 if row is not None and row["released_at"] is not None:
                     if int(row["fence"]) == claim.fence and row["owner"] == claim.owner:
                         return
-                row = _require_live_claim(conn, claim)
+                row = _require_live_claim(
+                    conn,
+                    claim,
+                    now_seconds=self._now_seconds(),
+                )
                 if (
                     row["provider_operation_id"] is not None
                     or row["reconciles_attempt"] is not None
@@ -1091,6 +1119,8 @@ def _attempt(
 def _require_live_claim(
     conn: sqlite3.Connection,
     claim: ActivityClaimRecord,
+    *,
+    now_seconds: float,
 ) -> sqlite3.Row:
     if not claim.acquired:
         raise ActivityCatalogClaimError("activity claim was not acquired")
@@ -1121,7 +1151,7 @@ def _require_live_claim(
     if row["released_at"] is not None:
         raise ActivityCatalogClaimError("activity claim was released")
     expires = row["lease_expires_at"]
-    if expires is None or float(expires) <= time.time():
+    if expires is None or float(expires) <= now_seconds:
         raise ActivityCatalogClaimError("activity claim lease expired")
     return row
 
