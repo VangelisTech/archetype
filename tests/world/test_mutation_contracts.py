@@ -137,7 +137,6 @@ async def test_atomic_batch_rolls_back_after_a_prior_spawn_hook_ran() -> None:
             self.entity2sig = {1: (Marker,)}
             self.spawn_cache = {(Marker,): [{"entity_id": 1, "marker__value": 99}]}
             self.despawn_cache: dict[tuple[type[Component], ...], list[int]] = {}
-            self._sig_intern = {(Marker,): (Marker,)}
             self.hook_effects: list[int] = []
 
         async def create_entities(
@@ -179,7 +178,6 @@ async def test_atomic_batch_rolls_back_after_a_prior_spawn_hook_ran() -> None:
     assert world.entity2sig == original_entity2sig
     assert world.spawn_cache == original_spawn_cache
     assert world.despawn_cache == {}
-    assert world._sig_intern is None
 
 
 async def test_atomic_batch_rolls_back_an_unexpected_identity_sequence() -> None:
@@ -189,7 +187,6 @@ async def test_atomic_batch_rolls_back_an_unexpected_identity_sequence() -> None
             self.entity2sig = {1: (Marker,)}
             self.spawn_cache = {(Marker,): [{"entity_id": 1, "marker__value": 99}]}
             self.despawn_cache: dict[tuple[type[Component], ...], list[int]] = {}
-            self._sig_intern = {(Marker,): (Marker,)}
 
         async def create_entities(
             self,
@@ -214,7 +211,6 @@ async def test_atomic_batch_rolls_back_an_unexpected_identity_sequence() -> None
     assert world.entity2sig == original_entity2sig
     assert world.spawn_cache == original_spawn_cache
     assert world.despawn_cache == {}
-    assert world._sig_intern is None
 
 
 async def test_processor_mutation_preserves_live_capability_identity() -> None:

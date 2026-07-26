@@ -111,8 +111,11 @@ async def _create_entities_atomically_locked(
         world.spawn_cache.update(spawn_cache)
         world.despawn_cache.clear()
         world.despawn_cache.update(despawn_cache)
-        # Rebuild aliases lazily from the restored maps.
-        world._sig_intern = None
+        # Signature interning is a monotonic canonicalization cache, not
+        # staged world state. A failed batch may leave an unused canonical
+        # signature there, but no entity or row points at it and a later spawn
+        # can safely reuse it. Do not couple world-owned rollback to a private
+        # AsyncWorld cache representation.
         raise
 
 
