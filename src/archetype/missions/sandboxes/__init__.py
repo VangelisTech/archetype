@@ -34,13 +34,30 @@ from archetype.missions.sandboxes.docker import (
     DockerSandboxSession,
 )
 from archetype.missions.sandboxes.modal import (
+    MODAL_ACTIVITY_PROTOCOL_EPOCH,
     ModalSandboxBackend,
     ModalSandboxConfig,
+    ModalSandboxOperationCapability,
+    ModalSandboxOperationIdentity,
+    ModalSandboxOperationReconciliation,
+    ModalSandboxOperationRunning,
+    ModalSandboxOperationUnknown,
     ModalSandboxSession,
+)
+from archetype.missions.sandboxes.modal_barrier import (
+    ModalOperationGuardAcquisition,
+    ModalPersistentDictMarker,
+    ModalProviderBarrierUnknown,
+    ModalProviderMarkerExists,
+    ModalProviderOperationGuard,
+    ModalProviderRunPermit,
+    ModalProviderStartBarrier,
+    ModalRunPermitAcquisition,
 )
 from archetype.missions.sandboxes.service import SandboxService
 
 __all__ = [
+    "MODAL_ACTIVITY_PROTOCOL_EPOCH",
     "AppleContainerSandboxBackend",
     "AppleContainerSandboxConfig",
     "AppleContainerSandboxSession",
@@ -51,7 +68,20 @@ __all__ = [
     "DockerSandboxSession",
     "ModalSandboxBackend",
     "ModalSandboxConfig",
+    "ModalSandboxOperationCapability",
+    "ModalSandboxOperationIdentity",
+    "ModalSandboxOperationReconciliation",
+    "ModalSandboxOperationRunning",
+    "ModalSandboxOperationUnknown",
     "ModalSandboxSession",
+    "ModalOperationGuardAcquisition",
+    "ModalPersistentDictMarker",
+    "ModalProviderBarrierUnknown",
+    "ModalProviderMarkerExists",
+    "ModalProviderOperationGuard",
+    "ModalProviderRunPermit",
+    "ModalProviderStartBarrier",
+    "ModalRunPermitAcquisition",
     "ProcessRequest",
     "ProcessResult",
     "SandboxBackend",
