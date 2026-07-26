@@ -3,10 +3,10 @@ source_root = "src"
 
 [concrete_services]
 types = [
+  "ActivityCoordinator",
   "AuditLog",
   "CommandScheduler",
   "MissionService",
-  "PhysicalAIService",
   "RedactionService",
   "SandboxService",
   "StorageService",
@@ -82,13 +82,6 @@ allowed_app = [
   "archetype.app.missions",
 ]
 
-[[family_rule]]
-name = "physical-ai-family"
-consumer = "archetype.app.physical_ai"
-allowed_app = [
-  "archetype.app.physical_ai",
-]
-
 [[module_rule]]
 module = "archetype.app.missions.service"
 allowed_interfaces = []
@@ -105,15 +98,6 @@ allowed_app = []
 module = "archetype.app.missions.transcript_service"
 allowed_interfaces = [
   "archetype.storage.interfaces.iStorageService",
-]
-allowed_app = []
-
-[[module_rule]]
-module = "archetype.app.physical_ai.service"
-allowed_interfaces = [
-  "archetype.storage.interfaces.iStorageService",
-  "archetype.world.interfaces.iWorldLifecycle",
-  "archetype.world.interfaces.iWorldRegistry",
 ]
 allowed_app = []
 

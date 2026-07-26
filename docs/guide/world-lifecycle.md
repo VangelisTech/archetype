@@ -59,7 +59,8 @@ Creation:
 1. serializes activation for the exact `world_id`;
 2. validates the live ID and name indexes;
 3. resolves the storage backend through `iStorageService`;
-4. registers an active durable world with a fresh immutable UUIDv7 `run_id`;
+4. registers an active, `resumable` durable world with a fresh immutable UUIDv7
+   `run_id`;
 5. acquires a writer fence;
 6. binds a commit coordinator to world, run, and writer epoch;
 7. calls the module-level `build_world(...)` constructor with the scheduler
@@ -74,6 +75,70 @@ reachable through the live registry.
 Processors, resources, and hooks are live Python capabilities and are not
 durable configuration. Trusted callers attach them after creation; untrusted
 callers use actor-aware dispatcher operations.
+
+### 3.1. Atomically private workflow worlds
+
+`iWorldLifecycle.create_closing_world(...)` is an internal family/composition
+capability for a workflow whose world must persist durable evidence without
+ever becoming public live work. It performs the same durable construction as
+`create_world`, but registry insertion atomically installs the exact sticky
+`WorldCleanupLease` and returns `(world, lease)`. There is no interval in which
+another public operation can acquire the world lock: `registry.operation(...)`
+rejects with `WorldClosingError` from the first visible binding.
+
+The catalog records these worlds as `status="active"` with immutable
+`writer_mode="cleanup_only"` from their first registration. Active status is
+required while the scheduler materializes commands at tick boundaries;
+`cleanup_only` is the orthogonal crash rule that prevents a fresh process from
+reconstructing the writer as ordinary mutable work. A crashed workflow's
+published rows therefore remain discoverable and queryable, but the provider
+processors can never be reactivated through mutable resume.
+
+Physical workflow composition reserves a process-owned cleanup slot before it
+may create a closing world. `create_closing_world(...)` synchronously binds the
+exact control catalog and complete cleanup-only `WorldRecord` into that slot
+before calling `register_world(...)`; there is no registration effect without
+an already-retained retirement owner. Immediately after registry insertion
+installs the sticky `WorldCleanupLease`, lifecycle promotes that same slot to
+the canonical exact-world cleanup target without awaiting or replacing its
+process owner.
+
+An activation failure invokes the currently bound owner cancellation-resistantly.
+Before promotion it performs identity-safe registration retirement, including
+an absent-row tombstone for an ambiguous remote write; after promotion it
+revalidates and executes through registered `WorldCleanup`. There is no
+unregistered lifecycle-destroy fallback. A failed attempt remains in the
+`workflow-handles` shutdown inventory for retry, associated provider close
+still joins it, and multiple failures are reported as an aggregate rather than
+abandoning any cause. See
+[Durable Discovery](durable-discovery.md#2-the-control-catalog) for the remote
+v8 retirement contract.
+
+Public `ListWorlds` omits closing entries, entries removed after its
+point-in-time snapshot, and same-ID replacement bindings created after that
+snapshot, so one private or concurrently retiring writer cannot make unrelated
+live worlds unlistable. `snapshot_world_bindings()` captures opaque exact-entry
+references, not only world-object identity: removing an entry and reinserting
+even the same Python world object creates a replacement binding outside that
+snapshot. A binding reference is only a comparison witness; public admission
+authority remains `registry.operation(...)`. Listing admits each captured ID
+independently and synchronously proves the admitted world still belongs to
+that exact binding before reconciliation. A `KeyError` before
+`registry.operation(...)` yields is a stale snapshot omission; once admission
+yields, a `KeyError` from reconciliation propagates and is never reclassified
+from a later ambient `contains(...)` observation. After reconciling each
+admitted candidate, listing linearizes `is_public_binding(binding, world)`
+without another await before capturing `WorldInfo`; a close that became sticky
+during reconciliation is therefore omitted, while a later close occurs after
+that candidate's valid snapshot point.
+
+The owning workflow executes state changes only inside
+`registry.cleanup_operation(lease)` and through lock-held world functions. On
+completion or cancellation it reconciles and destroys the writer through the
+same exact cleanup authority. Destroyed rows, lineage, and run identity remain
+durably queryable. The lease cannot authorize a sibling, a replacement, or an
+already-live world, and this construction path is not a registered public
+operation.
 
 ## 4. `fork_world`
 
@@ -142,16 +207,24 @@ lease, `WorldCleanup`:
 If any cleanup step fails, the entry stays strongly reachable and closing. The
 same lease authorizes a later retry against that exact entry; it cannot
 authorize a sibling or replacement world. Aliases and locks disappear only
-after `finish_close`. A successfully completed advisory `OnDestroy` dispatch
-is checkpointed on that exact cleanup lease before the durable status write;
-if a later status write fails, returns an ambiguous response, or is cancelled,
-the retry repeats only the idempotent durable write and does not emit
-`OnDestroy` again. Cancellation while the hook dispatch itself is still
-running does not checkpoint completion and remains retryable. Required
-projection or prepared-commit reconciliation failure produces no command
-cancellation, `OnDestroy`, or durable destroyed status. A pending
-required-projector receipt also prevents final release until it is
-acknowledged.
+after `finish_close`. Composition callers—registered `DestroyWorld` and a
+workflow's retained retirement handle—holding that same lease join one complete
+reconcile, command-cancel, lifecycle-close transaction. Successful completion
+is memoized only on that lease and never authorizes a replacement. Composition
+registers the transaction with the process owner before executing cleanup. A
+physical provider owner waits for every exact evidence-world
+retirement associated with its identity before closing the provider. A failure
+therefore retains both sides in the `workflow-handles` shutdown inventory and
+is retried before audit or storage teardown rather than being abandoned in the
+registry. A successfully completed advisory `OnDestroy` dispatch is
+checkpointed on that exact cleanup lease before the durable status write; if a
+later status write fails, returns an ambiguous response, or is cancelled, the
+retry repeats only the idempotent durable write and does not emit `OnDestroy`
+again. Cancellation while the hook dispatch itself is still running does not
+checkpoint completion and remains retryable. Required projection or
+prepared-commit reconciliation failure produces no command cancellation,
+`OnDestroy`, or durable destroyed status. A pending required-projector receipt
+also prevents final release until it is acknowledged.
 
 Destroy never removes persisted rows, lineage, command history, audit history,
 or storage files. Destroyed worlds remain durably queryable but are not
@@ -184,10 +257,12 @@ unreconstructable. Once the fence is acquired, any failure is
 operator-visible: the prior writer is stale and the caller must correct the
 cause before retrying.
 
-Resume refuses unknown, destroyed, already-live, corrupt-lineage, missing-run,
-and unresolved-or-schema-drifted worlds. It never guesses. Processors,
-resources, and hooks are code rather than rows and must be reattached by the
-caller.
+Resume requires both `status="active"` and `writer_mode="resumable"`. It
+refuses destroyed worlds, `cleanup_only` evidence worlds, unknown future writer
+modes, already-live worlds, corrupt lineage, missing runs, and unresolved or
+schema-drifted worlds. Status and writer-mode refusal happens before opening a
+store or acquiring a writer fence. Resume never guesses. Processors, resources,
+and hooks are code rather than rows and must be reattached by the caller.
 
 When a required projector is configured, resume reconstructs the manifest-head
 `CommittedTickReceipt` and retains it for idempotent acknowledgment before a

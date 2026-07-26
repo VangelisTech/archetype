@@ -16,6 +16,7 @@ from archetype.core.paths import normalized_storage_uri
 from archetype.errors import ConflictError
 
 _DIGEST_DOMAIN = "archetype.catalog.v1"
+WORLD_WRITER_MODES = frozenset({"resumable", "cleanup_only"})
 
 
 class CatalogConflictError(ConflictError):
@@ -32,6 +33,16 @@ class CommandConflictError(ConflictError):
     """A command identity was reused with different immutable content."""
 
     public_detail = "Command conflicts with an existing durable command"
+
+
+def require_world_writer_mode(value: str) -> str:
+    """Validate the finite durable writer-mode vocabulary for new records."""
+
+    if value not in WORLD_WRITER_MODES:
+        raise ValueError(
+            "world writer_mode must be one of: " + ", ".join(sorted(WORLD_WRITER_MODES))
+        )
+    return value
 
 
 def arrow_schema_descriptor(schema: pa.Schema) -> dict[str, object]:
@@ -94,7 +105,12 @@ def storage_fingerprint(config: StorageConfig) -> str:
 
 @dataclass(frozen=True)
 class WorldRecord:
-    """Compact durable pointer to a world in one store."""
+    """Compact durable pointer to a world in one store.
+
+    ``writer_mode`` is immutable lifecycle identity. ``resumable`` is the
+    legacy/default mode; ``cleanup_only`` records a writer that may persist
+    evidence but must never be reconstructed as ordinary mutable work.
+    """
 
     world_id: str
     name: str | None
@@ -102,6 +118,7 @@ class WorldRecord:
     parent_world_id: str | None
     status: str
     tick_head: int
+    writer_mode: str = "resumable"
 
 
 @dataclass(frozen=True)

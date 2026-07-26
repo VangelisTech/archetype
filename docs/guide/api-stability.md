@@ -52,11 +52,17 @@ transcript composition plus artifact-family handlers remain implementation
 details.
 
 `archetype.physical_ai` is the reviewed owner for reusable physical state,
-policy contracts, external-step processors, typed evaluation values, and pure
-instruction optimization. `PhysicalTaskEvalConfig`, `PhysicalTaskEvalReport`,
+provider protocols, typed evaluation values, storage-backed views, free
+workflow handlers, and pure instruction optimization. `EnvClient` and
+`PolicyClient` are canonical in `archetype.physical_ai.interfaces`.
+`PhysicalTaskEvalConfig`, `PhysicalTaskEvalReport`,
 `InstructionSweepConfig`, `InstructionSweepReport`, `TrialOutcome`, and
-`VariantOutcome` are supported top-level runtime contracts. The concrete
-application service remains internal.
+`VariantOutcome` are canonical in `archetype.physical_ai.models` and remain
+supported top-level runtime contracts. `archetype.physical_ai.contracts`
+preserves object-identical re-exports for one release. The free handlers and
+process-lifetime registrar remain internal. Raw-client environment and policy
+processors are internal implementation details; the registered runtime
+operations are the supported ownership boundary.
 
 `FrameGrader`, `Outcome`, `GraderContract`, and `EvalReceipt` are supported
 top-level evaluation contracts. `TrajectoryGrader` remains an object-identical
@@ -71,8 +77,8 @@ gone. The former `archetype.htn` resolver now lives under
 `archetype.missions.planning`; its future adapter to mission task entities is
 not yet a supported authoring surface. Trajectory schemas, Claude source
 parsing, and pure transforms live under `archetype.missions.trajectories`;
-physical state and pure behavior live in `physical_ai`; physical rollout/sweep
-orchestration is registered behind exact `physical_ai` operations; and
+physical state and the episode/sweep workflows live in `physical_ai`; those
+workflows are registered behind exact trusted-only direct operations; and
 research values, ledger state, views, decoder, and free workflow handler live
 in `archetype.research`. `ResearchCandidateContext` is the canonical supported
 preparer-callback value. `CandidateContext` remains an object-identical

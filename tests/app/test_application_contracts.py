@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
@@ -79,10 +78,7 @@ def _wiring_parts(
     lifecycle = getattr(create_world, "__self__", None)
     assert isinstance(lifecycle, WorldLifecycle)
 
-    destroy_handler = dispatcher._registry.resolve_name("destroy_world").handler  # noqa: SLF001
-    assert isinstance(destroy_handler, partial)
-    destroy_world = destroy_handler.args[0]
-    scheduler = inspect.getclosurevars(destroy_world).nonlocals["scheduler"]
+    scheduler = dispatcher._scheduler  # noqa: SLF001
     assert isinstance(scheduler, CommandScheduler)
     return registry, lifecycle, scheduler
 

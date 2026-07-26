@@ -34,7 +34,7 @@ workflow behavior.
 | `TranscriptIngestionService` | artifact handler, canonical redaction, and storage |
 | evaluation handlers | storage; pinned reads additionally use `archetype.world.query` |
 | `TrajectoryService` | storage and the pure evaluation grader runner |
-| `PhysicalAIService` | `WorldRegistry`, `WorldLifecycle`, and storage |
+| physical-AI free handlers | `WorldRegistry`, `WorldLifecycle`, storage, and the runtime-owned provider-lifetime registrar |
 | research handler plus process-shared admissions | `WorldRegistry`, `WorldLifecycle`, storage, and exact owned-world cleanup |
 | `MissionService` | a runtime-world factory, sandbox service, narrow redaction capability, generic owner reservation, and exact cleanup factory |
 
@@ -44,6 +44,16 @@ operation closes over one process-shared `AutoResearchAdmissions`; its handler
 is awaited inside the dispatcher's existing admission and never re-enters the
 dispatcher. Registered handlers close over concrete dependencies but never
 create a second process owner.
+
+The two physical-AI operations are trusted-only, direct, and non-durable.
+Their handlers synchronously transfer each unique live provider to a
+`RuntimeResources` owner before any workflow or provider effect, then hold an
+identity-ordered exclusive lease for the complete operation. Shared providers
+serialize while disjoint provider sets may progress concurrently. Runtime
+shutdown invokes each provider's async `aclose()` and retains failed owners
+for retry. A handler retires its live world writer before releasing the lease,
+so the returned coordinates are durable read evidence and not a later
+provider-execution bypass.
 
 ## Core world composition
 

@@ -18,12 +18,12 @@ from archetype.core.aio import AsyncSystem
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.physical_ai.manipulation import (
     ACTION_DIM,
-    EnvStepProcessor,
     ManipAction,
     ManipProprio,
     ManipStatus,
     ManipTask,
     ScriptedReachEnv,
+    _EnvStepProcessor,
 )
 from tests.conftest import make_world_harness
 
@@ -63,7 +63,7 @@ async def test_reset_obs_are_raw_tick0_and_steps_match_env_exactly(tmp_path):
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="manip")
         system = AsyncSystem()
-        await system.add_processor(EnvStepProcessor(client))
+        await system.add_processor(_EnvStepProcessor(client))
         world = await ws.lifecycle.create_world(
             WorldConfig(name="reach"), storage_config=storage, system=system
         )
@@ -113,7 +113,7 @@ async def test_success_latches_and_done_rows_freeze(tmp_path):
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="manip")
         system = AsyncSystem()
-        await system.add_processor(EnvStepProcessor(client))
+        await system.add_processor(_EnvStepProcessor(client))
         world = await ws.lifecycle.create_world(
             WorldConfig(name="reach-done"), storage_config=storage, system=system
         )
@@ -152,7 +152,7 @@ async def test_despawned_episode_never_steps_external_env(tmp_path):
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="despawn_freeze")
         system = AsyncSystem()
-        await system.add_processor(EnvStepProcessor(client))
+        await system.add_processor(_EnvStepProcessor(client))
         world = await ws.lifecycle.create_world(
             WorldConfig(name="despawn-freeze"), storage_config=storage, system=system
         )

@@ -16,6 +16,7 @@ from uuid_utils import UUID, uuid7
 
 from archetype.core.config import StorageConfig, WorldConfig
 from archetype.storage.catalog import WorldRecord
+from archetype.world.errors import WorldClosingError
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -129,6 +130,46 @@ class _Storage:
         return self.coordinator
 
 
+class _ActivationOwner:
+    """Focused fake for the synchronous activation-owner handoff."""
+
+    def __init__(
+        self,
+        events: list[tuple[Any, ...]],
+        *,
+        registry: Any | None = None,
+    ) -> None:
+        self.events = events
+        self.registry = registry
+        self.catalog: Any | None = None
+        self.record: WorldRecord | None = None
+        self.lease: Any | None = None
+        self.closed = False
+
+    def bind_registration(
+        self,
+        catalog: Any,
+        record: WorldRecord,
+    ) -> None:
+        assert self.record is None
+        assert record.writer_mode == "cleanup_only"
+        self.catalog = catalog
+        self.record = record
+        self.events.append(("owner-bind", record.world_id, record.run_id))
+
+    def promote(self, world_id: str, lease: Any) -> None:
+        assert self.record is not None
+        assert self.record.world_id == world_id
+        if self.registry is not None:
+            self.registry.validate_cleanup_lease(lease, world_id=world_id)
+        self.lease = lease
+        self.events.append(("owner-promote", world_id))
+
+    async def aclose(self) -> None:
+        self.events.append(("owner-close",))
+        self.closed = True
+
+
 class _Registry:
     def __init__(self, events: list[tuple[Any, ...]]) -> None:
         self.events = events
@@ -158,11 +199,14 @@ class _Registry:
         storage_config: StorageConfig,
         cache_config: object | None,
         required_projector: object | None,
-    ) -> None:
+        closing: bool = False,
+    ) -> object | None:
         del storage_config, cache_config
+        assert not closing
         self.events.append(("insert", world.world_id, str(world.run_id)))
         self.world = world
         self.projector = required_projector
+        return None
 
 
 async def test_create_registers_final_uuid7_before_bound_construction(
@@ -221,6 +265,7 @@ async def test_create_registers_final_uuid7_before_bound_construction(
     assert registry.projector is projector
     world_id = str(world.world_id)
     run_id = str(world.run_id)
+    assert catalog.records[world_id].writer_mode == "resumable"
     assert events == [
         ("activation-enter", world_id),
         ("store",),
@@ -232,6 +277,185 @@ async def test_create_registers_final_uuid7_before_bound_construction(
         ("insert", world_id, run_id),
         ("activation-exit", world_id),
     ]
+
+
+async def test_create_closing_world_is_atomically_non_public_and_exactly_cleanable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lifecycle_module = import_module("archetype.world.lifecycle")
+    registry_module = import_module("archetype.world.registry")
+    events: list[tuple[Any, ...]] = []
+    catalog = _Catalog(events)
+    storage = _Storage(catalog, events)
+    registry = registry_module.WorldRegistry()
+
+    def fake_build(
+        store: object,
+        config: WorldConfig,
+        *,
+        restored_run_id: UUID | None,
+        commit_coordinator: object,
+        materialize_commands: object | None,
+        system: object | None = None,
+    ) -> _World:
+        del store, commit_coordinator, materialize_commands, system
+        assert restored_run_id is not None
+        return _World(
+            world_id=str(config.world_id),
+            run_id=restored_run_id,
+            name=config.name,
+        )
+
+    monkeypatch.setattr(lifecycle_module, "build_world", fake_build)
+    lifecycle = lifecycle_module.WorldLifecycle(storage, registry)
+    activation_owner = _ActivationOwner(events, registry=registry)
+    world, lease = await lifecycle.create_closing_world(
+        WorldConfig(
+            world_id="00000000-0000-7000-8000-000000000075",
+            name="private-workflow",
+        ),
+        StorageConfig(),
+        activation_owner=activation_owner,
+    )
+
+    assert activation_owner.catalog is catalog
+    assert activation_owner.record is catalog.records[str(world.world_id)]
+    assert activation_owner.lease is lease
+    assert events.index(("owner-bind", str(world.world_id), str(world.run_id))) < events.index(
+        ("register", str(world.world_id), str(world.run_id))
+    )
+    assert events.index(("owner-promote", str(world.world_id))) > events.index(
+        ("fence", str(world.world_id))
+    )
+    assert await registry.begin_close(world.world_id) is lease
+    with pytest.raises(WorldClosingError, match=str(world.world_id)):
+        async with registry.operation(world.world_id):
+            pytest.fail("closing world admitted a public operation")
+    async with registry.cleanup_operation(lease) as exact_world:
+        assert exact_world is world
+
+    assert catalog.records[str(world.world_id)].status == "active"
+    assert catalog.records[str(world.world_id)].writer_mode == "cleanup_only"
+    await lifecycle.destroy_world(world.world_id, lease=lease)
+    assert not await registry.contains(world.world_id)
+    assert ("status", str(world.world_id), "destroyed") in events
+
+
+def _exception_leaves(exc: BaseException) -> list[BaseException]:
+    if isinstance(exc, BaseExceptionGroup):
+        return [leaf for child in exc.exceptions for leaf in _exception_leaves(child)]
+    return [exc]
+
+
+async def test_closing_world_activation_preserves_primary_and_cleanup_cancellation() -> None:
+    lifecycle_module = import_module("archetype.world.lifecycle")
+    registry_module = import_module("archetype.world.registry")
+    events: list[tuple[Any, ...]] = []
+
+    class _PartialCommitCatalog(_Catalog):
+        async def register_world(self, record: Any) -> None:
+            self.events.append(("register", record.world_id, record.run_id))
+            self.records[record.world_id] = record
+            raise RuntimeError("registration response lost")
+
+    class _CancelledCleanupOwner(_ActivationOwner):
+        async def aclose(self) -> None:
+            self.events.append(("owner-close",))
+            raise asyncio.CancelledError("owned cleanup cancelled")
+
+    catalog = _PartialCommitCatalog(events)
+    owner = _CancelledCleanupOwner(events)
+    lifecycle = lifecycle_module.WorldLifecycle(
+        _Storage(catalog, events),
+        registry_module.WorldRegistry(),
+    )
+    world_id = "00000000-0000-7000-8000-000000000076"
+
+    with pytest.raises(BaseExceptionGroup) as caught:
+        await lifecycle.create_closing_world(
+            WorldConfig(world_id=world_id, name="partial-commit"),
+            StorageConfig(),
+            activation_owner=owner,
+        )
+
+    leaves = _exception_leaves(caught.value)
+    assert [type(leaf) for leaf in leaves] == [
+        RuntimeError,
+        asyncio.CancelledError,
+    ]
+    assert [str(leaf) for leaf in leaves] == [
+        "registration response lost",
+        "owned cleanup cancelled",
+    ]
+    assert events == [
+        ("store",),
+        ("owner-bind", world_id, owner.record.run_id),
+        ("register", world_id, owner.record.run_id),
+        ("owner-close",),
+    ]
+
+
+async def test_closing_world_activation_cancellation_waits_for_owned_cleanup() -> None:
+    lifecycle_module = import_module("archetype.world.lifecycle")
+    registry_module = import_module("archetype.world.registry")
+    events: list[tuple[Any, ...]] = []
+    registration_entered = asyncio.Event()
+    cleanup_entered = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    class _BlockingCatalog(_Catalog):
+        async def register_world(self, record: Any) -> None:
+            self.events.append(("register", record.world_id, record.run_id))
+            self.records[record.world_id] = record
+            registration_entered.set()
+            await asyncio.Future()
+
+    class _BlockingCleanupOwner(_ActivationOwner):
+        async def aclose(self) -> None:
+            self.events.append(("owner-close-enter",))
+            cleanup_entered.set()
+            await release_cleanup.wait()
+            self.events.append(("owner-close-finish",))
+            self.closed = True
+
+    catalog = _BlockingCatalog(events)
+    owner = _BlockingCleanupOwner(events)
+    lifecycle = lifecycle_module.WorldLifecycle(
+        _Storage(catalog, events),
+        registry_module.WorldRegistry(),
+    )
+    world_id = "00000000-0000-7000-8000-000000000077"
+    activation = asyncio.create_task(
+        lifecycle.create_closing_world(
+            WorldConfig(world_id=world_id, name="cancelled-activation"),
+            StorageConfig(),
+            activation_owner=owner,
+        )
+    )
+
+    try:
+        await asyncio.wait_for(registration_entered.wait(), timeout=1.0)
+        activation.cancel("activation caller cancelled")
+        await asyncio.wait_for(cleanup_entered.wait(), timeout=1.0)
+        await asyncio.sleep(0)
+        assert not activation.done()
+
+        release_cleanup.set()
+        with pytest.raises(
+            asyncio.CancelledError,
+            match="activation caller cancelled",
+        ):
+            await asyncio.wait_for(activation, timeout=1.0)
+        assert owner.closed
+        assert events[-2:] == [
+            ("owner-close-enter",),
+            ("owner-close-finish",),
+        ]
+    finally:
+        release_cleanup.set()
+        if not activation.done():
+            activation.cancel()
+        await asyncio.gather(activation, return_exceptions=True)
 
 
 async def test_create_failure_after_registration_is_not_activated(
@@ -366,6 +590,8 @@ async def test_fork_mints_identity_and_wires_fresh_projector_binding() -> None:
     assert fork._materialize_commands is materialize_commands
     assert len(projectors) == 2
     assert projectors[0] is not projectors[1]
+    assert catalog.records[str(source.world_id)].writer_mode == "resumable"
+    assert catalog.records[str(fork.world_id)].writer_mode == "resumable"
     assert registry.required_projector(str(source.world_id)) is projectors[0]
     assert registry.required_projector(str(fork.world_id)) is projectors[1]
 

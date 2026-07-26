@@ -1,0 +1,26 @@
+version = 1
+owner = "activities"
+family = "activities"
+
+[[disposition]]
+operations = [
+  "interfaces.iActivityCoordinator.admit",
+  "interfaces.iActivityCoordinator.bind_provider_operation",
+  "interfaces.iActivityCoordinator.claim",
+  "interfaces.iActivityCoordinator.confirm_provider_operation_absent",
+  "interfaces.iActivityCoordinator.get",
+  "interfaces.iActivityCoordinator.has_unsettled",
+  "interfaces.iActivityCoordinator.pending",
+  "interfaces.iActivityCoordinator.pending_results",
+  "interfaces.iActivityCoordinator.record_result",
+  "interfaces.iActivityCoordinator.release",
+  "interfaces.iActivityCoordinator.settle_observation",
+]
+signals = ["none"]
+outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
+authority = "The local activity catalog's immutable admission, fenced attempt, provider-operation binding, bounded result reference, and exact observation settlement remain authoritative."
+evidence = [
+  "docs/guide/activities.md",
+  "tests/activities/test_activity_catalog_contracts.py",
+]
+rationale = "The coordinator emits no second authority signal; durable control facts and typed return values expose every admitted, ambiguous, recovered, and settled transition."

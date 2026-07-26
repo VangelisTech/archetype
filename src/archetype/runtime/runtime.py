@@ -42,14 +42,13 @@ from archetype.world.models import DiscoverWorlds, ResumeWorld, WorldInfo
 
 if TYPE_CHECKING:
     from archetype.missions.contracts import AgentMissionConfig
-    from archetype.physical_ai.contracts import (
+    from archetype.physical_ai.interfaces import EnvClient, PolicyClient
+    from archetype.physical_ai.models import (
         InstructionSweepConfig,
         InstructionSweepReport,
         PhysicalTaskEvalConfig,
         PhysicalTaskEvalReport,
     )
-    from archetype.physical_ai.manipulation import EnvClient
-    from archetype.physical_ai.policy import PolicyClient
     from archetype.runtime.missions import RuntimeMissions
 
 

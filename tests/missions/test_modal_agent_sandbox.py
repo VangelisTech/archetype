@@ -96,6 +96,14 @@ def test_modal_backend_has_no_task_outcome_or_commit_without_push_mode() -> None
         ModalSandboxConfig(image_id="floating-name")
 
 
+@pytest.mark.parametrize("app_name", ("_app", ".app", "a" * 64))
+def test_modal_config_preserves_existing_sdk_valid_app_names(app_name: str) -> None:
+    config = ModalSandboxConfig(app_name=app_name)
+
+    assert config.app_name == app_name
+    assert ModalSandboxBackend(config).config is config
+
+
 def test_modal_agent_process_is_wrapped_in_durable_live_output_files() -> None:
     session = ModalSandboxSession(
         spec=SandboxSpec("modal", "modal-codex-test", "/workspace/repo"),
@@ -1023,7 +1031,8 @@ def _fake_modal(sandboxes: list[object]):
         calls: list[dict[str, object]] = []
 
         @classmethod
-        async def aio(cls, **kwargs):
+        async def aio(cls, *args, **kwargs):
+            kwargs["command"] = args
             cls.calls.append(kwargs)
             candidate = sandboxes.pop(0)
             if isinstance(candidate, BaseException):
@@ -1112,6 +1121,7 @@ async def test_modal_backend_create_restore_and_login_lifecycle(
         command[:3] == ("codex", "login", "--device-auth") for command in resources[4].commands
     )
     assert resources[4].terminate.result is None
+    assert all(call["command"] == ("sleep", "infinity") for call in fake_modal.Sandbox.create.calls)
 
     with pytest.raises(ValueError, match="non-Modal"):
         await backend.create(SandboxSpec("docker", backend.environment, "/workspace/repo"))

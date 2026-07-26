@@ -24,6 +24,7 @@ machine authority; this page is its review surface.
 | `commands.failure.preserves_progress` | `commands` | high | [docs/guide/specification.md](../guide/specification.md) — Command ledger, scheduler, and dispatcher | pytest: 1; eval: 4 | `pr`, `main`, `release` |
 | `world.tick.atomic_visibility` | `world` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 10. Supported durability profile | pytest: 1; eval: 2 | `pr`, `main`, `release` |
 | `world.writer.fenced` | `world` | high | [docs/guide/world-lifecycle.md](../guide/world-lifecycle.md) — 6. `resume_world` (fenced mutable cold resume) | pytest: 2; eval: 3 | `pr`, `main`, `release` |
+| `activities.durable_control` | `activities` | high | [docs/guide/activities.md](../guide/activities.md) — 2. The committed-state protocol | pytest: 1; static: 2 | `pr`, `main`, `release` |
 | `world.lifecycle.idempotent` | `world` | high | [docs/guide/world-lifecycle.md](../guide/world-lifecycle.md) — 2. World lifecycle operations | pytest: 2; eval: 2 | `pr`, `main`, `release` |
 | `world.fork.lineage` | `world` | high | [docs/guide/world-lifecycle.md](../guide/world-lifecycle.md) — 4. `fork_world` | pytest: 2; eval: 1 | `pr`, `main`, `release` |
 | `world.run_identity.cold_resume` | `world` | high | [docs/guide/world-lifecycle.md](../guide/world-lifecycle.md) — 6. `resume_world` (fenced mutable cold resume) | pytest: 2; eval: 1 | `pr`, `main`, `release` |
@@ -43,7 +44,7 @@ machine authority; this page is its review surface.
 | `evaluation.ontology.separated` | `evaluation` | medium | [docs/guide/dataset-eval-ontology.md](../guide/dataset-eval-ontology.md) — 1. The contract in one view | pytest: 1; eval: 2 | `pr`, `main`, `release` |
 | `audit.append_only.evidence` | `commands` | high | [docs/guide/audit-log.md](../guide/audit-log.md) — 2. Append-only invariant | pytest: 1; eval: 1 | `pr`, `main`, `release` |
 | `simulation.episode.termination` | `world` | medium | [docs/guide/specification.md](../guide/specification.md) — Run contract | pytest: 1; eval: 3 | `pr`, `main`, `release` |
-| `physical_ai.workflow.evidence` | `physical_ai` | high | [docs/guide/physical-ai.md](../guide/physical-ai.md) — Evidence invariants | pytest: 4 | `pr`, `main`, `release` |
+| `physical_ai.workflow.evidence` | `physical_ai` | high | [docs/guide/physical-ai.md](../guide/physical-ai.md) — Evidence invariants | pytest: 6 | `pr`, `main`, `release` |
 | `core.ecs.data_model` | `core` | high | [docs/guide/specification.md](../guide/specification.md) — Data Model Contracts | pytest: 2; eval: 2; benchmark: 1 | `pr`, `main`, `release` |
 | `core.processors.execution` | `core` | high | [docs/guide/specification.md](../guide/specification.md) — System and Processor Contracts | pytest: 3; eval: 1 | `pr`, `main`, `release` |
 | `core.hooks.lifecycle` | `core` | medium | [docs/guide/specification.md](../guide/specification.md) — Lifecycle Hook Contracts | pytest: 3 | `pr`, `main`, `release` |

@@ -25,7 +25,11 @@ export interface Env {
 }
 
 const JSON_HEADERS = { "content-type": "application/json" };
-const CATALOG_PROTOCOL_VERSION = 7;
+const CATALOG_PROTOCOL_VERSION = 8;
+const GATEWAY_PROTOCOL_VERSION = 8;
+const DIRECTORY_INTERNAL_HOST = "catalog-directory.internal";
+const WORLD_WRITER_MODES = new Set(["resumable", "cleanup_only"]);
+const WORLD_STATUSES = new Set(["active", "destroyed"]);
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), { status, headers: JSON_HEADERS });
@@ -33,6 +37,67 @@ function json(data: unknown, status = 200): Response {
 
 function conflict(kind: string, message: string): Response {
   return json({ error: kind, message }, 409);
+}
+
+function sameWorldIdentity(
+  row: Record<string, unknown>,
+  record: Record<string, unknown>,
+  writerMode: string,
+): boolean {
+  return (
+    String(row.world_id) === String(record.world_id) &&
+    row.name === (record.name ?? null) &&
+    row.run_id === (record.run_id ?? null) &&
+    row.parent_world_id === (record.parent_world_id ?? null) &&
+    String(row.writer_mode) === writerMode
+  );
+}
+
+function validateRetirementRecord(
+  record: Record<string, unknown>,
+  worldId: string,
+): Response | null {
+  const required = [
+    "world_id",
+    "name",
+    "run_id",
+    "parent_world_id",
+    "status",
+    "tick_head",
+    "writer_mode",
+  ];
+  if (required.some((field) => !Object.prototype.hasOwnProperty.call(record, field))) {
+    return json(
+      {
+        error: "invalid_request",
+        message: "exact cleanup-only retirement requires the complete world record",
+      },
+      422,
+    );
+  }
+  const nullableStringsValid = ["name", "run_id", "parent_world_id"].every(
+    (field) => record[field] === null || typeof record[field] === "string",
+  );
+  if (
+    typeof record.world_id !== "string" ||
+    record.world_id !== worldId ||
+    record.writer_mode !== "cleanup_only" ||
+    record.status !== "destroyed" ||
+    !nullableStringsValid ||
+    typeof record.tick_head !== "number" ||
+    !Number.isSafeInteger(record.tick_head) ||
+    record.tick_head < 0
+  ) {
+    return json(
+      {
+        error: "invalid_request",
+        message:
+          "retirement requires matching world_id, cleanup_only identity, destroyed status, and a valid tick head",
+      },
+      422,
+    );
+  }
+  return null;
 }
 
 function appendCommandEvent(
@@ -113,35 +178,176 @@ export default {
     const namespace = decodeURIComponent(parts[1]);
     const directory = env.DIRECTORY.get(env.DIRECTORY.idFromName(namespace));
 
+    if (parts[2] === "protocol" && parts.length === 3 && request.method === "GET") {
+      return json({ catalog_protocol_version: CATALOG_PROTOCOL_VERSION });
+    }
+
     // World status is mirrored into the per-world authority before command
     // traffic can reach it. Status transitions hit WorldCommitDO first, where
     // they serialize with admission/leasing and atomically reject open work;
     // the directory remains the cross-world discovery index.
-    if (parts[2] === "worlds" && parts.length === 3 && request.method === "POST") {
+    const ordinaryWorldRegistration =
+      parts[2] === "worlds" && parts.length === 3;
+    const versionedWorldRegistration =
+      parts[2] === "protocol" &&
+      parts[3] === "v8" &&
+      parts[4] === "worlds" &&
+      parts.length === 5;
+    const versionedWorldRetirement =
+      parts[2] === "protocol" &&
+      parts[3] === "v8" &&
+      parts[4] === "worlds" &&
+      parts[6] === "retire" &&
+      parts.length === 7;
+    if (versionedWorldRetirement && request.method === "POST") {
+      const worldId = decodeURIComponent(parts[5]);
       const record = (await request.clone().json()) as Record<string, unknown>;
-      const response = await directory.fetch(request);
+      const invalid = validateRetirementRecord(record, worldId);
+      if (invalid !== null) return invalid;
+      const directoryResponse = await directory.fetch(
+        new Request(
+          `https://${DIRECTORY_INTERNAL_HOST}/ns/${encodeURIComponent(namespace)}/_gateway/v8/worlds/${encodeURIComponent(worldId)}/retire`,
+          {
+            method: "POST",
+            headers: JSON_HEADERS,
+            body: JSON.stringify(record),
+          },
+        ),
+      );
+      if (!directoryResponse.ok) return directoryResponse;
+      const directoryResult = (await directoryResponse.json()) as Record<
+        string,
+        unknown
+      >;
+      if (
+        !sameWorldIdentity(directoryResult, record, "cleanup_only") ||
+        directoryResult.status !== "destroyed" ||
+        directoryResult.catalog_status !== "destroyed" ||
+        directoryResult.catalog_protocol_version !== CATALOG_PROTOCOL_VERSION
+      ) {
+        return json(
+          {
+            error: "protocol_mismatch",
+            message: "directory did not confirm exact cleanup-only retirement",
+          },
+          502,
+        );
+      }
+
+      const world = env.WORLD.get(env.WORLD.idFromName(`${namespace}:${worldId}`));
+      const statusResponse = await world.fetch(
+        new Request(
+          `${url.origin}/ns/${encodeURIComponent(namespace)}/w/${encodeURIComponent(worldId)}/status`,
+          {
+            method: "PATCH",
+            headers: JSON_HEADERS,
+            body: JSON.stringify({ status: "destroyed" }),
+          },
+        ),
+      );
+      if (!statusResponse.ok) return statusResponse;
+      const statusResult = (await statusResponse.json()) as Record<string, unknown>;
+      if (statusResult.status !== "destroyed") {
+        return json(
+          {
+            error: "protocol_mismatch",
+            message: "world authority did not confirm destroyed status",
+          },
+          502,
+        );
+      }
+      return json({
+        ...directoryResult,
+        ok: true,
+        status: "destroyed",
+        catalog_status: "destroyed",
+        world_status: statusResult.status,
+        gateway_protocol_version: GATEWAY_PROTOCOL_VERSION,
+      });
+    }
+    if (
+      (ordinaryWorldRegistration || versionedWorldRegistration) &&
+      request.method === "POST"
+    ) {
+      const record = (await request.clone().json()) as Record<string, unknown>;
+      // The public v8 route terminates at this outer Worker. Rewrite it to a
+      // Directory-only host and route so either direction of a rolling
+      // Worker/DO deployment rejects before the Directory mutates SQL:
+      //
+      // - a v7 outer Worker forwards the public route, which the v8 Directory
+      //   does not accept;
+      // - a v8 outer Worker sends this internal route, which a v7 Directory
+      //   does not accept.
+      const directoryRequest = versionedWorldRegistration
+        ? new Request(
+            `https://${DIRECTORY_INTERNAL_HOST}/ns/${encodeURIComponent(namespace)}/_gateway/v8/worlds`,
+            {
+              method: "POST",
+              headers: JSON_HEADERS,
+              body: JSON.stringify(record),
+            },
+          )
+        : request;
+      const response = await directory.fetch(directoryRequest);
       if (!response.ok) return response;
       const result = (await response.clone().json()) as Record<string, unknown>;
       const worldId = String(record.world_id ?? "");
       const status = String(result.status ?? record.status ?? "active");
       const world = env.WORLD.get(env.WORLD.idFromName(`${namespace}:${worldId}`));
       const statusResponse = await world.fetch(
-        new Request(`${url.origin}/ns/${namespace}/w/${worldId}/status`, {
-          method: "PATCH",
-          headers: JSON_HEADERS,
-          body: JSON.stringify({ status }),
-        }),
+        new Request(
+          `${url.origin}/ns/${encodeURIComponent(namespace)}/w/${encodeURIComponent(worldId)}/status`,
+          {
+            method: "PATCH",
+            headers: JSON_HEADERS,
+            body: JSON.stringify({ status }),
+          },
+        ),
       );
-      return statusResponse.ok ? response : statusResponse;
+      if (!statusResponse.ok) return statusResponse;
+      const statusResult = (await statusResponse.json()) as Record<string, unknown>;
+      if (!WORLD_STATUSES.has(String(statusResult.status ?? ""))) {
+        return json(
+          {
+            error: "protocol_mismatch",
+            message: "world authority did not confirm a valid mirrored status",
+          },
+          502,
+        );
+      }
+      if (String(statusResult.status) !== status) {
+        return json(
+          {
+            error: "protocol_mismatch",
+            message: "directory and world authority statuses differ",
+          },
+          502,
+        );
+      }
+      return versionedWorldRegistration
+        ? json({
+            ...result,
+            status: statusResult.status,
+            catalog_status: result.status,
+            world_status: statusResult.status,
+            gateway_protocol_version: GATEWAY_PROTOCOL_VERSION,
+          })
+        : json({
+            ...result,
+            status: statusResult.status,
+          });
     }
 
     if (parts[2] === "worlds" && parts.length === 4 && request.method === "PATCH") {
       const patch = (await request.clone().json()) as Record<string, unknown>;
-      if (Object.prototype.hasOwnProperty.call(patch, "run_id")) {
+      if (
+        Object.prototype.hasOwnProperty.call(patch, "run_id") ||
+        Object.prototype.hasOwnProperty.call(patch, "writer_mode")
+      ) {
         return json(
           {
             error: "immutable_identity",
-            message: "world run_id is assigned at registration and cannot be changed",
+            message: "world run_id and writer_mode are immutable after registration",
           },
           422,
         );
@@ -193,6 +399,9 @@ export default {
       }
       return stub.fetch(request);
     }
+    if (parts[2] === "_gateway") {
+      return json({ error: "bad_route" }, 404);
+    }
     return directory.fetch(request);
   },
 };
@@ -210,13 +419,20 @@ export class CatalogDirectoryDO implements DurableObject {
       CREATE TABLE IF NOT EXISTS worlds (
         world_id TEXT PRIMARY KEY, name TEXT, run_id TEXT,
         parent_world_id TEXT, status TEXT NOT NULL,
-        tick_head INTEGER NOT NULL DEFAULT 0
+        tick_head INTEGER NOT NULL DEFAULT 0,
+        writer_mode TEXT NOT NULL DEFAULT 'resumable'
       );
       CREATE TABLE IF NOT EXISTS signatures (
         table_id TEXT PRIMARY KEY, component_names TEXT NOT NULL,
         schema_json TEXT NOT NULL, fingerprint TEXT NOT NULL
       );
     `);
+    const worldColumns = this.sql.exec("PRAGMA table_info(worlds)").toArray();
+    if (!worldColumns.some((row) => String(row.name) === "writer_mode")) {
+      this.sql.exec(
+        "ALTER TABLE worlds ADD COLUMN writer_mode TEXT NOT NULL DEFAULT 'resumable'",
+      );
+    }
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -225,35 +441,166 @@ export class CatalogDirectoryDO implements DurableObject {
     const route = parts.slice(2);
     const method = request.method;
 
-    if (route[0] === "worlds" && method === "POST") {
+    const ordinaryWorldRegistration =
+      route[0] === "worlds" && route.length === 1;
+    const versionedWorldRegistration =
+      url.hostname === DIRECTORY_INTERNAL_HOST &&
+      route[0] === "_gateway" &&
+      route[1] === "v8" &&
+      route[2] === "worlds" &&
+      route.length === 3;
+    const versionedWorldRetirement =
+      url.hostname === DIRECTORY_INTERNAL_HOST &&
+      route[0] === "_gateway" &&
+      route[1] === "v8" &&
+      route[2] === "worlds" &&
+      route[4] === "retire" &&
+      route.length === 5;
+    if (versionedWorldRetirement && method === "POST") {
+      const worldId = decodeURIComponent(route[3]);
       const rec = (await request.json()) as Record<string, unknown>;
+      const invalid = validateRetirementRecord(rec, worldId);
+      if (invalid !== null) return invalid;
+
+      const result = this.state.storage.transactionSync(() => {
+        const existing = this.sql
+          .exec("SELECT * FROM worlds WHERE world_id = ?", worldId)
+          .toArray() as Array<Record<string, unknown>>;
+        if (existing.length === 0) {
+          this.sql.exec(
+            "INSERT INTO worlds (world_id, name, run_id, parent_world_id, status, tick_head, writer_mode) VALUES (?, ?, ?, ?, 'destroyed', ?, 'cleanup_only')",
+            worldId,
+            rec.name,
+            rec.run_id,
+            rec.parent_world_id,
+            rec.tick_head,
+          );
+          const row = this.sql
+            .exec("SELECT * FROM worlds WHERE world_id = ?", worldId)
+            .toArray()[0] as Record<string, unknown>;
+          return { row, disposition: "tombstoned", conflict: false };
+        }
+
+        const row = existing[0];
+        if (!sameWorldIdentity(row, rec, "cleanup_only")) {
+          return { row, disposition: "conflict", conflict: true };
+        }
+        if (row.status !== "active" && row.status !== "destroyed") {
+          return { row, disposition: "conflict", conflict: true };
+        }
+        const disposition =
+          row.status === "destroyed" ? "already_destroyed" : "retired";
+        if (row.status === "active") {
+          this.sql.exec(
+            "UPDATE worlds SET status = 'destroyed' WHERE world_id = ?",
+            worldId,
+          );
+        }
+        const updated = this.sql
+          .exec("SELECT * FROM worlds WHERE world_id = ?", worldId)
+          .toArray()[0] as Record<string, unknown>;
+        return { row: updated, disposition, conflict: false };
+      });
+      if (result.conflict) {
+        return conflict(
+          "catalog_conflict",
+          `world ${worldId} is registered with a different identity`,
+        );
+      }
+      return json({
+        ...result.row,
+        ok: true,
+        disposition: result.disposition,
+        catalog_status: result.row.status,
+        catalog_protocol_version: CATALOG_PROTOCOL_VERSION,
+      });
+    }
+    if (
+      (ordinaryWorldRegistration || versionedWorldRegistration) &&
+      method === "POST"
+    ) {
+      const rec = (await request.json()) as Record<string, unknown>;
+      const hasWriterMode = Object.prototype.hasOwnProperty.call(
+        rec,
+        "writer_mode",
+      );
+      const rawWriterMode = hasWriterMode ? rec.writer_mode : "resumable";
+      if (
+        typeof rawWriterMode !== "string" ||
+        !WORLD_WRITER_MODES.has(rawWriterMode)
+      ) {
+        return json(
+          {
+            error: "invalid_request",
+            message: "writer_mode must be resumable or cleanup_only",
+          },
+          422,
+        );
+      }
+      const writerMode = rawWriterMode;
+      if (rec.status !== "active") {
+        return json(
+          {
+            error: "invalid_request",
+            message: "world registration requires status active",
+          },
+          422,
+        );
+      }
+      if (
+        (writerMode === "cleanup_only" && !versionedWorldRegistration) ||
+        (writerMode !== "cleanup_only" && versionedWorldRegistration)
+      ) {
+        return json(
+          {
+            error: "invalid_request",
+            message:
+              "cleanup_only registration requires the protocol v8 world route",
+          },
+          422,
+        );
+      }
       const existing = this.sql
         .exec("SELECT * FROM worlds WHERE world_id = ?", rec.world_id)
         .toArray();
       if (existing.length > 0) {
         const row = existing[0] as Record<string, unknown>;
-        if (
-          row.name !== (rec.name ?? null) ||
-          row.run_id !== (rec.run_id ?? null) ||
-          row.parent_world_id !== (rec.parent_world_id ?? null)
-        ) {
+        if (!sameWorldIdentity(row, rec, writerMode)) {
           return conflict(
             "catalog_conflict",
             `world ${rec.world_id} already registered with different identity`,
           );
         }
-        return json({ ok: true, idempotent: true, status: row.status });
+        if (row.status !== "active" && row.status !== "destroyed") {
+          return conflict(
+            "catalog_conflict",
+            `world ${rec.world_id} has an invalid durable status`,
+          );
+        }
+        return json({
+          ok: true,
+          idempotent: true,
+          status: row.status,
+          writer_mode: row.writer_mode,
+          catalog_protocol_version: CATALOG_PROTOCOL_VERSION,
+        });
       }
       this.sql.exec(
-        "INSERT INTO worlds (world_id, name, run_id, parent_world_id, status, tick_head) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO worlds (world_id, name, run_id, parent_world_id, status, tick_head, writer_mode) VALUES (?, ?, ?, ?, ?, ?, ?)",
         rec.world_id,
         rec.name ?? null,
         rec.run_id ?? null,
         rec.parent_world_id ?? null,
         rec.status ?? "active",
         rec.tick_head ?? 0,
+        writerMode,
       );
-      return json({ ok: true, status: rec.status ?? "active" });
+      return json({
+        ok: true,
+        status: rec.status ?? "active",
+        writer_mode: writerMode,
+        catalog_protocol_version: CATALOG_PROTOCOL_VERSION,
+      });
     }
 
     if (route[0] === "worlds" && route.length === 1 && method === "GET") {
@@ -293,17 +640,49 @@ export class CatalogDirectoryDO implements DurableObject {
       }
       if (method === "PATCH") {
         const patch = (await request.json()) as Record<string, unknown>;
-        if (Object.prototype.hasOwnProperty.call(patch, "run_id")) {
+        if (
+          Object.prototype.hasOwnProperty.call(patch, "run_id") ||
+          Object.prototype.hasOwnProperty.call(patch, "writer_mode")
+        ) {
           return json(
             {
               error: "immutable_identity",
-              message: "world run_id is assigned at registration and cannot be changed",
+              message: "world run_id and writer_mode are immutable after registration",
+            },
+            422,
+          );
+        }
+        if (
+          Object.prototype.hasOwnProperty.call(patch, "status") &&
+          (typeof patch.status !== "string" || !WORLD_STATUSES.has(patch.status))
+        ) {
+          return json(
+            {
+              error: "invalid_request",
+              message: "status must be active or destroyed",
             },
             422,
           );
         }
         if (typeof patch.status === "string") {
-          this.sql.exec("UPDATE worlds SET status = ? WHERE world_id = ?", patch.status, worldId);
+          const rows = this.sql
+            .exec("SELECT status FROM worlds WHERE world_id = ?", worldId)
+            .toArray() as Array<Record<string, unknown>>;
+          if (
+            rows.length > 0 &&
+            rows[0].status === "destroyed" &&
+            patch.status === "active"
+          ) {
+            return conflict(
+              "catalog_conflict",
+              `world ${worldId} cannot transition from destroyed to active`,
+            );
+          }
+          this.sql.exec(
+            "UPDATE worlds SET status = ? WHERE world_id = ?",
+            patch.status,
+            worldId,
+          );
         }
         if (typeof patch.tick_head === "number") {
           this.sql.exec(
@@ -434,6 +813,22 @@ export class WorldCommitDO implements DurableObject {
           );
         }
         const result = this.state.storage.transactionSync(() => {
+          const existing = this.sql
+            .exec("SELECT status FROM world_state WHERE singleton = 1")
+            .toArray() as Array<Record<string, unknown>>;
+          if (
+            existing.length > 0 &&
+            existing[0].status === "destroyed" &&
+            body.status === "active"
+          ) {
+            return {
+              conflict: true,
+              status: "destroyed",
+              cancelled: 0,
+              idempotent: false,
+            };
+          }
+          const prior = existing.length > 0 ? String(existing[0].status) : null;
           this.sql.exec(
             "INSERT INTO world_state (singleton, status) VALUES (1, ?) " +
               "ON CONFLICT(singleton) DO UPDATE SET status = excluded.status",
@@ -447,8 +842,20 @@ export class WorldCommitDO implements DurableObject {
                   `world transitioned to ${body.status}`,
                   now,
                 );
-          return { ok: true, status: body.status, cancelled };
+          return {
+            conflict: false,
+            ok: true,
+            status: body.status,
+            cancelled,
+            idempotent: prior === body.status,
+          };
         });
+        if (result.conflict) {
+          return conflict(
+            "catalog_conflict",
+            `world ${worldId} cannot transition from destroyed to active`,
+          );
+        }
         return json(result);
       }
     }

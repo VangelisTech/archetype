@@ -48,8 +48,8 @@ method = "to_pylist"
 reason = "HTTP JSON response boundary: convert the already-collected Daft result into row dictionaries for FastAPI's JSON encoder at the terminal REST boundary."
 
 [[entries]]
-path = "src/archetype/app/physical_ai/service.py"
-symbol = "_latest_rows"
+path = "src/archetype/physical_ai/views.py"
+symbol = "latest_rows"
 expr = "materialized.to_pylist"
 method = "to_pylist"
 reason = "Physical-evaluation grading boundary: StorageService admits and materializes latest-tick ledger rows before bounded success and episode-length values become typed task or sweep reports."
@@ -137,6 +137,41 @@ symbol = "CriticReviewOutbox.on_post_tick"
 expr = "author_executions.to_pylist"
 method = "to_pylist"
 reason = "Critic identity-binding boundary: persisted author execution identities and sandbox ids become scalar fields in the independent reviewer request and are later compared against the critic session before promotion."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "project_complete_author_activity_observations"
+expr = "executions.to_pylist"
+method = "to_pylist"
+reason = "Exact post-commit activity-settlement boundary: finite committed AgentExecution facts become scalar identities used to verify that an author result bundle is complete before acknowledging its bounded durable result."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "project_complete_author_activity_observations"
+expr = "validations.to_pylist"
+method = "to_pylist"
+reason = "Exact post-commit activity-settlement boundary: finite committed ValidationResult facts are counted against the result-bound completeness marker before the activity catalog can acknowledge observation."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "project_complete_author_activity_observations"
+expr = "commits.to_pylist"
+method = "to_pylist"
+reason = "Exact post-commit activity-settlement boundary: finite committed Commit facts are counted against the result-bound completeness marker before the activity catalog can acknowledge observation."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "project_complete_author_activity_observations"
+expr = "friction.to_pylist"
+method = "to_pylist"
+reason = "Exact post-commit activity-settlement boundary: finite committed FrictionLog facts are counted against the result-bound completeness marker before the activity catalog can acknowledge observation."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "project_complete_author_activity_observations"
+expr = "markers.to_pylist"
+method = "to_pylist"
+reason = "Exact post-commit activity-settlement boundary: bounded AuthorActivityObservation markers become scalar result references, digests, identities, and expected fact counts for catalog settlement."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
@@ -235,6 +270,13 @@ symbol = "series_to_rows"
 expr = "s.to_pylist"
 method = "to_pylist"
 reason = "series_to_rows helper: converts each Series parameter to a Python list inside a list comprehension. This function is called exclusively from @daft.method.batch UDF bodies (MuJoCo C-library boundary, env RPC boundary, policy inference boundary) where the Daft executor has already materialised the batch. The AST checker auto-exempts to_pylist calls on named parameters of @daft.method.batch functions but cannot trace through this plain helper indirection; the call is semantically equivalent to an auto-sanctioned UDF-boundary access."
+
+[[entries]]
+path = "src/archetype/physical_ai/hosted_episode.py"
+symbol = "_decode_rows"
+expr = "batches[0].to_pylist"
+method = "to_pylist"
+reason = "Canonical Arrow IPC codec boundary: the input is already one validated in-memory PyArrow RecordBatch, not a lazy Daft DataFrame, and exact Python values are required to validate cross-payload identities, terminal completeness, and canonical byte re-encoding before any Activity result reference can be recorded."
 
 [[entries]]
 path = "src/archetype/storage/service.py"

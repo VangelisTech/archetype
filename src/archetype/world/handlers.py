@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from archetype.core.aio import AsyncWorld
 from archetype.core.component import Component
 from archetype.world import mutation, query, simulation
+from archetype.world.errors import WorldClosingError
 from archetype.world.models import (
     WORLD_OPERATION_TYPES,
     AddComponents,
@@ -322,20 +323,32 @@ async def list_worlds(
     operation: ListWorlds,
 ) -> list[WorldInfo]:
     del operation
-    snapshot = await registry.list_worlds()
-    world_ids = [str(world.world_id) for world in snapshot]
+    snapshot = await registry.snapshot_world_bindings()
     infos: list[WorldInfo] = []
     # Recovery may invoke user hooks or required projectors that target a
-    # sibling. Acquire only one exact-world lock at a time and fail closed if
-    # a snapshotted world begins closing before its turn.
-    for world_id in world_ids:
-        async with registry.operation(world_id) as world:
-            await simulation.reconcile_committed_work_locked(
-                registry,
-                world_id,
-                world,
-            )
-            infos.append(_world_info(world))
+    # sibling. Acquire only one exact-world lock at a time. A close racing the
+    # snapshot makes that entry non-public; omit it without poisoning siblings.
+    for binding in snapshot:
+        world_id = binding.world_id
+        admitted = False
+        try:
+            async with registry.operation(world_id) as world:
+                admitted = True
+                if not registry.is_public_binding(binding, world):
+                    continue
+                await simulation.reconcile_committed_work_locked(
+                    registry,
+                    world_id,
+                    world,
+                )
+                if not registry.is_public_binding(binding, world):
+                    continue
+                infos.append(_world_info(world))
+        except WorldClosingError:
+            continue
+        except KeyError:
+            if admitted:
+                raise
     return infos
 
 

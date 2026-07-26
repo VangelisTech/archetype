@@ -36,7 +36,10 @@ from archetype.storage.catalog import (
     WorldRecord,
 )
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.xdist_group(name="remote-control-catalog-worker"),
+]
 
 WORKER_DIR = Path(__file__).resolve().parents[2] / "infra" / "control-catalog"
 WORKER_TOKEN = "archetype-parity-token"
@@ -175,6 +178,161 @@ async def test_worker_rejects_run_identity_patch_atomically(worker_url):
         assert fetched.json()["run_id"] == world.run_id
         assert fetched.json()["status"] == world.status
 
+        rejected_mode = await client.patch(
+            f"/ns/{namespace}/worlds/{world.world_id}",
+            json={"writer_mode": "cleanup_only", "status": "destroyed"},
+        )
+        assert rejected_mode.status_code == 422
+        assert rejected_mode.json()["error"] == "immutable_identity"
+
+        fetched = await client.get(f"/ns/{namespace}/worlds/{world.world_id}")
+        assert fetched.status_code == 200
+        assert fetched.json()["writer_mode"] == "resumable"
+        assert fetched.json()["status"] == world.status
+
+
+async def test_worker_rejects_unversioned_cleanup_only_without_effect(worker_url):
+    import httpx
+
+    namespace = f"unversioned-cleanup-{uuid.uuid4().hex[:12]}"
+    headers = {"authorization": f"Bearer {WORKER_TOKEN}"}
+    world = _world("private", writer_mode="cleanup_only")
+    async with httpx.AsyncClient(base_url=worker_url, headers=headers) as client:
+        rejected = await client.post(f"/ns/{namespace}/worlds", json=world.__dict__)
+        assert rejected.status_code == 422
+
+        fetched = await client.get(f"/ns/{namespace}/worlds/{world.world_id}")
+        assert fetched.status_code == 404
+        status = await client.get(f"/ns/{namespace}/w/{world.world_id}/status")
+        assert status.status_code == 404
+
+
+async def test_worker_confirms_v8_gateway_after_cleanup_only_status_mirror(worker_url):
+    import httpx
+
+    namespace = f"gateway-confirmation-{uuid.uuid4().hex[:12]}"
+    headers = {"authorization": f"Bearer {WORKER_TOKEN}"}
+    world = _world("private", writer_mode="cleanup_only")
+    async with httpx.AsyncClient(base_url=worker_url, headers=headers) as client:
+        registered = await client.post(
+            f"/ns/{namespace}/protocol/v8/worlds",
+            json=world.__dict__,
+        )
+        assert registered.status_code == 200
+        assert registered.json()["catalog_protocol_version"] == 8
+        assert registered.json()["gateway_protocol_version"] == 8
+        assert registered.json()["catalog_status"] == "active"
+        assert registered.json()["world_status"] == "active"
+
+        status = await client.get(f"/ns/{namespace}/w/{world.world_id}/status")
+        assert status.status_code == 200
+        assert status.json()["status"] == "active"
+
+
+async def test_remote_client_retires_directory_commit_after_status_mirror_rejection(
+    worker_url,
+):
+    import httpx
+
+    from archetype.storage.catalog.remote import RemoteControlCatalog
+
+    namespace = f"gateway-partial-commit-{uuid.uuid4().hex[:12]}"
+    world = _world(
+        "private",
+        writer_mode="cleanup_only",
+    )
+    catalog = RemoteControlCatalog(worker_url, namespace, token=WORKER_TOKEN)
+    try:
+        headers = {"authorization": f"Bearer {WORKER_TOKEN}"}
+        async with httpx.AsyncClient(base_url=worker_url, headers=headers) as client:
+            preexisting_status = await client.patch(
+                f"/ns/{namespace}/w/{world.world_id}/status",
+                json={"status": "destroyed"},
+            )
+        assert preexisting_status.status_code == 200
+
+        with pytest.raises(CatalogConflictError):
+            await catalog.register_world(world)
+
+        retained = await catalog.get_world(world.world_id)
+        assert retained is not None
+        assert retained.status == "destroyed"
+        assert retained.writer_mode == "cleanup_only"
+        assert (
+            retained.world_id,
+            retained.name,
+            retained.run_id,
+            retained.parent_world_id,
+        ) == (
+            world.world_id,
+            world.name,
+            world.run_id,
+            world.parent_world_id,
+        )
+
+        async with httpx.AsyncClient(base_url=worker_url, headers=headers) as client:
+            status = await client.get(
+                f"/ns/{namespace}/w/{world.world_id}/status",
+            )
+        assert status.status_code == 200
+        assert status.json()["status"] == "destroyed"
+
+        with pytest.raises(RuntimeError, match="active cleanup-only registration"):
+            await catalog.register_world(
+                _world(
+                    world.world_id,
+                    status="active",
+                    writer_mode="cleanup_only",
+                )
+            )
+        replayed = await catalog.get_world(world.world_id)
+        assert replayed is not None
+        assert replayed.status == "destroyed"
+    finally:
+        await catalog.close()
+
+
+async def test_worker_rejects_public_directory_internal_route_without_effect(worker_url):
+    import httpx
+
+    namespace = f"internal-route-{uuid.uuid4().hex[:12]}"
+    headers = {"authorization": f"Bearer {WORKER_TOKEN}"}
+    world = _world("private", writer_mode="cleanup_only")
+    async with httpx.AsyncClient(base_url=worker_url, headers=headers) as client:
+        rejected = await client.post(
+            f"/ns/{namespace}/_gateway/v8/worlds",
+            json=world.__dict__,
+        )
+        assert rejected.status_code == 404
+
+        fetched = await client.get(f"/ns/{namespace}/worlds/{world.world_id}")
+        assert fetched.status_code == 404
+        status = await client.get(f"/ns/{namespace}/w/{world.world_id}/status")
+        assert status.status_code == 404
+
+
+@pytest.mark.parametrize("writer_mode", [None, "future_mode"])
+async def test_worker_rejects_invalid_writer_mode_without_effect(
+    worker_url,
+    writer_mode,
+):
+    import httpx
+
+    namespace = f"invalid-writer-mode-{uuid.uuid4().hex[:12]}"
+    headers = {"authorization": f"Bearer {WORKER_TOKEN}"}
+    payload = _world("invalid").__dict__ | {"writer_mode": writer_mode}
+    async with httpx.AsyncClient(base_url=worker_url, headers=headers) as client:
+        rejected = await client.post(
+            f"/ns/{namespace}/protocol/v8/worlds",
+            json=payload,
+        )
+        assert rejected.status_code == 422
+
+        fetched = await client.get(f"/ns/{namespace}/worlds/invalid")
+        assert fetched.status_code == 404
+        status = await client.get(f"/ns/{namespace}/w/invalid/status")
+        assert status.status_code == 404
+
 
 async def test_world_registration_parity(tmp_path, worker_url):
     for catalog in await _both(tmp_path, worker_url):
@@ -189,6 +347,48 @@ async def test_world_registration_parity(tmp_path, worker_url):
         assert (await catalog.get_world("w1")).status == "destroyed"
         listed = await catalog.list_worlds()
         assert [w.world_id for w in listed] == ["w1"]
+        await catalog.close()
+
+
+async def test_cleanup_only_world_registration_parity(tmp_path, worker_url):
+    for catalog in await _both(tmp_path, worker_url):
+        private = _world("private", writer_mode="cleanup_only")
+        with pytest.raises(ValueError, match="requires status='active'"):
+            await catalog.register_world(
+                _world("invalid-private", status="destroyed", writer_mode="cleanup_only")
+            )
+        await catalog.register_world(private)
+        record = await catalog.get_world("private")
+        assert record is not None
+        assert record.status == "active"
+        assert record.writer_mode == "cleanup_only"
+        with pytest.raises(CatalogConflictError):
+            await catalog.register_world(_world("private", writer_mode="resumable"))
+
+        await catalog.retire_world_registration(private)
+        await catalog.retire_world_registration(private)
+        retired = await catalog.get_world("private")
+        assert retired is not None and retired.status == "destroyed"
+        with pytest.raises(CatalogConflictError):
+            await catalog.set_world_status("private", "active")
+        with pytest.raises(RuntimeError, match="active cleanup-only registration"):
+            await catalog.register_world(private)
+        still_retired = await catalog.get_world("private")
+        assert still_retired is not None and still_retired.status == "destroyed"
+
+        late = _world("late", writer_mode="cleanup_only")
+        await catalog.retire_world_registration(late)
+        tombstone = await catalog.get_world("late")
+        assert tombstone is not None and tombstone.status == "destroyed"
+        with pytest.raises(RuntimeError, match="active cleanup-only registration"):
+            await catalog.register_world(late)
+        await catalog.retire_world_registration(
+            _world("late", run_id="foreign", writer_mode="cleanup_only")
+        )
+        unchanged = await catalog.get_world("late")
+        assert unchanged is not None
+        assert unchanged.status == "destroyed"
+        assert unchanged.run_id == "r1"
         await catalog.close()
 
 

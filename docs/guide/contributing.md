@@ -19,6 +19,7 @@ Package location states architectural ownership before any symbol is exported:
 | Components, processors, pure DataFrame transforms, transition graphs, and reusable projections | `archetype.<family>` |
 | Supported family value contracts | `archetype.<family>.contracts` or another specifically named family module |
 | Capability-scoped resources and provider adapters implementing a family-owned protocol | A named subpackage of `archetype.<family>` |
+| Generic Activity identity, claims, attempts, fences, result references, and settlement | `archetype.activities` |
 | Physical storage, control catalogs, commit coordination, and generic durable world/run envelopes | `archetype.storage` |
 | Application workflow authority, cross-family orchestration, internal service ports, and concrete application services | `archetype.app.<family>` |
 | Transport and authentication | `archetype.api` |
@@ -114,6 +115,7 @@ These documents are the current orientation pack for contributors:
 | [Application Architecture](application-architecture.md) | Normative supported boundaries, service ownership, dependency order, and lint inputs |
 | [Observability](observability.md) | Safe signal vocabulary, family dispositions, process-host ownership, and telemetry authority boundaries |
 | [Command Gate](command-gate.md) | Policy enforcement point, roles, and audit emission |
+| [Activities](activities.md) | Resource/Activity distinction, between-tick delivery, provider reconciliation, and settlement |
 | [Service Protocols](service-protocols.md) | Normative app service interfaces |
 | [Runtime](runtime.md) | Script-boundary runtime contract |
 | [Architecture](architecture.md) | High-level ECS and service-layer design |

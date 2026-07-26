@@ -208,6 +208,45 @@ async def test_app_table_schema_drift_fails_before_write(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_concurrent_first_table_registration_recovers_losing_creator(tmp_path, monkeypatch):
+    """A first-use creator that loses the catalog race resolves the winning table."""
+    storage = _storage(tmp_path)
+    first = StorageService(session=configure_session(storage))
+    second = StorageService(session=configure_session(storage))
+    rows = daft.from_pydict({"event_id": ["e1"]})
+    barrier = threading.Barrier(2)
+    try:
+        first_store, second_store = await asyncio.gather(
+            first.get_or_create_store(storage),
+            second.get_or_create_store(storage),
+        )
+        for store in (first_store, second_store):
+            catalog = store.session.current_catalog()
+            original_has_table = catalog.has_table
+
+            def synchronized_has_table(identifier, *, _has_table=original_has_table):
+                exists = _has_table(identifier)
+                assert not exists
+                barrier.wait(timeout=10)
+                return exists
+
+            monkeypatch.setattr(catalog, "has_table", synchronized_has_table)
+
+        tables = await asyncio.wait_for(
+            asyncio.gather(
+                asyncio.to_thread(first._ensure_table, first_store, "events", rows.schema()),
+                asyncio.to_thread(second._ensure_table, second_store, "events", rows.schema()),
+            ),
+            timeout=20,
+        )
+
+        assert all(table.name == "events" for table in tables)
+    finally:
+        await first.shutdown()
+        await second.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_real_iceberg_conflict_recomputes_conditional_append(tmp_path):
     """A losing writer refreshes and anti-joins again instead of duplicating a key."""
     storage = _storage(tmp_path)

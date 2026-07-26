@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from collections.abc import Callable
@@ -46,6 +48,15 @@ _CODEX_HOME = "/root/.codex"
 _MISSION_AUTH_PATH = f"{_CODEX_HOME}/auth.json"
 _CODEX_SECRET = "codex_oauth"
 _GITHUB_SECRET = "github"
+_MAX_PROVIDER_OPERATION_ID_LENGTH = 1024
+_MAX_PROVIDER_OBJECT_ID_LENGTH = 256
+_MAX_PROVIDER_COHORT_ID_LENGTH = 256
+_MODAL_NAMESPACE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}")
+_MODAL_OPERATION_COHORT = re.compile(r"cohort-v1:[0-9a-f]{32}")
+
+# Epoch zero and operations without an epoch predate the persistent provider
+# barrier. They must never infer retry permission from a missing marker.
+MODAL_ACTIVITY_PROTOCOL_EPOCH = 1
 
 
 def _default_environment() -> str:
@@ -68,6 +79,12 @@ def _default_environment() -> str:
     return f"modal-agent://sha256:{hashlib.sha256(material.encode()).hexdigest()}"
 
 
+def _require_modal_namespace_name(value: str, *, label: str) -> str:
+    if not _MODAL_NAMESPACE_NAME.fullmatch(value):
+        raise ValueError(f"Modal {label} is invalid")
+    return value
+
+
 @dataclass(frozen=True)
 class ModalSandboxConfig:
     """Provider configuration; repository coordinates arrive in ``SandboxSpec``."""
@@ -80,6 +97,9 @@ class ModalSandboxConfig:
     checkpoint_ttl_seconds: int | None = 30 * 24 * 60 * 60
     heartbeat_seconds: int = 15
     login_timeout_seconds: int = 15 * 60
+    workspace_name: str | None = None
+    environment_name: str | None = None
+    operation_protocol_epoch: int | None = None
 
     def __post_init__(self) -> None:
         if not self.app_name.strip():
@@ -98,6 +118,74 @@ class ModalSandboxConfig:
             raise ValueError("heartbeat interval must be positive")
         if self.login_timeout_seconds < 1:
             raise ValueError("login timeout must be positive")
+        if self.operation_protocol_epoch is not None and self.operation_protocol_epoch < 0:
+            raise ValueError("Modal operation protocol epoch must not be negative")
+
+
+@dataclass(frozen=True, slots=True)
+class ModalSandboxOperationIdentity:
+    """Stable full provider identity known before any Modal effect."""
+
+    workspace_name: str
+    environment_name: str
+    app_name: str
+    operation_id: str
+    protocol_epoch: int
+
+    def __post_init__(self) -> None:
+        _require_modal_namespace_name(self.workspace_name, label="workspace_name")
+        _require_modal_namespace_name(self.environment_name, label="environment_name")
+        _require_modal_namespace_name(self.app_name, label="app_name")
+        if not self.operation_id.strip():
+            raise ValueError("Modal sandbox operation_id must not be empty")
+        if self.operation_id != self.operation_id.strip():
+            raise ValueError("Modal sandbox operation_id must not have surrounding whitespace")
+        if "\x00" in self.operation_id:
+            raise ValueError("Modal sandbox operation_id must not contain NUL")
+        if len(self.operation_id) > _MAX_PROVIDER_OPERATION_ID_LENGTH:
+            raise ValueError(
+                "Modal sandbox operation_id must not exceed "
+                f"{_MAX_PROVIDER_OPERATION_ID_LENGTH} characters"
+            )
+        if self.protocol_epoch < 0:
+            raise ValueError("Modal operation protocol epoch must not be negative")
+
+    @property
+    def digest(self) -> str:
+        """Return the complete namespaced content identity."""
+
+        payload = json.dumps(
+            {
+                "schema_version": 2,
+                "provider": "modal",
+                "workspace_name": self.workspace_name,
+                "environment_name": self.environment_name,
+                "app_name": self.app_name,
+                "protocol_epoch": self.protocol_epoch,
+                "operation_id": self.operation_id,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode()
+        return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+    @property
+    def mission_sandbox_name(self) -> str:
+        """Return a deterministic provider-safe name for the mission sandbox."""
+
+        return self._sandbox_name("m")
+
+    @property
+    def auth_sandbox_name(self) -> str:
+        """Return a deterministic provider-safe name for the isolated auth broker."""
+
+        return self._sandbox_name("a")
+
+    def _sandbox_name(self, role: str) -> str:
+        digest = bytes.fromhex(self.digest.removeprefix("sha256:"))
+        encoded = base64.b32encode(digest).decode().rstrip("=").lower()
+        return f"arc-{role}-{encoded}"
 
 
 class ModalSandboxSession:
@@ -114,6 +202,8 @@ class ModalSandboxSession:
         checkpoint_timeout_seconds: int,
         checkpoint_ttl_seconds: int | None,
         heartbeat_seconds: int,
+        operation_identity: ModalSandboxOperationIdentity | None = None,
+        operation_cohort_id: str | None = None,
     ) -> None:
         self._spec = spec
         self._sandbox = sandbox
@@ -123,6 +213,8 @@ class ModalSandboxSession:
         self._checkpoint_timeout_seconds = checkpoint_timeout_seconds
         self._checkpoint_ttl_seconds = checkpoint_ttl_seconds
         self._heartbeat_seconds = heartbeat_seconds
+        self._operation_identity = operation_identity
+        self._operation_cohort_id = operation_cohort_id
         self._lock = asyncio.Lock()
         self._event_lock = asyncio.Lock()
         self._event_sequence = 0
@@ -139,6 +231,18 @@ class ModalSandboxSession:
             sandbox_id=str(self._sandbox.object_id),
             environment=self._spec.environment,
         )
+
+    @property
+    def operation_identity(self) -> ModalSandboxOperationIdentity | None:
+        """Return the stable named-operation identity, when this session has one."""
+
+        return self._operation_identity
+
+    @property
+    def operation_cohort_id(self) -> str | None:
+        """Return the exact two-resource cohort created for this session."""
+
+        return self._operation_cohort_id
 
     @property
     def capabilities(self) -> SandboxCapabilities:
@@ -716,11 +820,16 @@ class ModalSandboxBackend:
             raise RuntimeError(
                 "Modal support is optional; install it with `uv sync --extra coding-agent`"
             ) from exc
-        app = await modal.App.lookup.aio(self.config.app_name, create_if_missing=True)
+        app = await modal.App.lookup.aio(
+            self.config.app_name,
+            create_if_missing=True,
+            environment_name=self.config.environment_name,
+        )
         volume = modal.Volume.from_name(
             self.config.auth_volume_name,
             create_if_missing=True,
             version=2,
+            environment_name=self.config.environment_name,
         )
         await volume.hydrate.aio()
         image = (
@@ -729,6 +838,8 @@ class ModalSandboxBackend:
             else self._default_image(modal)
         )
         sandbox = await modal.Sandbox.create.aio(
+            "sleep",
+            "infinity",
             app=app,
             image=image,
             timeout=self.config.login_timeout_seconds,
@@ -736,6 +847,7 @@ class ModalSandboxBackend:
             workdir=_AUTH_MOUNT,
             volumes={_AUTH_MOUNT: volume},
             tags={"kind": "archetype-agent-oauth-login"},
+            environment_name=self.config.environment_name,
         )
         try:
             process = await sandbox.exec.aio(
@@ -841,36 +953,83 @@ class ModalSandboxBackend:
             if writes:
                 await asyncio.gather(*writes, return_exceptions=True)
 
-    async def _start(self, modal: Any, spec: SandboxSpec, image: Any) -> SandboxSession:
-        app = await modal.App.lookup.aio(self.config.app_name, create_if_missing=True)
+    async def _start(
+        self,
+        modal: Any,
+        spec: SandboxSpec,
+        image: Any,
+        *,
+        operation_identity: ModalSandboxOperationIdentity | None = None,
+        client: Any | None = None,
+    ) -> SandboxSession:
+        if operation_identity is not None:
+            self._validate_operation_identity(operation_identity)
+        app = await modal.App.lookup.aio(
+            self.config.app_name,
+            create_if_missing=True,
+            environment_name=self.config.environment_name,
+            client=client,
+        )
         auth_volume = modal.Volume.from_name(
             self.config.auth_volume_name,
             create_if_missing=False,
             version=2,
+            environment_name=self.config.environment_name,
+            client=client,
         )
         await auth_volume.hydrate.aio()
         github_secret = modal.Secret.from_name(
             self.config.github_secret_name,
             required_keys=["GITHUB_TOKEN"],
+            environment_name=self.config.environment_name,
+            client=client,
         )
         metadata = spec.metadata_dict()
+        operation_cohort_id = f"cohort-v1:{uuid4().hex}" if operation_identity is not None else None
+        operation_tags = (
+            {
+                "operation_digest": operation_identity.digest,
+                "operation_cohort": str(operation_cohort_id),
+                "operation_protocol_epoch": str(operation_identity.protocol_epoch),
+            }
+            if operation_identity is not None
+            else {}
+        )
+        auth_name = (
+            {"name": operation_identity.auth_sandbox_name} if operation_identity is not None else {}
+        )
         auth_sandbox = await modal.Sandbox.create.aio(
+            "sleep",
+            "infinity",
             app=app,
             image=image,
             timeout=spec.timeout_seconds,
             idle_timeout=spec.idle_timeout_seconds,
             workdir=_AUTH_MOUNT,
             volumes={_AUTH_MOUNT: auth_volume},
-            tags={"kind": "archetype-agent-auth", **metadata},
+            tags={**metadata, "kind": "archetype-agent-auth", **operation_tags},
+            environment_name=self.config.environment_name,
+            client=client,
+            **auth_name,
         )
         try:
+            mission_name = (
+                {"name": operation_identity.mission_sandbox_name}
+                if operation_identity is not None
+                else {}
+            )
             sandbox = await modal.Sandbox.create.aio(
+                "sleep",
+                "infinity",
                 app=app,
                 image=image,
                 timeout=spec.timeout_seconds,
                 idle_timeout=spec.idle_timeout_seconds,
                 workdir=str(PurePosixPath(spec.workdir).parent),
-                tags={"kind": "archetype-agent-mission", **metadata},
+                tags={**metadata, "kind": "archetype-agent-mission", **operation_tags},
+                environment_name=self.config.environment_name,
+                client=client,
+                **mission_name,
             )
         except BaseException:
             await ModalSandboxSession._terminate(auth_sandbox)
@@ -884,6 +1043,8 @@ class ModalSandboxBackend:
             checkpoint_timeout_seconds=self.config.checkpoint_timeout_seconds,
             checkpoint_ttl_seconds=self.config.checkpoint_ttl_seconds,
             heartbeat_seconds=self.config.heartbeat_seconds,
+            operation_identity=operation_identity,
+            operation_cohort_id=operation_cohort_id,
         )
         try:
             await verify_coding_agent_environment(
@@ -896,6 +1057,25 @@ class ModalSandboxBackend:
             await session.close()
             raise
         return session
+
+    def _validate_operation_identity(
+        self,
+        identity: ModalSandboxOperationIdentity,
+    ) -> None:
+        expected = (
+            self.config.workspace_name,
+            self.config.environment_name,
+            self.config.app_name,
+            self.config.operation_protocol_epoch,
+        )
+        observed = (
+            identity.workspace_name,
+            identity.environment_name,
+            identity.app_name,
+            identity.protocol_epoch,
+        )
+        if observed != expected:
+            raise ValueError("Modal operation identity does not match backend namespace")
 
     async def restore(
         self,
@@ -962,4 +1142,367 @@ class ModalSandboxBackend:
         )
 
 
-__all__ = ["ModalSandboxBackend", "ModalSandboxConfig", "ModalSandboxSession"]
+@dataclass(frozen=True, slots=True)
+class ModalSandboxOperationRunning:
+    """Bounded evidence that one coherent named cohort was running.
+
+    This value deliberately carries no executable session. Reconciliation
+    cannot grant a second worker access to the inner ``exec`` boundary.
+    """
+
+    identity: ModalSandboxOperationIdentity
+    mission_sandbox_id: str
+    auth_sandbox_id: str
+    cohort_id: str
+
+    def __post_init__(self) -> None:
+        if not self.mission_sandbox_id.strip() or not self.auth_sandbox_id.strip():
+            raise ValueError("running Modal operation requires both sandbox identities")
+        if (
+            len(self.mission_sandbox_id) > _MAX_PROVIDER_OBJECT_ID_LENGTH
+            or len(self.auth_sandbox_id) > _MAX_PROVIDER_OBJECT_ID_LENGTH
+        ):
+            raise ValueError("running Modal sandbox identity is too long")
+        if self.mission_sandbox_id == self.auth_sandbox_id:
+            raise ValueError("mission and auth sandbox identities must be distinct")
+        if (
+            not _MODAL_OPERATION_COHORT.fullmatch(self.cohort_id)
+            or len(self.cohort_id) > _MAX_PROVIDER_COHORT_ID_LENGTH
+        ):
+            raise ValueError("running Modal operation cohort identity is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class ModalSandboxOperationUnknown:
+    """Provider evidence cannot prove a complete live pair or safe absence."""
+
+    identity: ModalSandboxOperationIdentity
+    reason: str
+
+    def __post_init__(self) -> None:
+        if not self.reason.strip():
+            raise ValueError("unknown Modal sandbox reconciliation requires a reason")
+        if len(self.reason) > 512:
+            raise ValueError("unknown Modal sandbox reconciliation reason is too long")
+
+
+type ModalSandboxOperationReconciliation = (
+    ModalSandboxOperationRunning | ModalSandboxOperationUnknown
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _ModalSandboxLookupFailure:
+    reason: str
+
+
+_MODAL_SANDBOX_MISSING = object()
+
+
+class ModalSandboxOperationCapability:
+    """Start and observe one namespaced, cohort-tagged Modal sandbox pair.
+
+    Identity includes the authenticated workspace, explicit Environment, App,
+    protocol epoch, and logical operation. Epoch zero and any operation that
+    existed before the persistent barrier are legacy: missing barrier evidence
+    for them is always Unknown and must never authorize this endpoint.
+
+    ``start`` is an initial execution endpoint, not an idempotent retry
+    endpoint. A running provider name prevents a second ``start`` from
+    acquiring the same pair, but Modal releases names when sandboxes stop.
+    Consequently reconciliation never returns replay permission, a retry
+    guard, or an executable session. Public name-based cleanup is deliberately
+    absent because a late cleanup could terminate a newer name generation;
+    successful sessions close the exact handles they created.
+
+    This is provider-resource substrate, not full Activity parity. The current
+    multi-step author harness still invokes inner processes after pair
+    creation; those invocations are not one atomic named Modal operation. An
+    Activity adapter must use ``ModalProviderStartBarrier.start_initial`` or
+    ``start_retry``. The barrier owns both acknowledged marker acquisitions and
+    the one allowed call into this capability; no structural value is accepted
+    as start authority.
+    """
+
+    def __init__(self, backend: ModalSandboxBackend) -> None:
+        self._backend = backend
+        config = backend.config
+        if config.workspace_name is None:
+            raise ValueError("Modal named operations require an explicit workspace_name")
+        if config.environment_name is None:
+            raise ValueError("Modal named operations require an explicit environment_name")
+        _require_modal_namespace_name(config.workspace_name, label="workspace_name")
+        _require_modal_namespace_name(config.environment_name, label="environment_name")
+        _require_modal_namespace_name(config.app_name, label="app_name")
+        if config.operation_protocol_epoch != MODAL_ACTIVITY_PROTOCOL_EPOCH:
+            raise ValueError(
+                "Modal named operations require the barrier-aware protocol epoch "
+                f"{MODAL_ACTIVITY_PROTOCOL_EPOCH}"
+            )
+
+    def identity(self, operation_id: str) -> ModalSandboxOperationIdentity:
+        """Derive provider names without contacting Modal."""
+
+        config = self._backend.config
+        assert config.workspace_name is not None
+        assert config.environment_name is not None
+        assert config.operation_protocol_epoch is not None
+        return ModalSandboxOperationIdentity(
+            workspace_name=config.workspace_name,
+            environment_name=config.environment_name,
+            app_name=config.app_name,
+            operation_id=operation_id,
+            protocol_epoch=config.operation_protocol_epoch,
+        )
+
+    async def _start_after_provider_barrier(
+        self,
+        *,
+        identity: ModalSandboxOperationIdentity,
+        spec: SandboxSpec,
+    ) -> ModalSandboxSession:
+        """Create the pair after the barrier acknowledged its permanent marker.
+
+        This is deliberately private. The ``ModalProviderStartBarrier`` start
+        methods are the public family contract and never release transferable
+        start authority. The first named sandbox create additionally
+        serializes the live provider cohort, but it is not a retry guard
+        because Modal releases sandbox names when they stop.
+        """
+
+        if self.identity(identity.operation_id) != identity:
+            raise ValueError("Modal provider barrier belongs to another operation capability")
+        self._validate_spec(spec)
+        modal = self._load_modal()
+        client = await self._verified_client(modal, phase="start")
+        if isinstance(client, _ModalSandboxLookupFailure):
+            raise RuntimeError(client.reason)
+        image = (
+            modal.Image.from_id(self._backend.config.image_id, client=client)
+            if self._backend.config.image_id
+            else self._backend._default_image(modal)
+        )
+        session = await self._backend._start(
+            modal,
+            spec,
+            image,
+            operation_identity=identity,
+            client=client,
+        )
+        if not isinstance(session, ModalSandboxSession):
+            raise TypeError("Modal named operation returned a non-Modal session")
+        return session
+
+    async def reconcile(
+        self,
+        *,
+        operation_id: str,
+        spec: SandboxSpec,
+    ) -> ModalSandboxOperationReconciliation:
+        """Observe a complete running pair without granting execution authority."""
+
+        identity = self.identity(operation_id)
+        self._validate_spec(spec)
+        modal = self._load_modal()
+        client = await self._verified_client(modal, phase="reconciliation")
+        if isinstance(client, _ModalSandboxLookupFailure):
+            return ModalSandboxOperationUnknown(identity, client.reason)
+        mission, auth = await asyncio.gather(
+            self._lookup(
+                modal,
+                client=client,
+                role="mission",
+                name=identity.mission_sandbox_name,
+            ),
+            self._lookup(
+                modal,
+                client=client,
+                role="auth",
+                name=identity.auth_sandbox_name,
+            ),
+        )
+        lookups = {"mission": mission, "auth": auth}
+        failures = [
+            value.reason
+            for value in lookups.values()
+            if isinstance(value, _ModalSandboxLookupFailure)
+        ]
+        if failures:
+            return ModalSandboxOperationUnknown(
+                identity,
+                "; ".join(sorted(failures)),
+            )
+        missing = [role for role, value in lookups.items() if value is _MODAL_SANDBOX_MISSING]
+        if len(missing) == len(lookups):
+            return ModalSandboxOperationUnknown(
+                identity,
+                "no running named Modal sandbox pair; absence is not retry authorization",
+            )
+        if missing:
+            return ModalSandboxOperationUnknown(
+                identity,
+                "named Modal sandbox pair is partial; absent=" + ",".join(sorted(missing)),
+            )
+
+        mission_tags, auth_tags, mission_poll, auth_poll = await asyncio.gather(
+            self._tags(mission, role="mission"),
+            self._tags(auth, role="auth"),
+            self._poll(mission, role="mission"),
+            self._poll(auth, role="auth"),
+        )
+        tags = {"mission": mission_tags, "auth": auth_tags}
+        polls = {"mission": mission_poll, "auth": auth_poll}
+        observation_failures = [
+            value.reason
+            for value in (*tags.values(), *polls.values())
+            if isinstance(value, _ModalSandboxLookupFailure)
+        ]
+        if observation_failures:
+            return ModalSandboxOperationUnknown(
+                identity,
+                "; ".join(sorted(observation_failures)),
+            )
+        stopped = [role for role, value in polls.items() if value is not None]
+        if stopped:
+            return ModalSandboxOperationUnknown(
+                identity,
+                "named Modal sandbox is not running; stopped=" + ",".join(sorted(stopped)),
+            )
+
+        expected_tags = {
+            "operation_digest": identity.digest,
+            "operation_protocol_epoch": str(identity.protocol_epoch),
+        }
+        for role, values in tags.items():
+            if not isinstance(values, dict):
+                return ModalSandboxOperationUnknown(
+                    identity,
+                    f"{role} sandbox returned invalid cohort evidence",
+                )
+            if any(values.get(key) != value for key, value in expected_tags.items()):
+                return ModalSandboxOperationUnknown(
+                    identity,
+                    f"{role} sandbox does not match the full provider operation identity",
+                )
+            if values.get("kind") != f"archetype-agent-{role}":
+                return ModalSandboxOperationUnknown(
+                    identity,
+                    f"{role} sandbox role evidence does not match",
+                )
+        mission_cohort = mission_tags.get("operation_cohort")
+        auth_cohort = auth_tags.get("operation_cohort")
+        if (
+            not isinstance(mission_cohort, str)
+            or not _MODAL_OPERATION_COHORT.fullmatch(mission_cohort)
+            or mission_cohort != auth_cohort
+        ):
+            return ModalSandboxOperationUnknown(
+                identity,
+                "named Modal sandbox pair has missing or mixed-generation cohort evidence",
+            )
+
+        return ModalSandboxOperationRunning(
+            identity=identity,
+            mission_sandbox_id=str(mission.object_id),
+            auth_sandbox_id=str(auth.object_id),
+            cohort_id=mission_cohort,
+        )
+
+    def _validate_spec(self, spec: SandboxSpec) -> None:
+        if spec.provider != self._backend.name:
+            raise ValueError("Modal operation capability received a non-Modal sandbox spec")
+        if spec.environment != self._backend.environment:
+            raise ValueError(
+                f"Modal environment must be {self._backend.environment!r}, got {spec.environment!r}"
+            )
+
+    @staticmethod
+    def _load_modal() -> Any:
+        try:
+            import modal
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError(
+                "Modal support is optional; install it with `uv sync --extra coding-agent`"
+            ) from exc
+        return modal
+
+    async def _verified_client(
+        self,
+        modal: Any,
+        *,
+        phase: str,
+    ) -> Any | _ModalSandboxLookupFailure:
+        expected = self._backend.config.workspace_name
+        assert expected is not None
+        try:
+            workspace = modal.Workspace.from_context()
+            await workspace.hydrate.aio()
+            observed = str(workspace.name or "")
+            client = workspace.client
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return _ModalSandboxLookupFailure(
+                f"Modal {phase} workspace lookup failed ({type(exc).__name__[:128]})"
+            )
+        if observed != expected:
+            return _ModalSandboxLookupFailure(
+                f"Modal {phase} workspace identity does not match configured namespace"
+            )
+        return client
+
+    async def _lookup(
+        self,
+        modal: Any,
+        *,
+        client: Any,
+        role: str,
+        name: str,
+    ) -> Any:
+        try:
+            return await modal.Sandbox.from_name.aio(
+                self._backend.config.app_name,
+                name,
+                environment_name=self._backend.config.environment_name,
+                client=client,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            not_found = getattr(getattr(modal, "exception", None), "NotFoundError", None)
+            if isinstance(not_found, type) and isinstance(exc, not_found):
+                return _MODAL_SANDBOX_MISSING
+            return _ModalSandboxLookupFailure(f"{role} lookup failed ({type(exc).__name__[:128]})")
+
+    @staticmethod
+    async def _tags(sandbox: Any, *, role: str) -> Any:
+        try:
+            return await sandbox.get_tags.aio()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return _ModalSandboxLookupFailure(
+                f"{role} cohort lookup failed ({type(exc).__name__[:128]})"
+            )
+
+    @staticmethod
+    async def _poll(sandbox: Any, *, role: str) -> Any:
+        try:
+            return await sandbox.poll.aio()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return _ModalSandboxLookupFailure(f"{role} poll failed ({type(exc).__name__[:128]})")
+
+
+__all__ = [
+    "MODAL_ACTIVITY_PROTOCOL_EPOCH",
+    "ModalSandboxBackend",
+    "ModalSandboxConfig",
+    "ModalSandboxOperationCapability",
+    "ModalSandboxOperationIdentity",
+    "ModalSandboxOperationReconciliation",
+    "ModalSandboxOperationRunning",
+    "ModalSandboxOperationUnknown",
+    "ModalSandboxSession",
+]

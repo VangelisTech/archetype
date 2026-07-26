@@ -235,13 +235,13 @@ SUPPLEMENTAL: dict[str, tuple[str, str]] = {
         "TranscriptIngestionResult",
     ),
     "IterationResult": ("archetype.research.models", "IterationResult"),
-    "EnvClient": ("archetype.physical_ai.manipulation", "EnvClient"),
+    "EnvClient": ("archetype.physical_ai.interfaces", "EnvClient"),
     "OptimizationResult": ("archetype.physical_ai.optimization", "OptimizationResult"),
     "PerturbationStrategy": (
         "archetype.physical_ai.optimization",
         "PerturbationStrategy",
     ),
-    "PolicyClient": ("archetype.physical_ai.policy", "PolicyClient"),
+    "PolicyClient": ("archetype.physical_ai.interfaces", "PolicyClient"),
     "RoundRecord": ("archetype.physical_ai.optimization", "RoundRecord"),
     "TemplatePerturbation": (
         "archetype.physical_ai.optimization",

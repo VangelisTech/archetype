@@ -96,12 +96,18 @@ processors and command materialization are not replayed, and the same retained
 receipt is retried before another tick. Required projection is not a public
 hook. It runs under exact-world authority and is limited to idempotently
 persisting deterministic intent keyed by its consumer and receipt identity; it
-MUST NOT perform provider or sandbox I/O. A downstream resource consumer may
-claim that intent and perform external effects outside the world lock.
+MUST NOT perform provider or sandbox I/O. An Activity worker may claim that
+intent and perform external effects outside the world lock. When that work is
+durably coordinated into a later committed observation, it follows the
+[Activity](activities.md) contract: at-least-once delivery, fenced control
+writes, provider reconciliation, durable result reference, and exact-receipt
+settlement.
 
 Worlds constructed without a coordinator (bare core usage, the sync stack)
 run uncoordinated: rows stamp the implicit epoch-0 identity (`""`/`0`), no
 manifests are written, and nothing is filtered — v0.2 semantics, unchanged.
+Their tokenless receipts do not provide the pinned source or observation
+snapshot required by the [Activity](activities.md) contract.
 
 ## 4. Reader-side allowlist
 
@@ -164,7 +170,10 @@ is what makes maintenance safe:
 
 - No physical resumability: a crashed MuJoCo (or any external-process)
   execution is queryable up to its last published tick, not resumable
-  mid-physics.
+  mid-physics. Physical evidence worlds are durably registered with immutable
+  `writer_mode="cleanup_only"` while retaining `status="active"` for ordinary
+  tick materialization. Mutable resume requires `writer_mode="resumable"`, so
+  a process crash cannot reactivate the serialized provider processors.
 - Cross-host fencing requires the remote control catalog
   (``ARCHETYPE_CONTROL_CATALOG_URL`` plus
   ``ARCHETYPE_CONTROL_CATALOG_TOKEN``, captured once by the application

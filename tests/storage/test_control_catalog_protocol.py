@@ -37,6 +37,7 @@ _REQUIRED_METHODS = {
     "read_outbox",
     "register_signature",
     "register_world",
+    "retire_world_registration",
     "release_commands",
     "release_evaluation",
     "set_world_status",

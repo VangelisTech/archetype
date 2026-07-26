@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Paired instruction sweeps plus the pure physical-AI optimizer.
+"""Paired instruction episodes plus the pure physical-AI optimizer.
 
 SCOPE — this is a MECHANISM CHECK, not evidence for the scientific claim.
 ``InstructionConditionedReachPolicy`` defines its effective gain *as*
@@ -23,12 +23,15 @@ and the same sweep + optimizer run on real LIBERO on a Modal GPU container.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from archetype import ArchetypeRuntime, InstructionSweepConfig
 from archetype.core.config import StorageConfig
+from archetype.physical_ai import handlers as physical_handlers
 from archetype.physical_ai.manipulation import ManipStatus, ManipTask, ScriptedReachEnv
-from archetype.physical_ai.models import SweepPhysicalInstructions
+from archetype.physical_ai.models import SweepPhysicalInstructions, VariantOutcome
 from archetype.physical_ai.optimization import (
     TemplatePerturbation,
     optimize_instruction,
@@ -143,6 +146,14 @@ async def test_instruction_sweep_grades_success_rate_per_variant(tmp_path):
             )
         )
 
+        assert report.suite == "scripted"
+        assert report.task_id == TASK_ID
+        assert report.variants == (
+            VariantOutcome("", 5, 0, 0.0, 6.0),
+            VariantOutcome("reach", 5, 1, 0.2, 5.8),
+            VariantOutcome("reach red", 5, 4, 0.8, 4.6),
+            VariantOutcome("reach red block", 5, 5, 1.0, 3.4),
+        )
         assert [o.instruction for o in report.variants] == variants
         for vidx, variant in enumerate(variants):
             outcome = report.variants[vidx]
@@ -171,6 +182,57 @@ async def test_instruction_sweep_grades_success_rate_per_variant(tmp_path):
         )
         rows = df.collect().to_pylist()
         assert len({r["entity_id"] for r in rows}) == len(variants) * SEEDS
+    finally:
+        await resources.aclose()
+
+
+@pytest.mark.asyncio
+async def test_instruction_sweep_rejects_valid_variant_denominator_skew(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A correct total cannot hide missing evidence for one valid variant."""
+
+    original_latest_rows = physical_handlers.latest_rows
+
+    async def skew_one_variant(
+        frame: Any,
+        storage_service: Any,
+    ) -> dict[int, dict[str, Any]]:
+        rows = await original_latest_rows(frame, storage_service)
+        skewed = {entity_id: dict(row) for entity_id, row in rows.items()}
+        row = next(row for row in skewed.values() if row["maniptask__instruction"] == "reach red")
+        row["maniptask__instruction"] = "reach"
+        return skewed
+
+    monkeypatch.setattr(physical_handlers, "latest_rows", skew_one_variant)
+    resources = build_test_runtime(tmp_path)
+    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="iskew")
+    targets = _targets()
+    try:
+        with pytest.raises(
+            ValueError,
+            match=r"variant 'reach'.*graded 3 trials.*expected 2",
+        ):
+            await resources.dispatcher.apply(
+                SweepPhysicalInstructions(
+                    config=InstructionSweepConfig(
+                        suite="scripted",
+                        task_id=TASK_ID,
+                        variants=("reach", "reach red"),
+                        seeds_per_variant=2,
+                        max_steps=MAX_STEPS,
+                        storage=storage,
+                    ),
+                    env_client=ScriptedReachEnv(targets=targets, tolerance=TOL),
+                    policy_client=InstructionConditionedReachPolicy(
+                        targets=targets,
+                        required_keywords=REQUIRED,
+                        gain=GAIN,
+                        max_step=MAX_STEP,
+                    ),
+                )
+            )
     finally:
         await resources.aclose()
 
@@ -352,3 +414,39 @@ async def test_sweep_runtime_path_is_ledger_backed_without_access_audit(tmp_path
         )
         rows = (await audit.history(limit=200)).collect().to_pylist()
         assert rows == []
+
+
+def test_sync_runtime_exposes_the_same_typed_instruction_sweep(tmp_path):
+    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="isweepsync")
+    targets = _targets()
+    env = ScriptedReachEnv(targets=targets, tolerance=TOL)
+    policy = InstructionConditionedReachPolicy(
+        targets=targets,
+        required_keywords=REQUIRED,
+        gain=GAIN,
+        max_step=MAX_STEP,
+    )
+
+    with ArchetypeRuntime.sync() as runtime:
+        report = runtime.sweep_physical_instructions(
+            InstructionSweepConfig(
+                suite="scripted",
+                task_id=TASK_ID,
+                variants=("reach red block",),
+                seeds_per_variant=1,
+                max_steps=MAX_STEPS,
+                storage=storage,
+            ),
+            env_client=env,
+            policy_client=policy,
+        )
+
+    assert report.world_id and report.run_id
+    assert report.suite == "scripted"
+    assert report.task_id == TASK_ID
+    assert len(report.variants) == 1
+    assert report.variants[0].instruction == "reach red block"
+    assert report.variants[0].n_trials == 1
+    assert report.variants[0].n_success == 1
+    assert report.variants[0].success_rate == 1.0
+    assert report.variants[0].mean_length == 2.0
