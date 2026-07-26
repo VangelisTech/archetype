@@ -96,6 +96,14 @@ def test_modal_backend_has_no_task_outcome_or_commit_without_push_mode() -> None
         ModalSandboxConfig(image_id="floating-name")
 
 
+@pytest.mark.parametrize("app_name", ("_app", ".app", "a" * 64))
+def test_modal_config_preserves_existing_sdk_valid_app_names(app_name: str) -> None:
+    config = ModalSandboxConfig(app_name=app_name)
+
+    assert config.app_name == app_name
+    assert ModalSandboxBackend(config).config is config
+
+
 def test_modal_agent_process_is_wrapped_in_durable_live_output_files() -> None:
     session = ModalSandboxSession(
         spec=SandboxSpec("modal", "modal-codex-test", "/workspace/repo"),
