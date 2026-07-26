@@ -342,10 +342,22 @@ DESIGN_CATEGORIES = tuple(
     category for categories in DESIGN_LENSES.values() for category in categories
 )
 
+# Seat history (2026-07-26): kimi exhausted its billing-cycle quota in the
+# morning and the claude subscription hit its monthly spend cap in the
+# afternoon — each outage bricked the whole gate while seats were
+# single-provider. Codex (subscription OAuth, gpt-5.6-luna) is the primary
+# verdict seat; claude keeps the second seat on every lens and simply
+# records quota infra receipts (neutral, non-corroborating) until its cap
+# resets, at which point corroboration resumes with no code change. Kimi
+# rejoins the bench the same way when its cycle refreshes, if re-seated.
 REVIEWERS: dict[str, dict[str, str]] = {
     "claude": {
         "backend": "claude-code",
         "model": "claude-code-action",
+    },
+    "codex": {
+        "backend": "codex",
+        "model": "gpt-5.6-luna",
     },
     "kimi": {
         "backend": "opencode",
@@ -354,15 +366,15 @@ REVIEWERS: dict[str, dict[str, str]] = {
 }
 
 LENS_REVIEWERS: dict[str, tuple[str, str]] = {
-    "daft-shape": ("kimi", "claude"),
-    "state-lifecycle": ("claude", "kimi"),
-    "contracts": ("claude", "kimi"),
-    "authority": ("claude", "kimi"),
-    "observability": ("kimi", "claude"),
-    "design-coherence": ("claude", "kimi"),
+    "daft-shape": ("codex", "claude"),
+    "state-lifecycle": ("codex", "claude"),
+    "contracts": ("codex", "claude"),
+    "authority": ("codex", "claude"),
+    "observability": ("codex", "claude"),
+    "design-coherence": ("codex", "claude"),
 }
 
-ADJUDICATOR_REVIEWER = "claude"
+ADJUDICATOR_REVIEWER = "codex"
 
 _ROOT = Path(__file__).resolve().parents[1]
 _PROMPT_DIR = _ROOT / ".github" / "review" / "prompts"
@@ -1259,6 +1271,7 @@ def render_lens_review_prompt(
     head_sha: str,
     lens: str,
     reviewer_id: str,
+    scoped_files: Sequence[str] = (),
 ) -> str:
     reviewer_spec(reviewer_id)
     rulebook = (
@@ -1275,6 +1288,7 @@ def render_lens_review_prompt(
             "reviewer_id": reviewer_id,
             "rulebook": rulebook,
             "categories": "\n".join(f"- `{category}`" for category in lens_categories(lens)),
+            "scoped_files": "\n".join(f"- `{path}`" for path in scoped_files),
             "output_schema": json.dumps(lens_result_schema(lens), indent=2),
         },
     )
@@ -1286,6 +1300,7 @@ def render_lens_retry_prompt(
     head_sha: str,
     lens: str,
     reviewer_id: str,
+    scoped_files: Sequence[str] = (),
 ) -> str:
     reviewer_spec(reviewer_id)
     rulebook = (
@@ -1302,6 +1317,7 @@ def render_lens_retry_prompt(
             "reviewer_id": reviewer_id,
             "rulebook": rulebook,
             "categories": "\n".join(f"- `{category}`" for category in lens_categories(lens)),
+            "scoped_files": "\n".join(f"- `{path}`" for path in scoped_files),
             "output_schema": json.dumps(lens_result_schema(lens), indent=2),
         },
     )

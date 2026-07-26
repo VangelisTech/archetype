@@ -14,6 +14,12 @@ assigned categories:
 
 $categories
 
+The scope manifest is exactly these changed files, and your `reviewed_files`
+array must equal exactly this list — never the rulebook, the diff file, or
+anything else you merely opened:
+
+$scoped_files
+
 Preserve substantive analysis that remains valid. The result must cover every
 changed file in `review_context`, anchor every finding to a changed line, and
 contain no model-authored reviewer identity, assigned-category claim, or file

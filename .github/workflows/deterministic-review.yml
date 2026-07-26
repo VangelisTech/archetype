@@ -111,6 +111,7 @@ jobs:
     env:
       DIFF_FILE: ${{ github.workspace }}/.footgun-review.diff
       LENS: ${{ matrix.lens }}
+      CODEX_VERSION: "0.144.0"
       OPENCODE_VERSION: "1.18.4"
       REVIEW_DIR: ${{ github.workspace }}/.footgun-review-output
       REVIEWER_ID: ${{ matrix.reviewer }}
@@ -173,6 +174,7 @@ jobs:
           fi
           python3 scripts/footgun_review_gate.py prompt \
             --kind lens-review \
+            --scope "${SCOPE_FILE}" \
             --pr-number "${PR_NUMBER}" \
             --head "${HEAD_SHA}" \
             --lens "${LENS}" \
@@ -258,6 +260,44 @@ jobs:
             --raw "${RUNNER_TEMP}/opencode-raw.txt" \
             --output "${REVIEW_DIR}/first-structured-output.json"
 
+
+      - name: Run read-only reviewer (Codex)
+        id: detector_codex
+        if: matrix.backend == 'codex'
+        continue-on-error: true
+        timeout-minutes: 25
+        env:
+          # Subscription OAuth, same trust posture as CLAUDE_CODE_OAUTH_TOKEN;
+          # materialized into an ephemeral CODEX_HOME, never the workspace.
+          # Read-only enforcement is the codex sandbox itself (-s read-only);
+          # --output-schema yields schema-conforming JSON natively and still
+          # flows through the same extract/validate pipeline.
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          CODEX_MODEL: ${{ matrix.model }}
+          SCHEMA: ${{ steps.contract.outputs.schema }}
+        run: |
+          export CODEX_HOME="${RUNNER_TEMP}/codex-home"
+          mkdir -p "${CODEX_HOME}"
+          printf '%s' "${CODEX_AUTH_JSON}" > "${CODEX_HOME}/auth.json"
+          chmod 600 "${CODEX_HOME}/auth.json"
+          npm install -g "@openai/codex@${CODEX_VERSION}"
+          printf '%s' "${SCHEMA}" > "${RUNNER_TEMP}/lens-schema.json"
+          mkdir -p "${REVIEW_DIR}"
+          codex exec \
+            -m "${CODEX_MODEL}" \
+            -s read-only \
+            --ephemeral \
+            --ignore-user-config \
+            --color never \
+            -C "${GITHUB_WORKSPACE}" \
+            --output-schema "${RUNNER_TEMP}/lens-schema.json" \
+            -o "${RUNNER_TEMP}/codex-last.txt" \
+            "$(cat "${RUNNER_TEMP}/lens-prompt.txt")" \
+            > "${RUNNER_TEMP}/codex-raw.txt" 2>&1
+          python3 scripts/footgun_review_gate.py extract \
+            --raw "${RUNNER_TEMP}/codex-last.txt" \
+            --output "${REVIEW_DIR}/first-structured-output.json"
+
       - name: Validate first reviewer result
         id: first_validation
         run: |
@@ -282,6 +322,7 @@ jobs:
         run: |
           python3 scripts/footgun_review_gate.py prompt \
             --kind lens-retry \
+            --scope "${SCOPE_FILE}" \
             --pr-number "${PR_NUMBER}" \
             --head "${HEAD_SHA}" \
             --lens "${LENS}" \
@@ -358,6 +399,42 @@ jobs:
             --raw "${RUNNER_TEMP}/opencode-retry-raw.txt" \
             --output "${REVIEW_DIR}/retry-structured-output.json"
 
+
+      - name: Retry reviewer with validator feedback (Codex)
+        id: detector_codex_retry
+        if: >-
+          matrix.backend == 'codex' &&
+          steps.first_validation.outputs.valid != 'true'
+        continue-on-error: true
+        timeout-minutes: 25
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          CODEX_MODEL: ${{ matrix.model }}
+          SCHEMA: ${{ steps.contract.outputs.schema }}
+        run: |
+          # Auth and schema rewritten: the first attempt may have failed
+          # before writing them.
+          export CODEX_HOME="${RUNNER_TEMP}/codex-home"
+          mkdir -p "${CODEX_HOME}"
+          printf '%s' "${CODEX_AUTH_JSON}" > "${CODEX_HOME}/auth.json"
+          chmod 600 "${CODEX_HOME}/auth.json"
+          npm install -g "@openai/codex@${CODEX_VERSION}"
+          printf '%s' "${SCHEMA}" > "${RUNNER_TEMP}/lens-schema.json"
+          codex exec \
+            -m "${CODEX_MODEL}" \
+            -s read-only \
+            --ephemeral \
+            --ignore-user-config \
+            --color never \
+            -C "${GITHUB_WORKSPACE}" \
+            --output-schema "${RUNNER_TEMP}/lens-schema.json" \
+            -o "${RUNNER_TEMP}/codex-retry-last.txt" \
+            "$(cat "${RUNNER_TEMP}/lens-retry-prompt.txt")" \
+            > "${RUNNER_TEMP}/codex-retry-raw.txt" 2>&1
+          python3 scripts/footgun_review_gate.py extract \
+            --raw "${RUNNER_TEMP}/codex-retry-last.txt" \
+            --output "${REVIEW_DIR}/retry-structured-output.json"
+
       - name: Validate bounded retry
         id: retry_validation
         if: steps.first_validation.outputs.valid != 'true'
@@ -394,6 +471,7 @@ jobs:
           failure_class=schema
           detail="reviewer produced no schema-valid structured output after the bounded retry"
           for raw in "${RUNNER_TEMP}/opencode-raw.txt" "${RUNNER_TEMP}/opencode-retry-raw.txt" \
+                     "${RUNNER_TEMP}/codex-raw.txt" "${RUNNER_TEMP}/codex-retry-raw.txt" \
                      "${REVIEW_DIR}/first-structured-output.json" "${REVIEW_DIR}/retry-structured-output.json"; do
             if [ -f "$raw" ] && grep -qiE "usage limit|spend limit|rate.?limit|\b429\b|quota" "$raw"; then
               failure_class=quota
@@ -590,34 +668,51 @@ jobs:
             echo '__ARCHETYPE_ADJUDICATION_PROMPT__'
           } >> "${GITHUB_OUTPUT}"
 
-      - name: Falsify disputed claim
+      # ADJUDICATOR_REVIEWER seats this on codex: the claude subscription is
+      # spend-capped (2026-07-26) and an adjudicator that cannot run would
+      # leave every singleton-blocking claim pending forever.
+      - name: Falsify disputed claim (Codex)
         id: adjudicator
         if: matrix.skip != true
-        uses: anthropics/claude-code-action@1298632ce7736903d02a1435002705aa2a594a6c # v1.0.175
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ github.token }}
-          claude_args: |
-            --allowedTools "Read,Grep,Glob"
-            --max-turns 60
-            --json-schema '${{ steps.contract.outputs.schema }}'
-          prompt: ${{ steps.contract.outputs.prompt }}
+        continue-on-error: true
+        timeout-minutes: 20
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          SCHEMA: ${{ steps.contract.outputs.schema }}
+        run: |
+          export CODEX_HOME="${RUNNER_TEMP}/codex-home"
+          mkdir -p "${CODEX_HOME}"
+          printf '%s' "${CODEX_AUTH_JSON}" > "${CODEX_HOME}/auth.json"
+          chmod 600 "${CODEX_HOME}/auth.json"
+          npm install -g "@openai/codex@${CODEX_VERSION}"
+          printf '%s' "${SCHEMA}" > "${RUNNER_TEMP}/adjudication-schema.json"
+          codex exec \
+            -m gpt-5.6-luna \
+            -s read-only \
+            --ephemeral \
+            --ignore-user-config \
+            --color never \
+            -C "${GITHUB_WORKSPACE}" \
+            --output-schema "${RUNNER_TEMP}/adjudication-schema.json" \
+            -o "${RUNNER_TEMP}/adjudication-last.txt" \
+            "$(cat "${RUNNER_TEMP}/adjudication-prompt.txt")" \
+            > "${RUNNER_TEMP}/adjudication-raw.txt" 2>&1
 
       - name: Validate adjudication receipt
         if: matrix.skip != true
         env:
           CLUSTER_ID: ${{ matrix.cluster_id }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          STRUCTURED_OUTPUT: ${{ steps.adjudicator.outputs.structured_output }}
         run: |
           mkdir -p "${REVIEW_DIR}/adjudication"
-          printf '%s' "${STRUCTURED_OUTPUT}" \
-            > "${REVIEW_DIR}/adjudication/result.json"
+          python3 scripts/footgun_review_gate.py extract \
+            --raw "${RUNNER_TEMP}/adjudication-last.txt" \
+            --output "${REVIEW_DIR}/adjudication/result.json"
           python3 scripts/footgun_review_gate.py normalize-adjudication \
             --scope "${SCOPE_FILE}" \
             --head "${HEAD_SHA}" \
             --cluster "${CLUSTER_ID}" \
-            --reviewer claude \
+            --reviewer codex \
             --result "${REVIEW_DIR}/adjudication/result.json" \
             --prompt "${RUNNER_TEMP}/adjudication-prompt.txt" \
             --output "${REVIEW_DIR}/adjudication/receipt.json"
@@ -753,26 +848,38 @@ jobs:
             echo '__ARCHETYPE_DESIGN_BRIEF_PROMPT__'
           } >> "${GITHUB_OUTPUT}"
 
-      - name: Generate human design-review brief
+      - name: Generate human design-review brief (Codex)
         id: brief
         if: needs.reaffirm.outputs.reaffirmed != 'true'
-        uses: anthropics/claude-code-action@1298632ce7736903d02a1435002705aa2a594a6c # v1.0.175
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ github.token }}
-          claude_args: |
-            --allowedTools "Read,Grep,Glob"
-            --max-turns 100
-            --json-schema '${{ steps.brief_contract.outputs.schema }}'
-          prompt: ${{ steps.brief_contract.outputs.prompt }}
+        timeout-minutes: 25
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          SCHEMA: ${{ steps.brief_contract.outputs.schema }}
+        run: |
+          export CODEX_HOME="${RUNNER_TEMP}/codex-home"
+          mkdir -p "${CODEX_HOME}"
+          printf '%s' "${CODEX_AUTH_JSON}" > "${CODEX_HOME}/auth.json"
+          chmod 600 "${CODEX_HOME}/auth.json"
+          npm install -g "@openai/codex@${CODEX_VERSION}"
+          printf '%s' "${SCHEMA}" > "${RUNNER_TEMP}/design-brief-schema.json"
+          codex exec \
+            -m gpt-5.6-luna \
+            -s read-only \
+            --ephemeral \
+            --ignore-user-config \
+            --color never \
+            -C "${GITHUB_WORKSPACE}" \
+            --output-schema "${RUNNER_TEMP}/design-brief-schema.json" \
+            -o "${RUNNER_TEMP}/design-brief-last.txt" \
+            "$(cat "${RUNNER_TEMP}/design-brief-prompt.txt")" \
+            > "${RUNNER_TEMP}/design-brief-raw.txt" 2>&1
 
       - name: Validate human design-review brief
         if: needs.reaffirm.outputs.reaffirmed != 'true'
-        env:
-          STRUCTURED_OUTPUT: ${{ steps.brief.outputs.structured_output }}
         run: |
-          printf '%s' "${STRUCTURED_OUTPUT}" \
-            > "${REVIEW_DIR}/human-design-brief-result.json"
+          python3 scripts/footgun_review_gate.py extract \
+            --raw "${RUNNER_TEMP}/design-brief-last.txt" \
+            --output "${REVIEW_DIR}/human-design-brief-result.json"
           python3 scripts/footgun_review_gate.py normalize-brief \
             --scope "${SCOPE_FILE}" \
             --diff "${DIFF_FILE}" \

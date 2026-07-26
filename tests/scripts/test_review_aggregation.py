@@ -98,7 +98,7 @@ def _adjudication(
     return dict(
         make_adjudication_receipt(
             normalized,
-            reviewer_id="claude",
+            reviewer_id="codex",
             prompt=prompt,
         )
     )
@@ -125,7 +125,7 @@ def test_exact_anchor_reports_from_two_reviewers_are_corroborated():
     cluster = bundle["clusters"][0]
 
     assert cluster["corroboration"] == "corroborated"
-    assert cluster["reviewer_ids"] == ["claude", "kimi"]
+    assert cluster["reviewer_ids"] == ["codex", "claude"]
     assert len(cluster["members"]) == 2
     assert cluster["gate_disposition"] == "blocking"
     assert cluster["adjudication_status"] == "not-required"
@@ -133,7 +133,7 @@ def test_exact_anchor_reports_from_two_reviewers_are_corroborated():
 
 def test_duplicate_findings_from_one_reviewer_do_not_create_false_corroboration():
     def findings(lens: str, reviewer: str) -> list[dict[str, Any]]:
-        if lens == "authority" and reviewer == "claude":
+        if lens == "authority" and reviewer == "codex":
             return [footgun_finding(), footgun_finding()]
         return []
 
@@ -141,18 +141,18 @@ def test_duplicate_findings_from_one_reviewer_do_not_create_false_corroboration(
     cluster = bundle["clusters"][0]
 
     assert cluster["corroboration"] == "singleton"
-    assert cluster["reviewer_ids"] == ["claude"]
+    assert cluster["reviewer_ids"] == ["codex"]
     assert len(cluster["members"]) == 2
     assert cluster["gate_disposition"] == "pending-adjudication"
 
 
 def test_aggregation_conserves_every_original_finding():
     def findings(lens: str, reviewer: str) -> list[dict[str, Any]]:
-        if lens == "authority" and reviewer == "claude":
+        if lens == "authority" and reviewer == "codex":
             return [footgun_finding(), footgun_finding(severity="advisory")]
-        if lens == "authority" and reviewer == "kimi":
+        if lens == "authority" and reviewer == "claude":
             return [footgun_finding()]
-        if lens == "design-coherence" and reviewer == "claude":
+        if lens == "design-coherence" and reviewer == "codex":
             return [design_finding()]
         return []
 
@@ -197,7 +197,7 @@ def test_severity_disagreement_selects_target_without_softening_evidence():
     def findings(lens: str, reviewer: str) -> list[dict[str, Any]]:
         if lens != "authority":
             return []
-        severity = "blocking" if reviewer == "claude" else "advisory"
+        severity = "blocking" if reviewer == "codex" else "advisory"
         return [footgun_finding(severity=severity)]
 
     bundle = preliminary_bundle(findings)
@@ -323,7 +323,7 @@ def _with_neutral_seat(
 def test_infra_receipt_round_trips_and_never_carries_a_result():
     receipt = make_infra_failure_receipt(
         lens="observability",
-        reviewer_id="kimi",
+        reviewer_id="claude",
         head_sha=HEAD_SHA,
         failure_class="quota",
         detail="usage limit for this billing cycle",
@@ -345,7 +345,7 @@ def test_unknown_failure_class_is_rejected():
     with pytest.raises(ReviewError, match="failure class"):
         make_infra_failure_receipt(
             lens="observability",
-            reviewer_id="kimi",
+            reviewer_id="claude",
             head_sha=HEAD_SHA,
             failure_class="vibes",
             detail="anything",
@@ -354,14 +354,14 @@ def test_unknown_failure_class_is_rejected():
 
 def test_one_neutral_seat_leaves_the_lens_verdict_to_the_survivor():
     def findings_for(lens: str, reviewer: str) -> list[dict[str, Any]]:
-        if lens == "observability" and reviewer == "claude":
+        if lens == "observability" and reviewer == "codex":
             return [footgun_finding(category="observability-boundary-and-authority")]
         return []
 
     receipts = _with_neutral_seat(
         reviewer_receipts(findings_for),
         lens="observability",
-        reviewer_id="kimi",
+        reviewer_id="claude",
     )
     bundle = assemble_preliminary_bundle(
         receipts,
@@ -371,7 +371,7 @@ def test_one_neutral_seat_leaves_the_lens_verdict_to_the_survivor():
     )
 
     assert neutral_seats(bundle) == [
-        {"lens": "observability", "reviewer_id": "kimi", "failure_class": "quota"}
+        {"lens": "observability", "reviewer_id": "claude", "failure_class": "quota"}
     ]
     clusters = bundle["clusters"]
     assert len(clusters) == 1
@@ -383,7 +383,7 @@ def test_one_neutral_seat_leaves_the_lens_verdict_to_the_survivor():
 
 def test_a_lens_whose_entire_bench_failed_fails_closed():
     receipts = reviewer_receipts()
-    receipts = _with_neutral_seat(receipts, lens="observability", reviewer_id="kimi")
+    receipts = _with_neutral_seat(receipts, lens="observability", reviewer_id="codex")
     receipts = _with_neutral_seat(
         receipts, lens="observability", reviewer_id="claude", failure_class="schema"
     )
@@ -401,14 +401,14 @@ def test_neutral_seats_cannot_corroborate():
     """An infra receipt must never lend a second reviewer id to a cluster."""
 
     def findings_for(lens: str, reviewer: str) -> list[dict[str, Any]]:
-        if lens == "daft-shape" and reviewer == "claude":
+        if lens == "daft-shape" and reviewer == "codex":
             return [footgun_finding(category="dag-breaking-collects")]
         return []
 
     receipts = _with_neutral_seat(
         reviewer_receipts(findings_for),
         lens="daft-shape",
-        reviewer_id="kimi",
+        reviewer_id="claude",
     )
     bundle = assemble_preliminary_bundle(
         receipts,
@@ -418,4 +418,4 @@ def test_neutral_seats_cannot_corroborate():
     )
 
     (cluster,) = bundle["clusters"]
-    assert cluster["reviewer_ids"] == ["claude"]
+    assert cluster["reviewer_ids"] == ["codex"]

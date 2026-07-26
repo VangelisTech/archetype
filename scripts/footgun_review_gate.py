@@ -1115,12 +1115,18 @@ def _extract_command(args: argparse.Namespace) -> None:
 
 
 def _prompt_command(args: argparse.Namespace) -> None:
+    lens_scope: list[str] = []
+    if args.kind in ("lens-review", "lens-retry"):
+        if args.scope is None:
+            raise GateError("lens prompts require --scope for the file manifest")
+        _, lens_scope = _scope_values(_load_json(args.scope))
     if args.kind == "lens-review":
         prompt = render_lens_review_prompt(
             pr_number=args.pr_number,
             head_sha=args.head,
             lens=args.lens,
             reviewer_id=args.reviewer,
+            scoped_files=lens_scope,
         )
     elif args.kind == "lens-retry":
         prompt = render_lens_retry_prompt(
@@ -1128,6 +1134,7 @@ def _prompt_command(args: argparse.Namespace) -> None:
             head_sha=args.head,
             lens=args.lens,
             reviewer_id=args.reviewer,
+            scoped_files=lens_scope,
         )
     elif args.kind == "adjudication":
         prompt = render_adjudication_prompt(
@@ -1227,6 +1234,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     prompt.add_argument("--pr-number", type=int, required=True)
     prompt.add_argument("--head", required=True)
+    prompt.add_argument("--scope", type=Path)
     prompt.add_argument("--lens")
     prompt.add_argument("--reviewer")
     prompt.add_argument("--cluster")

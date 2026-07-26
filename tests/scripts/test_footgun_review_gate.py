@@ -497,13 +497,13 @@ def test_rendered_receipt_names_neutral_seats():
     receipts = [
         receipt
         for receipt in receipts
-        if not (receipt["lens"] == "observability" and receipt["reviewer_id"] == "kimi")
+        if not (receipt["lens"] == "observability" and receipt["reviewer_id"] == "claude")
     ]
     receipts.append(
         dict(
             make_infra_failure_receipt(
                 lens="observability",
-                reviewer_id="kimi",
+                reviewer_id="claude",
                 head_sha=HEAD_SHA,
                 failure_class="quota",
                 detail="usage limit for this billing cycle",
@@ -528,7 +528,7 @@ def test_rendered_receipt_names_neutral_seats():
     digest = artifact_digest(bundle)
 
     body = render_evidence(bundle, digest)
-    assert "`kimi` (neutral: quota)" in body
+    assert "`claude` (neutral: quota)" in body
     assert "| 1/2 |" in body
 
 
