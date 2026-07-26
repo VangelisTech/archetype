@@ -15,6 +15,38 @@ Before editing those files, load the relevant skill — the deterministic
 footgun gate in CI reviews every maintainer PR against the same rules, so
 skipping them locally just moves the failure to review.
 
+## Canon
+
+The architect (Everett) is the only source of canonical language. Rulings
+live in numbered issues and PRs and in
+`docs/planning/activity-boundary-refactor.md`; cite the number when you rely
+on one. An interpretation without a citation is a proposal, not a fact about
+the project. When a session dump or generated document conflicts with canon,
+canon wins — flag the conflict, never blend.
+
+Nouns that exist: world, entity, component, processor, prefab, simulation,
+episode, rollout, trajectory (a view over an episode, never a second
+identity), artifact, agent mission, task, validator, harness, command,
+activity, resource, provider adapter, family.
+
+Stamped boundary (#671, #673): a Resource is a capability available while
+executing a tick — correctness must not depend on its process-local
+lifetime. An Activity is durably coordinated external work admitted from one
+committed tick and observed by a later committed tick. Processors remain the
+only transition authority. Tick commits intent → Activity performs
+consequential work → later tick commits the factual observation. Activities
+and Resources define the contract between Archetype and third-party systems
+so it can wrap them durably.
+
+Words that do not exist here: "fact" as a noun or a service — results are
+observations, artifacts, receipts, evidence ("factual" as an adjective is
+fine, per #671); "embodiment" — name the actual simulator, robot, or
+provider. Do not coin new nouns: write `PROPOSED TERM:` in the PR or issue
+body and wait for the architect to stamp it.
+
+Edge cases are not primary behavior. Documents lead with the primary path;
+completeness that buries the mental model is a regression, not rigor.
+
 ## Skills index
 
 | Skill | How it loads | What it enforces |
