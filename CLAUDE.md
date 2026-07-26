@@ -12,8 +12,8 @@ For the three Python rulebooks, `paths` frontmatter additionally limits that
 model invocation to Python under `src/`, `tests/`, or `examples/`; it is an
 eligibility fence, not a path-only trigger or a guarantee of invocation.
 Before editing those files, load the relevant skill — the deterministic
-footgun gate in CI reviews every PR against the same rules, so skipping them
-locally just moves the failure to review.
+footgun gate in CI reviews every maintainer PR against the same rules, so
+skipping them locally just moves the failure to review.
 
 ## Skills index
 
@@ -23,7 +23,7 @@ locally just moves the failure to review.
 | `daft-antipatterns` | `/daft-antipatterns` | Diff review for wrong-shape Daft (UDF theater, premature materialization, multimodal/lakehouse/PAI antipatterns) — complementary to footgun |
 | `archetype-components` | `/archetype-components`, or model-invoked for Component/schema code within its configured paths | Component definitions, Arrow serialization, field conventions |
 | `archetype-processors` | `/archetype-processors`, or model-invoked for processor/pipeline code within its configured paths | AsyncProcessor patterns, priority ordering, resource access |
-| `footgun-detector` | `/footgun-detector`; CI runs the same rulebook on every PR head as a five-lens matrix (authority, contracts, state-lifecycle, observability, daft-shape) | Archetype-specific runtime bugs in the current diff, graded `blocking` (fails the gate) or `advisory` (resolvable review thread) |
+| `footgun-detector` | `/footgun-detector`; CI runs the same rulebook on each maintainer-authored PR head as a five-lens matrix (authority, contracts, state-lifecycle, observability, daft-shape); other authors fail closed, unreviewed | Archetype-specific runtime bugs in the current diff, graded `blocking` (fails the gate) or `advisory` (resolvable review thread) |
 
 ## Agents
 
