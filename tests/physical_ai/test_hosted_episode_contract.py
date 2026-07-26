@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import math
 
@@ -241,6 +242,18 @@ def test_config_rejects_nonfinite_json_and_non_string_keys() -> None:
         canonical_hosted_episode_config({"nested": {1: "ambiguous"}})
 
 
+def test_config_parser_accepts_only_canonical_json_objects() -> None:
+    assert canonical_hosted_episode_config(None) == "{}"
+    assert canonical_hosted_episode_config('{"z": 1, "a": 2}') == '{"a":2,"z":1}'
+
+    with pytest.raises(ValueError, match="valid JSON"):
+        canonical_hosted_episode_config("{")
+    with pytest.raises(ValueError, match="JSON object"):
+        canonical_hosted_episode_config("[]")
+    with pytest.raises(TypeError, match="JSON object"):
+        canonical_hosted_episode_config(())  # type: ignore[arg-type]
+
+
 def test_config_quarantine_preserves_deterministic_provider_configuration() -> None:
     assert canonical_hosted_episode_config(
         {
@@ -453,6 +466,30 @@ def test_old_proof_field_names_fail_instead_of_silently_changing_meaning() -> No
         encode_hosted_episode_requests([request])
 
 
+def test_request_batch_rejects_empty_duplicate_and_cross_operation_identity() -> None:
+    with pytest.raises(ValueError, match="at least one episode"):
+        encode_hosted_episode_requests([])
+
+    duplicate = _request_rows()[0]
+    with pytest.raises(ValueError, match="trial_id must be unique"):
+        encode_hosted_episode_requests([duplicate, copy.deepcopy(duplicate)])
+
+    mixed = _request_rows()
+    mixed[1]["operation_id"] = "physical-eval:other"
+    with pytest.raises(ValueError, match="exactly one operation_id"):
+        encode_hosted_episode_requests(mixed)
+
+    wrong_episode = _request_rows()[0]
+    wrong_episode["episode_id"] = "physical-episode-wrong"
+    with pytest.raises(ValueError, match="episode_id does not match"):
+        encode_hosted_episode_requests([wrong_episode])
+
+    wrong_config = _request_rows()[0]
+    wrong_config["config_digest"] = "0" * 64
+    with pytest.raises(ValueError, match="config_digest does not match"):
+        encode_hosted_episode_requests([wrong_config])
+
+
 def test_content_ref_rejects_non_content_addressed_identity() -> None:
     request_ipc = encode_hosted_episode_requests([_request_rows()[0]])
     request = decode_hosted_episode_requests(request_ipc)[0]
@@ -468,6 +505,185 @@ def test_content_ref_rejects_non_content_addressed_identity() -> None:
 
     with pytest.raises(ValueError, match="content-addressed"):
         encode_hosted_episode_trajectory([row])
+
+
+def test_trajectory_row_rejects_malformed_provider_values() -> None:
+    request_ipc = encode_hosted_episode_requests([_request_rows()[0]])
+    request = decode_hosted_episode_requests(request_ipc)[0]
+    request_digest = hosted_episode_request_digest(request_ipc)
+    reset = _trajectory_row(
+        request,
+        request_digest,
+        0,
+        terminal=True,
+        termination_reason="transition_budget",
+    )
+
+    malformed = copy.deepcopy(reset)
+    malformed["episode_result_id"] = "physical-episode-result-wrong"
+    with pytest.raises(ValueError, match="episode_result_id is invalid"):
+        encode_hosted_episode_trajectory([malformed])
+
+    malformed = copy.deepcopy(reset)
+    malformed["step_id"] = "physical-step-wrong"
+    with pytest.raises(ValueError, match="step_id is invalid"):
+        encode_hosted_episode_trajectory([malformed])
+
+    malformed = copy.deepcopy(reset)
+    malformed["action"] = [0.0] * 7
+    with pytest.raises(ValueError, match="reset row action must be null"):
+        encode_hosted_episode_trajectory([malformed])
+
+    malformed = copy.deepcopy(reset)
+    malformed["termination_reason"] = "provider_timeout"
+    with pytest.raises(ValueError, match="closed hosted-episode vocabulary"):
+        encode_hosted_episode_trajectory([malformed])
+
+    malformed = copy.deepcopy(reset)
+    malformed["proprio"] = None
+    with pytest.raises(ValueError, match="proprio must be an object"):
+        encode_hosted_episode_trajectory([malformed])
+
+    malformed = copy.deepcopy(reset)
+    malformed["agentview_frame"] = []
+    with pytest.raises(ValueError, match="content reference or null"):
+        encode_hosted_episode_trajectory([malformed])
+
+    transition = _trajectory_row(
+        request,
+        request_digest,
+        1,
+        terminal=True,
+        termination_reason="transition_budget",
+    )
+    transition["action"] = None
+    with pytest.raises(ValueError, match="transition row action must not be null"):
+        encode_hosted_episode_trajectory([_trajectory_row(request, request_digest, 0), transition])
+
+
+def test_trajectory_group_rejects_noncontiguous_and_contradictory_history() -> None:
+    request = _request_rows()[0]
+    request["max_transitions"] = 3
+    request_ipc = encode_hosted_episode_requests([request])
+    normalized = decode_hosted_episode_requests(request_ipc)[0]
+    request_digest = hosted_episode_request_digest(request_ipc)
+
+    reset = _trajectory_row(normalized, request_digest, 0)
+    second = _trajectory_row(
+        normalized,
+        request_digest,
+        2,
+        terminal=True,
+        termination_reason="transition_budget",
+    )
+    with pytest.raises(ValueError, match="contiguous from reset"):
+        encode_hosted_episode_trajectory([reset, second])
+
+    first = _trajectory_row(
+        normalized,
+        request_digest,
+        1,
+        terminal=True,
+        termination_reason="transition_budget",
+    )
+    with pytest.raises(ValueError, match="invalid terminal reason"):
+        encode_hosted_episode_trajectory([reset, first])
+
+    early_reason = copy.deepcopy(reset)
+    early_reason["termination_reason"] = "success"
+    terminal = _trajectory_row(
+        normalized,
+        request_digest,
+        1,
+        success=True,
+        terminal=True,
+        termination_reason="success",
+    )
+    with pytest.raises(ValueError, match="early termination reason"):
+        encode_hosted_episode_trajectory([early_reason, terminal])
+
+    early_success = copy.deepcopy(reset)
+    early_success["success"] = True
+    with pytest.raises(ValueError, match="unacknowledged provider terminal"):
+        encode_hosted_episode_trajectory([early_success, terminal])
+
+    changed_identity = copy.deepcopy(terminal)
+    changed_identity["instruction"] = "a different admitted task"
+    with pytest.raises(ValueError, match="changes request identity"):
+        encode_hosted_episode_trajectory([reset, changed_identity])
+
+    duplicate = _trajectory_row(
+        normalized,
+        request_digest,
+        0,
+        terminal=True,
+        termination_reason="transition_budget",
+    )
+    with pytest.raises(ValueError, match="step_id values must be unique"):
+        encode_hosted_episode_trajectory([duplicate, copy.deepcopy(duplicate)])
+
+
+def test_result_and_manifest_rows_reject_internally_plausible_drift() -> None:
+    request_ipc, trajectory_ipc, results_ipc, manifest_ipc = _payloads()
+    del request_ipc, trajectory_ipc
+    result = decode_hosted_episode_results(results_ipc)[0]
+
+    malformed = copy.deepcopy(result)
+    malformed["episode_result_id"] = "physical-episode-result-wrong"
+    with pytest.raises(ValueError, match="episode_result_id is invalid"):
+        encode_hosted_episode_results([malformed])
+
+    malformed = copy.deepcopy(result)
+    malformed["termination_reason"] = "provider_timeout"
+    with pytest.raises(ValueError, match="closed vocabulary"):
+        encode_hosted_episode_results([malformed])
+
+    malformed = copy.deepcopy(result)
+    malformed["trajectory_row_count"] += 1
+    with pytest.raises(ValueError, match="reset plus contiguous transitions"):
+        encode_hosted_episode_results([malformed])
+
+    malformed = copy.deepcopy(result)
+    malformed["success"] = not result["success"]
+    with pytest.raises(ValueError, match="terminal flags"):
+        encode_hosted_episode_results([malformed])
+
+    with pytest.raises(ValueError, match="at least one row"):
+        encode_hosted_episode_results([])
+    with pytest.raises(ValueError, match="episode_result_id values must be unique"):
+        encode_hosted_episode_results([result, copy.deepcopy(result)])
+
+    manifest = decode_hosted_episode_manifest(manifest_ipc)
+    malformed_manifest = copy.deepcopy(manifest)
+    malformed_manifest["contract_version"] = "unsupported"
+    with pytest.raises(ValueError, match="contract_version is not supported"):
+        encode_hosted_episode_manifest(malformed_manifest)
+
+    malformed_manifest = copy.deepcopy(manifest)
+    malformed_manifest["manifest_id"] = "physical-manifest-wrong"
+    with pytest.raises(ValueError, match="manifest_id does not match"):
+        encode_hosted_episode_manifest(malformed_manifest)
+
+    malformed_manifest = copy.deepcopy(manifest)
+    malformed_manifest["success_count"] = manifest["episode_count"] + 1
+    with pytest.raises(ValueError, match="success_count exceeds"):
+        encode_hosted_episode_manifest(malformed_manifest)
+
+    malformed_manifest = copy.deepcopy(manifest)
+    malformed_manifest["trajectory_row_count"] += 1
+    with pytest.raises(ValueError, match="reset rows plus transitions"):
+        encode_hosted_episode_manifest(malformed_manifest)
+
+
+def test_decoders_reject_empty_invalid_and_wrong_schema_streams() -> None:
+    with pytest.raises(ValueError, match="non-empty bytes"):
+        decode_hosted_episode_requests(b"")
+    with pytest.raises(ValueError, match="valid Arrow stream"):
+        decode_hosted_episode_requests(b"not-arrow")
+
+    request_ipc = encode_hosted_episode_requests(_request_rows())
+    with pytest.raises(ValueError, match="wrong schema"):
+        decode_hosted_episode_results(request_ipc)
 
 
 def test_noncanonical_multibatch_stream_is_rejected() -> None:
