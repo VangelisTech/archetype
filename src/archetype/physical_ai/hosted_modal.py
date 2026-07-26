@@ -439,6 +439,11 @@ class ModalHostedEpisodeProvider:
             raise
         if isinstance(conclusion, HostedEpisodeRecovered):
             return conclusion.result
+        if isinstance(conclusion, HostedEpisodeRecoveryUnknown):
+            raise ModalHostedEpisodeProviderUnknown(
+                operation_id,
+                conclusion.reason or "provider reconciliation is unknown",
+            )
         return None
 
     async def _load_result(

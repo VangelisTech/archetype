@@ -338,7 +338,7 @@ async def test_permanent_modal_start_without_result_never_replays(
         runtime=_FakeModalRuntime(state, fail_spawn=True),
     )
 
-    with pytest.raises(ModalHostedEpisodeProviderUnknown, match="without provider result"):
+    with pytest.raises(ModalHostedEpisodeProviderUnknown, match="permanent start"):
         await first.execute(
             operation_id=operation_id,
             request_ipc=request_ipc,
@@ -501,6 +501,18 @@ async def test_modal_result_identity_corruption_fails_closed(
         request_ipc=request_ipc,
     )
     assert isinstance(recovery, HostedEpisodeRecoveryUnknown)
+    with pytest.raises(
+        ModalHostedEpisodeProviderUnknown,
+        match="without its exact permanent start",
+    ):
+        await provider.execute(
+            operation_id=operation_id,
+            request_ipc=request_ipc,
+            attempt=2,
+            fence=2,
+            retry_guard=None,
+        )
+    assert state.spawn_attempts == 1
 
 
 @pytest.mark.asyncio
