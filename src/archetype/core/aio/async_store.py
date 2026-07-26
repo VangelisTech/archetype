@@ -22,6 +22,7 @@ from daft import DataFrame, Schema, lit, read_iceberg
 from daft.catalog import Table
 from daft.io import IOConfig
 from daft.session import Session
+from pyiceberg.exceptions import TableAlreadyExistsError
 
 # Internals
 from archetype.core.archetype import Archetype
@@ -72,6 +73,10 @@ class AsyncStore(iAsyncStore):
         daft_schema = Schema.from_pyarrow_schema(pyarrow_schema)
         try:
             table = self.session.create_table_if_not_exists(hash_val, source=daft_schema)
+        except TableAlreadyExistsError:
+            # Another catalog client won first registration after both
+            # create-if-absent checks. The catalog winner is authoritative.
+            table = self.session.get_table(hash_val)
         except Exception as e:
             raise RuntimeError(f"Error creating table {hash_val}: {e}") from e
 
