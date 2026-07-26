@@ -265,6 +265,21 @@ benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
+id = "activities.durable_control"
+source = "docs/guide/activities.md"
+section = "2. The committed-state protocol"
+owner = "activities"
+risk = "high"
+pytest = ["tests/activities/test_activity_catalog_contracts.py"]
+static = [
+  "scripts/check_architecture.py",
+  "scripts/check_observability.py",
+]
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
 id = "world.lifecycle.idempotent"
 source = "docs/guide/world-lifecycle.md"
 section = "2. World lifecycle operations"

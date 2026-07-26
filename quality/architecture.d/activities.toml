@@ -1,0 +1,16 @@
+# Architecture policy fragment: activities.
+# Merged into quality/architecture.toml by scripts/check_architecture.py;
+# fragments may declare only rule/exception arrays, never scalar policy.
+
+[[top_level_family_rule]]
+name = "activities-domain-family"
+consumer = "archetype.activities"
+allowed_families = ["archetype.storage"]
+
+[[module_rule]]
+module = "archetype.activities.service"
+allowed_interfaces = [
+  "archetype.core.interfaces.CommittedTickReceipt",
+  "archetype.storage.activity_catalog.interfaces.ActivityCatalog",
+]
+allowed_app = []

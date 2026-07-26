@@ -3,6 +3,7 @@ source_root = "src"
 
 [concrete_services]
 types = [
+  "ActivityCoordinator",
   "AuditLog",
   "CommandScheduler",
   "MissionService",
