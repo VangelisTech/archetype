@@ -97,11 +97,17 @@ receipt is retried before another tick. Required projection is not a public
 hook. It runs under exact-world authority and is limited to idempotently
 persisting deterministic intent keyed by its consumer and receipt identity; it
 MUST NOT perform provider or sandbox I/O. A downstream resource consumer may
-claim that intent and perform external effects outside the world lock.
+claim that intent and perform external effects outside the world lock. When
+that work is durably coordinated into a later committed observation, it follows
+the [Activity](activities.md) contract: at-least-once delivery, fenced control
+writes, provider reconciliation, durable result reference, and exact-receipt
+settlement.
 
 Worlds constructed without a coordinator (bare core usage, the sync stack)
 run uncoordinated: rows stamp the implicit epoch-0 identity (`""`/`0`), no
 manifests are written, and nothing is filtered — v0.2 semantics, unchanged.
+Their tokenless receipts do not provide the pinned source or observation
+snapshot required by the [Activity](activities.md) contract.
 
 ## 4. Reader-side allowlist
 

@@ -64,6 +64,7 @@ nav:
   - ADVANCED GUIDES:
       - Application Internals: guide/app-overview.md
       - Custom Commands: guide/custom-commands.md
+      - Activities: guide/activities.md
       - Access Control and Audit: guide/command-gate.md
       - Token Quotas: guide/token-quotas.md
       - Running a Server: guide/api-layer.md

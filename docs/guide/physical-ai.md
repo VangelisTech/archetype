@@ -173,6 +173,7 @@ sequenceDiagram
 | `archetype.physical_ai.optimization` | Pure, callback-driven instruction search |
 | `archetype.physical_ai.views` | Storage-backed terminal report projection |
 | `archetype.physical_ai.handlers` | Free world/processor/episode/query workflows over declared storage and world ports |
+| `archetype.app.physical_ai` *(accepted hosted target)* | Intent-to-Activity-to-observation choreography for whole hosted episodes |
 | `CommandDispatcher` | Exact-operation admission and registered handler dispatch |
 | `RuntimeResources` | Process-scoped ownership and retryable close of live providers |
 | `ArchetypeRuntime` | Supported trusted Python entry point and sync parity |
@@ -190,6 +191,50 @@ The separation is intentional:
   while `RuntimeResources` owns their process lifetime after transfer.
 - The runtime exposes the capability without exposing a concrete service or
   live `AsyncWorld`.
+
+### Accepted hosted-episode Activity target
+
+The current direct path above remains supported until its owning cutover
+passes. It supplies environment and policy clients to internal per-step
+processors and owns those providers for the full workflow. That lifetime
+machinery proves cleanup; it does not make a provider mutation inside a
+retryable tick recoverable after process loss.
+
+The accepted hosted path uses the [Activity](activities.md) boundary:
+
+```text
+committed physical trial intent
+        |
+        v
+whole-episode Activity outside the world lock
+        |
+        v
+durable Arrow trajectory reference + digest
+        |
+        v
+later committed physical observation
+        |
+        v
+pure terminal projection and report
+```
+
+`archetype.physical_ai` retains request/result schemas, physical meaning,
+provider protocols, pure processors, views, and adapter-specific recovery.
+`archetype.app.physical_ai` owns the cross-family choreography that projects
+committed intent, invokes the Activity coordinator, publishes large results,
+stages factual observations, and binds settlement to the later committed
+receipt.
+
+The hosted result contract is not yet canonized. Before implementation, one
+focused schema slice must reconcile episode/trial cardinality, transition
+budget versus reset observation, provider termination versus Archetype terminal
+state, per-step publication identity, and canonical request/result digests.
+
+A seeded simulator may retrieve the first durable result by stable provider
+operation identity. Correctness must not depend on a second GPU execution being
+byte-identical. Real hardware is consequential: its adapter must reconcile or
+require operator intervention and may never treat lease expiry as permission
+to repeat an action.
 
 `EvaluatePhysicalTask` and `SweepPhysicalInstructions` are exact,
 application-scoped registrations. Both are trusted-only, direct,

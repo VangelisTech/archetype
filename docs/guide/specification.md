@@ -24,6 +24,7 @@ The current contract set is split across design docs and executable tests.
 | [World Lifecycle](world-lifecycle.md) | Create/fork/destroy | Append-only lifecycle, info-class downgrade, fork sharing/copy rules. |
 | [Durable Discovery](durable-discovery.md) | Control catalog and cold reads | Catalog authority, `discover_worlds`/`open_world_readonly`, fail-closed cold queries. |
 | [Atomic Visibility](atomic-visibility.md) | Tick commit identity | Manifest-published ticks, commit tokens, writer fencing, epoch-0 legacy reads. |
+| [Activities](activities.md) | Work between committed states | Resource/Activity boundary, post-commit admission, fenced attempts, provider reconciliation, result references, and later-receipt settlement. |
 | [Artifacts](artifacts.md) | External-artifact ingestion | Family-owned file/media scans and handlers over explicit durable coordinates, storage-owned typed Iceberg tables, occurrence identity, and content-addressed objects. |
 | [Agent Missions V1](agent-missions.md) | Coding-agent software factory | Typed task graphs, revision-bound validators, immutable candidates, independent exact-head critic receipts, durable repair findings, and terminal mission rollup. |
 | [Dataset and Evaluation Ontology](dataset-eval-ontology.md) | Dataset/eval identity and vocabulary | Dataset-vs-runtime coordinates, trial/episode cardinality, typed-ingestion ownership, and grader composition. |
@@ -88,6 +89,8 @@ This specification covers:
 - top-level runtime API constraints
 - multi-world orchestration and world forking
 - idempotency expectations and non-idempotent boundaries
+- Resources available during a tick and Activities coordinated between
+  committed ticks
 - typed external artifacts and dataset/evaluation identity
 - typed coding-agent task graphs, committed dispatch, and validator-gated transitions
 
@@ -107,6 +110,8 @@ implementation work must satisfy.
 | `Mutation cache` | The staged spawn/despawn data applied at the next tick |
 | `World lifecycle command` | Create, destroy, or fork world operations |
 | Exact operation | Frozen owning-family model resolved by `OperationRegistry` |
+| `Resource` | Tick-time capability whose process-local lifetime is not durable workflow truth |
+| `Activity` | Durably coordinated work admitted from one committed tick and observed by a later committed tick |
 | `RuntimeResources` | Explicit process owner for dispatcher admission, supervised work, handles, audit, and storage |
 | `Runtime` | Trusted scripting facade and process-lifetime owner |
 
@@ -450,6 +455,10 @@ downstream resource consumer outside the world lock.
   hook bus, persists only deterministic intent under exact-world authority,
   and reports failure as committed-but-unprojected work. Provider or sandbox
   I/O MUST NOT execute through this port.
+- A downstream Activity worker MAY claim that intent and perform provider work
+  outside the world lock. Its bounded result becomes a factual observation in
+  a later tick; it MUST NOT directly advance family workflow state. See
+  [Activities](activities.md).
 
 ## Application Layer Contracts
 
@@ -459,6 +468,41 @@ and dependency direction. Concrete services, `RuntimeResources`, and
 construct exact family models and select trusted or actor-aware dispatcher
 entry. The commands-owned `CommandDispatcher` and `Policy` are the policy
 boundary.
+
+### Activity boundary
+
+- Commands enter a tick and settle with its manifest. Activities leave one
+  committed tick and settle only against the later committed receipt that
+  observes their result.
+- Activity source and observation receipts MUST carry a durable visibility
+  token. Tokenless bare-core or uncoordinated ticks cannot admit or settle an
+  Activity.
+- Activity delivery uses at-least-once claims plus provider reconciliation. A
+  lease or fence prevents stale control writes but MUST NOT be interpreted as
+  exactly-once external execution.
+- A stable logical provider operation identity MUST become durable before any
+  external effect. If it cannot, the adapter fails closed. A later
+  provider-returned handle is supplemental evidence, not replay permission.
+- Confirmed provider absence alone MUST NOT authorize another attempt: a stale
+  claimant can start after the absence check. The adapter MUST first provide a
+  bounded durable retry guard proving atomic provider deduplication/fencing or
+  that every stale claimant is irrevocably unable to start.
+- Generic Activity mechanics own identity, claims, attempts, fences, bounded
+  retry-guard/result references, and settlement. Provider-specific recovery
+  meaning remains with the owning family or adapter.
+- Activity control records are not generic ECS Components. Components and
+  processors remain the semantic state and transition authority.
+- Settlement MUST require family-owned completeness evidence that binds the
+  Activity kind and identity to the exact recorded result reference/digest. A
+  correlation identity or partial result-derived fact set is insufficient.
+- Large results MUST become durable through storage or artifacts before the
+  Activity catalog records their bounded reference and digest.
+- V1 does not transfer in-flight Activities across lineage. Before an
+  Activity-backed family is wired into lifecycle operations, `fork_world` and
+  `destroy_world` MUST hold the source exact-world lock, reconcile retained
+  required projection, and refuse while that source has any unsettled
+  Activity. A permitted fork inherits only the complete committed observation,
+  not the source control record.
 
 ### Service error taxonomy
 

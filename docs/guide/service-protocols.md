@@ -232,6 +232,16 @@ work requests. The service acquires the mission-keyed session and invokes the
 harness only from that post-commit path, then stages the returned factual
 observations for a later tick.
 
+That outbox is the current process-local implementation, not the durability
+target. The accepted [Activity](activities.md) migration replaces author and
+critic delivery incrementally with application-owned exact-receipt projectors
+and workers over the generic coordinator. Completed results remain factual
+Mission observations, are restaged after restart until committed, and settle
+only when their exact later receipt contains Mission completeness evidence
+bound to the recorded Activity result reference/digest. A dispatch or review ID
+alone is insufficient. `iMissionService`, sandbox providers, and processors do
+not acquire Activity transition authority.
+
 Graph materialization records each authored `TaskValidator`. The harness then
 prepares the repository, runs the coding agent and those validator commands,
 performs Git publication, and returns facts that the service records as
@@ -280,6 +290,13 @@ world lifecycle, entity/processor mutation, episode execution, persisted world
 reads, and storage-admitted terminal report projection; they do not own those
 lower-family authorities. There is no app mirror or single-implementation
 service protocol.
+
+That statement describes the current direct path. The accepted hosted
+[Activity](activities.md) target introduces
+`archetype.app.physical_ai` as intent-to-Activity-to-observation workflow
+authority. It does not recreate the former family mirror or require a
+single-implementation physical service protocol. Its exact internal ports land
+with the hosted implementation rather than being guessed in this specification.
 
 `EvaluatePhysicalTask` and `SweepPhysicalInstructions` are exact trusted-only,
 direct, non-durable, application-scoped registrations. The handlers accept no
