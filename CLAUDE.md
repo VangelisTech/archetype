@@ -2,6 +2,8 @@
 
 Read these before doing anything:
 
+- `CANON.md` — The architect's verbatim record of what Archetype is. Cite it
+  or mark your sentence as an unratified proposal; never coin terms.
 - `docs/guide/specification.md` plus the focused specification pages — Normative contracts. **Mandatory.**
 - `LEARNINGS.md` — Daft 0.7.x patterns, UDF rules, serialization. **Mandatory before writing a processor.**
 - `AGENTS.md` — Architecture, service layer, RBAC, conventions, dev workflow.
