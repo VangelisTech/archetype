@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import asdict, dataclass
 from pathlib import PurePosixPath
@@ -22,7 +21,10 @@ from archetype.missions.coding_agents.contracts import (
 )
 from archetype.missions.contracts import RepositoryPublicationPolicy
 from archetype.missions.critics.contracts import validator_bundle_digest
-from archetype.missions.diff_identity import GIT_DIFF_IDENTITY_FLAGS
+from archetype.missions.diff_identity import (
+    GIT_DIFF_IDENTITY_FLAGS,
+    GIT_DIFF_MEASUREMENT_SCRIPT,
+)
 from archetype.missions.sandboxes import ProcessRequest, ProcessResult, SandboxSession
 from archetype.missions.transitions import AgentExecutionStatus
 
@@ -214,16 +216,11 @@ class CodingAgentHarness:
                 pushed=False,
             )
             if starting_revision and final_revision:
-                diff = (
-                    await self._git(
-                        session,
-                        "diff",
-                        *GIT_DIFF_IDENTITY_FLAGS,
-                        starting_revision,
-                        final_revision,
-                    )
-                ).stdout
-                diff_digest = hashlib.sha256(diff.encode()).hexdigest()
+                diff_digest = await self._diff_digest(
+                    session,
+                    starting_revision,
+                    final_revision,
+                )
             if validators_passed:
                 if final_revision == starting_revision:
                     raise RuntimeError(
@@ -402,6 +399,33 @@ class CodingAgentHarness:
                     )
                 )
         return tuple(observations)
+
+    async def _diff_digest(
+        self,
+        session: SandboxSession,
+        starting_revision: str,
+        final_revision: str,
+    ) -> str:
+        measured = await self._run(
+            session,
+            "python",
+            "-c",
+            GIT_DIFF_MEASUREMENT_SCRIPT,
+            starting_revision,
+            final_revision,
+            *GIT_DIFF_IDENTITY_FLAGS,
+            workdir=self.config.workspace,
+        )
+        self._raise(measured, "git diff measurement")
+        try:
+            measurement = json.loads(measured.stdout)
+            digest = str(measurement["digest"])
+            size_bytes = int(measurement["size_bytes"])
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError("git diff measurement is invalid") from exc
+        if len(digest) != 64 or size_bytes < 0:
+            raise RuntimeError("git diff measurement is invalid")
+        return digest
 
     async def _git(
         self,

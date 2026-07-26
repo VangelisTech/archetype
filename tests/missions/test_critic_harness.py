@@ -126,6 +126,19 @@ class _MalformedMktempSession(_LocalSession):
         return result
 
 
+class _ReportedCleanupFailureSession(_LocalSession):
+    async def exec(self, request: ProcessRequest) -> ProcessResult:
+        result = await super().exec(request)
+        if request.argv[:3] == ("rm", "-rf", "--"):
+            return ProcessResult(
+                result.argv,
+                9,
+                result.stdout,
+                "provider reported cleanup failure",
+            )
+        return result
+
+
 class _Driver:
     def __init__(self, output: str) -> None:
         self.output = output
@@ -376,6 +389,35 @@ async def test_over_budget_exact_subject_fails_closed_before_critic(
     assert "observed_bytes=" in result.error
     assert diff not in result.error
     assert any(item.argv[:3] == ("rm", "-rf", "--") for item in session.requests)
+
+
+@pytest.mark.asyncio
+async def test_cleanup_failure_does_not_mask_unverifiable_subject_failure(
+    tmp_path: Path,
+) -> None:
+    remote, base, head, diff = _repository(tmp_path)
+    session = _ReportedCleanupFailureSession()
+    driver = _Driver("{}")
+    harness = CriticHarness(
+        driver,
+        CriticHarnessConfig(workspace=str(tmp_path / "review")),
+    )
+    await harness.prewarm(
+        session,
+        CriticPrewarmRequest(1, 2, "dispatch-1", str(remote), "agent/review", "main"),
+    )
+    request = replace(
+        _request(remote, base, head, diff),
+        policy=CriticPolicy(max_subject_bytes=1),
+    )
+
+    result = await harness.execute(session, request)
+
+    assert result.status is CriticExecutionStatus.UNVERIFIABLE
+    assert request.diff_digest in result.error
+    assert "observed_bytes=" in result.error
+    assert "cleanup failure" not in result.error
+    assert driver.calls == 0
 
 
 @pytest.mark.asyncio

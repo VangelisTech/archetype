@@ -28,7 +28,10 @@ from archetype.missions.critics.contracts import (
     CriticReceiptValue,
     canonical_digest,
 )
-from archetype.missions.diff_identity import GIT_DIFF_IDENTITY_FLAGS
+from archetype.missions.diff_identity import (
+    FILE_MEASUREMENT_SCRIPT,
+    GIT_DIFF_IDENTITY_FLAGS,
+)
 from archetype.missions.sandboxes import (
     ProcessRequest,
     ProcessResult,
@@ -36,20 +39,6 @@ from archetype.missions.sandboxes import (
     SandboxStatus,
 )
 from archetype.missions.transitions import CriticConclusion, CriticExecutionStatus
-
-_SUBJECT_MEASUREMENT_SCRIPT = """\
-import hashlib
-import json
-import sys
-
-digest = hashlib.sha256()
-size = 0
-with open(sys.argv[1], "rb") as source:
-    for chunk in iter(lambda: source.read(1 << 20), b""):
-        digest.update(chunk)
-        size += len(chunk)
-print(json.dumps({"digest": digest.hexdigest(), "size_bytes": size}, sort_keys=True))
-"""
 
 
 @dataclass(frozen=True)
@@ -247,6 +236,7 @@ class CriticHarness:
                 if (candidate := self._owned_subject_directory(value)) is not None
             )
             cleanup_directory = owned_directories[0] if len(owned_directories) == 1 else None
+            subject_failed = False
             try:
                 if len(subject_directories) != 1:
                     raise _UnverifiableReview("critic subject directory allocation is invalid")
@@ -265,7 +255,7 @@ class CriticHarness:
                     session,
                     "python",
                     "-c",
-                    _SUBJECT_MEASUREMENT_SCRIPT,
+                    FILE_MEASUREMENT_SCRIPT,
                     subject_path,
                     workdir=self.config.workspace,
                 )
@@ -307,6 +297,9 @@ class CriticHarness:
                     bound_request,
                     prompt,
                 )
+            except BaseException:
+                subject_failed = True
+                raise
             finally:
                 if cleanup_directory is not None:
                     cleanup = await self._run(
@@ -317,7 +310,8 @@ class CriticHarness:
                         str(cleanup_directory),
                         workdir="/tmp",
                     )
-                    self._raise(cleanup, "critic subject cleanup")
+                    if not subject_failed:
+                        self._raise(cleanup, "critic subject cleanup")
             raw_output = process.stdout
             trace_uri = process.trace_uri
             if process.returncode != 0:

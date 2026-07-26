@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import subprocess
 from pathlib import Path
@@ -139,6 +140,30 @@ class _EditingDriver:
         )
 
 
+class _RawByteEditingDriver:
+    def __init__(self, workspace: Path) -> None:
+        self.workspace = workspace
+
+    async def run(self, session, request, prompt: str) -> AgentProcessObservation:
+        del request, prompt
+        result = await session.exec(
+            ProcessRequest(
+                (
+                    "python",
+                    "-c",
+                    "from pathlib import Path; Path('latin.txt').write_bytes(b'value=\\xe9\\n')",
+                ),
+                workdir=str(self.workspace),
+            )
+        )
+        return AgentProcessObservation(
+            result.returncode,
+            result.stdout,
+            result.stderr,
+            session_id="raw-byte-agent",
+        )
+
+
 class _TraceSession:
     def __init__(self) -> None:
         self.requests: list[ProcessRequest] = []
@@ -252,6 +277,54 @@ async def test_harness_preserves_agent_commits_and_publishes_the_validated_tree(
             "refs/heads/agent/harness-contract",
         )
         == result.final_revision
+    )
+
+
+@pytest.mark.asyncio
+async def test_author_diff_digest_hashes_exact_git_bytes_before_publication(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    setup = tmp_path / "setup"
+    _git("clone", str(remote), str(setup))
+    _git("config", "user.name", "Fixture", cwd=setup)
+    _git("config", "user.email", "fixture@example.com", cwd=setup)
+    (setup / ".gitattributes").write_text("latin.txt diff\n", encoding="utf-8")
+    (setup / "latin.txt").write_bytes(b"base\n")
+    _git("add", ".gitattributes", "latin.txt", cwd=setup)
+    _git("commit", "-m", "add byte-exact text fixture", cwd=setup)
+    _git("push", "origin", "main", cwd=setup)
+
+    workspace = tmp_path / "sandbox" / "repo"
+    harness = CodingAgentHarness(
+        _RawByteEditingDriver(workspace),
+        CodingAgentHarnessConfig(workspace=str(workspace)),
+    )
+
+    result = await harness.execute(
+        _LocalSession(),
+        _request(remote, validator_command=("true",)),
+    )
+    raw_diff = subprocess.run(
+        (
+            "git",
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--binary",
+            result.starting_revision,
+            result.final_revision,
+        ),
+        cwd=workspace,
+        check=True,
+        capture_output=True,
+    ).stdout
+
+    assert result.status is AgentExecutionStatus.EXITED
+    assert b"\xe9" in raw_diff
+    assert result.diff_digest == hashlib.sha256(raw_diff).hexdigest()
+    assert (
+        result.diff_digest != hashlib.sha256(raw_diff.decode(errors="replace").encode()).hexdigest()
     )
 
 
