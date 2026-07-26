@@ -194,6 +194,9 @@ async def test_complete_author_observation_survives_restart_without_duplicates(
         await world.create_entity([Guards(source=validator_id, target=task_id)])
 
         await step(registry, world.world_id, RunConfig())
+        # Receipt-pinned reads are state snapshots, not raw ledger history.
+        # A second tick must not duplicate validators or relations from tick 0.
+        await step(registry, world.world_id, RunConfig())
         intent_receipt = world.last_committed_receipt
         assert intent_receipt is not None
         reader = StorageMissionCommittedIntentReader(storage, storage_config)

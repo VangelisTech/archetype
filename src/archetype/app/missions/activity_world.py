@@ -57,6 +57,7 @@ from archetype.missions.relations import (
     RunsIn,
     Supersedes,
 )
+from archetype.projections import latest
 from archetype.storage.catalog import SignatureRecord
 from archetype.storage.interfaces import iStorageService
 from archetype.world.interfaces import iWorldRegistry
@@ -126,7 +127,7 @@ async def _query_groups(
             storage_config,
             snapshot=snapshot,
         )
-        results[group] = await storage.materialize(frame)
+        results[group] = await storage.materialize(latest(frame))
     return results
 
 
