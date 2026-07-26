@@ -729,6 +729,8 @@ class ModalSandboxBackend:
             else self._default_image(modal)
         )
         sandbox = await modal.Sandbox.create.aio(
+            "sleep",
+            "infinity",
             app=app,
             image=image,
             timeout=self.config.login_timeout_seconds,
@@ -855,6 +857,8 @@ class ModalSandboxBackend:
         )
         metadata = spec.metadata_dict()
         auth_sandbox = await modal.Sandbox.create.aio(
+            "sleep",
+            "infinity",
             app=app,
             image=image,
             timeout=spec.timeout_seconds,
@@ -865,6 +869,8 @@ class ModalSandboxBackend:
         )
         try:
             sandbox = await modal.Sandbox.create.aio(
+                "sleep",
+                "infinity",
                 app=app,
                 image=image,
                 timeout=spec.timeout_seconds,
