@@ -124,6 +124,22 @@ non-green result), with the completion marker last. Fork/destroy must refuse
 under the exact-world lock while the source has unsettled Activities. The
 supported Mission path remains unchanged until those oracles pass.
 
+A3b now supplies those adapters as an explicit per-world binding. Its receipt
+reader rejects a later head, sibling or ambiguous head token, wrong world/run,
+missing visibility membership, and tokenless receipts. Its v2 stager rolls back
+a mixed-signature mutation prefix on cancellation or hook failure, survives
+fresh stager and world reconstruction without duplicate facts, and preserves
+the committed request's candidate predecessor even when results are delivered
+out of order, while leaving provider execution outside the world lock. Its
+separately named v2 completion marker also preserves the durable schema identity
+of A3a's v1 marker. The exact registry can be injected into maintainer runtime
+composition so one real `MissionAuthorActivityBinding` owns both callbacks and
+its worker. The local Git oracle atomically publishes the canonical
+bounded/redacted observation with the authored revision and recovers that exact
+payload without rerunning validators. This remains opt-in: the supported
+`MissionService` delivery path is preserved until Modal parity authorizes
+cutover.
+
 ### A4a and A4 — Modal parity
 
 A4a is an inert provider prerequisite. It binds the Modal workspace,
@@ -170,6 +186,12 @@ evidence crosses the boundary only as content-addressed references. A7 may
 execute this contract but may not redefine it.
 
 ## Authority and dependency target
+
+The following is the landing topology, not an instruction to mix package moves
+into the A3–A7 behavior proofs. Those slices may use the existing
+`archetype.app` modules as an interim owner. A8 performs the mechanical rehome
+only after author, critic, and Physical-AI workflows prove which choreography
+is actually family-specific.
 
 | Area | Target |
 |---|---|

@@ -8,6 +8,7 @@ operations = [
   "activities.MissionAuthorActivityCatalog.bind_provider_operation",
   "activities.MissionAuthorActivityCatalog.claim_author",
   "activities.MissionAuthorActivityCatalog.confirm_provider_operation_absent",
+  "activities.MissionAuthorActivityCatalog.has_unsettled_work",
   "activities.MissionAuthorActivityCatalog.pending_author_results",
   "activities.MissionAuthorActivityCatalog.record_author_result",
   "activities.MissionAuthorActivityCatalog.settle_author_observation",

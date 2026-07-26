@@ -13,6 +13,7 @@ import archetype
 import archetype.app.missions as app_missions
 import archetype.missions as missions
 import archetype.missions.components as components
+from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.missions import (
     MISSION_COMPONENTS,
@@ -20,6 +21,7 @@ from archetype.missions import (
     TASK_TRANSITIONS,
     AuthorActivityObservation,
     Candidate,
+    CompleteAuthorActivityObservation,
     CriticFinding,
     CriticPolicy,
     CriticReceipt,
@@ -30,6 +32,7 @@ from archetype.missions import (
     require_mission_transition,
     require_task_transition,
 )
+from archetype.storage.catalog import schema_fingerprint
 
 pytestmark = pytest.mark.contract("missions.agent_v1.validator_gated")
 
@@ -57,6 +60,19 @@ def _component_instance(component: type[Component]) -> Component:
             result_digest="digest",
             fact_bundle_digest="fact-bundle-digest",
             execution_id=1,
+            redaction_policy_id="redaction-policy",
+        )
+    if component is CompleteAuthorActivityObservation:
+        return CompleteAuthorActivityObservation(
+            activity_id="dispatch",
+            task_id=1,
+            dispatch_sequence=1,
+            result_ref="artifact://author-result",
+            result_digest="digest",
+            fact_bundle_digest="fact-bundle-digest",
+            execution_id=1,
+            sandbox_entity_id=2,
+            relation_count=2,
             redaction_policy_id="redaction-policy",
         )
     if component is Candidate:
@@ -117,6 +133,7 @@ def test_components_have_one_family_owned_schema_identity() -> None:
         "Sandbox",
         "AgentExecution",
         "AuthorActivityObservation",
+        "CompleteAuthorActivityObservation",
         "ValidationResult",
         "Commit",
         "Candidate",
@@ -142,6 +159,29 @@ def test_components_have_one_family_owned_schema_identity() -> None:
         assert _component_matches(component.__name__) == [component]
         assert component.__name__ not in app_missions.__all__
         assert component.__name__ not in archetype.__all__
+
+
+def test_v1_author_activity_observation_keeps_its_durable_schema_identity() -> None:
+    assert tuple(AuthorActivityObservation.model_fields) == (
+        "activity_id",
+        "task_id",
+        "dispatch_sequence",
+        "result_ref",
+        "result_digest",
+        "fact_bundle_digest",
+        "execution_id",
+        "validation_count",
+        "commit_count",
+        "friction_count",
+        "redaction_policy_id",
+    )
+    signature = (AuthorActivityObservation,)
+    schema = Archetype.get_archetype_schema(signature)
+    assert Archetype.get_name(signature) == "a_1c_sd88ad8b876ee47bc"
+    assert (
+        schema_fingerprint(schema)
+        == "98d8764af332ccf6287a6fee2dee83704ae2bf0b5e10acc81b380e40be344bb7"
+    )
 
 
 @pytest.mark.parametrize(

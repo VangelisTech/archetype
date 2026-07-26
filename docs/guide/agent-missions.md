@@ -668,7 +668,7 @@ Component.
 
 | Gap | V1 treatment | Later seam |
 |---|---|---|
-| Cold process resume | Authors may explicitly replace a sandbox from a recorded checkpoint inside an already-known mission; no process-restart reconciliation, fleet claim, or automatic supervisor is implied. | Migrate author delivery through the Activity contract and prove local process reconstruction plus provider reconciliation before exposing cold mission continuation. |
+| Cold process resume | The opt-in author Activity integration proves exact-receipt admission, provider reconciliation, complete atomic ECS staging, and no-op redelivery after world reconstruction. The supported `MissionService` path remains the preservation baseline until provider parity and explicit cutover. | Compose the proven binding into the supported host only after Modal parity; then apply the same seam to critic work. |
 | Private-repository critic materialization | V1 proves public repositories and gives critic processes no Git publication secret. | Add a distinct read-only Git capability without widening critic publication authority. |
 | Sandbox placement | Use a simple configured policy. | Add a scheduler only when multiple topologies require one. |
 | Task decomposition | Authors submit the graph. | Planner emits the same typed graph. |
@@ -722,10 +722,24 @@ evidence bound to the exact recorded result reference/digest. A dispatch or
 review ID alone cannot settle partial facts. Neither a callback nor Activity
 catalog state directly advances task state.
 
+For author results, that completeness evidence is schema v2. One atomic
+mutation-cache batch stages sandbox identity and optional mission membership,
+execution/task/sandbox provenance, every output and its producer edge, and
+exactly one immutable candidate only when the durable result is authored-green.
+The digest-bound completion marker is last. A failed hook or cancellation
+restores the entire world mutation prefix; hook side effects are advisory and
+cannot own task-state correctness. Fresh stager instances inspect that pending
+world mutation state directly, including schema-identical resumed signatures,
+and the committed `TaskDispatchRequest.prior_candidate_entity_id` fixes the
+exact predecessor before either result is delivered. Delivery order therefore
+cannot change or omit the new candidate's `Supersedes` edge.
+
 Mission V1 does not fork or destroy through an in-flight author or critic
 Activity. Once this bridge is wired, the application lifecycle path holds the
 source exact-world lock, reconciles required projection, and refuses either
 operation until every source Activity has an exact later-receipt settlement.
+Public destroy rolls back only its provisional close on this refusal so the
+Activity worker can commit that observation; pre-owned cleanup remains sticky.
 The eventual fork inherits the complete committed Mission observation through
 ordinary lineage; it does not inherit, adopt, or recreate the source Activity.
 This is distinct from the normal lineage visibility of already-committed

@@ -62,6 +62,60 @@ async def _create_entities_locked(
     return await world.create_entities(entities)
 
 
+async def create_entities_atomically(
+    registry: iWorldRegistry,
+    world_id: str | UUID,
+    entities: list[list[Component]],
+) -> list[int]:
+    """Stage an all-or-none mixed-signature entity batch.
+
+    This is a mutation-cache transaction, not a durable tick commit. It keeps
+    a cancellation or hook failure from leaving a prefix of a factual bundle
+    available to the next tick. Durable visibility is still established only
+    by the world's ordinary manifest-last step.
+    """
+
+    async with registry.operation(world_id) as world:
+        return await _create_entities_atomically_locked(world, entities)
+
+
+async def _create_entities_atomically_locked(
+    world: AsyncWorld,
+    entities: list[list[Component]],
+) -> list[int]:
+    """Stage an all-or-none entity batch while exact-world authority is held."""
+
+    if not entities:
+        return []
+    next_entity_id = world.next_entity_id
+    entity2sig = dict(world.entity2sig)
+    spawn_cache = {signature: list(rows) for signature, rows in world.spawn_cache.items()}
+    despawn_cache = {
+        signature: list(entity_ids) for signature, entity_ids in world.despawn_cache.items()
+    }
+    try:
+        staged_ids = await world.create_entities(entities)
+        expected_ids = list(range(next_entity_id, next_entity_id + len(entities)))
+        if staged_ids != expected_ids:
+            raise RuntimeError("world did not preserve the atomic batch identity reservation")
+        return staged_ids
+    except BaseException:
+        # Rollback is deliberately synchronous. Cancellation cannot interrupt
+        # restoration and no partially staged row can escape into a later
+        # tick. Entity IDs were never returned, so restoring the counter is
+        # safe under the exact-world lock.
+        world.next_entity_id = next_entity_id
+        world.entity2sig.clear()
+        world.entity2sig.update(entity2sig)
+        world.spawn_cache.clear()
+        world.spawn_cache.update(spawn_cache)
+        world.despawn_cache.clear()
+        world.despawn_cache.update(despawn_cache)
+        # Rebuild aliases lazily from the restored maps.
+        world._sig_intern = None
+        raise
+
+
 async def reserve_entity_ids(
     registry: iWorldRegistry,
     world_id: str | UUID,

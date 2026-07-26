@@ -117,6 +117,7 @@ class TaskDispatchRequest:
     validators: tuple[DispatchedValidator, ...]
     publication_policy: RepositoryPublicationPolicy
     critic_policy: CriticPolicy = CriticPolicy()
+    prior_candidate_entity_id: int = 0
     task_base_revision: str = ""
     previous_agent_session_id: str = ""
     previous_validation: tuple[ValidationObservation, ...] = ()
@@ -130,6 +131,8 @@ class TaskDispatchRequest:
         validator_ids = [validator.validator_id for validator in self.validators]
         if len(validator_ids) != len(set(validator_ids)):
             raise ValueError("task dispatch validator identities must be unique")
+        if self.prior_candidate_entity_id < 0:
+            raise ValueError("task dispatch prior candidate identity cannot be negative")
         try:
             policy = RepositoryPublicationPolicy(self.publication_policy)
         except ValueError as exc:

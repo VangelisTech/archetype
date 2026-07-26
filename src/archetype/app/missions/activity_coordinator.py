@@ -194,6 +194,11 @@ class MissionAuthorActivityCoordinator:
             ),
         )
 
+    async def has_unsettled_work(self, world_id: str) -> bool:
+        """Expose the generic world-scoped orphan-prevention oracle."""
+
+        return await self._coordinator.has_unsettled(world_id)
+
     def _remember(self, claim: ActivityClaim) -> AuthorActivityClaim:
         if not claim.acquired or claim.attempt is None or claim.fence is None:
             raise ValueError("mission author adapter requires an acquired claim")

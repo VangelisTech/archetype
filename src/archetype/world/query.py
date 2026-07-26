@@ -20,7 +20,7 @@ from archetype.core.aio import AsyncQueryManager
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
-from archetype.core.interfaces import ArchetypeSignature, iAsyncStore
+from archetype.core.interfaces import ArchetypeSignature, CommittedTickReceipt, iAsyncStore
 from archetype.core.lineage import load_lineage
 from archetype.storage.catalog import (
     CatalogSchemaMismatchError,
@@ -84,11 +84,15 @@ async def pin_query_snapshot(
     world_id: str,
     run_id: str | None = None,
     storage_config: StorageConfig | None = None,
+    *,
+    max_tick: int | None = None,
 ) -> PinnedWorldQuerySnapshot:
     """Pin every physical segment that forms one logical world snapshot."""
 
     effective = storage_config or StorageConfig()
     wid = str(world_id)
+    if max_tick is not None and max_tick < 0:
+        raise ValueError("query snapshot max_tick must be non-negative")
     catalog = storage.get_control_catalog(effective)
     record = await catalog.get_world(wid)
     if record is None:
@@ -102,6 +106,7 @@ async def pin_query_snapshot(
         effective,
         wid,
         run_id=recorded_run,
+        max_tick=max_tick,
     )
     rid = str(current_visibility.run_id)
     if rid != recorded_run:
@@ -208,6 +213,45 @@ async def pin_query_snapshot(
         current=current,
         lineage=tuple(pinned_lineage),
     )
+
+
+async def pin_query_snapshot_for_receipt(
+    storage: iStorageService,
+    receipt: CommittedTickReceipt,
+    storage_config: StorageConfig | None = None,
+) -> PinnedWorldQuerySnapshot:
+    """Pin the sole manifest snapshot named by one committed receipt.
+
+    A world/run/tick tuple does not identify an Activity-safe snapshot by
+    itself. The selected current-run head must contain exactly the receipt's
+    visibility token; a later head, a sibling token, or an ambiguous
+    multi-token head fails closed.
+    """
+
+    if not isinstance(receipt, CommittedTickReceipt):
+        raise TypeError("receipt must be a CommittedTickReceipt")
+    if receipt.visibility_token is None or not receipt.visibility_token.strip():
+        raise ValueError("receipt-pinned query requires a visibility token")
+    snapshot = await pin_query_snapshot(
+        storage,
+        str(receipt.world_id),
+        str(receipt.run_id),
+        storage_config,
+    )
+    current = snapshot.current
+    if current.head_tick != receipt.committed_tick:
+        raise ValueError(
+            "receipt does not name the current run's committed manifest head: "
+            f"expected tick {receipt.committed_tick}, found {current.head_tick}"
+        )
+    if current.head_tokens != (receipt.visibility_token,):
+        raise ValueError("receipt visibility token is not the sole token at its committed head")
+    if (
+        current.visibility_tokens is None
+        or receipt.visibility_token not in current.visibility_tokens
+    ):
+        raise ValueError("receipt visibility token is absent from the pinned visibility set")
+    return snapshot
 
 
 async def query_archetype(

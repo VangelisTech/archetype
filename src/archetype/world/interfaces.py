@@ -86,6 +86,15 @@ class iWorldRegistry(Protocol):
 
     async def begin_close(self, world_id: str | UUID) -> WorldCleanupLease: ...
 
+    async def begin_close_attempt(
+        self,
+        world_id: str | UUID,
+        *,
+        reopenable_activity_gate: bool = False,
+    ) -> tuple[WorldCleanupLease, bool]: ...
+
+    async def abort_close(self, lease: WorldCleanupLease) -> None: ...
+
     def cleanup_operation(
         self,
         lease: WorldCleanupLease,
@@ -203,6 +212,11 @@ class iWorldLifecycle(Protocol):
         storage_config: StorageConfig,
         world_id: str | UUID,
     ) -> AsyncWorld: ...
+
+    async def begin_close(
+        self,
+        world_id: str | UUID,
+    ) -> WorldCleanupLease: ...
 
     async def destroy_world(
         self,

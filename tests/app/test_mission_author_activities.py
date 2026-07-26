@@ -4,9 +4,9 @@
 """Crash contracts for the Mission author-activity coordination substrate.
 
 The tests exercise real local Git effects and restart the durable catalog and
-value store.  Their committed-snapshot reader and observation stager remain
-test adapters; concrete receipt-pinned world reads and idempotent ECS staging
-are a separate integration gate, not something this proof claims to provide.
+value store. Focused test adapters isolate crash windows here; the concrete
+receipt-pinned reader and atomic ECS stager have their real managed-world
+restart oracle in ``test_mission_author_world_integration.py``.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from typing import Any
 
 import daft
 import pytest
+from pydantic import TypeAdapter
 
 from archetype.activities import ActivityCoordinator
 from archetype.app.missions.activities import (
@@ -37,6 +38,7 @@ from archetype.core.component import Component
 from archetype.core.interfaces import CommittedTickReceipt
 from archetype.missions.activities import (
     AUTHOR_ACTIVITY_KIND,
+    AuthorActivityEntityFact,
     AuthorActivityRequestRef,
     AuthorActivityResultRef,
     AuthorActivityRetryGuard,
@@ -44,9 +46,12 @@ from archetype.missions.activities import (
     AuthorExecutionObservation,
     AuthorRecovered,
     AuthorRecoveryUnknown,
+    CompleteAuthorActivityFactBundle,
     DurableAuthorExecutionObservation,
     author_activity_fact_bundle,
     author_provider_operation_id,
+    complete_author_activity_fact_bundle,
+    complete_author_activity_fact_count,
 )
 from archetype.missions.coding_agents.contracts import (
     AgentExecutionResult,
@@ -58,8 +63,9 @@ from archetype.missions.coding_agents.contracts import (
 )
 from archetype.missions.components import (
     AgentExecution,
-    AuthorActivityObservation,
+    Candidate,
     Commit,
+    CompleteAuthorActivityObservation,
     FrictionLog,
     Task,
     TaskCriticPolicy,
@@ -75,13 +81,20 @@ from archetype.missions.contracts import (
     CriticPolicy,
     RepositoryPublicationPolicy,
 )
-from archetype.missions.relations import Guards, PartOfMission
+from archetype.missions.relations import (
+    AuthoredBy,
+    CandidateFor,
+    Guards,
+    PartOfMission,
+    ProducedBy,
+)
 from archetype.missions.sandboxes import SandboxIdentity, SandboxStatus
 from archetype.missions.transitions import AgentExecutionStatus, TaskStatus
 from archetype.redaction import RedactionService, SecretQuarantineError
 from archetype.storage.activity_catalog import SqliteActivityCatalog
 
 _SECRET = "github_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+_RAW_OBSERVATION_ADAPTER = TypeAdapter(AuthorExecutionObservation)
 
 
 class _Reader:
@@ -186,7 +199,15 @@ class _LocalGitProvider:
         self.crash_after_publish = crash_after_publish
         self.unknown = unknown
         if not counter_path.exists():
-            counter_path.write_text(json.dumps({"execute_calls": 0, "reconcile_calls": 0}))
+            counter_path.write_text(
+                json.dumps(
+                    {
+                        "execute_calls": 0,
+                        "reconcile_calls": 0,
+                        "validator_calls": 0,
+                    }
+                )
+            )
 
     def _read(self) -> dict[str, Any]:
         return json.loads(self.counter_path.read_text())
@@ -201,6 +222,10 @@ class _LocalGitProvider:
     @property
     def reconcile_calls(self) -> int:
         return int(self._read()["reconcile_calls"])
+
+    @property
+    def validator_calls(self) -> int:
+        return int(self._read().get("validator_calls", 0))
 
     async def execute(
         self,
@@ -235,23 +260,34 @@ class _LocalGitProvider:
         _git("add", "proof.txt", cwd=self.workspace)
         _git("commit", "-m", f"{request.task_name}: prove activity", cwd=self.workspace)
         final_revision = _git("rev-parse", "HEAD", cwd=self.workspace).stdout.strip()
-        result_ref = self._result_ref(operation_id)
-        _git("update-ref", result_ref, final_revision, cwd=self.workspace)
-        _git(
-            "push",
-            "--atomic",
-            f"--force-with-lease={result_ref}:",
-            "-u",
-            "origin",
-            f"HEAD:refs/heads/{request.branch}",
-            f"{result_ref}:{result_ref}",
-            cwd=self.workspace,
-        )
-        observation = self._remote_observation(
+        observation = self._local_observation(
             operation_id,
             request,
             starting_revision=starting_revision,
             final_revision=final_revision,
+        )
+        result_ref = self._result_ref(operation_id)
+        payload_ref = self._payload_ref(operation_id)
+        _git("update-ref", result_ref, final_revision, cwd=self.workspace)
+        payload_oid = _git_input(
+            "hash-object",
+            "-w",
+            "--stdin",
+            input_text=self._observation_text(observation),
+            cwd=self.workspace,
+        ).stdout.strip()
+        _git("update-ref", payload_ref, payload_oid, cwd=self.workspace)
+        _git(
+            "push",
+            "--atomic",
+            f"--force-with-lease={result_ref}:",
+            f"--force-with-lease={payload_ref}:",
+            "-u",
+            "origin",
+            f"HEAD:refs/heads/{request.branch}",
+            f"{result_ref}:{result_ref}",
+            f"{payload_ref}:{payload_ref}",
+            cwd=self.workspace,
         )
         if self.crash_after_publish:
             raise RuntimeError("worker died after external Git publication")
@@ -264,6 +300,7 @@ class _LocalGitProvider:
         if self.unknown:
             return AuthorRecoveryUnknown("provider lookup unavailable")
         final_revision = self._marker_oid(self._result_ref(operation_id))
+        payload_oid = self._marker_oid(self._payload_ref(operation_id))
         if final_revision:
             parents = (
                 _git(
@@ -286,14 +323,26 @@ class _LocalGitProvider:
                 return AuthorRecoveryUnknown(
                     "provider result receipt does not prove one exact publication"
                 )
-            return AuthorRecovered(
-                self._remote_observation(
-                    operation_id,
-                    request,
-                    starting_revision=parents[1],
-                    final_revision=final_revision,
+            if not payload_oid:
+                return AuthorRecoveryUnknown(
+                    "provider result receipt has no canonical observation payload"
                 )
+            observation = _RAW_OBSERVATION_ADAPTER.validate_python(
+                json.loads(self._read_marker(payload_oid))
             )
+            result = observation.result
+            if (
+                result.mission_id != request.mission_id
+                or result.task_id != request.task_id
+                or result.dispatch_id != request.dispatch_id
+                or result.dispatch_sequence != request.dispatch_sequence
+                or result.starting_revision != parents[1]
+                or result.final_revision != final_revision
+            ):
+                return AuthorRecoveryUnknown(
+                    "provider observation payload does not match its exact publication"
+                )
+            return AuthorRecovered(observation)
         head = self._remote_head(request.branch)
         if head:
             return AuthorRecoveryUnknown(
@@ -409,6 +458,11 @@ class _LocalGitProvider:
         return f"refs/archetype/activity-results/{identity}"
 
     @staticmethod
+    def _payload_ref(operation_id: str) -> str:
+        identity = hashlib.sha256(operation_id.encode()).hexdigest()
+        return f"refs/archetype/activity-payloads/{identity}"
+
+    @staticmethod
     def _marker_text(
         *,
         operation_id: str,
@@ -476,7 +530,16 @@ class _LocalGitProvider:
         )
         return proof.returncode == 0 and proof.stdout.strip() == operation_id
 
-    def _remote_observation(
+    @staticmethod
+    def _observation_text(observation: AuthorExecutionObservation) -> str:
+        return json.dumps(
+            _RAW_OBSERVATION_ADAPTER.dump_python(observation, mode="json"),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    def _local_observation(
         self,
         operation_id: str,
         request,
@@ -484,25 +547,15 @@ class _LocalGitProvider:
         starting_revision: str,
         final_revision: str,
     ) -> AuthorExecutionObservation:
-        if not self._published_operation_matches(final_revision, operation_id):
-            raise RuntimeError("provider receipt points at another Git publication")
-        if not self.workspace.exists():
-            _git(
-                "clone",
-                "--no-checkout",
-                str(self.remote),
-                str(self.workspace),
-            )
-        _git(
-            "fetch",
-            "origin",
-            self._result_ref(operation_id),
-            cwd=self.workspace,
-        )
-        _git("checkout", "--detach", final_revision, cwd=self.workspace)
+        proof = (self.workspace / "proof.txt").read_text().strip()
+        if proof != operation_id:
+            raise RuntimeError("provider workspace belongs to another operation")
+        state = self._read()
+        state["validator_calls"] = int(state.get("validator_calls", 0)) + 1
+        self._write(state)
         validation: list[ValidationObservation] = []
         for validator in request.validators:
-            command = (*validator.spec.command, f"--token={_SECRET}")
+            command = validator.spec.command
             actual = subprocess.run(
                 command,
                 cwd=self.workspace,
@@ -523,23 +576,20 @@ class _LocalGitProvider:
                 )
             )
         diff = _git(
-            "--git-dir",
-            str(self.remote),
             "diff",
             "--binary",
             starting_revision,
             final_revision,
+            cwd=self.workspace,
         ).stdout
         message = _git(
-            "--git-dir",
-            str(self.remote),
             "show",
             "-s",
             "--format=%s",
             final_revision,
+            cwd=self.workspace,
         ).stdout.strip()
         operation_digest = hashlib.sha256(operation_id.encode()).hexdigest()
-        noisy = ("x" * 20_000) + f" token={_SECRET}"
         return AuthorExecutionObservation(
             result=AgentExecutionResult(
                 mission_id=request.mission_id,
@@ -561,8 +611,8 @@ class _LocalGitProvider:
                 validator_bundle_digest=hashlib.sha256(
                     repr(request.validators).encode()
                 ).hexdigest(),
-                agent_stdout=noisy,
-                agent_stderr=f"password={_SECRET}",
+                agent_stdout="canonical provider stdout",
+                agent_stderr="",
                 trace_uri=f"local-git://{operation_digest}",
                 validation=tuple(validation),
                 commits=(
@@ -574,7 +624,7 @@ class _LocalGitProvider:
                         final_revision=True,
                     ),
                 ),
-                friction=(FrictionObservation("provider", f"token={_SECRET}"),),
+                friction=(FrictionObservation("provider", "canonical provider fact"),),
             ),
             sandbox_status=SandboxStatus.READY,
         )
@@ -733,53 +783,113 @@ def _observation_snapshot(
     omit_result_children: bool = False,
     visibility_token: str | None = None,
 ) -> CommittedMissionSnapshot:
-    partial = _partial_observation_snapshot(
+    dispatch = _dispatch_snapshot(
         world_id=world_id,
         run_id=run_id,
         tick=tick,
-        observation=observation,
+        dispatch_id=observation.result.dispatch_id,
         repository=repository,
         visibility_token=visibility_token,
     )
-    execution_id = 20
-    bundle = author_activity_fact_bundle(observation, execution_id=execution_id)
-    validation_component = bundle.validations[0]
-    commit_component = bundle.commits[0]
-    friction_component = bundle.friction[0]
-    if unrelated_fact_task_id is not None:
-        validation_component = validation_component.model_copy(
-            update={"task_id": unrelated_fact_task_id}
-        )
-        commit_component = commit_component.model_copy(update={"task_id": unrelated_fact_task_id})
-        friction_component = friction_component.model_copy(
-            update={"task_id": unrelated_fact_task_id}
-        )
-    marker_bundle = (
-        replace(bundle, validations=(), commits=(), friction=()) if omit_result_children else bundle
+    policy = CriticPolicy()
+    request = TaskDispatchRequest(
+        mission_id=observation.result.mission_id,
+        task_id=observation.result.task_id,
+        task_name="prove-activity",
+        dispatch_id=observation.result.dispatch_id,
+        dispatch_sequence=observation.result.dispatch_sequence,
+        repository=repository,
+        branch="proof/activity",
+        base_ref="main",
+        prompt="commit proof.txt",
+        validators=(
+            DispatchedValidator(
+                validator_id=11,
+                spec=CommandValidator(
+                    name="proof-exists",
+                    command=("sh", "-c", "test -f proof.txt"),
+                ),
+            ),
+        ),
+        publication_policy=RepositoryPublicationPolicy.COMMIT_AND_PUSH,
+        critic_policy=policy,
     )
+    fact_count = complete_author_activity_fact_count(
+        request,
+        observation,
+        prior_candidate_id=None,
+    )
+    bundle = complete_author_activity_fact_bundle(
+        request,
+        observation,
+        entity_ids=tuple(range(20, 20 + fact_count)),
+        prior_candidate_id=None,
+        candidate_created_at_ms=1_234,
+    )
+    facts = list(bundle.facts)
+    if unrelated_fact_task_id is not None:
+        facts = [
+            AuthorActivityEntityFact(
+                fact.entity_id,
+                fact.component.model_copy(update={"task_id": unrelated_fact_task_id}),
+            )
+            if isinstance(
+                fact.component,
+                (ValidationResult, Commit, FrictionLog),
+            )
+            else fact
+            for fact in facts
+        ]
+    marker_bundle = bundle
+    if omit_result_children:
+        output_ids = {
+            fact.entity_id
+            for fact in facts
+            if isinstance(
+                fact.component,
+                (ValidationResult, Commit, FrictionLog),
+            )
+        }
+        facts = [
+            fact
+            for fact in facts
+            if fact.entity_id not in output_ids
+            and not (isinstance(fact.component, ProducedBy) and fact.component.source in output_ids)
+        ]
+        marker_bundle = CompleteAuthorActivityFactBundle(
+            facts=tuple(facts),
+            execution_id=bundle.execution_id,
+            sandbox_entity_id=bundle.sandbox_entity_id,
+            candidate_entity_id=bundle.candidate_entity_id,
+        )
     marker = marker_bundle.marker(
         result=result,
         redaction_policy_id=observation.redaction_policy_id,
     )
-    child_results = (
-        {}
-        if omit_result_children
-        else {
-            (ValidationResult,): _frame(21, tick, validation_component),
-            (Commit,): _frame(22, tick, commit_component),
-            (FrictionLog,): _frame(23, tick, friction_component),
-        }
+    grouped: dict[type[Component], list[AuthorActivityEntityFact]] = {}
+    for fact in facts:
+        grouped.setdefault(type(fact.component), []).append(fact)
+    fact_results: dict[tuple[type[Component], ...], Any] = {}
+    for component_type, selected in grouped.items():
+        frame = _frame(selected[0].entity_id, tick, selected[0].component)
+        for fact in selected[1:]:
+            frame = frame.concat(_frame(fact.entity_id, tick, fact.component))
+        fact_results[(component_type,)] = frame
+    combined_results = dict(dispatch.results)
+    for signature, frame in fact_results.items():
+        existing = combined_results.get(signature)
+        combined_results[signature] = existing.concat(frame) if existing is not None else frame
+    combined_results[(CompleteAuthorActivityObservation,)] = _frame(
+        20 + fact_count,
+        tick,
+        marker,
     )
     return CommittedMissionSnapshot(
         world_id=world_id,
         run_id=run_id,
         committed_tick=tick,
         visibility_token=visibility_token or f"token-{tick}",
-        results={
-            **partial.results,
-            **child_results,
-            (AuthorActivityObservation,): _frame(24, tick, marker),
-        },
+        results=combined_results,
     )
 
 
@@ -849,6 +959,59 @@ async def test_provider_metadata_is_quarantined_before_result_persistence(
         await values.put_result(poisoned)
 
     assert not list(root.rglob("*.json"))
+
+
+def test_non_green_complete_bundle_has_no_candidate_or_mission_binding() -> None:
+    raw = _raw_observation("dispatch-not-green")
+    durable = DurableAuthorExecutionObservation(
+        result=replace(
+            raw.result,
+            status=AgentExecutionStatus.ERRORED,
+            error="author failed",
+        ),
+        sandbox_status=SandboxStatus.ERRORED,
+        redaction_policy_id="test-redaction-v1",
+        bind_mission=False,
+    )
+    request = TaskDispatchRequest(
+        mission_id=3,
+        task_id=7,
+        task_name="prove-activity",
+        dispatch_id=raw.result.dispatch_id,
+        dispatch_sequence=1,
+        repository="owner/repo",
+        branch="proof/activity",
+        base_ref="main",
+        prompt="write proof.txt",
+        validators=(
+            DispatchedValidator(
+                validator_id=11,
+                spec=CommandValidator(
+                    name="proof-exists",
+                    command=("sh", "-c", "test -f proof.txt"),
+                ),
+            ),
+        ),
+        publication_policy=RepositoryPublicationPolicy.COMMIT_AND_PUSH,
+    )
+    fact_count = complete_author_activity_fact_count(
+        request,
+        durable,
+        prior_candidate_id=None,
+    )
+    bundle = complete_author_activity_fact_bundle(
+        request,
+        durable,
+        entity_ids=tuple(range(1, fact_count + 1)),
+        prior_candidate_id=None,
+        candidate_created_at_ms=0,
+    )
+
+    assert bundle.candidate_entity_id == 0
+    assert bundle.components(Candidate) == ()
+    assert bundle.components(CandidateFor) == ()
+    assert bundle.components(AuthoredBy) == ()
+    assert bundle.components(PartOfMission) == ()
 
 
 @pytest.mark.asyncio
@@ -1057,6 +1220,20 @@ async def test_cold_restart_reconciles_published_author_and_redelivers_result(
         first_provider._result_ref(operation_id),
     )
     assert result_receipt.stdout.partition("\t")[0].strip() == published_revision
+    payload_oid = first_provider._marker_oid(first_provider._payload_ref(operation_id))
+    canonical_payload = first_provider._read_marker(payload_oid)
+    canonical_payload_digest = hashlib.sha256(canonical_payload.encode()).hexdigest()
+    published_observation = _RAW_OBSERVATION_ADAPTER.validate_python(json.loads(canonical_payload))
+    published_fact_digest = author_activity_fact_bundle(
+        DurableAuthorExecutionObservation(
+            result=published_observation.result,
+            sandbox_status=published_observation.sandbox_status,
+            redaction_policy_id=RedactionService().policy_id,
+            bind_mission=published_observation.bind_mission,
+        ),
+        execution_id=20,
+    ).digest
+    assert first_provider.validator_calls == 1
     await physical.close()
     await asyncio.sleep(0.02)
 
@@ -1109,6 +1286,11 @@ async def test_cold_restart_reconciles_published_author_and_redelivers_result(
         await recovered_worker.run_once()
     assert recovered_provider.execute_calls == 1
     assert recovered_provider.reconcile_calls == 1
+    assert recovered_provider.validator_calls == 1
+    assert (
+        hashlib.sha256(recovered_provider._read_marker(payload_oid).encode()).hexdigest()
+        == canonical_payload_digest
+    )
     await recovered_physical.close()
 
     # The bounded result was durable before staging failed. A new process can
@@ -1134,6 +1316,10 @@ async def test_cold_restart_reconciles_published_author_and_redelivers_result(
     durable = final_stager.staged[(world_id, dispatch_id)]
     result_ref = final_stager.results[(world_id, dispatch_id)]
     assert durable.result.final_revision == published_revision
+    recovered_payload = _RAW_OBSERVATION_ADAPTER.validate_python(json.loads(canonical_payload))
+    assert durable.result == recovered_payload.result
+    assert author_activity_fact_bundle(durable, execution_id=20).digest == published_fact_digest
+    assert final_provider.validator_calls == 1
     assert len(durable.result.agent_stdout) <= 16_000
     persisted = b"".join(path.read_bytes() for path in values_path.rglob("*.json"))
     assert _SECRET.encode() not in persisted

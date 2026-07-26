@@ -237,6 +237,61 @@ class AuthorActivityObservation(Component):
         return self
 
 
+class CompleteAuthorActivityObservation(Component):
+    """Complete v2 fact bundle for one durable author result."""
+
+    schema_version: int = 2
+    activity_id: str = ""
+    task_id: int = 0
+    dispatch_sequence: int = 0
+    result_ref: str = ""
+    result_digest: str = ""
+    fact_bundle_digest: str = ""
+    execution_id: int = 0
+    validation_count: int = 0
+    commit_count: int = 0
+    friction_count: int = 0
+    sandbox_entity_id: int = 0
+    sandbox_bound: bool = False
+    candidate_entity_id: int = 0
+    candidate_count: int = 0
+    relation_count: int = 0
+    redaction_policy_id: str = ""
+
+    @model_validator(mode="after")
+    def _valid_observation(self) -> CompleteAuthorActivityObservation:
+        required = (
+            self.activity_id,
+            self.result_ref,
+            self.result_digest,
+            self.fact_bundle_digest,
+            self.redaction_policy_id,
+        )
+        if any(not value.strip() for value in required):
+            raise ValueError("complete author activity observation identity cannot be empty")
+        if self.task_id < 1 or self.dispatch_sequence < 1 or self.execution_id < 1:
+            raise ValueError(
+                "complete author activity observation requires dispatch and execution identities"
+            )
+        if min(self.validation_count, self.commit_count, self.friction_count) < 0:
+            raise ValueError("complete author activity observation counts cannot be negative")
+        if self.schema_version != 2:
+            raise ValueError("complete author activity observation requires schema version 2")
+        if self.candidate_count not in {0, 1}:
+            raise ValueError(
+                "complete author activity observation candidate count must be zero or one"
+            )
+        if self.candidate_count != int(self.candidate_entity_id > 0):
+            raise ValueError(
+                "complete author activity observation candidate identity is inconsistent"
+            )
+        if self.sandbox_entity_id < 1:
+            raise ValueError("complete author activity observation requires a sandbox")
+        if self.relation_count < 2:
+            raise ValueError("complete author activity observation requires provenance")
+        return self
+
+
 class ValidationResult(Component):
     """One validator observation bound to exact execution and revision identity."""
 
@@ -462,6 +517,7 @@ TASK_COMPONENTS = (
 
 OUTPUT_COMPONENTS = (
     AuthorActivityObservation,
+    CompleteAuthorActivityObservation,
     ValidationResult,
     Commit,
     Candidate,

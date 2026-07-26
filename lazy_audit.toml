@@ -175,6 +175,20 @@ reason = "Exact post-commit activity-settlement boundary: bounded AuthorActivity
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
+symbol = "_component_facts"
+expr = "frame.to_pylist"
+method = "to_pylist"
+reason = "Exact post-commit Activity fact boundary: each already component-scoped committed frame becomes a bounded set of typed Mission facts so entity identities, provenance edges, and the v2 completion digest can be verified before settlement."
+
+[[entries]]
+path = "src/archetype/app/missions/activity_world.py"
+symbol = "WorldMissionAuthorObservationStager._committed_bundle"
+expr = "materialized_markers.to_pylist"
+method = "to_pylist"
+reason = "Idempotent Activity-delivery boundary: the exact manifest-pinned AuthorActivityObservation frame becomes bounded marker identities so reconstruction can reject conflicting results or avoid duplicate world mutations."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
 symbol = "CriticReviewOutbox.on_post_tick"
 expr = "candidate_tasks.join(candidates, left_on='entity_id', right_on=f'{candidate}task_id').to_pylist"
 method = "to_pylist"

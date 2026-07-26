@@ -5,10 +5,8 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
-from collections import defaultdict
-from collections.abc import Sequence
+from collections import Counter, defaultdict
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -16,7 +14,12 @@ from daft import DataFrame, Expression, col
 
 from archetype.core.component import Component
 from archetype.core.hooks import PostTick
-from archetype.graph import GraphView
+from archetype.graph import GraphView, Relation
+from archetype.missions.activities import (
+    AuthorActivityEntityFact,
+    CompleteAuthorActivityFactBundle,
+    author_activity_fact_bundle_digest,
+)
 from archetype.missions.coding_agents.contracts import (
     CriticRepairFinding,
     DispatchedValidator,
@@ -28,12 +31,14 @@ from archetype.missions.components import (
     AuthorActivityObservation,
     Candidate,
     Commit,
+    CompleteAuthorActivityObservation,
     CriticExecution,
     CriticFinding,
     CriticReceipt,
     FrictionLog,
     Mission,
     MissionState,
+    Sandbox,
     Task,
     TaskCriticPolicy,
     TaskDispatch,
@@ -55,7 +60,16 @@ from archetype.missions.critics.contracts import (
     CandidateReviewRequest,
     CriticValidationEvidence,
 )
-from archetype.missions.relations import Guards, PartOfMission
+from archetype.missions.relations import (
+    AuthoredBy,
+    CandidateFor,
+    Executes,
+    Guards,
+    PartOfMission,
+    ProducedBy,
+    RunsIn,
+    Supersedes,
+)
 from archetype.missions.transitions import MissionStatus, TaskStatus
 
 
@@ -297,6 +311,9 @@ class TaskDispatchOutbox:
                         output_schema_version=int(row[f"{critic_policy}output_schema_version"]),
                         max_output_chars=int(row[f"{critic_policy}max_output_chars"]),
                     ),
+                    prior_candidate_entity_id=(
+                        int(prior_candidate["entity_id"]) if prior_candidate is not None else 0
+                    ),
                     task_base_revision=(
                         str(previous["_prior_starting_revision"]) if previous is not None else ""
                     ),
@@ -325,45 +342,6 @@ async def project_task_dispatch_requests(event: PostTick) -> tuple[TaskDispatchR
     projection = TaskDispatchOutbox()
     await projection.on_post_tick(event)
     return projection.drain()
-
-
-def author_activity_fact_bundle_digest(
-    *,
-    execution_id: int,
-    execution: AgentExecution,
-    validations: Sequence[ValidationResult],
-    commits: Sequence[Commit],
-    friction: Sequence[FrictionLog],
-) -> str:
-    """Digest the complete committed fact values for one author observation."""
-
-    def ordered(values: Sequence[Component]) -> list[dict[str, Any]]:
-        payloads = [value.model_dump(mode="json") for value in values]
-        return sorted(
-            payloads,
-            key=lambda value: json.dumps(
-                value,
-                ensure_ascii=False,
-                separators=(",", ":"),
-                sort_keys=True,
-            ),
-        )
-
-    payload = {
-        "commits": ordered(commits),
-        "execution": execution.model_dump(mode="json"),
-        "execution_id": execution_id,
-        "friction": ordered(friction),
-        "schema_version": 1,
-        "validations": ordered(validations),
-    }
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode()
-    return hashlib.sha256(encoded).hexdigest()
 
 
 def project_complete_author_activity_observations(
@@ -485,6 +463,230 @@ def project_complete_author_activity_observations(
             )
         )
     return tuple(sorted(complete, key=lambda value: value.activity_id))
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectedAuthorActivityFactBundle:
+    """One v2 completion marker and the exact facts named by its digest."""
+
+    marker: CompleteAuthorActivityObservation
+    bundle: CompleteAuthorActivityFactBundle
+
+
+def _component_facts(
+    event: PostTick,
+    component_type: type[Component],
+) -> tuple[AuthorActivityEntityFact, ...]:
+    frame = _live_frame(event, component_type)
+    if frame is None:
+        return ()
+    prefix = component_type.get_prefix()
+    return tuple(
+        AuthorActivityEntityFact(
+            entity_id=int(row["entity_id"]),
+            component=component_type(
+                **{field: row[f"{prefix}{field}"] for field in component_type.model_fields}
+            ),
+        )
+        for row in frame.to_pylist()
+    )
+
+
+COMPLETE_AUTHOR_ACTIVITY_FACT_TYPES: tuple[type[Component], ...] = (
+    Sandbox,
+    AgentExecution,
+    ValidationResult,
+    Commit,
+    FrictionLog,
+    Candidate,
+    PartOfMission,
+    Executes,
+    RunsIn,
+    ProducedBy,
+    CandidateFor,
+    AuthoredBy,
+    Supersedes,
+)
+
+
+def reconstruct_complete_author_activity_fact_bundle(
+    marker: CompleteAuthorActivityObservation,
+    facts_by_type: Mapping[
+        type[Component],
+        Sequence[AuthorActivityEntityFact],
+    ],
+) -> CompleteAuthorActivityFactBundle | None:
+    """Select the exact v2 fact bundle named by one completion marker."""
+
+    facts = {
+        component_type: tuple(facts_by_type.get(component_type, ()))
+        for component_type in COMPLETE_AUTHOR_ACTIVITY_FACT_TYPES
+    }
+    by_type_and_id = {
+        component_type: {fact.entity_id: fact for fact in component_facts}
+        for component_type, component_facts in facts.items()
+    }
+
+    sandbox = by_type_and_id[Sandbox].get(marker.sandbox_entity_id)
+    execution = by_type_and_id[AgentExecution].get(marker.execution_id)
+    if sandbox is None or execution is None:
+        return None
+    selected: list[AuthorActivityEntityFact] = [sandbox, execution]
+
+    membership = tuple(
+        fact
+        for fact in facts[PartOfMission]
+        if isinstance(fact.component, PartOfMission)
+        and fact.component.source == marker.sandbox_entity_id
+    )
+    if len(membership) != int(marker.sandbox_bound):
+        return None
+    selected.extend(membership)
+
+    executes = tuple(
+        fact
+        for fact in facts[Executes]
+        if isinstance(fact.component, Executes) and fact.component.source == marker.execution_id
+    )
+    runs_in = tuple(
+        fact
+        for fact in facts[RunsIn]
+        if isinstance(fact.component, RunsIn) and fact.component.source == marker.execution_id
+    )
+    if len(executes) != 1 or len(runs_in) != 1:
+        return None
+    selected.extend((*executes, *runs_in))
+
+    output_groups: tuple[tuple[type[Component], int], ...] = (
+        (ValidationResult, marker.validation_count),
+        (Commit, marker.commit_count),
+        (FrictionLog, marker.friction_count),
+    )
+    output_facts: list[AuthorActivityEntityFact] = []
+    for component_type, expected_count in output_groups:
+        matching = tuple(
+            fact
+            for fact in facts[component_type]
+            if getattr(fact.component, "execution_id", None) == marker.execution_id
+            and getattr(fact.component, "task_id", None) == marker.task_id
+            and getattr(fact.component, "dispatch_id", None) == marker.activity_id
+            and (
+                component_type is not ValidationResult
+                or getattr(fact.component, "dispatch_sequence", None) == marker.dispatch_sequence
+            )
+        )
+        if len(matching) != expected_count:
+            return None
+        output_facts.extend(matching)
+
+    produced: list[AuthorActivityEntityFact] = []
+    for output in output_facts:
+        matching_edges = tuple(
+            fact
+            for fact in facts[ProducedBy]
+            if isinstance(fact.component, ProducedBy)
+            and fact.component.source == output.entity_id
+            and fact.component.target == marker.execution_id
+        )
+        if len(matching_edges) != 1:
+            return None
+        produced.extend(matching_edges)
+    selected.extend((*output_facts, *produced))
+
+    matching_candidates = tuple(
+        fact
+        for fact in facts[Candidate]
+        if isinstance(fact.component, Candidate)
+        and fact.component.task_id == marker.task_id
+        and fact.component.dispatch_id == marker.activity_id
+        and fact.component.dispatch_sequence == marker.dispatch_sequence
+    )
+    if marker.candidate_count:
+        if (
+            len(matching_candidates) != 1
+            or matching_candidates[0].entity_id != marker.candidate_entity_id
+        ):
+            return None
+        candidate_id = marker.candidate_entity_id
+        candidate_for = tuple(
+            fact
+            for fact in facts[CandidateFor]
+            if isinstance(fact.component, CandidateFor) and fact.component.source == candidate_id
+        )
+        authored_by = tuple(
+            fact
+            for fact in facts[AuthoredBy]
+            if isinstance(fact.component, AuthoredBy) and fact.component.source == candidate_id
+        )
+        supersedes = tuple(
+            fact
+            for fact in facts[Supersedes]
+            if isinstance(fact.component, Supersedes) and fact.component.source == candidate_id
+        )
+        if len(candidate_for) != 1 or len(authored_by) != 1 or len(supersedes) > 1:
+            return None
+        selected.extend(
+            (
+                matching_candidates[0],
+                *candidate_for,
+                *authored_by,
+                *supersedes,
+            )
+        )
+    elif matching_candidates:
+        return None
+
+    relation_count = sum(isinstance(fact.component, Relation) for fact in selected)
+    if relation_count != marker.relation_count:
+        return None
+    try:
+        bundle = CompleteAuthorActivityFactBundle(
+            facts=tuple(selected),
+            execution_id=marker.execution_id,
+            sandbox_entity_id=marker.sandbox_entity_id,
+            candidate_entity_id=marker.candidate_entity_id,
+        )
+    except ValueError:
+        return None
+    return bundle if bundle.digest == marker.fact_bundle_digest else None
+
+
+def project_complete_author_activity_fact_bundles(
+    event: PostTick,
+) -> tuple[ProjectedAuthorActivityFactBundle, ...]:
+    """Reconstruct v2 author observations only when every named fact is present.
+
+    The marker is not proof by itself. Its exact entity identities, counts, and
+    digest must select one sandbox, one execution, every output/provenance
+    pair, and the optional candidate continuation from the same snapshot.
+    Semantic equality with the durable request/result is checked by the
+    Mission projector after this structural reconstruction.
+    """
+
+    marker_facts = _component_facts(event, CompleteAuthorActivityObservation)
+    if not marker_facts:
+        return ()
+    facts_by_type = {
+        component_type: _component_facts(event, component_type)
+        for component_type in COMPLETE_AUTHOR_ACTIVITY_FACT_TYPES
+    }
+    marker_counts = Counter(
+        fact.component.activity_id
+        for fact in marker_facts
+        if isinstance(fact.component, CompleteAuthorActivityObservation)
+    )
+
+    projected: list[ProjectedAuthorActivityFactBundle] = []
+    for marker_fact in marker_facts:
+        marker = marker_fact.component
+        assert isinstance(marker, CompleteAuthorActivityObservation)
+        if marker_counts[marker.activity_id] != 1:
+            continue
+        bundle = reconstruct_complete_author_activity_fact_bundle(marker, facts_by_type)
+        if bundle is not None:
+            projected.append(ProjectedAuthorActivityFactBundle(marker=marker, bundle=bundle))
+
+    return tuple(sorted(projected, key=lambda value: value.marker.activity_id))
 
 
 @dataclass(frozen=True)

@@ -16,7 +16,7 @@ from uuid_utils import UUID, uuid7
 
 from archetype.core.config import StorageConfig, WorldConfig
 from archetype.storage.catalog import WorldRecord
-from archetype.world.errors import WorldClosingError
+from archetype.world.errors import WorldClosingError, WorldHasUnsettledWorkError
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -556,6 +556,7 @@ async def test_fork_mints_identity_and_wires_fresh_projector_binding() -> None:
     catalog = _Catalog(events)
     storage = _Storage(catalog, events)
     projectors: list[object] = []
+    unsettled = True
 
     async def materialize_commands(world: object, target_tick: int) -> int:
         del world, target_tick
@@ -567,12 +568,16 @@ async def test_fork_mints_identity_and_wires_fresh_projector_binding() -> None:
         projectors.append(projector)
         return projector
 
+    async def has_unsettled(_world_id: str) -> bool:
+        return unsettled
+
     registry = registry_module.WorldRegistry()
     lifecycle = lifecycle_module.WorldLifecycle(
         storage,
         registry,
         materialize_commands=materialize_commands,
         required_projector_factory=projector_factory,
+        unsettled_world_oracle=has_unsettled,
     )
     source = await lifecycle.create_world(
         WorldConfig(
@@ -581,6 +586,11 @@ async def test_fork_mints_identity_and_wires_fresh_projector_binding() -> None:
         ),
         StorageConfig(),
     )
+    with pytest.raises(WorldHasUnsettledWorkError):
+        await lifecycle.fork_world(source.world_id, name="refused-fork")
+    assert len(catalog.records) == 1
+
+    unsettled = False
     fork = await lifecycle.fork_world(source.world_id, name="fork")
 
     assert source.run_id.version == 7

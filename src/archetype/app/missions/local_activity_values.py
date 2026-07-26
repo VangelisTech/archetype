@@ -204,6 +204,7 @@ class LocalMissionAuthorValueStore:
             result=sanitized,
             sandbox_status=observation.sandbox_status,
             redaction_policy_id=self._redactor.policy_id,
+            bind_mission=observation.bind_mission,
         )
 
     def _redact(self, value: str, limit: int, scope: str) -> str:

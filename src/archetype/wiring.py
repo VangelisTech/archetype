@@ -195,20 +195,24 @@ class RuntimeBootstrapConfig:
 
     control_catalog_config: ControlCatalogConfig
     storage_service: StorageService | None = None
+    world_registry: WorldRegistry | None = None
     audit_storage_config: StorageConfig | None = None
     artifact_store_config: ArtifactStoreConfig | None = None
     redaction_service: RedactionService | None = None
     required_projector_factory: Callable[[str], Any | None] | None = None
+    unsettled_world_oracle: Callable[[str], Awaitable[bool]] | None = None
 
     @classmethod
     def from_env(
         cls,
         *,
         storage_service: StorageService | None = None,
+        world_registry: WorldRegistry | None = None,
         audit_storage_config: StorageConfig | None = None,
         artifact_store_config: ArtifactStoreConfig | None = None,
         redaction_service: RedactionService | None = None,
         required_projector_factory: Callable[[str], Any | None] | None = None,
+        unsettled_world_oracle: Callable[[str], Awaitable[bool]] | None = None,
         environ: Mapping[str, str] | None = None,
     ) -> RuntimeBootstrapConfig:
         """Resolve environment-backed configuration once at the host boundary."""
@@ -216,10 +220,12 @@ class RuntimeBootstrapConfig:
         return cls(
             control_catalog_config=ControlCatalogConfig.from_env(environ),
             storage_service=storage_service,
+            world_registry=world_registry,
             audit_storage_config=audit_storage_config,
             artifact_store_config=artifact_store_config,
             redaction_service=redaction_service,
             required_projector_factory=required_projector_factory,
+            unsettled_world_oracle=unsettled_world_oracle,
         )
 
 
@@ -743,7 +749,7 @@ class _WorldCleanupLifetimes:
         """Join cleanup for the current exact world selected by public destroy."""
 
         try:
-            lease = await self._worlds.begin_close(str(world_id))
+            lease = await self._lifecycle.begin_close(str(world_id))
         except KeyError:
             return
         await self.retain(world_id, lease).aclose()
@@ -1090,7 +1096,7 @@ async def _handle_submit_mission(
             reservation.bind(sandbox, close=sandbox.shutdown)
 
             async def cleanup_factory(world_id: object) -> WorldCleanup:
-                lease = await worlds.begin_close(str(world_id))
+                lease = await lifecycle.begin_close(str(world_id))
                 return WorldCleanup(
                     registry=worlds,
                     lifecycle=lifecycle,
@@ -1420,7 +1426,7 @@ def build_runtime_resources(config: RuntimeBootstrapConfig) -> RuntimeResources:
         control_catalog_config=config.control_catalog_config,
     )
     redaction = config.redaction_service or RedactionService()
-    worlds = WorldRegistry()
+    worlds = config.world_registry or WorldRegistry()
     registry = OperationRegistry()
 
     async def resolve_control_catalog(world_id: str) -> Any:
@@ -1453,6 +1459,7 @@ def build_runtime_resources(config: RuntimeBootstrapConfig) -> RuntimeResources:
         worlds,
         materialize_commands=scheduler.materialize,
         required_projector_factory=config.required_projector_factory,
+        unsettled_world_oracle=config.unsettled_world_oracle,
     )
     audit = AuditLog(
         storage,
