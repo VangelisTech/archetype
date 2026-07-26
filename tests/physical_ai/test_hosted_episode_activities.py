@@ -943,3 +943,56 @@ async def test_world_stager_is_idempotent_and_rejects_pending_conflict() -> None
             world_id="physical-world",
             observation=observation.model_copy(update={"success_count": 0}),
         )
+
+
+@pytest.mark.asyncio
+async def test_hosted_claim_pages_past_a_full_batch_of_live_claims(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A claimable Activity beyond the scan page must not be stranded.
+
+    With more admitted Activities than one pending page, a page-sized prefix
+    of foreign leases previously made claim_episode report no work, leaving
+    later claimable Activities pending until an unrelated prefix change.
+    """
+    import archetype.physical_ai.hosted_activities as hosted_module
+
+    monkeypatch.setattr(hosted_module, "_CLAIM_SCAN_BATCH", 3)
+    world_id = "physical-world"
+    values = LocalHostedEpisodeValueStore(tmp_path / "values")
+    physical, generic, catalog = _open_catalog(
+        tmp_path / "activities.db",
+        lease_seconds=300,
+    )
+    receipt = CommittedTickReceipt(world_id, "run-a", 1, "token-1", 0)
+
+    activity_ids = [f"episode-{position:03d}" for position in range(7)]
+    for activity_id in activity_ids:
+        request = await values.put_request(_request(world_id, activity_id))
+        await catalog.admit_episode(
+            world_id=world_id,
+            receipt=receipt,
+            activity_id=activity_id,
+            request=request,
+        )
+    # Lease two full pages' worth so the claimable Activity sits on page 3.
+    for activity_id in activity_ids[:6]:
+        claim = await generic.claim(
+            world_id,
+            HOSTED_EPISODE_ACTIVITY_KIND,
+            activity_id,
+            f"busy-{activity_id}",
+            lease_seconds=300,
+        )
+        assert claim.acquired
+
+    claim = await catalog.claim_episode(world_id=world_id, owner="available-worker")
+
+    assert claim is not None
+    assert claim.activity_id == activity_ids[-1]
+
+    # Every Activity now leased: an honest None, reached only by paging to
+    # the catalog's end rather than stopping at page one.
+    assert await catalog.claim_episode(world_id=world_id, owner="late-worker") is None
+    await physical.close()

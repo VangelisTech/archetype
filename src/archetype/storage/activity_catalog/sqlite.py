@@ -888,6 +888,7 @@ class SqliteActivityCatalog:
         kind: str | None = None,
         world_id: str | None = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[ActivityRecord]:
         """Discover admitted work without relying on a process-local queue."""
 
@@ -896,6 +897,7 @@ class SqliteActivityCatalog:
             kind=kind,
             world_id=world_id,
             limit=limit,
+            offset=offset,
         )
 
     async def list_unobserved_results(
@@ -938,9 +940,12 @@ class SqliteActivityCatalog:
         kind: str | None,
         world_id: str | None,
         limit: int,
+        offset: int = 0,
     ) -> list[ActivityRecord]:
         if limit < 1:
             raise ValueError("limit must be positive")
+        if offset < 0:
+            raise ValueError("offset must be non-negative")
 
         def _list() -> list[ActivityRecord]:
             conditions = (
@@ -956,12 +961,13 @@ class SqliteActivityCatalog:
                 conditions.append("source_world_id=?")
                 parameters.append(world_id)
             parameters.append(limit)
+            parameters.append(offset)
             rows = (
                 self._connect_sync()
                 .execute(
                     "SELECT * FROM activities WHERE "
                     + " AND ".join(conditions)
-                    + " ORDER BY sequence LIMIT ?",
+                    + " ORDER BY sequence LIMIT ? OFFSET ?",
                     parameters,
                 )
                 .fetchall()

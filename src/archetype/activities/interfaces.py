@@ -71,6 +71,7 @@ class iActivityCoordinator(Protocol):
         kind: str | None = None,
         world_id: str | None = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> tuple[ActivitySnapshot, ...]: ...
 
     async def pending_results(
