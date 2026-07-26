@@ -202,6 +202,41 @@ class AgentExecution(Component):
         return AgentExecutionStatus(value).value
 
 
+class AuthorActivityObservation(Component):
+    """Complete committed fact bundle for one durable author result."""
+
+    activity_id: str = ""
+    task_id: int = 0
+    dispatch_sequence: int = 0
+    result_ref: str = ""
+    result_digest: str = ""
+    fact_bundle_digest: str = ""
+    execution_id: int = 0
+    validation_count: int = 0
+    commit_count: int = 0
+    friction_count: int = 0
+    redaction_policy_id: str = ""
+
+    @model_validator(mode="after")
+    def _valid_observation(self) -> AuthorActivityObservation:
+        required = (
+            self.activity_id,
+            self.result_ref,
+            self.result_digest,
+            self.fact_bundle_digest,
+            self.redaction_policy_id,
+        )
+        if any(not value.strip() for value in required):
+            raise ValueError("author activity observation identity cannot be empty")
+        if self.task_id < 1 or self.dispatch_sequence < 1 or self.execution_id < 1:
+            raise ValueError(
+                "author activity observation requires dispatch and execution identities"
+            )
+        if min(self.validation_count, self.commit_count, self.friction_count) < 0:
+            raise ValueError("author activity observation counts cannot be negative")
+        return self
+
+
 class ValidationResult(Component):
     """One validator observation bound to exact execution and revision identity."""
 
@@ -426,6 +461,7 @@ TASK_COMPONENTS = (
 )
 
 OUTPUT_COMPONENTS = (
+    AuthorActivityObservation,
     ValidationResult,
     Commit,
     Candidate,

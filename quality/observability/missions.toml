@@ -4,6 +4,25 @@ family = "missions"
 
 [[disposition]]
 operations = [
+  "activities.MissionAuthorActivityCatalog.admit_author",
+  "activities.MissionAuthorActivityCatalog.bind_provider_operation",
+  "activities.MissionAuthorActivityCatalog.claim_author",
+  "activities.MissionAuthorActivityCatalog.confirm_provider_operation_absent",
+  "activities.MissionAuthorActivityCatalog.pending_author_results",
+  "activities.MissionAuthorActivityCatalog.record_author_result",
+  "activities.MissionAuthorActivityCatalog.settle_author_observation",
+  "activities.MissionAuthorExecutor.execute",
+  "activities.MissionAuthorExecutor.provider",
+  "activities.MissionAuthorExecutor.reconcile",
+  "activities.MissionAuthorObservationStager.stage_author_observation",
+  "activities.MissionAuthorRedactor.assert_safe_metadata",
+  "activities.MissionAuthorRedactor.policy_id",
+  "activities.MissionAuthorRedactor.redact_text",
+  "activities.MissionAuthorValueStore.get_request",
+  "activities.MissionAuthorValueStore.get_result",
+  "activities.MissionAuthorValueStore.put_request",
+  "activities.MissionAuthorValueStore.put_result",
+  "activities.MissionCommittedIntentReader.read",
   "coding_agents.contracts.CodingAgentDriver.run",
   "critics.contracts.CriticDriver.run",
   "interfaces.iMissionService.submit",
@@ -58,6 +77,7 @@ outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
 authority = "Persisted mission/task state, stable author-base and dispatch intent, execution and validator observations, repository commits, immutable candidates, critic executions, findings, receipts, checkpoints, and sandbox lifecycle state remain authoritative."
 evidence = [
   "docs/guide/agent-missions.md",
+  "tests/app/test_mission_author_activities.py",
   "tests/integration/test_agent_mission_service.py",
   "tests/app/test_trajectory_service.py",
 ]

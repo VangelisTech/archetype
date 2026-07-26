@@ -18,6 +18,7 @@ from archetype.missions import (
     MISSION_COMPONENTS,
     MISSION_TRANSITIONS,
     TASK_TRANSITIONS,
+    AuthorActivityObservation,
     Candidate,
     CriticFinding,
     CriticPolicy,
@@ -46,6 +47,17 @@ def _component_instance(component: type[Component]) -> Component:
             information_view=policy.information_view,
             driver=policy.driver,
             sampling=policy.sampling,
+        )
+    if component is AuthorActivityObservation:
+        return AuthorActivityObservation(
+            activity_id="dispatch",
+            task_id=1,
+            dispatch_sequence=1,
+            result_ref="artifact://author-result",
+            result_digest="digest",
+            fact_bundle_digest="fact-bundle-digest",
+            execution_id=1,
+            redaction_policy_id="redaction-policy",
         )
     if component is Candidate:
         return Candidate(
@@ -104,6 +116,7 @@ def test_components_have_one_family_owned_schema_identity() -> None:
         "TaskValidator",
         "Sandbox",
         "AgentExecution",
+        "AuthorActivityObservation",
         "ValidationResult",
         "Commit",
         "Candidate",
