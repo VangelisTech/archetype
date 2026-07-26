@@ -114,6 +114,19 @@ class TaskCriticPolicy(Component):
         return self
 
 
+class TaskCriticSubjectPolicy(Component):
+    """Versioned exact-subject byte budget kept outside the legacy policy schema."""
+
+    max_subject_bytes: int = 4 << 20
+
+    @field_validator("max_subject_bytes")
+    @classmethod
+    def _positive_subject_bound(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("critic max_subject_bytes must be positive")
+        return value
+
+
 class TaskState(Component):
     """Processor-owned task decision state."""
 
@@ -451,6 +464,102 @@ class CriticReceipt(Component):
         return CriticConclusion(value).value
 
 
+class CompleteCriticActivityObservation(Component):
+    """Complete result-bound fact bundle for one durable critic Activity."""
+
+    schema_version: int = 1
+    activity_id: str = ""
+    candidate_entity_id: int = 0
+    domain_review_attempt: int = 0
+    result_ref: str = ""
+    result_digest: str = ""
+    fact_bundle_digest: str = ""
+    execution_id: int = 0
+    sandbox_entity_id: int = 0
+    finding_count: int = 0
+    receipt_entity_id: int = 0
+    receipt_count: int = 0
+    relation_count: int = 0
+    author_sandbox_id: str = ""
+    critic_sandbox_id: str = ""
+    subject_content_digest: str = ""
+    subject_metadata_digest: str = ""
+    subject_digest: str = ""
+    subject_content_size_bytes: int = 0
+    subject_metadata_size_bytes: int = 0
+    subject_size_bytes: int = 0
+    subject_media_type: str = ""
+    subject_transport: str = ""
+    subject_ref: str = ""
+    redaction_policy_id: str = ""
+
+    @model_validator(mode="after")
+    def _valid_observation(self) -> CompleteCriticActivityObservation:
+        required = (
+            self.activity_id,
+            self.result_ref,
+            self.result_digest,
+            self.fact_bundle_digest,
+            self.author_sandbox_id,
+            self.critic_sandbox_id,
+            self.redaction_policy_id,
+        )
+        if any(not value.strip() for value in required):
+            raise ValueError("complete critic Activity observation identity cannot be empty")
+        if self.schema_version != 1:
+            raise ValueError("complete critic Activity observation requires schema version 1")
+        if (
+            min(
+                self.candidate_entity_id,
+                self.domain_review_attempt,
+                self.execution_id,
+                self.sandbox_entity_id,
+            )
+            < 1
+        ):
+            raise ValueError("complete critic Activity observation identities must be positive")
+        if self.critic_sandbox_id == self.author_sandbox_id:
+            raise ValueError("complete critic Activity observation reused the author sandbox")
+        if min(self.finding_count, self.relation_count) < 0:
+            raise ValueError("complete critic Activity observation counts cannot be negative")
+        if self.relation_count < 2:
+            raise ValueError("complete critic Activity observation requires provenance")
+        if self.receipt_count not in {0, 1}:
+            raise ValueError("complete critic Activity receipt count must be zero or one")
+        if self.receipt_entity_id < 0:
+            raise ValueError("complete critic Activity receipt identity cannot be negative")
+        if self.receipt_count != int(self.receipt_entity_id > 0):
+            raise ValueError("complete critic Activity receipt identity is inconsistent")
+
+        subject_text = (
+            self.subject_content_digest,
+            self.subject_metadata_digest,
+            self.subject_digest,
+            self.subject_media_type,
+            self.subject_transport,
+            self.subject_ref,
+        )
+        subject_sizes = (
+            self.subject_content_size_bytes,
+            self.subject_metadata_size_bytes,
+            self.subject_size_bytes,
+        )
+        if min(subject_sizes) < 0:
+            raise ValueError("complete critic Activity subject sizes cannot be negative")
+        if self.receipt_count:
+            if any(not value.strip() for value in subject_text):
+                raise ValueError("complete critic Activity receipt requires subject identity")
+            if self.subject_transport not in {"sandbox_file", "stdin"}:
+                raise ValueError("complete critic Activity subject transport is invalid")
+            if self.subject_size_bytes != (
+                self.subject_content_size_bytes + self.subject_metadata_size_bytes
+            ):
+                raise ValueError("complete critic Activity subject size is inconsistent")
+        elif any(subject_text) or any(subject_sizes):
+            raise ValueError("receipt-free critic Activity cannot claim subject evidence")
+        return self
+
+
 class Checkpoint(Component):
     """Optional provider-native recovery point for a sandbox."""
 
@@ -511,6 +620,7 @@ TASK_COMPONENTS = (
     TaskWorkspace,
     TaskPolicy,
     TaskCriticPolicy,
+    TaskCriticSubjectPolicy,
     TaskState,
     TaskDispatch,
 )
@@ -524,6 +634,7 @@ OUTPUT_COMPONENTS = (
     CriticExecution,
     CriticFinding,
     CriticReceipt,
+    CompleteCriticActivityObservation,
     Checkpoint,
     FilesystemManifest,
     FrictionLog,

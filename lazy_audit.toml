@@ -133,10 +133,17 @@ reason = "Mutation-planning boundary for instantiation: spawning copies requires
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
-symbol = "CriticReviewOutbox.on_post_tick"
+symbol = "project_critic_activity_intents"
 expr = "author_executions.to_pylist"
 method = "to_pylist"
-reason = "Critic identity-binding boundary: persisted author execution identities and sandbox ids become scalar fields in the independent reviewer request and are later compared against the critic session before promotion."
+reason = "Durable critic-Activity admission boundary: persisted author execution identities and sandbox ids become bounded scalar fields in the exact-candidate request admitted only after the source tick commits."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "_critic_subject_bounds"
+expr = "frame.to_pylist"
+method = "to_pylist"
+reason = "Durable critic-Activity admission boundary: the task-scoped companion policy is already component-filtered and its one bounded integer becomes part of the immutable exact-subject request rather than provider process state."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
@@ -188,39 +195,60 @@ method = "to_pylist"
 reason = "Idempotent Activity-delivery boundary: the exact manifest-pinned AuthorActivityObservation frame becomes bounded marker identities so reconstruction can reject conflicting results or avoid duplicate world mutations."
 
 [[entries]]
-path = "src/archetype/missions/projections.py"
-symbol = "CriticReviewOutbox.on_post_tick"
-expr = "candidate_tasks.join(candidates, left_on='entity_id', right_on=f'{candidate}task_id').to_pylist"
+path = "src/archetype/app/missions/critic_activity_world.py"
+symbol = "WorldMissionCriticObservationStager._committed_bundle"
+expr = "materialized_markers.to_pylist"
 method = "to_pylist"
-reason = "Post-commit critic-I/O boundary: the lazy frame is restricted to tasks in CANDIDATE state and joined to their immutable candidate subjects before those bounded rows become exact-head reviewer process requests."
+reason = "Idempotent critic-Activity delivery boundary: the exact manifest-pinned completion-marker frame becomes bounded activity identities so durable-result reconstruction can reject conflicts or avoid duplicate world mutations after restart."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
-symbol = "CriticReviewOutbox.on_post_tick"
+symbol = "_critic_component_facts"
+expr = "frame.to_pylist"
+method = "to_pylist"
+reason = "Exact post-commit critic-Activity fact boundary: each already component-scoped committed frame becomes a bounded set of typed facts so entity identities, provenance edges, and the result-bound completion digest can be verified before settlement."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "project_critic_activity_intents"
+expr = "candidate_tasks.to_pylist"
+method = "to_pylist"
+reason = "Durable critic-Activity admission boundary: the frame is already restricted to committed CANDIDATE task rows, whose bounded histories must be reduced independently before matching immutable candidates; a Daft join of the two snapshot histories crashes the native runtime during the real closed-loop mission."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "project_critic_activity_intents"
+expr = "candidates.to_pylist"
+method = "to_pylist"
+reason = "Durable critic-Activity admission boundary: bounded committed candidate histories must retain their entity identities while they are reduced and matched to current task rows; provider execution occurs only after the resulting exact request is admitted."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "project_critic_activity_intents"
 expr = "critic_executions.to_pylist"
 method = "to_pylist"
-reason = "Bounded review-retry boundary: terminal CriticExecution facts are counted in Python to assign the next finite reviewer-attempt identity consumed by application-owned external I/O."
+reason = "Committed domain-budget boundary: finite CriticExecution facts are counted to assign the next semantic review attempt; generic Activity lease attempts are intentionally absent and cannot consume this budget."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
-symbol = "CriticReviewOutbox.on_post_tick"
+symbol = "project_critic_activity_intents"
 expr = "critic_receipts.to_pylist"
 method = "to_pylist"
-reason = "Review-admission boundary: persisted CriticReceipt completeness is inspected before emitting another external reviewer request so a candidate with durable review evidence is never invoked twice."
+reason = "Durable review-admission boundary: bounded committed CriticReceipt identities are compared with the exact candidate before admitting more consequential work, preventing a completed review from being invoked twice."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
-symbol = "CriticReviewOutbox.on_post_tick"
+symbol = "project_critic_activity_intents"
 expr = "validation_results.to_pylist"
 method = "to_pylist"
-reason = "Critic validator-evidence boundary: exact-revision ValidationResult observations become concrete immutable values sent to the external critic process after candidate state has committed."
+reason = "Durable critic-Activity admission boundary: exact-revision ValidationResult observations become bounded immutable evidence in the request value after candidate state has committed."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
-symbol = "CriticReviewOutbox.on_post_tick"
+symbol = "project_critic_activity_intents"
 expr = "validators.to_pylist"
 method = "to_pylist"
-reason = "Critic validator-evidence boundary: finite TaskValidator definitions become concrete command tuples embedded in the exact-head reviewer request; the external critic driver cannot consume a lazy frame."
+reason = "Durable critic-Activity admission boundary: finite TaskValidator definitions become concrete command tuples in the immutable request; the generic catalog and external provider cannot consume a lazy DataFrame."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"

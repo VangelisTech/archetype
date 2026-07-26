@@ -2,10 +2,11 @@
 
 **Document type:** Normative accepted-target contract.
 
-**Status:** The boundary and migration order are ratified. The generic catalog
-and canonical hosted Physical-AI data contract exist; Mission cutover and
-hosted Activity execution remain migration slices. Each implementation slice
-must land its executable oracle with the behavior it enables.
+**Status:** The boundary and migration order are ratified. The generic local
+catalog, canonical hosted Physical-AI data contract, and opt-in Mission
+author/critic integrations are implemented. Hosted Physical-AI execution and
+final topology consolidation remain separate slices. Each implementation
+slice must land its executable oracle with the behavior it enables.
 
 **Scope:** Durable work admitted after one committed tick and observed by a
 later committed tick. This specification refines the required-projector rule
@@ -327,6 +328,43 @@ the error escapes, so processors cannot consume a prefix on a later tick. A
 handler that already ran may have an advisory process-local side effect and
 cannot be undone; therefore `OnSpawn` hooks must not own Mission correctness.
 Durable atomic visibility remains the ordinary manifest-last tick commit.
+
+### Mission critic Activity
+
+The critic consumer uses
+`(world_id, kind="missions.critic", activity_id=review_id)`.
+`review_id` binds the exact candidate, critic-policy digest, and Mission domain
+review attempt. Generic claim attempts and fences are delivery mechanics and
+do not consume that domain budget. Only a `CriticExecution` visible in a later
+committed tick advances the next domain review attempt.
+
+The admitted request contains exact base/head, diff and validator-bundle
+digests, policy, validation evidence, author sandbox identity, and a bounded
+subject policy. It contains no diff bytes and no provider subject path. The
+provider recomputes the exact binary diff, places it in a provider-owned file
+or stdin, verifies its digest and total byte budget, and removes temporary
+subject storage on every unwind path. Provider operation identity is stable
+across generic retries. A replacement worker retrieves the exact published
+result, proves guarded absence before a safe retry, or remains unknown and
+fails closed.
+
+One critic result is staged as an all-or-none mixed-signature batch:
+
+- one fresh critic `Sandbox` distinct from the author sandbox;
+- one `CriticExecution`, with exact `Reviews` and `RunsIn` relations;
+- every `CriticFinding` and its `ProducedBy` relation;
+- an optional existing-v1 `CriticReceipt` and its `ProducedBy` relation; and
+- one `CompleteCriticActivityObservation` staged last.
+
+The separately named completion marker preserves the existing
+`TaskCriticPolicy` and `CriticReceipt` table identities. It binds the durable
+result reference/digest, every result-derived fact and relation identity, the
+author/critic sandbox separation, and the complete exact-subject binding when
+a receipt exists. A marker with missing or conflicting facts cannot settle.
+After restart, an exact committed bundle makes result redelivery a no-op; the
+projector settles only against the exact receipt of the tick that committed
+that bundle. Processors alone decide acceptance, repair, failure, or another
+review.
 
 ## 7. Resource-spike disposition
 
