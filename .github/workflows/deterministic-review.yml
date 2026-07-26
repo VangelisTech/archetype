@@ -134,8 +134,8 @@ jobs:
         # key must exist as a repository secret).
         include:
           - lens: daft-shape
-            backend: opencode
-            model: kimi-for-coding/k3
+            backend: claude-code
+            model: ""
           - lens: state-lifecycle
             backend: claude-code
             model: ""
@@ -146,8 +146,8 @@ jobs:
             backend: claude-code
             model: ""
           - lens: observability
-            backend: opencode
-            model: kimi-for-coding/k3
+            backend: claude-code
+            model: ""
     permissions:
       contents: read
       pull-requests: read # Supply PR metadata to the read-only detector.
