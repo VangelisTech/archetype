@@ -40,8 +40,11 @@ from archetype.missions.modal_author import (
 )
 from archetype.missions.sandboxes import (
     MODAL_ACTIVITY_PROTOCOL_EPOCH,
+    CheckpointRef,
     ModalProviderStartBarrier,
     ModalSandboxOperationIdentity,
+    SandboxEvent,
+    SandboxEventType,
     SandboxIdentity,
     SandboxStatus,
 )
@@ -234,6 +237,8 @@ class _Session:
         self,
         identity: ModalSandboxOperationIdentity,
         sequence: int,
+        *,
+        checkpoints: bool = False,
     ) -> None:
         self.operation_identity = identity
         self.identity = SandboxIdentity(
@@ -242,6 +247,8 @@ class _Session:
             "modal-agent://sha256:test",
         )
         self.closed = 0
+        self.capabilities = SimpleNamespace(checkpoints=checkpoints)
+        self.checkpoint_calls = 0
 
     async def status(self) -> SandboxStatus:
         return SandboxStatus.READY
@@ -249,12 +256,24 @@ class _Session:
     async def close(self) -> None:
         self.closed += 1
 
+    async def checkpoint(self) -> CheckpointRef:
+        self.checkpoint_calls += 1
+        return CheckpointRef(
+            provider="modal",
+            checkpoint_id="im-checkpoint",
+            uri="modal-image://im-checkpoint",
+            created_at_ms=1,
+            environment=self.identity.environment,
+            source_sandbox_id=self.identity.sandbox_id,
+        )
+
 
 class _Capability:
-    def __init__(self, registry: _ModalRegistry) -> None:
+    def __init__(self, registry: _ModalRegistry, *, checkpoints: bool = False) -> None:
         self.registry = registry
         self.starts = 0
         self.sessions: list[_Session] = []
+        self.checkpoints = checkpoints
 
     def identity(self, operation_id: str) -> ModalSandboxOperationIdentity:
         return ModalSandboxOperationIdentity(
@@ -277,7 +296,7 @@ class _Capability:
     ) -> _Session:
         self._validate_spec(spec)
         self.starts += 1
-        session = _Session(identity, self.starts)
+        session = _Session(identity, self.starts, checkpoints=self.checkpoints)
         self.sessions.append(session)
         return session
 
@@ -394,6 +413,7 @@ def _executor(
     *,
     capability: _Capability | None = None,
     harness: _Harness | None = None,
+    observer: Any = None,
 ) -> tuple[ModalMissionAuthorExecutor, _Capability, _Harness]:
     selected_capability = capability or _Capability(registry)
     selected_harness = harness or _Harness()
@@ -411,6 +431,7 @@ def _executor(
         config=ModalMissionAuthorExecutorConfig(
             sandbox_environment="modal-agent://sha256:test",
         ),
+        observer=observer,
     )
     return executor, selected_capability, selected_harness
 
@@ -461,6 +482,39 @@ async def test_initial_start_publishes_only_redacted_bounded_first_result(
     result_ref = await values.put_result(observation)
     durable = await values.get_result(result_ref)
     assert durable.result == observation.result
+
+
+@pytest.mark.asyncio
+async def test_modal_author_preserves_checkpoint_and_forwards_live_events(
+    fake_modal: _ModalRegistry,
+) -> None:
+    events: list[SandboxEvent] = []
+    capability = _Capability(fake_modal, checkpoints=True)
+    executor, _, _ = _executor(
+        fake_modal,
+        capability=capability,
+        observer=events.append,
+    )
+
+    observation = await executor.execute(
+        operation_id="missions.author:world-a:dispatch-checkpoint",
+        request=_request("dispatch-checkpoint"),
+        attempt=1,
+        fence=1,
+        retry_guard=None,
+    )
+
+    assert observation.checkpoint is not None
+    assert observation.checkpoint.checkpoint_id == "im-checkpoint"
+    assert capability.sessions[0].checkpoint_calls == 1
+    assert [event.kind for event in events] == [
+        SandboxEventType.READY,
+        SandboxEventType.PROCESS_STARTED,
+        SandboxEventType.PROCESS_FINISHED,
+        SandboxEventType.CHECKPOINT_STARTED,
+        SandboxEventType.CHECKPOINT_FINISHED,
+    ]
+    assert events[-1].checkpoint_uri == observation.checkpoint.uri
 
 
 @pytest.mark.asyncio

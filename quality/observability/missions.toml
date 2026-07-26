@@ -57,6 +57,7 @@ operations = [
   "service.MissionAuthorActivityRuntime.aclose",
   "service.MissionAuthorActivityRuntime.worker",
   "service.MissionAuthorActivityWorker.run_once",
+  "service.MissionAuthorActivityWorker.run_until_idle",
   "service.MissionRedactor.assert_safe_metadata",
   "service.MissionRedactor.policy_id",
   "service.MissionRedactor.redact_text",

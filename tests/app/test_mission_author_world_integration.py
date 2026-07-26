@@ -14,6 +14,7 @@ from typing import Any, cast
 import pytest
 from pydantic import create_model
 
+import archetype.wiring as wiring
 from archetype.app.missions.activity_world import (
     MissionAuthorActivityBinding,
     StorageMissionCommittedIntentReader,
@@ -574,3 +575,30 @@ async def test_complete_author_observation_survives_restart_without_duplicates(
             )
     finally:
         await recovered_storage.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cold_activity_router_fails_closed_until_family_binding_returns() -> None:
+    async def durable_unsettled(world_id: str) -> bool:
+        assert world_id == "cold-world"
+        return True
+
+    router = wiring._UnsettledWorldRouter(durable_unsettled)  # noqa: SLF001
+    projector = router.required_projector_for("cold-world")
+
+    with pytest.raises(RuntimeError, match="no executable binding"):
+        await projector.project(object())  # type: ignore[arg-type]
+
+    delegated: list[object] = []
+
+    async def project(receipt: object) -> None:
+        delegated.append(receipt)
+
+    binding = SimpleNamespace(
+        required_projector=SimpleNamespace(project=project),
+        has_unsettled_work=durable_unsettled,
+    )
+    await router.bind("cold-world", binding)
+    receipt = object()
+    await projector.project(receipt)  # type: ignore[arg-type]
+    assert delegated == [receipt]

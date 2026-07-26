@@ -10,7 +10,8 @@ import base64
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -33,10 +34,16 @@ from archetype.missions.activity_values import (
 )
 from archetype.missions.coding_agents.contracts import (
     AgentExecutionResult,
+    FrictionObservation,
     TaskDispatchRequest,
 )
 from archetype.missions.coding_agents.harness import CodingAgentHarness
-from archetype.missions.sandboxes.contracts import SandboxSpec
+from archetype.missions.sandboxes.contracts import (
+    SandboxEvent,
+    SandboxEventObserver,
+    SandboxEventType,
+    SandboxSpec,
+)
 from archetype.missions.sandboxes.modal import (
     MODAL_ACTIVITY_PROTOCOL_EPOCH,
     ModalSandboxOperationCapability,
@@ -70,6 +77,7 @@ class ModalMissionAuthorExecutorConfig:
     idle_timeout_seconds: int = 20 * 60
     result_dict_name: str = ""
     max_result_bytes: int = AUTHOR_RESULT_MAX_BYTES
+    checkpoint_after_dispatch: bool = True
 
     def __post_init__(self) -> None:
         if not self.sandbox_environment.strip():
@@ -426,6 +434,7 @@ class ModalMissionAuthorExecutor:
         harness: CodingAgentHarness,
         redactor: AuthorValueRedactor,
         config: ModalMissionAuthorExecutorConfig,
+        observer: SandboxEventObserver | None = None,
     ) -> None:
         if barrier.protocol_epoch != MODAL_ACTIVITY_PROTOCOL_EPOCH:
             raise ValueError("Modal author executor requires the barrier-aware epoch")
@@ -439,6 +448,7 @@ class ModalMissionAuthorExecutor:
         self._barrier = barrier
         self._harness = harness
         self._config = config
+        self._observer = observer
         self._codec = MissionAuthorValueCodec(
             redactor=redactor,
             max_result_bytes=(config.max_result_bytes - _PROVIDER_ENVELOPE_OVERHEAD_BYTES),
@@ -517,13 +527,62 @@ class ModalMissionAuthorExecutor:
 
         session = outcome.session
         try:
-            result = await self._harness.execute(session, sanitized_request)
+            self._emit(SandboxEventType.READY, session.identity)
+            self._emit(
+                SandboxEventType.PROCESS_STARTED,
+                session.identity,
+                operation="coding-agent",
+            )
+            try:
+                result = await self._harness.execute(session, sanitized_request)
+            except BaseException:
+                self._emit(
+                    SandboxEventType.PROCESS_FINISHED,
+                    session.identity,
+                    operation="coding-agent",
+                )
+                raise
+            self._emit(
+                SandboxEventType.PROCESS_FINISHED,
+                session.identity,
+                operation="coding-agent",
+                returncode=result.agent_returncode,
+            )
             self._validate_result(sanitized_request, result)
             if result.sandbox != session.identity:
                 raise ValueError("Modal author result belongs to another sandbox")
+            checkpoint = None
+            capabilities = getattr(session, "capabilities", None)
+            if self._config.checkpoint_after_dispatch and bool(
+                getattr(capabilities, "checkpoints", False)
+            ):
+                self._emit(SandboxEventType.CHECKPOINT_STARTED, session.identity)
+                try:
+                    checkpoint = await session.checkpoint()
+                except Exception as exc:
+                    message = f"{type(exc).__name__}: checkpoint failed"
+                    self._emit(
+                        SandboxEventType.CHECKPOINT_FAILED,
+                        session.identity,
+                        message=message,
+                    )
+                    result = replace(
+                        result,
+                        friction=(
+                            *result.friction,
+                            FrictionObservation(kind="checkpoint", message=message),
+                        ),
+                    )
+                else:
+                    self._emit(
+                        SandboxEventType.CHECKPOINT_FINISHED,
+                        session.identity,
+                        checkpoint_uri=checkpoint.uri,
+                    )
             observation = AuthorExecutionObservation(
                 result=result,
                 sandbox_status=await session.status(),
+                checkpoint=checkpoint,
             )
             durable = self._codec.sanitize_observation(observation)
             stored = await self._results.put_first(
@@ -535,6 +594,34 @@ class ModalMissionAuthorExecutor:
             return self._codec.execution_observation(stored)
         finally:
             await session.close()
+
+    def _emit(
+        self,
+        kind: SandboxEventType,
+        identity: Any,
+        *,
+        operation: str = "",
+        returncode: int | None = None,
+        checkpoint_uri: str = "",
+        message: str = "",
+    ) -> None:
+        observer = self._observer
+        if observer is None:
+            return
+        try:
+            observer(
+                SandboxEvent(
+                    kind=kind,
+                    sandbox=identity,
+                    timestamp_ms=int(time.time() * 1000),
+                    operation=operation,
+                    returncode=returncode,
+                    checkpoint_uri=checkpoint_uri,
+                    message=message,
+                )
+            )
+        except Exception:
+            return
 
     async def reconcile(
         self,

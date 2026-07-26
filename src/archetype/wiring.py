@@ -268,6 +268,7 @@ class _UnsettledWorldRouter:
     ) -> None:
         self._fallback = fallback
         self._bindings: dict[str, object] = {}
+        self._projectors: dict[str, simulation.RequiredProjector] = {}
         self._lock = asyncio.Lock()
 
     async def bind(self, world_id: str, binding: object) -> None:
@@ -294,6 +295,37 @@ class _UnsettledWorldRouter:
         if not callable(oracle):
             raise TypeError("Activity binding must expose has_unsettled_work")
         return bool(await oracle(world_id))
+
+    def required_projector_for(self, world_id: str) -> simulation.RequiredProjector:
+        """Return one stable delegate that fails closed until a family rebinds."""
+
+        key = str(world_id)
+        retained = self._projectors.get(key)
+        if retained is not None:
+            return retained
+
+        async def project(receipt: Any) -> None:
+            async with self._lock:
+                binding = self._bindings.get(key)
+            if binding is None:
+                fallback = self._fallback
+                if fallback is not None and await fallback(key):
+                    raise RuntimeError(
+                        f"world {key!r} has durable Activity work but no executable binding"
+                    )
+                return
+            required = getattr(binding, "required_projector", None)
+            callback = getattr(required, "project", None)
+            if not callable(callback):
+                raise TypeError("Activity binding must expose a required projector")
+            await callback(receipt)
+
+        projector = simulation.RequiredProjector(
+            consumer_name="missions.author-activities",
+            project=project,
+        )
+        self._projectors[key] = projector
+        return projector
 
 
 @dataclass(frozen=True, slots=True)
@@ -1195,7 +1227,9 @@ async def _handle_submit_mission(
                     config=ModalMissionAuthorExecutorConfig(
                         sandbox_environment=operation.config.sandbox_environment,
                         workspace=operation.config.workspace,
+                        checkpoint_after_dispatch=operation.config.checkpoint_after_dispatch,
                     ),
+                    observer=operation.config.on_sandbox_event,
                 )
 
                 async def bind_author_activity(
@@ -1240,10 +1274,12 @@ async def _handle_submit_mission(
                     )
                     await unsettled_worlds.bind(world_id, binding)
                     try:
-                        await worlds.bind_required_projector(
-                            world_id,
-                            binding.required_projector,
-                        )
+                        routed = unsettled_worlds.required_projector_for(world_id)
+                        if worlds.required_projector(world_id) is not routed:
+                            await worlds.bind_required_projector(
+                                world_id,
+                                binding.required_projector,
+                            )
                     except BaseException:
                         await unsettled_worlds.unbind(world_id, binding)
                         await physical.close()
@@ -1595,7 +1631,27 @@ def build_runtime_resources(config: RuntimeBootstrapConfig) -> RuntimeResources:
     redaction = config.redaction_service or RedactionService()
     worlds = config.world_registry or WorldRegistry()
     registry = OperationRegistry()
-    unsettled_worlds = _UnsettledWorldRouter(config.unsettled_world_oracle)
+
+    async def durable_activity_unsettled(world_id: str) -> bool:
+        configured = config.unsettled_world_oracle
+        if configured is not None and await configured(world_id):
+            return True
+        record = await worlds.storage_record(world_id)
+        if record is None:
+            return False
+        catalog_path = activity_catalog_path_for(
+            record[0],
+            config.control_catalog_config,
+        )
+        if not catalog_path.exists():
+            return False
+        physical = SqliteActivityCatalog(catalog_path)
+        try:
+            return await ActivityCoordinator(physical).has_unsettled(world_id)
+        finally:
+            await physical.close()
+
+    unsettled_worlds = _UnsettledWorldRouter(durable_activity_unsettled)
 
     async def resolve_control_catalog(world_id: str) -> Any:
         record = await worlds.storage_record(str(world_id))
@@ -1622,11 +1678,18 @@ def build_runtime_resources(config: RuntimeBootstrapConfig) -> RuntimeResources:
         catalog_for_world=resolve_control_catalog,
         reserve_entity_ids=reserve_entity_ids,
     )
+
+    def required_projector_for(world_id: str) -> Any | None:
+        configured = config.required_projector_factory
+        if configured is not None:
+            return configured(world_id)
+        return unsettled_worlds.required_projector_for(world_id)
+
     lifecycle = WorldLifecycle(
         storage,
         worlds,
         materialize_commands=scheduler.materialize,
-        required_projector_factory=config.required_projector_factory,
+        required_projector_factory=required_projector_for,
         unsettled_world_oracle=unsettled_worlds.has_unsettled,
     )
     audit = AuditLog(

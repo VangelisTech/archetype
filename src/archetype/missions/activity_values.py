@@ -21,6 +21,7 @@ from archetype.missions.coding_agents.contracts import (
     TaskDispatchRequest,
     ValidationObservation,
 )
+from archetype.missions.sandboxes import CheckpointRef
 
 AUTHOR_RESULT_MAX_BYTES = 512 * 1024
 _RESULT_KIND = "result"
@@ -211,11 +212,45 @@ class MissionAuthorValueCodec:
             friction=friction,
             error=self._redact(result.error, 4_000, f"{scope}:error"),
         )
+        checkpoint = observation.checkpoint
+        durable_checkpoint = (
+            CheckpointRef(
+                provider=self._safe(checkpoint.provider, "author.checkpoint.provider"),
+                checkpoint_id=self._safe(
+                    checkpoint.checkpoint_id,
+                    "author.checkpoint.checkpoint_id",
+                ),
+                uri=self._safe(checkpoint.uri, "author.checkpoint.uri"),
+                created_at_ms=checkpoint.created_at_ms,
+                environment=self._safe(
+                    checkpoint.environment,
+                    "author.checkpoint.environment",
+                ),
+                source_sandbox_id=self._safe(
+                    checkpoint.source_sandbox_id,
+                    "author.checkpoint.source_sandbox_id",
+                ),
+                owner_id=self._safe(
+                    checkpoint.owner_id,
+                    "author.checkpoint.owner_id",
+                ),
+                locality=checkpoint.locality,
+                expires_at_ms=checkpoint.expires_at_ms,
+                integrity=self._safe(
+                    checkpoint.integrity,
+                    "author.checkpoint.integrity",
+                ),
+                restorable=checkpoint.restorable,
+            )
+            if checkpoint is not None
+            else None
+        )
         durable = DurableAuthorExecutionObservation(
             result=sanitized,
             sandbox_status=observation.sandbox_status,
             redaction_policy_id=self._redactor.policy_id,
             bind_mission=observation.bind_mission,
+            checkpoint=durable_checkpoint,
         )
         self.encode_observation(durable)
         return durable
@@ -278,6 +313,7 @@ class MissionAuthorValueCodec:
             result=durable.result,
             sandbox_status=durable.sandbox_status,
             bind_mission=durable.bind_mission,
+            checkpoint=durable.checkpoint,
         )
 
     def _redact(self, value: str, limit: int, scope: str) -> str:

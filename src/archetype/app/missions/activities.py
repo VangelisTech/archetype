@@ -383,12 +383,23 @@ class MissionAuthorActivityWorker:
         """Make bounded progress without ever replaying provider-bound work."""
 
         progressed = await self._deliver_pending_results()
+        return await self._run_claim_once() or progressed
+
+    async def run_until_idle(self) -> bool:
+        """Drain every currently claimable author operation outside the tick lock."""
+
+        progressed = await self._deliver_pending_results()
+        while await self._run_claim_once():
+            progressed = True
+        return progressed
+
+    async def _run_claim_once(self) -> bool:
         claim = await self._catalog.claim_author(
             world_id=self._world_id,
             owner=self._owner,
         )
         if claim is None:
-            return progressed
+            return False
         if claim.world_id != self._world_id:
             raise ValueError("author activity catalog returned another world's claim")
 

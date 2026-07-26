@@ -220,6 +220,8 @@ class MissionCleanup(Protocol):
 class MissionAuthorActivityWorker(Protocol):
     async def run_once(self) -> bool: ...
 
+    async def run_until_idle(self) -> bool: ...
+
 
 class MissionAuthorActivityRuntime(Protocol):
     world_id: str
@@ -483,6 +485,7 @@ class MissionService:
         limit = max_ticks if max_ticks is not None else self._max_ticks
         if limit < 1:
             raise ValueError("max_ticks must be positive")
+        await self._ensure_author_activity()
 
         pending_checkpoints: list[tuple[int, _CheckpointCandidate]] = []
         checkpoint_commit_pending = False
@@ -507,7 +510,7 @@ class MissionService:
             for request in requests:
                 self._start_critic_prewarm(request)
             if self._author_activity is not None:
-                await self._author_activity.worker.run_once()
+                await self._author_activity.worker.run_until_idle()
             else:
                 for envelope in await self._execute(requests):
                     execution_id = await self._stage_result(
