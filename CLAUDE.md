@@ -12,8 +12,8 @@ For the three Python rulebooks, `paths` frontmatter additionally limits that
 model invocation to Python under `src/`, `tests/`, or `examples/`; it is an
 eligibility fence, not a path-only trigger or a guarantee of invocation.
 Before editing those files, load the relevant skill — the deterministic
-footgun gate in CI reviews every PR against the same rules, so skipping them
-locally just moves the failure to review.
+footgun gate in CI reviews every maintainer PR against the same rules, so
+skipping them locally just moves the failure to review.
 
 ## Skills index
 
@@ -23,7 +23,7 @@ locally just moves the failure to review.
 | `daft-antipatterns` | `/daft-antipatterns` | Diff review for wrong-shape Daft (UDF theater, premature materialization, multimodal/lakehouse/PAI antipatterns) — complementary to footgun |
 | `archetype-components` | `/archetype-components`, or model-invoked for Component/schema code within its configured paths | Component definitions, Arrow serialization, field conventions |
 | `archetype-processors` | `/archetype-processors`, or model-invoked for processor/pipeline code within its configured paths | AsyncProcessor patterns, priority ordering, resource access |
-| `footgun-detector` | `/footgun-detector` | Scans the current diff for archetype-specific runtime bugs across three perspectives: actor (code), observed (data), observer (review) |
+| `footgun-detector` | `/footgun-detector`; CI runs the same rulebook on each maintainer-authored PR head as a five-lens matrix (authority, contracts, state-lifecycle, observability, daft-shape); other authors fail closed, unreviewed | Archetype-specific runtime bugs in the current diff, graded `blocking` (fails the gate) or `advisory` (resolvable review thread) |
 
 ## Agents
 
@@ -71,8 +71,12 @@ workflow arms auto-merge only once your head is queue-ready: the latest
 review thread is resolved. Arming earlier does not merge sooner, it only
 lets the PR enter the merge queue before its review verdict (premature
 arms are auto-reverted). Reply to footgun review threads with what you
-changed, then resolve them — then re-run **Deterministic Review Gate**,
-because GitHub Actions cannot observe thread resolution and nothing
-re-evaluates arming on its own. A review submitted on an armed PR that is
-no longer queue-ready disarms it, best-effort. Full mechanism in
-`AGENTS.md`.
+changed, then resolve them. GitHub Actions cannot observe thread
+resolution, so after resolving the last thread submit a PR review —
+`gh pr review <n> --comment --body "Queue-readiness re-evaluation on
+exact head <sha>"` — the only signal that re-evaluates arming without
+re-reviewing the head. Do NOT re-run **Deterministic Review Gate** for
+this: the head already passed, and a re-run republishes its advisory
+findings as fresh unresolved threads, undoing the resolutions. A review
+submitted on an armed PR that is no longer queue-ready disarms it,
+best-effort. Full mechanism in `AGENTS.md`.
