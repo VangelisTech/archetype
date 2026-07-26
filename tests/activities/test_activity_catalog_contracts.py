@@ -6,7 +6,12 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import threading
+from dataclasses import dataclass
+from pathlib import Path
+from types import TracebackType
+from typing import cast
 
 import pytest
 
@@ -35,6 +40,77 @@ pytestmark = [
 
 _KIND = "missions.author"
 _OPERATION_ID = "missions.author:world-a:dispatch-1"
+
+
+@dataclass(slots=True)
+class _ManualClock:
+    value: float = 1_000_000.0
+
+    def __call__(self) -> float:
+        return self.value
+
+    def advance(self, seconds: float) -> None:
+        self.value += seconds
+
+
+class _BeginAdvancingConnection:
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        clock: _ManualClock,
+        advance_seconds: float,
+    ) -> None:
+        self._connection = connection
+        self._clock = clock
+        self._advance_seconds = advance_seconds
+
+    def execute(
+        self,
+        statement: str,
+        parameters: tuple[object, ...] = (),
+    ) -> sqlite3.Cursor:
+        cursor = self._connection.execute(statement, parameters)
+        if statement == "BEGIN IMMEDIATE":
+            self._clock.advance(self._advance_seconds)
+        return cursor
+
+    def __enter__(self) -> _BeginAdvancingConnection:
+        self._connection.__enter__()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool:
+        return self._connection.__exit__(exc_type, exc_value, traceback)
+
+
+class _BeginAdvancingCatalog(SqliteActivityCatalog):
+    def __init__(self, path: Path, *, clock: _ManualClock) -> None:
+        super().__init__(path, now_seconds=clock)
+        self._clock = clock
+        self._advance_after_begin: float | None = None
+
+    def advance_clock_after_next_begin(self, seconds: float) -> None:
+        assert self._advance_after_begin is None
+        self._advance_after_begin = seconds
+
+    def _connect_sync(self) -> sqlite3.Connection:
+        connection = super()._connect_sync()
+        advance_seconds = self._advance_after_begin
+        if advance_seconds is None:
+            return connection
+        self._advance_after_begin = None
+        return cast(
+            sqlite3.Connection,
+            _BeginAdvancingConnection(
+                connection,
+                self._clock,
+                advance_seconds,
+            ),
+        )
 
 
 def _receipt(
@@ -332,10 +408,46 @@ async def test_released_pre_provider_claim_is_safely_fenced_and_reclaimable(
         await catalog.close()
 
 
+async def test_claim_rechecks_expiry_after_write_lock(tmp_path) -> None:
+    clock = _ManualClock()
+    catalog = _BeginAdvancingCatalog(
+        tmp_path / "activities.db",
+        clock=clock,
+    )
+    coordinator = ActivityCoordinator(catalog)
+    try:
+        await coordinator.admit(_admission())
+        initial = await coordinator.claim(
+            "world-a",
+            _KIND,
+            "dispatch-1",
+            "owner-a",
+            lease_seconds=10,
+        )
+        assert initial.lease_expires_at == clock.value + 10
+
+        catalog.advance_clock_after_next_begin(10)
+        replacement = await coordinator.claim(
+            "world-a",
+            _KIND,
+            "dispatch-1",
+            "owner-b",
+            lease_seconds=30,
+        )
+
+        assert replacement.acquired
+        assert replacement.attempt == replacement.fence == 2
+        assert replacement.lease_expires_at == clock.value + 30
+        assert not replacement.reconciliation_required
+    finally:
+        await catalog.close()
+
+
 async def test_expired_provider_bound_attempt_becomes_reconcile_only(tmp_path) -> None:
     path = tmp_path / "activities.db"
-    first_catalog = SqliteActivityCatalog(path)
-    second_catalog = SqliteActivityCatalog(path)
+    clock = _ManualClock()
+    first_catalog = SqliteActivityCatalog(path, now_seconds=clock)
+    second_catalog = SqliteActivityCatalog(path, now_seconds=clock)
     first = ActivityCoordinator(first_catalog)
     second = ActivityCoordinator(second_catalog)
     try:
@@ -345,7 +457,7 @@ async def test_expired_provider_bound_attempt_becomes_reconcile_only(tmp_path) -
             _KIND,
             "dispatch-1",
             "owner-a",
-            lease_seconds=0.01,
+            lease_seconds=10,
         )
         bound = await first.bind_provider_operation(
             initial,
@@ -364,7 +476,7 @@ async def test_expired_provider_bound_attempt_becomes_reconcile_only(tmp_path) -
         assert same_owner_after_restart.attempt == bound.attempt
         assert same_owner_after_restart.fence == bound.fence
         assert same_owner_after_restart.provider_operation_id == _OPERATION_ID
-        await asyncio.sleep(0.02)
+        clock.advance(10)
 
         recovery = await second.claim(
             "world-a",
@@ -400,9 +512,12 @@ async def test_expired_provider_bound_attempt_becomes_reconcile_only(tmp_path) -
         await first_catalog.close()
 
 
-async def test_confirmed_provider_absence_mints_fresh_execution_fence(tmp_path) -> None:
-    path = tmp_path / "activities.db"
-    catalog = SqliteActivityCatalog(path)
+async def test_absence_confirmation_rechecks_expiry_after_write_lock(tmp_path) -> None:
+    clock = _ManualClock()
+    catalog = _BeginAdvancingCatalog(
+        tmp_path / "activities.db",
+        clock=clock,
+    )
     coordinator = ActivityCoordinator(catalog)
     try:
         await coordinator.admit(_admission())
@@ -411,24 +526,140 @@ async def test_confirmed_provider_absence_mints_fresh_execution_fence(tmp_path) 
             _KIND,
             "dispatch-1",
             "owner-a",
-            lease_seconds=0.01,
+            lease_seconds=10,
+        )
+        await coordinator.bind_provider_operation(
+            initial,
+            "git",
+            _OPERATION_ID,
+        )
+        clock.advance(10)
+        recovery = await coordinator.claim(
+            "world-a",
+            _KIND,
+            "dispatch-1",
+            "owner-b",
+            lease_seconds=10,
+        )
+        assert recovery.reconciliation_required
+        assert recovery.lease_expires_at is not None
+
+        catalog.advance_clock_after_next_begin(10)
+        with pytest.raises(ActivityClaimError, match="lease expired"):
+            await coordinator.confirm_provider_operation_absent(
+                recovery,
+                _guard(),
+            )
+
+        assert clock.value == recovery.lease_expires_at
+        replacement = await coordinator.claim(
+            "world-a",
+            _KIND,
+            "dispatch-1",
+            "owner-c",
+            lease_seconds=30,
+        )
+        assert replacement.acquired
+        assert replacement.attempt == replacement.fence == 3
+        assert replacement.reconciliation_required
+        assert replacement.reconciles_attempt == 1
+    finally:
+        await catalog.close()
+
+
+async def test_absence_exact_retry_does_not_renew_after_write_lock_expiry(
+    tmp_path,
+) -> None:
+    clock = _ManualClock()
+    catalog = _BeginAdvancingCatalog(
+        tmp_path / "activities.db",
+        clock=clock,
+    )
+    coordinator = ActivityCoordinator(catalog)
+    try:
+        await coordinator.admit(_admission())
+        initial = await coordinator.claim(
+            "world-a",
+            _KIND,
+            "dispatch-1",
+            "owner-a",
+            lease_seconds=10,
+        )
+        await coordinator.bind_provider_operation(
+            initial,
+            "git",
+            _OPERATION_ID,
+        )
+        clock.advance(10)
+        recovery = await coordinator.claim(
+            "world-a",
+            _KIND,
+            "dispatch-1",
+            "owner-b",
+            lease_seconds=10,
+        )
+        authorized = await coordinator.confirm_provider_operation_absent(
+            recovery,
+            _guard(),
+            lease_seconds=10,
+        )
+        assert authorized.lease_expires_at == clock.value + 10
+
+        catalog.advance_clock_after_next_begin(10)
+        with pytest.raises(ActivityClaimError, match="stale"):
+            await coordinator.confirm_provider_operation_absent(
+                recovery,
+                _guard(),
+                lease_seconds=30,
+            )
+
+        assert clock.value == authorized.lease_expires_at
+        replacement = await coordinator.claim(
+            "world-a",
+            _KIND,
+            "dispatch-1",
+            "owner-c",
+            lease_seconds=30,
+        )
+        assert replacement.acquired
+        assert replacement.attempt == replacement.fence == 4
+        assert replacement.lease_expires_at == clock.value + 30
+        assert not replacement.reconciliation_required
+        assert replacement.retry_guard == _guard()
+    finally:
+        await catalog.close()
+
+
+async def test_confirmed_provider_absence_mints_fresh_execution_fence(tmp_path) -> None:
+    path = tmp_path / "activities.db"
+    clock = _ManualClock()
+    catalog = SqliteActivityCatalog(path, now_seconds=clock)
+    coordinator = ActivityCoordinator(catalog)
+    try:
+        await coordinator.admit(_admission())
+        initial = await coordinator.claim(
+            "world-a",
+            _KIND,
+            "dispatch-1",
+            "owner-a",
+            lease_seconds=10,
         )
         bound = await coordinator.bind_provider_operation(
             initial,
             "git",
             _OPERATION_ID,
         )
-        await asyncio.sleep(0.02)
+        clock.advance(10)
 
         unknown = await coordinator.claim(
             "world-a",
             _KIND,
             "dispatch-1",
             "owner-b",
-            lease_seconds=0.01,
+            lease_seconds=10,
         )
         assert unknown.reconciliation_required
-        await asyncio.sleep(0.02)
+        clock.advance(10)
 
         recovery = await coordinator.claim(
             "world-a",
