@@ -277,6 +277,7 @@ def _quarantined_config_path(value: Any, path: str = "config_json") -> str | Non
             if not isinstance(key, str):
                 raise ValueError(f"{path} keys must be strings")
             normalized_key = _normalized_config_key(key)
+            key_tokens = normalized_key.split("_")
             nested_path = f"{path}.{key}"
             if (
                 normalized_key in _QUARANTINED_CONFIG_KEYS
@@ -284,9 +285,19 @@ def _quarantined_config_path(value: Any, path: str = "config_json") -> str | Non
                 or normalized_key.endswith(_QUARANTINED_CONFIG_SUFFIXES)
                 or "timestamp" in normalized_key.replace("_", "")
                 or any(
-                    token in {"latency", "elapsed", "duration", "key", "secret", "token"}
-                    for token in normalized_key.split("_")
+                    token
+                    in {
+                        "latency",
+                        "elapsed",
+                        "duration",
+                        "time",
+                        "key",
+                        "secret",
+                        "token",
+                    }
+                    for token in key_tokens
                 )
+                or (len(key_tokens) > 1 and "runtime" in key_tokens)
                 or normalized_key == "path"
                 or normalized_key.startswith("path_")
                 or normalized_key.endswith("_path")
