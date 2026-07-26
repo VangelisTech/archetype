@@ -279,6 +279,20 @@ method = "to_pylist"
 reason = "Canonical Arrow IPC codec boundary: the input is already one validated in-memory PyArrow RecordBatch, not a lazy Daft DataFrame, and exact Python values are required to validate cross-payload identities, terminal completeness, and canonical byte re-encoding before any Activity result reference can be recorded."
 
 [[entries]]
+path = "src/archetype/physical_ai/hosted_activities.py"
+symbol = "_component_rows"
+expr = "selected.select(*columns).to_pylist"
+method = "to_pylist"
+reason = "Exact post-commit Activity boundary: the receipt-pinned reader has already admitted and materialized the committed snapshot, and only bounded HostedEpisodeIntent or HostedEpisodeObservation scalar fields cross into generic Activity admission or exact-digest settlement."
+
+[[entries]]
+path = "src/archetype/physical_ai/hosted_activity_world.py"
+symbol = "WorldHostedEpisodeObservationStager._committed_observations"
+expr = "materialized.to_pylist"
+method = "to_pylist"
+reason = "Idempotent world-mutation boundary: StorageService has already admitted and materialized only HostedEpisodeObservation columns, whose bounded Activity identity and digest fields must enter Python to reject conflicts before staging one imperative world mutation."
+
+[[entries]]
 path = "src/archetype/storage/service.py"
 symbol = "StorageService.append_missing"
 expr = "aligned.collect"

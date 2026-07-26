@@ -6,6 +6,7 @@
 name = "physical-ai-domain-family"
 consumer = "archetype.physical_ai"
 allowed_families = [
+  "archetype.activities",
   "archetype.storage",
   "archetype.world",
 ]
