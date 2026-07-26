@@ -9,9 +9,9 @@ coordinator and durable value storage.  The mission family retains the meaning
 of author requests, provider reconciliation, and returned observations.
 
 The concrete receipt-pinned reader, atomic complete fact-bundle stager, and
-per-world opt-in binding live in :mod:`archetype.app.missions.activity_world`.
-They prove the local integration without silently replacing the supported
-``MissionService`` path before hosted-provider parity.
+per-world binding live in :mod:`archetype.app.missions.activity_world`.
+Concrete runtime composition installs that binding for the supported Modal
+Mission author path; non-Modal backends retain the direct local path.
 """
 
 from __future__ import annotations

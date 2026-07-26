@@ -309,6 +309,15 @@ For the Mission author slice:
 - Mission readiness, candidate creation, repair, acceptance, and rollup remain
   processor decisions.
 
+The supported Modal Mission author path installs this binding after lazy world
+activation and before the first tick. Its provider adapter binds the exact
+workspace, Environment, App, protocol epoch, and logical operation before
+sandbox start. A named Modal Dict retains the first canonical redacted result;
+a permanent start marker without that result remains unknown and cannot be
+replayed. The 2026-07-26 paid proof published one exact Git head, settled its
+Activity on a later tick, and recovered the same result from a separate cold
+process without a second sandbox start.
+
 The v2 Mission author observation is one all-or-none mixed-signature mutation
 batch. It contains one `Sandbox`, optional sandbox `PartOfMission`, one
 `AgentExecution` with `Executes` and `RunsIn`, every validation/commit/friction

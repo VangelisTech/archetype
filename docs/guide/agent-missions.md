@@ -668,7 +668,7 @@ Component.
 
 | Gap | V1 treatment | Later seam |
 |---|---|---|
-| Cold process resume | The opt-in author Activity integration proves exact-receipt admission, provider reconciliation, complete atomic ECS staging, and no-op redelivery after world reconstruction. The supported `MissionService` path remains the preservation baseline until provider parity and explicit cutover. | Compose the proven binding into the supported host only after Modal parity; then apply the same seam to critic work. |
+| Cold process resume | The supported Modal author path uses exact-receipt Activity admission, provider reconciliation, complete atomic ECS staging, and no-op redelivery after world reconstruction. A real Modal mission and separate cold process recovered the exact provider result without another sandbox start. | Apply the same seam to critic work; non-Modal authors retain the direct local path. |
 | Private-repository critic materialization | V1 proves public repositories and gives critic processes no Git publication secret. | Add a distinct read-only Git capability without widening critic publication authority. |
 | Sandbox placement | Use a simple configured policy. | Add a scheduler only when multiple topologies require one. |
 | Task decomposition | Authors submit the graph. | Planner emits the same typed graph. |
@@ -681,8 +681,8 @@ Component.
 
 This subsection is normative for the v0.5 migration and deliberately describes
 the accepted target, not the current `archetype.app.missions` implementation.
-The current implementation and its exact-head critic remain the preservation
-baseline until the Activity cutover.
+The supported Modal author uses this Activity contract. The exact-head critic
+remains on the preservation path until A5 completes its corresponding cutover.
 
 Agent Missions has three cooperating concerns with distinct authority:
 
@@ -881,10 +881,12 @@ The credential-free contract lane must prove:
 The dedicated Docker parity lane builds the shared image and proves real
 session-filesystem checkpoint/restore only when the dogfood example changes or
 an operator dispatches it manually; it is not part of ordinary CI. The live
-Modal dogfood must additionally prove real
-repository preparation, agent execution, direct monitoring, validation,
-commit/push publication, checkpoint/restore, and teardown. Modal is paid and
-credentialed, so it remains an explicit operation rather than ordinary CI.
+Modal dogfood must additionally prove real repository preparation, agent
+execution, direct monitoring, validation, commit/push publication, and
+teardown. Checkpoint/restore remains a separate sandbox-capability lane; the
+Activity author result closes its execution sandbox after publishing exact
+evidence. Modal is paid and credentialed, so it remains an explicit operation
+rather than ordinary CI.
 
 ## Companion contracts
 

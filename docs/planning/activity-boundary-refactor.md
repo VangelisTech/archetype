@@ -136,9 +136,9 @@ of A3a's v1 marker. The exact registry can be injected into maintainer runtime
 composition so one real `MissionAuthorActivityBinding` owns both callbacks and
 its worker. The local Git oracle atomically publishes the canonical
 bounded/redacted observation with the authored revision and recovers that exact
-payload without rerunning validators. This remains opt-in: the supported
-`MissionService` delivery path is preserved until Modal parity authorizes
-cutover.
+payload without rerunning validators. A4 now installs the same binding for the
+supported Modal `MissionService` path; non-Modal backends preserve the direct
+local path.
 
 ### A4a and A4 — Modal parity
 
@@ -176,9 +176,12 @@ worker may infer replay permission from stopped or missing sandbox names.
 The PR must preserve exact task base, validator, candidate, publication, and
 cleanup behavior and must not add Modal-specific state to world Components.
 
-The supported Mission cutover occurs only after local restart and real Modal
-parity both pass. If A4 misses the release cut, the existing supported path
-remains in place rather than shipping a half-cut-over workflow.
+The supported Modal Mission cutover passed local restart and real Modal parity
+on 2026-07-26. The proof committed dispatch at tick 1, settled the exact author
+result at tick 2, published and independently approved the exact Git head, and
+recovered the provider result from a separate cold process without another
+sandbox start. See the
+[A4 proof report](../reports/2026-07-26-modal-mission-author-activity-proof.md).
 
 ### A6 — Hosted Physical-AI contract
 

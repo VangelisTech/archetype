@@ -425,13 +425,12 @@ class WorldMissionAuthorObservationStager:
 
 
 class MissionAuthorActivityBinding:
-    """Opt one exact world into the Activity-backed author choreography.
+    """Bind one exact world to the Activity-backed author choreography.
 
-    The default Mission service remains untouched. Hosts explicitly pass
-    ``required_projector_for`` and ``has_unsettled_work`` into their world
-    lifecycle composition, inject the stager's exact ``WorldRegistry`` into
-    ``RuntimeBootstrapConfig``, and drive ``worker.run_once`` outside tick
-    locks.
+    Runtime composition installs this binding for supported Modal Missions.
+    Maintainer hosts may also pass ``required_projector_for`` and
+    ``has_unsettled_work`` into world lifecycle composition explicitly. The
+    worker always runs outside tick locks.
     """
 
     def __init__(
