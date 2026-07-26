@@ -260,12 +260,20 @@ def _canonical_json(value: Any) -> str:
         raise ValueError("hosted episode configuration must be finite JSON data") from exc
 
 
+def _normalized_config_key(key: str) -> str:
+    """Normalize snake, kebab, camel, Pascal, and acronym-style key boundaries."""
+
+    separated = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", key)
+    separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", separated)
+    return separated.casefold().replace("-", "_")
+
+
 def _quarantined_config_path(value: Any, path: str = "config_json") -> str | None:
     if isinstance(value, Mapping):
         for key, nested in value.items():
             if not isinstance(key, str):
                 raise ValueError(f"{path} keys must be strings")
-            normalized_key = key.casefold().replace("-", "_")
+            normalized_key = _normalized_config_key(key)
             nested_path = f"{path}.{key}"
             if (
                 normalized_key in _QUARANTINED_CONFIG_KEYS

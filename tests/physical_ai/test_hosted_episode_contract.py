@@ -217,6 +217,11 @@ def test_request_digest_is_contract_and_payload_domain_separated() -> None:
         ({"runtime": {"device-id": "cuda:0"}}, "config_json.runtime.device-id"),
         ({"runtime": {"gpu-type": "L40S"}}, "config_json.runtime.gpu-type"),
         ({"runtime": {"cloud-region": "us-east"}}, "config_json.runtime.cloud-region"),
+        ({"frames": {"hostPath": "/tmp/frame.png"}}, "config_json.frames.hostPath"),
+        ({"metrics": {"gpuDurationMs": 42}}, "config_json.metrics.gpuDurationMs"),
+        ({"auth": {"apiKey": "secret"}}, "config_json.auth.apiKey"),
+        ({"auth": {"APIKey": "secret"}}, "config_json.auth.APIKey"),
+        ({"runtime": {"GPUUuid": "gpu-1"}}, "config_json.runtime.GPUUuid"),
     ],
 )
 def test_config_quarantine_is_recursive_and_case_insensitive(config: dict, path: str) -> None:
