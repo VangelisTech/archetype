@@ -27,6 +27,7 @@ from archetype.missions import (
     CriticReceipt,
     MissionStatus,
     TaskCriticPolicy,
+    TaskCriticSubjectPolicy,
     TaskStatus,
     TaskValidator,
     require_mission_transition,
@@ -127,6 +128,7 @@ def test_components_have_one_family_owned_schema_identity() -> None:
         "TaskWorkspace",
         "TaskPolicy",
         "TaskCriticPolicy",
+        "TaskCriticSubjectPolicy",
         "TaskState",
         "TaskDispatch",
         "TaskValidator",
@@ -182,6 +184,30 @@ def test_v1_author_activity_observation_keeps_its_durable_schema_identity() -> N
         schema_fingerprint(schema)
         == "98d8764af332ccf6287a6fee2dee83704ae2bf0b5e10acc81b380e40be344bb7"
     )
+
+
+def test_task_critic_policy_keeps_its_pre_activity_schema_identity() -> None:
+    assert tuple(TaskCriticPolicy.model_fields) == (
+        "policy_id",
+        "version",
+        "digest",
+        "perspective",
+        "information_view",
+        "driver",
+        "model",
+        "sampling",
+        "max_reviews",
+        "timeout_seconds",
+        "output_schema_version",
+        "max_output_chars",
+    )
+    schema = Archetype.get_archetype_schema((TaskCriticPolicy,))
+    assert Archetype.get_name((TaskCriticPolicy,)) == "a_1c_sf8608970ea3994f5"
+    assert (
+        schema_fingerprint(schema)
+        == "57b05a4c0718da90412693b74f60e9f549f42b8494d9571ea1492d40d0079d07"
+    )
+    assert TaskCriticSubjectPolicy(max_subject_bytes=1).max_subject_bytes == 1
 
 
 @pytest.mark.parametrize(

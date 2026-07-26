@@ -10,7 +10,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
-from daft import DataFrame, Expression, col
+from daft import DataFrame, Expression, col, lit
 
 from archetype.core.component import Component
 from archetype.core.hooks import PostTick
@@ -41,6 +41,7 @@ from archetype.missions.components import (
     Sandbox,
     Task,
     TaskCriticPolicy,
+    TaskCriticSubjectPolicy,
     TaskDispatch,
     TaskPolicy,
     TaskState,
@@ -138,6 +139,28 @@ class TaskDispatchOutbox:
             left_on="entity_id",
             right_on=f"{membership}source",
         )
+        critic_subject_policy = TaskCriticSubjectPolicy.get_prefix()
+        critic_subject_frame = _live_frame(event, TaskCriticSubjectPolicy)
+        if critic_subject_frame is not None:
+            dispatched = dispatched.join(
+                critic_subject_frame.select(
+                    col("entity_id").alias("_critic_subject_task_id"),
+                    col(f"{critic_subject_policy}max_subject_bytes").alias(
+                        "_critic_max_subject_bytes"
+                    ),
+                ),
+                left_on="entity_id",
+                right_on="_critic_subject_task_id",
+                how="left",
+            ).with_column(
+                "_critic_max_subject_bytes",
+                col("_critic_max_subject_bytes").fill_null(CriticPolicy().max_subject_bytes),
+            )
+        else:
+            dispatched = dispatched.with_column(
+                "_critic_max_subject_bytes",
+                lit(CriticPolicy().max_subject_bytes),
+            )
         task_rows = dispatched.to_pylist()
         if not task_rows:
             return
@@ -310,7 +333,7 @@ class TaskDispatchOutbox:
                         timeout_seconds=int(row[f"{critic_policy}timeout_seconds"]),
                         output_schema_version=int(row[f"{critic_policy}output_schema_version"]),
                         max_output_chars=int(row[f"{critic_policy}max_output_chars"]),
-                        max_subject_bytes=int(row[f"{critic_policy}max_subject_bytes"]),
+                        max_subject_bytes=int(row["_critic_max_subject_bytes"]),
                     ),
                     prior_candidate_entity_id=(
                         int(prior_candidate["entity_id"]) if prior_candidate is not None else 0
@@ -735,6 +758,8 @@ class CriticReviewOutbox:
         state = TaskState.get_prefix()
         task = Task.get_prefix()
         policy = TaskCriticPolicy.get_prefix()
+        subject_policy = TaskCriticSubjectPolicy.get_prefix()
+        subject_policy_frame = _live_frame(event, TaskCriticSubjectPolicy)
         candidate = Candidate.get_prefix()
         author = AgentExecution.get_prefix()
         validator = TaskValidator.get_prefix()
@@ -743,6 +768,24 @@ class CriticReviewOutbox:
         candidate_tasks = tasks.where(
             cast(Expression, col(f"{state}status") == TaskStatus.CANDIDATE.value)
         )
+        if subject_policy_frame is not None:
+            candidate_tasks = candidate_tasks.join(
+                subject_policy_frame.select(
+                    col("entity_id").alias("_critic_subject_task_id"),
+                    col(f"{subject_policy}max_subject_bytes").alias("_critic_max_subject_bytes"),
+                ),
+                left_on="entity_id",
+                right_on="_critic_subject_task_id",
+                how="left",
+            ).with_column(
+                "_critic_max_subject_bytes",
+                col("_critic_max_subject_bytes").fill_null(CriticPolicy().max_subject_bytes),
+            )
+        else:
+            candidate_tasks = candidate_tasks.with_column(
+                "_critic_max_subject_bytes",
+                lit(CriticPolicy().max_subject_bytes),
+            )
         candidates = candidates.with_column(
             "_candidate_entity_id",
             col("entity_id"),
@@ -826,7 +869,7 @@ class CriticReviewOutbox:
                 timeout_seconds=int(row[f"{policy}timeout_seconds"]),
                 output_schema_version=int(row[f"{policy}output_schema_version"]),
                 max_output_chars=int(row[f"{policy}max_output_chars"]),
-                max_subject_bytes=int(row[f"{policy}max_subject_bytes"]),
+                max_subject_bytes=int(row["_critic_max_subject_bytes"]),
             )
             author_execution_id = int(row[f"{candidate}author_execution_id"])
             author_row = author_rows[author_execution_id]

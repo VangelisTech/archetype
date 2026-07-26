@@ -89,7 +89,6 @@ class TaskCriticPolicy(Component):
     timeout_seconds: int = 2700
     output_schema_version: int = 1
     max_output_chars: int = 16_000
-    max_subject_bytes: int = 4 << 20
 
     @model_validator(mode="after")
     def _valid_policy(self) -> TaskCriticPolicy:
@@ -106,17 +105,26 @@ class TaskCriticPolicy(Component):
             raise ValueError("critic policy identity fields must not be empty")
         if self.max_reviews < 1 or self.timeout_seconds < 1:
             raise ValueError("critic review budgets must be positive")
-        if (
-            self.output_schema_version < 1
-            or self.max_output_chars < 1
-            or self.max_subject_bytes < 1
-        ):
-            raise ValueError("critic output schema and bounds must be positive")
+        if self.output_schema_version < 1 or self.max_output_chars < 1:
+            raise ValueError("critic output schema and bound must be positive")
         if self.information_view != "task-diff-validators":
             raise ValueError("unsupported critic information_view")
         if self.sampling != "provider-default":
             raise ValueError("unsupported critic sampling policy")
         return self
+
+
+class TaskCriticSubjectPolicy(Component):
+    """Additive subject bound for new tasks without changing legacy task schemas."""
+
+    max_subject_bytes: int = 4 << 20
+
+    @field_validator("max_subject_bytes")
+    @classmethod
+    def _positive_subject_bound(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("critic subject bound must be positive")
+        return value
 
 
 class TaskState(Component):
@@ -516,6 +524,7 @@ TASK_COMPONENTS = (
     TaskWorkspace,
     TaskPolicy,
     TaskCriticPolicy,
+    TaskCriticSubjectPolicy,
     TaskState,
     TaskDispatch,
 )

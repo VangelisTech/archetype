@@ -461,6 +461,26 @@ def test_receipt_rejects_unadmitted_subject_media_type() -> None:
         )
 
 
+def test_receipt_rejects_unadmitted_output_schema_version() -> None:
+    codec = CriticActivityCodec(RedactionService())
+    raw_request = _request()
+    request = codec.prepare_request(raw_request)
+    raw_result = _result(raw_request)
+    assert raw_result.receipt is not None
+
+    with pytest.raises(ValueError, match="non-admitted output schema version"):
+        codec.prepare_result(
+            replace(
+                raw_result,
+                receipt=replace(
+                    raw_result.receipt,
+                    output_schema_version=request.policy.output_schema_version + 1,
+                ),
+            ),
+            request,
+        )
+
+
 @pytest.mark.parametrize(
     ("conclusion", "blocking_count"),
     (

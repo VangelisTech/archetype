@@ -874,6 +874,8 @@ class CriticActivityCodec:
             raise ValueError("critic receipt used a non-admitted subject transport")
         if subject.media_type != request.subject.media_type:
             raise ValueError("critic receipt used a non-admitted subject media type")
+        if raw.output_schema_version != request.policy.output_schema_version:
+            raise ValueError("critic receipt used a non-admitted output schema version")
         self._safe(raw.subject_ref, "critic.receipt.subject_ref")
         receipt = CriticActivityReceipt(
             review_id=raw.review_id,
