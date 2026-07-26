@@ -67,6 +67,11 @@ operations = [
   "hosted_activity_contracts.HostedEpisodeProvider.provider",
   "hosted_activity_contracts.HostedEpisodeProvider.reconcile",
   "hosted_activity_values.HostedEpisodeRunner.run",
+  "hosted_modal.ModalHostedEpisodeRuntime.get",
+  "hosted_modal.ModalHostedEpisodeRuntime.put_if_absent",
+  "hosted_modal.ModalHostedEpisodeRuntime.read_blob",
+  "hosted_modal.ModalHostedEpisodeRuntime.spawn",
+  "hosted_modal.ModalHostedEpisodeRuntime.wait",
 ]
 signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
@@ -74,6 +79,7 @@ authority = "The provider's permanent operation-start evidence and first complet
 evidence = [
   "docs/guide/physical-ai.md",
   "tests/physical_ai/test_hosted_episode_activities.py",
+  "tests/physical_ai/test_hosted_modal_activity.py",
 ]
 rationale = "Provider execution and recovery are effect boundaries whose durable result or explicit unknown state is the authority; a second telemetry signal cannot make an episode complete or safe to repeat."
 

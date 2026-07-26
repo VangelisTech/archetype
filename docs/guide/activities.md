@@ -399,15 +399,22 @@ manifest, and exact completeness counts.
 The local provider proof uses an atomic permanent start marker and a
 provider-durable first-result index. It deliberately sacrifices liveness after
 an ambiguous start rather than assume a seeded GPU rerun is equivalent.
-Remote/Modal adapters implement the same `HostedEpisodeProvider` protocol but
-remain fail-closed until they can reuse the reviewed generic provider
-operation/start/result mechanics. Provider placement and recovery records never
-enter Components.
 
-The local value store and SQLite Activity catalog are executable proof
-substrates, not claims of remote storage parity. Production trajectory and
-frame publication still belongs in Iceberg or the artifact substrate, while a
-remote control-catalog implementation is its own parity slice.
+The Modal parity adapter preserves that contract under an exact workspace,
+Environment, App, Function, named Dict, named Volume, and protocol epoch. An
+atomic Dict `put(..., skip_if_exists=True)` selects one start winner. The remote
+function commits the four canonical Arrow payloads to the Volume before it
+atomically installs the bounded first-result index in the Dict. A lost function
+response is therefore recoverable; a permanent start without that index
+remains unknown and cannot be replayed. Provider placement diagnostics never
+enter canonical payloads or Components.
+
+The local family value store and SQLite Activity catalog remain executable
+proof substrates, not claims of remote storage parity. The Modal Volume and
+Dict prove provider-side start and first-result durability only. Production
+trajectory and frame publication still belongs in Iceberg or the artifact
+substrate, while a remote control-catalog implementation is its own parity
+slice.
 
 ## 8. Resource-spike disposition
 
