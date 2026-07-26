@@ -1023,7 +1023,8 @@ def _fake_modal(sandboxes: list[object]):
         calls: list[dict[str, object]] = []
 
         @classmethod
-        async def aio(cls, **kwargs):
+        async def aio(cls, *args, **kwargs):
+            kwargs["command"] = args
             cls.calls.append(kwargs)
             candidate = sandboxes.pop(0)
             if isinstance(candidate, BaseException):
@@ -1112,6 +1113,7 @@ async def test_modal_backend_create_restore_and_login_lifecycle(
         command[:3] == ("codex", "login", "--device-auth") for command in resources[4].commands
     )
     assert resources[4].terminate.result is None
+    assert all(call["command"] == ("sleep", "infinity") for call in fake_modal.Sandbox.create.calls)
 
     with pytest.raises(ValueError, match="non-Modal"):
         await backend.create(SandboxSpec("docker", backend.environment, "/workspace/repo"))
