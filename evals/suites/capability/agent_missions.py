@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import subprocess
 import tempfile
@@ -262,8 +263,13 @@ class _DeterministicCriticDriver:
         request: CandidateReviewRequest,
         prompt: str,
     ) -> CriticProcessObservation:
-        assert request.diff
-        assert request.diff in prompt
+        assert request.diff == ""
+        assert request.subject_transport == "sandbox_file"
+        assert request.subject_ref in prompt
+        subject = Path(request.subject_ref).read_bytes()
+        assert subject
+        assert hashlib.sha256(subject).hexdigest() == request.diff_digest
+        assert subject.decode() not in prompt
         self.requests.append(request)
         self.sandbox_ids.append(session.identity.sandbox_id)
         if request.task_name == "repair-gate":
