@@ -211,9 +211,16 @@ reason = "Exact post-commit critic-Activity fact boundary: each already componen
 [[entries]]
 path = "src/archetype/missions/projections.py"
 symbol = "project_critic_activity_intents"
-expr = "_latest_tick(candidate_tasks).join(candidate_subjects, left_on='entity_id', right_on=f'{candidate}task_id').to_pylist"
+expr = "candidate_tasks.to_pylist"
 method = "to_pylist"
-reason = "Durable critic-Activity admission boundary: lazy global-tick snapshots restrict the frame to committed CANDIDATE tasks and join immutable subjects before bounded rows become exact-candidate requests; provider execution occurs only after catalog admission."
+reason = "Durable critic-Activity admission boundary: the frame is already restricted to committed CANDIDATE task rows, whose bounded histories must be reduced independently before matching immutable candidates; a Daft join of the two snapshot histories crashes the native runtime during the real closed-loop mission."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "project_critic_activity_intents"
+expr = "candidates.to_pylist"
+method = "to_pylist"
+reason = "Durable critic-Activity admission boundary: bounded committed candidate histories must retain their entity identities while they are reduced and matched to current task rows; provider execution occurs only after the resulting exact request is admitted."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"

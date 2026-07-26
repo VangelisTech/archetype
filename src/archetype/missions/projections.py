@@ -102,13 +102,6 @@ def _live_frame(event: PostTick, *components: type[Component]) -> DataFrame | No
     return result
 
 
-def _latest_tick(frame: DataFrame) -> DataFrame:
-    """Keep one committed global-tick snapshot inside the lazy plan."""
-
-    max_tick = frame.agg(col("tick").max().alias("tick"))
-    return frame.join(max_tick, on="tick")
-
-
 def _critic_subject_bounds(event: PostTick) -> dict[int, int]:
     """Return task-owned subject bounds without changing the legacy policy schema."""
 
@@ -1000,20 +993,27 @@ async def project_critic_activity_intents(
     candidate_tasks = tasks.where(
         cast(Expression, col(f"{state}status") == TaskStatus.CANDIDATE.value)
     )
-    candidate_subjects = (
-        _latest_tick(candidates)
-        .with_column("_candidate_entity_id", col("entity_id"))
-        .exclude("entity_id")
+    candidate_task_rows = _latest_entity_rows(
+        candidate_tasks.to_pylist(),
+        label="candidate task",
+        allow_updates=True,
     )
-    rows = (
-        _latest_tick(candidate_tasks)
-        .join(
-            candidate_subjects,
-            left_on="entity_id",
-            right_on=f"{candidate}task_id",
+    candidate_rows = _latest_entity_rows(
+        candidates.to_pylist(),
+        label="candidate",
+    )
+    rows: list[dict[str, Any]] = []
+    for candidate_entity_id, candidate_row in candidate_rows.items():
+        task_id = int(candidate_row[f"{candidate}task_id"])
+        task_row = candidate_task_rows.get(task_id)
+        if task_row is None:
+            continue
+        joined = dict(task_row)
+        joined.update(
+            {key: value for key, value in candidate_row.items() if key not in {"entity_id", "tick"}}
         )
-        .to_pylist()
-    )
+        joined["_candidate_entity_id"] = candidate_entity_id
+        rows.append(joined)
     if not rows:
         return CriticActivityIntentProjection((), ())
     subject_bounds = _critic_subject_bounds(event)
