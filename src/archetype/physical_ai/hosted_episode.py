@@ -124,9 +124,12 @@ _QUARANTINED_CONFIG_SUFFIXES: Final = (
     "_gpu_uuid",
     "_hostname",
     "_instance",
+    "_key",
+    "_key_id",
     "_password",
     "_region",
     "_secret",
+    "_token",
     "_zone",
 )
 
@@ -281,7 +284,7 @@ def _quarantined_config_path(value: Any, path: str = "config_json") -> str | Non
                 or normalized_key.endswith(_QUARANTINED_CONFIG_SUFFIXES)
                 or "timestamp" in normalized_key
                 or any(
-                    token in {"latency", "elapsed", "duration"}
+                    token in {"latency", "elapsed", "duration", "key", "secret", "token"}
                     for token in normalized_key.split("_")
                 )
                 or normalized_key == "path"
