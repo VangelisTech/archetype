@@ -5,7 +5,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -22,11 +25,13 @@ from archetype.missions.coding_agents.contracts import (
 )
 from archetype.missions.components import (
     AgentExecution,
+    AuthorActivityObservation,
     Candidate,
     Commit,
     CriticExecution,
     CriticFinding,
     CriticReceipt,
+    FrictionLog,
     Mission,
     MissionState,
     Task,
@@ -308,6 +313,178 @@ class TaskDispatchOutbox:
         requests = tuple(self._queued)
         self._queued.clear()
         return requests
+
+
+async def project_task_dispatch_requests(event: PostTick) -> tuple[TaskDispatchRequest, ...]:
+    """Project dispatch requests from one exact committed mission snapshot.
+
+    The legacy process-local outbox and the durable required projector share
+    this construction path so request meaning cannot drift during cutover.
+    """
+
+    projection = TaskDispatchOutbox()
+    await projection.on_post_tick(event)
+    return projection.drain()
+
+
+def author_activity_fact_bundle_digest(
+    *,
+    execution_id: int,
+    execution: AgentExecution,
+    validations: Sequence[ValidationResult],
+    commits: Sequence[Commit],
+    friction: Sequence[FrictionLog],
+) -> str:
+    """Digest the complete committed fact values for one author observation."""
+
+    def ordered(values: Sequence[Component]) -> list[dict[str, Any]]:
+        payloads = [value.model_dump(mode="json") for value in values]
+        return sorted(
+            payloads,
+            key=lambda value: json.dumps(
+                value,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+        )
+
+    payload = {
+        "commits": ordered(commits),
+        "execution": execution.model_dump(mode="json"),
+        "execution_id": execution_id,
+        "friction": ordered(friction),
+        "schema_version": 1,
+        "validations": ordered(validations),
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def project_complete_author_activity_observations(
+    event: PostTick,
+) -> tuple[AuthorActivityObservation, ...]:
+    """Return markers whose exact factual bundle is present in the snapshot."""
+
+    markers = _live_frame(event, AuthorActivityObservation)
+    executions = _live_frame(event, AgentExecution)
+    if markers is None or executions is None:
+        return ()
+    validations = _live_frame(event, ValidationResult)
+    commits = _live_frame(event, Commit)
+    friction = _live_frame(event, FrictionLog)
+    marker = AuthorActivityObservation.get_prefix()
+    execution = AgentExecution.get_prefix()
+    validation = ValidationResult.get_prefix()
+    commit = Commit.get_prefix()
+    friction_record = FrictionLog.get_prefix()
+    execution_rows = executions.to_pylist()
+    validation_rows = validations.to_pylist() if validations is not None else []
+    commit_rows = commits.to_pylist() if commits is not None else []
+    friction_rows = friction.to_pylist() if friction is not None else []
+    complete: list[AuthorActivityObservation] = []
+    for row in markers.to_pylist():
+        activity_id = str(row[f"{marker}activity_id"])
+        task_id = int(row[f"{marker}task_id"])
+        execution_id = int(row[f"{marker}execution_id"])
+        sequence = int(row[f"{marker}dispatch_sequence"])
+        matching_execution = [
+            candidate
+            for candidate in execution_rows
+            if int(candidate["entity_id"]) == execution_id
+            and int(candidate[f"{execution}task_id"]) == task_id
+            and str(candidate[f"{execution}dispatch_id"]) == activity_id
+            and int(candidate[f"{execution}dispatch_sequence"]) == sequence
+        ]
+        matching_validations = [
+            candidate
+            for candidate in validation_rows
+            if int(candidate[f"{validation}execution_id"]) == execution_id
+            and int(candidate[f"{validation}task_id"]) == task_id
+            and str(candidate[f"{validation}dispatch_id"]) == activity_id
+            and int(candidate[f"{validation}dispatch_sequence"]) == sequence
+        ]
+        matching_commits = [
+            candidate
+            for candidate in commit_rows
+            if int(candidate[f"{commit}execution_id"]) == execution_id
+            and int(candidate[f"{commit}task_id"]) == task_id
+            and str(candidate[f"{commit}dispatch_id"]) == activity_id
+        ]
+        matching_friction = [
+            candidate
+            for candidate in friction_rows
+            if int(candidate[f"{friction_record}execution_id"]) == execution_id
+            and int(candidate[f"{friction_record}task_id"]) == task_id
+            and str(candidate[f"{friction_record}dispatch_id"]) == activity_id
+        ]
+        if (
+            len(matching_execution) != 1
+            or len(matching_validations) != int(row[f"{marker}validation_count"])
+            or len(matching_commits) != int(row[f"{marker}commit_count"])
+            or len(matching_friction) != int(row[f"{marker}friction_count"])
+            or str(matching_execution[0][f"{execution}redaction_policy_id"])
+            != str(row[f"{marker}redaction_policy_id"])
+        ):
+            continue
+        execution_fact = AgentExecution(
+            **{
+                field: matching_execution[0][f"{execution}{field}"]
+                for field in AgentExecution.model_fields
+            }
+        )
+        validation_facts = tuple(
+            ValidationResult(
+                **{
+                    field: candidate[f"{validation}{field}"]
+                    for field in ValidationResult.model_fields
+                }
+            )
+            for candidate in matching_validations
+        )
+        commit_facts = tuple(
+            Commit(**{field: candidate[f"{commit}{field}"] for field in Commit.model_fields})
+            for candidate in matching_commits
+        )
+        friction_facts = tuple(
+            FrictionLog(
+                **{
+                    field: candidate[f"{friction_record}{field}"]
+                    for field in FrictionLog.model_fields
+                }
+            )
+            for candidate in matching_friction
+        )
+        bundle_digest = author_activity_fact_bundle_digest(
+            execution_id=execution_id,
+            execution=execution_fact,
+            validations=validation_facts,
+            commits=commit_facts,
+            friction=friction_facts,
+        )
+        if bundle_digest != str(row[f"{marker}fact_bundle_digest"]):
+            continue
+        complete.append(
+            AuthorActivityObservation(
+                activity_id=activity_id,
+                task_id=task_id,
+                dispatch_sequence=sequence,
+                result_ref=str(row[f"{marker}result_ref"]),
+                result_digest=str(row[f"{marker}result_digest"]),
+                fact_bundle_digest=bundle_digest,
+                execution_id=execution_id,
+                validation_count=int(row[f"{marker}validation_count"]),
+                commit_count=int(row[f"{marker}commit_count"]),
+                friction_count=int(row[f"{marker}friction_count"]),
+                redaction_policy_id=str(row[f"{marker}redaction_policy_id"]),
+            )
+        )
+    return tuple(sorted(complete, key=lambda value: value.activity_id))
 
 
 @dataclass(frozen=True)

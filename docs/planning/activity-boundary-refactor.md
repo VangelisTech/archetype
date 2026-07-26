@@ -38,8 +38,10 @@ shared substrate; they do not expand A2 speculatively.
 |---|---|---|
 | A1 — Contract and plan | Canonical Resource/Activity definitions, authority split, Mission-author crash matrix, refactor-plan disposition, and documentation navigation | Documentation build, links, lint, and architecture consistency |
 | A2 — Minimal local catalog | `storage.activity_catalog` physical records/SQLite port plus `activities` contracts/coordinator for immutable admission, claim/lease/fence, attempt identity, provider binding, bounded retry-guard/result references and digests, and exact-receipt settlement | Catalog reconstruction and two-instance restart contracts cover every generic transition required by the A1 matrix, including equal family-local IDs across worlds and kinds |
-| A3 — Mission author, local restart | Required projector, content-addressed author request, `kind="missions.author"` plus `activity_id=dispatch_id`, local worker, provider reconciliation, idempotent result stager, and result-digest-bound completeness settlement | Kill/reconstruct tests recover Git publication without a second author execution; partial observation facts cannot settle; existing transition processors remain unchanged |
-| A4 — Modal parity | Run the same author Activity through the existing Modal sandbox capability, with stable provider operation identity and reconciliation | Real Modal mission proves the same request/result/settlement contract, exact Git head, cleanup, and installed-artifact path |
+| A3a — Mission author seam | Family-owned request/result and provider-recovery values, Activity adapter, fenced worker choreography, and an explicitly incomplete execution-fact scaffold | Real bare-Git provider proof recovers an exact atomically published operation result after reconstruction; wrong receipt, provider, result, and partial-fact paths fail closed |
+| A3b — Mission world integration | Exact receipt-pinned storage reader, idempotent complete ECS stager, required-projector/worker composition, candidate/provenance continuation, and exact-world lifecycle gate | Kill/reconstruct tests cross staging and tick publication without duplicate facts, omitted result meaning, or a stranded candidate; existing transition processors remain authoritative |
+| A4a — Modal provider safety | Namespace-complete operation identity plus permanent operation/run markers that select one hosted-start winner and fail closed after ambiguous creation | Real Modal races prove one winner under the exact workspace, Environment, App, and protocol epoch; legacy/pre-barrier operations remain unknown |
+| A4 — Modal parity | Run the same complete author Activity through the guarded Modal sandbox capability, with stable provider operation identity and reconciliation | Real Modal mission proves the same request/result/settlement contract, exact Git head, cleanup, and installed-artifact path |
 | A5 — Mission critic | Project and execute exact-candidate critic work through the proven Activity seam; remove only critic process-local delivery after parity | Existing exact-head, separate-sandbox, bounded-subject, and fail-closed critic oracles pass through restart |
 | A6 — Hosted Physical-AI contract | Reconcile one canonical whole-episode Arrow request/result schema and result publication contract before cutover | Robot adapter and simulator agree on episode/trial cardinality, transition budget, terminal meaning, and canonical digests |
 | A7 — Hosted Physical-AI Activity | Add `archetype.app.physical_ai` choreography, execute a whole seeded episode locally and on Modal, publish the full trajectory, and stage its factual observation | First result is recovered by operation identity; correctness does not depend on byte-identical GPU replay |
@@ -76,9 +78,19 @@ framework, Modal dependency, family Component, or command-scheduler adapter.
 Catalog state names remain implementation details until multiple consumers
 prove shared meaning.
 
-### A3 — Mission author, local restart
+### A3a and A3b — Mission author, local restart
 
-The Mission author is the first vertical consumer:
+A3a establishes the Mission-owned seam and provider crash proof without
+claiming a world integration. It includes the content-addressed values, generic
+coordinator adapter, fenced worker choreography, provider identity checks,
+an execution-fact bundle scaffold, and bare-Git reconciliation oracle. Its
+semantic request/result values, provider protocol, and recovery facts live in
+`archetype.missions`; the projector and worker choreography live in
+`archetype.app.missions`. Its reader and stager are test adapters. It does not
+register a required projector, stage real world mutations, or change the
+supported delivery path.
+
+A3b completes the first vertical consumer:
 
 1. The processor commits `TaskDispatch`.
 2. `MissionAuthorActivityProjector` reads the exact committed snapshot,
@@ -95,16 +107,32 @@ The Mission author is the first vertical consumer:
 8. The projector settles only when that complete binding appears in the exact
    later receipt; `dispatch_id` alone is insufficient.
 
-The decisive test crashes after Git publication but before result recording,
-reconstructs the catalog and service, reconciles the remote head, and proves
-the author executed once. A separate identity oracle creates the same
-world-local `dispatch_id` in two worlds and proves their control records and
-provider operation identities cannot collide. The supported Mission cutover
-also requires an exact-world lifecycle gate that refuses fork and destroy
-while the source has unsettled Activities; A3 proves the oracle but does not
-change supported lifecycle wiring.
+The A3a provider test atomically publishes the authored branch and exact
+operation-result reference, crashes before generic Activity result recording,
+reconstructs the catalog and service, advances the public branch independently,
+and recovers the pinned authored revision without a second execution. A
+separate identity oracle creates the same world-local `dispatch_id` in two
+worlds and proves their control records and provider operation identities
+cannot collide.
 
-### A4 — Modal parity
+A3b owns the harder world guarantees: its reader must prove the exact manifest
+token before reading; its stager must stage the complete result-derived fact
+batch idempotently, including sandbox/bind meaning, provenance relations, and
+exactly one digest-bound `Candidate` for an author-green result (zero for a
+non-green result), with the completion marker last. Fork/destroy must refuse
+under the exact-world lock while the source has unsettled Activities. The
+supported Mission path remains unchanged until those oracles pass.
+
+### A4a and A4 — Modal parity
+
+A4a is an inert provider prerequisite. It binds the Modal workspace,
+Environment, App, and a post-cutover protocol epoch into the operation
+identity. Permanent named Dict operation/run markers may select execution
+authority only for Activities admitted under that barrier-aware epoch from
+birth. Missing markers for legacy or already-in-flight Missions are unknown,
+never confirmed absence. Marker objects must not be deleted or recreated.
+Ambiguous creation and lost winners deliberately sacrifice liveness rather
+than permit duplicate starts.
 
 Modal supplies placement, sandbox lifetime, and process execution behind the
 same Activity request/result contract. It does not become workflow authority.
@@ -154,8 +182,9 @@ The release consumes only the highest contiguous green slice:
 
 - A1 is documentation-only and safe to review independently.
 - A2 is inert generic substrate; it does not switch a supported workflow.
-- A3 must not delete the supported Mission delivery path before its local
-  crash/restart oracle passes.
+- A3a and A4a are inert prerequisites and do not switch a supported workflow.
+- A3b must not delete the supported Mission delivery path before its exact
+  reader, complete stager, lifecycle, and local crash/restart oracles pass.
 - A4 cuts the supported hosted author path over only after the real Modal proof
   passes against the same contract.
 - A5–A8 may follow the release unless they independently meet their gates.
