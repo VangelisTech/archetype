@@ -8,6 +8,18 @@ replaces = ["interfaces.iStorageService"]
 
 [[disposition]]
 operations = [
+  "activity_catalog.interfaces.ActivityCatalog.admit_activity",
+  "activity_catalog.interfaces.ActivityCatalog.bind_provider_operation",
+  "activity_catalog.interfaces.ActivityCatalog.claim_activity",
+  "activity_catalog.interfaces.ActivityCatalog.close",
+  "activity_catalog.interfaces.ActivityCatalog.confirm_provider_operation_absent",
+  "activity_catalog.interfaces.ActivityCatalog.get_activity",
+  "activity_catalog.interfaces.ActivityCatalog.has_unsettled_activities",
+  "activity_catalog.interfaces.ActivityCatalog.list_incomplete_activities",
+  "activity_catalog.interfaces.ActivityCatalog.list_unobserved_results",
+  "activity_catalog.interfaces.ActivityCatalog.record_activity_result",
+  "activity_catalog.interfaces.ActivityCatalog.release_activity",
+  "activity_catalog.interfaces.ActivityCatalog.settle_activity_observation",
   "catalog.interface.ControlCatalog.register_world",
   "catalog.interface.ControlCatalog.retire_world_registration",
   "catalog.interface.ControlCatalog.set_world_status",
@@ -58,6 +70,7 @@ evidence = [
   "docs/guide/atomic-visibility.md",
   "docs/guide/artifacts.md",
   "docs/guide/service-protocols.md",
+  "tests/activities/test_activity_catalog_contracts.py",
   "tests/app/test_application_atomic_visibility.py",
   "tests/storage/test_remote_catalog_parity.py",
   "tests/storage/test_storage_execution.py",

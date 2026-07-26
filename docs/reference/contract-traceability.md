@@ -24,6 +24,7 @@ machine authority; this page is its review surface.
 | `commands.failure.preserves_progress` | `commands` | high | [docs/guide/specification.md](../guide/specification.md) — Command ledger, scheduler, and dispatcher | pytest: 1; eval: 4 | `pr`, `main`, `release` |
 | `world.tick.atomic_visibility` | `world` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 10. Supported durability profile | pytest: 1; eval: 2 | `pr`, `main`, `release` |
 | `world.writer.fenced` | `world` | high | [docs/guide/world-lifecycle.md](../guide/world-lifecycle.md) — 6. `resume_world` (fenced mutable cold resume) | pytest: 2; eval: 3 | `pr`, `main`, `release` |
+| `activities.durable_control` | `activities` | high | [docs/guide/activities.md](../guide/activities.md) — 2. The committed-state protocol | pytest: 1; static: 2 | `pr`, `main`, `release` |
 | `world.lifecycle.idempotent` | `world` | high | [docs/guide/world-lifecycle.md](../guide/world-lifecycle.md) — 2. World lifecycle operations | pytest: 2; eval: 2 | `pr`, `main`, `release` |
 | `world.fork.lineage` | `world` | high | [docs/guide/world-lifecycle.md](../guide/world-lifecycle.md) — 4. `fork_world` | pytest: 2; eval: 1 | `pr`, `main`, `release` |
 | `world.run_identity.cold_resume` | `world` | high | [docs/guide/world-lifecycle.md](../guide/world-lifecycle.md) — 6. `resume_world` (fenced mutable cold resume) | pytest: 2; eval: 1 | `pr`, `main`, `release` |
