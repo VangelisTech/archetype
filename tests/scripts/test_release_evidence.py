@@ -54,11 +54,48 @@ def _artifact(tmp_path: Path) -> tuple[Path, Path, str]:
 def test_release_artifact_verification_rejects_changed_bytes(tmp_path: Path) -> None:
     dist, manifest_path, _digest_value = _artifact(tmp_path)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    verify_artifact(manifest, dist)
+    verify_artifact(manifest, dist, expected_commit="a" * 40)
 
     (dist / "archetype.whl").write_bytes(b"other")
     with pytest.raises(ValueError, match="mismatch"):
-        verify_artifact(manifest, dist)
+        verify_artifact(manifest, dist, expected_commit="a" * 40)
+
+
+def test_release_artifact_verification_requires_clean_build(tmp_path: Path) -> None:
+    dist, manifest_path, _digest_value = _artifact(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    manifest["clean_checkout"] = False
+    with pytest.raises(ValueError, match="not built from a clean checkout"):
+        verify_artifact(manifest, dist, expected_commit="a" * 40)
+
+    manifest.pop("clean_checkout")
+    with pytest.raises(ValueError, match="not built from a clean checkout"):
+        verify_artifact(manifest, dist, expected_commit="a" * 40)
+
+
+@pytest.mark.parametrize(
+    "commit",
+    [
+        pytest.param(None, id="missing"),
+        pytest.param(7, id="non-string"),
+        pytest.param("not-a-commit", id="malformed"),
+        pytest.param("b" * 40, id="another-valid-commit"),
+    ],
+)
+def test_release_artifact_verification_requires_exact_checkout_commit(
+    tmp_path: Path,
+    commit: object,
+) -> None:
+    dist, manifest_path, _digest_value = _artifact(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if commit is None:
+        manifest.pop("commit")
+    else:
+        manifest["commit"] = commit
+
+    with pytest.raises(ValueError, match="release artifact commit mismatch"):
+        verify_artifact(manifest, dist, expected_commit="a" * 40)
 
 
 def test_release_evidence_requires_every_scenario_on_exact_wheel(tmp_path: Path) -> None:

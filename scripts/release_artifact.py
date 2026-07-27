@@ -66,9 +66,21 @@ def record(root: Path, dist: Path) -> dict[str, Any]:
     }
 
 
-def verify(manifest: dict[str, Any], dist: Path) -> dict[str, Any]:
+def verify(
+    manifest: dict[str, Any],
+    dist: Path,
+    *,
+    expected_commit: str,
+) -> dict[str, Any]:
     if manifest.get("schema") != SCHEMA:
         raise ValueError("release artifact manifest has an unsupported schema")
+    if manifest.get("clean_checkout") is not True:
+        raise ValueError("release artifact was not built from a clean checkout")
+    if manifest.get("commit") != expected_commit:
+        raise ValueError(
+            "release artifact commit mismatch: "
+            f"manifest={manifest.get('commit')!r}, checkout={expected_commit!r}"
+        )
     wheel, sdist = _distribution_files(dist)
     actual = {"wheel": wheel, "sdist": sdist}
     records = manifest.get("artifacts")
@@ -121,7 +133,11 @@ def main(argv: list[str] | None = None) -> int:
             encoding="utf-8",
         )
     else:
-        value = verify(_load(manifest_path), dist)
+        value = verify(
+            _load(manifest_path),
+            dist,
+            expected_commit=_git(root, "rev-parse", "HEAD"),
+        )
     wheel = next(item for item in value["artifacts"] if item["kind"] == "wheel")
     print(f"Release wheel sha256:{wheel['sha256']}")
     return 0
