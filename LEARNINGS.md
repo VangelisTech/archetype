@@ -797,15 +797,11 @@ expression at a time" and prescribed chained `with_column`. That was wrong
 about the signature: the `TypeError` is about *positional* args, and the dict
 form has always been available.
 
-Chained `with_column` is still correct when a later column genuinely reads an
-earlier one's new value, and much of `src/` predates this correction. Prefer
-the dict form for independent columns in one projection — that is
-`daft-patterns` Rule 5. The hazard that rule warns about is specific: a UDF
-column argument resolves to the column's **final** value in a projection set,
-so a read-then-overwrite split across calls sees the bumped value. That footgun
-is documented above under "UDF column args resolve to the column's FINAL
-value"; the fix there is one struct-returning UDF, not a different
-`with_column*` spelling.
+Chained `with_column` remains correct for an intentional dependency on an
+earlier update; prefer the dict form for independent columns. See
+`daft-patterns` Rule 5. The separate read-then-overwrite UDF hazard retains one
+canonical explanation above under "UDF column args resolve to the column's
+FINAL value".
 
 ---
 
