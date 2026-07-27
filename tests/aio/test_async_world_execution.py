@@ -2,9 +2,10 @@ import asyncio
 import json
 import logging
 
+import daft
 import pytest
 import pytest_asyncio
-from daft import col, from_pylist, lit
+from daft import DataFrame, DataType, col, from_pylist, lit
 
 from archetype.core.aio.async_cached_store import AsyncCachedStore
 from archetype.core.aio.async_processor import AsyncProcessor
@@ -28,6 +29,28 @@ class Position(Component):
 
 class ResourceProbeMarker(Component):
     value: int
+
+
+class LazyExecutionMarker(Component):
+    value: int
+
+
+_LAZY_EXECUTION_CALLS: list[int] = []
+
+
+@daft.func(return_dtype=DataType.int64(), use_process=False)
+def _observe_lazy_execution(value: int) -> int:
+    _LAZY_EXECUTION_CALLS.append(value)
+    return value
+
+
+class FilteredSideEffectProbe(AsyncProcessor):
+    components = (LazyExecutionMarker,)
+
+    async def process(self, df: DataFrame, **kwargs: object) -> DataFrame:
+        return df.with_column(
+            "observed", _observe_lazy_execution(col("lazyexecutionmarker__value"))
+        ).where(col("observed") > 0)
 
 
 class SharedCounter:
@@ -231,6 +254,30 @@ async def test_concurrent_archetype_executions_share_resources():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio
+async def test_async_system_debug_does_not_execute_lazy_udfs(caplog):
+    async def calls_for(debug: bool) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        _LAZY_EXECUTION_CALLS.clear()
+        system = AsyncSystem()
+        await system.add_processor(FilteredSideEffectProbe())
+        source = daft.from_pydict({"lazyexecutionmarker__value": [1, 2, 3]})
+
+        planned = await system.execute(source, (LazyExecutionMarker,), debug=debug)
+        after_execute = tuple(_LAZY_EXECUTION_CALLS)
+        planned.collect()
+        return after_execute, tuple(_LAZY_EXECUTION_CALLS)
+
+    caplog.set_level(logging.DEBUG, logger="archetype.core.aio.async_system")
+    traces = {debug: await calls_for(debug) for debug in (False, True)}
+
+    assert traces[False] == traces[True] == ((), (1, 2, 3))
+    processor_end = [
+        record.message for record in caplog.records if "processor_end" in record.message
+    ]
+    assert processor_end
+    assert all("rows_out" not in message for message in processor_end)
+
+
 class CatchAllKwargsProbe(AsyncProcessor):
     """Processor using the documented catch-all signature. Captures the full
     kwargs dict it receives for assertions."""
@@ -350,7 +397,7 @@ async def test_run_config_debug_logs_step_lifecycle_via_hooks(store_backend, cap
     assert payloads[0]["spawn_pending"] == 1
     assert payloads[1]["count"] == 1
     assert payloads[2]["tick"] == 1
-    assert payloads[2]["live_entities"] == 1
+    assert "live_entities" not in payloads[2]
 
 
 @pytest.mark.asyncio
