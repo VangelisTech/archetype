@@ -13,12 +13,12 @@ from daft import DataFrame, col
 
 from archetype.activities import (
     ActivityAdmission,
-    ActivitySnapshot,
     ActivityClaim,
     ActivityConflictError,
     ActivityResultRef,
     ActivityRetryGuard,
     ActivitySettlement,
+    ActivitySnapshot,
     iActivityCoordinator,
 )
 from archetype.core.hooks import PostTick
