@@ -62,6 +62,7 @@ _DICT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REQUEST_ADAPTER = TypeAdapter(TaskDispatchRequest)
 _PROVIDER_RESULT_KIND = "missions.author.modal-result"
+_LEGACY_PROVIDER_RESULT_SCHEMA_VERSION = 1
 _PROVIDER_RESULT_SCHEMA_VERSION = 2
 _RESULT_KEY_PREFIX = "author-result-v1-"
 _RETRY_REF_PREFIX = "modal-author-retry+json:sha256:"
@@ -110,7 +111,7 @@ class ModalAuthorExecutionUnknown(AvailabilityError):
 @dataclass(frozen=True, slots=True)
 class _StoredAuthorResult:
     observation: DurableAuthorExecutionObservation
-    cleanup: ModalSandboxOperationCleanup
+    cleanup: ModalSandboxOperationCleanup | None
 
 
 class _ModalAuthorResultCatalog:
@@ -199,7 +200,7 @@ class _ModalAuthorResultCatalog:
             recovered = await self._recover_ambiguous_put(
                 identity=identity,
                 request_digest=request_digest,
-                expected=encoded,
+                expected=stored,
                 cause=exc,
             )
             return recovered
@@ -214,14 +215,7 @@ class _ModalAuthorResultCatalog:
                 identity.operation_id,
                 "provider rejected first result but no result is visible",
             )
-        if (
-            self._encode(
-                identity=identity,
-                request_digest=request_digest,
-                stored=existing,
-            )
-            != encoded
-        ):
+        if not self._matches_first_result(existing, stored):
             raise RuntimeError("Modal author operation has a conflicting first result")
         return existing
 
@@ -230,7 +224,7 @@ class _ModalAuthorResultCatalog:
         *,
         identity: ModalSandboxOperationIdentity,
         request_digest: str,
-        expected: bytes,
+        expected: _StoredAuthorResult,
         cause: Exception,
     ) -> _StoredAuthorResult:
         try:
@@ -250,18 +244,23 @@ class _ModalAuthorResultCatalog:
                 "provider first-result write outcome is ambiguous and no result is visible "
                 f"({type(cause).__name__[:128]})",
             ) from cause
-        if (
-            self._encode(
-                identity=identity,
-                request_digest=request_digest,
-                stored=existing,
-            )
-            != expected
-        ):
+        if not self._matches_first_result(existing, expected):
             raise RuntimeError(
                 "Modal author operation has a conflicting first result after ambiguous write"
             ) from cause
         return existing
+
+    @staticmethod
+    def _matches_first_result(
+        existing: _StoredAuthorResult,
+        expected: _StoredAuthorResult,
+    ) -> bool:
+        # A schema-1 result is already the immutable winner. The current
+        # execute path still closes its own session in ``finally``; without
+        # legacy object IDs, replacing or inventing cleanup authority is unsafe.
+        return existing.observation == expected.observation and (
+            existing.cleanup is None or existing.cleanup == expected.cleanup
+        )
 
     def _encode(
         self,
@@ -273,17 +272,49 @@ class _ModalAuthorResultCatalog:
         self._validate_identity(identity)
         if not _DIGEST.fullmatch(request_digest):
             raise ValueError("Modal author request digest is invalid")
-        if stored.cleanup.identity != identity:
+        cleanup = stored.cleanup
+        if cleanup is None:
+            raise ValueError("Modal author schema-2 result requires cleanup metadata")
+        if cleanup.identity != identity:
             raise ValueError("Modal author cleanup belongs to another operation")
         result_envelope = json.loads(self._codec.encode_observation(stored.observation))
         encoded = json.dumps(
             {
-                "cleanup": stored.cleanup.to_payload(),
+                "cleanup": cleanup.to_payload(),
                 "kind": _PROVIDER_RESULT_KIND,
                 "operation_digest": identity.digest,
                 "request_digest": request_digest,
                 "result": result_envelope,
                 "schema_version": _PROVIDER_RESULT_SCHEMA_VERSION,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        if len(encoded) > self._max_result_bytes:
+            raise ValueError(
+                f"Modal author provider result exceeds the {self._max_result_bytes}-byte limit"
+            )
+        return encoded
+
+    def _encode_legacy(
+        self,
+        *,
+        identity: ModalSandboxOperationIdentity,
+        request_digest: str,
+        observation: DurableAuthorExecutionObservation,
+    ) -> bytes:
+        self._validate_identity(identity)
+        if not _DIGEST.fullmatch(request_digest):
+            raise ValueError("Modal author request digest is invalid")
+        result_envelope = json.loads(self._codec.encode_observation(observation))
+        encoded = json.dumps(
+            {
+                "kind": _PROVIDER_RESULT_KIND,
+                "operation_digest": identity.digest,
+                "request_digest": request_digest,
+                "result": result_envelope,
+                "schema_version": _LEGACY_PROVIDER_RESULT_SCHEMA_VERSION,
             },
             ensure_ascii=False,
             separators=(",", ":"),
@@ -314,10 +345,17 @@ class _ModalAuthorResultCatalog:
                 identity.operation_id,
                 "provider result is not canonical JSON",
             ) from exc
-        if (
-            not isinstance(envelope, dict)
-            or set(envelope)
-            != {
+        schema_version = envelope.get("schema_version") if isinstance(envelope, dict) else None
+        if schema_version == _LEGACY_PROVIDER_RESULT_SCHEMA_VERSION:
+            expected_fields = {
+                "kind",
+                "operation_digest",
+                "request_digest",
+                "result",
+                "schema_version",
+            }
+        elif schema_version == _PROVIDER_RESULT_SCHEMA_VERSION:
+            expected_fields = {
                 "cleanup",
                 "kind",
                 "operation_digest",
@@ -325,8 +363,12 @@ class _ModalAuthorResultCatalog:
                 "result",
                 "schema_version",
             }
+        else:
+            expected_fields = set()
+        if (
+            not isinstance(envelope, dict)
+            or set(envelope) != expected_fields
             or envelope.get("kind") != _PROVIDER_RESULT_KIND
-            or envelope.get("schema_version") != _PROVIDER_RESULT_SCHEMA_VERSION
             or envelope.get("operation_digest") != identity.digest
             or envelope.get("request_digest") != request_digest
         ):
@@ -342,31 +384,42 @@ class _ModalAuthorResultCatalog:
         ).encode()
         try:
             observation = self._codec.decode_observation(result_encoded)
-            cleanup = ModalSandboxOperationCleanup.from_payload(
-                identity,
-                envelope["cleanup"],
+            cleanup = (
+                None
+                if schema_version == _LEGACY_PROVIDER_RESULT_SCHEMA_VERSION
+                else ModalSandboxOperationCleanup.from_payload(
+                    identity,
+                    envelope["cleanup"],
+                )
             )
         except (TypeError, ValueError) as exc:
             raise ModalAuthorExecutionUnknown(
                 identity.operation_id,
                 "provider result contains an invalid author observation",
             ) from exc
-        if (
-            self._encode(
+        stored = _StoredAuthorResult(
+            observation=observation,
+            cleanup=cleanup,
+        )
+        canonical = (
+            self._encode_legacy(
                 identity=identity,
                 request_digest=request_digest,
-                stored=_StoredAuthorResult(
-                    observation=observation,
-                    cleanup=cleanup,
-                ),
+                observation=observation,
             )
-            != encoded
-        ):
+            if schema_version == _LEGACY_PROVIDER_RESULT_SCHEMA_VERSION
+            else self._encode(
+                identity=identity,
+                request_digest=request_digest,
+                stored=stored,
+            )
+        )
+        if canonical != encoded:
             raise ModalAuthorExecutionUnknown(
                 identity.operation_id,
                 "provider result is not canonically encoded",
             )
-        return _StoredAuthorResult(observation=observation, cleanup=cleanup)
+        return stored
 
     async def _dictionary(self) -> Any:
         modal = self._load_modal()
@@ -706,16 +759,21 @@ class ModalMissionAuthorExecutor:
         *,
         spec: SandboxSpec,
     ) -> None:
+        cleanup = stored.cleanup
+        if cleanup is None:
+            # Schema 1 made the result authoritative before exact teardown
+            # identities existed. Never invent provider cleanup authority.
+            return
         try:
             await self._capability.cleanup_completed(
-                cleanup=stored.cleanup,
+                cleanup=cleanup,
                 spec=spec,
             )
         except asyncio.CancelledError:
             raise
         except BaseException as exc:
             raise ModalAuthorExecutionUnknown(
-                stored.cleanup.identity.operation_id,
+                cleanup.identity.operation_id,
                 f"exact provider cleanup failed ({type(exc).__name__[:128]})",
             ) from exc
 

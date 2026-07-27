@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable, Mapping
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -33,6 +33,75 @@ type AppServerCompletionBarrier = Callable[["CodexTurnCompletion"], Awaitable[No
 
 class CodexAppServerError(RuntimeError):
     """The app-server rejected a request or its transport failed."""
+
+
+async def _await_app_server_phase[T](
+    operation: Awaitable[T],
+    *,
+    deadline: float,
+    phase: str,
+    propagate_timeout: bool = False,
+) -> T:
+    """Await one phase against the caller's absolute monotonic deadline."""
+
+    try:
+        async with asyncio.timeout_at(deadline):
+            return await operation
+    except TimeoutError as exc:
+        message = f"Codex app-server exchange timed out during {phase}"
+        if propagate_timeout:
+            raise TimeoutError(message) from exc
+        raise CodexAppServerError(message) from exc
+
+
+async def _interrupt_for_terminal_completion(
+    client: CodexAppServerClient,
+    turn: CodexTurn,
+    *,
+    deadline: float,
+) -> CodexTurnCompletion:
+    """Race best-effort interruption against exact terminal turn authority."""
+
+    completion_task = asyncio.create_task(client.wait_for_turn(turn))
+    interrupt_task = asyncio.create_task(client.interrupt(turn))
+    interrupt_error: Exception | None = None
+    try:
+        try:
+            async with asyncio.timeout_at(deadline):
+                pending: set[asyncio.Task[Any]] = {
+                    completion_task,
+                    interrupt_task,
+                }
+                while True:
+                    done, _ = await asyncio.wait(
+                        pending,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if completion_task in done:
+                        return completion_task.result()
+                    if interrupt_task in done:
+                        try:
+                            interrupt_task.result()
+                        except Exception as exc:
+                            interrupt_error = exc
+                        pending = {completion_task}
+        except TimeoutError as exc:
+            # The terminal notification can race the deadline cancellation.
+            # Its exact factual result remains stronger than interrupt RPC
+            # acknowledgement or rejection.
+            if completion_task.done() and not completion_task.cancelled():
+                return completion_task.result()
+            if interrupt_error is not None:
+                raise interrupt_error from exc
+            phase = "turn/interrupt" if not interrupt_task.done() else "interrupted turn completion"
+            raise CodexAppServerError(
+                f"Codex app-server exchange timed out during {phase}"
+            ) from exc
+    finally:
+        for task in (completion_task, interrupt_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(completion_task, interrupt_task, return_exceptions=True)
 
 
 @runtime_checkable
@@ -665,26 +734,57 @@ async def run_codex_app_server_turn(
             },
         }
     }
-    async with connector.connect(session) as connection:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_seconds
+    async with AsyncExitStack() as stack:
+        connection = await _await_app_server_phase(
+            stack.enter_async_context(connector.connect(session)),
+            deadline=deadline,
+            phase="connect",
+        )
         client = connection.client
-        await client.initialize()
+        await _await_app_server_phase(
+            client.initialize(),
+            deadline=deadline,
+            phase="initialize",
+        )
         # Modal Activity executions use fresh operation-scoped sandboxes and
         # deliberately scrub CODEX_HOME before checkpointing. A prior thread
         # id is durable evidence, not a resumable local rollout.
-        thread = await client.start_thread(
-            cwd=workspace,
-            model=model,
-            options=options,
+        thread = await _await_app_server_phase(
+            client.start_thread(
+                cwd=workspace,
+                model=model,
+                options=options,
+            ),
+            deadline=deadline,
+            phase="thread/start",
         )
-        turn = await client.start_turn(thread, prompt)
+        turn = await _await_app_server_phase(
+            client.start_turn(thread, prompt),
+            deadline=deadline,
+            phase="turn/start",
+        )
+        # Interruption and its exact terminal fact share the configured
+        # exchange budget. Reserve at most the historical 30-second grace,
+        # and half of a short remaining budget, so timeout handling can never
+        # extend a paid Activity beyond its configured agent deadline.
+        remaining = max(0.0, deadline - loop.time())
+        interrupt_grace = min(30.0, remaining / 2)
+        turn_deadline = deadline - interrupt_grace
         try:
-            completed = await asyncio.wait_for(
+            completed = await _await_app_server_phase(
                 client.wait_for_turn(turn),
-                timeout=timeout_seconds,
+                deadline=turn_deadline,
+                phase="turn completion",
+                propagate_timeout=True,
             )
         except TimeoutError:
-            await client.interrupt(turn)
-            completed = await asyncio.wait_for(client.wait_for_turn(turn), timeout=30)
+            completed = await _interrupt_for_terminal_completion(
+                client,
+                turn,
+                deadline=deadline,
+            )
     return AgentProcessObservation(
         returncode={"completed": 0, "interrupted": 130, "failed": 1}[completed.status],
         stdout=completed.final_message,

@@ -561,6 +561,21 @@ class _Connector:
             await self.client.aclose()
 
 
+class _StalledConnector:
+    def __init__(self) -> None:
+        self.closed = False
+
+    @asynccontextmanager
+    async def connect(self, session: SandboxSession):
+        del session
+        try:
+            await asyncio.Event().wait()
+            raise AssertionError("stalled connector unexpectedly acquired")
+            yield  # pragma: no cover
+        finally:
+            self.closed = True
+
+
 def _request(*, previous_session_id: str = "") -> TaskDispatchRequest:
     return TaskDispatchRequest(
         mission_id=1,
@@ -635,6 +650,179 @@ async def test_driver_uses_app_server_completion_not_pty_output(
     assert observed.stdout == "Implemented."
     assert observed.stderr == ""
     assert observed.trace_uri == "modal-sandbox://sb-1/executions/trace/stdout.log"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stalled_phase", "expected_phase"),
+    [
+        ("initialize", "initialize"),
+        ("thread", "thread/start"),
+        ("turn", "turn/start"),
+    ],
+)
+async def test_driver_bounds_silent_app_server_admission_phases(
+    stalled_phase: str,
+    expected_phase: str,
+) -> None:
+    transport = _Transport()
+    client = CodexAppServerClient(transport)
+    driver = CodexAppServerDriver(_Connector(client), timeout_seconds=1)
+
+    async def server() -> None:
+        initialize = await transport.sent.get()
+        assert initialize["method"] == "initialize"
+        if stalled_phase == "initialize":
+            return
+        await transport.incoming.put({"id": initialize["id"], "result": {}})
+        assert await transport.sent.get() == {"method": "initialized", "params": {}}
+
+        thread = await transport.sent.get()
+        assert thread["method"] == "thread/start"
+        if stalled_phase == "thread":
+            return
+        await transport.incoming.put(
+            {"id": thread["id"], "result": {"thread": {"id": "thr-timeout"}}}
+        )
+
+        turn = await transport.sent.get()
+        assert turn["method"] == "turn/start"
+
+    server_task = asyncio.create_task(server())
+    with pytest.raises(
+        CodexAppServerError,
+        match=rf"timed out during {expected_phase}",
+    ):
+        await asyncio.wait_for(
+            driver.run(_Session(), _request(), "Go."),
+            timeout=2,
+        )
+    await server_task
+
+    assert transport.closed is True
+
+
+@pytest.mark.asyncio
+async def test_driver_bounds_connector_acquisition_and_runs_its_cleanup() -> None:
+    connector = _StalledConnector()
+    driver = CodexAppServerDriver(connector, timeout_seconds=1)
+
+    with pytest.raises(CodexAppServerError, match=r"timed out during connect"):
+        await asyncio.wait_for(
+            driver.run(_Session(), _request(), "Go."),
+            timeout=2,
+        )
+
+    assert connector.closed is True
+
+
+@pytest.mark.asyncio
+async def test_driver_bounds_timeout_triggered_interrupt_by_same_exchange_deadline() -> None:
+    transport = _Transport()
+    client = CodexAppServerClient(transport)
+    driver = CodexAppServerDriver(_Connector(client), timeout_seconds=1)
+
+    async def server() -> None:
+        initialize = await transport.sent.get()
+        await transport.incoming.put({"id": initialize["id"], "result": {}})
+        assert await transport.sent.get() == {"method": "initialized", "params": {}}
+        thread = await transport.sent.get()
+        await transport.incoming.put(
+            {"id": thread["id"], "result": {"thread": {"id": "thr-timeout"}}}
+        )
+        turn = await transport.sent.get()
+        await transport.incoming.put(
+            {
+                "id": turn["id"],
+                "result": {"turn": {"id": "turn-timeout", "status": "inProgress"}},
+            }
+        )
+        interrupt = await asyncio.wait_for(transport.sent.get(), timeout=1)
+        assert interrupt == {
+            "method": "turn/interrupt",
+            "id": 4,
+            "params": {
+                "threadId": "thr-timeout",
+                "turnId": "turn-timeout",
+            },
+        }
+
+    server_task = asyncio.create_task(server())
+    with pytest.raises(CodexAppServerError, match=r"timed out during turn/interrupt"):
+        await asyncio.wait_for(
+            driver.run(_Session(), _request(), "Go."),
+            timeout=2,
+        )
+    await server_task
+
+    assert transport.closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interrupt_outcome", ["hang", "reject"])
+async def test_exact_terminal_completion_wins_interrupt_race(
+    interrupt_outcome: str,
+) -> None:
+    transport = _Transport()
+    client = CodexAppServerClient(transport)
+    driver = CodexAppServerDriver(_Connector(client), timeout_seconds=1)
+
+    async def server() -> None:
+        initialize = await transport.sent.get()
+        await transport.incoming.put({"id": initialize["id"], "result": {}})
+        assert await transport.sent.get() == {"method": "initialized", "params": {}}
+        thread = await transport.sent.get()
+        await transport.incoming.put({"id": thread["id"], "result": {"thread": {"id": "thr-race"}}})
+        turn = await transport.sent.get()
+        await transport.incoming.put(
+            {
+                "id": turn["id"],
+                "result": {"turn": {"id": "turn-race", "status": "inProgress"}},
+            }
+        )
+        interrupt = await asyncio.wait_for(transport.sent.get(), timeout=1)
+        assert interrupt["method"] == "turn/interrupt"
+        if interrupt_outcome == "reject":
+            await transport.incoming.put(
+                {
+                    "id": interrupt["id"],
+                    "error": {
+                        "code": -32000,
+                        "message": "turn already completed",
+                    },
+                }
+            )
+        await transport.incoming.put(
+            {
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thr-race",
+                    "turn": {
+                        "id": "turn-race",
+                        "status": "completed",
+                        "items": [
+                            {
+                                "type": "agentMessage",
+                                "id": "message-race",
+                                "text": "Finished at the deadline.",
+                            }
+                        ],
+                    },
+                },
+            }
+        )
+
+    server_task = asyncio.create_task(server())
+    observed = await asyncio.wait_for(
+        driver.run(_Session(), _request(), "Go."),
+        timeout=2,
+    )
+    await server_task
+
+    assert observed.returncode == 0
+    assert observed.stdout == "Finished at the deadline."
+    assert observed.session_id == "thr-race"
+    assert transport.closed is True
 
 
 def test_thread_policy_fields_cannot_be_overridden() -> None:

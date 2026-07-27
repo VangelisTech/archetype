@@ -253,9 +253,33 @@ class _ModalRegistry:
         )
         self._next_object += 1
 
-    def result_values(self, executor: ModalMissionAuthorExecutor) -> tuple[str, ...]:
+    def result_values(
+        self,
+        executor: ModalMissionAuthorExecutor | ModalMissionCriticExecutor,
+    ) -> tuple[str, ...]:
         data = self.dicts[(self.environment_name, executor.result_dict_name)]
         return tuple(str(value) for value in data.values.values())
+
+
+def _downgrade_provider_result_to_schema_v1(
+    registry: _ModalRegistry,
+    *,
+    result_dict_name: str,
+) -> str:
+    data = registry.dicts[(registry.environment_name, result_dict_name)]
+    ((key, value),) = data.values.items()
+    envelope = json.loads(str(value))
+    assert envelope["schema_version"] == 2
+    envelope.pop("cleanup")
+    envelope["schema_version"] = 1
+    legacy = json.dumps(
+        envelope,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    data.values[key] = legacy
+    return legacy
 
 
 class _Session:
@@ -751,6 +775,45 @@ async def test_cold_restart_recovers_exact_provider_result_without_start(
 
 
 @pytest.mark.asyncio
+async def test_schema_v1_author_result_recovers_and_delivers_without_replay(
+    fake_modal: _ModalRegistry,
+) -> None:
+    first, _first_capability, _first_harness = _executor(fake_modal)
+    request = _request("dispatch-schema-v1")
+    operation_id = "missions.author:world-a:dispatch-schema-v1"
+    original = await first.execute(
+        operation_id=operation_id,
+        request=request,
+        attempt=1,
+        fence=1,
+        retry_guard=None,
+    )
+    legacy = _downgrade_provider_result_to_schema_v1(
+        fake_modal,
+        result_dict_name=first.result_dict_name,
+    )
+    restarted, capability, harness = _executor(fake_modal)
+
+    recovered = await restarted.reconcile(
+        operation_id=operation_id,
+        request=request,
+    )
+    delivered = await restarted.execute(
+        operation_id=operation_id,
+        request=request,
+        attempt=2,
+        fence=2,
+        retry_guard=None,
+    )
+
+    assert isinstance(recovered, AuthorRecovered)
+    assert recovered.observation == original
+    assert delivered == original
+    assert capability.starts == harness.calls == capability.cleanup_calls == 0
+    assert fake_modal.result_values(restarted) == (legacy,)
+
+
+@pytest.mark.asyncio
 async def test_modal_critic_cold_restart_recovers_exact_receipt_with_one_start(
     fake_modal: _ModalRegistry,
     tmp_path: Path,
@@ -798,6 +861,46 @@ async def test_modal_critic_cold_restart_recovers_exact_receipt_with_one_start(
     durable = await values.get_result(result_ref)
     assert durable.receipt is not None
     assert durable.receipt.reviewed_diff_digest == request.diff_digest
+
+
+@pytest.mark.asyncio
+async def test_schema_v1_critic_result_recovers_and_delivers_without_replay(
+    fake_modal: _ModalRegistry,
+) -> None:
+    first, _first_capability, _first_harness = _critic_executor(fake_modal)
+    request = _critic_request()
+    operation_id = "missions.critic:world-a:review-schema-v1"
+    original = await first.execute(
+        operation_id=operation_id,
+        request=request,
+        attempt=1,
+        fence=1,
+        retry_guard=None,
+    )
+    legacy = _downgrade_provider_result_to_schema_v1(
+        fake_modal,
+        result_dict_name=first.result_dict_name,
+    )
+    restarted, capability, harness = _critic_executor(fake_modal)
+
+    recovered = await restarted.reconcile(
+        operation_id=operation_id,
+        request=request,
+    )
+    delivered = await restarted.execute(
+        operation_id=operation_id,
+        request=request,
+        attempt=2,
+        fence=2,
+        retry_guard=None,
+    )
+
+    assert isinstance(recovered, CriticRecovered)
+    assert recovered.result == original
+    assert delivered == original
+    assert capability.starts == harness.prewarm_calls == harness.calls == 0
+    assert capability.cleanup_calls == 0
+    assert fake_modal.result_values(restarted) == (legacy,)
 
 
 @pytest.mark.asyncio
