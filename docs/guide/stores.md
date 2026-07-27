@@ -319,8 +319,9 @@ same-tick active/inactive ties, load component classes, interpret lineage,
 choose a resumed tick, or allocate the next entity ID. Those are world-family
 semantics layered over the raw visible frames.
 
-The service uses one reentrant execution gate for terminal plans and for
-appends made by its pooled ECS stores. Reentrancy lets a cached-store append
+One `StorageService` serializes terminal Daft submissions within one process
+through a reentrant execution gate for terminal plans and appends made by its
+pooled ECS stores. Reentrancy lets a cached-store append
 flush into its inner store in the same task; a background flush or another
 application job waits its turn. Daft still parallelizes the admitted plan over
 rows and partitions. The gate coordinates local submissions so application
@@ -332,6 +333,27 @@ metadata refresh. A conditional append refreshes after a conflict and
 recomputes its anti-join against the new snapshot before retrying. That
 distinction prevents a stale retry from publishing a logical key that another
 writer committed first.
+
+The managed ECS Iceberg adapter also freezes one Arrow payload and retries only
+PyIceberg's exact catalog compare-and-swap conflict, for at most 16 attempts
+with full jitter. Every attempt retains the same physical table identity and
+commit token; processor work is never planned or materialized again.
+
+The deliberate v0.5 ambiguity posture is fail-closed rather than
+reconciliation: PyIceberg's exact commit-state-unknown signal becomes
+`AmbiguousCommitError`, whose fields preserve the table, world, run, tick,
+commit token, and writer epoch. Storage does not replay that append because it
+cannot prove absence, and the managed store rejects later non-empty appends to
+that physical table before materialization. This includes a cached batch
+restored after the typed error. The physical rows may already exist, while
+manifest-last visibility keeps them hidden. Exact snapshot readback,
+reconciliation, and restart-persistent freeze state remain future work
+(issue #709).
+
+The v0.5 surface does not expose general schema evolution, physical layout
+tuning, compaction, or snapshot expiry. Visibility pinning retains an explicit
+manifest-token allowlist and therefore grows linearly with committed tick
+count.
 
 Application families may construct lazy DataFrame transforms. They request
 materialization or table persistence from `iStorageService`; they do not call

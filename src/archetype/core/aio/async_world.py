@@ -1150,10 +1150,7 @@ class AsyncWorld(iAsyncWorld):
             )
 
         async def log_tick_end(event: PostTick) -> None:
-            total_live = sum(
-                df.count_rows() if hasattr(df, "count_rows") else 0 for df in event.results.values()
-            )
-            self._debug_log("tick_end", tick=event.tick, live_entities=total_live)
+            self._debug_log("tick_end", tick=event.tick)
 
         return (
             self.add_hook(PreTick, log_tick_start),

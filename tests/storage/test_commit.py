@@ -7,12 +7,6 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from archetype.app.storage.commit import (
-    CatalogCommitCoordinator as CompatibilityCoordinator,
-)
-from archetype.app.storage.commit import (
-    CommitCoordinatorIdentity as CompatibilityIdentity,
-)
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.interfaces import CommitContext
@@ -53,11 +47,6 @@ class RecordingCatalog:
     ) -> dict[int, list[str]]:
         self.visibility_requests.append((world_id, run_id, ticks))
         return {4: ["visible-token"]}
-
-
-def test_compatibility_module_reexports_canonical_coordinator() -> None:
-    assert CompatibilityCoordinator is CatalogCommitCoordinator
-    assert CompatibilityIdentity is CommitCoordinatorIdentity
 
 
 @pytest.mark.asyncio

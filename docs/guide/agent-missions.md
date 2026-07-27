@@ -168,8 +168,8 @@ V1.
 ```mermaid
 flowchart LR
     Author[Mission author] --> Runtime[RuntimeMissions]
-    Runtime --> App[MissionService]
-    App --> World[Mission world]
+    Runtime --> Service[MissionService]
+    Service --> World[Mission world]
 
     subgraph Domain[archetype.missions]
         State[Components + relations]
@@ -181,12 +181,12 @@ flowchart LR
 
     World --> State
     World --> Behavior
-    App --> Agents
-    App --> Critics
+    Service --> Agents
+    Service --> Critics
     Agents --> Sandboxes
     Critics --> Sandboxes
-    Sandboxes --> Provider[Apple Container / Docker / Modal]
-    App --> World
+    Sandboxes --> Provider[Modal]
+    Service --> World
 ```
 
 `archetype.missions` owns the reusable family:
@@ -198,18 +198,18 @@ flowchart LR
 - sandbox Service, Backend, and Session contracts; and
 - capability-scoped provider adapters such as Modal.
 
-`archetype.app.missions` owns application composition:
+`archetype.missions` also owns the family workflow:
 
 - reserve identities and materialize submitted graphs;
 - configure a world with the built-in mission behavior;
 - step the state machine;
-- cross post-commit boundaries, prewarm a critic sandbox during author work,
-  and invoke both repository harnesses;
-- stage factual observations through the mutation path;
-- compose mission trajectory reads and evaluation through a separate app service; and
+- project author and critic requests from exact committed snapshots;
+- execute or reconcile both repository harnesses through one Activity binding;
+- stage observations through the mutation path;
+- compose mission trajectory reads and evaluation; and
 - return supported mission projections.
 
-The application service does not decide readiness, retry, acceptance, or
+The family service does not decide readiness, retry, acceptance, or
 mission success. Those decisions remain visible in processors and persisted
 state.
 
@@ -250,14 +250,13 @@ sequenceDiagram
         World->>World: commit tick N
         World-->>Service: PostTick(committed dispatches)
         opt a current dispatch is ready for external work
-            Service->>CriticBox: prewarm public base
-            Service->>AuthorHarness: execute(dispatch)
+            Service->>AuthorHarness: execute admitted dispatch
             AuthorHarness->>AuthorBox: author, validators, exact push
             AuthorHarness-->>Service: execution + revision-bound evidence
-            Service->>World: stage observations + immutable candidate
+            Service->>World: stage author observations
         end
         opt a committed candidate awaits review
-            Service->>CriticHarness: review exact base/head/diff
+            Service->>CriticHarness: execute admitted exact review
             CriticHarness->>CriticBox: fetch, verify, probe, infer
             CriticHarness-->>Service: findings + bound receipt
             Service->>World: stage review evidence
@@ -465,23 +464,20 @@ consume an author dispatch. When that bounded budget is exhausted,
 `missions.run()` reports the candidate as still pending review instead of
 turning reviewer failure into task failure or implicit approval.
 
-The opt-in Activity-backed critic path makes that post-commit boundary durable.
-It projects the exact current candidate without relying on the process-local
-`CriticReviewOutbox`, admits `kind="missions.critic"` under the stable
-`review_id`, and executes or reconciles outside the world lock. The admitted
+The Activity-backed critic path makes that post-commit boundary durable. It
+projects the exact current candidate, admits `kind="missions.critic"` under the
+stable `review_id`, and executes or reconciles outside the world lock. The admitted
 value contains no diff bytes; the provider binds the recomputed binary diff
 through a bounded provider-owned file or stdin and cleans temporary subject
 storage on success and failure.
 
-The returned observation is one atomic fact bundle: a fresh critic `Sandbox`,
+The returned observation is one atomic bundle: a fresh critic `Sandbox`,
 `CriticExecution`, `Reviews`/`RunsIn`, findings and provenance, an optional
 existing-v1 `CriticReceipt`, and a `CompleteCriticActivityObservation` marker
 staged last. The marker, rather than a process-local queue or the receipt row
 alone, binds the exact durable result and full subject evidence to the later
 committed tick. Generic Activity retries never increment Mission review
-attempts; only committed `CriticExecution` facts do. The legacy delivery path
-remains available until final consolidation, but correctness of this path does
-not depend on it.
+attempts; only committed `CriticExecution` observations do.
 
 A blocking receipt moves the task back to `READY` only after its findings are
 durable. The next author request contains those findings. Any repair produces
@@ -650,11 +646,13 @@ relationships. HTN decomposition is useful, but is not a V1 correctness gate.
 - revision-bound validation and Git publication evidence;
 - immutable candidate identity plus policy-digest-bound critic executions,
   typed findings, and exact-subject receipts;
-- critic prewarming, bounded infrastructure-only review retry, and durable
-  findings before author repair;
+- bounded infrastructure-only review retry and durable findings before author
+  repair;
 - first-class commits, friction, and post-decision checkpoint evidence plus
   reusable manifest and artifact-reference schemas;
-- Apple Container, Docker, and Modal backends with checkpoint/restore parity;
+- Modal author and critic execution with exact restart recovery;
+- deterministic pre-admission rejection for Apple Container and Docker
+  end-to-end Missions;
 - immediate sandbox identity observation and direct Modal live monitoring;
 - best-effort post-dispatch checkpoint evidence plus explicit restore; and
 - terminal result projection and cleanup.
@@ -686,7 +684,7 @@ Component.
 
 | Gap | V1 treatment | Later seam |
 |---|---|---|
-| Cold process resume | The supported Modal author path uses exact-receipt Activity admission, provider reconciliation, complete atomic ECS staging, and no-op redelivery after world reconstruction. A real Modal mission and separate cold process recovered the exact provider result without another sandbox start. | Apply the same seam to critic work; non-Modal authors retain the direct local path. |
+| Cold process resume | Modal author and critic paths use exact-receipt Activity admission, provider reconciliation, complete atomic ECS staging, and no-op redelivery after world reconstruction. | Add another backend only with the same fail-closed Activity adapter. |
 | Private-repository critic materialization | V1 proves public repositories and gives critic processes no Git publication secret. | Add a distinct read-only Git capability without widening critic publication authority. |
 | Sandbox placement | Use a simple configured policy. | Add a scheduler only when multiple topologies require one. |
 | Task decomposition | Authors submit the graph. | Planner emits the same typed graph. |
@@ -697,10 +695,8 @@ Component.
 
 ### Accepted v0.5 control-plane contract
 
-This subsection is normative for the v0.5 migration and deliberately describes
-the accepted target, not the current `archetype.app.missions` implementation.
-The supported Modal author uses this Activity contract. The exact-head critic
-remains on the preservation path until A5 completes its corresponding cutover.
+This subsection is normative for v0.5. The supported Modal author and
+exact-head critic both use this Activity contract.
 
 Agent Missions has three cooperating concerns with distinct authority:
 
@@ -794,16 +790,18 @@ a failed phase, rejects new admission, and retries the retained phase before
 finalization. This replaces ambient cleanup authority without weakening the
 landed create/replace/close race guarantees.
 
-That reservation covers the entire supported `RuntimeMissions.run()` call, not
-only individual world steps or provider subprocesses. The run enters through
-the registered dispatcher operation before it may construct or schedule work
-and remains counted as admitted until its resource ownership is either
-registered or released. Shutdown waits for a run admitted before closure; a run
-arriving afterward is rejected before task, sandbox, critic prewarm, or
-provider side effects. Retryable cleanup receives only a narrow exact-world
-capability and cannot use inherited task context to admit another mission or
-touch a sibling world. This whole-operation barrier is the v0.5 resolution of
-the admission race tracked in issue #627.
+That reservation covers each entire supported `RuntimeMissions` operation —
+`submit`, `run`, `restore_sandbox`, and `query` — not only individual world
+steps or provider subprocesses. The run enters through the registered
+dispatcher operation before it may construct or schedule work and remains
+counted as admitted until its resource ownership is either registered or
+released. Shutdown waits for a run admitted before closure; a run arriving
+afterward is rejected before task, sandbox, Activity, or provider side
+effects. A drained run returns its factual terminal result; teardown never
+replaces it with a generic runtime-closed error. Retryable cleanup receives
+only a narrow exact-world capability and cannot use inherited task context to
+admit another mission or touch a sibling world. This whole-operation barrier
+is the v0.5 resolution of the admission race tracked in issue #627.
 
 ## 8. File and responsibility map
 
@@ -826,11 +824,13 @@ The implementation follows this layout:
 | `archetype/missions/sandboxes/apple_container.py` | Operational macOS backend and atomic root-filesystem archive restore. |
 | `archetype/missions/sandboxes/docker.py` | Linux/CI reference backend and immutable image restore. |
 | `archetype/missions/sandboxes/modal.py` | Remote backend, device login, snapshots, and direct live monitor. |
-| `archetype/app/missions/service.py` | Graph materialization, tick/I/O composition, cross-family workflows, and projections. |
+| `archetype/missions/service.py` | Graph materialization, tick/I/O composition, family workflow, and projections. |
 | `archetype/runtime/missions.py` | Mission-author runtime handle and lifecycle. |
 | `examples/11_coding_agent_mission.py` | Real typed dogfood script. |
 | `tests/missions/` | Family contract, transition, sandbox, harness, and provider oracles. |
-| `tests/integration/test_agent_mission_service.py` | End-to-end graph, retry, revision binding, and cleanup oracle. |
+| `tests/missions/test_mission_author_world_integration.py` | Exact committed author admission, staging, restart, and settlement oracle. |
+| `tests/missions/test_mission_critic_world_integration.py` | Exact committed critic admission, staging, restart, and settlement oracle. |
+| `tests/missions/test_modal_activity_executors.py` | Modal author and critic provider restart/reconciliation oracle. |
 
 No author imports a Component, processor, `GraphView`, application service, or
 provider SDK to run the built-in workflow.
@@ -838,8 +838,9 @@ provider SDK to run the built-in workflow.
 ## 9. Family direction after V1
 
 Agent Missions establishes the repository convention: reusable state, pure
-behavior, and capability-scoped resources live in the named family; the app
-layer owns durable application authority and cross-family composition.
+behavior, capability-scoped resources, and family-owned workflows live in the
+named family. Concrete cross-family composition remains in
+`archetype.wiring`.
 
 ```text
 archetype.missions
@@ -852,9 +853,7 @@ archetype.missions
 ├── critics/
 ├── sandboxes/
 ├── planning/
-└── trajectories/
-
-archetype.app.missions
+├── trajectories/
 └── service.py
 ```
 
@@ -863,8 +862,8 @@ The orphan cleanup follows the same rule:
 | Capability | Owner |
 |---|---|
 | Planning / former HTN | `archetype.missions.planning` |
-| Mission trajectories | `archetype.missions.trajectories` with app query/evaluation composition |
-| Artifact ingestion and transcript composition | `archetype.artifacts` owns file ingestion; `archetype.app.missions` composes transcript redaction and typed rows over its handler |
+| Mission trajectories | `archetype.missions.trajectories` with family-owned query/evaluation composition |
+| Artifact ingestion and transcript composition | `archetype.artifacts` owns file ingestion; `archetype.missions` composes transcript redaction and typed rows over its handler |
 | Physical-AI state, models, views, and free workflows | `archetype.physical_ai` |
 | Research state, values, views, decoding, and AutoResearch workflow | `archetype.research` |
 | Vendor-neutral observability vocabulary | `archetype._obs` |

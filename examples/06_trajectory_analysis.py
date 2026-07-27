@@ -1,11 +1,11 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Query and grade normalized mission trajectory evidence.
+"""Query and grade normalized episode evidence.
 
-The example is deterministic and credential-free. It writes two trajectory
-headers plus separate turn and reward rows, selects one failed trial, and asks
-the trajectory application service to grade that trial's rewards.
+The example is deterministic and credential-free. It writes turn and reward
+rows for two episodes keyed by ``episode_id``, selects one failed episode,
+and asks the trajectory application service to grade that episode's rewards.
 
 Usage:
     uv run python examples/06_trajectory_analysis.py
@@ -21,80 +21,60 @@ from daft import DataFrame
 from archetype import ArchetypeRuntime
 from archetype.core.config import StorageConfig
 from archetype.missions.trajectories import (
-    Trajectory,
     TrajectoryReward,
     TrajectorySelection,
+    TrajectoryTurn,
     Turn,
+    trajectory,
     turns_to_components,
 )
 
 
 @dataclass(frozen=True)
-class ExampleTrajectory:
-    """One header and its normalized child values before spawning."""
+class ExampleEpisode:
+    """One episode's normalized evidence values before spawning."""
 
-    header: Trajectory
+    episode_id: str
     turns: tuple[Turn, ...]
     rewards: tuple[float, ...]
 
 
-def make_trajectories() -> tuple[ExampleTrajectory, ...]:
+def make_episodes() -> tuple[ExampleEpisode, ...]:
     """Build two small synthetic mission attempts."""
-    accepted_turns = (
-        Turn(role="user", content="Fix the login regression", tokens=6),
-        Turn(role="assistant", content="Patched and validated", tokens=18),
-    )
-    rejected_turns = (
-        Turn(role="user", content="Fix the cache regression", tokens=6),
-        Turn(role="assistant", content="Validator still fails", tokens=14),
-    )
     return (
-        ExampleTrajectory(
-            header=Trajectory.from_turns(
-                "mission-42:auth:attempt-1",
-                list(accepted_turns),
-                run_id="mission-42",
-                task_id="auth",
-                trial_idx=0,
-                source="coding-agent",
-                terminal=True,
-                outcome="accepted",
+        ExampleEpisode(
+            episode_id="episode-auth-1",
+            turns=(
+                Turn(role="user", content="Fix the login regression", tokens=6),
+                Turn(role="assistant", content="Patched and validated", tokens=18),
             ),
-            turns=accepted_turns,
             rewards=(0.25, 1.0),
         ),
-        ExampleTrajectory(
-            header=Trajectory.from_turns(
-                "mission-42:cache:attempt-1",
-                list(rejected_turns),
-                run_id="mission-42",
-                task_id="cache",
-                trial_idx=1,
-                source="coding-agent",
-                terminal=True,
-                outcome="rejected",
+        ExampleEpisode(
+            episode_id="episode-cache-1",
+            turns=(
+                Turn(role="user", content="Fix the cache regression", tokens=6),
+                Turn(role="assistant", content="Validator still fails", tokens=14),
             ),
-            turns=rejected_turns,
             rewards=(-1.0,),
         ),
     )
 
 
 async def run_demo(storage_uri: str = "./archetype_data") -> dict[str, object]:
-    """Persist, select, and grade the synthetic trajectory evidence."""
+    """Persist, select, and grade the synthetic episode evidence."""
     async with ArchetypeRuntime() as runtime:
         world = runtime.world(
             "trajectory-analysis",
             storage=StorageConfig(uri=storage_uri, namespace="trajectory_example"),
         )
-        for authored in make_trajectories():
-            await world.spawn(authored.header)
+        for episode in make_episodes():
             await world.spawn_many(
                 [
                     [turn]
                     for turn in turns_to_components(
-                        authored.header.trajectory_id,
-                        list(authored.turns),
+                        episode.episode_id,
+                        list(episode.turns),
                     )
                 ]
             )
@@ -102,22 +82,20 @@ async def run_demo(storage_uri: str = "./archetype_data") -> dict[str, object]:
                 [
                     [
                         TrajectoryReward(
-                            trajectory_id=authored.header.trajectory_id,
+                            episode_id=episode.episode_id,
                             seq=seq,
                             reward=reward,
                         )
                     ]
-                    for seq, reward in enumerate(authored.rewards)
+                    for seq, reward in enumerate(episode.rewards)
                 ]
             )
         await world.run(steps=1)
 
-        rejected = await world.query_trajectory(
-            Trajectory,
-            selection=TrajectorySelection(task_ids=("cache",), trial_idxs=(1,)),
-        )
-        rejected_rows = rejected.collect().to_pylist()
-        trajectory_id = str(rejected_rows[0]["trajectory__trajectory_id"])
+        failed_episode_id = "episode-cache-1"
+        turns_frame = await world.query_trajectory(TrajectoryTurn)
+        ordered = trajectory(turns_frame, TrajectoryTurn, episode_id=failed_episode_id)
+        roles = [row["trajectoryturn__role"] for row in ordered.collect().to_pylist()]
 
         def reward_summary(frame: DataFrame) -> dict[str, object]:
             rows = frame.collect().to_pylist()
@@ -128,19 +106,19 @@ async def run_demo(storage_uri: str = "./archetype_data") -> dict[str, object]:
 
         outputs = await world.grade_trajectory(
             TrajectoryReward,
-            selection=TrajectorySelection(trajectory_ids=(trajectory_id,)),
+            selection=TrajectorySelection(episode_ids=(failed_episode_id,)),
             graders=[reward_summary],
         )
         return {
-            "trajectory_id": trajectory_id,
-            "outcome": rejected_rows[0]["trajectory__outcome"],
+            "episode_id": failed_episode_id,
+            "roles": roles,
             "grade": outputs[0],
         }
 
 
 async def main() -> None:
     result = await run_demo()
-    print(f"Selected: {result['trajectory_id']} ({result['outcome']})")
+    print(f"Selected: {result['episode_id']} (roles: {result['roles']})")
     print(f"Grade:    {result['grade']}")
 
 

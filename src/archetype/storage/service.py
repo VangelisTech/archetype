@@ -18,20 +18,27 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
 
+import daft
 import pyarrow as pa
 from daft import DataFrame, DataType, col, lit, read_iceberg
 from daft.catalog import Catalog, Table
 from daft.io import IOConfig
 from daft.session import Session
-from pyiceberg.exceptions import CommitFailedException, TableAlreadyExistsError
+from pyiceberg.exceptions import (
+    CommitFailedException,
+    CommitStateUnknownException,
+    TableAlreadyExistsError,
+)
 
 from archetype.core.aio import AsyncCachedStore, AsyncLancedbStore, AsyncStore
+from archetype.core.archetype import Archetype
 from archetype.core.config import CacheConfig, StorageBackend, StorageConfig
 from archetype.core.interfaces import AppendReceipt, ArchetypeSignature, iAsyncStore
 from archetype.core.paths import (
@@ -40,6 +47,7 @@ from archetype.core.paths import (
     require_safe_namespace,
     resolve_local_root,
 )
+from archetype.errors import AvailabilityError
 from archetype.storage.catalog import (
     ControlCatalog,
     RemoteControlCatalog,
@@ -57,6 +65,44 @@ logger = logging.getLogger(__name__)
 _MAX_COMMIT_ATTEMPTS = 16
 _T = TypeVar("_T")
 _WORLD_ENVELOPE_COLUMNS = ("world_id", "run_id")
+
+
+class AmbiguousCommitError(AvailabilityError):
+    """An Iceberg table commit may have landed and must not be replayed.
+
+    The exact physical table and managed tick identity remain inspectable so
+    callers can fail closed without parsing a backend exception. v0.5 freezes
+    this outcome rather than retrying an append whose absence is unproven
+    (issue #704).
+    """
+
+    public_detail = "Storage commit status is temporarily unavailable; retry is not authorized"
+
+    def __init__(
+        self,
+        *,
+        table_id: str,
+        world_id: str,
+        run_id: str,
+        tick: int,
+        commit_token: str,
+        writer_epoch: int,
+    ) -> None:
+        self.table_id = table_id
+        self.world_id = world_id
+        self.run_id = run_id
+        self.tick = tick
+        self.commit_token = commit_token
+        self.writer_epoch = writer_epoch
+        super().__init__(
+            f"Iceberg commit outcome for table {table_id!r}, world {world_id!r}, "
+            f"run {run_id!r}, tick {tick} is ambiguous; replay is not authorized"
+        )
+
+    @property
+    def physical_identity(self) -> tuple[str, str, str, int]:
+        """The exact table/world/run/tick destination of the frozen append."""
+        return (self.table_id, self.world_id, self.run_id, self.tick)
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,7 +173,7 @@ class _DaftExecutionGate:
 
 
 class _AdmittedAsyncStore(AsyncStore):
-    """Iceberg ECS store whose terminal append shares StorageService admission."""
+    """Managed Iceberg ECS writes owned by the StorageService execution lane."""
 
     def __init__(
         self,
@@ -137,10 +183,109 @@ class _AdmittedAsyncStore(AsyncStore):
     ) -> None:
         super().__init__(session, io_config=io_config)
         self._execution_gate = execution_gate
+        self._ambiguous_commits: dict[str, tuple[str, str, int, str, int]] = {}
 
     async def append(self, sig: ArchetypeSignature, df: DataFrame) -> AppendReceipt:
-        async with self._execution_gate.admit():
-            return await super().append(sig, df)
+        """Materialize once and retry only proven Iceberg CAS losers.
+
+        The one Arrow payload is retained across bounded attempts, so retry
+        cannot re-plan or re-execute processors. A commit-state-unknown signal
+        is never retried; it becomes the typed v0.5 frozen outcome ruled in
+        issue #704.
+        """
+        table_id = Archetype.get_name(sig)
+        if not df.column_names:
+            logger.info("Append skipped (store): archetype=%s empty schema", table_id)
+            return AppendReceipt(table_id=table_id, rows=0, durable=True)
+
+        payload: pa.Table | None = None
+        table: Table | None = None
+        identity: tuple[str, str, int, str, int] | None = None
+
+        for attempt in range(_MAX_COMMIT_ATTEMPTS):
+            try:
+                async with self._execution_gate.admit():
+                    self._raise_if_ambiguous(sig)
+                    if payload is None:
+                        payload = await asyncio.to_thread(df.to_arrow)
+                        rows = payload.num_rows
+                        if rows == 0:
+                            logger.info("Append skipped (store): archetype=%s rows=0", table_id)
+                            return AppendReceipt(table_id=table_id, rows=0, durable=True)
+                        identity = self._managed_identity(payload, table_id)
+                        table = self._ensure_table(sig)
+                    else:
+                        assert table is not None
+                        native = getattr(table, "_inner", None)
+                        if native is None:
+                            raise RuntimeError("Daft table does not expose an Iceberg handle")
+                        native.refresh()
+
+                    assert table is not None
+                    await asyncio.to_thread(
+                        self._append_table,
+                        table,
+                        daft.from_arrow(payload),
+                    )
+                    self._committed_sigs.add(table_id)
+                    return AppendReceipt(
+                        table_id=table_id,
+                        rows=payload.num_rows,
+                        durable=True,
+                        backend_ref=self._snapshot_ref(table),
+                    )
+            except CommitFailedException:
+                if attempt + 1 == _MAX_COMMIT_ATTEMPTS:
+                    raise
+                ceiling = min(0.005 * (2**attempt), 0.1)
+                await asyncio.sleep(random.uniform(0.0, ceiling))
+            except CommitStateUnknownException as exc:
+                assert identity is not None
+                self._ambiguous_commits[table_id] = identity
+                raise self._ambiguous_error(table_id, identity) from exc
+
+        raise AssertionError("unreachable managed Iceberg append retry state")
+
+    @staticmethod
+    def _managed_identity(
+        payload: pa.Table,
+        table_id: str,
+    ) -> tuple[str, str, int, str, int]:
+        required = ("world_id", "run_id", "tick", "commit_token", "writer_epoch")
+        missing = [name for name in required if name not in payload.column_names]
+        if missing:
+            raise ValueError(
+                f"managed Iceberg payload for table {table_id!r} is missing identity "
+                f"column(s): {', '.join(missing)}"
+            )
+        return (
+            str(payload["world_id"][0].as_py()),
+            str(payload["run_id"][0].as_py()),
+            int(payload["tick"][0].as_py()),
+            str(payload["commit_token"][0].as_py()),
+            int(payload["writer_epoch"][0].as_py()),
+        )
+
+    @staticmethod
+    def _ambiguous_error(
+        table_id: str,
+        identity: tuple[str, str, int, str, int],
+    ) -> AmbiguousCommitError:
+        world_id, run_id, tick, commit_token, writer_epoch = identity
+        return AmbiguousCommitError(
+            table_id=table_id,
+            world_id=world_id,
+            run_id=run_id,
+            tick=tick,
+            commit_token=commit_token,
+            writer_epoch=writer_epoch,
+        )
+
+    def _raise_if_ambiguous(self, sig: ArchetypeSignature) -> None:
+        """Reject work for a table frozen by an earlier ambiguous commit."""
+        table_id = Archetype.get_name(sig)
+        if identity := self._ambiguous_commits.get(table_id):
+            raise self._ambiguous_error(table_id, identity)
 
 
 class _AdmittedAsyncLancedbStore(AsyncLancedbStore):
@@ -174,6 +319,8 @@ class _AdmittedAsyncCachedStore(AsyncCachedStore):
 
     async def append(self, sig: ArchetypeSignature, df: DataFrame) -> AppendReceipt:
         async with self._execution_gate.admit():
+            if isinstance(self._inner, _AdmittedAsyncStore):
+                self._inner._raise_if_ambiguous(sig)
             return await super().append(sig, df)
 
     async def flush(self) -> None:

@@ -25,7 +25,7 @@
 | --- | --- | --- |
 | `world_id` | `str` | `required` |
 | `run_id` | `str` | `required` |
-| `trajectory_id` | `str` | `required` |
+| `episode_id` | `str` | `required` |
 | `mission_id` | `str` | `required` |
 | `source_uri` | `str` | `required` |
 | `artifact` | `ArtifactRef` | `required` |

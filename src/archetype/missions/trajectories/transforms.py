@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Pure structural transforms into typed trajectory rows and filtered frames."""
+"""Pure structural transforms into typed evidence rows and derived views."""
 
 from __future__ import annotations
 
@@ -23,7 +23,6 @@ from daft import DataFrame, col
 
 from archetype.core.component import Component
 from archetype.missions.trajectories.components import (
-    Trajectory,
     TrajectoryAction,
     TrajectoryCommandEvent,
     TrajectoryObservation,
@@ -32,26 +31,25 @@ from archetype.missions.trajectories.components import (
 )
 from archetype.missions.trajectories.contracts import (
     CommandRecord,
-    EpisodeRecord,
     TrajectorySelection,
     Turn,
 )
 
 
-def turns_to_components(trajectory_id: str, turns: list[Turn]) -> list[TrajectoryTurn]:
+def turns_to_components(episode_id: str, turns: list[Turn]) -> list[TrajectoryTurn]:
     """Materialize typed rows for an authored turn sequence."""
-    return [turn.to_component(trajectory_id, seq) for seq, turn in enumerate(turns)]
+    return [turn.to_component(episode_id, seq) for seq, turn in enumerate(turns)]
 
 
 def command_to_event(
     command: CommandRecord,
     *,
-    trajectory_id: str,
+    episode_id: str,
     seq: int,
 ) -> TrajectoryCommandEvent:
-    """Serialize a queued command into a typed trajectory event."""
+    """Serialize a queued command into a typed evidence event."""
     return TrajectoryCommandEvent(
-        trajectory_id=trajectory_id,
+        episode_id=episode_id,
         seq=seq,
         command_id=str(command.id),
         tick=command.tick,
@@ -64,12 +62,12 @@ def command_to_event(
 def audit_row_to_event(
     row: Mapping[str, Any],
     *,
-    trajectory_id: str,
+    episode_id: str,
     seq: int,
 ) -> TrajectoryCommandEvent:
-    """Serialize an audit row dict into a typed trajectory event."""
+    """Serialize an audit row dict into a typed evidence event."""
     return TrajectoryCommandEvent(
-        trajectory_id=trajectory_id,
+        episode_id=episode_id,
         seq=seq,
         audit_id=str(row.get("audit_id") or ""),
         command_id=str(row.get("command_id") or ""),
@@ -85,10 +83,10 @@ def audit_row_to_event(
 def commands_to_events(
     commands: Iterable[CommandRecord],
     *,
-    trajectory_id: str,
+    episode_id: str,
 ) -> list[TrajectoryCommandEvent]:
     return [
-        command_to_event(command, trajectory_id=trajectory_id, seq=seq)
+        command_to_event(command, episode_id=episode_id, seq=seq)
         for seq, command in enumerate(commands)
     ]
 
@@ -96,50 +94,19 @@ def commands_to_events(
 def audit_rows_to_events(
     rows: Iterable[Mapping[str, Any]],
     *,
-    trajectory_id: str,
+    episode_id: str,
 ) -> list[TrajectoryCommandEvent]:
-    return [
-        audit_row_to_event(row, trajectory_id=trajectory_id, seq=seq)
-        for seq, row in enumerate(rows)
-    ]
-
-
-def trajectory_from_episode_result(
-    episode: EpisodeRecord,
-    *,
-    rollout_id: str = "",
-    run_id: str = "",
-    task_id: str = "",
-    trial_idx: int = 0,
-    source: str = "archetype.rollout",
-) -> Trajectory:
-    """Build a durable trajectory header row from one episode result."""
-    trajectory_id = (
-        f"{rollout_id}:trial-{trial_idx}:{episode.episode_id}"
-        if rollout_id
-        else str(episode.episode_id)
-    )
-    return Trajectory(
-        trajectory_id=trajectory_id,
-        run_id=run_id,
-        episode_id=str(episode.episode_id),
-        rollout_id=rollout_id,
-        task_id=task_id,
-        trial_idx=trial_idx,
-        source=source,
-        terminal=episode.terminated,
-        total_steps=episode.duration_steps,
-    )
+    return [audit_row_to_event(row, episode_id=episode_id, seq=seq) for seq, row in enumerate(rows)]
 
 
 def observations_from_post_tick_events(
     events: Iterable[Mapping[str, Any]],
     *,
-    trajectory_id: str,
+    episode_id: str,
 ) -> list[TrajectoryObservation]:
     return [
         TrajectoryObservation(
-            trajectory_id=trajectory_id,
+            episode_id=episode_id,
             seq=seq,
             world_id=str(event.get("world_id") or ""),
             tick=int(event.get("tick") or 0),
@@ -158,7 +125,7 @@ def actions_from_observations(
 ) -> list[TrajectoryAction]:
     return [
         TrajectoryAction(
-            trajectory_id=observation.trajectory_id,
+            episode_id=observation.episode_id,
             seq=seq,
             tick=observation.tick,
             action_type=action_type,
@@ -169,11 +136,11 @@ def actions_from_observations(
 
 def reward_row(
     *,
-    trajectory_id: str,
+    episode_id: str,
     reward: float,
     seq: int = 0,
 ) -> TrajectoryReward:
-    return TrajectoryReward(trajectory_id=trajectory_id, seq=seq, reward=reward)
+    return TrajectoryReward(episode_id=episode_id, seq=seq, reward=reward)
 
 
 def filter_trajectory_rows(
@@ -181,16 +148,37 @@ def filter_trajectory_rows(
     component: type[Component],
     selection: TrajectorySelection,
 ) -> DataFrame:
-    """Lazily filter one typed trajectory table by fields it actually stores."""
+    """Lazily filter one typed evidence table by fields it actually stores."""
     requested = selection.requested()
     unsupported = sorted(set(requested) - set(component.model_fields))
     if unsupported:
         names = ", ".join(unsupported)
         raise ValueError(
             f"{component.__name__} does not store requested trajectory filter field(s): "
-            f"{names}; filter the Trajectory header or use fields stored on this component"
+            f"{names}; use fields stored on this component"
         )
     prefix = component.get_prefix()
     for field_name, values in requested.items():
         df = df.where(col(f"{prefix}{field_name}").is_in(list(values)))
     return df
+
+
+def trajectory(
+    df: DataFrame,
+    component: type[Component],
+    *,
+    episode_id: str,
+) -> DataFrame:
+    """Derive one episode's ordered evidence view as a lazy DataFrame.
+
+    A trajectory has no persistent identity: it is this seq-ordered selection
+    of one episode's persisted evidence rows.
+    """
+    missing = sorted({"episode_id", "seq"} - set(component.model_fields))
+    if missing:
+        names = ", ".join(missing)
+        raise ValueError(
+            f"{component.__name__} is not seq-ordered episode evidence; missing field(s): {names}"
+        )
+    prefix = component.get_prefix()
+    return df.where(col(f"{prefix}episode_id").is_in([episode_id])).sort(col(f"{prefix}seq"))

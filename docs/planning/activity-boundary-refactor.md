@@ -46,7 +46,8 @@ shared substrate; they do not expand A2 speculatively.
 | A5a — Mission critic value contract | Family-owned `missions.critic` request/result/receipt values, deterministic bounded redacted codecs, explicit domain-review attempt identity, and a digest-bound byte-budgeted subject transport contract | Canonical round trips preserve exact base/head/diff/policy/validator and separate-sandbox identity; diff bytes never enter the command line; over-budget subjects fail closed before inference |
 | A5b — Mission critic Activity integration | Purely project exact-current-candidate intent, execute/reconcile it through generic Activities, stage a complete result-bound critic fact bundle, and settle its exact later receipt; retain legacy delivery until A8 | Real Git and managed-world crash/restart oracles prove one provider execution, exact file-bound subject identity, fresh critic sandbox, marker-last atomic staging, idempotent redelivery, and exact-receipt settlement without `CriticReviewOutbox` |
 | A6 — Hosted Physical-AI contract | Reconcile one canonical whole-episode Arrow request/result schema and result publication contract before cutover | Robot adapter and simulator agree on episode/trial cardinality, transition budget, terminal meaning, and canonical digests |
-| A7 — Hosted Physical-AI Activity | Add family-owned choreography under `archetype.physical_ai`, execute a whole seeded episode locally and on Modal, publish the full trajectory, and stage its factual observation | First result is recovered by operation identity; correctness does not depend on byte-identical GPU replay |
+| A7 — Hosted Physical-AI Activity | Add provider-neutral family choreography under `archetype.physical_ai`, execute one seeded batch of whole episodes locally, publish the complete trajectory/results/manifest, and stage its factual observation | Cold reconstruction crosses provider publication, generic result recording, staging, and later settlement without a second episode; start-without-result remains unknown |
+| A7b — Hosted Physical-AI Modal parity | Bind the same family provider protocol to exact Modal namespace identity, atomic start admission, and provider-durable first-result publication without importing Mission barriers | Real Modal/GPU execution recovers its first complete result by stable operation identity and uses the exact A6 request/result contract |
 | A8 — Consolidation and refactor resume | Extract only mechanics shared by author, critic, and Physical AI; delete superseded outboxes and distributed per-step effect paths; reconcile broad docs and topology plan | No duplicate authority, no process-local durable queue, full release verification, and three end-to-end traces remain recognizable |
 
 ### A1 — Contract and plan
@@ -257,6 +258,60 @@ activation, placement, timing, credential, and host-path facts, and frame
 evidence crosses the boundary only as content-addressed references. A7 may
 execute this contract but may not redefine it.
 
+### A7 and A7b — Hosted Physical-AI execution
+
+A7 creates the hosted choreography directly in `archetype.physical_ai`; it
+does not create an `archetype.app.physical_ai` mirror. A committed
+`HostedEpisodeIntent` references the canonical A6 request. The required
+projector admits `kind="physical_ai.hosted_episode"`, and the out-of-lock
+worker binds the world-scoped stable provider operation before execution or
+reconciliation. Complete request, trajectory, derived episode results, and
+manifest bytes are content-addressed before the generic catalog records one
+bounded descriptor. `HostedEpisodeObservation` binds all four payloads and
+their exact completeness counts, and only a later matching committed receipt
+settles the Activity.
+
+The local restart oracle destroys and reconstructs the SQLite catalog,
+coordinator, value store, worker, and provider adapter across four separate
+windows:
+
+1. provider result published before generic result recording;
+2. generic result recorded before observation staging;
+3. observation staged before its tick commits; and
+4. provider start present without a complete result.
+
+The first three redeliver without a second episode. The fourth remains
+permanently unknown; lease expiry and deterministic seeds are not replay
+authority. Partial trajectory publication cannot produce a manifest or
+Activity result. The existing direct per-step path remains supported through
+this slice.
+
+A7 deliberately leaves the remote provider fail-closed behind the same family
+protocol. A7b supplies the Modal implementation under an exact workspace,
+Environment, App, Function, named Dict, named Volume, and protocol epoch. One
+atomic Dict put selects the start winner; canonical A6 payloads are committed
+to the Volume before the bounded first-result index is atomically installed in
+the Dict. Completion-response loss and worker reconstruction recover that
+first result without a second episode. Start-without-result remains unknown.
+
+The adapter does not import Mission-owned barriers or move Physical-AI
+recovery meaning into generic mechanics. A8 may extract only the identity,
+atomic-admission, and immutable-result mechanics that the completed Mission
+and Physical-AI implementations actually prove to be shared.
+
+Paid A7b evidence on 2026-07-26 used one L40S-backed function in stopped Modal
+App `ap-nXLKIwCqS18C4j6UuGFMSU`. The remote completion reported one visible GPU
+and first-result index digest
+`ad70beb7153d4b83cd0c12fb6218b1e312a265199e5013eae8d94f6f42327fb0`.
+After an injected worker failure before generic Activity result recording, a
+separate process recovered the exact two-episode result without another Modal
+call and staged result digest
+`784811d10f376faf3b45284c5f2b180ba179f4a35f9575b7af37444d08678cf9`.
+Provider evidence remains in named Dict
+`arch-a7b-results-20260726-185158-c3261f` and named Volume
+`arch-a7b-values-20260726-185158-c3261f` in workspace/environment
+`vangelis-tech/main`.
+
 ## Authority and dependency target
 
 The following is the landing topology, not an instruction to mix package moves
@@ -293,6 +348,28 @@ The `everettVT/resource-world-host-spike` branch and the Resource dossier at
 evidence. Neither is a merge dependency. `WorldHost` may later describe an
 executor implementation detail, but it is not the durable semantic owner of
 Mission or whole-episode work.
+
+## Rulings closed (2026-07-26)
+
+These questions are decided; execution slices implement them and do not
+re-open them.
+
+1. **Episode identity (A8.1).** `episode_id` is the canonical persistent
+   identity of one bounded domain execution (a Mission or a hosted
+   Physical-AI execution). A trajectory is a derived DataFrame view
+   (`trajectory(...)`) over persisted episode evidence; persistent
+   `trajectory_id` is removed. Hosted Physical-AI results use the same
+   persistent episode identity. Evaluation's dataset-local integer episode
+   index and the world runtime's lifecycle episode identifier stay
+   type-distinct; unrelated identifiers are not falsely unified. Any
+   contingency branch that re-opened this contract is void — A8.1 executes
+   the ruling, it does not debate it.
+2. **A8 ships in v0.5.0.** Correctness and cleanup are the release together,
+   including "`archetype.app` is gone." There is no pre-authorized
+   "v0.5.0 without A8" contingency; if the chain misses the wall-clock, the
+   tag moves unless Everett explicitly redefines the release. v0.5 is a
+   clean pre-1.0 contract epoch: no 0.4 backfill, dual reads, schema
+   evolution, or compatibility aliases in the release window.
 
 ## Release cut lines
 

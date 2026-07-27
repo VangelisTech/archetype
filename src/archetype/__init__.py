@@ -102,13 +102,10 @@ __all__ = [
     "ArtifactContext",
     "ArtifactSource",
     "ArtifactStoreConfig",
-    # Physical-AI workflow values
-    "PhysicalTaskEvalConfig",
-    "PhysicalTaskEvalReport",
-    "InstructionSweepConfig",
-    "InstructionSweepReport",
-    "TrialOutcome",
-    "VariantOutcome",
+    # Hosted Physical-AI workflow values
+    "HostedEpisodeRequest",
+    "HostedEpisodeObservation",
+    "ModalHostedEpisodeConfig",
     # AutoResearch
     "AutoResearchConfig",
     "AutoResearchResult",
@@ -182,25 +179,19 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "ArtifactContext": ("archetype.artifacts.models", "ArtifactContext"),
     "ArtifactSource": ("archetype.artifacts.models", "ArtifactSource"),
     "ArtifactStoreConfig": ("archetype.artifacts.models", "ArtifactStoreConfig"),
-    # Physical-AI workflow values
-    "PhysicalTaskEvalConfig": (
+    # Hosted Physical-AI workflow values
+    "HostedEpisodeRequest": (
         "archetype.physical_ai.models",
-        "PhysicalTaskEvalConfig",
+        "HostedEpisodeRequest",
     ),
-    "PhysicalTaskEvalReport": (
+    "HostedEpisodeObservation": (
         "archetype.physical_ai.models",
-        "PhysicalTaskEvalReport",
+        "HostedEpisodeObservation",
     ),
-    "InstructionSweepConfig": (
+    "ModalHostedEpisodeConfig": (
         "archetype.physical_ai.models",
-        "InstructionSweepConfig",
+        "ModalHostedEpisodeConfig",
     ),
-    "InstructionSweepReport": (
-        "archetype.physical_ai.models",
-        "InstructionSweepReport",
-    ),
-    "TrialOutcome": ("archetype.physical_ai.models", "TrialOutcome"),
-    "VariantOutcome": ("archetype.physical_ai.models", "VariantOutcome"),
     # AutoResearch
     "AutoResearchConfig": ("archetype.research.models", "AutoResearchConfig"),
     "AutoResearchResult": ("archetype.research.models", "AutoResearchResult"),

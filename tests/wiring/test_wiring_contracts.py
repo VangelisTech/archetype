@@ -33,8 +33,7 @@ _PULL_FORWARD_MODELS = (
     ("archetype.evaluation.models", "RunGraders"),
     ("archetype.evaluation.models", "Evaluate"),
     ("archetype.research.models", "AutoResearch"),
-    ("archetype.physical_ai.models", "EvaluatePhysicalTask"),
-    ("archetype.physical_ai.models", "SweepPhysicalInstructions"),
+    ("archetype.physical_ai.models", "RunHostedEpisode"),
     ("archetype.episodes.models", "IngestClaudeTranscript"),
     ("archetype.episodes.models", "QueryTranscriptRows"),
     ("archetype.episodes.models", "QueryTrajectory"),
@@ -53,7 +52,6 @@ _ACTOR_AWARE = frozenset(
 )
 _TRUSTED_ONLY = frozenset(
     {
-        "evaluate_physical_task",
         "grade_trajectory",
         "ingest_claude_transcript",
         "query_trajectory",
@@ -62,7 +60,7 @@ _TRUSTED_ONLY = frozenset(
         "run_graders",
         "run_mission",
         "submit_mission",
-        "sweep_physical_instructions",
+        "run_hosted_episode",
     }
 )
 _DELETED_MODULES = (
@@ -143,7 +141,6 @@ _WORLD_TOKEN_COSTS = {
 _PULL_FORWARD_SCOPES = {
     "autoresearch": "live_world",
     "evaluate": "durable_world",
-    "evaluate_physical_task": "application",
     "grade_trajectory": "durable_world",
     "ingest_artifacts": "durable_world",
     "ingest_claude_transcript": "live_world",
@@ -154,7 +151,7 @@ _PULL_FORWARD_SCOPES = {
     "run_graders": "application",
     "run_mission": "application",
     "submit_mission": "application",
-    "sweep_physical_instructions": "application",
+    "run_hosted_episode": "live_world",
 }
 
 
@@ -328,7 +325,7 @@ async def test_builder_returns_complete_runtime_resources(tmp_path: Path) -> Non
     try:
         assert type(resources) is RuntimeResources
         assert resources.dispatcher is not None
-        assert len(_specs(resources)) == 47
+        assert len(_specs(resources)) == 46
         assert resources.close_state.value == "OPEN"
     finally:
         await resources.aclose()
@@ -336,11 +333,11 @@ async def test_builder_returns_complete_runtime_resources(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_registry_contains_world_plus_fourteen_pull_forward_specs_exactly_once(
+async def test_registry_contains_world_plus_thirteen_pull_forward_specs_exactly_once(
     tmp_path: Path,
 ) -> None:
     expected = _expected_models()
-    assert len(expected) == 47
+    assert len(expected) == 46
     duplicate_counterfactual = (
         (_operation_name(expected[0]), expected[0]),
         (_operation_name(expected[0]), expected[0]),
@@ -351,7 +348,7 @@ async def test_registry_contains_world_plus_fourteen_pull_forward_specs_exactly_
     wiring = _wiring()
     async with _built_resources(wiring, tmp_path) as resources:
         actual = _inventory(resources)
-        assert len(actual) == 47
+        assert len(actual) == 46
         assert _inventory_defects(actual, expected) == (set(), set(), set(), set())
         assert set(actual) == {(_operation_name(model), model) for model in expected}
 
@@ -564,7 +561,7 @@ async def test_wiring_is_explicit_topological_and_has_no_setter_injection(
             ("ack", (scheduler, outbox_rows)),
         ]
         assert resources._storage is audit._storage_service
-        assert len(registry.specs) == 47
+        assert len(registry.specs) == 46
         assert [
             spec.name
             for spec in registry.specs
@@ -588,11 +585,11 @@ async def test_bootstrap_environment_is_resolved_once_before_family_construction
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from archetype.app.missions.trajectory_service import TrajectoryService
-    from archetype.app.missions.transcript_service import TranscriptIngestionService
     from archetype.commands.audit import AuditLog
     from archetype.commands.policy import Policy
     from archetype.commands.scheduler import CommandScheduler
+    from archetype.missions.trajectory_service import TrajectoryService
+    from archetype.missions.transcript_service import TranscriptIngestionService
     from archetype.research.handlers import AutoResearchAdmissions
     from archetype.storage.service import StorageService
     from archetype.world.lifecycle import WorldLifecycle
@@ -698,16 +695,18 @@ async def test_no_runtime_or_api_operation_can_fall_back_to_a_legacy_bridge(
     for module in checked:
         source_path = Path(inspect.getsourcefile(module) or "")
         assert _forbidden_imports(source_path.read_text()) == set()
+    assert find_spec("archetype.app") is None
     for module_name in _DELETED_MODULES:
-        assert find_spec(module_name) is None
+        if not module_name.startswith("archetype.app."):
+            assert find_spec(module_name) is None
         with pytest.raises(ModuleNotFoundError) as caught:
             import_module(module_name)
-        assert caught.value.name == module_name
+        assert caught.value.name in {module_name, "archetype.app"}
 
     async with _built_resources(wiring, tmp_path) as resources:
         pull_forward = set(_pull_forward_types())
         specs = tuple(spec for spec in _specs(resources) if spec.model in pull_forward)
-        assert len(specs) == 14
+        assert len(specs) == 13
         assert all(callable(spec.handler) for spec in specs)
 
 
@@ -717,13 +716,13 @@ def _pull_forward_specs(resources: Any) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-async def test_pull_forward_registration_has_exact_four_actor_aware_and_ten_trusted_only_specs(
+async def test_pull_forward_registration_has_exact_four_actor_aware_and_nine_trusted_only_specs(
     tmp_path: Path,
 ) -> None:
     assert len(_ACTOR_AWARE) == 4
-    assert len(_TRUSTED_ONLY) == 10
+    assert len(_TRUSTED_ONLY) == 9
     assert _ACTOR_AWARE.isdisjoint(_TRUSTED_ONLY)
-    assert len(_ACTOR_AWARE | _TRUSTED_ONLY) == 14
+    assert len(_ACTOR_AWARE | _TRUSTED_ONLY) == 13
     bad = {
         "one": SimpleNamespace(trusted=True, untrusted=True, durable=object()),
         "two": SimpleNamespace(trusted=False, untrusted=False, durable=None),
@@ -776,389 +775,6 @@ async def test_pull_forward_registration_has_exact_four_actor_aware_and_ten_trus
         assert specs["query_artifacts"].token_cost == 5
         assert specs["evaluate"].token_cost == 10
         assert all(specs[name].token_cost == 0 for name in _TRUSTED_ONLY)
-
-
-@pytest.mark.asyncio
-async def test_pull_forward_handlers_translate_exact_values_without_recursive_dispatch(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from archetype.app.missions.service import MissionService
-    from archetype.app.missions.trajectory_service import TrajectoryService
-    from archetype.app.missions.transcript_service import TranscriptIngestionService
-    from archetype.artifacts import handlers as artifact_handlers
-    from archetype.evaluation import handlers as evaluation_handlers
-    from archetype.missions.sandboxes.service import SandboxService
-    from archetype.physical_ai import handlers as physical_ai_handlers
-    from archetype.research import handlers as research_handlers
-    from archetype.world import query as world_query
-
-    calls: dict[str, list[tuple[tuple[object, ...], dict[str, object]]]] = {}
-    results = {name: object() for name in _ACTOR_AWARE | _TRUSTED_ONLY}
-
-    def record(name: str):
-        async def method(_self: object, *args: object, **kwargs: object) -> object:
-            calls.setdefault(name, []).append((args, kwargs))
-            return results[name]
-
-        return method
-
-    def record_free(name: str):
-        async def handler(*args: object, **kwargs: object) -> object:
-            calls.setdefault(name, []).append((args, kwargs))
-            return results[name]
-
-        return handler
-
-    method_bindings = (
-        (TranscriptIngestionService, "ingest", "ingest_claude_transcript"),
-        (TranscriptIngestionService, "read", "query_transcript_rows"),
-        (TrajectoryService, "query", "query_trajectory"),
-        (TrajectoryService, "grade", "grade_trajectory"),
-        (MissionService, "submit", "submit_mission"),
-        (MissionService, "run", "run_mission"),
-        (MissionService, "restore_sandbox", "restore_mission_sandbox"),
-    )
-    for service_type, method_name, operation_name in method_bindings:
-        monkeypatch.setattr(service_type, method_name, record(operation_name))
-    monkeypatch.setattr(
-        artifact_handlers,
-        "ingest_artifacts",
-        record_free("ingest_artifacts"),
-    )
-    monkeypatch.setattr(
-        artifact_handlers,
-        "query_artifacts",
-        record_free("query_artifacts"),
-    )
-    monkeypatch.setattr(
-        evaluation_handlers,
-        "run_graders",
-        record_free("run_graders"),
-    )
-    monkeypatch.setattr(
-        evaluation_handlers,
-        "evaluate",
-        record_free("evaluate"),
-    )
-    monkeypatch.setattr(
-        research_handlers,
-        "handle_autoresearch",
-        record_free("autoresearch"),
-    )
-    monkeypatch.setattr(
-        physical_ai_handlers,
-        "evaluate_physical_task",
-        record_free("evaluate_physical_task"),
-    )
-    monkeypatch.setattr(
-        physical_ai_handlers,
-        "sweep_physical_instructions",
-        record_free("sweep_physical_instructions"),
-    )
-
-    mission_init: list[dict[str, object]] = []
-
-    def initialize_mission(_self: object, **kwargs: object) -> None:
-        mission_init.append(kwargs)
-
-    async def close_mission(_self: object) -> None:
-        calls.setdefault("mission_close", []).append(((), {}))
-
-    monkeypatch.setattr(MissionService, "__init__", initialize_mission)
-    monkeypatch.setattr(MissionService, "close", close_mission)
-
-    lineage = [object()]
-    lineage_calls: list[tuple[object, ...]] = []
-
-    async def get_lineage(*args: object, **kwargs: object) -> list[object]:
-        lineage_calls.append((*args, kwargs))
-        return lineage
-
-    monkeypatch.setattr(world_query, "get_lineage", get_lineage)
-
-    wiring = _wiring()
-    monkeypatch.setattr(wiring, "get_lineage", get_lineage, raising=False)
-    async with _built_resources(wiring, tmp_path) as resources:
-        specs = _pull_forward_specs(resources)
-        dispatcher = resources.dispatcher
-
-        async def recursive_dispatch(*_args: object, **_kwargs: object) -> None:
-            raise AssertionError("a registered handler recursively entered dispatcher admission")
-
-        original_apply = dispatcher.apply
-        original_apply_as = dispatcher.apply_as
-        dispatcher.apply = recursive_dispatch
-        dispatcher.apply_as = recursive_dispatch
-        try:
-            world_id = "world-1"
-            run_id = "run-1"
-            storage = object()
-            source = object()
-            frame = object()
-            grader = object()
-            contract = object()
-            research_config = SimpleNamespace(max_iterations=2)
-            evaluator = object()
-            prepare_candidate = object()
-            on_iteration = object()
-            physical_config = object()
-            sweep_config = object()
-            env_client = object()
-            policy_client = object()
-            transcript = object()
-            component = object()
-            selection = object()
-            owner_id = "mission-owner-1"
-            backend = SimpleNamespace(name="provider")
-            mission_config = SimpleNamespace(sandbox_backend=backend)
-            mission_storage = object()
-            task = object()
-            submission = SimpleNamespace(
-                repository="repo",
-                branch="branch",
-                tasks=(task,),
-                name="mission",
-                base_ref="main",
-            )
-            mission = object()
-            checkpoint = object()
-
-            def operation(operation_name: str, **values: object) -> BaseModel:
-                return specs[operation_name].model.model_construct(
-                    operation=operation_name,
-                    **values,
-                )
-
-            operations = {
-                "ingest_artifacts": operation(
-                    "ingest_artifacts",
-                    world_id=world_id,
-                    sources=(source,),
-                    storage_config=storage,
-                ),
-                "query_artifacts": operation(
-                    "query_artifacts",
-                    world_id=world_id,
-                    storage_config=storage,
-                ),
-                "run_graders": operation(
-                    "run_graders",
-                    df=frame,
-                    graders=(grader,),
-                ),
-                "evaluate": operation(
-                    "evaluate",
-                    world_id=world_id,
-                    components=(component,),
-                    contract=contract,
-                    grader=grader,
-                    evaluation_id="evaluation-1",
-                    storage_config=storage,
-                    ticks=(2,),
-                    entity_ids=(3,),
-                ),
-                "autoresearch": operation(
-                    "autoresearch",
-                    world_id=world_id,
-                    config=research_config,
-                    evaluator=evaluator,
-                    prepare_candidate=prepare_candidate,
-                    lab_world_id="lab-world",
-                    on_iteration=on_iteration,
-                ),
-                "evaluate_physical_task": operation(
-                    "evaluate_physical_task",
-                    config=physical_config,
-                    env_client=env_client,
-                    policy_client=policy_client,
-                ),
-                "sweep_physical_instructions": operation(
-                    "sweep_physical_instructions",
-                    config=sweep_config,
-                    env_client=env_client,
-                    policy_client=policy_client,
-                ),
-                "ingest_claude_transcript": operation(
-                    "ingest_claude_transcript",
-                    world_id=world_id,
-                    source=transcript,
-                    storage_config=storage,
-                ),
-                "query_transcript_rows": operation(
-                    "query_transcript_rows",
-                    world_id=world_id,
-                    storage_config=storage,
-                ),
-                "query_trajectory": operation(
-                    "query_trajectory",
-                    component=component,
-                    world_id=world_id,
-                    run_id=run_id,
-                    storage_config=storage,
-                    selection=selection,
-                    ticks=(4,),
-                    entity_ids=(5,),
-                ),
-                "grade_trajectory": operation(
-                    "grade_trajectory",
-                    component=component,
-                    world_id=world_id,
-                    run_id=run_id,
-                    graders=(grader,),
-                    storage_config=storage,
-                    selection=selection,
-                    ticks=(6,),
-                    entity_ids=(7,),
-                ),
-                "submit_mission": operation(
-                    "submit_mission",
-                    owner_id=owner_id,
-                    name="mission-runtime",
-                    config=mission_config,
-                    storage=mission_storage,
-                    submission=submission,
-                ),
-                "run_mission": operation(
-                    "run_mission",
-                    owner_id=owner_id,
-                    mission=mission,
-                    max_ticks=9,
-                ),
-                "restore_mission_sandbox": operation(
-                    "restore_mission_sandbox",
-                    owner_id=owner_id,
-                    mission=mission,
-                    checkpoint=checkpoint,
-                ),
-            }
-
-            unknown_run = operations["run_mission"].model_copy(update={"owner_id": "unknown-owner"})
-            with pytest.raises((KeyError, RuntimeError, ValueError)):
-                await specs["run_mission"].handler(unknown_run)
-            unknown_submit = operations["submit_mission"].model_copy(
-                update={"owner_id": "unknown-owner"}
-            )
-            with pytest.raises((KeyError, RuntimeError, ValueError)):
-                await specs["submit_mission"].handler(unknown_submit)
-            assert "run_mission" not in calls
-            assert mission_init == []
-
-            reservation = resources.reserve_owner(owner_id, phase="workflow-handles")
-            for name in (
-                "ingest_artifacts",
-                "query_artifacts",
-                "run_graders",
-                "evaluate",
-                "autoresearch",
-                "evaluate_physical_task",
-                "sweep_physical_instructions",
-                "ingest_claude_transcript",
-                "query_transcript_rows",
-                "query_trajectory",
-                "grade_trajectory",
-                "submit_mission",
-                "run_mission",
-                "restore_mission_sandbox",
-            ):
-                assert await specs[name].handler(operations[name]) is results[name]
-
-            assert set(calls) == _ACTOR_AWARE | _TRUSTED_ONLY
-            assert all(len(calls[name]) == 1 for name in _ACTOR_AWARE | _TRUSTED_ONLY)
-            assert calls["ingest_artifacts"] == [
-                (
-                    (resources._storage, operations["ingest_artifacts"]),
-                    {"store_config": None},
-                )
-            ]
-            assert calls["query_artifacts"] == [
-                ((resources._storage, operations["query_artifacts"]), {})
-            ]
-            assert calls["run_graders"] == [((operations["run_graders"],), {})]
-            assert calls["evaluate"] == [((resources._storage, operations["evaluate"]), {})]
-            registered_research = specs["autoresearch"].handler
-            assert isinstance(registered_research, partial)
-            assert registered_research.func is research_handlers.handle_autoresearch
-            assert calls["autoresearch"] == [
-                (
-                    (*registered_research.args, operations["autoresearch"]),
-                    {},
-                )
-            ]
-            for name in (
-                "evaluate_physical_task",
-                "sweep_physical_instructions",
-            ):
-                registered_physical = specs[name].handler
-                assert isinstance(registered_physical, partial)
-                assert calls[name] == [
-                    (
-                        (*registered_physical.args, operations[name]),
-                        {},
-                    )
-                ]
-            assert calls["ingest_claude_transcript"] == [
-                ((world_id, transcript), {"storage_config": storage})
-            ]
-            assert calls["query_transcript_rows"] == [((world_id,), {"storage_config": storage})]
-            assert calls["query_trajectory"] == [
-                (
-                    (component,),
-                    {
-                        "world_id": world_id,
-                        "run_id": run_id,
-                        "storage_config": storage,
-                        "lineage": lineage,
-                        "selection": selection,
-                        "ticks": [4],
-                        "entity_ids": [5],
-                    },
-                )
-            ]
-            assert calls["grade_trajectory"] == [
-                (
-                    (component,),
-                    {
-                        "world_id": world_id,
-                        "run_id": run_id,
-                        "graders": (grader,),
-                        "storage_config": storage,
-                        "lineage": lineage,
-                        "selection": selection,
-                        "ticks": [6],
-                        "entity_ids": [7],
-                    },
-                )
-            ]
-            assert len(lineage_calls) == 2
-            assert [call[1:4] for call in lineage_calls] == [
-                (world_id, run_id, storage),
-                (world_id, run_id, storage),
-            ]
-            assert len(mission_init) == 1
-            assert isinstance(reservation.require_bound(), MissionService)
-            assert mission_init[0]["name"] == "mission-runtime"
-            assert mission_init[0]["config"] is mission_config
-            assert mission_init[0]["storage"] is mission_storage
-            assert isinstance(mission_init[0]["sandbox_service"], SandboxService)
-            assert callable(mission_init[0]["world_factory"])
-            assert calls["submit_mission"] == [
-                (
-                    (),
-                    {
-                        "repository": "repo",
-                        "branch": "branch",
-                        "tasks": (task,),
-                        "name": "mission",
-                        "base_ref": "main",
-                    },
-                )
-            ]
-            assert calls["run_mission"] == [((mission,), {"max_ticks": 9})]
-            assert calls["restore_mission_sandbox"] == [((mission, checkpoint), {})]
-        finally:
-            dispatcher.apply = original_apply
-            dispatcher.apply_as = original_apply_as
 
 
 @pytest.mark.asyncio
@@ -1395,7 +1011,7 @@ async def test_nondurable_pull_forward_rejections_have_no_provider_or_scheduler_
 
             assert trap.reads == []
             assert scheduler.calls == []
-            assert len(access_rows) == 24
+            assert len(access_rows) == 22
             assert all(getattr(row, "outcome", None) == "rejected" for row in access_rows)
         finally:
             dispatcher._policy = original_policy

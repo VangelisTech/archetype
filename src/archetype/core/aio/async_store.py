@@ -269,26 +269,25 @@ class AsyncStore(iAsyncStore):
     async def append(self, sig: ArchetypeSignature, df: DataFrame) -> AppendReceipt:
         """
         Append a table with a new dataframe. Returns the durable batch receipt.
+
+        The backing-table write is the only executor of the incoming plan.
+        Core never runs a count first to decide whether the append is worth
+        attempting (issue #538): a zero-row frame is the backend's own
+        successful no-op. Iceberg's append produces no natural row count, so
+        the receipt reports ``rows=None`` — unknown is None, not a preflight.
         """
         table_id = Archetype.get_name(sig)
         if not df.column_names:
+            # Schema availability, not row cardinality: a schemaless frame
+            # cannot even name a backing table.
             logger.info(f"Append skipped (store): archetype={table_id} empty schema")
-            return AppendReceipt(table_id=table_id, rows=0, durable=True)
-        try:
-            materialized = df.collect(num_preview_rows=0)
-            rows = materialized.count_rows()
-        except Exception as e:
-            logger.error(f"Append collect failed for {table_id}: {e}")
-            raise
-        if rows == 0:
-            logger.info(f"Append skipped (store): archetype={table_id} rows=0")
             return AppendReceipt(table_id=table_id, rows=0, durable=True)
 
         table = self._ensure_table(sig)
-        self._append_table(table, materialized)
+        self._append_table(table, df)
         self._committed_sigs.add(table_id)
         return AppendReceipt(
-            table_id=table_id, rows=rows, durable=True, backend_ref=self._snapshot_ref(table)
+            table_id=table_id, rows=None, durable=True, backend_ref=self._snapshot_ref(table)
         )
 
     @staticmethod

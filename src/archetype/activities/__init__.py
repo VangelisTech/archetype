@@ -15,7 +15,11 @@ from archetype.activities.contracts import (
     ActivitySnapshot,
 )
 from archetype.activities.interfaces import iActivityCoordinator
-from archetype.activities.service import ActivityCoordinator
+from archetype.activities.service import (
+    ActivityCoordinator,
+    claim_next_pending,
+    collect_pending_results,
+)
 
 __all__ = [
     "ActivityAdmission",
@@ -28,5 +32,7 @@ __all__ = [
     "ActivityRetryGuard",
     "ActivitySettlement",
     "ActivitySnapshot",
+    "claim_next_pending",
+    "collect_pending_results",
     "iActivityCoordinator",
 ]

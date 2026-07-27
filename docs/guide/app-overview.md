@@ -184,7 +184,7 @@ See [API Layer](api-layer.md).
 - Process lifetime: `src/archetype/runtime_resources.py`
 - Governed entry, scheduler, policy, and audit: `src/archetype/commands/`
 - Physical-AI models, state, views, and handlers: `src/archetype/physical_ai/`
-- Service protocols: `src/archetype/app/<family>/interfaces.py`
+- Family protocols: `src/archetype/<family>/interfaces.py` or another focused family module
 - World ports: `src/archetype/world/interfaces.py`
 - Storage port: `src/archetype/storage/interfaces.py`
 - Core interfaces: `src/archetype/core/interfaces.py`

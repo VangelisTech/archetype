@@ -9,10 +9,14 @@ import time
 
 import daft
 import pytest
+from pyiceberg.exceptions import CommitFailedException, CommitStateUnknownException
 
+from archetype.core.aio import AsyncUpdateManager
+from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import CacheConfig, RunConfig, StorageBackend, StorageConfig, WorldConfig
-from archetype.storage.service import StorageService
+from archetype.core.interfaces import CommitContext
+from archetype.storage.service import AmbiguousCommitError, StorageService
 from archetype.storage.session import configure_session
 from archetype.world.lifecycle import WorldLifecycle
 from archetype.world.registry import WorldRegistry
@@ -22,11 +26,25 @@ class Position(Component):
     x: int = 0
 
 
+class ManagedWriteProbe(Component):
+    value: int = 0
+
+
 def _storage(tmp_path) -> StorageConfig:
     return StorageConfig(
         uri=str(tmp_path / "store"),
         namespace="ns",
         backend=StorageBackend.ICEBERG,
+    )
+
+
+def _managed_rows(value: int) -> daft.DataFrame:
+    return daft.from_pydict(
+        {
+            "entity_id": [value],
+            "is_active": [True],
+            "managedwriteprobe__value": [value],
+        }
     )
 
 
@@ -244,6 +262,263 @@ async def test_concurrent_first_table_registration_recovers_losing_creator(tmp_p
     finally:
         await first.shutdown()
         await second.shutdown()
+
+
+@pytest.mark.contract("storage.execution.single_authority")
+@pytest.mark.asyncio
+async def test_managed_iceberg_conflict_retries_frozen_payload_once_per_writer(
+    tmp_path,
+    monkeypatch,
+):
+    """Two catalog clients commit one copy each after a real Iceberg CAS race."""
+    storage = _storage(tmp_path)
+    first = StorageService(session=configure_session(storage))
+    second = StorageService(session=configure_session(storage))
+    signature = Archetype.sig_from_components([ManagedWriteProbe()])
+    barrier = threading.Barrier(2)
+    try:
+        first_store, second_store = await asyncio.gather(
+            first.get_or_create_store(storage),
+            second.get_or_create_store(storage),
+        )
+        first_updater = AsyncUpdateManager(first_store)
+        second_updater = AsyncUpdateManager(second_store)
+        await first_updater.update(
+            _managed_rows(0),
+            signature,
+            0,
+            "seed-world",
+            "seed-run",
+            commit=CommitContext(commit_token="seed-token", writer_epoch=1),
+        )
+
+        def arm(catalog):
+            original = catalog._write_metadata
+            armed = True
+
+            def synchronized_metadata(*args, **kwargs):
+                nonlocal armed
+                result = original(*args, **kwargs)
+                if armed:
+                    armed = False
+                    barrier.wait(timeout=10)
+                return result
+
+            catalog._write_metadata = synchronized_metadata
+
+        table_id = Archetype.get_name(signature)
+        for store in (first_store, second_store):
+            native = store.session.current_catalog().get_table(f"ns.{table_id}")._inner
+            arm(native.catalog)
+
+        original_to_arrow = daft.DataFrame.to_arrow
+        materializations = 0
+
+        def counted_to_arrow(frame):
+            nonlocal materializations
+            materializations += 1
+            return original_to_arrow(frame)
+
+        monkeypatch.setattr(daft.DataFrame, "to_arrow", counted_to_arrow)
+        await asyncio.wait_for(
+            asyncio.gather(
+                first_updater.update(
+                    _managed_rows(1),
+                    signature,
+                    1,
+                    "first-world",
+                    "first-run",
+                    commit=CommitContext(commit_token="first-token", writer_epoch=2),
+                ),
+                second_updater.update(
+                    _managed_rows(2),
+                    signature,
+                    1,
+                    "second-world",
+                    "second-run",
+                    commit=CommitContext(commit_token="second-token", writer_epoch=3),
+                ),
+            ),
+            timeout=20,
+        )
+
+        assert materializations == 2
+        first_rows = (
+            await first_store.get_archetype_df(signature, "first-world", "first-run")
+        ).to_pylist()
+        second_rows = (
+            await first_store.get_archetype_df(signature, "second-world", "second-run")
+        ).to_pylist()
+        assert [(row["managedwriteprobe__value"], row["commit_token"]) for row in first_rows] == [
+            (1, "first-token")
+        ]
+        assert [(row["managedwriteprobe__value"], row["commit_token"]) for row in second_rows] == [
+            (2, "second-token")
+        ]
+    finally:
+        await first.shutdown()
+        await second.shutdown()
+
+
+@pytest.mark.contract("storage.execution.single_authority")
+@pytest.mark.asyncio
+async def test_managed_iceberg_conflict_retry_is_bounded_without_rematerializing(
+    tmp_path,
+    monkeypatch,
+):
+    storage = _storage(tmp_path)
+    service = StorageService(session=configure_session(storage))
+    signature = Archetype.sig_from_components([ManagedWriteProbe()])
+    attempts = 0
+    materializations = 0
+    try:
+        store = await service.get_or_create_store(storage)
+        original_to_arrow = daft.DataFrame.to_arrow
+
+        def counted_to_arrow(frame):
+            nonlocal materializations
+            materializations += 1
+            return original_to_arrow(frame)
+
+        def conflict(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            raise CommitFailedException("induced definite conflict")
+
+        async def no_wait(_delay):
+            return None
+
+        monkeypatch.setattr(daft.DataFrame, "to_arrow", counted_to_arrow)
+        monkeypatch.setattr(store, "_append_table", conflict)
+        monkeypatch.setattr(asyncio, "sleep", no_wait)
+
+        with pytest.raises(CommitFailedException, match="induced definite conflict"):
+            await AsyncUpdateManager(store).update(
+                _managed_rows(1),
+                signature,
+                1,
+                "world",
+                "run",
+                commit=CommitContext(commit_token="bounded-token", writer_epoch=4),
+            )
+
+        assert attempts == 16
+        assert materializations == 1
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.contract("storage.execution.single_authority")
+@pytest.mark.asyncio
+async def test_managed_iceberg_ambiguous_commit_is_typed_and_never_replayed(
+    tmp_path,
+    monkeypatch,
+):
+    storage = _storage(tmp_path)
+    service = StorageService(session=configure_session(storage))
+    observer = StorageService(session=configure_session(storage))
+    signature = Archetype.sig_from_components([ManagedWriteProbe()])
+    token = "ambiguous-token"
+    commit_calls = 0
+    materializations = 0
+    arrow_iterations = 0
+    try:
+        store = await service.get_or_create_store(
+            storage,
+            CacheConfig(flush_rows=1, flush_mb=1, global_mb=1, idle_sec=999),
+        )
+        await AsyncUpdateManager(store).update(
+            _managed_rows(0),
+            signature,
+            0,
+            "seed-world",
+            "seed-run",
+            commit=CommitContext(commit_token="seed-token", writer_epoch=1),
+        )
+        table_id = Archetype.get_name(signature)
+        inner_store = store._inner
+        native = inner_store.session.current_catalog().get_table(f"ns.{table_id}")._inner
+        original_commit = native.catalog.commit_table
+        original_to_arrow = daft.DataFrame.to_arrow
+        original_to_arrow_iter = daft.DataFrame.to_arrow_iter
+
+        def commit_then_lose_response(*args, **kwargs):
+            nonlocal commit_calls
+            commit_calls += 1
+            original_commit(*args, **kwargs)
+            raise CommitStateUnknownException("induced lost commit response")
+
+        def counted_to_arrow(frame):
+            nonlocal materializations
+            materializations += 1
+            return original_to_arrow(frame)
+
+        def counted_to_arrow_iter(frame, *args, **kwargs):
+            nonlocal arrow_iterations
+            arrow_iterations += 1
+            return original_to_arrow_iter(frame, *args, **kwargs)
+
+        monkeypatch.setattr(native.catalog, "commit_table", commit_then_lose_response)
+        monkeypatch.setattr(daft.DataFrame, "to_arrow", counted_to_arrow)
+        monkeypatch.setattr(daft.DataFrame, "to_arrow_iter", counted_to_arrow_iter)
+
+        with pytest.raises(AmbiguousCommitError) as raised:
+            await AsyncUpdateManager(store).update(
+                _managed_rows(7),
+                signature,
+                7,
+                "ambiguous-world",
+                "ambiguous-run",
+                commit=CommitContext(commit_token=token, writer_epoch=9),
+            )
+
+        outcome = raised.value
+        assert outcome.table_id == table_id
+        assert outcome.physical_identity == (
+            table_id,
+            "ambiguous-world",
+            "ambiguous-run",
+            7,
+        )
+        assert outcome.commit_token == token
+        assert outcome.writer_epoch == 9
+        assert isinstance(outcome.__cause__, CommitStateUnknownException)
+        assert materializations == 1
+        assert commit_calls == 1
+        iterations_after_ambiguity = arrow_iterations
+
+        with pytest.raises(AmbiguousCommitError) as frozen:
+            await AsyncUpdateManager(store).update(
+                _managed_rows(8),
+                signature,
+                8,
+                "later-world",
+                "later-run",
+                commit=CommitContext(commit_token="later-token", writer_epoch=10),
+            )
+        assert frozen.value.commit_token == token
+        assert frozen.value.physical_identity == outcome.physical_identity
+        assert materializations == 1
+        assert commit_calls == 1
+        assert arrow_iterations == iterations_after_ambiguity
+
+        observer_store = await observer.get_or_create_store(storage)
+        physical = (
+            await observer_store.get_archetype_df(
+                signature,
+                "ambiguous-world",
+                "ambiguous-run",
+            )
+        ).to_pylist()
+        assert [(row["managedwriteprobe__value"], row["commit_token"]) for row in physical] == [
+            (7, token)
+        ]
+    finally:
+        try:
+            await service.shutdown()
+        except RuntimeError as exc:
+            assert isinstance(exc.__cause__, AmbiguousCommitError)
+        await observer.shutdown()
 
 
 @pytest.mark.asyncio

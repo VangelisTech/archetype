@@ -41,13 +41,8 @@ _PULL_FORWARD_MODEL_BOUNDARIES = (
     ("archetype.research.models", "AutoResearch", "autoresearch"),
     (
         "archetype.physical_ai.models",
-        "EvaluatePhysicalTask",
-        "evaluate_physical_task",
-    ),
-    (
-        "archetype.physical_ai.models",
-        "SweepPhysicalInstructions",
-        "sweep_physical_instructions",
+        "RunHostedEpisode",
+        "run_hosted_episode",
     ),
     (
         "archetype.episodes.models",
@@ -793,7 +788,7 @@ _EXPECTED_DECLARED_ROUTES = {
 
 
 def test_supported_paths_statuses_and_response_shapes_are_unchanged() -> None:
-    """PR-4 does not manufacture REST routes for the fourteen pull-forwards."""
+    """PR-4 does not manufacture REST routes for the thirteen pull-forwards."""
 
     from fastapi.routing import APIRoute
 

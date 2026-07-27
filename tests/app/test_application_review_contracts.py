@@ -71,7 +71,6 @@ _PULL_FORWARD_OPERATIONS = frozenset(
     {
         "autoresearch",
         "evaluate",
-        "evaluate_physical_task",
         "grade_trajectory",
         "ingest_artifacts",
         "ingest_claude_transcript",
@@ -82,7 +81,7 @@ _PULL_FORWARD_OPERATIONS = frozenset(
         "run_graders",
         "run_mission",
         "submit_mission",
-        "sweep_physical_instructions",
+        "run_hosted_episode",
     }
 )
 

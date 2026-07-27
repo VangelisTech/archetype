@@ -837,6 +837,7 @@ jobs:
             --input "${REVIEW_DIR}/validated/review-bundle.json")"
           python3 scripts/footgun_review_gate.py prompt \
             --kind design-brief \
+            --scope "${SCOPE_FILE}" \
             --pr-number "${PR_NUMBER}" \
             --head "${HEAD_SHA}" \
             --bundle-digest "${BUNDLE_DIGEST}" \

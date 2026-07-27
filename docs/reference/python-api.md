@@ -15,7 +15,7 @@ Archetype's Python reference inventories and classifies the supported top-level 
 | [Hooks and ingress identity](python/hooks.md) | React to world lifecycle events and define the identity record used by trusted ingress adapters. |
 | [Configuration](python/configuration.md) | Runtime configuration is user-facing. `WorldConfig` is primarily for custom hosts and lower-level engine construction. |
 | [AutoResearch and evaluation](python/autoresearch.md) | Configure optimization loops and persist evaluation evidence with explicit identities. |
-| [Physical AI](python/physical-ai.md) | Run batched physical-policy evaluations and paired instruction sweeps through the runtime, while retaining queryable world/run evidence. |
+| [Physical AI](python/physical-ai.md) | Run or recover complete Modal-hosted episode batches through a World. |
 | [Core engine](python/core.md) | Supported engine primitives for custom execution and world lifecycle extensions. |
 | [Storage backends](python/storage.md) | Supported asynchronous storage implementations for custom engine wiring. |
 | [Compatibility API](python/compatibility.md) | The synchronous educational engine and legacy aliases remain available for compatibility. New application code should use `ArchetypeRuntime`. |

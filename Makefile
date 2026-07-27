@@ -27,6 +27,7 @@ help:
 	@echo "  make operational-audit Validate operational scenario ownership and policies"
 	@echo "  make architecture-audit  Enforce dependency and encapsulation policy"
 	@echo "  make observability-audit Enforce signal safety and family dispositions"
+	@echo "  make lockfile-audit  Scan the locked dependency graph for known vulnerabilities"
 	@echo "  make version-inventory-audit  Validate pinned execution-environment inventory"
 	@echo "  make python-api-audit  Validate committed generated Python reference"
 	@echo "  make lint-fix       Lint and auto-fix"
@@ -107,7 +108,7 @@ format:
 	@uv run ruff format $(RUFF_PATHS)
 
 .PHONY: lint
-lint: lazy-audit architecture-audit observability-audit version-inventory-audit python-api-audit api-boundary-audit idempotency-audit gate-coverage-audit operational-audit
+lint: lazy-audit architecture-audit observability-audit lockfile-audit version-inventory-audit python-api-audit api-boundary-audit idempotency-audit gate-coverage-audit operational-audit
 	@uv run ruff check $(RUFF_PATHS)
 
 .PHONY: lint-fix
@@ -141,6 +142,10 @@ operational-audit:
 .PHONY: static
 static: format-check lint typecheck lock-check contract-audit benchmark-audit
 	@echo "Static validation passed"
+
+.PHONY: lockfile-audit
+lockfile-audit:
+	@uv run python scripts/audit_lockfile.py
 
 # Lazy-evaluation audit: gate .collect()/.to_pylist() call sites against
 # lazy_audit.toml. Every premature materialization is a contract exception
@@ -415,12 +420,10 @@ operational-wheel:
 			--scenario example.03_time_travel \
 			--scenario example.06_trajectory_analysis \
 			--scenario example.10_autoresearch \
-			--scenario example.14_physical_ai \
 			--scenario dogfood.runtime.loopback \
 			--scenario dogfood.commands.local \
 			--scenario dogfood.evaluation.durable_receipt \
 			--scenario dogfood.artifacts.local \
-			--scenario dogfood.agent_mission.scripted \
 			--wheel "$$wheel" --out "$(OPERATIONAL_WHEEL_RESULTS)" || runner_status=$$?; \
 		if [ "$$build_status" -ne 0 ]; then \
 			exit "$$build_status"; \
@@ -431,7 +434,7 @@ operational-wheel:
 operational-mission:
 	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
 		--mode source --cadence pr --max-tier 1 --require-run \
-		--scenario dogfood.agent_mission.scripted \
+		--scenario dogfood.agent_mission.modal_activities \
 		--out operational-mission-results.json
 
 .PHONY: operational-external

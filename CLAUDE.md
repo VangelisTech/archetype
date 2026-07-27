@@ -39,7 +39,7 @@ Agents in `.claude/agents/` are invoked autonomously — by CI, by other agents,
 | Layer | Access |
 |-------|--------|
 | `src/archetype/core/` | Modify only after discussion. Holds the hard invariants. |
-| `src/archetype/app/` | Extend carefully. Service contracts live in the specification. Lower-level interface. |
+| `src/archetype/<family>/` | Family-owned values, behavior, and workflows. Follow the reviewed top-level family DAG. |
 | `src/archetype/runtime/` | Recommended top-level API (`ArchetypeRuntime`). Add runtime ergonomics additively; keep public exports stable. |
 | Everything else | Write freely, subject to the contracts they wrap. |
 

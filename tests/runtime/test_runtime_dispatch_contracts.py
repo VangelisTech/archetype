@@ -34,8 +34,7 @@ _PULL_FORWARD_MODELS = (
     ("archetype.evaluation.models", "RunGraders"),
     ("archetype.evaluation.models", "Evaluate"),
     ("archetype.research.models", "AutoResearch"),
-    ("archetype.physical_ai.models", "EvaluatePhysicalTask"),
-    ("archetype.physical_ai.models", "SweepPhysicalInstructions"),
+    ("archetype.physical_ai.models", "RunHostedEpisode"),
     ("archetype.episodes.models", "IngestClaudeTranscript"),
     ("archetype.episodes.models", "QueryTranscriptRows"),
     ("archetype.episodes.models", "QueryTrajectory"),
@@ -420,8 +419,7 @@ def _assert_exact_pull_forward_dispatch(
         models["RunGraders"],
         models["Evaluate"],
         models["AutoResearch"],
-        models["EvaluatePhysicalTask"],
-        models["SweepPhysicalInstructions"],
+        models["RunHostedEpisode"],
         models["IngestClaudeTranscript"],
         models["QueryTranscriptRows"],
         get_world_info,
@@ -481,7 +479,7 @@ async def test_runtime_world_constructs_exact_registered_family_models() -> None
 async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
     tmp_path: Path,
 ) -> None:
-    """All fourteen supported methods construct their canonical operation."""
+    """All thirteen supported methods construct their canonical operation."""
 
     from daft import from_pydict
 
@@ -498,9 +496,9 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
         ClaudeTranscriptSource,
         TrajectorySelection,
     )
-    from archetype.physical_ai.contracts import (
-        InstructionSweepConfig,
-        PhysicalTaskEvalConfig,
+    from archetype.physical_ai.models import (
+        HostedEpisodeRequest,
+        ModalHostedEpisodeConfig,
     )
     from archetype.research.models import AutoResearchConfig
     from archetype.world.models import GetWorldInfo, QueryComponents
@@ -546,7 +544,7 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
         grader_id="runtime-dispatch",
         implementation_version="1",
     )
-    selection = TrajectorySelection(task_ids=("task-1",))
+    selection = TrajectorySelection(episode_ids=("episode-1",))
     research_config = AutoResearchConfig(
         experiment_name="runtime-dispatch",
         experiment_id="runtime-dispatch-1",
@@ -555,22 +553,23 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
         max_iterations=1,
         num_episodes=1,
     )
-    env_client = object()
-    policy_client = object()
-    physical_config = PhysicalTaskEvalConfig(
+    hosted_request = HostedEpisodeRequest(
+        trial_id=0,
         suite="suite",
         task_id=1,
-        trials=1,
-        max_steps=1,
-        storage=storage,
+        seed=1,
+        instruction="reach",
+        max_transitions=1,
+        environment_id="environment@v1",
+        policy_id="policy@v1",
     )
-    sweep_config = InstructionSweepConfig(
-        suite="suite",
-        task_id=1,
-        variants=("reach",),
-        seeds_per_variant=1,
-        max_steps=1,
-        storage=storage,
+    provider_config = ModalHostedEpisodeConfig(
+        workspace_name="workspace",
+        environment_name="environment",
+        app_name="app",
+        function_name="function",
+        result_dict_name="results",
+        result_volume_name="values",
     )
 
     assert await world.ingest_artifacts(artifact) is results["ingest_artifacts"]
@@ -598,20 +597,12 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
         is results["autoresearch"]
     )
     assert (
-        await runtime.evaluate_physical_task(
-            physical_config,
-            env_client=env_client,
-            policy_client=policy_client,
+        await world.run_hosted_episode(
+            [hosted_request],
+            provider=provider_config,
+            activity_id="activity-1",
         )
-        is results["evaluate_physical_task"]
-    )
-    assert (
-        await runtime.sweep_physical_instructions(
-            sweep_config,
-            env_client=env_client,
-            policy_client=policy_client,
-        )
-        is results["sweep_physical_instructions"]
+        is results["run_hosted_episode"]
     )
     assert await world.ingest_claude_transcript(transcript) is results["ingest_claude_transcript"]
     assert await world.transcript_rows() is results["query_transcript_rows"]
@@ -689,7 +680,7 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
         get_world_info=GetWorldInfo,
         query_components=QueryComponents,
     )
-    assert len(operations) == 14
+    assert len(operations) == 13
     assert all(
         model.model_fields["operation"].default == operations[model_name].operation
         for model_name, model in models.items()
@@ -740,12 +731,11 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
     assert operations["AutoResearch"].prepare_candidate is prepare_candidate
     assert operations["AutoResearch"].lab_world_id == "lab-world-1"
     assert operations["AutoResearch"].on_iteration is on_iteration
-    assert operations["EvaluatePhysicalTask"].config is physical_config
-    assert operations["EvaluatePhysicalTask"].env_client is env_client
-    assert operations["EvaluatePhysicalTask"].policy_client is policy_client
-    assert operations["SweepPhysicalInstructions"].config is sweep_config
-    assert operations["SweepPhysicalInstructions"].env_client is env_client
-    assert operations["SweepPhysicalInstructions"].policy_client is policy_client
+    assert operations["RunHostedEpisode"].world_id == "world-1"
+    assert operations["RunHostedEpisode"].storage_config is storage
+    assert operations["RunHostedEpisode"].activity_id == "activity-1"
+    assert operations["RunHostedEpisode"].requests == (hosted_request,)
+    assert operations["RunHostedEpisode"].provider is provider_config
     assert operations["IngestClaudeTranscript"].world_id == "world-1"
     assert operations["IngestClaudeTranscript"].source is transcript
     assert operations["IngestClaudeTranscript"].storage_config is storage
@@ -790,26 +780,47 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
 async def test_runtime_has_no_actor_or_access_decision_evidence() -> None:
     """Trusted calls use apply, never invent an ActorCtx or access decision."""
 
-    from archetype.physical_ai.contracts import PhysicalTaskEvalConfig
+    from archetype.physical_ai.models import (
+        HostedEpisodeRequest,
+        ModalHostedEpisodeConfig,
+    )
 
     models = _canonical_pull_forward_models()
     dispatcher = _DispatchProbe()
     expected = object()
-    dispatcher.results["evaluate_physical_task"] = expected
-    runtime = _runtime_shell(dispatcher)
-    config = PhysicalTaskEvalConfig(
+    dispatcher.results["run_hosted_episode"] = expected
+    world, _state = _runtime_world(dispatcher, storage=StorageConfig())
+    request = HostedEpisodeRequest(
+        trial_id=0,
         suite="suite",
         task_id=1,
-        trials=1,
-        max_steps=1,
+        seed=1,
+        instruction="reach",
+        max_transitions=1,
+        environment_id="environment@v1",
+        policy_id="policy@v1",
     )
-    env_client = object()
+    provider = ModalHostedEpisodeConfig(
+        workspace_name="workspace",
+        environment_name="environment",
+        app_name="app",
+        function_name="function",
+        result_dict_name="results",
+        result_volume_name="values",
+    )
 
-    assert await runtime.evaluate_physical_task(config, env_client=env_client) is expected
-    assert [type(operation) for operation in dispatcher.trusted] == [models["EvaluatePhysicalTask"]]
+    assert (
+        await world.run_hosted_episode(
+            [request],
+            provider=provider,
+            activity_id="activity-1",
+        )
+        is expected
+    )
+    assert [type(operation) for operation in dispatcher.trusted] == [models["RunHostedEpisode"]]
     operation = dispatcher.trusted[0]
-    assert operation.config is config
-    assert operation.env_client is env_client
+    assert operation.requests == (request,)
+    assert operation.provider is provider
     assert dispatcher.actor_aware == []
     assert "actor" not in type(operation).model_fields
     assert "actor_id" not in type(operation).model_fields

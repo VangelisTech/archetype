@@ -32,13 +32,12 @@ rejects fragments that declare anything else or duplicate a rule name.
 | `ArchetypeRuntime` and runtime world handles | Primary supported Python API | Trusted local scripting boundary |
 | Components, processors, resources, configuration, and runtime result models | Supported extension/signature surface | May cross the runtime boundary where explicitly documented |
 | REST and CLI behavior | Supported adapter surfaces | Preserve approved application semantics through the authorized server path |
-| Concrete classes under `archetype.app` | Internal | No direct compatibility promise |
+| Concrete family services | Internal | No direct compatibility promise |
 | `archetype.wiring` | Internal composition root | Sole concrete cross-family construction transaction |
 | `RuntimeResources` | Internal process owner | Admission drain, supervised work, handle lifetime, audit, and storage teardown |
-| App-family protocols | Internal architecture ports by default | Enforce dependencies and substitutability inside the repository |
 | Core engine types retained at top level | Compatibility or extension surface | Classification is owned by API Stability |
 
-Concrete app services, `RuntimeResources`, and wiring helpers are absent from
+Concrete family services, `RuntimeResources`, and wiring helpers are absent from
 the top-level export surface. External code receives capabilities through the
 runtime, REST, or CLI boundary; it does not assemble the internal graph.
 
@@ -74,7 +73,7 @@ Other untrusted ingress, including MCP tools, sandboxed agents, or multi-tenant
 embeddings, must authenticate an `ActorCtx` and use the same actor-aware
 dispatcher methods even when HTTP is not involved.
 
-The concrete `ArchetypeRuntime` is not a dependency of `archetype.app`.
+The concrete `ArchetypeRuntime` is not a dependency of domain families.
 Runtime and API are parallel trusted and actor-aware adapters over the same
 commands dispatcher and family models. Scripting-only handles, sync wrappers,
 callbacks, and local lifetime therefore do not leak into the server.
@@ -90,7 +89,7 @@ Repository package ownership is normative:
 | Capability-scoped resources and provider adapters implementing a family-owned protocol | A named subpackage of `archetype.<family>` |
 | Generic Activity identity, claims, attempts, fences, result references, and settlement | `archetype.activities` |
 | Physical storage, control catalogs, commit coordination, and generic durable world/run envelopes | `archetype.storage` |
-| Application authority requiring app-family composition, internal service ports, and concrete application services | `archetype.app.<family>` |
+| Family-owned workflows and internal lower-family ports | `archetype.<family>` |
 | Transport and authentication | `archetype.api` |
 | Process composition and lifetime | `archetype.wiring` and `archetype.runtime_resources` |
 
@@ -100,10 +99,9 @@ only reviewed lower top-level family contracts declared in the merged
 architecture policy. It must not import `archetype.app`,
 `archetype.runtime`, `archetype.runtime_resources`, `archetype.wiring`,
 `archetype.api`, or `archetype.cli`, and it does not configure process-global
-providers or exporters, storage backends, process hosts, or wiring. The
-application layer may import a registered top-level family contract; the
-reverse edge is forbidden. Undeclared top-level
-family-to-family dependencies are denied. Every first-party package or module
+providers or exporters, storage backends, process hosts, or wiring.
+Undeclared top-level family-to-family dependencies are denied. Every
+first-party package or module
 directly beneath `archetype` is classified as reserved infrastructure or
 registered as a domain family with one exact dependency disposition.
 Unclassified scopes fail the architecture audit, and the complete registered
@@ -145,13 +143,13 @@ Naming states semantic ownership:
 - `views.py` contains reusable storage-backed projections;
 - `handlers.py` contains family-owned free workflows over declared lower-family
   ports;
-- `interfaces.py` contains internal application ports;
+- `interfaces.py` contains family-owned ports;
 - `transitions.py` contains pure typed transition graphs; and
-- `service.py` contains application authority or orchestration.
+- `service.py` contains family-owned workflow authority or orchestration.
 
 A `Component` is persistent ECS schema even though its implementation uses
-Pydantic. It is not an application DTO and does not belong anywhere under
-`archetype.app`. Conversely, a top-level path does not automatically make a
+Pydantic. It is not an application DTO and belongs to its named family.
+Conversely, a top-level path does not automatically make a
 symbol public. Supported names remain an explicit classification owned by
 [API Stability](api-stability.md); concrete services and process wiring remain
 internal.
@@ -160,13 +158,11 @@ The `archetype.missions` family consumes the lower `archetype.graph` family,
 as declared in `quality/architecture.d/missions.toml`. It owns mission/task Components,
 typed authoring and execution values, task relationships, DataFrame-first
 transition processors, reusable projections/resources, and coding-agent
-sandbox implementations. Sandboxes are mission-family resources; they are not
-peer application authorities. The family never imports app, runtime, API, or
-CLI code.
-
-`archetype.app.missions` owns durable mission composition and orchestration.
-For Agent Missions V1 that means graph materialization, tick/external-I/O
-coordination, observation staging, and result projection. Family-package
+sandbox implementations. It also owns graph materialization,
+tick/external-I/O coordination through one author-and-critic Activity binding,
+observation staging, and result projection. Sandboxes are mission-family
+resources; they are not peer authorities. The family never imports runtime,
+API, CLI, or composition code. Family-package
 exports are deliberate and do not promote a concrete application service to
 the `archetype` root.
 
@@ -183,16 +179,14 @@ src/archetype/
   artifacts/         file values, scans, immutable objects, indexes, views and handlers
   research/          AutoResearch values, ledger state, views and free workflow handler
   physical_ai/       physical state, models, views and free workflow handlers
-  app/
-    missions/        mission graph and external-I/O composition
+  missions/          mission state, resources, Activities and family workflows
   runtime_resources.py explicit process-lifetime owner
   wiring.py          sole concrete cross-family composition root
 ```
 
-The accepted Activity migration adds `activities/` as a top-level family over
-the storage-owned Activity catalog. It retains `app/missions/` and introduces
-`app/physical_ai/` when hosted whole-episode choreography lands. This is an
-accepted target, not a claim that those packages exist on the current baseline.
+The Activity migration adds `activities/` as a top-level family over the
+storage-owned Activity catalog. Hosted whole-episode choreography is owned by
+`archetype.physical_ai`; no application mirror is created.
 
 The mission-adjacent cleanup direction is recorded in
 [Agent Missions V1, section 9](agent-missions.md#9-family-direction-after-v1).
@@ -209,12 +203,11 @@ mission trajectory service composes world-query functions with the evaluation
 family's pure grader runner. Physical evaluation values, provider protocols,
 pure instruction optimization, terminal views, and the current direct
 world/storage workflow handlers all live under `archetype.physical_ai`.
-The hosted Activity target retains those reusable contracts and assigns
-intent-to-Activity-to-observation choreography to
-`archetype.app.physical_ai`; it does not recreate the former mirror or
-single-implementation facade protocol. Claude transcript parsing
+Hosted Activity handling retains those reusable contracts and keeps
+intent-to-Activity-to-observation choreography in `archetype.physical_ai`
+without a single-implementation facade protocol. Claude transcript parsing
 now lives under `archetype.missions.trajectories`;
-`archetype.app.missions.transcript_service` owns its
+`archetype.missions.transcript_service` owns its
 redact-before-durability workflow and consumes the artifacts family directly.
 
 Physical environment and policy providers transfer synchronously into
@@ -240,11 +233,9 @@ production
 `archetype.experiments` umbrella is gone. The repository-root `experiments/`
 directory remains a consumer-side harness, not a package or authority family.
 
-Every application family co-locates its internal protocols, boundary models,
-and authority implementation. It imports reusable domain values from their
-top-level family once those values have moved. A generic `services/` bucket
-and a monolithic `app/interfaces.py` are prohibited; the architecture checker
-rejects edges that recreate them.
+Every family co-locates its genuine protocols, boundary models, and workflow
+implementation. A generic `services/` bucket and a monolithic interface module
+are prohibited; the architecture checker rejects edges that recreate them.
 
 The allowed outer-package direction is:
 
@@ -252,8 +243,7 @@ The allowed outer-package direction is:
 application code -> archetype.runtime
 CLI              -> REST API over HTTP
 runtime          -> commands dispatcher plus family models/contracts
-API              -> commands dispatcher, auth models, family models, app errors
-app families     -> top-level family contracts, approved app-family ports, core
+API              -> commands dispatcher, auth models, family models, shared errors
 commands         -> storage and world
 world            -> storage
 top-level family -> core and explicitly declared lower top-level families
@@ -267,9 +257,8 @@ Forbidden reverse edges include:
 - a top-level family importing app, runtime, API, or CLI;
 - a top-level family importing another registered family without a declared
   lower-family edge;
-- app importing runtime, API, or CLI;
-- runtime importing API auth, concrete app services, or API modules;
-- API routes importing concrete app services or process wiring;
+- runtime importing API auth, concrete family services, or API modules;
+- API routes importing concrete family services or process wiring;
 - CLI command implementations bypassing HTTP.
 
 The proposed graph-family design in
@@ -428,14 +417,14 @@ dataset row, or evaluation receipt—never as a universal fact.
 
 ### Storage execution authority
 
-Archetype-owned terminal Daft work in the application layer MUST enter through
-the canonical `archetype.storage.StorageService` authority (temporarily
-consumed through the compatibility `iStorageService` port).
+Archetype-owned terminal Daft work outside storage MUST enter through the
+canonical `archetype.storage.StorageService` authority through the narrow
+`iStorageService` port.
 `materialize()` admits a lazy plan and returns its completed frame.
 `read_table()` returns a lazy app-table read; `append_table()` and
 `append_missing()` own registration, schema alignment, materialization, and
 Iceberg commit retry. `append_world_rows()` and `read_world_rows()` own the
-generic durable world/run envelope. Other application families may build lazy
+generic durable world/run envelope. Other families may build lazy
 DataFrame plans, but they MUST NOT call Daft collection, Iceberg read/write,
 or catalog table-creation primitives directly. A bounded conversion to Python
 control state may call `to_pylist()` only on a frame first returned by
@@ -449,13 +438,30 @@ tick, or the next entity ID; those remain world-family interpretation.
 Coordinator construction binds the exact `(world_id, run_id, writer_epoch)`
 before tick publication.
 
-The execution gate is reentrant within one task so a cached append can flush
-through the same authority. It coordinates local Daft submissions; it is not a
-second distributed transaction protocol. Iceberg remains authoritative for
+One `StorageService` serializes terminal Daft submissions within one process.
+Its execution gate is reentrant within one task so a cached append can flush
+through the same authority. It is not a second distributed transaction
+protocol. Iceberg remains authoritative for
 atomic table snapshots and optimistic concurrency. On a conditional-append
 conflict, storage refreshes the table and recomputes the anti-join before
 retrying so stale pending rows cannot duplicate an already-committed logical
 key.
+
+Managed ECS appends follow the same storage authority without changing core:
+the private Iceberg adapter materializes one Arrow payload, retains its commit
+token and physical table identity, and refreshes/retries only an exact catalog
+compare-and-swap conflict. Retry is bounded and uses full jitter. A
+commit-state-unknown response cannot prove absence, so v0.5 does not retry it
+or claim exact reconciliation. Storage raises `AmbiguousCommitError` with the
+exact table/world/run/tick identity and commit token, then rejects later
+non-empty appends to that table for the managed store's remaining lifetime.
+This also prevents a restored cached batch from replaying. The manifest-last
+protocol keeps any unconfirmed rows invisible (issue #709).
+
+The v0.5 API exposes no general schema-evolution contract. Physical layout
+tuning, compaction, and snapshot expiry are also deferred. Visibility pinning
+uses an explicit manifest-token allowlist whose size is linear in committed
+tick count.
 
 The durable control plane is separate from that data plane. The local SQLite
 `ControlCatalog`, or its remote Durable Object implementation, owns world
@@ -499,12 +505,12 @@ Ordinary runtime and route modules retain only `RuntimeResources` or its
 dispatcher, never the concrete service graph.
 
 For Agent Missions V1, wiring registers exact submit/run/restore handlers. The
-submit handler constructs `MissionService` exactly once inside the facade's
-pre-reserved workflow owner, injects that same owner for supervised tasks, and
-creates exact-world cleanup authority only after close begins. The app service
-installs the built-in processor/resource bundle and owns mission-world
-orchestration; the runtime handle neither imports nor retains the concrete
-service.
+submit handler constructs `MissionService` exactly once inside the
+pre-reserved workflow owner, retains the combined author-and-critic Activity
+binding for that owner, and creates exact-world cleanup authority only after
+close begins. The family service installs the built-in processor/resource
+bundle and owns mission-world orchestration; the runtime handle neither
+imports nor retains the concrete service.
 
 Concrete services compose collaborators and never inherit another concrete
 service. Intentional inheritance is limited to components, processors,
@@ -553,15 +559,15 @@ Together, the repository's architecture and observability checkers must:
   enforcing package direction;
 - fail closed when the root-facade export map is missing a valid static
   disposition for any declared entry;
-- allow application authority to consume registered top-level family
-  contracts without treating that path as public-API promotion;
-- reject direct `Component` subclasses anywhere under `archetype.app`;
-- enforce the existing outer-package and application-family dependency rules;
+- allow family workflows to consume declared lower-family contracts without
+  treating that path as public-API promotion;
+- reject misplaced direct `Component` subclasses outside their named family;
+- enforce the existing outer-package and family dependency rules;
 - confine commands-owned `ActorCtx` to policy/dispatch and approved adapter
   construction;
 - restrict concrete cross-family construction to `archetype.wiring`;
 - reject concrete-service inheritance;
-- reserve application-owned terminal Daft, Iceberg, and catalog-table
+- reserve family-owned terminal Daft, Iceberg, and catalog-table
   operations to `StorageService`, while allowing only storage-materialized
   frames to cross into bounded Python control flow;
 - reject live-world, runtime-resource, backend-client, and concrete-service
@@ -569,7 +575,7 @@ Together, the repository's architecture and observability checkers must:
 - verify active protocol consumer/implementation mappings;
 - confine provider/exporter and logging configuration to explicit process-host
   callables and require one exact observation disposition for every callable
-  application-family protocol member;
+  family-owned protocol member;
 - support only exact, issue-owned migration exceptions with release deadlines
   and objective expiry conditions; wildcard package exceptions are invalid;
 - report the forbidden edge, governing rule, and supported alternative.
@@ -586,14 +592,14 @@ co-located protocols are implemented. Runtime calls do not fabricate
 `ActorCtx`; API routes depend directly on the lifespan-owned dispatcher;
 concrete services and process wiring are not top-level exports.
 
-Agent Missions V1 is implemented under `archetype.missions`,
-`archetype.app.missions.service`, and `archetype.runtime.missions`. The
+Agent Missions V1 is implemented under `archetype.missions` and
+`archetype.runtime.missions`. The
 top-level mission-family edge to `archetype.graph` is machine-declared and
 supports temporal `DependsOn` and `PartOfMission` entities plus previous-tick
 `GraphView` joins. Coding-agent and sandbox implementations remain subordinate
 resources within the mission family.
 
-`quality/architecture.toml` contains the scalar policy and application-family
+`quality/architecture.toml` contains the scalar policy and family
 DAG. Per-family fragments under `quality/architecture.d/` register the
 top-level dispositions for `artifacts`, `commands`, `episodes`, `evaluation`,
 `graph`, `missions`, `physical_ai`, `projections`, `redaction`,
@@ -621,7 +627,7 @@ The research workflow pull-forward (#652) is complete:
 `archetype.research` owns the frozen `AutoResearch` operation, supported values,
 ledger Components, views, process-shared keyed admission type, and free
 handler. Its reviewed graph is `research → storage, world`; the deleted
-`archetype.app.research`, `iResearchService`, and `AutoResearchService` have no
+the former research facade and its service protocol have no
 compatibility facade.
 
 The trajectory, physical-AI, physical-workflow, ontology, HTN, and transcript
@@ -720,7 +726,6 @@ src/archetype/
   missions/
   redaction/
   projections/
-  app/           internal cross-family workflow services and ports
   runtime/
   api/
   cli/
@@ -731,9 +736,8 @@ src/archetype/
 Historical note (superseded): before PR4, the design used
 `RuntimeApplication`, `CommandGateway`, `ServiceContainer`, a generic command
 envelope, and facade protocols. The refactor deleted those mirrors rather than
-retaining compatibility layers. Internal application-family workflow services,
-genuine resource/provider protocols, and stateful owners remain; their
-`archetype.app.*` paths still have no public compatibility promise.
+retaining compatibility layers. Genuine resource/provider protocols and
+stateful owners remain in their named families.
 
 ### Execution and durability boundaries
 
@@ -820,13 +824,12 @@ are first-class recovery/evidence references, but their existence has no
 implicit acceptance authority. Only an explicit typed policy may require
 their publication for a transition.
 
-Remaining target after PR4: persistent behavioral evidence converges on
-`episode_id`. A trajectory becomes a derived learning-facing DataFrame
-selected from episode evidence and has no persistent identity. Until its
-owning migration lands, the persistent trajectory contract in
-[Mission Trajectories](trajectories.md) remains current. The episode-schema
-change is an intentional pre-1.0 v0.5 migration rather than a silent
-compatibility alias.
+Persistent behavioral evidence converges on `episode_id`: evidence rows are
+keyed by `episode_id` and `seq`, and a trajectory is a derived learning-facing
+DataFrame selected from episode evidence with no persistent identity. The
+contract is documented in [Mission Trajectories](trajectories.md). The
+episode-schema change was an intentional pre-1.0 v0.5 migration — no 0.4
+backfill, dual reads, or compatibility aliases.
 
 ### v0.5 migration oracle status
 
@@ -840,7 +843,7 @@ boundary rather than relying on a pre-refactor baseline.
 | command materialization and manifest-coupled settlement | command-flow and durable-command integration contracts | Landed in world/commands |
 | lock and shutdown admission | runtime lifecycle and admitted-work race contracts | Landed in world/runtime resources |
 | UUIDv7 run identity and fork/resume continuity | command-flow, fork-storage, and world-resume contracts | Landed in world |
-| episode identity and trajectory derivation | episode-rollout and trajectory-domain contracts | Remaining episodes migration |
+| episode identity and trajectory derivation | trajectory-domain, trajectory-service, and episode-join contracts | Landed: evidence keyed by `episode_id`, trajectory is a derived view |
 | stable task base, immutable candidate, exact-head critic | coding-agent, critic, mission-service, and capability-eval contracts | Current preservation baseline; author and critic Activity cutovers must preserve it |
 | sandbox cleanup and retryable phased teardown | sandbox-service, runtime-contract, and mission-service race contracts | Process lifetime landed; Activity worker ownership remains |
 | committed required projection and provider reconciliation | generic seam and mission-consumer failpoint contracts | Generic world seam landed; Activity catalog and Mission consumers are A2–A5 |

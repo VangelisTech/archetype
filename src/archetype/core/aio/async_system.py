@@ -103,9 +103,10 @@ class AsyncSystem(iAsyncSystem):
                     df = await proc_instance.process(df, **filtered_input_kwargs)
 
                     if debug:
-                        row_count = df.count_rows() if hasattr(df, "count_rows") else "?"
                         logger.debug(
-                            f"[archetype] processor_end: {proc_name} (rows_out={row_count})"
+                            "[archetype] processor_end: %s (archetype=%s)",
+                            proc_name,
+                            archetype_name,
                         )
                 except Exception as e:
                     logger.error(
