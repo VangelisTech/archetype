@@ -11,7 +11,6 @@ restart oracle in ``test_mission_author_world_integration.py``.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import subprocess
@@ -112,7 +111,7 @@ class _Reader:
 def _open_catalog(
     path: Path,
     *,
-    lease_seconds: float = 0.01,
+    lease_seconds: float = 30,
     now_seconds: Callable[[], float] | None = None,
 ) -> tuple[
     SqliteActivityCatalog,
@@ -1277,6 +1276,7 @@ async def test_cold_restart_reconciles_published_author_and_redelivers_result(
     provider_path = tmp_path / "provider-counters.json"
     remote = _init_bare_remote(tmp_path / "git")
     receipt = CommittedTickReceipt(world_id, run_id, 1, "token-1", 0)
+    now = [1_000.0]
 
     reader = _Reader(
         _dispatch_snapshot(
@@ -1287,7 +1287,11 @@ async def test_cold_restart_reconciles_published_author_and_redelivers_result(
             repository=str(remote),
         )
     )
-    physical, generic, catalog = _open_catalog(catalog_path)
+    physical, generic, catalog = _open_catalog(
+        catalog_path,
+        lease_seconds=30,
+        now_seconds=lambda: now[0],
+    )
     values = LocalMissionAuthorValueStore(values_path, redactor=RedactionService())
     projector = MissionAuthorActivityProjector(
         reader=reader,
@@ -1340,7 +1344,7 @@ async def test_cold_restart_reconciles_published_author_and_redelivers_result(
     ).digest
     assert first_provider.validator_calls == 1
     await physical.close()
-    await asyncio.sleep(0.02)
+    now[0] += 31
 
     # A later branch head may retain proof.txt unchanged. Recovery must use the
     # provider's exact completion receipt, never misattribute the later head.
@@ -1368,6 +1372,7 @@ async def test_cold_restart_reconciles_published_author_and_redelivers_result(
     recovered_physical, _recovered_generic, recovered_catalog = _open_catalog(
         catalog_path,
         lease_seconds=30,
+        now_seconds=lambda: now[0],
     )
     recovered_values = LocalMissionAuthorValueStore(
         values_path,
@@ -1400,7 +1405,10 @@ async def test_cold_restart_reconciles_published_author_and_redelivers_result(
 
     # The bounded result was durable before staging failed. A new process can
     # redeliver it without claiming or executing provider work.
-    final_physical, _final_generic, final_catalog = _open_catalog(catalog_path)
+    final_physical, _final_generic, final_catalog = _open_catalog(
+        catalog_path,
+        now_seconds=lambda: now[0],
+    )
     final_values = LocalMissionAuthorValueStore(values_path, redactor=RedactionService())
     final_provider = _LocalGitProvider(
         remote,
@@ -1448,7 +1456,10 @@ async def test_cold_restart_reconciles_published_author_and_redelivers_result(
     assert len(await final_catalog.pending_author_results(world_id=world_id)) == 1
     await final_physical.close()
 
-    restage_physical, _restage_generic, restage_catalog = _open_catalog(catalog_path)
+    restage_physical, _restage_generic, restage_catalog = _open_catalog(
+        catalog_path,
+        now_seconds=lambda: now[0],
+    )
     restage = _CrashOnceStager(crash=False)
     restage_worker = MissionAuthorActivityWorker(
         world_id=world_id,
@@ -1481,7 +1492,10 @@ async def test_cold_restart_reconciles_published_author_and_redelivers_result(
         repository=str(remote),
     )
     await restage_physical.close()
-    settling_physical, settling_generic, settling_catalog = _open_catalog(catalog_path)
+    settling_physical, settling_generic, settling_catalog = _open_catalog(
+        catalog_path,
+        now_seconds=lambda: now[0],
+    )
     settling_projector = MissionAuthorActivityProjector(
         reader=reader,
         catalog=settling_catalog,
@@ -1560,7 +1574,10 @@ async def test_cold_restart_reconciles_published_author_and_redelivers_result(
     assert settled.settlement.result_digest == result_ref.digest
     await settling_physical.close()
     after_observation_stager = _CrashOnceStager(crash=False)
-    after_physical, _after_generic, after_catalog = _open_catalog(catalog_path)
+    after_physical, _after_generic, after_catalog = _open_catalog(
+        catalog_path,
+        now_seconds=lambda: now[0],
+    )
     after_observation_worker = MissionAuthorActivityWorker(
         world_id=world_id,
         owner="worker-after-observation-crash",
@@ -1737,7 +1754,11 @@ async def test_confirmed_absence_mints_fresh_fence_before_execution(
     )
     catalog_path = tmp_path / "activities.db"
     values_path = tmp_path / "values"
-    physical, _generic, catalog = _open_catalog(catalog_path)
+    now = [1_000.0]
+    physical, _generic, catalog = _open_catalog(
+        catalog_path,
+        now_seconds=lambda: now[0],
+    )
     values = LocalMissionAuthorValueStore(values_path, redactor=RedactionService())
     await MissionAuthorActivityProjector(
         reader=reader,
@@ -1754,7 +1775,7 @@ async def test_confirmed_absence_mints_fresh_fence_before_execution(
     )
     request = await values.get_request(first.request)
     await physical.close()
-    await asyncio.sleep(0.02)
+    now[0] += 31
 
     provider = _LocalGitProvider(
         remote,
@@ -1779,7 +1800,7 @@ async def test_confirmed_absence_mints_fresh_fence_before_execution(
     # The unbound replacement claim must retain that same guard after restart.
     barrier_physical, _barrier_generic, barrier_catalog = _open_catalog(
         catalog_path,
-        lease_seconds=0.5,
+        now_seconds=lambda: now[0],
     )
     confirmed_again = await provider.reconcile(
         operation_id=operation_id,
@@ -1798,12 +1819,12 @@ async def test_confirmed_absence_mints_fresh_fence_before_execution(
     )
     assert fresh.retry_guard == absence.guard
     await barrier_physical.close()
-    await asyncio.sleep(0.55)
+    now[0] += 31
 
     stager = _CrashOnceStager(crash=False)
     recovery_physical, recovery_generic, recovery_catalog = _open_catalog(
         catalog_path,
-        lease_seconds=30,
+        now_seconds=lambda: now[0],
     )
     worker = MissionAuthorActivityWorker(
         world_id=world_id,
