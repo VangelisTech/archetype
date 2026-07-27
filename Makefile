@@ -27,6 +27,7 @@ help:
 	@echo "  make operational-audit Validate operational scenario ownership and policies"
 	@echo "  make architecture-audit  Enforce dependency and encapsulation policy"
 	@echo "  make observability-audit Enforce signal safety and family dispositions"
+	@echo "  make lockfile-audit  Scan the locked dependency graph for known vulnerabilities"
 	@echo "  make version-inventory-audit  Validate pinned execution-environment inventory"
 	@echo "  make python-api-audit  Validate committed generated Python reference"
 	@echo "  make lint-fix       Lint and auto-fix"
@@ -107,7 +108,7 @@ format:
 	@uv run ruff format $(RUFF_PATHS)
 
 .PHONY: lint
-lint: lazy-audit architecture-audit observability-audit version-inventory-audit python-api-audit api-boundary-audit idempotency-audit gate-coverage-audit operational-audit
+lint: lazy-audit architecture-audit observability-audit lockfile-audit version-inventory-audit python-api-audit api-boundary-audit idempotency-audit gate-coverage-audit operational-audit
 	@uv run ruff check $(RUFF_PATHS)
 
 .PHONY: lint-fix
@@ -141,6 +142,10 @@ operational-audit:
 .PHONY: static
 static: format-check lint typecheck lock-check contract-audit benchmark-audit
 	@echo "Static validation passed"
+
+.PHONY: lockfile-audit
+lockfile-audit:
+	@uv run python scripts/audit_lockfile.py
 
 # Lazy-evaluation audit: gate .collect()/.to_pylist() call sites against
 # lazy_audit.toml. Every premature materialization is a contract exception
