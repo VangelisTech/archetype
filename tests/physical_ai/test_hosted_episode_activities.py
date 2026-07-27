@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-import asyncio
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -263,12 +263,17 @@ def _open_catalog(
     path: Path,
     *,
     lease_seconds: float = 0.01,
+    now_seconds: Callable[[], float] | None = None,
 ) -> tuple[
     SqliteActivityCatalog,
     ActivityCoordinator,
     PhysicalHostedActivityCoordinator,
 ]:
-    physical = SqliteActivityCatalog(path)
+    physical = (
+        SqliteActivityCatalog(path)
+        if now_seconds is None
+        else SqliteActivityCatalog(path, now_seconds=now_seconds)
+    )
     generic = ActivityCoordinator(physical)
     return (
         physical,
@@ -404,7 +409,16 @@ async def test_cold_restart_recovers_first_provider_result_without_second_episod
             intent=intent,
         )
     )
-    physical, generic, catalog = _open_catalog(catalog_path)
+    now = [100.0]
+
+    def clock() -> float:
+        return now[0]
+
+    physical, generic, catalog = _open_catalog(
+        catalog_path,
+        lease_seconds=30,
+        now_seconds=clock,
+    )
     projector = PhysicalHostedActivityProjector(
         reader=reader,
         catalog=catalog,
@@ -439,7 +453,7 @@ async def test_cold_restart_recovers_first_provider_result_without_second_episod
         await first_worker.run_once()
     assert first_runner.execution_count == 1
     await physical.close()
-    await asyncio.sleep(0.02)
+    now[0] += 31
 
     # Reconstruct every Archetype-side object. The provider index is the first
     # durable result, so generic catalog recording cannot trigger another run.
@@ -447,6 +461,7 @@ async def test_cold_restart_recovers_first_provider_result_without_second_episod
     recovered_physical, recovered_generic, recovered_catalog = _open_catalog(
         catalog_path,
         lease_seconds=30,
+        now_seconds=clock,
     )
     recovered_runner = SeededHostedEpisodeRunner(counter_path)
     crash_before_stage = _ObservationStager(crash_once=True)
@@ -469,7 +484,11 @@ async def test_cold_restart_recovers_first_provider_result_without_second_episod
     await recovered_physical.close()
 
     # A third process redelivers the bounded result and stages the same marker.
-    final_physical, _final_generic, final_catalog = _open_catalog(catalog_path)
+    final_physical, _final_generic, final_catalog = _open_catalog(
+        catalog_path,
+        lease_seconds=30,
+        now_seconds=clock,
+    )
     final_stager = _ObservationStager()
     final_runner = SeededHostedEpisodeRunner(counter_path)
     final_worker = PhysicalHostedActivityWorker(
@@ -495,7 +514,11 @@ async def test_cold_restart_recovers_first_provider_result_without_second_episod
     # The worker dies after staging but before a tick commits. A new process has
     # no staged mutation, so it redelivers the same immutable marker and still
     # does not touch the provider.
-    restage_physical, restage_generic, restage_catalog = _open_catalog(catalog_path)
+    restage_physical, restage_generic, restage_catalog = _open_catalog(
+        catalog_path,
+        lease_seconds=30,
+        now_seconds=clock,
+    )
     restage_stager = _ObservationStager()
     restage_worker = PhysicalHostedActivityWorker(
         world_id=world_id,
@@ -618,7 +641,16 @@ async def test_lease_expiry_does_not_replay_an_ambiguous_provider_start(
             intent=intent,
         )
     )
-    physical, _generic, catalog = _open_catalog(catalog_path)
+    now = [100.0]
+
+    def clock() -> float:
+        return now[0]
+
+    physical, _generic, catalog = _open_catalog(
+        catalog_path,
+        lease_seconds=30,
+        now_seconds=clock,
+    )
     await PhysicalHostedActivityProjector(
         reader=reader,
         catalog=catalog,
@@ -640,9 +672,13 @@ async def test_lease_expiry_does_not_replay_an_ambiguous_provider_start(
         await first.run_once()
     assert seeded.execution_count == 1
     await physical.close()
-    await asyncio.sleep(0.02)
+    now[0] += 31
 
-    recovered_physical, _generic, recovered_catalog = _open_catalog(catalog_path)
+    recovered_physical, _generic, recovered_catalog = _open_catalog(
+        catalog_path,
+        lease_seconds=30,
+        now_seconds=clock,
+    )
     healthy_runner = SeededHostedEpisodeRunner(counter_path)
     recovered = PhysicalHostedActivityWorker(
         world_id=world_id,
