@@ -14,7 +14,6 @@ from typing import Any, cast
 import pytest
 from pydantic import create_model
 
-import archetype.wiring as wiring
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.core.hooks import OnSpawn
@@ -87,6 +86,7 @@ from archetype.storage.config import ControlCatalogConfig
 from archetype.storage.service import StorageService
 from archetype.wiring import RuntimeBootstrapConfig, build_runtime_resources
 from archetype.world.lifecycle import WorldLifecycle
+from archetype.world.projectors import RequiredProjectorFanout
 from archetype.world.registry import WorldRegistry
 from archetype.world.simulation import step
 
@@ -159,8 +159,13 @@ async def test_author_binding_composes_with_the_exact_injected_runtime_registry(
         lifecycle = getattr(create.args[0], "__self__", None)
         assert isinstance(lifecycle, WorldLifecycle)
         assert lifecycle._registry is registry  # noqa: SLF001
-        assert lifecycle._required_projector("bound-world") is binding.required_projector
-        assert lifecycle._required_projector("other-world") is None
+        bound = lifecycle._required_projector("bound-world")
+        assert bound is not None
+        assert bound.consumer_name == "world.required-projectors"
+        assert lifecycle._required_projector("bound-world") is bound
+        other = lifecycle._required_projector("other-world")
+        assert other is not None
+        assert other.consumer_name == "world.required-projectors"
         assert await binding.has_unsettled_work("bound-world")
         assert not await binding.has_unsettled_work("other-world")
     finally:
@@ -232,7 +237,7 @@ async def test_modal_mission_submit_binds_required_activity_before_first_tick(
         assert binding.author.world_id == binding.critic.world_id == world_id
         projector = registry.required_projector(world_id)
         assert projector is not None
-        assert projector.consumer_name == "missions.activities"
+        assert projector.consumer_name == "world.required-projectors"
         assert registry.pending_receipt(world_id) is None
     finally:
         await resources.aclose()
@@ -648,7 +653,7 @@ async def test_cold_activity_router_fails_closed_until_family_binding_returns() 
         assert world_id == "cold-world"
         return True
 
-    router = wiring._UnsettledWorldRouter(durable_unsettled)  # noqa: SLF001
+    router = RequiredProjectorFanout(fallback_unsettled=durable_unsettled)
     projector = router.required_projector_for("cold-world")
 
     with pytest.raises(RuntimeError, match="no executable binding"):
@@ -660,7 +665,10 @@ async def test_cold_activity_router_fails_closed_until_family_binding_returns() 
         delegated.append(receipt)
 
     binding = SimpleNamespace(
-        required_projector=SimpleNamespace(project=project),
+        required_projector=SimpleNamespace(
+            consumer_name="missions.activities",
+            project=project,
+        ),
         has_unsettled_work=durable_unsettled,
     )
     await router.bind("cold-world", binding)

@@ -1763,17 +1763,17 @@ async def test_confirmed_absence_mints_fresh_fence_before_execution(
         catalog_path,
         lease_seconds=0.5,
     )
+    confirmed_again = await provider.reconcile(
+        operation_id=operation_id,
+        request=request,
+    )
+    assert isinstance(confirmed_again, AuthorConfirmedAbsent)
     reconciliation_claim = await barrier_catalog.claim_author(
         world_id=world_id,
         owner="barrier-worker",
     )
     assert reconciliation_claim is not None
     assert reconciliation_claim.reconciliation_required
-    confirmed_again = await provider.reconcile(
-        operation_id=operation_id,
-        request=request,
-    )
-    assert isinstance(confirmed_again, AuthorConfirmedAbsent)
     fresh = await barrier_catalog.confirm_provider_operation_absent(
         reconciliation_claim,
         confirmed_again.guard,

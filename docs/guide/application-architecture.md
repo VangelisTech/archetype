@@ -438,9 +438,10 @@ tick, or the next entity ID; those remain world-family interpretation.
 Coordinator construction binds the exact `(world_id, run_id, writer_epoch)`
 before tick publication.
 
-The execution gate is reentrant within one task so a cached append can flush
-through the same authority. It coordinates local Daft submissions; it is not a
-second distributed transaction protocol. Iceberg remains authoritative for
+One `StorageService` serializes terminal Daft submissions within one process.
+Its execution gate is reentrant within one task so a cached append can flush
+through the same authority. It is not a second distributed transaction
+protocol. Iceberg remains authoritative for
 atomic table snapshots and optimistic concurrency. On a conditional-append
 conflict, storage refreshes the table and recomputes the anti-join before
 retrying so stale pending rows cannot duplicate an already-committed logical
@@ -455,7 +456,12 @@ or claim exact reconciliation. Storage raises `AmbiguousCommitError` with the
 exact table/world/run/tick identity and commit token, then rejects later
 non-empty appends to that table for the managed store's remaining lifetime.
 This also prevents a restored cached batch from replaying. The manifest-last
-protocol keeps any unconfirmed rows invisible (issue #704).
+protocol keeps any unconfirmed rows invisible (issue #709).
+
+The v0.5 API exposes no general schema-evolution contract. Physical layout
+tuning, compaction, and snapshot expiry are also deferred. Visibility pinning
+uses an explicit manifest-token allowlist whose size is linear in committed
+tick count.
 
 The durable control plane is separate from that data plane. The local SQLite
 `ControlCatalog`, or its remote Durable Object implementation, owns world

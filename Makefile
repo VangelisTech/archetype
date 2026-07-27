@@ -420,7 +420,6 @@ operational-wheel:
 			--scenario example.03_time_travel \
 			--scenario example.06_trajectory_analysis \
 			--scenario example.10_autoresearch \
-			--scenario example.14_physical_ai \
 			--scenario dogfood.runtime.loopback \
 			--scenario dogfood.commands.local \
 			--scenario dogfood.evaluation.durable_receipt \

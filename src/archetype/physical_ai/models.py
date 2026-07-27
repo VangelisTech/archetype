@@ -1,207 +1,83 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Supported physical-AI values and direct operation models."""
+"""Supported hosted Physical-AI values and operation model."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from dataclasses import dataclass
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict
 
 from archetype.core.config import StorageConfig
+from archetype.physical_ai.hosted_activity_contracts import HostedEpisodeObservation
+from archetype.physical_ai.hosted_episode import canonical_hosted_episode_config
+from archetype.physical_ai.hosted_modal import ModalHostedEpisodeConfig
 
-if TYPE_CHECKING:
-    from archetype.physical_ai.interfaces import EnvClient, PolicyClient
 
+@dataclass(frozen=True, slots=True)
+class HostedEpisodeRequest:
+    """One deterministic episode in a hosted provider request batch."""
 
-@dataclass(frozen=True)
-class PhysicalTaskEvalConfig:
-    """One instruction evaluated across multiple deterministic trial seeds."""
-
+    trial_id: int
     suite: str
     task_id: int
-    trials: int
-    max_steps: int
-    storage: StorageConfig = field(default_factory=StorageConfig)
-    with_frames: bool = False
-    instruction: str = "reach"
-
-    def __post_init__(self) -> None:
-        if not self.suite.strip():
-            raise ValueError("suite must not be empty")
-        if self.trials < 1:
-            raise ValueError("trials must be at least 1")
-        if self.max_steps < 1:
-            raise ValueError("max_steps must be at least 1")
-
-
-@dataclass(frozen=True)
-class InstructionSweepConfig:
-    """Instruction variants evaluated on paired initial-state seeds."""
-
-    suite: str
-    task_id: int
-    variants: tuple[str, ...]
-    seeds_per_variant: int
-    max_steps: int
-    storage: StorageConfig = field(default_factory=StorageConfig)
-    with_frames: bool = False
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "variants", tuple(self.variants))
-        if not self.suite.strip():
-            raise ValueError("suite must not be empty")
-        if not self.variants:
-            raise ValueError("variants must contain at least one instruction")
-        if self.seeds_per_variant < 1:
-            raise ValueError("seeds_per_variant must be at least 1")
-        if self.max_steps < 1:
-            raise ValueError("max_steps must be at least 1")
-
-
-@dataclass(frozen=True)
-class TrialOutcome:
-    """Ledger-derived terminal outcome for one physical trial entity."""
-
-    trial_idx: int
-    env_key: int
     seed: int
-    success: bool
-    episode_length: int
-
-
-@dataclass(frozen=True)
-class PhysicalTaskEvalReport:
-    """Ledger-derived result for one batched physical task evaluation."""
-
-    suite: str
-    task_id: int
     instruction: str
-    world_id: str
-    run_id: str
-    trials: tuple[TrialOutcome, ...] = ()
+    max_transitions: int
+    environment_id: str
+    policy_id: str
+    config_json: str = "{}"
 
-    @property
-    def success_rate(self) -> float:
-        """Fraction of trial entities whose terminal status latched success."""
-
-        return (
-            sum(trial.success for trial in self.trials) / len(self.trials) if self.trials else 0.0
-        )
-
-    @property
-    def mean_length(self) -> float:
-        """Mean terminal environment-step count across all trials."""
-
-        return (
-            sum(trial.episode_length for trial in self.trials) / len(self.trials)
-            if self.trials
-            else 0.0
-        )
-
-
-@dataclass(frozen=True)
-class VariantOutcome:
-    """Ledger-derived aggregate for one instruction variant."""
-
-    instruction: str
-    n_trials: int
-    n_success: int
-    success_rate: float
-    mean_length: float
-
-
-@dataclass(frozen=True)
-class InstructionSweepReport:
-    """All variants graded from one addressable physical evaluation run."""
-
-    suite: str
-    task_id: int
-    world_id: str
-    run_id: str
-    variants: tuple[VariantOutcome, ...] = ()
-
-    @property
-    def scores(self) -> dict[str, float]:
-        """Map each instruction to its success-rate objective."""
-
-        return {variant.instruction: variant.success_rate for variant in self.variants}
-
-    @property
-    def best(self) -> VariantOutcome | None:
-        """Best variant with deterministic shorter-then-lexical tie breaking."""
-
-        if not self.variants:
-            return None
-        return min(
-            self.variants,
-            key=lambda variant: (
-                -variant.success_rate,
-                len(variant.instruction),
-                variant.instruction,
-            ),
+    def __post_init__(self) -> None:
+        if isinstance(self.trial_id, bool) or self.trial_id < 0:
+            raise ValueError("trial_id must be an integer >= 0")
+        if isinstance(self.task_id, bool) or self.task_id < 0:
+            raise ValueError("task_id must be an integer >= 0")
+        if isinstance(self.seed, bool) or self.seed < 0:
+            raise ValueError("seed must be an integer >= 0")
+        if isinstance(self.max_transitions, bool) or self.max_transitions < 0:
+            raise ValueError("max_transitions must be an integer >= 0")
+        for field in ("suite", "instruction", "environment_id", "policy_id"):
+            value = getattr(self, field)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field} must be a non-empty string")
+        object.__setattr__(
+            self,
+            "config_json",
+            canonical_hosted_episode_config(self.config_json),
         )
 
 
-if TYPE_CHECKING:
-    _EnvOperationClient = EnvClient
-    _PolicyOperationClient = PolicyClient
-else:
-    # Direct-only clients are validated at the registered handler boundary.
-    # Keeping Pydantic from introspecting structural protocols also prevents
-    # provider properties from becoming an accidental dispatch-time effect.
-    _EnvOperationClient = Any
-    _PolicyOperationClient = Any
+class RunHostedEpisode(BaseModel):
+    """Execute or recover one whole-episode Modal Activity."""
 
-
-class _PhysicalAIOperation(BaseModel):
-    model_config = ConfigDict(
-        frozen=True,
-        arbitrary_types_allowed=True,
-        extra="forbid",
-    )
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True, extra="forbid")
 
     direct_only: ClassVar[bool] = True
-    operation: str
+    operation: Literal["run_hosted_episode"] = "run_hosted_episode"
+    world_id: str
+    storage_config: StorageConfig
+    activity_id: str
+    requests: tuple[HostedEpisodeRequest, ...]
+    provider: ModalHostedEpisodeConfig
 
 
-class EvaluatePhysicalTask(_PhysicalAIOperation):
-    """Evaluate one typed physical task configuration."""
+def summarize_physical_ai_operation(operation: RunHostedEpisode) -> Mapping[str, Any]:
+    """Return bounded operation identity without provider or request payloads."""
 
-    operation: Literal["evaluate_physical_task"] = "evaluate_physical_task"
-    config: PhysicalTaskEvalConfig
-    env_client: _EnvOperationClient
-    policy_client: _PolicyOperationClient | None = None
-
-
-class SweepPhysicalInstructions(_PhysicalAIOperation):
-    """Evaluate instruction variants against paired initial-state seeds."""
-
-    operation: Literal["sweep_physical_instructions"] = "sweep_physical_instructions"
-    config: InstructionSweepConfig
-    env_client: _EnvOperationClient
-    policy_client: _PolicyOperationClient
-
-
-def summarize_physical_ai_operation(
-    operation: _PhysicalAIOperation,
-) -> Mapping[str, Any]:
-    """Return the discriminator without clients, instructions, or provider state."""
-
-    return {"operation": operation.operation}
+    return {
+        "operation": operation.operation,
+        "world_id": str(operation.world_id),
+    }
 
 
 __all__ = [
-    "EvaluatePhysicalTask",
-    "InstructionSweepConfig",
-    "InstructionSweepReport",
-    "PhysicalTaskEvalConfig",
-    "PhysicalTaskEvalReport",
-    "SweepPhysicalInstructions",
-    "TrialOutcome",
-    "VariantOutcome",
+    "HostedEpisodeObservation",
+    "HostedEpisodeRequest",
+    "ModalHostedEpisodeConfig",
+    "RunHostedEpisode",
     "summarize_physical_ai_operation",
 ]

@@ -319,8 +319,9 @@ same-tick active/inactive ties, load component classes, interpret lineage,
 choose a resumed tick, or allocate the next entity ID. Those are world-family
 semantics layered over the raw visible frames.
 
-The service uses one reentrant execution gate for terminal plans and for
-appends made by its pooled ECS stores. Reentrancy lets a cached-store append
+One `StorageService` serializes terminal Daft submissions within one process
+through a reentrant execution gate for terminal plans and appends made by its
+pooled ECS stores. Reentrancy lets a cached-store append
 flush into its inner store in the same task; a background flush or another
 application job waits its turn. Daft still parallelizes the admitted plan over
 rows and partitions. The gate coordinates local submissions so application
@@ -347,7 +348,12 @@ that physical table before materialization. This includes a cached batch
 restored after the typed error. The physical rows may already exist, while
 manifest-last visibility keeps them hidden. Exact snapshot readback,
 reconciliation, and restart-persistent freeze state remain future work
-(issue #704).
+(issue #709).
+
+The v0.5 surface does not expose general schema evolution, physical layout
+tuning, compaction, or snapshot expiry. Visibility pinning retains an explicit
+manifest-token allowlist and therefore grows linearly with committed tick
+count.
 
 Application families may construct lazy DataFrame transforms. They request
 materialization or table persistence from `iStorageService`; they do not call

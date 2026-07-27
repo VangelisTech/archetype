@@ -85,10 +85,7 @@ def check_registry_coverage() -> list[str]:
         RunMission,
         SubmitMission,
     )
-    from archetype.physical_ai.models import (
-        EvaluatePhysicalTask,
-        SweepPhysicalInstructions,
-    )
+    from archetype.physical_ai.models import RunHostedEpisode
     from archetype.research.models import AutoResearch
     from archetype.world.models import (
         PORTABLE_TICK_OPERATION_TYPES,
@@ -104,8 +101,7 @@ def check_registry_coverage() -> list[str]:
         RunGraders,
         Evaluate,
         AutoResearch,
-        EvaluatePhysicalTask,
-        SweepPhysicalInstructions,
+        RunHostedEpisode,
         IngestClaudeTranscript,
         QueryTranscriptRows,
         QueryTrajectory,

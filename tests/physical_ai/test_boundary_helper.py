@@ -26,7 +26,7 @@ from __future__ import annotations
 import pytest
 from daft import Series
 
-from archetype.physical_ai.boundary import series_to_rows, unpack_struct
+from archetype.physical_ai._dataframe import series_to_rows, unpack_struct
 
 # ---------------------------------------------------------------------------
 # series_to_rows

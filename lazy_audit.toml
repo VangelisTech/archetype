@@ -301,7 +301,7 @@ method = "to_pylist"
 reason = "Terminal task result boundary: task state is filtered to the submitted ids and left-joined lazily to first-class commit entities before the finite scalar rows become immutable TaskResult values returned by the public runtime API."
 
 [[entries]]
-path = "src/archetype/physical_ai/boundary.py"
+path = "src/archetype/physical_ai/_dataframe.py"
 symbol = "series_to_rows"
 expr = "s.to_pylist"
 method = "to_pylist"

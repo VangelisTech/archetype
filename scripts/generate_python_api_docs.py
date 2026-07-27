@@ -142,15 +142,11 @@ PAGES: tuple[ReferencePage, ...] = (
         "physical-ai",
         "Physical AI",
         "Recommended API",
-        "Run batched physical-policy evaluations and paired instruction sweeps through "
-        "the runtime, while retaining queryable world/run evidence.",
+        "Run or recover complete Modal-hosted episode batches through a World.",
         (
-            "PhysicalTaskEvalConfig",
-            "PhysicalTaskEvalReport",
-            "InstructionSweepConfig",
-            "InstructionSweepReport",
-            "TrialOutcome",
-            "VariantOutcome",
+            "HostedEpisodeRequest",
+            "HostedEpisodeObservation",
+            "ModalHostedEpisodeConfig",
             "EnvClient",
             "PolicyClient",
             "PerturbationStrategy",
@@ -305,12 +301,9 @@ RECORDS = frozenset(
         "Outcome",
         "GraderContract",
         "EvalReceipt",
-        "PhysicalTaskEvalConfig",
-        "PhysicalTaskEvalReport",
-        "InstructionSweepConfig",
-        "InstructionSweepReport",
-        "TrialOutcome",
-        "VariantOutcome",
+        "HostedEpisodeRequest",
+        "HostedEpisodeObservation",
+        "ModalHostedEpisodeConfig",
         "OptimizationResult",
         "RoundRecord",
     }
@@ -321,8 +314,6 @@ EXPLICIT_MEMBERS: dict[str, tuple[str, ...]] = {
     "AutoResearchResult": ("improved",),
     "ArtifactStoreConfig": ("local",),
     "GraderContract": ("digest",),
-    "PhysicalTaskEvalReport": ("success_rate", "mean_length"),
-    "InstructionSweepReport": ("scores", "best"),
 }
 
 COMPATIBILITY_CLASSES = frozenset(

@@ -556,16 +556,14 @@ profiles = ["pr", "main", "release"]
 [[contract]]
 id = "physical_ai.workflow.evidence"
 source = "docs/guide/physical-ai.md"
-section = "Evidence invariants"
+section = "Committed-state sequence"
 owner = "physical_ai"
 risk = "high"
 pytest = [
-  "tests/physical_ai/test_task_evaluation.py",
-  "tests/physical_ai/test_instruction_sweep.py",
-  "tests/physical_ai/test_provider_concurrency_contracts.py",
-  "tests/physical_ai/test_provider_lifetime_contracts.py",
-  "tests/physical_ai/test_frame_ref_carriage.py",
-  "tests/integration/test_physical_ai_example_receipt.py::test_physical_ai_receipt_proves_eval_sweep_optimizer_and_telemetry",
+  "tests/physical_ai/test_hosted_episode_activities.py",
+  "tests/physical_ai/test_hosted_modal_activity.py",
+  "tests/integration/test_hosted_physical_runtime.py",
+  "tests/world/test_required_projector_fanout.py",
 ]
 static = []
 evals = []
@@ -648,8 +646,7 @@ pytest = [
   "tests/app/test_application_review_contracts.py::test_stop_admission_then_wait_drained_joins_admitted_autoresearch",
   "tests/app/test_lifecycle_parity.py::TestShutdownErrorAggregation::test_shutdown_waits_for_admitted_autoresearch",
   "tests/wiring/test_wiring_contracts.py::test_wiring_is_explicit_topological_and_has_no_setter_injection",
-  "tests/wiring/test_wiring_contracts.py::test_pull_forward_registration_has_exact_four_actor_aware_and_ten_trusted_only_specs",
-  "tests/wiring/test_wiring_contracts.py::test_pull_forward_handlers_translate_exact_values_without_recursive_dispatch",
+  "tests/wiring/test_wiring_contracts.py::test_pull_forward_registration_has_exact_four_actor_aware_and_nine_trusted_only_specs",
   "tests/integration/test_domain_example_receipts.py::test_autoresearch_receipt_pins_improvement_and_ledger_order",
 ]
 static = []
