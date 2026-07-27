@@ -394,22 +394,11 @@ def test_human_design_brief_is_grounded_without_secret_read_capabilities():
     assert "--disable shell_tool \\" in step
     assert "--disable multi_agent \\" in step
     assert '- < "${RUNNER_TEMP}/design-brief-prompt.txt" \\' in step
-    for source in (
-        '"${REVIEW_DIR}/validated/review-bundle.json"',
-        '"${SCOPE_FILE}"',
-        '"${DIFF_FILE}"',
-    ):
-        assert f"cat {source}" in materialize
-    for guidance_source in (
-        "AGENTS.md",
-        "LEARNINGS.md",
-        ".github/review/README.md",
-        "docs/guide/*.md",
-        "quality/architecture.toml",
-        "quality/architecture.d/*.toml",
-    ):
-        assert guidance_source in materialize
-    assert 'cat "${path}" >> "${RUNNER_TEMP}/design-brief-prompt.txt"' in materialize
+    assert '--bundle "${REVIEW_DIR}/validated/review-bundle.json" \\' in materialize
+    assert '--scope "${SCOPE_FILE}" \\' in materialize
+    assert '--diff "${DIFF_FILE}" \\' in materialize
+    assert "<finalized-review-bundle>" not in materialize
+    assert "for path in \\" not in materialize
 
 
 def test_workflow_preserves_inert_candidate_and_fail_closed_publication():

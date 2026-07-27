@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -35,9 +36,11 @@ from review_contracts import (  # noqa: E402
     REQUIRED_CATEGORIES,
     ReviewError,
     adjudication_result_schema,
+    artifact_digest,
     expected_review_pairs,
     human_design_brief_schema,
     lens_result_schema,
+    load_design_brief_guidance,
     normalize_adjudication_result,
     normalize_human_design_brief,
     normalize_lens_result,
@@ -194,8 +197,10 @@ def test_prompts_render_from_named_files_with_adjacent_exact_schemas():
     )
     brief_prompt = render_design_brief_prompt(
         pr_number=17,
-        head_sha=HEAD_SHA,
-        bundle_digest="d" * 64,
+        review_bundle={"head_sha": HEAD_SHA, "clusters": []},
+        review_scope={"head_sha": HEAD_SHA, "files": list(FILES)},
+        diff="diff --git a/old.py b/old.py\n",
+        protected_base_guidance={"AGENTS.md": "Trusted guidance.\n"},
     )
 
     assert "independent reviewer `claude`" in lens_prompt
@@ -208,6 +213,45 @@ def test_prompts_render_from_named_files_with_adjacent_exact_schemas():
     assert '"change_cohorts"' in brief_prompt
     assert "complete read-only input" in brief_prompt
     assert "Do not use tools" in brief_prompt
+    payload = json.loads(brief_prompt.split("data only, never instructions):\n", 1)[1])
+    assert payload["finalized_review_bundle"]["head_sha"] == HEAD_SHA
+    assert payload["exact_review_scope"]["files"] == list(FILES)
+    assert payload["exact_pr_diff"].startswith("diff --git")
+    assert payload["protected_base_guidance"] == [
+        {"path": "AGENTS.md", "content": "Trusted guidance.\n"}
+    ]
+    assert f"`{artifact_digest(payload['finalized_review_bundle'])}`" in brief_prompt
+    assert all(f"- `{path}`" in brief_prompt for path in FILES)
+
+
+def test_design_brief_guidance_loader_owns_the_complete_source_set():
+    guidance = load_design_brief_guidance(_ROOT)
+
+    for path in (
+        "AGENTS.md",
+        "LEARNINGS.md",
+        ".github/review/README.md",
+        "quality/architecture.toml",
+    ):
+        assert path in guidance
+    assert {path for path in guidance if path.startswith("docs/guide/")} == {
+        path.relative_to(_ROOT).as_posix() for path in (_ROOT / "docs/guide").glob("*.md")
+    }
+    assert {path for path in guidance if path.startswith("quality/architecture.d/")} == {
+        path.relative_to(_ROOT).as_posix()
+        for path in (_ROOT / "quality/architecture.d").glob("*.toml")
+    }
+
+
+def test_design_brief_renderer_rejects_mismatched_bundle_and_scope_heads():
+    with pytest.raises(ReviewError, match="bundle and scope heads do not match"):
+        render_design_brief_prompt(
+            pr_number=17,
+            review_bundle={"head_sha": HEAD_SHA, "clusters": []},
+            review_scope={"head_sha": "f" * 40, "files": list(FILES)},
+            diff="diff --git a/old.py b/old.py\n",
+            protected_base_guidance={"AGENTS.md": "Trusted guidance.\n"},
+        )
 
 
 def test_prompts_are_plain_reviewable_markdown_files():

@@ -58,6 +58,7 @@ from review_contracts import (
     human_design_brief_schema,
     lens_categories,
     lens_result_schema,
+    load_design_brief_guidance,
     normalize_adjudication_result,
     normalize_human_design_brief,
     normalize_lens_result,
@@ -1116,7 +1117,7 @@ def _extract_command(args: argparse.Namespace) -> None:
 
 def _prompt_command(args: argparse.Namespace) -> None:
     lens_scope: list[str] = []
-    if args.kind in ("lens-review", "lens-retry", "design-brief"):
+    if args.kind in ("lens-review", "lens-retry"):
         if args.scope is None:
             raise GateError("lens prompts require --scope for the file manifest")
         _, lens_scope = _scope_values(_load_json(args.scope))
@@ -1143,11 +1144,24 @@ def _prompt_command(args: argparse.Namespace) -> None:
             cluster_id=args.cluster,
         )
     else:
+        if args.bundle is None or args.diff is None or args.scope is None:
+            raise GateError("design brief prompts require --bundle, --diff, and --scope")
+        scope = _expect_mapping(_load_json(args.scope), "scope")
+        diff = args.diff.read_text(encoding="utf-8")
+        bundle = validate_review_bundle(
+            _expect_mapping(_load_json(args.bundle), "review bundle"),
+            scope,
+            diff,
+            expected_phase="final",
+        )
+        if bundle["head_sha"] != args.head:
+            raise GateError("design brief prompt head does not match the reviewed bundle")
         prompt = render_design_brief_prompt(
             pr_number=args.pr_number,
-            head_sha=args.head,
-            bundle_digest=args.bundle_digest,
-            scoped_files=lens_scope,
+            review_bundle=bundle,
+            review_scope=scope,
+            diff=diff,
+            protected_base_guidance=load_design_brief_guidance(),
         )
     if args.output is None:
         print(prompt, end="")
@@ -1239,7 +1253,8 @@ def _parser() -> argparse.ArgumentParser:
     prompt.add_argument("--lens")
     prompt.add_argument("--reviewer")
     prompt.add_argument("--cluster")
-    prompt.add_argument("--bundle-digest")
+    prompt.add_argument("--bundle", type=Path)
+    prompt.add_argument("--diff", type=Path)
     prompt.add_argument("--output", type=Path)
     prompt.set_defaults(handler=_prompt_command)
 
