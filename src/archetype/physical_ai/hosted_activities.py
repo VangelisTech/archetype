@@ -13,6 +13,7 @@ from daft import DataFrame, col
 
 from archetype.activities import (
     ActivityAdmission,
+    ActivitySnapshot,
     ActivityClaim,
     ActivityConflictError,
     ActivityResultRef,
@@ -530,10 +531,24 @@ class PhysicalHostedActivityCoordinator:
         *,
         world_id: str,
     ) -> tuple[HostedEpisodeResultDelivery, ...]:
-        snapshots = await self._coordinator.pending_results(
-            kind=HOSTED_EPISODE_ACTIVITY_KIND,
-            world_id=world_id,
-        )
+        # Page to exhaustion: the default 100-row prefix skipped durable
+        # results beyond it, so an observation committed on the current
+        # receipt could miss its delivery when a world held more than one
+        # page of unobserved results — the results-side twin of the
+        # claim_episode stranding fix.
+        snapshots: list[ActivitySnapshot] = []
+        offset = 0
+        while True:
+            page = await self._coordinator.pending_results(
+                kind=HOSTED_EPISODE_ACTIVITY_KIND,
+                world_id=world_id,
+                limit=_CLAIM_SCAN_BATCH,
+                offset=offset,
+            )
+            snapshots.extend(page)
+            if len(page) < _CLAIM_SCAN_BATCH:
+                break
+            offset += _CLAIM_SCAN_BATCH
         deliveries: list[HostedEpisodeResultDelivery] = []
         for snapshot in snapshots:
             result = snapshot.result

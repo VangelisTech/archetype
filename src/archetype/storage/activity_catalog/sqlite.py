@@ -906,6 +906,7 @@ class SqliteActivityCatalog:
         kind: str | None = None,
         world_id: str | None = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[ActivityRecord]:
         """Discover durable results that a later world tick has not observed."""
 
@@ -914,6 +915,7 @@ class SqliteActivityCatalog:
             kind=kind,
             world_id=world_id,
             limit=limit,
+            offset=offset,
         )
 
     async def has_unsettled_activities(self, world_id: str) -> bool:
