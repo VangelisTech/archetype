@@ -11,6 +11,11 @@ on:
 
 permissions: {}
 
+# Keep every reviewer on the same audited CLI instead of letting jobs with an
+# unset version silently install the latest release.
+env:
+  CODEX_VERSION: "0.144.0"
+
 concurrency:
   group: deterministic-review-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event.action != 'ready_for_review' }}
@@ -111,7 +116,6 @@ jobs:
     env:
       DIFF_FILE: ${{ github.workspace }}/.footgun-review.diff
       LENS: ${{ matrix.lens }}
-      CODEX_VERSION: "0.144.0"
       OPENCODE_VERSION: "1.18.4"
       REVIEW_DIR: ${{ github.workspace }}/.footgun-review-output
       REVIEWER_ID: ${{ matrix.reviewer }}
@@ -731,7 +735,7 @@ jobs:
     needs: [reaffirm, review-aggregate, review-adjudication]
     if: ${{ !cancelled() && github.event_name != 'merge_group' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       actions: read
       contents: read
@@ -833,21 +837,19 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          BUNDLE_DIGEST="$(python3 scripts/footgun_review_gate.py digest \
-            --input "${REVIEW_DIR}/validated/review-bundle.json")"
           python3 scripts/footgun_review_gate.py prompt \
             --kind design-brief \
             --scope "${SCOPE_FILE}" \
+            --diff "${DIFF_FILE}" \
+            --bundle "${REVIEW_DIR}/validated/review-bundle.json" \
             --pr-number "${PR_NUMBER}" \
             --head "${HEAD_SHA}" \
-            --bundle-digest "${BUNDLE_DIGEST}" \
             --output "${RUNNER_TEMP}/design-brief-prompt.txt"
-          {
-            echo "schema=$(python3 scripts/footgun_review_gate.py schema --kind design-brief)"
-            echo 'prompt<<__ARCHETYPE_DESIGN_BRIEF_PROMPT__'
-            cat "${RUNNER_TEMP}/design-brief-prompt.txt"
-            echo '__ARCHETYPE_DESIGN_BRIEF_PROMPT__'
-          } >> "${GITHUB_OUTPUT}"
+          PROMPT_CHARS="$(wc -m < "${RUNNER_TEMP}/design-brief-prompt.txt" | tr -d '[:space:]')"
+          PROMPT_BYTES="$(wc -c < "${RUNNER_TEMP}/design-brief-prompt.txt" | tr -d '[:space:]')"
+          echo "Design brief prompt size: ${PROMPT_CHARS} characters, ${PROMPT_BYTES} bytes."
+          echo "schema=$(python3 scripts/footgun_review_gate.py schema --kind design-brief)" \
+            >> "${GITHUB_OUTPUT}"
 
       - name: Generate human design-review brief (Codex)
         id: brief
@@ -863,23 +865,95 @@ jobs:
           chmod 600 "${CODEX_HOME}/auth.json"
           npm install -g "@openai/codex@${CODEX_VERSION}"
           printf '%s' "${SCHEMA}" > "${RUNNER_TEMP}/design-brief-schema.json"
+          set +e
           codex exec \
             -m gpt-5.6-luna \
             -s read-only \
+            --disable shell_tool \
+            --disable multi_agent \
             --ephemeral \
             --ignore-user-config \
             --color never \
             -C "${GITHUB_WORKSPACE}" \
             --output-schema "${RUNNER_TEMP}/design-brief-schema.json" \
             -o "${RUNNER_TEMP}/design-brief-last.txt" \
-            "$(cat "${RUNNER_TEMP}/design-brief-prompt.txt")" \
-            > "${RUNNER_TEMP}/design-brief-raw.txt" 2>&1
+            - < "${RUNNER_TEMP}/design-brief-prompt.txt" \
+            > "${RUNNER_TEMP}/design-brief-raw.txt" \
+            2> "${RUNNER_TEMP}/design-brief-stderr.txt"
+          CODEX_STATUS=$?
+          set -e
+          if [[ "${CODEX_STATUS}" -ne 0 ]]; then
+            PROMPT_CHARS="$(wc -m < "${RUNNER_TEMP}/design-brief-prompt.txt" | tr -d '[:space:]')"
+            echo "::error::Codex design brief failed with exit ${CODEX_STATUS}; prompt characters=${PROMPT_CHARS}."
+            exit "${CODEX_STATUS}"
+          fi
 
-      - name: Validate human design-review brief
+      - name: Validate initial human design-review brief
+        id: brief_validation
         if: needs.reaffirm.outputs.reaffirmed != 'true'
         run: |
           python3 scripts/footgun_review_gate.py extract \
             --raw "${RUNNER_TEMP}/design-brief-last.txt" \
+            --output "${REVIEW_DIR}/human-design-brief-result.json"
+          python3 scripts/footgun_review_gate.py attempt-brief \
+            --scope "${SCOPE_FILE}" \
+            --diff "${DIFF_FILE}" \
+            --bundle "${REVIEW_DIR}/validated/review-bundle.json" \
+            --result "${REVIEW_DIR}/human-design-brief-result.json" \
+            --output "${REVIEW_DIR}/validated/human-design-brief.json" \
+            --feedback "${RUNNER_TEMP}/design-brief-validation.txt" \
+            --github-output "${GITHUB_OUTPUT}"
+
+      - name: Materialize bounded design-brief correction
+        if: >-
+          needs.reaffirm.outputs.reaffirmed != 'true' &&
+          steps.brief_validation.outputs.valid != 'true'
+        run: |
+          python3 scripts/footgun_review_gate.py brief-retry-prompt \
+            --prompt "${RUNNER_TEMP}/design-brief-prompt.txt" \
+            --result "${REVIEW_DIR}/human-design-brief-result.json" \
+            --feedback "${RUNNER_TEMP}/design-brief-validation.txt" \
+            --output "${RUNNER_TEMP}/design-brief-retry-prompt.txt"
+          RETRY_CHARS="$(wc -m < "${RUNNER_TEMP}/design-brief-retry-prompt.txt" | tr -d '[:space:]')"
+          echo "Design brief retry prompt size: ${RETRY_CHARS} characters."
+
+      - name: Correct human design-review brief (Codex)
+        if: >-
+          needs.reaffirm.outputs.reaffirmed != 'true' &&
+          steps.brief_validation.outputs.valid != 'true'
+        timeout-minutes: 20
+        run: |
+          export CODEX_HOME="${RUNNER_TEMP}/codex-home"
+          set +e
+          codex exec \
+            -m gpt-5.6-luna \
+            -s read-only \
+            --disable shell_tool \
+            --disable multi_agent \
+            --ephemeral \
+            --ignore-user-config \
+            --color never \
+            -C "${GITHUB_WORKSPACE}" \
+            --output-schema "${RUNNER_TEMP}/design-brief-schema.json" \
+            -o "${RUNNER_TEMP}/design-brief-retry-last.txt" \
+            - < "${RUNNER_TEMP}/design-brief-retry-prompt.txt" \
+            > "${RUNNER_TEMP}/design-brief-retry-raw.txt" \
+            2> "${RUNNER_TEMP}/design-brief-retry-stderr.txt"
+          CODEX_STATUS=$?
+          set -e
+          if [[ "${CODEX_STATUS}" -ne 0 ]]; then
+            RETRY_CHARS="$(wc -m < "${RUNNER_TEMP}/design-brief-retry-prompt.txt" | tr -d '[:space:]')"
+            echo "::error::Codex design-brief correction failed with exit ${CODEX_STATUS}; prompt characters=${RETRY_CHARS}."
+            exit "${CODEX_STATUS}"
+          fi
+
+      - name: Validate corrected human design-review brief
+        if: >-
+          needs.reaffirm.outputs.reaffirmed != 'true' &&
+          steps.brief_validation.outputs.valid != 'true'
+        run: |
+          python3 scripts/footgun_review_gate.py extract \
+            --raw "${RUNNER_TEMP}/design-brief-retry-last.txt" \
             --output "${REVIEW_DIR}/human-design-brief-result.json"
           python3 scripts/footgun_review_gate.py normalize-brief \
             --scope "${SCOPE_FILE}" \
