@@ -29,7 +29,7 @@ archetype episode <WORLD_ID> [OPTIONS]
 | `--max-steps` / `-n` | integer | `1000` | Maximum episode steps |
 | `--terminal-component` | text | — | Terminal component type name |
 | `--url` | text | — | Override ARCHETYPE_URL for this command |
-| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--role` / `-r` | choice | — | Role shortcut for a server started with --dev-auth |
 | `--token` | text | — | Bearer token to send verbatim |
 | `--json` | boolean | `False` | Emit raw JSON |
 
@@ -59,7 +59,7 @@ archetype history <WORLD_ID> [OPTIONS]
 | `--tick-from` | integer | — | Reserved for API v2 |
 | `--tick-to` | integer | — | Reserved for API v2 |
 | `--url` | text | — | Override ARCHETYPE_URL for this command |
-| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--role` / `-r` | choice | — | Role shortcut for a server started with --dev-auth |
 | `--token` | text | — | Bearer token to send verbatim |
 | `--json` | boolean | `False` | Emit raw JSON |
 
@@ -92,7 +92,7 @@ archetype query <WORLD_ID> [COMPONENT_TYPES] [OPTIONS]
 | `--count` / `-c` | boolean | `False` | Return the row count only |
 | `--where` / `-w` | text | — | Filter with one comparison, for example "score__value > 0.5" |
 | `--url` | text | — | Override ARCHETYPE_URL for this command |
-| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--role` / `-r` | choice | — | Role shortcut for a server started with --dev-auth |
 | `--token` | text | — | Bearer token to send verbatim |
 | `--json` | boolean | `False` | Emit raw JSON |
 
@@ -122,7 +122,7 @@ archetype rollout <WORLD_ID> [OPTIONS]
 | `--parallel` | boolean | `False` | Run episodes concurrently |
 | `--destroy-forks-on-complete` | boolean | `False` | Destroy forked worlds after each episode; storage retained |
 | `--url` | text | — | Override ARCHETYPE_URL for this command |
-| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--role` / `-r` | choice | — | Role shortcut for a server started with --dev-auth |
 | `--token` | text | — | Bearer token to send verbatim |
 | `--json` | boolean | `False` | Emit raw JSON |
 
@@ -148,7 +148,7 @@ archetype run <WORLD_ID> [OPTIONS]
 |------|------|---------|-------------|
 | `--steps` / `-n` | integer | `1` | Number of steps |
 | `--url` | text | — | Override ARCHETYPE_URL for this command |
-| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--role` / `-r` | choice | — | Role shortcut for a server started with --dev-auth |
 | `--token` | text | — | Bearer token to send verbatim |
 
 ---
@@ -165,9 +165,10 @@ archetype serve [OPTIONS]
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--host` | text | `0.0.0.0` | Bind host |
+| `--host` | text | `127.0.0.1` | Bind host |
 | `--port` | integer | `8000` | Bind port |
 | `--reload` / `--no-reload` | boolean | `False` | Enable auto-reload |
+| `--dev-auth` | boolean | `False` | Enable role-based development auth (loopback only) |
 
 ---
 
@@ -184,7 +185,7 @@ archetype status [OPTIONS]
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--url` | text | — | Override ARCHETYPE_URL for this command |
-| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--role` / `-r` | choice | — | Role shortcut for a server started with --dev-auth |
 | `--token` | text | — | Bearer token to send verbatim |
 | `--json` | boolean | `False` | Emit raw JSON |
 
@@ -209,7 +210,7 @@ archetype step <WORLD_ID> [OPTIONS]
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--url` | text | — | Override ARCHETYPE_URL for this command |
-| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--role` / `-r` | choice | — | Role shortcut for a server started with --dev-auth |
 | `--token` | text | — | Bearer token to send verbatim |
 
 ---
@@ -239,7 +240,7 @@ archetype entity add-components <WORLD_ID> <ENTITY_ID> [OPTIONS]
 |------|------|---------|-------------|
 | `--components` | text | — | JSON array of component payloads |
 | `--url` | text | — | Override ARCHETYPE_URL for this command |
-| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--role` / `-r` | choice | — | Role shortcut for a server started with --dev-auth |
 | `--token` | text | — | Bearer token to send verbatim |
 
 ---
@@ -264,7 +265,7 @@ archetype entity despawn <WORLD_ID> <ENTITY_ID> [OPTIONS]
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--url` | text | — | Override ARCHETYPE_URL for this command |
-| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--role` / `-r` | choice | — | Role shortcut for a server started with --dev-auth |
 | `--token` | text | — | Bearer token to send verbatim |
 
 ---
@@ -290,7 +291,7 @@ archetype entity remove-components <WORLD_ID> <ENTITY_ID> [OPTIONS]
 |------|------|---------|-------------|
 | `--types` / `--typ` | text | — | Comma-separated component type names |
 | `--url` | text | — | Override ARCHETYPE_URL for this command |
-| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--role` / `-r` | choice | — | Role shortcut for a server started with --dev-auth |
 | `--token` | text | — | Bearer token to send verbatim |
 
 ---
@@ -315,7 +316,7 @@ archetype entity spawn <WORLD_ID> [OPTIONS]
 |------|------|---------|-------------|
 | `--components` | text | — | JSON array of component payloads |
 | `--url` | text | — | Override ARCHETYPE_URL for this command |
-| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--role` / `-r` | choice | — | Role shortcut for a server started with --dev-auth |
 | `--token` | text | — | Bearer token to send verbatim |
 
 ---
@@ -341,7 +342,7 @@ archetype entity update <WORLD_ID> <ENTITY_ID> [OPTIONS]
 |------|------|---------|-------------|
 | `--components` | text | — | JSON array of component payloads |
 | `--url` | text | — | Override ARCHETYPE_URL for this command |
-| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--role` / `-r` | choice | — | Role shortcut for a server started with --dev-auth |
 | `--token` | text | — | Bearer token to send verbatim |
 
 ---
@@ -369,7 +370,7 @@ archetype hooks list <WORLD_ID> [OPTIONS]
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--url` | text | — | Override ARCHETYPE_URL for this command |
-| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--role` / `-r` | choice | — | Role shortcut for a server started with --dev-auth |
 | `--token` | text | — | Bearer token to send verbatim |
 | `--json` | boolean | `False` | Emit raw JSON |
 
@@ -398,7 +399,7 @@ archetype processors list <WORLD_ID> [OPTIONS]
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--url` | text | — | Override ARCHETYPE_URL for this command |
-| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--role` / `-r` | choice | — | Role shortcut for a server started with --dev-auth |
 | `--token` | text | — | Bearer token to send verbatim |
 | `--json` | boolean | `False` | Emit raw JSON |
 
@@ -427,7 +428,7 @@ archetype resources list <WORLD_ID> [OPTIONS]
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--url` | text | — | Override ARCHETYPE_URL for this command |
-| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--role` / `-r` | choice | — | Role shortcut for a server started with --dev-auth |
 | `--token` | text | — | Bearer token to send verbatim |
 | `--json` | boolean | `False` | Emit raw JSON |
 
@@ -439,7 +440,7 @@ World management commands
 
 ### `archetype world create`
 
-Create a world. Defaults to API admin mode when auth is omitted.
+Create a world.
 
 ```bash
 archetype world create <NAME> [OPTIONS]
@@ -459,7 +460,7 @@ archetype world create <NAME> [OPTIONS]
 | `--namespace` | text | `archetypes` | Storage namespace |
 | `--cache` | boolean | `False` | Use default cache config |
 | `--url` | text | — | Override ARCHETYPE_URL for this command |
-| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--role` / `-r` | choice | — | Role shortcut for a server started with --dev-auth |
 | `--token` | text | — | Bearer token to send verbatim |
 
 ---
@@ -483,7 +484,7 @@ archetype world destroy <WORLD_ID> [OPTIONS]
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--url` | text | — | Override ARCHETYPE_URL for this command |
-| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--role` / `-r` | choice | — | Role shortcut for a server started with --dev-auth |
 | `--token` | text | — | Bearer token to send verbatim |
 
 ---
@@ -511,7 +512,7 @@ archetype world fork <WORLD_ID> [OPTIONS]
 | `--namespace` | text | `archetypes` | Storage namespace |
 | `--cache` | boolean | `False` | Use default cache config |
 | `--url` | text | — | Override ARCHETYPE_URL for this command |
-| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--role` / `-r` | choice | — | Role shortcut for a server started with --dev-auth |
 | `--token` | text | — | Bearer token to send verbatim |
 
 ---
@@ -535,7 +536,7 @@ archetype world inspect <WORLD_ID> [OPTIONS]
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--url` | text | — | Override ARCHETYPE_URL for this command |
-| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--role` / `-r` | choice | — | Role shortcut for a server started with --dev-auth |
 | `--token` | text | — | Bearer token to send verbatim |
 | `--json` | boolean | `False` | Emit raw JSON |
 
@@ -554,7 +555,7 @@ archetype world list [OPTIONS]
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--url` | text | — | Override ARCHETYPE_URL for this command |
-| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--role` / `-r` | choice | — | Role shortcut for a server started with --dev-auth |
 | `--token` | text | — | Bearer token to send verbatim |
 | `--json` | boolean | `False` | Emit raw JSON |
 

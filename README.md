@@ -171,9 +171,10 @@ normative contracts are under [`docs/guide/`](docs/guide/specification.md).
 ## Status
 
 Archetype is alpha software. The append-only world, history, and fork paths
-are the most mature parts of the project. The HTTP layer uses development-mode
-authentication by default; supply your own authentication before exposing it
-to untrusted users.
+are the most mature parts of the project. Protected HTTP routes reject requests
+unless the application factory receives an authenticator. The built-in
+role-based development shortcut requires `archetype serve --dev-auth` and a
+loopback bind; it is not credential verification.
 
 ## License
 

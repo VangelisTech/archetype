@@ -72,8 +72,9 @@ multi-user host.
 ## Project status
 
 Archetype is alpha software. The core world, append-only history, and fork
-paths are the best-tested parts. The built-in HTTP server has development-mode
-authentication; add real authentication before exposing it to untrusted users.
+paths are the best-tested parts. Protected HTTP routes fail closed without an
+injected authenticator. The built-in role shortcut is available only through
+explicit loopback development auth.
 
 ## Development and design notes
 

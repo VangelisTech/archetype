@@ -241,7 +241,7 @@ class TestApiSurface:
         from archetype.api.app import create_app
 
         monkeypatch.setenv("ARCHETYPE_CATALOG_DIR", str(tmp_path / "control"))
-        with TestClient(create_app()) as client:
+        with TestClient(create_app(dev_auth=True, bind_host="127.0.0.1")) as client:
             resp = client.post(
                 "/worlds",
                 json={

@@ -270,6 +270,7 @@ make test-contract    # tests carrying approved contract IDs
 make test-integration # multi-layer tests
 make test-process     # subprocess/crash/independent-writer tests
 make observability-audit # signal safety and exact family dispositions
+make lockfile-audit   # scan every locked dependency for known vulnerabilities
 make static           # format, lint, types, lock, contracts, benchmarks
 make eval-conformance # blocking regression + specification evidence
 make eval-reliability # blocking retry/replay/crash/recovery evidence
@@ -280,6 +281,11 @@ make bench            # record one local ECS microbenchmark report
 make bench-query      # record materialized durable-world read latency
 make docs
 ```
+
+`make lockfile-audit` exports all extras and dependency groups from the exact
+`uv.lock`, excludes the editable project entry, and runs the pinned
+`pip-audit`. A vulnerability finding, stale lock, export failure, or audit-tool
+failure makes the quality gate fail.
 
 Test directories identify the owning subsystem. Orthogonal markers identify
 evidence type and cost: `unit`, `contract(<id>)`, `integration`, `race`,
