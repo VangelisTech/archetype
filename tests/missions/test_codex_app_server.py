@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ from archetype.missions.coding_agents.app_server import (
     CodexThread,
     CodexTurn,
     CodexTurnCompletion,
+    CodexTurnCompletionBarrierError,
 )
 from archetype.missions.coding_agents.contracts import (
     DispatchedValidator,
@@ -403,6 +405,98 @@ async def test_completion_barrier_closes_input_before_exact_waiter_is_released()
 
 
 @pytest.mark.asyncio
+async def test_completion_barrier_failure_preserves_turn_and_reader_liveness() -> None:
+    transport = _Transport()
+    barrier_entered = asyncio.Event()
+    barrier_release = asyncio.Event()
+
+    async def fail_to_quiesce(_completion: CodexTurnCompletion) -> None:
+        barrier_entered.set()
+        await barrier_release.wait()
+        raise RuntimeError("interactive descendants survived")
+
+    client = CodexAppServerClient(transport, completion_barrier=fail_to_quiesce)
+    await _initialize(client, transport)
+    starting = asyncio.create_task(client.start_thread(cwd="/workspace/repo"))
+    _, thread = await _respond(
+        transport,
+        starting,
+        method="thread/start",
+        result={"thread": {"id": "thr-1"}},
+    )
+    starting_turn = asyncio.create_task(client.start_turn(thread, "Do the work."))
+    _, turn = await _respond(
+        transport,
+        starting_turn,
+        method="turn/start",
+        result={"turn": {"id": "turn-1", "status": "inProgress"}},
+    )
+    first_waiter = asyncio.create_task(client.wait_for_turn(turn))
+    await transport.incoming.put(
+        {
+            "method": "turn/completed",
+            "params": {
+                "threadId": turn.thread_id,
+                "turn": {
+                    "id": turn.turn_id,
+                    "status": "completed",
+                    "items": [
+                        {
+                            "type": "agentMessage",
+                            "id": "message-1",
+                            "text": "Committed the fix.",
+                        }
+                    ],
+                },
+            },
+        }
+    )
+    await asyncio.wait_for(barrier_entered.wait(), timeout=1)
+
+    rejoined_waiter = asyncio.create_task(client.wait_for_turn(turn))
+    await asyncio.sleep(0)
+    assert first_waiter.done() is False
+    assert rejoined_waiter.done() is False
+    expected = CodexTurnCompletion(
+        "thr-1",
+        "turn-1",
+        "completed",
+        final_message="Committed the fix.",
+    )
+    assert client._completed_turns[(turn.thread_id, turn.turn_id)] == expected  # noqa: SLF001
+
+    barrier_release.set()
+    failures = await asyncio.wait_for(
+        asyncio.gather(first_waiter, rejoined_waiter, return_exceptions=True),
+        timeout=1,
+    )
+    assert len(failures) == 2
+    for failure in failures:
+        assert isinstance(failure, CodexTurnCompletionBarrierError)
+        assert failure.completion == expected
+        assert isinstance(failure.barrier_error, RuntimeError)
+
+    with pytest.raises(CodexTurnCompletionBarrierError) as rejoined_after_failure:
+        await client.wait_for_turn(turn)
+    assert rejoined_after_failure.value.completion == expected
+
+    later = CodexTurn("thr-1", "turn-2")
+    later_waiter = asyncio.create_task(client.wait_for_turn(later))
+    await transport.incoming.put(
+        {
+            "method": "turn/completed",
+            "params": {
+                "threadId": later.thread_id,
+                "turn": {"id": later.turn_id, "status": "completed", "items": []},
+            },
+        }
+    )
+    assert (await asyncio.wait_for(later_waiter, timeout=1)).status == "completed"
+    assert client._terminal_failure is None  # noqa: SLF001 - reader-liveness oracle
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_completion_barrier_ignores_turns_not_started_by_this_controller() -> None:
     transport = _Transport()
     closed: list[CodexTurnCompletion] = []
@@ -561,6 +655,30 @@ class _Connector:
             await self.client.aclose()
 
 
+class _CleanupRetryConnector:
+    def __init__(
+        self,
+        client: CodexAppServerClient,
+        cleanup_retry: Callable[[], Awaitable[None]],
+    ) -> None:
+        self.client = client
+        self.cleanup_retry = cleanup_retry
+
+    @asynccontextmanager
+    async def connect(self, session: SandboxSession):
+        del session
+        try:
+            yield CodexAppServerConnection(
+                self.client,
+                trace_uri="modal-sandbox://sb-1/executions/trace/stdout.log",
+            )
+        finally:
+            try:
+                await self.cleanup_retry()
+            finally:
+                await self.client.aclose()
+
+
 class _StalledConnector:
     def __init__(self) -> None:
         self.closed = False
@@ -595,6 +713,44 @@ def _request(*, previous_session_id: str = "") -> TaskDispatchRequest:
         ),
         publication_policy=RepositoryPublicationPolicy.COMMIT_AND_PUSH,
         previous_agent_session_id=previous_session_id,
+    )
+
+
+async def _serve_completed_driver_turn(
+    transport: _Transport,
+    *,
+    final_message: str,
+) -> None:
+    initialize = await transport.sent.get()
+    await transport.incoming.put({"id": initialize["id"], "result": {}})
+    assert await transport.sent.get() == {"method": "initialized", "params": {}}
+    thread = await transport.sent.get()
+    await transport.incoming.put({"id": thread["id"], "result": {"thread": {"id": "thr-cleanup"}}})
+    turn = await transport.sent.get()
+    await transport.incoming.put(
+        {
+            "id": turn["id"],
+            "result": {"turn": {"id": "turn-cleanup", "status": "inProgress"}},
+        }
+    )
+    await transport.incoming.put(
+        {
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thr-cleanup",
+                "turn": {
+                    "id": "turn-cleanup",
+                    "status": "completed",
+                    "items": [
+                        {
+                            "type": "agentMessage",
+                            "id": "message-cleanup",
+                            "text": final_message,
+                        }
+                    ],
+                },
+            },
+        }
     )
 
 
@@ -650,6 +806,74 @@ async def test_driver_uses_app_server_completion_not_pty_output(
     assert observed.stdout == "Implemented."
     assert observed.stderr == ""
     assert observed.trace_uri == "modal-sandbox://sb-1/executions/trace/stdout.log"
+
+
+@pytest.mark.asyncio
+async def test_driver_releases_completion_only_after_cleanup_retry_succeeds() -> None:
+    transport = _Transport()
+    cleanup_calls = 0
+    cleanup_retry_entered = asyncio.Event()
+    cleanup_retry_release = asyncio.Event()
+
+    async def finish_interactive() -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        if cleanup_calls == 1:
+            raise RuntimeError("interactive descendants survived")
+        cleanup_retry_entered.set()
+        await cleanup_retry_release.wait()
+
+    async def completion_barrier(_completion: CodexTurnCompletion) -> None:
+        await finish_interactive()
+
+    client = CodexAppServerClient(transport, completion_barrier=completion_barrier)
+    driver = CodexAppServerDriver(_CleanupRetryConnector(client, finish_interactive))
+    server_task = asyncio.create_task(
+        _serve_completed_driver_turn(transport, final_message="Committed the fix.")
+    )
+    running = asyncio.create_task(driver.run(_Session(), _request(), "Go."))
+    await asyncio.wait_for(cleanup_retry_entered.wait(), timeout=1)
+
+    assert running.done() is False
+    assert cleanup_calls == 2
+    cleanup_retry_release.set()
+    observed = await asyncio.wait_for(running, timeout=1)
+    await server_task
+
+    assert observed.returncode == 0
+    assert observed.stdout == "Committed the fix."
+    assert observed.session_id == "thr-cleanup"
+    assert transport.closed is True
+
+
+@pytest.mark.asyncio
+async def test_driver_propagates_persistent_cleanup_failure() -> None:
+    transport = _Transport()
+    cleanup_calls = 0
+
+    async def finish_interactive() -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        raise RuntimeError(f"interactive descendants survived attempt {cleanup_calls}")
+
+    async def completion_barrier(_completion: CodexTurnCompletion) -> None:
+        await finish_interactive()
+
+    client = CodexAppServerClient(transport, completion_barrier=completion_barrier)
+    driver = CodexAppServerDriver(_CleanupRetryConnector(client, finish_interactive))
+    server_task = asyncio.create_task(
+        _serve_completed_driver_turn(transport, final_message="Committed but unsafe.")
+    )
+
+    with pytest.raises(RuntimeError, match="survived attempt 2"):
+        await asyncio.wait_for(
+            driver.run(_Session(), _request(), "Go."),
+            timeout=1,
+        )
+    await server_task
+
+    assert cleanup_calls == 2
+    assert transport.closed is True
 
 
 @pytest.mark.asyncio

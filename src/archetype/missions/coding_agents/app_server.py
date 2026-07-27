@@ -187,6 +187,23 @@ class CodexTurnCompletion:
             raise ValueError(f"unsupported Codex turn completion status {self.status!r}")
 
 
+class CodexTurnCompletionBarrierError(CodexAppServerError):
+    """Provider cleanup failed after one exact authoritative completion."""
+
+    def __init__(
+        self,
+        completion: CodexTurnCompletion,
+        barrier_error: Exception,
+    ) -> None:
+        self.completion = completion
+        self.barrier_error = barrier_error
+        super().__init__(
+            "Codex completion barrier failed for "
+            f"{completion.thread_id}/{completion.turn_id} "
+            f"({type(barrier_error).__name__})"
+        )
+
+
 class CodexAppServerClient:
     """Concurrent JSON-RPC client with exact-turn completion routing."""
 
@@ -225,6 +242,10 @@ class CodexAppServerClient:
         self._pending_calls: dict[int, tuple[str, JsonObject]] = {}
         self._turn_waiters: dict[tuple[str, str], asyncio.Future[CodexTurnCompletion]] = {}
         self._completed_turns: dict[tuple[str, str], CodexTurnCompletion] = {}
+        self._completion_barriers_pending: set[tuple[str, str]] = set()
+        self._completion_barrier_failures: dict[
+            tuple[str, str], CodexTurnCompletionBarrierError
+        ] = {}
         self._completed_agent_items: dict[tuple[str, str, str], str] = {}
         self._last_agent_messages: dict[tuple[str, str], str] = {}
         self._controlled_turns: set[tuple[str, str]] = set()
@@ -347,11 +368,16 @@ class CodexAppServerClient:
 
         Caller cancellation never cancels the shared completion future, so a
         replacement observer can rejoin the same in-flight turn.
+        Provider cleanup failure raises ``CodexTurnCompletionBarrierError``
+        carrying the exact authoritative completion instead of erasing it.
         """
 
         key = (turn.thread_id, turn.turn_id)
+        barrier_failure = self._completion_barrier_failures.get(key)
+        if barrier_failure is not None:
+            raise barrier_failure
         completed = self._completed_turns.get(key)
-        if completed is not None:
+        if completed is not None and key not in self._completion_barriers_pending:
             return completed
         self._require_ready()
         waiter = self._turn_waiters.get(key)
@@ -501,16 +527,26 @@ class CodexAppServerClient:
             if existing is not None and existing != completion:
                 raise CodexAppServerError("Codex app-server returned conflicting turn completion")
             if existing is None:
-                # Do not release the exact-turn waiter until provider-owned
-                # interactive input has been closed. This is a delivery
-                # barrier, not an alternate completion signal: the only fact
-                # that reaches this branch is the app-server notification.
-                if self._completion_barrier is not None and key in self._controlled_turns:
-                    await self._completion_barrier(completion)
+                # Persist the app-server's authoritative fact before invoking
+                # provider cleanup. A failed descendant-quiescence barrier is
+                # operational substrate; it cannot erase this completion or
+                # poison unrelated requests in the shared reader.
+                self._completion_barriers_pending.add(key)
                 self._completed_turns[key] = completion
+                barrier_failure: CodexTurnCompletionBarrierError | None = None
+                try:
+                    if self._completion_barrier is not None and key in self._controlled_turns:
+                        await self._completion_barrier(completion)
+                except Exception as exc:
+                    barrier_failure = CodexTurnCompletionBarrierError(completion, exc)
+                    self._completion_barrier_failures[key] = barrier_failure
+                self._completion_barriers_pending.discard(key)
                 waiter = self._turn_waiters.pop(key, None)
                 if waiter is not None and not waiter.done():
-                    waiter.set_result(completion)
+                    if barrier_failure is None:
+                        waiter.set_result(completion)
+                    else:
+                        waiter.set_exception(barrier_failure)
         if self._observer is not None:
             try:
                 self._observer(method, params)
@@ -773,18 +809,25 @@ async def run_codex_app_server_turn(
         interrupt_grace = min(30.0, remaining / 2)
         turn_deadline = deadline - interrupt_grace
         try:
-            completed = await _await_app_server_phase(
-                client.wait_for_turn(turn),
-                deadline=turn_deadline,
-                phase="turn completion",
-                propagate_timeout=True,
-            )
-        except TimeoutError:
-            completed = await _interrupt_for_terminal_completion(
-                client,
-                turn,
-                deadline=deadline,
-            )
+            try:
+                completed = await _await_app_server_phase(
+                    client.wait_for_turn(turn),
+                    deadline=turn_deadline,
+                    phase="turn completion",
+                    propagate_timeout=True,
+                )
+            except TimeoutError:
+                completed = await _interrupt_for_terminal_completion(
+                    client,
+                    turn,
+                    deadline=deadline,
+                )
+        except CodexTurnCompletionBarrierError as exc:
+            # The app-server fact is authoritative, but it is not safe to
+            # release the observation until provider context cleanup retries
+            # quiescence successfully. A persistent __aexit__ failure still
+            # propagates and prevents validation of a live-mutating worktree.
+            completed = exc.completion
     return AgentProcessObservation(
         returncode={"completed": 0, "interrupted": 130, "failed": 1}[completed.status],
         stdout=completed.final_message,
@@ -805,5 +848,6 @@ __all__ = [
     "CodexThread",
     "CodexTurn",
     "CodexTurnCompletion",
+    "CodexTurnCompletionBarrierError",
     "run_codex_app_server_turn",
 ]
