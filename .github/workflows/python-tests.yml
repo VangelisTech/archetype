@@ -28,6 +28,10 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.12", "3.13"]
+    env:
+      # Override the repository's developer-default .python-version for every
+      # uv command in this job, including the `uv run` calls behind Make.
+      UV_PYTHON: ${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -38,7 +42,15 @@ jobs:
           version: "latest"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-      - run: uv sync --group dev
+      - run: uv sync --python "${{ matrix.python-version }}" --group dev
+      - name: Verify matrix interpreter
+        env:
+          EXPECTED_PYTHON: ${{ matrix.python-version }}
+        run: >-
+          uv run python -c
+          'import os, sys;
+          expected = tuple(map(int, os.environ["EXPECTED_PYTHON"].split(".")));
+          assert sys.version_info[:2] == expected, (sys.version, expected)'
       - name: Full tests with coverage
         if: matrix.python-version == '3.12'
         run: make test-cov

@@ -73,6 +73,9 @@ def test_quality_workflow_preserves_active_required_context_names() -> None:
     ci = _job(workflow, "ci")
     assert ci.startswith("    runs-on:")
     assert 'python-version: ["3.12", "3.13"]' in ci
+    assert "UV_PYTHON: ${{ matrix.python-version }}" in ci
+    assert 'uv sync --python "${{ matrix.python-version }}" --group dev' in ci
+    assert "Verify matrix interpreter" in ci
     for job_id in ("evals", "format", "typecheck", "examples"):
         assert _job(workflow, job_id).startswith(("    if:", "    runs-on:"))
 
@@ -443,6 +446,7 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     profile = _job(workflow, "release-profile")
     external = _job(workflow, "external-evidence")
+    compatibility = _job(workflow, "python-compatibility")
     gate = _job(workflow, "release-evidence-gate")
     publish = _job(workflow, "publish")
 
@@ -484,6 +488,9 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
     assert 'test "$(uname -m)" = "arm64"' in external
     assert 'test "$(sw_vers -productVersion | cut -d. -f1)" -ge 26' in external
     assert "container system status" in external
+    assert 'UV_PYTHON: "3.13"' in compatibility
+    assert 'uv sync --python "3.13" --group dev' in compatibility
+    assert "sys.version_info[:2] == (3, 13)" in compatibility
     assert "needs: [release-evidence-gate, python-compatibility]" in publish
 
 
