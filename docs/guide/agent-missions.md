@@ -794,16 +794,18 @@ a failed phase, rejects new admission, and retries the retained phase before
 finalization. This replaces ambient cleanup authority without weakening the
 landed create/replace/close race guarantees.
 
-That reservation covers the entire supported `RuntimeMissions.run()` call, not
-only individual world steps or provider subprocesses. The run enters through
-the registered dispatcher operation before it may construct or schedule work
-and remains counted as admitted until its resource ownership is either
-registered or released. Shutdown waits for a run admitted before closure; a run
-arriving afterward is rejected before task, sandbox, critic prewarm, or
-provider side effects. Retryable cleanup receives only a narrow exact-world
-capability and cannot use inherited task context to admit another mission or
-touch a sibling world. This whole-operation barrier is the v0.5 resolution of
-the admission race tracked in issue #627.
+That reservation covers each entire supported `RuntimeMissions` operation —
+`submit`, `run`, `restore_sandbox`, and `query` — not only individual world
+steps or provider subprocesses. The run enters through the registered
+dispatcher operation before it may construct or schedule work and remains
+counted as admitted until its resource ownership is either registered or
+released. Shutdown waits for a run admitted before closure; a run arriving
+afterward is rejected before task, sandbox, critic prewarm, or provider side
+effects. A drained run returns its factual terminal result; teardown never
+replaces it with a generic runtime-closed error. Retryable cleanup receives
+only a narrow exact-world capability and cannot use inherited task context to
+admit another mission or touch a sibling world. This whole-operation barrier
+is the v0.5 resolution of the admission race tracked in issue #627.
 
 ## 8. File and responsibility map
 

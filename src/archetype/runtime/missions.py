@@ -45,6 +45,12 @@ def _admitted_mission_operation[**P, R](
     async def admitted(self: RuntimeMissions, *args: P.args, **kwargs: P.kwargs) -> R:
         async with self._resources.admit_operation():
             continuation = self._reservation.operation_admitted()
+            # A publicly closed or released handle rejects by its own contract
+            # here, before the coordinator's owner-registration guard can
+            # surface an internal inventory error for the same condition
+            # (#627). The recheck inside the owner admission keeps rejection
+            # atomic against a close that starts after this preflight.
+            self._ensure_open(continuation=continuation)
             async with self._resources.admit_owner_operation(self._reservation):
                 self._ensure_open(continuation=continuation)
                 return await operation(self, *args, **kwargs)
