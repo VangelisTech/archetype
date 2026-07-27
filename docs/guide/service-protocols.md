@@ -62,10 +62,9 @@ CommandScheduler   -> storage control catalog
                    -> world.handlers lock-held materialization
 research.handlers  -> iWorldRegistry + iWorldLifecycle + iStorageService
                    -> world simulation + exact owned-world cleanup
-physical_ai.handlers
-  -> iWorldRegistry + iWorldLifecycle + iStorageService
-  -> archetype.world mutation/simulation/query
-  -> construction-injected PhysicalClientLifetimeRegistrar
+physical_ai.hosted_workflow
+  -> iWorldRegistry + hosted Activity binding
+  -> archetype.world mutation/simulation
 AuditLog           -> iStorageService + CommandScheduler outbox callbacks
 
 RuntimeMissions -> CommandDispatcher -> registered mission handler
@@ -88,10 +87,8 @@ through those handlers and its exact pre-reserved owner.
 | `iStorageService` | `StorageService` | world, commands, artifacts, evaluation, transcripts, research, physical AI | Store/session lifetime, control authority, physical visibility, world/run row envelope, terminal Daft execution, and app-table catalog/read/write/retry authority |
 | `iWorldRegistry` | `WorldRegistry` | lifecycle, mutation, simulation, research, physical AI | Live identity, storage coordinates, exact-world synchronization, retryable close ownership, and committed-receipt retention |
 | `iWorldLifecycle` | `WorldLifecycle` | wiring, research, physical AI | Managed construction, durable discovery, readonly open, fenced mutable resume, fork, and close |
-| `iWorldActivationOwner` | wiring-owned physical workflow lifetime | `WorldLifecycle.create_closing_world` | Bind exact catalog registration retirement before its first write, promote the same owner to the canonical sticky cleanup lease after registry insertion, and retain retryable activation cleanup |
 | `iWorldCleanup` | `WorldCleanup` | reservation-owned mission cleanup | Exact-world, close-lease-bound retained updates, teardown staging, commit, and finish |
 | Structural `MissionRedactor` / `TranscriptRedactor` | canonical `archetype.redaction.RedactionService` | mission execution and transcript ingestion | Provider-neutral pre-durability scanning, deterministic redaction, safe receipts, and quarantine |
-| Family lifetime port `PhysicalClientLifetimeRegistrar` | wiring-owned runtime registrar | physical-AI handlers | Transfer unique live providers before the first effect, hold an identity-ordered exclusive lease for the complete workflow, and yield scoped exact-world retirement authority |
 | Family resource service `missions.SandboxService` | `missions.SandboxService` | `MissionService` | Select a configured backend and acquire, reuse, close, and shut down mission-keyed sessions; no task-transition authority |
 | Family resource port `missions.SandboxBackend` | configured Apple Container, Docker, or Modal adapter | `missions.SandboxService` | Create or restore provider-owned isolated sessions |
 | Family resource port `missions.SandboxSession` | provider session adapter | `CodingAgentHarness`, `CriticHarness`, `missions.SandboxService` | Expose capability, process, status, checkpoint, and close operations for one live sandbox |
@@ -257,69 +254,31 @@ See [Agent Missions V1](agent-missions.md).
 
 ### Physical AI
 
-`EnvClient`, `PolicyClient`, and `PhysicalClientLifetimeRegistrar` are genuine
-protocols in `archetype.physical_ai.interfaces`; configuration, operation, and
-report values live in `archetype.physical_ai.models`. External simulator and
-model resources are implementations beneath those capabilities. The free
-`archetype.physical_ai.handlers` workflows compose
-world lifecycle, entity/processor mutation, episode execution, persisted world
-reads, and storage-admitted terminal report projection; they do not own those
-lower-family authorities. There is no app mirror or single-implementation
-service protocol.
+The public distributed surface is one exact trusted-only direct operation,
+`RunHostedEpisode`, on a `RuntimeWorld`. Its public values live in
+`archetype.physical_ai.models`, and its provider configuration identifies one
+exact Modal namespace.
 
-Hosted [Activity](activities.md) handling keeps
-intent-to-Activity-to-observation workflow authority in
-`archetype.physical_ai`. It does not recreate a family mirror or require a
-single-implementation physical service protocol.
+`archetype.physical_ai.hosted_workflow` commits intent, invokes the
+world-scoped Activity worker outside the World lock, and commits the complete
+observation in a later tick. The family-owned binding supplies exact-receipt
+projection, provider reconciliation, content-addressed values, and observation
+staging. `RuntimeResources` owns that binding and worker; world-owned required
+projection fans out deterministically by consumer name when multiple Activity
+families share a World.
 
-`EvaluatePhysicalTask` and `SweepPhysicalInstructions` are exact trusted-only,
-direct, non-durable, application-scoped registrations. The handlers accept no
-actor context and emit no parallel summary Component. They return typed reports
-carrying the authoritative `(world_id, run_id)` coordinates.
+No public operation installs remote environment or policy clients in a tick.
+The `EnvClient` and `PolicyClient` protocols remain internal support for
+explicit in-process processor composition. Pure in-memory paths such as the
+MuJoCo cart-pole processor remain supported examples; distributed execution
+crosses only the whole-episode Activity boundary.
 
-Each live provider must expose `async aclose()`. Before ownership or effects, a
-construction-injected registrar validates every supplied role with Daft's exact
-serializer; accepted providers are serializable non-owning handles to
-host-owned backing resources. It then transfers every unique provider identity
-to `RuntimeResources` synchronously before world creation or a provider call
-and holds an identity-ordered exclusive lease through the complete workflow.
-Reuse and dual-role clients are deduplicated for the process lifetime;
-operations that share any provider serialize, while disjoint providers may
-proceed concurrently. Cancellation retains ownership; failed closes retain
-only the failed owner for retry. Raw-client processors are internal and cannot
-be installed as a supported ownership bypass. Daft 0.7.19 has no deterministic
-`@daft.cls` teardown hook, so worker-local provider Specs are unsupported. The
-host-owned provider close is authoritative; serialized processor handles may
-reconnect but may not own independent closeable or I/O-backed worker-local
-resources. The exact in-memory MuJoCo cartpole scratch exception is non-I/O and
-has no application-controlled close. Issue #667 tracks a future safe provider
-construction contract.
+Modal permanent-start evidence and the first complete provider result are
+authoritative. Lease expiry does not authorize replay. Exact recovery returns
+the existing result, confirmed absence requires the provider retry guard, and
+unknown start state fails closed.
 
-The registrar pre-reserves a process-owned cleanup slot before the handler may
-create a private evidence world. That world is active for tick materialization
-but carries immutable `writer_mode="cleanup_only"`. Before registration,
-`WorldLifecycle` synchronously binds the exact catalog and complete
-`WorldRecord` to the scoped lifetime token. Immediately after registry
-insertion, it promotes that same owner to the returned sticky cleanup lease
-without awaiting. The handler then retires that exact writer before releasing
-the provider lease.
-
-Activation cleanup is cancellation-resistant. Before promotion it executes
-identity-safe durable-registration retirement; after promotion it revalidates
-through retained `WorldCleanup`. There is no unregistered lifecycle-destroy
-fallback. A failed attempt remains process-owned, provider close joins its
-`workflow-handles` shutdown retry, and multiple failures preserve every cause,
-including distinct caller and cleanup-originated cancellation. Registered
-public destroy and the retained physical handle join one process-owned cleanup
-transaction. Returned world/run coordinates remain durable read evidence,
-while mutable resume rejects the cleanup-only identity before storage or
-fencing and cannot reactivate the provider processors.
-
-The credential-free contract tests prove provider transfer ordering, identity
-deduplication, cancellation retention, retryable close, paired seeds, complete
-denominators, policy reset, runtime/sync parity, and ledger addressability.
-
-See [Physical AI](physical-ai.md).
+See [Physical AI](physical-ai.md) and [Activities](activities.md).
 
 ## 5. Values crossing family ports
 
@@ -354,13 +313,11 @@ issue #586: schemas, authoring values, and structural transforms live under
 `archetype.missions.trajectories`; `TrajectoryService` composes durable query
 with the evaluation family's pure grader runner.
 
-The physical-AI pull-forward completed #666: canonical provider and lifetime
-protocols live in `archetype.physical_ai.interfaces`; operation, request, and
-report values live in `archetype.physical_ai.models`; views and free handlers
-compose the declared storage and world ports in the same family.
-`archetype.physical_ai.contracts` is a one-release object-identical re-export
-shim for the moved value contracts. The former app mirror,
-`iPhysicalAIService`, and root application command-envelope boundary are gone.
+The physical-AI family owns the hosted operation, request and observation
+values, provider recovery, content contracts, and free workflow over declared
+world and storage ports. The former app mirror, direct per-step distributed
+operations, compatibility shim, `iPhysicalAIService`, and root application
+command-envelope boundary are gone.
 
 The root policy and its `quality/architecture.d/` fragments currently carry no
 migration exceptions; no wildcard compatibility package is implied.

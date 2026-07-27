@@ -235,7 +235,7 @@ class _CrashBeforeGenericRecord:
 def _open_catalog(
     path: Path,
     *,
-    lease_seconds: float = 0.01,
+    lease_seconds: float = 0.5,
 ) -> tuple[
     SqliteActivityCatalog,
     ActivityCoordinator,
@@ -554,7 +554,7 @@ async def test_activity_restart_recovers_modal_result_before_generic_record(
         await first.run_once()
     assert state.execution_count == 1
     await physical.close()
-    await asyncio.sleep(0.02)
+    await asyncio.sleep(0.55)
 
     recovered_physical, _recovered_generic, recovered_catalog = _open_catalog(
         catalog_path,

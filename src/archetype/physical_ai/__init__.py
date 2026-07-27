@@ -1,16 +1,12 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Physical-AI state, provider boundaries, workflows, and evaluation values."""
+"""Physical state, pure local simulation, and hosted episode workflows."""
 
-from archetype.physical_ai.interfaces import EnvClient, PolicyClient
 from archetype.physical_ai.models import (
-    InstructionSweepConfig,
-    InstructionSweepReport,
-    PhysicalTaskEvalConfig,
-    PhysicalTaskEvalReport,
-    TrialOutcome,
-    VariantOutcome,
+    HostedEpisodeObservation,
+    HostedEpisodeRequest,
+    ModalHostedEpisodeConfig,
 )
 from archetype.physical_ai.optimization import (
     OptimizationResult,
@@ -21,17 +17,12 @@ from archetype.physical_ai.optimization import (
 )
 
 __all__ = [
-    "EnvClient",
-    "InstructionSweepConfig",
-    "InstructionSweepReport",
+    "HostedEpisodeObservation",
+    "HostedEpisodeRequest",
+    "ModalHostedEpisodeConfig",
     "OptimizationResult",
     "PerturbationStrategy",
-    "PhysicalTaskEvalConfig",
-    "PhysicalTaskEvalReport",
-    "PolicyClient",
     "RoundRecord",
     "TemplatePerturbation",
-    "TrialOutcome",
-    "VariantOutcome",
     "optimize_instruction",
 ]

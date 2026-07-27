@@ -22,7 +22,7 @@ from collections.abc import Awaitable, Callable
 from functools import wraps
 from typing import TYPE_CHECKING, Any, Concatenate
 
-from uuid_utils import UUID
+from uuid_utils import UUID, uuid7
 
 from archetype.artifacts.models import (
     ArtifactRef,
@@ -41,6 +41,12 @@ from archetype.episodes.models import (
     QueryTranscriptRows,
 )
 from archetype.evaluation.models import Evaluate, RunGraders
+from archetype.physical_ai.models import (
+    HostedEpisodeObservation,
+    HostedEpisodeRequest,
+    ModalHostedEpisodeConfig,
+    RunHostedEpisode,
+)
 from archetype.research.models import AutoResearch
 from archetype.runtime_resources import OperationAdmission
 from archetype.world.models import (
@@ -391,6 +397,28 @@ class RuntimeWorld:
                 world_id=wid,
                 source=source,
                 storage_config=storage_config,
+            )
+        )
+
+    @_admitted_world_operation
+    async def run_hosted_episode(
+        self,
+        requests: Sequence[HostedEpisodeRequest],
+        *,
+        provider: ModalHostedEpisodeConfig,
+        activity_id: str | None = None,
+    ) -> HostedEpisodeObservation:
+        """Run or recover one complete Modal-hosted episode batch."""
+
+        wid = str(await self._ensure_id())
+        storage_config = self._state.require_storage_config("run_hosted_episode")
+        return await self._dispatcher.apply(
+            RunHostedEpisode(
+                world_id=wid,
+                storage_config=storage_config,
+                activity_id=activity_id or f"hosted-{uuid7()}",
+                requests=tuple(requests),
+                provider=provider,
             )
         )
 
@@ -965,6 +993,23 @@ class SyncRuntimeWorld:
         """Sync mirror of redacted Claude transcript ingestion."""
 
         return self._run(lambda: self._world.ingest_claude_transcript(source))
+
+    def run_hosted_episode(
+        self,
+        requests: Sequence[HostedEpisodeRequest],
+        *,
+        provider: ModalHostedEpisodeConfig,
+        activity_id: str | None = None,
+    ) -> HostedEpisodeObservation:
+        """Sync mirror of whole-episode Modal execution."""
+
+        return self._run(
+            lambda: self._world.run_hosted_episode(
+                requests,
+                provider=provider,
+                activity_id=activity_id,
+            )
+        )
 
     def transcript_rows(self) -> DataFrame:
         """Return normalized coding-agent transcript rows for this run."""

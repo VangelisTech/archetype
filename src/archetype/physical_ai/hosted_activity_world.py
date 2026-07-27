@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, cast
 
 from daft import DataFrame, Expression, col
@@ -19,11 +19,13 @@ from archetype.physical_ai.hosted_activities import (
     PhysicalHostedActivityProjector,
     PhysicalHostedActivityWorker,
     PhysicalHostedValueStore,
+    prepare_hosted_episode_intent,
 )
 from archetype.physical_ai.hosted_activity_contracts import (
     HostedEpisodeIntent,
     HostedEpisodeObservation,
     HostedEpisodeProvider,
+    hosted_episode_provider_operation_id,
 )
 from archetype.storage.catalog import SignatureRecord
 from archetype.storage.interfaces import iStorageService
@@ -222,7 +224,14 @@ class WorldHostedEpisodeObservationStager:
             visibility_tokens=list(visibility),
         )
         prefix = HostedEpisodeObservation.get_prefix()
-        matching = frame.where(cast(Expression, col(f"{prefix}activity_id") == activity_id))
+        operation_id = hosted_episode_provider_operation_id(world_id, activity_id)
+        matching = frame.where(
+            cast(
+                Expression,
+                (col(f"{prefix}activity_id") == activity_id)
+                & (col(f"{prefix}operation_id") == operation_id),
+            )
+        )
         materialized = await self._storage.materialize(matching)
         return tuple(
             _component_from_row(HostedEpisodeObservation, row) for row in materialized.to_pylist()
@@ -253,6 +262,7 @@ class PhysicalHostedActivityBinding:
         values: PhysicalHostedValueStore,
         provider: HostedEpisodeProvider,
         stager: WorldHostedEpisodeObservationStager,
+        close: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         if not world_id.strip():
             raise ValueError("hosted Physical-AI binding requires a world identity")
@@ -275,6 +285,8 @@ class PhysicalHostedActivityBinding:
             stager=stager,
         )
         self._catalog = catalog
+        self._values = values
+        self._close = close
 
     def required_projector_for(self, world_id: str) -> RequiredProjector | None:
         return self.required_projector if str(world_id) == self.world_id else None
@@ -283,6 +295,33 @@ class PhysicalHostedActivityBinding:
         if str(world_id) != self.world_id:
             return False
         return await self._catalog.has_unsettled_work(self.world_id)
+
+    async def observation(self, activity_id: str) -> HostedEpisodeObservation | None:
+        delivery = await self._catalog.episode_result(
+            world_id=self.world_id,
+            activity_id=activity_id,
+        )
+        if delivery is None:
+            return None
+        published = await self._values.get_result(delivery.result)
+        return published.observation(activity_id)
+
+    async def prepare_intent(
+        self,
+        *,
+        activity_id: str,
+        request_ipc: bytes,
+    ) -> HostedEpisodeIntent:
+        return await prepare_hosted_episode_intent(
+            self._values,
+            world_id=self.world_id,
+            activity_id=activity_id,
+            request_ipc=request_ipc,
+        )
+
+    async def aclose(self) -> None:
+        if self._close is not None:
+            await self._close()
 
 
 __all__ = [

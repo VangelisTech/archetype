@@ -176,6 +176,13 @@ class PhysicalHostedActivityCatalog(Protocol):
         world_id: str,
     ) -> tuple[HostedEpisodeResultDelivery, ...]: ...
 
+    async def episode_result(
+        self,
+        *,
+        world_id: str,
+        activity_id: str,
+    ) -> HostedEpisodeResultDelivery | None: ...
+
     async def settle_episode_observation(
         self,
         *,
@@ -284,7 +291,15 @@ class PhysicalHostedActivityProjector:
             raise ValueError("physical snapshot does not match the exact committed receipt")
         event = snapshot.as_post_tick()
 
-        intents = self._unique_intents(_component_rows(event, HostedEpisodeIntent))
+        intents = self._unique_intents(
+            tuple(
+                value
+                for value in _component_rows(event, HostedEpisodeIntent)
+                if isinstance(value, HostedEpisodeIntent)
+                and value.operation_id
+                == hosted_episode_provider_operation_id(receipt.world_id, value.activity_id)
+            )
+        )
         for intent in intents.values():
             request_ref = HostedEpisodeRequestRef(
                 ref=intent.request_ref,
@@ -306,7 +321,15 @@ class PhysicalHostedActivityProjector:
                 world_id=receipt.world_id,
             )
         }
-        observations = self._unique_observations(_component_rows(event, HostedEpisodeObservation))
+        observations = self._unique_observations(
+            tuple(
+                value
+                for value in _component_rows(event, HostedEpisodeObservation)
+                if isinstance(value, HostedEpisodeObservation)
+                and value.operation_id
+                == hosted_episode_provider_operation_id(receipt.world_id, value.activity_id)
+            )
+        )
         for observation in observations.values():
             delivery = pending.get(observation.activity_id)
             if delivery is None:
@@ -553,6 +576,34 @@ class PhysicalHostedActivityCoordinator:
                 )
             )
         return tuple(deliveries)
+
+    async def episode_result(
+        self,
+        *,
+        world_id: str,
+        activity_id: str,
+    ) -> HostedEpisodeResultDelivery | None:
+        snapshot = await self._coordinator.get(
+            world_id,
+            HOSTED_EPISODE_ACTIVITY_KIND,
+            activity_id,
+        )
+        if snapshot is None or snapshot.result is None:
+            return None
+        return HostedEpisodeResultDelivery(
+            world_id=snapshot.admission.source.world_id,
+            activity_id=snapshot.admission.activity_id,
+            request=HostedEpisodeRequestIdentity(
+                ref=snapshot.admission.input_ref,
+                digest=snapshot.admission.input_digest,
+            ),
+            result=HostedEpisodeActivityResultRef(
+                ref=snapshot.result.ref,
+                digest=snapshot.result.digest,
+                media_type=snapshot.result.media_type,
+                size_bytes=snapshot.result.size_bytes,
+            ),
+        )
 
     async def settle_episode_observation(
         self,

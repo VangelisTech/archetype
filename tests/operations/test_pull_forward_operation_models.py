@@ -38,13 +38,8 @@ _MODEL_BOUNDARIES = (
     ("archetype.research.models", "AutoResearch", "autoresearch"),
     (
         "archetype.physical_ai.models",
-        "EvaluatePhysicalTask",
-        "evaluate_physical_task",
-    ),
-    (
-        "archetype.physical_ai.models",
-        "SweepPhysicalInstructions",
-        "sweep_physical_instructions",
+        "RunHostedEpisode",
+        "run_hosted_episode",
     ),
     (
         "archetype.episodes.models",
@@ -361,10 +356,10 @@ def _forbidden_imports(source: str) -> set[str]:
     return imported
 
 
-def test_pull_forward_inventory_is_exactly_fourteen_models() -> None:
+def test_pull_forward_inventory_is_exactly_thirteen_models() -> None:
     models = _canonical_models()
 
-    assert len(models) == 14
+    assert len(models) == 13
     assert set(models) == set(_EXPECTED_LITERALS)
     for module_name, model_name, literal in _MODEL_BOUNDARIES:
         model = models[model_name]
@@ -427,22 +422,6 @@ def test_old_supported_contract_paths_preserve_object_identity() -> None:
             "archetype.episodes.contracts",
             "TranscriptIngestionResult",
         ),
-        *(
-            (
-                "archetype.physical_ai.contracts",
-                name,
-                "archetype.physical_ai.models",
-                name,
-            )
-            for name in (
-                "InstructionSweepConfig",
-                "InstructionSweepReport",
-                "PhysicalTaskEvalConfig",
-                "PhysicalTaskEvalReport",
-                "TrialOutcome",
-                "VariantOutcome",
-            )
-        ),
         (
             "archetype.physical_ai.manipulation",
             "EnvClient",
@@ -489,7 +468,7 @@ async def test_pull_forward_specs_have_exact_immediate_availability_and_are_non_
     specs_by_model = {spec.model.__name__: spec for spec in specs}
 
     assert len(_ACTOR_AWARE_MODELS) == 4
-    assert len(_TRUSTED_ONLY_MODELS) == 10
+    assert len(_TRUSTED_ONLY_MODELS) == 9
     assert set(specs_by_model) == set(_EXPECTED_LITERALS)
     for model_name, spec in specs_by_model.items():
         assert spec.name == _EXPECTED_LITERALS[model_name]
@@ -544,7 +523,7 @@ async def test_apply_as_reaches_exact_four_actor_aware_handlers() -> None:
 
 
 @pytest.mark.asyncio
-async def test_apply_as_rejects_other_ten_before_handler_provider_or_scheduler_effect() -> None:
+async def test_apply_as_rejects_other_nine_before_handler_provider_or_scheduler_effect() -> None:
     await _assert_trusted_only_counterfactual()
     models = _canonical_models()
     effects: list[str] = []
@@ -556,13 +535,13 @@ async def test_apply_as_rejects_other_ten_before_handler_provider_or_scheduler_e
         with pytest.raises(PermissionError, match="not available to untrusted"):
             await dispatcher.apply_as(actor, _operation_instance(models[model_name]))
 
-    assert len(_TRUSTED_ONLY_MODELS) == 10
+    assert len(_TRUSTED_ONLY_MODELS) == 9
     assert effects == []
     assert scheduler.calls == []
 
 
 @pytest.mark.asyncio
-async def test_defer_and_defer_as_reject_all_fourteen_before_handler_provider_or_scheduler_effect() -> (
+async def test_defer_and_defer_as_reject_all_thirteen_before_handler_provider_or_scheduler_effect() -> (
     None
 ):
     await _assert_direct_only_counterfactual()

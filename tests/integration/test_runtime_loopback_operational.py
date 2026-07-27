@@ -46,8 +46,11 @@ from archetype.missions.contracts import (
 from archetype.missions.models import RestoreMissionSandbox, RunMission, SubmitMission
 from archetype.missions.sandboxes import CheckpointRef
 from archetype.missions.trajectories import ClaudeTranscriptSource, TrajectorySelection
-from archetype.physical_ai.contracts import InstructionSweepConfig, PhysicalTaskEvalConfig
-from archetype.physical_ai.models import EvaluatePhysicalTask, SweepPhysicalInstructions
+from archetype.physical_ai.models import (
+    HostedEpisodeRequest,
+    ModalHostedEpisodeConfig,
+    RunHostedEpisode,
+)
 from archetype.research.models import AutoResearch, AutoResearchConfig
 from archetype.runtime_resources import RuntimeCloseState, RuntimeResources
 from scripts.run_runtime_loopback import (
@@ -64,8 +67,7 @@ _PULL_FORWARD_MODELS: tuple[type[BaseModel], ...] = (
     RunGraders,
     Evaluate,
     AutoResearch,
-    EvaluatePhysicalTask,
-    SweepPhysicalInstructions,
+    RunHostedEpisode,
     IngestClaudeTranscript,
     QueryTranscriptRows,
     QueryTrajectory,
@@ -163,7 +165,7 @@ def test_shipped_server_cli_receipt_is_complete_bounded_and_redacted(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_trusted_runtime_reaches_all_fourteen_models_and_reserved_spawn(
+async def test_trusted_runtime_reaches_all_thirteen_models_and_reserved_spawn(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -257,25 +259,25 @@ async def test_trusted_runtime_reaches_all_fourteen_models_and_reserved_spawn(
             max_iterations=1,
             num_episodes=1,
         )
-        physical = PhysicalTaskEvalConfig(
+        physical = HostedEpisodeRequest(
+            trial_id=0,
             suite="suite",
             task_id=1,
-            trials=1,
-            max_steps=1,
-            storage=storage,
+            seed=1,
+            instruction="reach",
+            max_transitions=1,
+            environment_id="environment@v1",
+            policy_id="policy@v1",
         )
-        sweep = InstructionSweepConfig(
-            suite="suite",
-            task_id=1,
-            variants=("reach",),
-            seeds_per_variant=1,
-            max_steps=1,
-            storage=storage,
+        provider = ModalHostedEpisodeConfig(
+            workspace_name="workspace",
+            environment_name="environment",
+            app_name="app",
+            function_name="function",
+            result_dict_name="results",
+            result_volume_name="values",
         )
         selection = TrajectorySelection(episode_ids=("episode-1",))
-        env_client = object()
-        policy_client = object()
-
         await world.ingest_artifacts(artifact)
         await world.artifacts()
         await world.grade(Mission, graders=(grader,))
@@ -291,15 +293,10 @@ async def test_trusted_runtime_reaches_all_fourteen_models_and_reserved_spawn(
             prepare_candidate=prepare_candidate,
             lab_world_id="lab-world",
         )
-        await runtime.evaluate_physical_task(
-            physical,
-            env_client=cast(Any, env_client),
-            policy_client=cast(Any, policy_client),
-        )
-        await runtime.sweep_physical_instructions(
-            sweep,
-            env_client=cast(Any, env_client),
-            policy_client=cast(Any, policy_client),
+        await world.run_hosted_episode(
+            [physical],
+            provider=provider,
+            activity_id="activity-1",
         )
         await world.ingest_claude_transcript(transcript)
         await world.transcript_rows()
@@ -346,7 +343,7 @@ async def test_trusted_runtime_reaches_all_fourteen_models_and_reserved_spawn(
         await missions.run(submitted, max_ticks=1)
         await missions.restore_sandbox(submitted, checkpoint)
 
-        assert len(captured) == 14
+        assert len(captured) == 13
         assert {type(operation) for operation in captured} == set(_PULL_FORWARD_MODELS)
         assert all(
             sum(type(operation) is model for operation in captured) == 1

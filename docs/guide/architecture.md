@@ -1,168 +1,95 @@
-# Overview
+# Archetype in one page
 
-Archetype is a data-centric Entity-Component-System simulation engine. World state is stored as columnar DataFrames, and each tick appends new rows instead of overwriting previous state. That storage model supports time-travel queries, forking, replay, and audit.
+Archetype lets a world library define a domain once—as typed Components,
+Relations, Prefabs, and Processors—and use those same definitions to run,
+persist, query, fork, compare, and improve it. Simulation or workflow code and
+the data model used to understand its results do not drift into separate
+systems.
 
-This page is an explanatory overview. The written rules and dependency tables
-in [Application Architecture](application-architecture.md) are normative;
-visual layout is not.
+The durable thing Archetype creates is a **World**: an append-only, queryable,
+forkable history of typed facts. A fork shares committed history and creates an
+independent future. This is the system's identity; Daft, ECS, and Iceberg are
+the mechanisms that make it practical.
 
-## Layers
+## The mental model
 
-```text
-application code -> ArchetypeRuntime -> CommandDispatcher.apply / defer
-CLI -> REST API -> authentication -> CommandDispatcher.apply_as / defer_as
-CommandDispatcher -> registered family handler -> world/storage/core
-```
-
-The trusted runtime bypasses authorization; the API authenticates an
-`ActorCtx` and enters through actor-aware dispatcher methods. Both adapters
-construct the same exact family model; only actor-aware entry invokes `Policy`
-and bounded access evidence. `RuntimeResources`, process wiring, and concrete
-services are internal machinery.
-
-`ArchetypeRuntime` is the recommended script boundary. It owns process lifetime,
-returns lazy actor-free world handles, and forwards exact operations through
-its process-owned dispatcher.
-
-```python
-from archetype import ArchetypeRuntime, Component
-
-
-class Position(Component):
-    x: float = 0.0
-    y: float = 0.0
-
-
-async with ArchetypeRuntime() as runtime:
-    world = runtime.world("demo")
-    entity_id = await world.spawn(Position(x=0, y=0))
-    await world.run(steps=10)
-```
-
-Applications do not construct the internal wiring graph or call concrete
-services. Repository wiring and focused implementation tests may inspect those
-internal seams.
-
-## Command Gate
-
-All untrusted operations authenticate an `ActorCtx` and use actor-aware
-dispatcher entry. Commands-owned `CommandDispatcher` and `Policy` are the
-policy enforcement point.
-
-```text
-API / untrusted caller
-  -> authenticate ActorCtx and construct exact operation
-  -> CommandDispatcher.apply_as / defer_as
-  -> OperationRegistry + Policy
-  -> registered family handler or CommandScheduler
-  -> AuditLog.record_access(bounded evidence)
-  -> return result
-```
-
-`OperationRegistry`, dispatcher, policy, durable scheduler/ledger, and
-`AuditLog` belong to the top-level commands family. Runtime and API retain none
-of that state beyond their reference to the process-owned dispatcher.
-
-## Roles
-
-Roles are flat:
-
-| Role | Intent |
+| Concept | Meaning |
 |---|---|
-| `viewer` | Read-only operations |
-| `player` | Viewer permissions plus spawn, batch create, despawn, and update |
-| `operator` | Player permissions plus schema, processors, hooks, resources, simulation control, fork, and destroy |
-| `admin` | Operator permissions plus world creation and mutable resume |
+| Component / Relation | A typed fact the World remembers about an entity |
+| Processor | An ordered DataFrame transformation over every matching population; the family-owned authority for recurring semantic transitions |
+| Tick | The user-chosen durable causal boundary between one World state and the next |
+| Resource | A capability available during a tick; correctness does not depend on the Python object surviving |
+| Activity | Durable work admitted from one committed tick and observed as facts by a later committed tick |
+| View / Evaluation | A read or interpretation of committed World evidence |
+| Episode | One persistently identified bounded domain execution; a trajectory is a derived view of its evidence |
 
-Role labels are flat inputs and an actor's grants are unioned. The built-in
-permission sets above explicitly include the preceding row; no unknown
-permission is inferred from a role name, including `admin`.
-
-See [Command Gate](command-gate.md).
-
-## Execution
-
-The simulation hierarchy is:
+An ordinary tick is deliberately small:
 
 ```text
-step     one tick
-run      N steps, no termination, no fork
-episode  step until termination/cap on the supplied world
-rollout  N forked episodes from a base world
+materialize admitted changes
+    -> read the current committed state
+    -> run matching processors
+    -> append candidate rows
+    -> publish one visible tick
+    -> return its receipt
 ```
 
-See [Execution Hierarchy](execution-hierarchy.md).
+A processor failure does not advance the World. Rows from a managed tick become
+visible only when that tick's exact manifest is published.
 
-## Tick Lifecycle
-
-A managed tick holds the exact world's registry operation lease. Durable
-commands are part of the tick itself:
+Consequential work crosses two committed states:
 
 ```text
-archetype.world.simulation.step(registry, world_id, run_config)
-  |
-  a. Retry an unacknowledged required-projector receipt, if any
-  b. AsyncWorld materializes due portable commands
-  c. Fire advisory PreTick hooks
-  d. Discover active signatures
-  e. Compute every archetype without consuming mutation caches
-  f. Append and flush rows
-  g. Publish the manifest and settle staged command outcomes atomically
-  h. Consume mutation caches and advance the tick
-  i. Fire advisory PostTick hooks
-  j. Return a stable CommittedTickReceipt
-  k. Run and acknowledge the required projector, when configured
+tick T commits intent
+    -> Activity executes or reconciles outside the World lock
+    -> durable result reference + digest
+    -> stage factual observations
+    -> tick U commits those facts
+    -> later processors decide what they mean
 ```
 
-Processors are trusted internal code once registered. External callers do not bypass the gate.
+Activity execution does not declare domain success or advance a workflow
+directly. It delivers evidence for a later committed decision. Lease expiry
+cannot prove an external effect did not happen; a provider-bound attempt must
+reconcile or fail closed.
 
-A tick is a world execution and commit boundary. It does not necessarily imply
-a task, mission, or physical-workflow state transition. Public hook failures
-are advisory. A required-projector failure is post-commit: the receipt remains
-retryable, and retry does not recompute or republish the committed tick.
+## Where authority lives
 
-## World Lifecycle
+| Owner | Authority |
+|---|---|
+| Domain family (`missions`, `physical_ai`, `research`, …) | Components, processors, values, provider meaning, and family workflows |
+| `activities` | Generic admission, attempt, fence, result-reference, and exact-receipt settlement mechanics |
+| `world` | Live state, tick execution, lineage, fork/resume/destroy meaning, and committed receipts |
+| `storage` | Physical tables, control catalogs, commit coordination, and durable world/run envelopes |
+| `commands` | Registered operation admission, authorization, deferred command delivery, and access evidence |
+| `wiring.py` / `RuntimeResources` | Concrete composition and process-owned admission, workers, and teardown |
+| `runtime` / API / CLI | Supported trusted and authenticated entry points |
 
-World lifecycle has three operations:
+Dependencies point downward. Families do not import the runtime, API, CLI,
+wiring, or concrete process owner. Package placement does not create public
+API.
 
-- `create_world`: admin-only identity creation.
-- `fork_world`: create a new world from the source snapshot.
-- `destroy_world`: remove the live in-memory world; storage and audit rows remain.
+## What the substrates do
 
-Forks receive a new `world_id`, a new `run_id`, the source tick, copied pending mutation caches, copied hook registrations, and shared processor/resource instances by default.
+- **Daft** evaluates lazy, columnar population transforms and queries. Archetype
+  preserves that lazy boundary; Daft does not own workflow durability.
+- **Iceberg** stores scalable, immutable history with optimistic table commits.
+  Archetype's control catalog and manifest-last protocol decide which managed
+  rows form a visible World tick.
+- **Modal or another provider** may place and execute work. The owning family
+  and Activity contract decide identity, reconciliation, and the meaning of its
+  result.
 
-See [World Lifecycle](world-lifecycle.md).
+Use `ArchetypeRuntime` for scripts. Define domain state with Components,
+behavior with Processors, and let the World make the resulting history
+queryable. Use a Resource for safe tick-time capability; use an Activity when a
+committed decision authorizes work whose outcome must survive process loss.
 
-## Deep Dives
+Archetype is therefore not merely an ECS engine, a DataFrame wrapper, or a
+workflow scheduler. It is durable execution that leaves a queryable World
+instead of only a log: forkable history, with the receipts.
 
-### Specifications
-
-- [Application Architecture](application-architecture.md)
-- [Runtime](runtime.md)
-- [Service Protocols](service-protocols.md)
-- [Command Gate](command-gate.md)
-- [Execution Hierarchy](execution-hierarchy.md)
-- [World Lifecycle](world-lifecycle.md)
-- [Audit Log](audit-log.md)
-
-### Core
-
-- [Archetype](archetype.md)
-- [Components](components.md)
-- [Processors](processors.md)
-- [Systems](system-execution.md)
-- [Worlds](worlds.md)
-- [Lifecycle Hooks](hooks.md)
-- [Resources](resources.md)
-- [Stores](stores.md)
-- [Querier](querier.md)
-- [Updater](updater.md)
-- [Configuration](run-config.md)
-
-### App
-
-- [App Overview](app-overview.md)
-- [Services](services.md)
-- [Durable Commands](durable-commands.md)
-- [API Layer](api-layer.md)
-- [Data Flow](data-flow.md)
+Deep contracts: [Runtime](runtime.md), [World lifecycle](world-lifecycle.md),
+[Atomic visibility](atomic-visibility.md), [Resources](resources.md),
+[Activities](activities.md), [Application architecture](application-architecture.md),
+and [Command gate](command-gate.md).

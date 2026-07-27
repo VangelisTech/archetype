@@ -6,14 +6,11 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, Literal, cast
 
-from daft.pickle import dumps as daft_dumps
 from pydantic import BaseModel
 from uuid_utils import uuid7
 
@@ -106,17 +103,21 @@ from archetype.missions.sandboxes.service import SandboxService
 from archetype.missions.service import MissionService
 from archetype.missions.trajectory_service import TrajectoryService
 from archetype.missions.transcript_service import TranscriptIngestionService
-from archetype.physical_ai import handlers as physical_ai_handlers
-from archetype.physical_ai.interfaces import (
-    EnvClient,
-    PhysicalClientLifetimeRegistrar,
-    PhysicalEvidenceWorldRetirement,
-    PhysicalWorkflowLifetime,
-    PolicyClient,
+from archetype.physical_ai import hosted_workflow as physical_ai_handlers
+from archetype.physical_ai.hosted_activities import PhysicalHostedActivityCoordinator
+from archetype.physical_ai.hosted_activity_contracts import HostedEpisodeProvider
+from archetype.physical_ai.hosted_activity_values import LocalHostedEpisodeValueStore
+from archetype.physical_ai.hosted_activity_world import (
+    PhysicalHostedActivityBinding,
+    StoragePhysicalCommittedIntentReader,
+    WorldHostedEpisodeObservationStager,
+)
+from archetype.physical_ai.hosted_modal import (
+    ModalHostedEpisodeConfig,
+    ModalHostedEpisodeProvider,
 )
 from archetype.physical_ai.models import (
-    EvaluatePhysicalTask,
-    SweepPhysicalInstructions,
+    RunHostedEpisode,
     summarize_physical_ai_operation,
 )
 from archetype.redaction.service import RedactionService
@@ -127,7 +128,6 @@ from archetype.storage.activity_catalog import (
     SqliteActivityCatalog,
     activity_catalog_path_for,
 )
-from archetype.storage.catalog import ControlCatalog, WorldRecord
 from archetype.storage.config import ControlCatalogConfig
 from archetype.storage.service import StorageService
 from archetype.world import mutation, query, simulation
@@ -138,7 +138,8 @@ from archetype.world.models import (
     PORTABLE_TICK_OPERATION_TYPES,
     WORLD_OPERATION_TYPES,
 )
-from archetype.world.registry import WorldCleanupLease, WorldRegistry
+from archetype.world.projectors import RequiredProjectorFanout
+from archetype.world.registry import WorldRegistry
 
 _APPLICATION_SCOPED_OPERATIONS = frozenset(
     {
@@ -204,8 +205,7 @@ _PULL_FORWARD_MODELS: tuple[type[BaseModel], ...] = (
     RunGraders,
     Evaluate,
     AutoResearch,
-    EvaluatePhysicalTask,
-    SweepPhysicalInstructions,
+    RunHostedEpisode,
     IngestClaudeTranscript,
     QueryTranscriptRows,
     QueryTrajectory,
@@ -225,7 +225,6 @@ _ACTOR_AWARE_PULL_FORWARD = frozenset(
 _PULL_FORWARD_SCOPES: dict[str, Literal["application", "live_world", "durable_world"]] = {
     "autoresearch": "live_world",
     "evaluate": "durable_world",
-    "evaluate_physical_task": "application",
     "grade_trajectory": "durable_world",
     "ingest_artifacts": "durable_world",
     "ingest_claude_transcript": "live_world",
@@ -236,7 +235,7 @@ _PULL_FORWARD_SCOPES: dict[str, Literal["application", "live_world", "durable_wo
     "run_graders": "application",
     "run_mission": "application",
     "submit_mission": "application",
-    "sweep_physical_instructions": "application",
+    "run_hosted_episode": "live_world",
 }
 
 
@@ -252,6 +251,10 @@ class RuntimeBootstrapConfig:
     redaction_service: RedactionService | None = None
     required_projector_factory: Callable[[str], Any | None] | None = None
     unsettled_world_oracle: Callable[[str], Awaitable[bool]] | None = None
+    hosted_episode_provider_factory: (
+        Callable[[ModalHostedEpisodeConfig], HostedEpisodeProvider] | None
+    ) = None
+    hosted_activity_lease_seconds: float = 300.0
 
     @classmethod
     def from_env(
@@ -264,6 +267,10 @@ class RuntimeBootstrapConfig:
         redaction_service: RedactionService | None = None,
         required_projector_factory: Callable[[str], Any | None] | None = None,
         unsettled_world_oracle: Callable[[str], Awaitable[bool]] | None = None,
+        hosted_episode_provider_factory: (
+            Callable[[ModalHostedEpisodeConfig], HostedEpisodeProvider] | None
+        ) = None,
+        hosted_activity_lease_seconds: float = 300.0,
         environ: Mapping[str, str] | None = None,
     ) -> RuntimeBootstrapConfig:
         """Resolve environment-backed configuration once at the host boundary."""
@@ -277,359 +284,13 @@ class RuntimeBootstrapConfig:
             redaction_service=redaction_service,
             required_projector_factory=required_projector_factory,
             unsettled_world_oracle=unsettled_world_oracle,
+            hosted_episode_provider_factory=hosted_episode_provider_factory,
+            hosted_activity_lease_seconds=hosted_activity_lease_seconds,
         )
-
-
-class _UnsettledWorldRouter:
-    """Compose static host policy with dynamically bound Activity families."""
-
-    def __init__(
-        self,
-        fallback: Callable[[str], Awaitable[bool]] | None,
-    ) -> None:
-        self._fallback = fallback
-        self._bindings: dict[str, object] = {}
-        self._projectors: dict[str, simulation.RequiredProjector] = {}
-        self._lock = asyncio.Lock()
-
-    async def bind(self, world_id: str, binding: object) -> None:
-        async with self._lock:
-            existing = self._bindings.get(world_id)
-            if existing is not None and existing is not binding:
-                raise ValueError(f"world {world_id!r} already has an Activity binding")
-            self._bindings[world_id] = binding
-
-    async def unbind(self, world_id: str, binding: object) -> None:
-        async with self._lock:
-            if self._bindings.get(world_id) is binding:
-                self._bindings.pop(world_id)
-
-    async def has_unsettled(self, world_id: str) -> bool:
-        fallback = self._fallback
-        if fallback is not None and await fallback(world_id):
-            return True
-        async with self._lock:
-            binding = self._bindings.get(world_id)
-        if binding is None:
-            return False
-        oracle = getattr(binding, "has_unsettled_work", None)
-        if not callable(oracle):
-            raise TypeError("Activity binding must expose has_unsettled_work")
-        return bool(await oracle(world_id))
-
-    def required_projector_for(self, world_id: str) -> simulation.RequiredProjector:
-        """Return one stable delegate that fails closed until a family rebinds."""
-
-        key = str(world_id)
-        retained = self._projectors.get(key)
-        if retained is not None:
-            return retained
-
-        async def project(receipt: Any) -> None:
-            async with self._lock:
-                binding = self._bindings.get(key)
-            if binding is None:
-                fallback = self._fallback
-                if fallback is not None and await fallback(key):
-                    raise RuntimeError(
-                        f"world {key!r} has durable Activity work but no executable binding"
-                    )
-                return
-            required = getattr(binding, "required_projector", None)
-            callback = getattr(required, "project", None)
-            if not callable(callback):
-                raise TypeError("Activity binding must expose a required projector")
-            await callback(receipt)
-
-        projector = simulation.RequiredProjector(
-            consumer_name="missions.activities",
-            project=project,
-        )
-        self._projectors[key] = projector
-        return projector
-
-
-@dataclass(frozen=True, slots=True)
-class _PhysicalAIClientEntry:
-    """One identity-keyed provider owner and its operation lock."""
-
-    identity: int
-    client: object
-    reservation: OwnerReservation
-    lock: asyncio.Lock
-
-
-@dataclass(slots=True)
-class _WorldCleanupReservation:
-    """One pre-effect process-owner slot for an eventual exact-world cleanup."""
-
-    reservation: OwnerReservation
-    deferred: _DeferredWorldCleanup
-    bound: bool = False
-    entry: _WorldCleanupEntry | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _LazyExactWorldCleanup:
-    """Canonical exact cleanup selected now and constructed only when joined."""
-
-    registry: WorldRegistry
-    lifecycle: WorldLifecycle
-    scheduler: CommandScheduler
-    world_id: str
-    lease: WorldCleanupLease
-
-    async def finish(self) -> None:
-        """Revalidate and run the canonical cleanup inside its retained owner."""
-
-        cleanup = WorldCleanup(
-            registry=self.registry,
-            lifecycle=self.lifecycle,
-            world_id=self.world_id,
-            lease=self.lease,
-            cancel_unsettled=self.scheduler.cancel_world,
-        )
-        await cleanup.finish()
-
-
-@dataclass(frozen=True, slots=True)
-class _RegistrationWorldCleanup:
-    """Exact durable registration retirement owned before its first write."""
-
-    catalog: ControlCatalog
-    record: WorldRecord
-
-    async def finish(self) -> None:
-        """Destroy or tombstone only the attempted immutable registration."""
-
-        await self.catalog.retire_world_registration(self.record)
-
-
-@dataclass(slots=True)
-class _DeferredWorldCleanup:
-    """A process-owned cleanup target promoted without changing its owner."""
-
-    cleanup: _RegistrationWorldCleanup | _LazyExactWorldCleanup | None = None
-    on_success: Callable[[], None] | None = None
-
-    def bind_registration(
-        self,
-        cleanup: _RegistrationWorldCleanup,
-        *,
-        on_success: Callable[[], None],
-    ) -> None:
-        """Select exact durable cleanup before registration may execute."""
-
-        if self.cleanup is not None:
-            if self.cleanup is cleanup and self.on_success is on_success:
-                return
-            raise RuntimeError("deferred world cleanup is already bound")
-        self.cleanup = cleanup
-        self.on_success = on_success
-
-    def bind_exact(
-        self,
-        cleanup: _LazyExactWorldCleanup,
-        *,
-        on_success: Callable[[], None],
-    ) -> None:
-        """Select canonical cleanup directly for non-provisional callers."""
-
-        if self.cleanup is not None:
-            if self.cleanup is cleanup and self.on_success is on_success:
-                return
-            raise RuntimeError("deferred world cleanup is already bound")
-        self.cleanup = cleanup
-        self.on_success = on_success
-
-    def promote(self, cleanup: _LazyExactWorldCleanup) -> None:
-        """Replace provisional retirement with canonical exact-world cleanup."""
-
-        if not isinstance(self.cleanup, _RegistrationWorldCleanup):
-            if self.cleanup is cleanup:
-                return
-            raise RuntimeError("deferred world cleanup has no provisional registration")
-        self.cleanup = cleanup
-
-    async def finish(self) -> None:
-        """Finish the current exact target, releasing only after success."""
-
-        cleanup = self.cleanup
-        if cleanup is None:
-            return
-        await cleanup.finish()
-        on_success = self.on_success
-        if on_success is not None:
-            on_success()
-
-
-class _PhysicalAIClientLifetimes:
-    """Own providers and serialize operations that share their identities."""
-
-    def __init__(
-        self,
-        resources: RuntimeResources,
-        cleanup_lifetimes: _WorldCleanupLifetimes,
-    ) -> None:
-        self._resources = resources
-        self._cleanup_lifetimes = cleanup_lifetimes
-        self._entries: dict[int, _PhysicalAIClientEntry] = {}
-
-    def lease(
-        self,
-        env_client: EnvClient,
-        policy_client: PolicyClient | None = None,
-    ) -> AbstractAsyncContextManager[PhysicalWorkflowLifetime]:
-        """Synchronously own clients, then return their ordered async lease."""
-
-        self._require_role(
-            env_client,
-            role="environment",
-            methods=("reset", "step", "aclose"),
-        )
-        if policy_client is not None:
-            self._require_role(
-                policy_client,
-                role="policy",
-                methods=("act", "aclose"),
-            )
-        entries = self._entries_for((env_client, policy_client))
-        return self._hold(entries)
-
-    @staticmethod
-    def _require_role(
-        client: object,
-        *,
-        role: str,
-        methods: tuple[str, ...],
-    ) -> None:
-        for method in methods:
-            member = inspect.getattr_static(client, method, None)
-            target = member.__func__ if isinstance(member, (classmethod, staticmethod)) else member
-            if target is None or not callable(target):
-                expected = "async" if method == "aclose" else "synchronous"
-                raise TypeError(f"physical-AI {role} providers must define {expected} {method}()")
-            is_async = inspect.iscoroutinefunction(target)
-            if method == "aclose" and not is_async:
-                raise TypeError(f"physical-AI {role} providers must define async aclose()")
-            if method != "aclose" and is_async:
-                raise TypeError(f"physical-AI {role} providers must define synchronous {method}()")
-        try:
-            daft_dumps(client)
-        except Exception as exc:
-            raise TypeError(
-                f"physical-AI {role} provider must be serializable by Daft as a non-owning handle"
-            ) from exc
-
-    def _entries_for(
-        self,
-        clients: tuple[Any | None, ...],
-    ) -> tuple[_PhysicalAIClientEntry, ...]:
-        unique: dict[int, object] = {}
-        for client in clients:
-            if client is None:
-                continue
-            identity = id(client)
-            selected = unique.get(identity)
-            if selected is not None:
-                if selected is not client:
-                    raise RuntimeError("physical-AI provider identity collision")
-                continue
-            retained = self._entries.get(identity)
-            if retained is not None and retained.client is not client:
-                raise RuntimeError("physical-AI provider identity collision")
-            unique[identity] = client
-
-        new_clients = tuple(
-            (identity, client)
-            for identity, client in unique.items()
-            if identity not in self._entries
-        )
-        for identity, client in new_clients:
-
-            async def close_client(
-                client: object = client,
-                identity: int = identity,
-            ) -> None:
-                await self._cleanup_lifetimes.close_for_provider(identity)
-                result = cast(Any, client).aclose()
-                if not inspect.isawaitable(result):
-                    raise TypeError("physical-AI provider aclose() must return an awaitable")
-                await result
-                retained = self._entries.get(identity)
-                if retained is not None and retained.client is client:
-                    self._entries.pop(identity)
-
-            reservation = self._resources.reserve_owner(
-                f"physical-ai:client:{uuid7()}",
-                phase="workflow-handles",
-                closed_message="physical-AI provider owner is closed",
-            )
-            reservation.bind(client, close=close_client)
-            self._entries[identity] = _PhysicalAIClientEntry(
-                identity=identity,
-                client=client,
-                reservation=reservation,
-                lock=asyncio.Lock(),
-            )
-
-        return tuple(self._entries[identity] for identity in sorted(unique))
-
-    @asynccontextmanager
-    async def _hold(
-        self,
-        entries: tuple[_PhysicalAIClientEntry, ...],
-    ) -> AsyncIterator[PhysicalWorkflowLifetime]:
-        acquired: list[_PhysicalAIClientEntry] = []
-        cleanup_reservation: _WorldCleanupReservation | None = None
-        async with AsyncExitStack() as admissions:
-            for entry in entries:
-                await admissions.enter_async_context(
-                    self._resources.admit_owner_operation(entry.reservation)
-                )
-            try:
-                for entry in entries:
-                    await entry.lock.acquire()
-                    acquired.append(entry)
-                cleanup_reservation = self._cleanup_lifetimes.reserve()
-                yield _PhysicalWorkflowLifetime(
-                    cleanup_lifetimes=self._cleanup_lifetimes,
-                    cleanup_reservation=cleanup_reservation,
-                    provider_ids=frozenset(entry.identity for entry in entries),
-                )
-            finally:
-                try:
-                    if cleanup_reservation is not None and not cleanup_reservation.bound:
-                        await cleanup_reservation.reservation.aclose()
-                finally:
-                    for entry in reversed(acquired):
-                        entry.lock.release()
-
-
-@dataclass(eq=False, slots=True)
-class _WorldCleanupEntry:
-    """One provisional or canonical cleanup retained by the process owner."""
-
-    world_id: str
-    lease: WorldCleanupLease | None
-    reservation: OwnerReservation
-    provider_ids: set[int]
-
-
-@dataclass(frozen=True, slots=True)
-class _WorldCleanupHandle:
-    """A stale-safe join handle bound directly to one cleanup reservation."""
-
-    reservation: OwnerReservation
-
-    async def aclose(self) -> None:
-        """Join the reservation's shielded, retryable exact cleanup."""
-
-        await self.reservation.aclose()
 
 
 class _WorldCleanupLifetimes:
-    """Coalesce and retain complete world-close transactions by exact lease."""
+    """Retain retryable exact-world cleanup in the process owner."""
 
     def __init__(
         self,
@@ -642,228 +303,7 @@ class _WorldCleanupLifetimes:
         self._worlds = worlds
         self._lifecycle = lifecycle
         self._scheduler = scheduler
-        self._entries: dict[WorldCleanupLease, _WorldCleanupEntry] = {}
-        self._by_provider: dict[int, set[_WorldCleanupEntry]] = {}
-
-    def reserve(self) -> _WorldCleanupReservation:
-        """Reserve cleanup ownership before a workflow may create its world."""
-
-        reservation = self._resources.reserve_owner(
-            f"world-cleanup:{uuid7()}",
-            phase="workflow-handles",
-            closed_message="world cleanup owner is closed",
-        )
-        deferred = _DeferredWorldCleanup()
-        reservation.bind(deferred, close=deferred.finish)
-        return _WorldCleanupReservation(
-            reservation=reservation,
-            deferred=deferred,
-        )
-
-    def retain(
-        self,
-        world_id: object,
-        lease: WorldCleanupLease,
-        *,
-        provider_ids: frozenset[int] = frozenset(),
-        reservation: _WorldCleanupReservation | None = None,
-    ) -> _WorldCleanupHandle:
-        """Synchronously retain one exact cleanup transaction before effects."""
-
-        return self._retain_exact(
-            world_id,
-            lease,
-            provider_ids=provider_ids,
-            reservation=reservation,
-        )
-
-    def retain_registration(
-        self,
-        catalog: ControlCatalog,
-        record: WorldRecord,
-        *,
-        provider_ids: frozenset[int],
-        reservation: _WorldCleanupReservation,
-    ) -> None:
-        """Bind exact durable retirement before registration can execute."""
-
-        if record.writer_mode != "cleanup_only":
-            raise ValueError("provisional cleanup requires writer_mode='cleanup_only'")
-        exact_world_id = str(record.world_id)
-        if reservation.bound:
-            entry = reservation.entry
-            if entry is None:
-                raise RuntimeError("bound world cleanup reservation has no exact entry")
-            if entry.world_id != exact_world_id:
-                raise RuntimeError("world cleanup reservation is bound to another world")
-            cleanup = reservation.deferred.cleanup
-            if (
-                not isinstance(cleanup, _RegistrationWorldCleanup)
-                or cleanup.catalog is not catalog
-                or cleanup.record != record
-            ):
-                raise RuntimeError("world cleanup reservation is bound to another registration")
-            self._associate_providers(entry, provider_ids)
-            return
-        if reservation.reservation.released:
-            raise RuntimeError("world cleanup reservation is already released")
-        entry = _WorldCleanupEntry(
-            world_id=exact_world_id,
-            lease=None,
-            reservation=reservation.reservation,
-            provider_ids=set(),
-        )
-        cleanup = _RegistrationWorldCleanup(catalog=catalog, record=record)
-        reservation.deferred.bind_registration(
-            cleanup,
-            on_success=partial(self._release_entry, entry),
-        )
-        reservation.entry = entry
-        reservation.bound = True
-        self._associate_providers(entry, provider_ids)
-
-    def promote_registration(
-        self,
-        world_id: object,
-        lease: WorldCleanupLease,
-        *,
-        provider_ids: frozenset[int],
-        reservation: _WorldCleanupReservation,
-    ) -> _WorldCleanupHandle:
-        """Promote the same provisional owner to canonical registry cleanup."""
-
-        exact_world_id = str(world_id)
-        entry = reservation.entry
-        if not reservation.bound or entry is None:
-            raise RuntimeError("world cleanup reservation has no provisional registration")
-        if entry.world_id != exact_world_id:
-            raise RuntimeError("world cleanup reservation is bound to another world")
-        if entry.lease is not None:
-            if entry.lease != lease:
-                raise RuntimeError("world cleanup reservation is bound to another lease")
-            retained = self._entries.get(lease)
-            if retained is not None and retained is not entry:
-                raise RuntimeError("world cleanup lease has another retained owner")
-            self._entries[lease] = entry
-            self._associate_providers(entry, provider_ids)
-            return _WorldCleanupHandle(entry.reservation)
-        retained = self._entries.get(lease)
-        if retained is not None and retained is not entry:
-            raise RuntimeError("world cleanup lease has another retained owner")
-        cleanup = _LazyExactWorldCleanup(
-            registry=self._worlds,
-            lifecycle=self._lifecycle,
-            scheduler=self._scheduler,
-            world_id=exact_world_id,
-            lease=lease,
-        )
-        reservation.deferred.promote(cleanup)
-        entry.lease = lease
-        self._entries[lease] = entry
-        self._associate_providers(entry, provider_ids)
-        return _WorldCleanupHandle(entry.reservation)
-
-    def retain_reserved(
-        self,
-        world_id: object,
-        lease: WorldCleanupLease,
-        *,
-        provider_ids: frozenset[int],
-        reservation: _WorldCleanupReservation,
-    ) -> _WorldCleanupHandle:
-        """Restore the same pre-owned slot without repeating normal validation."""
-
-        return self._bind_or_restore_exact(
-            str(world_id),
-            lease,
-            provider_ids=provider_ids,
-            reservation=reservation,
-        )
-
-    def _retain_exact(
-        self,
-        world_id: object,
-        lease: WorldCleanupLease,
-        *,
-        provider_ids: frozenset[int],
-        reservation: _WorldCleanupReservation | None,
-    ) -> _WorldCleanupHandle:
-        exact_world_id = str(world_id)
-        retained = self._bind_or_restore_exact(
-            exact_world_id,
-            lease,
-            provider_ids=provider_ids,
-            reservation=reservation,
-        )
-        self._worlds.validate_cleanup_lease(lease, world_id=exact_world_id)
-        return retained
-
-    def _bind_or_restore_exact(
-        self,
-        exact_world_id: str,
-        lease: WorldCleanupLease,
-        *,
-        provider_ids: frozenset[int],
-        reservation: _WorldCleanupReservation | None,
-    ) -> _WorldCleanupHandle:
-        """Bind lazy canonical cleanup before any fallible lease validation."""
-
-        if reservation is not None and reservation.bound:
-            entry = reservation.entry
-            if entry is None:
-                raise RuntimeError("bound world cleanup reservation has no exact entry")
-            if entry.world_id != exact_world_id:
-                raise RuntimeError("world cleanup reservation is bound to another world")
-            if entry.lease is None:
-                return self.promote_registration(
-                    exact_world_id,
-                    lease,
-                    provider_ids=provider_ids,
-                    reservation=reservation,
-                )
-            if entry.lease != lease:
-                raise RuntimeError("world cleanup reservation is bound to another world")
-            retained = self._entries.get(lease)
-            if retained is not None and retained is not entry:
-                raise RuntimeError("world cleanup lease has another retained owner")
-            self._entries[lease] = entry
-            self._associate_providers(entry, provider_ids)
-            return _WorldCleanupHandle(entry.reservation)
-
-        retained = self._entries.get(lease)
-        if retained is not None:
-            if retained.world_id != exact_world_id:
-                raise RuntimeError("world cleanup entry is bound to another world")
-            self._associate_providers(retained, provider_ids)
-            return _WorldCleanupHandle(retained.reservation)
-
-        selected = reservation or self.reserve()
-        if selected.bound:
-            raise RuntimeError("world cleanup reservation is already bound")
-        if selected.reservation.released:
-            raise RuntimeError("world cleanup reservation is already released")
-        cleanup = _LazyExactWorldCleanup(
-            registry=self._worlds,
-            lifecycle=self._lifecycle,
-            scheduler=self._scheduler,
-            world_id=exact_world_id,
-            lease=lease,
-        )
-        entry = _WorldCleanupEntry(
-            world_id=exact_world_id,
-            lease=lease,
-            reservation=selected.reservation,
-            provider_ids=set(),
-        )
-        selected.deferred.bind_exact(
-            cleanup,
-            on_success=partial(self._release_entry, entry),
-        )
-        selected.entry = entry
-        selected.bound = True
-        self._entries[lease] = entry
-        self._associate_providers(entry, provider_ids)
-        return _WorldCleanupHandle(selected.reservation)
+        self._entries: dict[object, OwnerReservation] = {}
 
     async def close_current(self, world_id: object) -> None:
         """Join cleanup for the current exact world selected by public destroy."""
@@ -872,123 +312,27 @@ class _WorldCleanupLifetimes:
             lease = await self._lifecycle.begin_close(str(world_id))
         except KeyError:
             return
-        await self.retain(world_id, lease).aclose()
-
-    async def close_for_provider(self, provider_id: int) -> None:
-        """Finish every exact evidence world before closing its provider."""
-
-        entries = tuple(
-            sorted(
-                self._by_provider.get(provider_id, ()),
-                key=lambda entry: entry.world_id,
+        reservation = self._entries.get(lease)
+        if reservation is None:
+            cleanup = WorldCleanup(
+                registry=self._worlds,
+                lifecycle=self._lifecycle,
+                world_id=str(world_id),
+                lease=lease,
+                cancel_unsettled=self._scheduler.cancel_world,
             )
-        )
-        if not entries:
-            return
-        results = await asyncio.gather(
-            *(entry.reservation.aclose() for entry in entries),
-            return_exceptions=True,
-        )
-        failures = [result for result in results if isinstance(result, BaseException)]
-        if failures:
-            raise BaseExceptionGroup(
-                f"physical provider retains {len(failures)} failed evidence cleanup(s)",
-                failures,
+            reservation = self._resources.reserve_owner(
+                f"world-cleanup:{uuid7()}",
+                phase="workflow-handles",
+                closed_message="world cleanup owner is closed",
             )
-
-    def _associate_providers(
-        self,
-        entry: _WorldCleanupEntry,
-        provider_ids: frozenset[int],
-    ) -> None:
-        for provider_id in provider_ids:
-            if provider_id in entry.provider_ids:
-                continue
-            entry.provider_ids.add(provider_id)
-            self._by_provider.setdefault(provider_id, set()).add(entry)
-
-    def _release_entry(self, entry: _WorldCleanupEntry) -> None:
-        lease = entry.lease
-        if lease is not None and self._entries.get(lease) is entry:
-            self._entries.pop(lease)
-        for provider_id in tuple(entry.provider_ids):
-            entries = self._by_provider.get(provider_id)
-            if entries is None:
-                continue
-            entries.discard(entry)
-            if not entries:
-                self._by_provider.pop(provider_id)
-        entry.provider_ids.clear()
-
-
-@dataclass(frozen=True, slots=True)
-class _PhysicalWorkflowLifetime:
-    """Concrete provider lease token injected into one physical workflow."""
-
-    cleanup_lifetimes: _WorldCleanupLifetimes
-    cleanup_reservation: _WorldCleanupReservation
-    provider_ids: frozenset[int]
-
-    def bind_registration(
-        self,
-        catalog: ControlCatalog,
-        record: WorldRecord,
-    ) -> None:
-        """Own exact durable retirement before registration may execute."""
-
-        self.cleanup_lifetimes.retain_registration(
-            catalog,
-            record,
-            provider_ids=self.provider_ids,
-            reservation=self.cleanup_reservation,
-        )
-
-    def promote(
-        self,
-        world_id: object,
-        lease: WorldCleanupLease,
-    ) -> None:
-        """Promote provisional retirement to canonical exact-world cleanup."""
-
-        self.cleanup_lifetimes.promote_registration(
-            world_id,
-            lease,
-            provider_ids=self.provider_ids,
-            reservation=self.cleanup_reservation,
-        )
-
-    async def aclose(self) -> None:
-        """Join or retry the currently bound cleanup transaction."""
-
-        await self.cleanup_reservation.reservation.aclose()
-
-    def retain_evidence_world(
-        self,
-        world_id: object,
-        lease: WorldCleanupLease,
-    ) -> PhysicalEvidenceWorldRetirement:
-        """Bind exact cleanup to every provider before the next await."""
-
-        return self.cleanup_lifetimes.retain(
-            world_id,
-            lease,
-            provider_ids=self.provider_ids,
-            reservation=self.cleanup_reservation,
-        )
-
-    def retain_evidence_world_for_compensation(
-        self,
-        world_id: object,
-        lease: WorldCleanupLease,
-    ) -> PhysicalEvidenceWorldRetirement:
-        """Recover the pre-owned exact cleanup without normal admission."""
-
-        return self.cleanup_lifetimes.retain_reserved(
-            world_id,
-            lease,
-            provider_ids=self.provider_ids,
-            reservation=self.cleanup_reservation,
-        )
+            reservation.bind(cleanup, close=cleanup.finish)
+            self._entries[lease] = reservation
+        try:
+            await reservation.aclose()
+        finally:
+            if reservation.released and self._entries.get(lease) is reservation:
+                self._entries.pop(lease)
 
 
 class _AdmissionGuardedCatalog:
@@ -1208,7 +552,7 @@ async def _handle_submit_mission(
     storage: StorageService,
     redaction: RedactionService,
     control_catalog_config: ControlCatalogConfig,
-    unsettled_worlds: _UnsettledWorldRouter,
+    unsettled_worlds: RequiredProjectorFanout,
     operation: SubmitMission,
 ) -> Any:
     backend = operation.config.sandbox_backend
@@ -1337,7 +681,7 @@ async def _handle_submit_mission(
                     if worlds.required_projector(world_id) is not routed:
                         await worlds.bind_required_projector(
                             world_id,
-                            binding.required_projector,
+                            routed,
                         )
                 except BaseException:
                     await unsettled_worlds.unbind(world_id, binding)
@@ -1395,6 +739,19 @@ async def _handle_restore_mission_sandbox(
     async with resources.admit_owner_operation(reservation):
         service = cast(MissionService, reservation.require_bound())
         return await service.restore_sandbox(operation.mission, operation.checkpoint)
+
+
+async def _handle_run_hosted_episode(
+    worlds: WorldRegistry,
+    hosted_activity_for: Callable[[RunHostedEpisode], Awaitable[PhysicalHostedActivityBinding]],
+    operation: RunHostedEpisode,
+) -> Any:
+    binding = await hosted_activity_for(operation)
+    return await physical_ai_handlers.run_hosted_episode(
+        worlds,
+        binding,
+        operation,
+    )
 
 
 def _register_world_operations(
@@ -1489,11 +846,11 @@ def _pull_forward_handler(
     storage: StorageService,
     redaction: RedactionService,
     control_catalog_config: ControlCatalogConfig,
-    unsettled_worlds: _UnsettledWorldRouter,
+    unsettled_worlds: RequiredProjectorFanout,
     artifact_store_config: ArtifactStoreConfig | None,
     research_admissions: research_handlers.AutoResearchAdmissions,
     destroy_world: simulation.DestroyWorldCallable,
-    physical_ai_lifetimes: PhysicalClientLifetimeRegistrar,
+    hosted_activity_for: Callable[[RunHostedEpisode], Awaitable[PhysicalHostedActivityBinding]],
     transcripts: TranscriptIngestionService,
     trajectories: TrajectoryService,
 ) -> Callable[[BaseModel], Awaitable[Any]]:
@@ -1520,24 +877,12 @@ def _pull_forward_handler(
                 destroy_world,
             ),
         ),
-        EvaluatePhysicalTask: cast(
+        RunHostedEpisode: cast(
             Any,
             partial(
-                physical_ai_handlers.evaluate_physical_task,
-                physical_ai_lifetimes,
+                _handle_run_hosted_episode,
                 worlds,
-                lifecycle,
-                storage,
-            ),
-        ),
-        SweepPhysicalInstructions: cast(
-            Any,
-            partial(
-                physical_ai_handlers.sweep_physical_instructions,
-                physical_ai_lifetimes,
-                worlds,
-                lifecycle,
-                storage,
+                hosted_activity_for,
             ),
         ),
         IngestClaudeTranscript: cast(
@@ -1588,7 +933,7 @@ def _pull_forward_summarizer(
         return cast(Any, summarize_evaluation_operation)
     if model is AutoResearch:
         return cast(Any, summarize_research_operation)
-    if model in {EvaluatePhysicalTask, SweepPhysicalInstructions}:
+    if model is RunHostedEpisode:
         return cast(Any, summarize_physical_ai_operation)
     if model in {
         IngestClaudeTranscript,
@@ -1626,11 +971,11 @@ def _register_pull_forward_operations(
     storage: StorageService,
     redaction: RedactionService,
     control_catalog_config: ControlCatalogConfig,
-    unsettled_worlds: _UnsettledWorldRouter,
+    unsettled_worlds: RequiredProjectorFanout,
     artifact_store_config: ArtifactStoreConfig | None,
     research_admissions: research_handlers.AutoResearchAdmissions,
     destroy_world: simulation.DestroyWorldCallable,
-    physical_ai_lifetimes: PhysicalClientLifetimeRegistrar,
+    hosted_activity_for: Callable[[RunHostedEpisode], Awaitable[PhysicalHostedActivityBinding]],
     transcripts: TranscriptIngestionService,
     trajectories: TrajectoryService,
 ) -> None:
@@ -1654,7 +999,7 @@ def _register_pull_forward_operations(
                     artifact_store_config=artifact_store_config,
                     research_admissions=research_admissions,
                     destroy_world=destroy_world,
-                    physical_ai_lifetimes=physical_ai_lifetimes,
+                    hosted_activity_for=hosted_activity_for,
                     transcripts=transcripts,
                     trajectories=trajectories,
                 ),
@@ -1707,7 +1052,10 @@ def build_runtime_resources(config: RuntimeBootstrapConfig) -> RuntimeResources:
         finally:
             await physical.close()
 
-    unsettled_worlds = _UnsettledWorldRouter(durable_activity_unsettled)
+    unsettled_worlds = RequiredProjectorFanout(
+        fallback_unsettled=durable_activity_unsettled,
+        static_projector_factory=config.required_projector_factory,
+    )
 
     async def resolve_control_catalog(world_id: str) -> Any:
         record = await worlds.storage_record(str(world_id))
@@ -1735,17 +1083,11 @@ def build_runtime_resources(config: RuntimeBootstrapConfig) -> RuntimeResources:
         reserve_entity_ids=reserve_entity_ids,
     )
 
-    def required_projector_for(world_id: str) -> Any | None:
-        configured = config.required_projector_factory
-        if configured is not None:
-            return configured(world_id)
-        return unsettled_worlds.required_projector_for(world_id)
-
     lifecycle = WorldLifecycle(
         storage,
         worlds,
         materialize_commands=scheduler.materialize,
-        required_projector_factory=required_projector_for,
+        required_projector_factory=unsettled_worlds.required_projector_for,
         unsettled_world_oracle=unsettled_worlds.has_unsettled,
     )
     audit = AuditLog(
@@ -1802,10 +1144,91 @@ def build_runtime_resources(config: RuntimeBootstrapConfig) -> RuntimeResources:
         config.artifact_store_config,
     )
     trajectories = TrajectoryService(storage)
-    physical_ai_lifetimes = _PhysicalAIClientLifetimes(
-        resources,
-        cleanup_lifetimes,
-    )
+    hosted_bindings: dict[str, tuple[ModalHostedEpisodeConfig, PhysicalHostedActivityBinding]] = {}
+    hosted_bindings_lock = asyncio.Lock()
+
+    async def hosted_activity_for(
+        operation: RunHostedEpisode,
+    ) -> PhysicalHostedActivityBinding:
+        world_id = str(operation.world_id)
+        async with hosted_bindings_lock:
+            retained = hosted_bindings.get(world_id)
+            if retained is not None:
+                retained_config, binding = retained
+                if retained_config != operation.provider:
+                    raise ValueError("one world cannot change its hosted Modal provider namespace")
+                return binding
+
+            storage_record = await worlds.storage_record(world_id)
+            if storage_record is None:
+                raise WorldNotFoundError(world_id)
+            storage_config = storage_record[0]
+            if storage_config != operation.storage_config:
+                raise ValueError("hosted operation storage does not match the live world")
+            catalog_path = activity_catalog_path_for(
+                storage_config,
+                config.control_catalog_config,
+            )
+            physical = SqliteActivityCatalog(catalog_path)
+            reservation = resources.reserve_owner(
+                f"physical-ai:hosted:{world_id}",
+                phase="workflow-handles",
+                closed_message="hosted Physical-AI worker is closed",
+            )
+
+            async def construct() -> PhysicalHostedActivityBinding:
+                coordinator = PhysicalHostedActivityCoordinator(
+                    ActivityCoordinator(physical),
+                    lease_seconds=config.hosted_activity_lease_seconds,
+                )
+                provider_factory = config.hosted_episode_provider_factory
+                provider = (
+                    provider_factory(operation.provider)
+                    if provider_factory is not None
+                    else ModalHostedEpisodeProvider(operation.provider)
+                )
+                if provider.provider != operation.provider.provider_identity:
+                    raise ValueError(
+                        "hosted provider does not implement the requested Modal namespace"
+                    )
+                binding: PhysicalHostedActivityBinding
+
+                async def close_binding() -> None:
+                    await unsettled_worlds.unbind(world_id, binding)
+                    await physical.close()
+
+                binding = PhysicalHostedActivityBinding(
+                    world_id=world_id,
+                    owner=f"physical-hosted:{reservation.owner}",
+                    reader=StoragePhysicalCommittedIntentReader(
+                        storage,
+                        storage_config,
+                    ),
+                    catalog=coordinator,
+                    values=LocalHostedEpisodeValueStore(
+                        catalog_path.with_name(f"{catalog_path.stem}-physical-values")
+                    ),
+                    provider=provider,
+                    stager=WorldHostedEpisodeObservationStager(
+                        storage=storage,
+                        registry=worlds,
+                    ),
+                    close=close_binding,
+                )
+                await unsettled_worlds.bind(world_id, binding)
+                routed = unsettled_worlds.required_projector_for(world_id)
+                if worlds.required_projector(world_id) is not routed:
+                    await worlds.bind_required_projector(world_id, routed)
+                return binding
+
+            try:
+                binding = await reservation.construct(construct)
+            except BaseException:
+                await physical.close()
+                raise
+            hosted_bindings[world_id] = (operation.provider, binding)
+            return binding
+
     research_admissions = research_handlers.AutoResearchAdmissions()
     _register_pull_forward_operations(
         registry,
@@ -1820,12 +1243,12 @@ def build_runtime_resources(config: RuntimeBootstrapConfig) -> RuntimeResources:
         artifact_store_config=config.artifact_store_config,
         research_admissions=research_admissions,
         destroy_world=destroy_owned_world,
-        physical_ai_lifetimes=physical_ai_lifetimes,
+        hosted_activity_for=hosted_activity_for,
         transcripts=transcripts,
         trajectories=trajectories,
     )
-    if len(registry.specs) != 47:
-        raise RuntimeError("runtime composition did not register exactly 47 operations")
+    if len(registry.specs) != 46:
+        raise RuntimeError("runtime composition did not register exactly 46 operations")
     return resources
 
 

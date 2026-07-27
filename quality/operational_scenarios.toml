@@ -325,32 +325,6 @@ artifact_schema = "archetype.operational-results/v1"
 required_cadence = ["pr", "main", "release"]
 
 [[scenario]]
-id = "example.14_physical_ai"
-kind = "example"
-owner = "physical_ai"
-owner_paths = [
-  "src/archetype/physical_ai",
-  "src/archetype/runtime",
-  "src/archetype/wiring.py",
-]
-source_path = "examples/14_physical_ai.py"
-source_command = ["python", "examples/14_physical_ai.py"]
-required_extras = []
-tier = 1
-applicability = ["source", "wheel"]
-timeout_seconds = 300
-prerequisites = []
-missing_prerequisite = "fail"
-semantic_oracle = { kind = "pytest", ref = "tests/integration/test_physical_ai_example_receipt.py::test_physical_ai_receipt_proves_eval_sweep_optimizer_and_telemetry" }
-contracts = [
-  "physical_ai.workflow.evidence",
-]
-cleanup_policy = "isolated"
-artifact_policy = "receipt"
-artifact_schema = "archetype.operational-results/v1"
-required_cadence = ["pr", "main", "release"]
-
-[[scenario]]
 id = "dogfood.runtime.loopback"
 kind = "dogfood"
 owner = "runtime"
