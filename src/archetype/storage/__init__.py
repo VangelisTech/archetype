@@ -5,6 +5,7 @@
 
 from archetype.storage.config import ControlCatalogConfig
 from archetype.storage.service import (
+    AmbiguousCommitError,
     PinnedVisibility,
     StorageService,
     VisibleTableRows,
@@ -13,6 +14,7 @@ from archetype.storage.service import (
 )
 
 __all__ = [
+    "AmbiguousCommitError",
     "ControlCatalogConfig",
     "PinnedVisibility",
     "StorageService",
