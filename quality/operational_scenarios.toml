@@ -445,6 +445,11 @@ artifact_policy = "receipt"
 artifact_schema = "archetype.operational-results/v1"
 required_cadence = ["pr", "main", "release"]
 
+# Credential-free Modal *executor choreography* proven against local
+# in-process provider fakes (tier 1): admission, retry guards, and the
+# critic cold-restart exact receipt. No real Modal execution occurs in
+# this scenario; live Modal author/critic evidence is a credentialed
+# release-head run.
 [[scenario]]
 id = "dogfood.agent_mission.modal_activities"
 kind = "dogfood"
