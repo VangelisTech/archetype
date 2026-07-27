@@ -19,7 +19,14 @@ from archetype.activities.contracts import (
 
 @runtime_checkable
 class iActivityCoordinator(Protocol):
-    """Coordinate durable work between two exact committed world states."""
+    """Coordinate durable work between two exact committed world states.
+
+    ``pending`` and ``pending_results`` return snapshots in ascending
+    catalog admission ``sequence`` order and honor ``after_sequence`` as a
+    keyset cursor: only rows whose ``sequence`` is strictly greater are
+    returned.  Every returned snapshot must carry its ``sequence`` so scans
+    can page without an absolute offset.
+    """
 
     async def admit(self, admission: ActivityAdmission) -> ActivitySnapshot: ...
 
@@ -71,7 +78,7 @@ class iActivityCoordinator(Protocol):
         kind: str | None = None,
         world_id: str | None = None,
         limit: int = 100,
-        offset: int = 0,
+        after_sequence: int = 0,
     ) -> tuple[ActivitySnapshot, ...]: ...
 
     async def pending_results(
@@ -80,7 +87,7 @@ class iActivityCoordinator(Protocol):
         kind: str | None = None,
         world_id: str | None = None,
         limit: int = 100,
-        offset: int = 0,
+        after_sequence: int = 0,
     ) -> tuple[ActivitySnapshot, ...]: ...
 
     async def settle_observation(

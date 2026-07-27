@@ -141,14 +141,14 @@ class ActivityCoordinator:
         kind: str | None = None,
         world_id: str | None = None,
         limit: int = 100,
-        offset: int = 0,
+        after_sequence: int = 0,
     ) -> tuple[ActivitySnapshot, ...]:
         records = await _translate_catalog_errors(
             self._catalog.list_incomplete_activities(
                 kind=kind,
                 world_id=world_id,
                 limit=limit,
-                offset=offset,
+                after_sequence=after_sequence,
             )
         )
         return tuple(_snapshot(record) for record in records)
@@ -159,14 +159,14 @@ class ActivityCoordinator:
         kind: str | None = None,
         world_id: str | None = None,
         limit: int = 100,
-        offset: int = 0,
+        after_sequence: int = 0,
     ) -> tuple[ActivitySnapshot, ...]:
         records = await _translate_catalog_errors(
             self._catalog.list_unobserved_results(
                 kind=kind,
                 world_id=world_id,
                 limit=limit,
-                offset=offset,
+                after_sequence=after_sequence,
             )
         )
         return tuple(_snapshot(record) for record in records)
@@ -212,21 +212,25 @@ async def claim_next_pending(
     coordinator claim scan must page to the end of the pending set before
     concluding there is nothing to claim; a larger prefix is not a fix.
 
-    Offset paging over a mutating set can skip or repeat entries within one
-    pass; a repeat is one failed claim attempt and a skipped entry remains
-    pending for the caller's next scan, so no Activity is permanently
-    stranded.
+    Pages advance by keyset over the catalog-assigned admission sequence:
+    each page requests rows whose ``sequence`` is strictly greater than the
+    last row of the previous page.  The cursor key is immutable and
+    monotonic, so rows that other workers complete mid-scan leave the
+    pending set without shifting the rows behind them — one pass visits
+    every Activity that stays pending throughout the scan.  A row leased
+    mid-scan is one failed claim attempt, and ``None`` means the scan
+    reached the end of the pending set, not a shifted page boundary.
     """
 
     if page_size < 1:
         raise ValueError("claim scan page size must be positive")
-    offset = 0
+    after_sequence = 0
     while True:
         page = await coordinator.pending(
             kind=kind,
             world_id=world_id,
             limit=page_size,
-            offset=offset,
+            after_sequence=after_sequence,
         )
         for snapshot in page:
             claim = await coordinator.claim(
@@ -240,7 +244,7 @@ async def claim_next_pending(
                 return claim
         if len(page) < page_size:
             return None
-        offset += page_size
+        after_sequence = _scan_cursor(page[-1])
 
 
 async def collect_pending_results(
@@ -255,24 +259,36 @@ async def collect_pending_results(
     The results-side twin of :func:`claim_next_pending`: a finite prefix
     silently drops durable results beyond it, so an observation committed
     on the current receipt could miss deliveries whenever a world holds
-    more than one page of unobserved results.
+    more than one page of unobserved results.  Pages advance by the same
+    admission-sequence keyset cursor, so results observed by other workers
+    mid-scan leave the set without shifting later rows out of the pass —
+    every result that stays unobserved throughout the scan is collected.
     """
 
     if page_size < 1:
         raise ValueError("result scan page size must be positive")
     snapshots: list[ActivitySnapshot] = []
-    offset = 0
+    after_sequence = 0
     while True:
         page = await coordinator.pending_results(
             kind=kind,
             world_id=world_id,
             limit=page_size,
-            offset=offset,
+            after_sequence=after_sequence,
         )
         snapshots.extend(page)
         if len(page) < page_size:
             return tuple(snapshots)
-        offset += page_size
+        after_sequence = _scan_cursor(page[-1])
+
+
+def _scan_cursor(snapshot: ActivitySnapshot) -> int:
+    if snapshot.sequence is None:
+        raise RuntimeError(
+            "activity scan paging requires the catalog-assigned admission "
+            "sequence on every returned snapshot"
+        )
+    return snapshot.sequence
 
 
 def _admission_record(admission: ActivityAdmission) -> ActivityAdmissionRecord:
@@ -311,6 +327,7 @@ def _activity_record(snapshot: ActivitySnapshot) -> ActivityRecord:
     result = snapshot.result
     settlement = snapshot.settlement
     return ActivityRecord(
+        sequence=snapshot.sequence,
         activity_id=admission.activity_id,
         kind=admission.kind,
         source_world_id=admission.source.world_id,
@@ -440,6 +457,7 @@ def _snapshot(record: ActivityRecord) -> ActivitySnapshot:
         settlement=settlement,
         result_attempt=record.result_attempt,
         result_fence=record.result_fence,
+        sequence=record.sequence,
     )
 
 

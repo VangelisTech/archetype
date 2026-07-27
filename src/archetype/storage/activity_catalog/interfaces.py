@@ -73,7 +73,7 @@ class ActivityCatalog(Protocol):
         kind: str | None = None,
         world_id: str | None = None,
         limit: int = 100,
-        offset: int = 0,
+        after_sequence: int = 0,
     ) -> list[ActivityRecord]: ...
 
     async def list_unobserved_results(
@@ -82,7 +82,7 @@ class ActivityCatalog(Protocol):
         kind: str | None = None,
         world_id: str | None = None,
         limit: int = 100,
-        offset: int = 0,
+        after_sequence: int = 0,
     ) -> list[ActivityRecord]: ...
 
     async def settle_activity_observation(
