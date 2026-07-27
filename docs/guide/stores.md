@@ -333,6 +333,22 @@ recomputes its anti-join against the new snapshot before retrying. That
 distinction prevents a stale retry from publishing a logical key that another
 writer committed first.
 
+The managed ECS Iceberg adapter also freezes one Arrow payload and retries only
+PyIceberg's exact catalog compare-and-swap conflict, for at most 16 attempts
+with full jitter. Every attempt retains the same physical table identity and
+commit token; processor work is never planned or materialized again.
+
+The deliberate v0.5 ambiguity posture is fail-closed rather than
+reconciliation: PyIceberg's exact commit-state-unknown signal becomes
+`AmbiguousCommitError`, whose fields preserve the table, world, run, tick,
+commit token, and writer epoch. Storage does not replay that append because it
+cannot prove absence, and the managed store rejects later non-empty appends to
+that physical table before materialization. This includes a cached batch
+restored after the typed error. The physical rows may already exist, while
+manifest-last visibility keeps them hidden. Exact snapshot readback,
+reconciliation, and restart-persistent freeze state remain future work
+(issue #704).
+
 Application families may construct lazy DataFrame transforms. They request
 materialization or table persistence from `iStorageService`; they do not call
 Daft collection, Iceberg read/write, or catalog table-creation primitives

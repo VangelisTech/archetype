@@ -548,6 +548,22 @@ boundary.
   read/write operations.
 - Per-store credentials MUST NOT rely solely on process-global Daft planning
   config.
+- A `StorageService`-managed ECS append MUST materialize its producer into
+  Arrow exactly once. A retry MUST reuse that payload, commit token, and
+  physical table identity; it MUST NOT collect, plan, or execute the producer
+  again.
+- Only an exact Iceberg `CommitFailedException`, which proves the catalog
+  compare-and-swap did not land, MAY be retried. Retry MUST refresh table
+  metadata and stop after a bounded number of full-jitter attempts.
+- An exact Iceberg `CommitStateUnknownException` MUST NOT authorize replay.
+  The v0.5 contract freezes it as `AmbiguousCommitError`, preserving the
+  table, world, run, tick, commit token, and writer epoch for the caller.
+  The managed store MUST reject later non-empty appends to that physical table
+  for its remaining lifetime before materialization, including a restored
+  cached batch. Exact snapshot reconciliation and restart-persistent freeze
+  state are not shipped in v0.5; the physical append may be durable, but it
+  remains logically invisible unless its tick manifest is later published
+  (issue #704).
 - Control-catalog bootstrap MUST be captured once in an immutable
   `ControlCatalogConfig`. `RuntimeBootstrapConfig.from_env()` may resolve it
   once at the host boundary; ordinary storage/catalog operations MUST NOT

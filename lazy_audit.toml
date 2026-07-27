@@ -330,6 +330,13 @@ reason = "Idempotent world-mutation boundary: StorageService has already admitte
 
 [[entries]]
 path = "src/archetype/storage/service.py"
+symbol = "_AdmittedAsyncStore.append"
+expr = "df.to_arrow"
+method = "to_arrow"
+reason = "Managed-write boundary: the admitted world append materializes its plan exactly once so bounded Iceberg CAS retries resubmit the same physical Arrow payload via daft.from_arrow instead of re-executing the upstream DAG."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
 symbol = "StorageService.append_missing"
 expr = "aligned.collect"
 method = "collect"
