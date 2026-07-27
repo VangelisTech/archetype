@@ -1,11 +1,12 @@
 # Lazy-evaluation audit allowlist.
 #
 # Each entry documents an exception to Archetype's lazy execution
-# contract. .collect() and .to_pylist() force a Daft DataFrame through
-# Python memory and defeat query planning. Adding an entry here is
-# auditable: PR reviewers will challenge any new entry whose reason
-# does not name a specific technical boundary (storage write, single-row
-# migration extract, debug logging).
+# contract. Execution-capable terminals run a Daft DataFrame plan;
+# conversion terminals may also force it through Python memory and
+# defeat query planning. Adding an entry here is auditable: PR reviewers
+# will challenge any new entry whose reason does not name a specific
+# technical boundary (storage write, transport conversion, single-row
+# migration extract).
 #
 # Generic reasons ("needed", "for the test", "convenience") are
 # rejected automatically by scripts/check_lazy_audit.py.
@@ -95,13 +96,6 @@ symbol = "load_lineage"
 expr = "df.to_pylist"
 method = "to_pylist"
 reason = "Lineage metadata extract: a fork's ancestor segments (bounded by fork depth, typically 1-3 rows) must become Python (world_id, run_id, up_to_tick) tuples because they route subsequent per-tick store queries; the routing decision cannot be expressed inside a single Daft plan."
-
-[[entries]]
-path = "src/archetype/core/sync/store.py"
-symbol = "SyncStore.append"
-expr = "df.collect"
-method = "collect"
-reason = "Debug-mode-only logging: materialise so count_rows and df.show emit diagnostics; gated on self.debug and never reached in production execution paths."
 
 [[entries]]
 path = "src/archetype/core/sync/world.py"
@@ -321,6 +315,20 @@ method = "to_pylist"
 reason = "Canonical Arrow IPC codec boundary: the input is already one validated in-memory PyArrow RecordBatch, not a lazy Daft DataFrame, and exact Python values are required to validate cross-payload identities, terminal completeness, and canonical byte re-encoding before any Activity result reference can be recorded."
 
 [[entries]]
+path = "src/archetype/physical_ai/hosted_activities.py"
+symbol = "_component_rows"
+expr = "selected.select(*columns).to_pylist"
+method = "to_pylist"
+reason = "Exact post-commit Activity boundary: the receipt-pinned reader has already admitted and materialized the committed snapshot, and only bounded HostedEpisodeIntent or HostedEpisodeObservation scalar fields cross into generic Activity admission or exact-digest settlement."
+
+[[entries]]
+path = "src/archetype/physical_ai/hosted_activity_world.py"
+symbol = "WorldHostedEpisodeObservationStager._committed_observations"
+expr = "materialized.to_pylist"
+method = "to_pylist"
+reason = "Idempotent world-mutation boundary: StorageService has already admitted and materialized only HostedEpisodeObservation columns, whose bounded Activity identity and digest fields must enter Python to reject conflicts before staging one imperative world mutation."
+
+[[entries]]
 path = "src/archetype/storage/service.py"
 symbol = "StorageService.append_missing"
 expr = "aligned.collect"
@@ -361,3 +369,143 @@ symbol = "_entities_terminal"
 expr = "materialized.to_pylist"
 method = "to_pylist"
 reason = "Episode-termination boundary: StorageService admits and materializes the one-row (n_done, n_total) reduction before its all/any values enter Python control flow to stop the episode loop."
+
+[[entries]]
+path = "src/archetype/api/routes/query.py"
+symbol = "get_components"
+expr = "frame.count_rows"
+method = "count_rows"
+reason = "Explicit HTTP count operation: the caller requested a scalar count instead of row output, so the API route owns this terminal query boundary."
+
+[[entries]]
+path = "src/archetype/artifacts/handlers.py"
+symbol = "ingest_artifacts"
+expr = "discovered.to_pydict"
+method = "to_pydict"
+reason = "Artifact discovery validation boundary: StorageService has already materialized the occurrence frame once; bounded source identities enter Python validation before any durable publication."
+
+[[entries]]
+path = "src/archetype/artifacts/handlers.py"
+symbol = "ingest_artifacts"
+expr = "stored.to_pydict"
+method = "to_pydict"
+reason = "Artifact index-routing boundary: StorageService has already materialized the persisted occurrence frame once; bounded media families and logical paths select the required typed indexes."
+
+[[entries]]
+path = "src/archetype/core/aio/async_cached_store.py"
+symbol = "AsyncCachedStore.append"
+expr = "df.to_arrow_iter"
+method = "to_arrow_iter"
+reason = "Cached-store append boundary: stream the incoming Daft plan once into bounded Arrow record batches retained until the owning durable flush."
+
+[[entries]]
+path = "src/archetype/core/aio/async_lancedb_store.py"
+symbol = "AsyncLancedbStore.get_existing_table_df"
+expr = "table.query().where(where_str).to_arrow"
+method = "to_arrow"
+reason = "LanceDB SDK query boundary: the async SDK returns an Arrow table for the exact durable table identity; the receiver is not a lazy Daft DataFrame."
+
+[[entries]]
+path = "src/archetype/core/aio/async_lancedb_store.py"
+symbol = "AsyncLancedbStore.get_archetype_df"
+expr = "async_table.query().where(where_str).to_arrow"
+method = "to_arrow"
+reason = "LanceDB SDK query boundary: execute the backend-filtered async query once and convert its Arrow result into the lazy Daft frame returned to core."
+
+[[entries]]
+path = "src/archetype/core/aio/async_lancedb_store.py"
+symbol = "AsyncLancedbStore._legacy_df"
+expr = "table.query().where(where_str).to_arrow"
+method = "to_arrow"
+reason = "LanceDB SDK legacy-read boundary: execute the backend-filtered frozen-history query once before aligning its Arrow result to the current lazy Daft schema."
+
+[[entries]]
+path = "src/archetype/core/aio/async_lancedb_store.py"
+symbol = "AsyncLancedbStore.append"
+expr = "df.to_arrow"
+method = "to_arrow"
+reason = "LanceDB append boundary: materialize the incoming Daft plan exactly once as the Arrow table required by the backend add operation and its returned row metadata."
+
+[[entries]]
+path = "src/archetype/core/aio/async_store.py"
+symbol = "AsyncStore._append_table"
+expr = "df.write_iceberg"
+method = "write_iceberg"
+reason = "Iceberg storage sink: explicit IO configuration requires the native Daft write at the store-owned append boundary."
+
+[[entries]]
+path = "src/archetype/core/aio/async_store.py"
+symbol = "AsyncStore.append"
+expr = "materialized.count_rows"
+method = "count_rows"
+reason = "Owned store boundary: the input is already collected once; this count reads the concrete result to preserve empty-append and committed-signature behavior without replaying the upstream plan."
+
+[[entries]]
+path = "src/archetype/core/sync/store.py"
+symbol = "SyncStore._append_table"
+expr = "df.write_iceberg"
+method = "write_iceberg"
+reason = "Synchronous Iceberg storage sink: explicit IO configuration requires the native Daft write at the store-owned append boundary."
+
+[[entries]]
+path = "src/archetype/evaluation/views.py"
+symbol = "read_result"
+expr = "(await storage.materialize(matched)).to_pydict"
+method = "to_pydict"
+reason = "Single-row evaluation receipt boundary: StorageService admits and materializes the exact identity match before its bounded scalar values become the typed return value."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.scan_visible_world_rows"
+expr = "tick_frame.to_pydict"
+method = "to_pydict"
+reason = "Single-row physical tick reduction: StorageService has already materialized the aggregate, whose bounded maximum tick routes visibility metadata for the returned table frame."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.append_table"
+expr = "frozen.count_rows"
+method = "count_rows"
+reason = "Owned append receipt boundary: the producer plan is already collected exactly once, and the concrete row count controls the write no-op and returned scalar without replay."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.append_table"
+expr = "frozen.write_iceberg"
+method = "write_iceberg"
+reason = "StorageService-owned Iceberg sink: write the single frozen producer result while retaining it across bounded optimistic commit retries."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.append_missing"
+expr = "candidates.count_rows"
+method = "count_rows"
+reason = "Conditional-write validation boundary: the candidate plan is already collected once, and its concrete row count is compared with the key projection before persistence."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.append_missing"
+expr = "candidates.where(null_key_filter).limit(1).count_rows"
+method = "count_rows"
+reason = "Conditional-write validation boundary: execute a bounded one-row null-key probe over frozen candidates before admitting them to the Iceberg sink."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.append_missing"
+expr = "candidates.distinct(*key_columns).count_rows"
+method = "count_rows"
+reason = "Conditional-write validation boundary: count distinct keys over frozen candidates to reject ambiguous same-batch identities before persistence."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.append_missing"
+expr = "pending.count_rows"
+method = "count_rows"
+reason = "Owned append receipt boundary: the anti-joined pending frame is already collected once, and its concrete row count controls the write no-op and returned scalar."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.append_missing"
+expr = "pending.write_iceberg"
+method = "write_iceberg"
+reason = "StorageService-owned conditional Iceberg sink: write the frozen anti-joined rows under the execution gate and bounded optimistic commit retry."

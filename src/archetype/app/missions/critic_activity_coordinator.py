@@ -12,6 +12,8 @@ from archetype.activities import (
     ActivityResultRef,
     ActivityRetryGuard,
     ActivitySettlement,
+    claim_next_pending,
+    collect_pending_results,
     iActivityCoordinator,
 )
 from archetype.core.interfaces import CommittedTickReceipt
@@ -26,6 +28,11 @@ from .critic_activities import (
     CriticActivityClaim,
     CriticActivityResultDelivery,
 )
+
+# Pending-scan page size, not a scan bound: claim and result scans page
+# until the catalog is exhausted.  A module constant so tests can shrink
+# it and prove the pagination property with few rows.
+_CLAIM_SCAN_PAGE = 1_000
 
 
 class MissionCriticActivityCoordinator:
@@ -86,22 +93,19 @@ class MissionCriticActivityCoordinator:
         world_id: str,
         owner: str,
     ) -> CriticActivityClaim | None:
-        pending = await self._coordinator.pending(
+        # Page until the catalog is exhausted: the old single default-sized
+        # prefix (100 rows) stranded claimable critic work behind leased rows.
+        generic = await claim_next_pending(
+            self._coordinator,
             kind=CRITIC_ACTIVITY_KIND,
             world_id=world_id,
+            owner=owner,
+            lease_seconds=self._lease_seconds,
+            page_size=_CLAIM_SCAN_PAGE,
         )
-        for snapshot in pending:
-            generic = await self._coordinator.claim(
-                kind=CRITIC_ACTIVITY_KIND,
-                world_id=world_id,
-                activity_id=snapshot.admission.activity_id,
-                owner=owner,
-                lease_seconds=self._lease_seconds,
-            )
-            if not generic.acquired:
-                continue
-            return self._remember(generic)
-        return None
+        if generic is None:
+            return None
+        return self._remember(generic)
 
     async def bind_provider_operation(
         self,
@@ -149,9 +153,13 @@ class MissionCriticActivityCoordinator:
         *,
         world_id: str,
     ) -> tuple[CriticActivityResultDelivery, ...]:
-        snapshots = await self._coordinator.pending_results(
+        # Results-side twin of the claim scan: page to exhaustion so a
+        # durable result beyond the first page still reaches observation.
+        snapshots = await collect_pending_results(
+            self._coordinator,
             kind=CRITIC_ACTIVITY_KIND,
             world_id=world_id,
+            page_size=_CLAIM_SCAN_PAGE,
         )
         deliveries: list[CriticActivityResultDelivery] = []
         for snapshot in snapshots:

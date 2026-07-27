@@ -1342,6 +1342,7 @@ def render_design_brief_prompt(
     pr_number: int,
     head_sha: str,
     bundle_digest: str,
+    scoped_files: Sequence[str] = (),
 ) -> str:
     return _render_template(
         "design-brief.md",
@@ -1349,6 +1350,7 @@ def render_design_brief_prompt(
             "pr_number": str(pr_number),
             "head_sha": head_sha,
             "bundle_digest": bundle_digest,
+            "scoped_files": "\n".join(f"- `{path}`" for path in scoped_files),
             "output_schema": json.dumps(human_design_brief_schema(), indent=2),
         },
     )

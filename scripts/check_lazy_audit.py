@@ -15,8 +15,10 @@
 """Lazy-evaluation audit.
 
 Daft is lazily evaluated. DataFrames represent computations, not results.
-Calling ``.collect()`` or ``.to_pylist()`` forces the frame through Python
-memory, defeats query planning, and stops scaling at in-memory size.
+Execution-capable terminals such as ``.collect()``, ``.count_rows()``,
+``.show()``, ``.to_arrow()``, ``.to_pylist()``, and ``.write_*()`` execute
+the lazy plan. Conversion terminals may also force the frame through Python
+memory and stop scaling at in-memory size.
 
 Every such reference inside ``src/`` is a contract exception against
 Archetype's lazy execution model. This includes bound callables such as
@@ -56,8 +58,8 @@ The checker detects this pattern via AST analysis:
   classified as **udf-boundary (sanctioned)** and reported separately.  It
   does not need an entry in ``lazy_audit.toml``.
 
-``DataFrame.collect()`` and ``DataFrame.to_pylist()`` anywhere, and
-``Series.to_pylist()`` *outside* batch-UDF scope, still require entries.
+Every other execution-capable terminal, plus ``Series.to_pylist()`` *outside*
+batch-UDF scope, still requires an entry.
 
 Tests are intentionally out of scope: terminal materialization at the
 assertion boundary is expected. The contract being audited is the
@@ -79,7 +81,42 @@ ROOTS: tuple[str, ...] = ("src",)
 ALLOWLIST_FILENAME = "lazy_audit.toml"
 SELF_RELATIVE = "scripts/check_lazy_audit.py"
 
-_MATERIALIZATION_METHODS = frozenset({"collect", "to_pylist"})
+# Daft 0.7.19 DataFrame methods that execute a plan, create an execution-backed
+# iterator/dataset, or write a sink. Keep this as the single source of truth;
+# tests exercise representative conversion, diagnostic, iterator, and sink
+# terminals without carrying a second full inventory.
+_MATERIALIZATION_METHODS = frozenset(
+    {
+        "collect",
+        "count_rows",
+        "iter_partitions",
+        "iter_rows",
+        "show",
+        "to_arrow",
+        "to_arrow_iter",
+        "to_dask_dataframe",
+        "to_pandas",
+        "to_pydict",
+        "to_pylist",
+        "to_ray_dataset",
+        "to_torch_dataloader",
+        "to_torch_iter_dataset",
+        "to_torch_map_dataset",
+        "write_bigtable",
+        "write_clickhouse",
+        "write_csv",
+        "write_deltalake",
+        "write_huggingface",
+        "write_iceberg",
+        "write_json",
+        "write_lance",
+        "write_paimon",
+        "write_parquet",
+        "write_sink",
+        "write_sql",
+        "write_turbopuffer",
+    }
+)
 
 
 MODULE_SCOPE = "<module>"
@@ -338,18 +375,19 @@ STERN_HEADER = (
 
 STERN_BODY = """\
 Daft is lazily evaluated. DataFrames represent computations, not results.
-.collect() and .to_pylist() force the frame through Python memory, defeat
-query planning, and stop scaling at in-memory dataset sizes. Every such
-call is a contract exception against Archetype's lazy execution model.
+Execution-capable terminals run the lazy plan. Conversion terminals may also
+force the frame through Python memory, defeat query planning, and stop scaling
+at in-memory dataset sizes. Every such call is a contract exception against
+Archetype's lazy execution model.
 
 If you are reading this, the most likely answer is to rewrite the
 expression in Daft. Reach for where, select, with_column, agg, join,
-sort, distinct, count_rows before pulling rows into Python. See
-LEARNINGS.md and docs/guide/specification.md for the lazy contract.
+sort, and distinct, or use explain for plan diagnostics. See LEARNINGS.md
+and docs/guide/specification.md for the lazy contract.
 
 If the materialization is genuinely unavoidable (storage write boundary,
-single-row migration extract, debug logging, terminal test assertion),
-the exception must be documented in writing and visible in code review:
+single-row migration extract, terminal transport conversion), the exception
+must be documented in writing and visible in code review:
 
   * The reason field in lazy_audit.toml must state the technical reason
     the boundary cannot be expressed lazily. Generic phrases ("needed",
@@ -383,7 +421,7 @@ def main() -> int:
     parser.add_argument(
         "--list",
         action="store_true",
-        help="Print every detected materialization site and exit 0 (no gating).",
+        help="Print every detected execution-capable terminal and exit 0 (no gating).",
     )
     parser.add_argument(
         "files",
@@ -444,7 +482,7 @@ def main() -> int:
             f'    expr = "{s.expr}"\n    method = "{s.method}"\n    reason = "..."'
             for s in new_sites
         ]
-        sys.stderr.write(_format_section("New, undocumented materialization points:", rendered))
+        sys.stderr.write(_format_section("New, undocumented execution points:", rendered))
 
     if stale_entries:
         rendered = [

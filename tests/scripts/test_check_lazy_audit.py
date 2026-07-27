@@ -3,7 +3,7 @@
 
 """Tests for scripts/check_lazy_audit.py — AST scope detection.
 
-Covers the two key policy assertions:
+Covers the key policy assertions:
 
 1. **Positive (sanctioned):** ``Series.to_pylist()`` on a parameter of a
    ``@daft.method.batch`` / ``@daft.func.batch`` decorated function is
@@ -12,6 +12,9 @@ Covers the two key policy assertions:
 2. **Negative (gated):** A plain ``df.to_pylist()`` at module scope (or
    outside a batch-UDF) is still flagged as an audited site that requires
    an allowlist entry.
+
+3. **Execution coverage:** diagnostic, Arrow, iterator, conversion, and sink
+   terminals are all audited.
 """
 
 from __future__ import annotations
@@ -214,6 +217,26 @@ def test_collect_call_reports_one_attribute_site(tmp_path):
     sites = _scan_file(py, "one_collect.py")
 
     assert [(site.line, site.method) for site in sites] == [(1, "collect")]
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "count_rows",
+        "show",
+        "to_arrow",
+        "to_arrow_iter",
+        "to_pydict",
+        "iter_rows",
+        "write_parquet",
+    ],
+)
+def test_execution_capable_terminals_are_gated(tmp_path, method):
+    py = _write_py(tmp_path, "terminal.py", f"result = frame.{method}()\n")
+
+    sites = _scan_file(py, "terminal.py")
+
+    assert [(site.method, site.sanctioned) for site in sites] == [(method, False)]
 
 
 def test_non_call_text_is_ignored(tmp_path):
