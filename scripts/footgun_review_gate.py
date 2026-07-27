@@ -835,14 +835,16 @@ def _append_github_outputs(path: Path, values: Mapping[str, str | int]) -> None:
 
 
 def reviewer_reported_blocked(result_paths: Sequence[Path]) -> bool:
-    """Return whether any structured attempt explicitly reports blocked inspection."""
-    for path in result_paths:
+    """Return whether the latest classifiable attempt reports blocked inspection."""
+    for path in reversed(result_paths):
         try:
             value = _load_json(path)
         except GateError:
             continue
-        if isinstance(value, Mapping) and value.get("review_status") == "blocked":
-            return True
+        if isinstance(value, Mapping):
+            status = value.get("review_status")
+            if status in {"complete", "blocked"}:
+                return status == "blocked"
     return False
 
 

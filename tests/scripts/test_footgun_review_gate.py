@@ -401,6 +401,8 @@ def test_cli_attempt_routes_blocked_inspection_to_retry_without_a_verdict(tmp_pa
 def test_blocked_failure_classification_reads_structured_status_without_model_prose(
     tmp_path,
 ):
+    first_path = tmp_path / "first.json"
+    retry_path = tmp_path / "retry.json"
     blocked_path = tmp_path / "blocked.json"
     malformed_path = tmp_path / "malformed.json"
     blocked = raw_result()
@@ -413,6 +415,23 @@ def test_blocked_failure_classification_reads_structured_status_without_model_pr
     blocked["review_status"] = "complete"
     blocked_path.write_text(json.dumps(blocked), encoding="utf-8")
     assert not reviewer_reported_blocked([malformed_path, blocked_path])
+
+    first = raw_result()
+    first["review_status"] = "blocked"
+    first_path.write_text(json.dumps(first), encoding="utf-8")
+    retry = raw_result()
+    retry["review_status"] = "complete"
+    retry_path.write_text(json.dumps(retry), encoding="utf-8")
+    assert not reviewer_reported_blocked([first_path, retry_path])
+
+    retry_path.write_text("{not-json", encoding="utf-8")
+    assert reviewer_reported_blocked([first_path, retry_path])
+
+    retry["review_status"] = "blocked"
+    retry_path.write_text(json.dumps(retry), encoding="utf-8")
+    first["review_status"] = "complete"
+    first_path.write_text(json.dumps(first), encoding="utf-8")
+    assert reviewer_reported_blocked([first_path, retry_path])
 
 
 def test_cli_materializes_one_bounded_design_brief_correction(tmp_path):
