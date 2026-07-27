@@ -811,5 +811,13 @@ def test_lens_seat_failure_records_an_infra_receipt_instead_of_failing():
         'detail="reviewer reported blocked required repository inspection '
         'after the bounded retry"' in workflow
     )
+    classification = workflow.split('if [[ "$reported_blocked" == "true" ]]', 1)[1]
+    classification = classification.split(
+        "python3 scripts/footgun_review_gate.py infra-receipt",
+        1,
+    )[0]
+    assert classification.index("else") < classification.index("failure_class=quota")
+    assert 'detail="provider reported a quota or rate limit after the bounded retry"' in workflow
+    assert "provider quota/rate limit: $(" not in workflow
     # The bounded retry no longer hard-fails the job; the receipt decides.
     assert "Require retry completion" not in workflow

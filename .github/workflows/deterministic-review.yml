@@ -481,16 +481,17 @@ jobs:
           if [[ "$reported_blocked" == "true" ]]; then
             failure_class=runner
             detail="reviewer reported blocked required repository inspection after the bounded retry"
+          else
+            for raw in "${RUNNER_TEMP}/opencode-raw.txt" "${RUNNER_TEMP}/opencode-retry-raw.txt" \
+                       "${RUNNER_TEMP}/codex-raw.txt" "${RUNNER_TEMP}/codex-retry-raw.txt" \
+                       "${REVIEW_DIR}/first-structured-output.json" "${REVIEW_DIR}/retry-structured-output.json"; do
+              if [ -f "$raw" ] && grep -qiE "usage limit|spend limit|rate.?limit|\b429\b|quota" "$raw"; then
+                failure_class=quota
+                detail="provider reported a quota or rate limit after the bounded retry"
+                break
+              fi
+            done
           fi
-          for raw in "${RUNNER_TEMP}/opencode-raw.txt" "${RUNNER_TEMP}/opencode-retry-raw.txt" \
-                     "${RUNNER_TEMP}/codex-raw.txt" "${RUNNER_TEMP}/codex-retry-raw.txt" \
-                     "${REVIEW_DIR}/first-structured-output.json" "${REVIEW_DIR}/retry-structured-output.json"; do
-            if [ -f "$raw" ] && grep -qiE "usage limit|spend limit|rate.?limit|\b429\b|quota" "$raw"; then
-              failure_class=quota
-              detail="provider quota/rate limit: $(grep -ioE '[^\n]{0,160}(usage limit|spend limit|rate.?limit|quota)[^\n]{0,160}' "$raw" | head -1)"
-              break
-            fi
-          done
           python3 scripts/footgun_review_gate.py infra-receipt \
             --lens "${LENS}" \
             --reviewer "${REVIEWER_ID}" \
