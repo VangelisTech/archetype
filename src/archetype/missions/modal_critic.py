@@ -92,6 +92,14 @@ class ModalCriticExecutionUnknown(AvailabilityError):
         super().__init__(f"Modal critic operation {operation_id!r} is Unknown: {self.reason}")
 
 
+class ModalCriticRecoveryRequired(ModalCriticExecutionUnknown):
+    """A durable critic result exists but its exact cleanup remains unknown."""
+
+    def __init__(self, operation_id: str, recovery: CriticRecoveryUnknown) -> None:
+        self.recovery = recovery
+        super().__init__(operation_id, recovery.reason)
+
+
 @dataclass(frozen=True, slots=True)
 class _StoredCriticResult:
     result: CriticActivityResult
@@ -498,7 +506,10 @@ class ModalMissionCriticExecutor:
             request_digest=request_digest,
         )
         if existing is not None:
-            await self._cleanup_completed(existing, spec=self._sandbox_spec(request))
+            await self._require_cleanup_before_recovered_result(
+                existing,
+                spec=self._sandbox_spec(request),
+            )
             return self._execution_result(request, existing.result)
 
         provision_started_at_ms = int(time.time() * 1000)
@@ -521,7 +532,10 @@ class ModalMissionCriticExecutor:
                 request_digest=request_digest,
             )
             if recovered is not None:
-                await self._cleanup_completed(recovered, spec=spec)
+                await self._require_cleanup_before_recovered_result(
+                    recovered,
+                    spec=spec,
+                )
                 return self._execution_result(request, recovered.result)
             if isinstance(outcome, ModalProviderMarkerExists):
                 reason = f"permanent {outcome.phase} marker exists without a durable result"
@@ -587,10 +601,12 @@ class ModalMissionCriticExecutor:
         except ModalCriticExecutionUnknown as exc:
             return CriticRecoveryUnknown(exc.reason)
         if existing is not None:
-            try:
-                await self._cleanup_completed(existing, spec=self._sandbox_spec(request))
-            except ModalCriticExecutionUnknown as exc:
-                return CriticRecoveryUnknown(exc.reason)
+            recovery = await self._cleanup_recovery(
+                existing,
+                spec=self._sandbox_spec(request),
+            )
+            if recovery is not None:
+                return recovery
             return CriticRecovered(self._execution_result(request, existing.result))
 
         marker = await self._barrier.observe_operation_marker(identity=identity)
@@ -605,10 +621,12 @@ class ModalMissionCriticExecutor:
         except ModalCriticExecutionUnknown as exc:
             return CriticRecoveryUnknown(exc.reason)
         if existing is not None:
-            try:
-                await self._cleanup_completed(existing, spec=self._sandbox_spec(request))
-            except ModalCriticExecutionUnknown as exc:
-                return CriticRecoveryUnknown(exc.reason)
+            recovery = await self._cleanup_recovery(
+                existing,
+                spec=self._sandbox_spec(request),
+            )
+            if recovery is not None:
+                return recovery
             return CriticRecovered(self._execution_result(request, existing.result))
         if isinstance(marker, ModalProviderMarkerExists):
             return CriticRecoveryUnknown(
@@ -617,6 +635,32 @@ class ModalMissionCriticExecutor:
         if isinstance(marker, ModalProviderBarrierUnknown):
             return CriticRecoveryUnknown(marker.reason)
         return CriticRecoveryUnknown("provider marker observation returned an invalid outcome")
+
+    async def _require_cleanup_before_recovered_result(
+        self,
+        stored: _StoredCriticResult,
+        *,
+        spec: SandboxSpec,
+    ) -> None:
+        recovery = await self._cleanup_recovery(stored, spec=spec)
+        if recovery is not None:
+            cleanup = stored.cleanup
+            operation_id = (
+                cleanup.identity.operation_id if cleanup is not None else "unknown-critic-operation"
+            )
+            raise ModalCriticRecoveryRequired(operation_id, recovery)
+
+    async def _cleanup_recovery(
+        self,
+        stored: _StoredCriticResult,
+        *,
+        spec: SandboxSpec,
+    ) -> CriticRecoveryUnknown | None:
+        try:
+            await self._cleanup_completed(stored, spec=spec)
+        except ModalCriticExecutionUnknown as exc:
+            return CriticRecoveryUnknown(exc.reason)
+        return None
 
     async def _cleanup_completed(
         self,
@@ -781,6 +825,7 @@ class ModalMissionCriticExecutor:
 
 __all__ = [
     "ModalCriticExecutionUnknown",
+    "ModalCriticRecoveryRequired",
     "ModalMissionCriticExecutor",
     "ModalMissionCriticExecutorConfig",
 ]

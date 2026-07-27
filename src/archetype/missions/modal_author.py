@@ -108,6 +108,14 @@ class ModalAuthorExecutionUnknown(AvailabilityError):
         super().__init__(f"Modal author operation {operation_id!r} is Unknown: {self.reason}")
 
 
+class ModalAuthorRecoveryRequired(ModalAuthorExecutionUnknown):
+    """A durable author result exists but its exact cleanup remains unknown."""
+
+    def __init__(self, operation_id: str, recovery: AuthorRecoveryUnknown) -> None:
+        self.recovery = recovery
+        super().__init__(operation_id, recovery.reason)
+
+
 @dataclass(frozen=True, slots=True)
 class _StoredAuthorResult:
     observation: DurableAuthorExecutionObservation
@@ -567,7 +575,10 @@ class ModalMissionAuthorExecutor:
         )
         if existing is not None:
             self._validate_result(sanitized_request, existing.observation.result)
-            await self._cleanup_completed(existing, spec=self._sandbox_spec(sanitized_request))
+            await self._require_cleanup_before_recovered_result(
+                existing,
+                spec=self._sandbox_spec(sanitized_request),
+            )
             return self._codec.execution_observation(existing.observation)
 
         spec = self._sandbox_spec(sanitized_request)
@@ -590,7 +601,10 @@ class ModalMissionAuthorExecutor:
             )
             if recovered is not None:
                 self._validate_result(sanitized_request, recovered.observation.result)
-                await self._cleanup_completed(recovered, spec=spec)
+                await self._require_cleanup_before_recovered_result(
+                    recovered,
+                    spec=spec,
+                )
                 return self._codec.execution_observation(recovered.observation)
             if isinstance(outcome, ModalProviderMarkerExists):
                 reason = f"permanent {outcome.phase} marker exists without a durable result"
@@ -721,9 +735,14 @@ class ModalMissionAuthorExecutor:
         if existing is not None:
             try:
                 self._validate_result(sanitized_request, existing.observation.result)
-                await self._cleanup_completed(existing, spec=self._sandbox_spec(sanitized_request))
-            except (ModalAuthorExecutionUnknown, ValueError) as exc:
+            except ValueError as exc:
                 return AuthorRecoveryUnknown(str(exc))
+            recovery = await self._cleanup_recovery(
+                existing,
+                spec=self._sandbox_spec(sanitized_request),
+            )
+            if recovery is not None:
+                return recovery
             return AuthorRecovered(self._codec.execution_observation(existing.observation))
 
         marker = await self._barrier.observe_operation_marker(identity=identity)
@@ -741,9 +760,14 @@ class ModalMissionAuthorExecutor:
         if existing is not None:
             try:
                 self._validate_result(sanitized_request, existing.observation.result)
-                await self._cleanup_completed(existing, spec=self._sandbox_spec(sanitized_request))
-            except (ModalAuthorExecutionUnknown, ValueError) as exc:
+            except ValueError as exc:
                 return AuthorRecoveryUnknown(str(exc))
+            recovery = await self._cleanup_recovery(
+                existing,
+                spec=self._sandbox_spec(sanitized_request),
+            )
+            if recovery is not None:
+                return recovery
             return AuthorRecovered(self._codec.execution_observation(existing.observation))
         if isinstance(marker, ModalProviderMarkerExists):
             return AuthorRecoveryUnknown(
@@ -752,6 +776,32 @@ class ModalMissionAuthorExecutor:
         if isinstance(marker, ModalProviderBarrierUnknown):
             return AuthorRecoveryUnknown(marker.reason)
         return AuthorRecoveryUnknown("provider marker observation returned an invalid outcome")
+
+    async def _require_cleanup_before_recovered_result(
+        self,
+        stored: _StoredAuthorResult,
+        *,
+        spec: SandboxSpec,
+    ) -> None:
+        recovery = await self._cleanup_recovery(stored, spec=spec)
+        if recovery is not None:
+            cleanup = stored.cleanup
+            operation_id = (
+                cleanup.identity.operation_id if cleanup is not None else "unknown-author-operation"
+            )
+            raise ModalAuthorRecoveryRequired(operation_id, recovery)
+
+    async def _cleanup_recovery(
+        self,
+        stored: _StoredAuthorResult,
+        *,
+        spec: SandboxSpec,
+    ) -> AuthorRecoveryUnknown | None:
+        try:
+            await self._cleanup_completed(stored, spec=spec)
+        except ModalAuthorExecutionUnknown as exc:
+            return AuthorRecoveryUnknown(exc.reason)
+        return None
 
     async def _cleanup_completed(
         self,
@@ -866,6 +916,7 @@ class ModalMissionAuthorExecutor:
 
 __all__ = [
     "ModalAuthorExecutionUnknown",
+    "ModalAuthorRecoveryRequired",
     "ModalMissionAuthorExecutor",
     "ModalMissionAuthorExecutorConfig",
 ]
