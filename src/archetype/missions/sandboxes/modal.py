@@ -382,6 +382,36 @@ class _ModalInteractiveSession:
 _TRANSPORT_EOF = object()
 
 
+async def _finish_cleanup_preserving_cancellation(
+    task: asyncio.Task[None],
+    *,
+    cancellation: asyncio.CancelledError | None,
+) -> None:
+    """Join exact cleanup before surfacing the caller's cancellation."""
+
+    caller_cancellation = cancellation
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as interrupted:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                caller_cancellation = caller_cancellation or interrupted
+            if task.done():
+                break
+        except BaseException:
+            break
+
+    try:
+        task.result()
+    except BaseException as cleanup_error:
+        if caller_cancellation is not None:
+            raise caller_cancellation from cleanup_error
+        raise
+    if caller_cancellation is not None:
+        raise caller_cancellation
+
+
 class _ModalAppServerTransport:
     """Adapt one Modal process's JSONL streams to the app-server transport."""
 
@@ -777,9 +807,20 @@ class ModalSandboxSession:
 
                 cleanup_task = asyncio.create_task(cleanup())
                 try:
-                    await asyncio.shield(cleanup_task)
+                    await _finish_cleanup_preserving_cancellation(
+                        cleanup_task,
+                        cancellation=(
+                            operation_error
+                            if isinstance(operation_error, asyncio.CancelledError)
+                            else None
+                        ),
+                    )
                 except asyncio.CancelledError:
-                    await cleanup_task
+                    if cleanup_task.done():
+                        try:
+                            cleanup_task.result()
+                        except BaseException:
+                            self._status = SandboxStatus.ERRORED
                     raise
                 except BaseException as exc:
                     self._status = SandboxStatus.ERRORED
@@ -1078,9 +1119,15 @@ class ModalSandboxSession:
 
                 cleanup_task = asyncio.create_task(cleanup())
                 try:
-                    await asyncio.shield(cleanup_task)
+                    await _finish_cleanup_preserving_cancellation(
+                        cleanup_task,
+                        cancellation=(
+                            operation_error
+                            if isinstance(operation_error, asyncio.CancelledError)
+                            else None
+                        ),
+                    )
                 except asyncio.CancelledError:
-                    await cleanup_task
                     raise
                 except BaseException as exc:
                     if operation_error is not None:
@@ -1103,15 +1150,6 @@ class ModalSandboxSession:
         a compromised producer cannot force an unbounded allocation.
         """
 
-        source_process = await self._sandbox.exec.aio(
-            "head",
-            "-c",
-            str(_MAX_PUBLICATION_BUNDLE_BYTES + 1),
-            "--",
-            source,
-            timeout=timeout_seconds,
-            text=False,
-        )
         destination_process = await self._auth_sandbox.exec.aio(
             "sh",
             "-c",
@@ -1121,6 +1159,67 @@ class ModalSandboxSession:
             timeout=timeout_seconds,
             text=False,
         )
+        try:
+            source_process = await self._sandbox.exec.aio(
+                "head",
+                "-c",
+                str(_MAX_PUBLICATION_BUNDLE_BYTES + 1),
+                "--",
+                source,
+                timeout=timeout_seconds,
+                text=False,
+            )
+        except BaseException as source_error:
+
+            async def reap_destination() -> None:
+                failures: list[BaseException] = []
+                try:
+                    destination_process.stdin.write_eof()
+                except BaseException as exc:
+                    failures.append(exc)
+                try:
+                    await destination_process.stdin.drain.aio()
+                except BaseException as exc:
+                    failures.append(exc)
+                results = await asyncio.gather(
+                    destination_process.wait.aio(),
+                    destination_process.stdout.read.aio(),
+                    destination_process.stderr.read.aio(),
+                    return_exceptions=True,
+                )
+                failures.extend(result for result in results if isinstance(result, BaseException))
+                if failures:
+                    raise BaseExceptionGroup(
+                        "failed to close repository publication destination",
+                        failures,
+                    )
+
+            reap_task = asyncio.create_task(reap_destination())
+            try:
+                await _finish_cleanup_preserving_cancellation(
+                    reap_task,
+                    cancellation=(
+                        source_error if isinstance(source_error, asyncio.CancelledError) else None
+                    ),
+                )
+            except asyncio.CancelledError as cancellation:
+                if cancellation is source_error:
+                    raise
+                reap_error: BaseException | None = None
+                if reap_task.done():
+                    try:
+                        reap_task.result()
+                    except BaseException as exc:
+                        reap_error = exc
+                if reap_error is not None:
+                    raise cancellation from BaseExceptionGroup(
+                        "repository publication source start and destination cleanup failed",
+                        [source_error, reap_error],
+                    )
+                raise cancellation from source_error
+            except BaseException as cleanup_error:
+                raise source_error from cleanup_error
+            raise
         size = 0
         digest = hashlib.sha256()
         oversized = False

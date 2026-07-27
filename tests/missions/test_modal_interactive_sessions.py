@@ -28,6 +28,7 @@ from archetype.missions.sandboxes import (
     RepositoryPublicationRequest,
     SandboxEventType,
     SandboxSpec,
+    SandboxStatus,
 )
 from archetype.missions.sandboxes.modal import (
     _PUBLICATION_MEASUREMENT_SCRIPT,
@@ -259,6 +260,65 @@ async def test_modal_publication_transfers_exact_bundle_to_non_agent_broker(
     assert all(not call_secrets for owner, _request, call_secrets in calls if owner is sandbox)
     assert "https://github.com/VangelisTech/archetype.git" in push.argv
     assert not any("exact-git-bundle" in argument for argument in push.argv)
+
+
+@pytest.mark.asyncio
+async def test_modal_publication_cancellation_survives_cleanup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, sandbox, _writes, _raw_exec = _session()
+    revision = "a" * 40
+    bundle = b"exact-git-bundle"
+    digest = hashlib.sha256(bundle).hexdigest()
+    publication_started = asyncio.Event()
+    cleanup_started = asyncio.Event()
+
+    async def transfer(**_kwargs: Any) -> tuple[int, str]:
+        publication_started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("cancelled publication transfer resumed")
+
+    async def execute(
+        selected_sandbox: object,
+        request: ProcessRequest,
+        **_kwargs: Any,
+    ) -> ProcessResult:
+        if request.argv[:3] == ("rm", "-rf", "--") and selected_sandbox is sandbox:
+            cleanup_started.set()
+            return ProcessResult(request.argv, 1, stderr="mission cleanup failed")
+        if request.argv[:2] == ("sh", "-c") and "sha256sum" in request.argv[2]:
+            return ProcessResult(
+                request.argv,
+                0,
+                stdout=f"{digest} {len(bundle)}\n",
+            )
+        if "rev-parse" in request.argv:
+            return ProcessResult(request.argv, 0, stdout=f"{revision}\n")
+        return ProcessResult(request.argv, 0)
+
+    monkeypatch.setattr(session, "_stream_publication_bundle", transfer)
+    monkeypatch.setattr(session, "_exec_on", execute)
+
+    publication = asyncio.create_task(
+        session.publish_repository(
+            RepositoryPublicationRequest(
+                repository="https://github.com/VangelisTech/archetype.git",
+                branch_ref="refs/heads/agent/cancelled-publication",
+                revision=revision,
+                worktree="/workspace/repo",
+                timeout_seconds=300,
+            )
+        )
+    )
+    await asyncio.wait_for(publication_started.wait(), timeout=1)
+    publication.cancel()
+    await asyncio.wait_for(cleanup_started.wait(), timeout=1)
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await publication
+
+    assert isinstance(caught.value.__cause__, BaseExceptionGroup)
+    assert "failed to clean repository publication state" in str(caught.value.__cause__)
 
 
 def test_publication_measurement_shell_preserves_the_bundle_path(tmp_path) -> None:
@@ -624,6 +684,70 @@ async def test_modal_app_server_wires_exact_post_thread_oauth_scrub_before_turn_
     assert order[-2:] == ["stop-interactive", "remove-codex-home"]
 
 
+@pytest.mark.asyncio
+async def test_modal_app_server_cancellation_survives_cleanup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, _sandbox, _writes, _raw_exec = _session()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    class _Client:
+        def __init__(self, _transport: object, **_kwargs: Any) -> None:
+            pass
+
+        async def aclose(self) -> None:
+            cleanup_started.set()
+            await release_cleanup.wait()
+            raise RuntimeError("client cleanup failed")
+
+    async def noop(*_args: Any, **_kwargs: Any) -> None:
+        pass
+
+    async def capture(_trace_id: str) -> str:
+        return ""
+
+    async def heartbeat() -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        "archetype.missions.coding_agents.app_server.CodexAppServerClient",
+        _Client,
+    )
+    monkeypatch.setattr(
+        "archetype.missions.sandboxes.modal._ModalAppServerTransport",
+        lambda _process: object(),
+    )
+    monkeypatch.setattr(session, "_stage_oauth", noop)
+    monkeypatch.setattr(session, "_prepare_interactive_session", noop)
+    monkeypatch.setattr(session, "_start_app_server_proxy", lambda _state: _async_value(object()))
+    monkeypatch.setattr(session, "_stop_interactive_session", noop)
+    monkeypatch.setattr(session, "_remove_oauth", noop)
+    monkeypatch.setattr(session, "_capture_live_output_best_effort", capture)
+    monkeypatch.setattr(session, "_heartbeat", heartbeat)
+
+    async def open_and_close() -> None:
+        async with session.codex_app_server():
+            pass
+
+    driver = asyncio.create_task(open_and_close())
+    await asyncio.wait_for(cleanup_started.wait(), timeout=1)
+    driver.cancel()
+    await asyncio.sleep(0)
+    assert not driver.done()
+    driver.cancel()
+    await asyncio.sleep(0)
+    assert not driver.done()
+    release_cleanup.set()
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await driver
+
+    assert isinstance(caught.value.__cause__, BaseExceptionGroup)
+    assert "failed to close Modal interactive session" in str(caught.value.__cause__)
+    assert await session.status() is SandboxStatus.ERRORED
+
+
 async def _async_value(value: Any) -> Any:
     return value
 
@@ -752,6 +876,79 @@ async def test_publication_bundle_stream_forwards_chunks_and_returns_exact_diges
     assert destination.stdin.values == [b"exact", b"-bundle"]
     assert destination.stdin.eof is True
     assert source.wait.calls == 1
+    assert destination.wait.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_publication_bundle_reaps_destination_when_source_fails_to_start() -> None:
+    session, sandbox, _writes, _raw_exec = _session()
+    destination = _StreamingProcess([])
+    auth_sandbox = session._auth_sandbox  # noqa: SLF001 - provider-boundary oracle
+    auth_sandbox.exec = _RawExecEndpoint()
+    auth_sandbox.exec.result = destination
+
+    async def fail_source(*_args: Any, **_kwargs: Any) -> object:
+        raise RuntimeError("mission exec unavailable")
+
+    sandbox.exec = SimpleNamespace(aio=fail_source)
+
+    with pytest.raises(RuntimeError, match="mission exec unavailable"):
+        await session._stream_publication_bundle(  # noqa: SLF001
+            source="/tmp/source.bundle",
+            destination="/tmp/destination.bundle",
+            timeout_seconds=30,
+        )
+
+    assert destination.stdin.eof is True
+    assert destination.stdin.drains == 1
+    assert destination.wait.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_publication_bundle_cancellation_preserves_source_and_reap_failures() -> None:
+    session, sandbox, _writes, _raw_exec = _session()
+    destination = _StreamingProcess([])
+    drain_started = asyncio.Event()
+    release_drain = asyncio.Event()
+
+    async def fail_drain() -> None:
+        drain_started.set()
+        await release_drain.wait()
+        raise RuntimeError("destination reap failed")
+
+    destination.stdin.drain = SimpleNamespace(aio=fail_drain)
+    auth_sandbox = session._auth_sandbox  # noqa: SLF001 - provider-boundary oracle
+    auth_sandbox.exec = _RawExecEndpoint()
+    auth_sandbox.exec.result = destination
+
+    async def fail_source(*_args: Any, **_kwargs: Any) -> object:
+        raise RuntimeError("source start failed")
+
+    sandbox.exec = SimpleNamespace(aio=fail_source)
+    publication = asyncio.create_task(
+        session._stream_publication_bundle(  # noqa: SLF001
+            source="/tmp/source.bundle",
+            destination="/tmp/destination.bundle",
+            timeout_seconds=30,
+        )
+    )
+    await asyncio.wait_for(drain_started.wait(), timeout=1)
+    publication.cancel()
+    await asyncio.sleep(0)
+    assert not publication.done()
+    release_drain.set()
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await publication
+
+    cause = caught.value.__cause__
+    assert isinstance(cause, BaseExceptionGroup)
+    source_error, reap_error = cause.exceptions
+    assert str(source_error) == "source start failed"
+    assert isinstance(reap_error, BaseExceptionGroup)
+    assert "failed to close repository publication destination" in str(reap_error)
+    assert [str(error) for error in reap_error.exceptions] == ["destination reap failed"]
+    assert destination.stdin.eof is True
     assert destination.wait.calls == 1
 
 

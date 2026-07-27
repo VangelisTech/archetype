@@ -659,24 +659,40 @@ class CodingAgentHarness:
                 directory,
             )
         )
+        caller_cancellation = (
+            operation_error if isinstance(operation_error, asyncio.CancelledError) else None
+        )
+        while not cleanup_task.done():
+            try:
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError as interrupted:
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    caller_cancellation = caller_cancellation or interrupted
+            except BaseException:
+                break
         try:
-            cleanup = await asyncio.shield(cleanup_task)
-        except asyncio.CancelledError as cancellation:
-            cleanup = await cleanup_task
-            if cleanup.returncode != 0:
-                raise RuntimeError(
-                    "remove clean temporary directory failed with exit code "
-                    f"{cleanup.returncode}: {cleanup.stderr or cleanup.stdout}"
-                ) from cancellation
+            cleanup = cleanup_task.result()
+        except BaseException as cleanup_error:
+            if caller_cancellation is not None:
+                raise caller_cancellation from cleanup_error
+            if operation_error is not None:
+                raise cleanup_error from operation_error
             raise
         if cleanup.returncode != 0:
             cleanup_error = RuntimeError(
                 "remove clean temporary directory failed with exit code "
                 f"{cleanup.returncode}: {cleanup.stderr or cleanup.stdout}"
             )
+            if caller_cancellation is not None:
+                raise caller_cancellation from cleanup_error
             if operation_error is not None:
                 raise cleanup_error from operation_error
             raise cleanup_error
+        if caller_cancellation is not None and caller_cancellation is not operation_error:
+            if operation_error is not None:
+                raise caller_cancellation from operation_error
+            raise caller_cancellation
 
     async def _commits(
         self,

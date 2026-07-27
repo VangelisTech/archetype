@@ -126,6 +126,26 @@ class _BlockingValidationSession(_LocalSession):
         return result
 
 
+class _BlockingCleanupFailureSession(_BlockingValidationSession):
+    def __init__(self) -> None:
+        super().__init__()
+        self.cleanup_started = asyncio.Event()
+        self.release_cleanup = asyncio.Event()
+
+    async def exec(self, request: ProcessRequest) -> ProcessResult:
+        result = await super().exec(request)
+        if request.argv[:3] != ("rm", "-rf", "--"):
+            return result
+        self.cleanup_started.set()
+        await self.release_cleanup.wait()
+        return ProcessResult(
+            request.argv,
+            17,
+            stdout=result.stdout,
+            stderr="simulated cleanup failure",
+        )
+
+
 class _EditingDriver:
     def __init__(
         self,
@@ -448,6 +468,54 @@ async def test_cancellation_waits_for_owned_validation_checkout_cleanup(
     with pytest.raises(asyncio.CancelledError):
         await execution
 
+    assert session.cleanup_directories == session.temporary_directories
+    assert session.temporary_directories
+    assert all(not directory.exists() for directory in session.temporary_directories)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cancel_before_cleanup",
+    [False, True],
+    ids=["cleanup-time", "operation-time"],
+)
+async def test_cleanup_failure_cannot_replace_validation_cancellation(
+    tmp_path: Path,
+    cancel_before_cleanup: bool,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    session = _BlockingCleanupFailureSession()
+    execution = asyncio.create_task(
+        CodingAgentHarness(
+            _EditingDriver(workspace, commit=False),
+            CodingAgentHarnessConfig(workspace=str(workspace)),
+        ).execute(
+            session,
+            _request(
+                remote,
+                validator_command=(("block-validator",) if cancel_before_cleanup else ("true",)),
+            ),
+        )
+    )
+    if cancel_before_cleanup:
+        await asyncio.wait_for(session.validator_started.wait(), timeout=10)
+        execution.cancel("cancel author mission")
+    await asyncio.wait_for(session.cleanup_started.wait(), timeout=10)
+
+    if not cancel_before_cleanup:
+        execution.cancel("cancel author mission")
+    await asyncio.sleep(0)
+    assert not execution.done()
+    execution.cancel("repeated cancellation")
+    await asyncio.sleep(0)
+    assert not execution.done()
+    session.release_cleanup.set()
+    with pytest.raises(asyncio.CancelledError, match="cancel author mission") as raised:
+        await execution
+
+    assert isinstance(raised.value.__cause__, RuntimeError)
+    assert "simulated cleanup failure" in str(raised.value.__cause__)
     assert session.cleanup_directories == session.temporary_directories
     assert session.temporary_directories
     assert all(not directory.exists() for directory in session.temporary_directories)
