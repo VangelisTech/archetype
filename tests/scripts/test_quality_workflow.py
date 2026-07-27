@@ -172,8 +172,41 @@ def test_r2_job_runs_each_oracle_once_and_retains_the_redacted_receipt() -> None
         r"\s+path: \|\n"
         r"\s+r2-operational-results\.json\n"
         r"\s+r2-operational-results\.d/\n"
+        r"\s+r2-operational-results\.attempt1\.json\n"
+        r"\s+r2-operational-results\.attempt1\.d/\n"
         r"\s+if-no-files-found: error",
         infrastructure,
+    )
+
+    # One sanctioned in-job retry: the scenario command is defined once
+    # (count above), invoked through a function, and a failed first attempt
+    # keeps its receipt as the classification record before the single
+    # retry. Nothing may retry more than once, and the retry must not
+    # discard attempt 1's evidence.
+    code = _code_only(infrastructure)
+    assert code.count("run_r2_scenario()") == 1, "scenario command must be defined exactly once"
+    assert code.count("run_r2_scenario\n") + code.count("run_r2_scenario;") == 2, (
+        "the scenario must be invoked exactly twice: first attempt and one retry"
+    )
+    assert "r2-operational-results.attempt1.json" in code
+    # Attempt 1's receipt must reference its OWN logs after the rename: the
+    # retry recreates r2-operational-results.d, so without the path rewrite
+    # the retained receipt resolves to attempt 2's logs.
+    assert re.search(
+        r"jq .+gsub\(\"r2-operational-results\\\\\.d\"; "
+        r"\"r2-operational-results\.attempt1\.d\"\)",
+        code,
+    ), "the retained attempt-1 receipt must have its log paths rewritten"
+    assert "::warning::" in infrastructure, "a silent retry hides the flake it absorbed"
+
+    # The job budget must cover BOTH attempts at the scenario's full
+    # timeout plus setup overhead, or the retry is unreachable exactly when
+    # the first attempt is the stall it exists to absorb.
+    timeout_match = re.search(r"timeout-minutes: (\d+)", infrastructure)
+    assert timeout_match is not None, "the R2 job lost its timeout"
+    scenario_seconds = scenario["timeout_seconds"]
+    assert int(timeout_match.group(1)) * 60 >= 2 * scenario_seconds + 240, (
+        "job timeout must cover two scenario attempts plus ~4 min overhead"
     )
 
 

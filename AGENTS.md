@@ -13,7 +13,7 @@ Choose the owning package before adding a type or behavior:
 | Capability-scoped resources and provider adapters implementing a family-owned protocol | A named subpackage of `archetype.<family>` |
 | Generic Activity identity, claims, attempts, fences, result references, and settlement | `archetype.activities` |
 | Physical storage, control catalogs, commit coordination, and generic durable world/run envelopes | `archetype.storage` |
-| Application authority requiring app-family composition, internal service ports, and concrete application services | `archetype.app.<family>` |
+| Legacy application modules awaiting the accepted family rehome | `archetype.app.<family>` (migration only; add no new authority) |
 | Transport and authentication | `archetype.api` |
 | Concrete composition and process lifetime | `archetype.wiring` and `archetype.runtime_resources` |
 
@@ -41,10 +41,12 @@ AutoResearch values, ledger state, views, experiment-scoped admission, and the
 directly awaited handler over the declared storage and world-family ports. It
 does not require an application facade or service protocol.
 
-A reviewed family may own a capability-scoped resource adapter without gaining
-application authority. Agent Missions is the concrete example: coding-agent
-state, processors, relations, and sandbox resources live under
-`archetype.missions`; `archetype.app.missions` composes them into a workflow.
+A reviewed family may own a capability-scoped resource adapter and workflows
+over declared lower-family ports without gaining concrete composition
+authority. Agent Missions is the concrete migration example: coding-agent
+state, processors, relations, sandbox resources, and Activity choreography
+belong under `archetype.missions`; the current `archetype.app.missions`
+workflow is rehomed and removed in A8.
 
 The accepted Activity migration distinguishes tick-time capability from
 between-tick durable work. A Resource is available while executing a tick;
@@ -53,9 +55,12 @@ durably coordinated work admitted from one committed tick and observed by a
 later committed tick. `archetype.activities` owns generic delivery mechanics
 only and consumes the lower `archetype.storage.activity_catalog`; recovery
 meaning stays with the owning family/provider adapter. Application choreography
-stays in `archetype.app.missions` and, for hosted episodes,
-`archetype.app.physical_ai`. The `AsyncResources`/WorldHost spike is frozen and
-must not be merged into this path. See `docs/guide/activities.md`.
+belongs to the owning top-level family over declared lower-family ports.
+Hosted-episode choreography is born under `archetype.physical_ai`; no
+`archetype.app.physical_ai` mirror is recreated. The current
+`archetype.app.missions` implementation is an interim migration source removed
+in A8. The `AsyncResources`/WorldHost spike is frozen and must not be merged
+into this path. See `docs/guide/activities.md`.
 
 ## Layout
 

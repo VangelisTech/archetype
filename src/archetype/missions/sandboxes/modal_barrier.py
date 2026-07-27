@@ -217,6 +217,23 @@ class ModalProviderMarkerExists:
 
 
 @dataclass(frozen=True, slots=True)
+class ModalProviderOperationMissing:
+    """Read-only evidence that the permanent operation marker was not found.
+
+    This value is deliberately not a guard or permit. It cannot be supplied to
+    the operation capability and does not authorize execution. A later retry
+    must still win ``start_retry``'s atomic marker-create/start transaction.
+    """
+
+    identity: ModalSandboxOperationIdentity
+    marker_name: str
+
+    def __post_init__(self) -> None:
+        if self.marker_name != _operation_marker_name(self.identity):
+            raise ValueError("missing Modal marker does not match its operation")
+
+
+@dataclass(frozen=True, slots=True)
 class ModalProviderBarrierUnknown:
     """Provider evidence cannot grant guard or run authority."""
 
@@ -236,6 +253,9 @@ type ModalOperationGuardAcquisition = (
 )
 type ModalRunPermitAcquisition = (
     ModalProviderRunPermit | ModalProviderMarkerExists | ModalProviderBarrierUnknown
+)
+type ModalOperationMarkerObservation = (
+    ModalProviderMarkerExists | ModalProviderOperationMissing | ModalProviderBarrierUnknown
 )
 
 
@@ -344,6 +364,35 @@ class ModalProviderStartBarrier:
         if failure is not None:
             raise ValueError(failure)
         return _operation_marker_name(identity)
+
+    async def observe_operation_marker(
+        self,
+        *,
+        identity: ModalSandboxOperationIdentity,
+    ) -> ModalOperationMarkerObservation:
+        """Observe marker presence without constructing execution authority.
+
+        Absence can route an Activity through ``start_retry`` after it obtains
+        a fresh workflow fence. The returned value itself never bypasses that
+        method's atomic provider lookup, marker creation, and immediate start.
+        """
+
+        failure = self._identity_failure(identity)
+        if failure is not None:
+            return ModalProviderBarrierUnknown(identity, "operation", failure)
+        marker_name = _operation_marker_name(identity)
+        observed = await self._lookup_marker(marker_name, phase="operation")
+        if isinstance(observed, ModalPersistentDictMarker):
+            return ModalProviderMarkerExists(identity, "operation", marker_name)
+        if isinstance(observed, _MarkerLookupFailure):
+            return ModalProviderBarrierUnknown(identity, "operation", observed.reason)
+        if observed is _MARKER_MISSING:
+            return ModalProviderOperationMissing(identity, marker_name)
+        return ModalProviderBarrierUnknown(
+            identity,
+            "operation",
+            "operation marker lookup returned invalid evidence",
+        )
 
     @staticmethod
     def run_marker_name(guard: ModalProviderOperationGuard) -> str:
@@ -708,10 +757,12 @@ class ModalProviderStartBarrier:
 
 
 __all__ = [
+    "ModalOperationMarkerObservation",
     "ModalOperationGuardAcquisition",
     "ModalPersistentDictMarker",
     "ModalProviderBarrierUnknown",
     "ModalProviderMarkerExists",
+    "ModalProviderOperationMissing",
     "ModalProviderOperationGuard",
     "ModalProviderRunPermit",
     "ModalProviderStartOutcome",

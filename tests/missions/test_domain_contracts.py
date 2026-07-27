@@ -13,6 +13,7 @@ import archetype
 import archetype.app.missions as app_missions
 import archetype.missions as missions
 import archetype.missions.components as components
+from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.missions import (
     MISSION_COMPONENTS,
@@ -20,16 +21,20 @@ from archetype.missions import (
     TASK_TRANSITIONS,
     AuthorActivityObservation,
     Candidate,
+    CompleteAuthorActivityObservation,
+    CompleteCriticActivityObservation,
     CriticFinding,
     CriticPolicy,
     CriticReceipt,
     MissionStatus,
     TaskCriticPolicy,
+    TaskCriticSubjectPolicy,
     TaskStatus,
     TaskValidator,
     require_mission_transition,
     require_task_transition,
 )
+from archetype.storage.catalog import schema_fingerprint
 
 pytestmark = pytest.mark.contract("missions.agent_v1.validator_gated")
 
@@ -57,6 +62,34 @@ def _component_instance(component: type[Component]) -> Component:
             result_digest="digest",
             fact_bundle_digest="fact-bundle-digest",
             execution_id=1,
+            redaction_policy_id="redaction-policy",
+        )
+    if component is CompleteAuthorActivityObservation:
+        return CompleteAuthorActivityObservation(
+            activity_id="dispatch",
+            task_id=1,
+            dispatch_sequence=1,
+            result_ref="artifact://author-result",
+            result_digest="digest",
+            fact_bundle_digest="fact-bundle-digest",
+            execution_id=1,
+            sandbox_entity_id=2,
+            relation_count=2,
+            redaction_policy_id="redaction-policy",
+        )
+    if component is CompleteCriticActivityObservation:
+        return CompleteCriticActivityObservation(
+            activity_id="review",
+            candidate_entity_id=1,
+            domain_review_attempt=1,
+            result_ref="mission-critic+json:sha256:result",
+            result_digest="result",
+            fact_bundle_digest="fact-bundle",
+            execution_id=2,
+            sandbox_entity_id=3,
+            relation_count=2,
+            author_sandbox_id="author",
+            critic_sandbox_id="critic",
             redaction_policy_id="redaction-policy",
         )
     if component is Candidate:
@@ -111,18 +144,21 @@ def test_components_have_one_family_owned_schema_identity() -> None:
         "TaskWorkspace",
         "TaskPolicy",
         "TaskCriticPolicy",
+        "TaskCriticSubjectPolicy",
         "TaskState",
         "TaskDispatch",
         "TaskValidator",
         "Sandbox",
         "AgentExecution",
         "AuthorActivityObservation",
+        "CompleteAuthorActivityObservation",
         "ValidationResult",
         "Commit",
         "Candidate",
         "CriticExecution",
         "CriticFinding",
         "CriticReceipt",
+        "CompleteCriticActivityObservation",
         "Checkpoint",
         "FilesystemManifest",
         "FrictionLog",
@@ -144,6 +180,58 @@ def test_components_have_one_family_owned_schema_identity() -> None:
         assert component.__name__ not in archetype.__all__
 
 
+def test_v1_author_activity_observation_keeps_its_durable_schema_identity() -> None:
+    assert tuple(AuthorActivityObservation.model_fields) == (
+        "activity_id",
+        "task_id",
+        "dispatch_sequence",
+        "result_ref",
+        "result_digest",
+        "fact_bundle_digest",
+        "execution_id",
+        "validation_count",
+        "commit_count",
+        "friction_count",
+        "redaction_policy_id",
+    )
+    signature = (AuthorActivityObservation,)
+    schema = Archetype.get_archetype_schema(signature)
+    assert Archetype.get_name(signature) == "a_1c_sd88ad8b876ee47bc"
+    assert (
+        schema_fingerprint(schema)
+        == "98d8764af332ccf6287a6fee2dee83704ae2bf0b5e10acc81b380e40be344bb7"
+    )
+
+
+def test_v1_critic_policy_keeps_its_durable_schema_identity() -> None:
+    assert tuple(TaskCriticPolicy.model_fields) == (
+        "policy_id",
+        "version",
+        "digest",
+        "perspective",
+        "information_view",
+        "driver",
+        "model",
+        "sampling",
+        "max_reviews",
+        "timeout_seconds",
+        "output_schema_version",
+        "max_output_chars",
+    )
+    signature = (TaskCriticPolicy,)
+    schema = Archetype.get_archetype_schema(signature)
+    assert Archetype.get_name(signature) == "a_1c_sf8608970ea3994f5"
+    assert (
+        schema_fingerprint(schema)
+        == "57b05a4c0718da90412693b74f60e9f549f42b8494d9571ea1492d40d0079d07"
+    )
+
+
+def test_critic_subject_budget_uses_a_companion_component() -> None:
+    assert tuple(TaskCriticSubjectPolicy.model_fields) == ("max_subject_bytes",)
+    assert TaskCriticSubjectPolicy().max_subject_bytes == CriticPolicy().max_subject_bytes
+
+
 @pytest.mark.parametrize(
     "overrides",
     (
@@ -158,9 +246,43 @@ def test_critic_policy_rejects_unimplemented_behavior_axes(
         CriticPolicy(**overrides)
 
 
-def test_critic_receipt_schema_contains_only_varying_evidence() -> None:
-    assert "complete" not in CriticReceipt.model_fields
-    assert "verifiable" not in CriticReceipt.model_fields
+def test_critic_subject_budget_is_positive_and_identity_bound() -> None:
+    baseline = CriticPolicy()
+    bounded = CriticPolicy(max_subject_bytes=baseline.max_subject_bytes + 1)
+
+    assert baseline.max_subject_bytes > 0
+    assert bounded.digest != baseline.digest
+    with pytest.raises(ValueError, match="max_subject_bytes"):
+        CriticPolicy(max_subject_bytes=0)
+
+
+def test_v1_critic_receipt_keeps_its_durable_schema_identity() -> None:
+    assert tuple(CriticReceipt.model_fields) == (
+        "candidate_entity_id",
+        "critic_execution_id",
+        "critic_sandbox_id",
+        "review_id",
+        "conclusion",
+        "candidate_digest",
+        "policy_digest",
+        "evidence_digest",
+        "reviewed_base_revision",
+        "reviewed_head_revision",
+        "reviewed_diff_digest",
+        "validator_bundle_digest",
+        "reviewed_scope",
+        "finding_count",
+        "blocking_count",
+        "output_schema_version",
+        "completed_at_ms",
+    )
+    signature = (CriticReceipt,)
+    schema = Archetype.get_archetype_schema(signature)
+    assert Archetype.get_name(signature) == "a_1c_sa0c654749eef2548"
+    assert (
+        schema_fingerprint(schema)
+        == "7b3ebbb6636a667ca0e6d972f369511fa9c906e841e0290febcab9858f927c78"
+    )
 
 
 def test_transition_tables_are_small_complete_and_terminal() -> None:

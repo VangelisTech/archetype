@@ -17,6 +17,18 @@ from daft.pickle import dumps as daft_dumps
 from pydantic import BaseModel
 from uuid_utils import uuid7
 
+from archetype.activities import ActivityCoordinator
+from archetype.app.missions.activity_coordinator import (
+    MissionAuthorActivityCoordinator,
+)
+from archetype.app.missions.activity_world import (
+    MissionAuthorActivityBinding,
+    StorageMissionCommittedIntentReader,
+    WorldMissionAuthorObservationStager,
+)
+from archetype.app.missions.local_activity_values import (
+    LocalMissionAuthorValueStore,
+)
 from archetype.app.missions.service import MissionService
 from archetype.app.missions.trajectory_service import TrajectoryService
 from archetype.app.missions.transcript_service import TranscriptIngestionService
@@ -52,12 +64,26 @@ from archetype.evaluation.models import (
     RunGraders,
     summarize_evaluation_operation,
 )
+from archetype.missions.coding_agents.harness import (
+    CodexDriver,
+    CodingAgentHarness,
+    CodingAgentHarnessConfig,
+)
+from archetype.missions.modal_author import (
+    ModalMissionAuthorExecutor,
+    ModalMissionAuthorExecutorConfig,
+)
 from archetype.missions.models import (
     RestoreMissionSandbox,
     RunMission,
     SubmitMission,
     summarize_mission_operation,
 )
+from archetype.missions.sandboxes.modal import (
+    ModalSandboxBackend,
+    ModalSandboxOperationCapability,
+)
+from archetype.missions.sandboxes.modal_barrier import ModalProviderStartBarrier
 from archetype.missions.sandboxes.service import SandboxService
 from archetype.physical_ai import handlers as physical_ai_handlers
 from archetype.physical_ai.interfaces import (
@@ -76,6 +102,10 @@ from archetype.redaction.service import RedactionService
 from archetype.research import handlers as research_handlers
 from archetype.research.models import AutoResearch, summarize_research_operation
 from archetype.runtime_resources import OwnerReservation, RuntimeResources
+from archetype.storage.activity_catalog import (
+    SqliteActivityCatalog,
+    activity_catalog_path_for,
+)
 from archetype.storage.catalog import ControlCatalog, WorldRecord
 from archetype.storage.config import ControlCatalogConfig
 from archetype.storage.service import StorageService
@@ -195,20 +225,24 @@ class RuntimeBootstrapConfig:
 
     control_catalog_config: ControlCatalogConfig
     storage_service: StorageService | None = None
+    world_registry: WorldRegistry | None = None
     audit_storage_config: StorageConfig | None = None
     artifact_store_config: ArtifactStoreConfig | None = None
     redaction_service: RedactionService | None = None
     required_projector_factory: Callable[[str], Any | None] | None = None
+    unsettled_world_oracle: Callable[[str], Awaitable[bool]] | None = None
 
     @classmethod
     def from_env(
         cls,
         *,
         storage_service: StorageService | None = None,
+        world_registry: WorldRegistry | None = None,
         audit_storage_config: StorageConfig | None = None,
         artifact_store_config: ArtifactStoreConfig | None = None,
         redaction_service: RedactionService | None = None,
         required_projector_factory: Callable[[str], Any | None] | None = None,
+        unsettled_world_oracle: Callable[[str], Awaitable[bool]] | None = None,
         environ: Mapping[str, str] | None = None,
     ) -> RuntimeBootstrapConfig:
         """Resolve environment-backed configuration once at the host boundary."""
@@ -216,11 +250,82 @@ class RuntimeBootstrapConfig:
         return cls(
             control_catalog_config=ControlCatalogConfig.from_env(environ),
             storage_service=storage_service,
+            world_registry=world_registry,
             audit_storage_config=audit_storage_config,
             artifact_store_config=artifact_store_config,
             redaction_service=redaction_service,
             required_projector_factory=required_projector_factory,
+            unsettled_world_oracle=unsettled_world_oracle,
         )
+
+
+class _UnsettledWorldRouter:
+    """Compose static host policy with dynamically bound Activity families."""
+
+    def __init__(
+        self,
+        fallback: Callable[[str], Awaitable[bool]] | None,
+    ) -> None:
+        self._fallback = fallback
+        self._bindings: dict[str, object] = {}
+        self._projectors: dict[str, simulation.RequiredProjector] = {}
+        self._lock = asyncio.Lock()
+
+    async def bind(self, world_id: str, binding: object) -> None:
+        async with self._lock:
+            existing = self._bindings.get(world_id)
+            if existing is not None and existing is not binding:
+                raise ValueError(f"world {world_id!r} already has an Activity binding")
+            self._bindings[world_id] = binding
+
+    async def unbind(self, world_id: str, binding: object) -> None:
+        async with self._lock:
+            if self._bindings.get(world_id) is binding:
+                self._bindings.pop(world_id)
+
+    async def has_unsettled(self, world_id: str) -> bool:
+        fallback = self._fallback
+        if fallback is not None and await fallback(world_id):
+            return True
+        async with self._lock:
+            binding = self._bindings.get(world_id)
+        if binding is None:
+            return False
+        oracle = getattr(binding, "has_unsettled_work", None)
+        if not callable(oracle):
+            raise TypeError("Activity binding must expose has_unsettled_work")
+        return bool(await oracle(world_id))
+
+    def required_projector_for(self, world_id: str) -> simulation.RequiredProjector:
+        """Return one stable delegate that fails closed until a family rebinds."""
+
+        key = str(world_id)
+        retained = self._projectors.get(key)
+        if retained is not None:
+            return retained
+
+        async def project(receipt: Any) -> None:
+            async with self._lock:
+                binding = self._bindings.get(key)
+            if binding is None:
+                fallback = self._fallback
+                if fallback is not None and await fallback(key):
+                    raise RuntimeError(
+                        f"world {key!r} has durable Activity work but no executable binding"
+                    )
+                return
+            required = getattr(binding, "required_projector", None)
+            callback = getattr(required, "project", None)
+            if not callable(callback):
+                raise TypeError("Activity binding must expose a required projector")
+            await callback(receipt)
+
+        projector = simulation.RequiredProjector(
+            consumer_name="missions.author-activities",
+            project=project,
+        )
+        self._projectors[key] = projector
+        return projector
 
 
 @dataclass(frozen=True, slots=True)
@@ -743,7 +848,7 @@ class _WorldCleanupLifetimes:
         """Join cleanup for the current exact world selected by public destroy."""
 
         try:
-            lease = await self._worlds.begin_close(str(world_id))
+            lease = await self._lifecycle.begin_close(str(world_id))
         except KeyError:
             return
         await self.retain(world_id, lease).aclose()
@@ -1079,7 +1184,10 @@ async def _handle_submit_mission(
     worlds: WorldRegistry,
     lifecycle: WorldLifecycle,
     scheduler: CommandScheduler,
+    storage: StorageService,
     redaction: RedactionService,
+    control_catalog_config: ControlCatalogConfig,
+    unsettled_worlds: _UnsettledWorldRouter,
     operation: SubmitMission,
 ) -> Any:
     reservation = resources.owner(operation.owner_id)
@@ -1088,9 +1196,100 @@ async def _handle_submit_mission(
         async def construct() -> MissionService:
             sandbox = SandboxService((operation.config.sandbox_backend,))
             reservation.bind(sandbox, close=sandbox.shutdown)
+            author_activity_factory = None
+            backend = operation.config.sandbox_backend
+            if isinstance(backend, ModalSandboxBackend):
+                capability = ModalSandboxOperationCapability(backend)
+                backend_config = backend.config
+                assert backend_config.workspace_name is not None
+                assert backend_config.environment_name is not None
+                assert backend_config.operation_protocol_epoch is not None
+                barrier = ModalProviderStartBarrier(
+                    workspace_name=backend_config.workspace_name,
+                    environment_name=backend_config.environment_name,
+                    app_name=backend_config.app_name,
+                    protocol_epoch=backend_config.operation_protocol_epoch,
+                )
+                driver = operation.config.driver or CodexDriver(
+                    model=operation.config.model,
+                    workspace=operation.config.workspace,
+                )
+                executor = ModalMissionAuthorExecutor(
+                    capability=capability,
+                    barrier=barrier,
+                    harness=CodingAgentHarness(
+                        driver,
+                        CodingAgentHarnessConfig(
+                            workspace=operation.config.workspace,
+                        ),
+                    ),
+                    redactor=redaction,
+                    config=ModalMissionAuthorExecutorConfig(
+                        sandbox_environment=operation.config.sandbox_environment,
+                        workspace=operation.config.workspace,
+                        checkpoint_after_dispatch=operation.config.checkpoint_after_dispatch,
+                    ),
+                    observer=operation.config.on_sandbox_event,
+                )
+
+                async def bind_author_activity(
+                    world_id: str,
+                ) -> MissionAuthorActivityBinding:
+                    storage_record = await worlds.storage_record(world_id)
+                    if storage_record is None:
+                        raise WorldNotFoundError(world_id)
+                    storage_config = storage_record[0]
+                    catalog_path = activity_catalog_path_for(
+                        storage_config,
+                        control_catalog_config,
+                    )
+                    physical = SqliteActivityCatalog(catalog_path)
+                    values = LocalMissionAuthorValueStore(
+                        catalog_path.with_name(f"{catalog_path.stem}-author-values"),
+                        redactor=redaction,
+                    )
+                    binding: MissionAuthorActivityBinding
+
+                    async def close_binding() -> None:
+                        await physical.close()
+                        await unsettled_worlds.unbind(world_id, binding)
+
+                    binding = MissionAuthorActivityBinding(
+                        world_id=world_id,
+                        owner=f"mission-author:{reservation.owner}",
+                        reader=StorageMissionCommittedIntentReader(
+                            storage,
+                            storage_config,
+                        ),
+                        catalog=MissionAuthorActivityCoordinator(
+                            ActivityCoordinator(physical),
+                        ),
+                        values=values,
+                        executor=executor,
+                        stager=WorldMissionAuthorObservationStager(
+                            storage=storage,
+                            registry=worlds,
+                        ),
+                        close=close_binding,
+                    )
+                    await unsettled_worlds.bind(world_id, binding)
+                    try:
+                        routed = unsettled_worlds.required_projector_for(world_id)
+                        if worlds.required_projector(world_id) is not routed:
+                            await worlds.bind_required_projector(
+                                world_id,
+                                binding.required_projector,
+                            )
+                    except BaseException:
+                        await unsettled_worlds.unbind(world_id, binding)
+                        await physical.close()
+                        raise
+                    return binding
+
+                author_activity_factory = bind_author_activity
 
             async def cleanup_factory(world_id: object) -> WorldCleanup:
-                lease = await worlds.begin_close(str(world_id))
+                lease = await lifecycle.begin_close(str(world_id))
                 return WorldCleanup(
                     registry=worlds,
                     lifecycle=lifecycle,
@@ -1107,6 +1306,7 @@ async def _handle_submit_mission(
                 redaction_service=redaction,
                 task_owner=reservation,
                 cleanup_factory=cleanup_factory,
+                author_activity_factory=author_activity_factory,
                 storage=operation.storage,
             )
 
@@ -1232,6 +1432,8 @@ def _pull_forward_handler(
     scheduler: CommandScheduler,
     storage: StorageService,
     redaction: RedactionService,
+    control_catalog_config: ControlCatalogConfig,
+    unsettled_worlds: _UnsettledWorldRouter,
     artifact_store_config: ArtifactStoreConfig | None,
     research_admissions: research_handlers.AutoResearchAdmissions,
     destroy_world: simulation.DestroyWorldCallable,
@@ -1306,7 +1508,10 @@ def _pull_forward_handler(
                 worlds,
                 lifecycle,
                 scheduler,
+                storage,
                 redaction,
+                control_catalog_config,
+                unsettled_worlds,
             ),
         ),
         RunMission: cast(Any, partial(_handle_run_mission, resources)),
@@ -1364,6 +1569,8 @@ def _register_pull_forward_operations(
     scheduler: CommandScheduler,
     storage: StorageService,
     redaction: RedactionService,
+    control_catalog_config: ControlCatalogConfig,
+    unsettled_worlds: _UnsettledWorldRouter,
     artifact_store_config: ArtifactStoreConfig | None,
     research_admissions: research_handlers.AutoResearchAdmissions,
     destroy_world: simulation.DestroyWorldCallable,
@@ -1386,6 +1593,8 @@ def _register_pull_forward_operations(
                     scheduler=scheduler,
                     storage=storage,
                     redaction=redaction,
+                    control_catalog_config=control_catalog_config,
+                    unsettled_worlds=unsettled_worlds,
                     artifact_store_config=artifact_store_config,
                     research_admissions=research_admissions,
                     destroy_world=destroy_world,
@@ -1420,8 +1629,29 @@ def build_runtime_resources(config: RuntimeBootstrapConfig) -> RuntimeResources:
         control_catalog_config=config.control_catalog_config,
     )
     redaction = config.redaction_service or RedactionService()
-    worlds = WorldRegistry()
+    worlds = config.world_registry or WorldRegistry()
     registry = OperationRegistry()
+
+    async def durable_activity_unsettled(world_id: str) -> bool:
+        configured = config.unsettled_world_oracle
+        if configured is not None and await configured(world_id):
+            return True
+        record = await worlds.storage_record(world_id)
+        if record is None:
+            return False
+        catalog_path = activity_catalog_path_for(
+            record[0],
+            config.control_catalog_config,
+        )
+        if not catalog_path.exists():
+            return False
+        physical = SqliteActivityCatalog(catalog_path)
+        try:
+            return await ActivityCoordinator(physical).has_unsettled(world_id)
+        finally:
+            await physical.close()
+
+    unsettled_worlds = _UnsettledWorldRouter(durable_activity_unsettled)
 
     async def resolve_control_catalog(world_id: str) -> Any:
         record = await worlds.storage_record(str(world_id))
@@ -1448,11 +1678,19 @@ def build_runtime_resources(config: RuntimeBootstrapConfig) -> RuntimeResources:
         catalog_for_world=resolve_control_catalog,
         reserve_entity_ids=reserve_entity_ids,
     )
+
+    def required_projector_for(world_id: str) -> Any | None:
+        configured = config.required_projector_factory
+        if configured is not None:
+            return configured(world_id)
+        return unsettled_worlds.required_projector_for(world_id)
+
     lifecycle = WorldLifecycle(
         storage,
         worlds,
         materialize_commands=scheduler.materialize,
-        required_projector_factory=config.required_projector_factory,
+        required_projector_factory=required_projector_for,
+        unsettled_world_oracle=unsettled_worlds.has_unsettled,
     )
     audit = AuditLog(
         storage,
@@ -1521,6 +1759,8 @@ def build_runtime_resources(config: RuntimeBootstrapConfig) -> RuntimeResources:
         scheduler=scheduler,
         storage=storage,
         redaction=redaction,
+        control_catalog_config=config.control_catalog_config,
+        unsettled_worlds=unsettled_worlds,
         artifact_store_config=config.artifact_store_config,
         research_admissions=research_admissions,
         destroy_world=destroy_owned_world,

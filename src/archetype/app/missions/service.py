@@ -42,6 +42,7 @@ from archetype.missions.components import (
     Sandbox,
     Task,
     TaskCriticPolicy,
+    TaskCriticSubjectPolicy,
     TaskDispatch,
     TaskPolicy,
     TaskState,
@@ -217,7 +218,26 @@ class MissionCleanup(Protocol):
     async def finish(self) -> None: ...
 
 
+class MissionAuthorActivityWorker(Protocol):
+    async def run_once(self) -> bool: ...
+
+    async def run_until_idle(self) -> bool: ...
+
+
+class MissionAuthorActivityRuntime(Protocol):
+    world_id: str
+
+    @property
+    def worker(self) -> MissionAuthorActivityWorker: ...
+
+    async def aclose(self) -> None: ...
+
+
 type MissionCleanupFactory = Callable[[object], Awaitable[MissionCleanup]]
+type MissionAuthorActivityFactory = Callable[
+    [str],
+    Awaitable[MissionAuthorActivityRuntime],
+]
 
 
 class MissionService:
@@ -233,6 +253,7 @@ class MissionService:
         redaction_service: MissionRedactor,
         task_owner: MissionTaskOwner,
         cleanup_factory: MissionCleanupFactory,
+        author_activity_factory: MissionAuthorActivityFactory | None = None,
         storage: str | Path | StorageConfig | None = None,
     ) -> None:
         view = GraphView()
@@ -261,6 +282,8 @@ class MissionService:
         self._redaction_service = redaction_service
         self._task_owner = task_owner
         self._cleanup_factory = cleanup_factory
+        self._author_activity_factory = author_activity_factory
+        self._author_activity: MissionAuthorActivityRuntime | None = None
         self._cleanup: MissionCleanup | None = None
         self._mission_cleanup_complete = False
         self._closed = False
@@ -329,6 +352,7 @@ class MissionService:
                 f"{self._critic_driver_id!r}; got {', '.join(mismatched_drivers)}"
             )
         identities = await self._world.reserve_ids(len(submission.tasks) + 1)
+        await self._ensure_author_activity()
         mission_id, *task_entity_ids = identities
         task_ids = {
             task.name: entity_id
@@ -371,6 +395,9 @@ class MissionService:
                     timeout_seconds=task.critic_policy.timeout_seconds,
                     output_schema_version=task.critic_policy.output_schema_version,
                     max_output_chars=task.critic_policy.max_output_chars,
+                ),
+                TaskCriticSubjectPolicy(
+                    max_subject_bytes=task.critic_policy.max_subject_bytes,
                 ),
                 TaskState(),
                 TaskDispatch(),
@@ -462,6 +489,7 @@ class MissionService:
         limit = max_ticks if max_ticks is not None else self._max_ticks
         if limit < 1:
             raise ValueError("max_ticks must be positive")
+        await self._ensure_author_activity()
 
         pending_checkpoints: list[tuple[int, _CheckpointCandidate]] = []
         checkpoint_commit_pending = False
@@ -485,36 +513,39 @@ class MissionService:
             requests = self._outbox.drain()
             for request in requests:
                 self._start_critic_prewarm(request)
-            for envelope in await self._execute(requests):
-                execution_id = await self._stage_result(
-                    envelope.result,
-                    envelope.sandbox_status,
-                    bind_mission=envelope.bind_mission,
-                )
-                candidate_id = await self._stage_candidate(
-                    envelope.request,
-                    envelope.result,
-                    execution_id,
-                )
-                if candidate_id is None:
-                    await self._close_unused_critic(envelope.request)
-                if (
-                    self._checkpoint_after_dispatch
-                    and envelope.session is not None
-                    and envelope.session.capabilities.checkpoints
-                ):
-                    # GraphView is previous-tick: one commit makes execution
-                    # evidence visible and the next commits the task decision.
-                    pending_checkpoints.append(
-                        (
-                            2,
-                            _CheckpointCandidate(
-                                envelope.result,
-                                execution_id,
-                                envelope.session,
-                            ),
-                        )
+            if self._author_activity is not None:
+                await self._author_activity.worker.run_until_idle()
+            else:
+                for envelope in await self._execute(requests):
+                    execution_id = await self._stage_result(
+                        envelope.result,
+                        envelope.sandbox_status,
+                        bind_mission=envelope.bind_mission,
                     )
+                    candidate_id = await self._stage_candidate(
+                        envelope.request,
+                        envelope.result,
+                        execution_id,
+                    )
+                    if candidate_id is None:
+                        await self._close_unused_critic(envelope.request)
+                    if (
+                        self._checkpoint_after_dispatch
+                        and envelope.session is not None
+                        and envelope.session.capabilities.checkpoints
+                    ):
+                        # GraphView is previous-tick: one commit makes execution
+                        # evidence visible and the next commits the task decision.
+                        pending_checkpoints.append(
+                            (
+                                2,
+                                _CheckpointCandidate(
+                                    envelope.result,
+                                    execution_id,
+                                    envelope.session,
+                                ),
+                            )
+                        )
 
             for review in self._critic_outbox.drain():
                 result = await self._execute_review(review)
@@ -622,6 +653,8 @@ class MissionService:
                 "Agent Missions shutdown failed for 1 operation(s)",
                 [exc],
             ) from exc
+        if self._author_activity is not None:
+            await self._author_activity.aclose()
         self._closed = True
 
     async def query(self, *components: type[Component]) -> DataFrame:
@@ -646,6 +679,21 @@ class MissionService:
                 raise ValueError("mission cleanup capability is bound to another world")
             self._cleanup = cleanup
         return cleanup
+
+    async def _ensure_author_activity(self) -> None:
+        if self._author_activity is not None:
+            return
+        factory = self._author_activity_factory
+        if factory is None:
+            return
+        world_id = self._world.active_world_id
+        if world_id is None:
+            raise RuntimeError("mission author Activity requires an activated world")
+        binding = await factory(str(world_id))
+        if binding.world_id != str(world_id):
+            await binding.aclose()
+            raise ValueError("mission author Activity factory returned another world")
+        self._author_activity = binding
 
     async def _execute(
         self,

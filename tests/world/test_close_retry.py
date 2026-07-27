@@ -13,6 +13,7 @@ import pytest
 
 from archetype.core.config import RunConfig, StorageConfig
 from archetype.core.hooks import HookRegistry, OnDestroy
+from archetype.world.errors import WorldClosingError, WorldHasUnsettledWorkError
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -226,6 +227,204 @@ async def test_public_destroy_reconciles_prepared_commit_before_projection_and_s
     assert events == ["publish:0", "project:0", "destroy", "status:destroyed"]
     assert catalog.statuses == [(world.world_id, "destroyed")]
     assert registry.pending_receipt(world.world_id) is None
+    assert not await registry.contains(world.world_id)
+
+
+async def test_public_destroy_rolls_back_new_close_when_work_is_unsettled(
+    monkeypatch,
+) -> None:
+    lifecycle_module = import_module("archetype.world.lifecycle")
+    registry_module, _simulation_module = _managed_api()
+    from archetype.core.interfaces import CommittedTickReceipt
+
+    world = _ReceiptWorld(
+        world_id="00000000-0000-7000-8000-000000000081",
+        name="unsettled-public-destroy",
+        receipt_type=CommittedTickReceipt,
+    )
+    world.has_prepared_tick_commit = False
+    world.hooks = HookRegistry()
+    registry = registry_module.WorldRegistry()
+    await registry.insert(world, storage_config=StorageConfig())
+    catalog = _DestroyCatalog([])
+    unsettled = True
+
+    async def has_unsettled(world_id: str) -> bool:
+        assert world_id == world.world_id
+        return unsettled
+
+    lifecycle = lifecycle_module.WorldLifecycle(
+        _DestroyStorage(catalog),
+        registry,
+        unsettled_world_oracle=has_unsettled,
+    )
+    monkeypatch.setattr(lifecycle_module, "AsyncWorld", _ReceiptWorld)
+
+    with pytest.raises(WorldHasUnsettledWorkError):
+        await lifecycle.destroy_world(world.world_id)
+
+    # The normal path reserves close before waiting for exact-world authority,
+    # then rolls back that newly initiated close when the gate refuses it.
+    async with registry.operation(world.world_id) as retained:
+        assert retained is world
+    assert catalog.statuses == []
+
+    unsettled = False
+    await lifecycle.destroy_world(world.world_id)
+    assert not await registry.contains(world.world_id)
+
+
+async def test_preowned_close_refuses_unsettled_work_and_retains_sticky_lease(
+    monkeypatch,
+) -> None:
+    lifecycle_module = import_module("archetype.world.lifecycle")
+    registry_module, _simulation_module = _managed_api()
+    from archetype.core.interfaces import CommittedTickReceipt
+
+    world = _ReceiptWorld(
+        world_id="00000000-0000-7000-8000-000000000082",
+        name="unsettled-preowned-destroy",
+        receipt_type=CommittedTickReceipt,
+    )
+    world.has_prepared_tick_commit = False
+    world.hooks = HookRegistry()
+    registry = registry_module.WorldRegistry()
+    await registry.insert(world, storage_config=StorageConfig())
+    lease = await registry.begin_close(world.world_id)
+    catalog = _DestroyCatalog([])
+    unsettled = True
+
+    async def has_unsettled(_world_id: str) -> bool:
+        return unsettled
+
+    lifecycle = lifecycle_module.WorldLifecycle(
+        _DestroyStorage(catalog),
+        registry,
+        unsettled_world_oracle=has_unsettled,
+    )
+    monkeypatch.setattr(lifecycle_module, "AsyncWorld", _ReceiptWorld)
+
+    with pytest.raises(WorldHasUnsettledWorkError):
+        await lifecycle.destroy_world(world.world_id, lease=lease)
+
+    assert await registry.contains(world.world_id)
+    assert await registry.begin_close(world.world_id) is lease
+    with pytest.raises(RuntimeError):
+        async with registry.operation(world.world_id):
+            pytest.fail("pre-owned refused cleanup must remain sticky")
+    assert catalog.statuses == []
+
+    unsettled = False
+    await lifecycle.destroy_world(world.world_id, lease=lease)
+    assert not await registry.contains(world.world_id)
+
+
+async def test_concurrent_close_joiner_cannot_outlive_an_aborted_activity_gate(
+    monkeypatch,
+) -> None:
+    lifecycle_module = import_module("archetype.world.lifecycle")
+    registry_module, _simulation_module = _managed_api()
+    from archetype.core.interfaces import CommittedTickReceipt
+
+    world = _ReceiptWorld(
+        world_id="00000000-0000-7000-8000-000000000083",
+        name="concurrent-unsettled-close",
+        receipt_type=CommittedTickReceipt,
+    )
+    world.has_prepared_tick_commit = False
+    world.hooks = HookRegistry()
+    registry = registry_module.WorldRegistry()
+    await registry.insert(world, storage_config=StorageConfig())
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    oracle_calls = 0
+
+    async def has_unsettled(_world_id: str) -> bool:
+        nonlocal oracle_calls
+        oracle_calls += 1
+        entered.set()
+        await release.wait()
+        return oracle_calls == 1
+
+    lifecycle = lifecycle_module.WorldLifecycle(
+        _DestroyStorage(_DestroyCatalog([])),
+        registry,
+        unsettled_world_oracle=has_unsettled,
+    )
+    monkeypatch.setattr(lifecycle_module, "AsyncWorld", _ReceiptWorld)
+
+    first = asyncio.create_task(lifecycle.begin_close(world.world_id))
+    await entered.wait()
+    second = asyncio.create_task(lifecycle.begin_close(world.world_id))
+    await asyncio.sleep(0)
+    release.set()
+
+    with pytest.raises(WorldHasUnsettledWorkError):
+        await first
+    with pytest.raises(ValueError, match="no longer owns"):
+        await second
+    assert oracle_calls == 1
+    async with registry.operation(world.world_id) as retained:
+        assert retained is world
+
+
+async def test_public_close_reopens_after_projection_retry_admits_unsettled_work(
+    monkeypatch,
+) -> None:
+    lifecycle_module = import_module("archetype.world.lifecycle")
+    registry_module, simulation_module = _managed_api()
+    from archetype.core.interfaces import CommittedTickReceipt
+
+    attempts = 0
+    unsettled = False
+
+    async def project(_receipt: CommittedTickReceipt) -> None:
+        nonlocal attempts, unsettled
+        attempts += 1
+        if attempts < 3:
+            raise RuntimeError("required projection unavailable")
+        unsettled = True
+
+    async def has_unsettled(_world_id: str) -> bool:
+        return unsettled
+
+    world = _ReceiptWorld(
+        world_id="00000000-0000-7000-8000-000000000084",
+        name="projection-then-unsettled",
+        receipt_type=CommittedTickReceipt,
+    )
+    world.has_prepared_tick_commit = False
+    world.hooks = HookRegistry()
+    registry = registry_module.WorldRegistry()
+    await registry.insert(
+        world,
+        storage_config=StorageConfig(),
+        required_projector=simulation_module.RequiredProjector(
+            consumer_name="test.projection-then-unsettled",
+            project=project,
+        ),
+    )
+    lifecycle = lifecycle_module.WorldLifecycle(
+        _DestroyStorage(_DestroyCatalog([])),
+        registry,
+        unsettled_world_oracle=has_unsettled,
+    )
+    monkeypatch.setattr(lifecycle_module, "AsyncWorld", _ReceiptWorld)
+
+    with pytest.raises(simulation_module.PostCommitProjectionError):
+        await simulation_module.step(registry, world.world_id, RunConfig())
+    with pytest.raises(simulation_module.PostCommitProjectionError):
+        await lifecycle.destroy_world(world.world_id)
+    with pytest.raises(WorldHasUnsettledWorkError):
+        await lifecycle.destroy_world(world.world_id)
+
+    # The public close retains reopen authority across projection failure, so
+    # the worker can stage the observation that will eventually settle work.
+    async with registry.operation(world.world_id) as retained:
+        assert retained is world
+
+    unsettled = False
+    await lifecycle.destroy_world(world.world_id)
     assert not await registry.contains(world.world_id)
 
 
@@ -576,3 +775,25 @@ async def test_cleanup_lease_cannot_authorize_a_sibling_world() -> None:
 
     await registry.finish_close(second_lease)
     await registry.finish_close(first_lease)
+
+
+async def test_abort_close_rejects_a_non_reopenable_cleanup_lease() -> None:
+    registry_module, _simulation_module = _managed_api()
+    from archetype.core.interfaces import CommittedTickReceipt
+
+    world = _ReceiptWorld(
+        world_id="00000000-0000-7000-8000-000000000070",
+        name="sticky-close",
+        receipt_type=CommittedTickReceipt,
+    )
+    registry = registry_module.WorldRegistry()
+    await registry.insert(world)
+    lease = await registry.begin_close(world.world_id)
+
+    with pytest.raises(RuntimeError, match="not reopenable"):
+        await registry.abort_close(lease)
+    with pytest.raises(WorldClosingError):
+        async with registry.operation(world.world_id):
+            pytest.fail("a rejected abort must leave close sticky")
+
+    await registry.finish_close(lease)
