@@ -8,6 +8,13 @@ repository guidance, and only the protected-base context needed to explain the
 change. The finalized bundle is the finding authority: preserve its cluster
 states, adjudications, design notes, and human-decision dispositions.
 
+The scope manifest is exactly these changed files, and every
+`change_cohorts[].files` entry must come from this list. The review bundle,
+scope file, diff file, and anything else you merely opened belong in a
+cohort only when they appear in this manifest:
+
+$scoped_files
+
 Organize the diff into logical change cohorts in the order a human should read
 them, not alphabetical file order. Explain intent and behavioral delta, design
 choices and alternatives, affected invariants, validation evidence, and the
