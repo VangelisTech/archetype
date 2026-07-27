@@ -9,8 +9,9 @@ change. The finalized bundle is the finding authority: preserve its cluster
 states, adjudications, design notes, and human-decision dispositions.
 
 The scope manifest is exactly these changed files, and every
-`change_cohorts[].files` entry must come from this list — never the review
-bundle, scope file, diff file, or anything else you merely opened:
+`change_cohorts[].files` entry must come from this list. The review bundle,
+scope file, diff file, and anything else you merely opened belong in a
+cohort only when they appear in this manifest:
 
 $scoped_files
 
