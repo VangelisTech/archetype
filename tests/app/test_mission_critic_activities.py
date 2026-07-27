@@ -31,9 +31,11 @@ from archetype.app.missions.local_critic_activity_values import (
 from archetype.core.interfaces import CommittedTickReceipt
 from archetype.missions import CriticPolicy
 from archetype.missions.critics import (
+    CRITIC_ACTIVITY_KIND,
     CandidateReviewRequest,
     CriticActivityCodec,
     CriticActivityRequest,
+    CriticActivityRequestRef,
     CriticActivityResult,
     CriticActivityResultRef,
     CriticActivityRetryGuard,
@@ -613,3 +615,56 @@ async def test_confirmed_absence_rebinds_and_executes_with_exact_retry_guard(
     assert provider._state()["retry_guard_ref"] == f"critic-retry://{operation_id}"
     assert (world_id, raw_request.review_id) in stager.staged
     await recovered_physical.close()
+
+
+@pytest.mark.asyncio
+async def test_critic_claim_claims_beyond_the_retired_default_prefix(
+    tmp_path: Path,
+) -> None:
+    """More leased rows than the old scan bound cannot strand critic work.
+
+    The retired claim scan read one default-sized page (100 rows) of the
+    pending set.  Lease more rows than that bound with foreign owners and
+    prove the claimable Activity beyond the prefix is still claimed — at
+    the real page size, with no page shrinking.
+    """
+
+    world_id = "critic-world"
+    physical, generic, catalog = _open_catalog(
+        tmp_path / "activities.db",
+        lease_seconds=300,
+    )
+    receipt = CommittedTickReceipt(world_id, "run-a", 1, "token-1", 0)
+
+    total = 131  # 130 leased rows, one claimable row beyond the old bound.
+    activity_ids = [f"review-{position:03d}" for position in range(total)]
+    for activity_id in activity_ids:
+        digest = hashlib.sha256(activity_id.encode()).hexdigest()
+        await catalog.admit_critic(
+            world_id=world_id,
+            receipt=receipt,
+            activity_id=activity_id,
+            request=CriticActivityRequestRef(
+                ref=f"mission-critic+json:sha256:{digest}",
+                digest=digest,
+            ),
+        )
+    for activity_id in activity_ids[:-1]:
+        claim = await generic.claim(
+            world_id,
+            CRITIC_ACTIVITY_KIND,
+            activity_id,
+            f"busy-{activity_id}",
+            lease_seconds=300,
+        )
+        assert claim.acquired
+
+    claim = await catalog.claim_critic(world_id=world_id, owner="available-worker")
+
+    assert claim is not None
+    assert claim.activity_id == activity_ids[-1]
+
+    # Every Activity now leased: an honest None, reached only by paging to
+    # the catalog's end rather than stopping at the first prefix.
+    assert await catalog.claim_critic(world_id=world_id, owner="late-worker") is None
+    await physical.close()

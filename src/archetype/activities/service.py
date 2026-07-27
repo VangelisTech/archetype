@@ -18,6 +18,7 @@ from archetype.activities.contracts import (
     ActivitySettlement,
     ActivitySnapshot,
 )
+from archetype.activities.interfaces import iActivityCoordinator
 from archetype.core.interfaces import CommittedTickReceipt
 from archetype.storage.activity_catalog.interfaces import ActivityCatalog
 from archetype.storage.activity_catalog.records import (
@@ -191,6 +192,87 @@ class ActivityCoordinator:
             )
         )
         return _snapshot(record)
+
+
+async def claim_next_pending(
+    coordinator: iActivityCoordinator,
+    *,
+    kind: str,
+    world_id: str,
+    owner: str,
+    lease_seconds: float,
+    page_size: int = 1_000,
+) -> ActivityClaim | None:
+    """Claim the first claimable pending Activity, paging until exhaustion.
+
+    A finite prefix scan strands claimable work: when other workers hold
+    leases on every row the scan can see, it reports no work even though a
+    claimable Activity sits just beyond the prefix, and that Activity stays
+    pending until an unrelated change reshuffles the prefix.  Every
+    coordinator claim scan must page to the end of the pending set before
+    concluding there is nothing to claim; a larger prefix is not a fix.
+
+    Offset paging over a mutating set can skip or repeat entries within one
+    pass; a repeat is one failed claim attempt and a skipped entry remains
+    pending for the caller's next scan, so no Activity is permanently
+    stranded.
+    """
+
+    if page_size < 1:
+        raise ValueError("claim scan page size must be positive")
+    offset = 0
+    while True:
+        page = await coordinator.pending(
+            kind=kind,
+            world_id=world_id,
+            limit=page_size,
+            offset=offset,
+        )
+        for snapshot in page:
+            claim = await coordinator.claim(
+                world_id=world_id,
+                kind=kind,
+                activity_id=snapshot.admission.activity_id,
+                owner=owner,
+                lease_seconds=lease_seconds,
+            )
+            if claim.acquired:
+                return claim
+        if len(page) < page_size:
+            return None
+        offset += page_size
+
+
+async def collect_pending_results(
+    coordinator: iActivityCoordinator,
+    *,
+    kind: str,
+    world_id: str,
+    page_size: int = 1_000,
+) -> tuple[ActivitySnapshot, ...]:
+    """Collect every unobserved durable result, paging until exhaustion.
+
+    The results-side twin of :func:`claim_next_pending`: a finite prefix
+    silently drops durable results beyond it, so an observation committed
+    on the current receipt could miss deliveries whenever a world holds
+    more than one page of unobserved results.
+    """
+
+    if page_size < 1:
+        raise ValueError("result scan page size must be positive")
+    snapshots: list[ActivitySnapshot] = []
+    offset = 0
+    while True:
+        page = await coordinator.pending_results(
+            kind=kind,
+            world_id=world_id,
+            limit=page_size,
+            offset=offset,
+        )
+        snapshots.extend(page)
+        if len(page) < page_size:
+            return tuple(snapshots)
+        offset += page_size
 
 
 def _admission_record(admission: ActivityAdmission) -> ActivityAdmissionRecord:
@@ -372,4 +454,8 @@ async def _translate_catalog_errors[T](awaitable: Awaitable[T]) -> T:
         raise ActivityConflictError(str(exc)) from exc
 
 
-__all__ = ["ActivityCoordinator"]
+__all__ = [
+    "ActivityCoordinator",
+    "claim_next_pending",
+    "collect_pending_results",
+]

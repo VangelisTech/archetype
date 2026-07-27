@@ -453,6 +453,9 @@ The Activity migration is conforming only when focused contracts prove:
   a fresh execution-authorized attempt;
 - a complete result becomes durable before ECS staging;
 - restart repeatedly restages completed-but-unobserved results;
+- claim and result-delivery scans page the pending set to exhaustion, so a
+  leased prefix cannot strand a claimable Activity or skip an unobserved
+  durable result — a larger finite prefix is not conforming;
 - settlement binds the exact observation receipt and matching result
   reference/digest completeness evidence;
 - equal world-local Activity IDs in two worlds remain isolated in both control

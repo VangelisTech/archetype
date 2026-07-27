@@ -18,7 +18,8 @@ from archetype.activities import (
     ActivityResultRef,
     ActivityRetryGuard,
     ActivitySettlement,
-    ActivitySnapshot,
+    claim_next_pending,
+    collect_pending_results,
     iActivityCoordinator,
 )
 from archetype.core.hooks import PostTick
@@ -46,9 +47,10 @@ from archetype.physical_ai.hosted_episode import (
     hosted_episode_request_digest,
 )
 
-# Pending-scan page size for claim_episode; a module constant so tests can
-# shrink it and prove the pagination property without 10,000 rows.
-_CLAIM_SCAN_BATCH = 10_000
+# Pending-scan page size, not a scan bound: claim and result scans page
+# until the catalog is exhausted.  A module constant so tests can shrink
+# it and prove the pagination property with few rows.
+_CLAIM_SCAN_PAGE = 1_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -457,33 +459,19 @@ class PhysicalHostedActivityCoordinator:
     ) -> HostedEpisodeActivityClaim | None:
         # Page until the catalog is exhausted: a finite prefix scan stranded
         # claimable Activities beyond the batch when the head of the pending
-        # set was leased by other workers — they stayed pending until an
-        # unrelated change reshuffled the prefix. Offset paging over a
-        # mutating set can skip or repeat entries within one pass; a repeat
-        # is a failed claim attempt and a skipped entry remains incomplete
-        # for the next pass, so no Activity is permanently stranded.
-        offset = 0
-        batch = _CLAIM_SCAN_BATCH
-        while True:
-            pending = await self._coordinator.pending(
-                kind=HOSTED_EPISODE_ACTIVITY_KIND,
-                world_id=world_id,
-                limit=batch,
-                offset=offset,
-            )
-            for snapshot in pending:
-                generic = await self._coordinator.claim(
-                    world_id,
-                    HOSTED_EPISODE_ACTIVITY_KIND,
-                    snapshot.admission.activity_id,
-                    owner,
-                    lease_seconds=self._lease_seconds,
-                )
-                if generic.acquired:
-                    return self._remember(generic)
-            if len(pending) < batch:
-                return None
-            offset += batch
+        # set was leased by other workers.  claim_next_pending carries this
+        # invariant for the author, critic, and hosted coordinators alike.
+        generic = await claim_next_pending(
+            self._coordinator,
+            kind=HOSTED_EPISODE_ACTIVITY_KIND,
+            world_id=world_id,
+            owner=owner,
+            lease_seconds=self._lease_seconds,
+            page_size=_CLAIM_SCAN_PAGE,
+        )
+        if generic is None:
+            return None
+        return self._remember(generic)
 
     async def bind_provider_operation(
         self,
@@ -536,19 +524,12 @@ class PhysicalHostedActivityCoordinator:
         # receipt could miss its delivery when a world held more than one
         # page of unobserved results — the results-side twin of the
         # claim_episode stranding fix.
-        snapshots: list[ActivitySnapshot] = []
-        offset = 0
-        while True:
-            page = await self._coordinator.pending_results(
-                kind=HOSTED_EPISODE_ACTIVITY_KIND,
-                world_id=world_id,
-                limit=_CLAIM_SCAN_BATCH,
-                offset=offset,
-            )
-            snapshots.extend(page)
-            if len(page) < _CLAIM_SCAN_BATCH:
-                break
-            offset += _CLAIM_SCAN_BATCH
+        snapshots = await collect_pending_results(
+            self._coordinator,
+            kind=HOSTED_EPISODE_ACTIVITY_KIND,
+            world_id=world_id,
+            page_size=_CLAIM_SCAN_PAGE,
+        )
         deliveries: list[HostedEpisodeResultDelivery] = []
         for snapshot in snapshots:
             result = snapshot.result

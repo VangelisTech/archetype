@@ -958,7 +958,7 @@ async def test_hosted_claim_pages_past_a_full_batch_of_live_claims(
     """
     import archetype.physical_ai.hosted_activities as hosted_module
 
-    monkeypatch.setattr(hosted_module, "_CLAIM_SCAN_BATCH", 3)
+    monkeypatch.setattr(hosted_module, "_CLAIM_SCAN_PAGE", 3)
     world_id = "physical-world"
     values = LocalHostedEpisodeValueStore(tmp_path / "values")
     physical, generic, catalog = _open_catalog(
@@ -1006,7 +1006,7 @@ async def test_pending_results_page_past_a_full_batch(
     """A durable result beyond the first page must still be delivered."""
     import archetype.physical_ai.hosted_activities as hosted_module
 
-    monkeypatch.setattr(hosted_module, "_CLAIM_SCAN_BATCH", 2)
+    monkeypatch.setattr(hosted_module, "_CLAIM_SCAN_PAGE", 2)
     world_id = "physical-world"
     values = LocalHostedEpisodeValueStore(tmp_path / "values")
     physical, generic, catalog = _open_catalog(
