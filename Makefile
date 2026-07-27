@@ -65,6 +65,7 @@ help:
 	@echo "  make operational-wheel  Run representative scenarios against the built wheel"
 	@echo "  make operational-mission  Run the credential-free exact-head mission scenario"
 	@echo "  make operational-external  Require selected Tier-5/6 provider evidence"
+	@echo "  make operational-release  Run every release-cadence installed-artifact scenario"
 	@echo "  make test-infra     Run external-infrastructure tests (requires configured service)"
 	@echo ""
 	@echo "Build & Release:"
@@ -72,7 +73,7 @@ help:
 	@echo "  make package-smoke  Install and probe the built wheel outside the checkout"
 	@echo "  make verify-pr      Complete pull-request profile"
 	@echo "  make verify-full    Main-branch profile"
-	@echo "  make verify-release Installed-artifact release profile"
+	@echo "  make verify-release Source profile plus installed-artifact release evidence"
 	@echo "  make release-check  Full pre-release validation"
 	@echo "  make publish-test   Publish to TestPyPI"
 	@echo "  make publish        Publish to PyPI"
@@ -443,6 +444,28 @@ operational-external:
 		--mode source --cadence release --min-tier 5 --max-tier 6 --require-run \
 		--out operational-external-results.json
 
+# Release evidence executes the installed artifact, never the checkout: one
+# wheel is built, its digest is recorded in the receipt, and every
+# release-cadence scenario that can run from an installed artifact runs in an
+# isolated environment whose ``archetype`` import is asserted to resolve
+# inside that environment with no checkout source root on ``sys.path``.
+OPERATIONAL_RELEASE_RESULTS ?= operational-release-results.json
+
+.PHONY: operational-release
+operational-release:
+	@$(MAKE) --no-print-directory build
+	@wheel=$$(find "$(OPERATIONAL_DIST_DIR)" -maxdepth 1 -name '*.whl' -print -quit 2>/dev/null); \
+		if [ -z "$$wheel" ]; then \
+			echo "operational-release requires one built wheel in $(OPERATIONAL_DIST_DIR)"; \
+			exit 1; \
+		fi; \
+		echo "Release artifact: $$wheel"; \
+		shasum -a 256 "$$wheel"; \
+		PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
+			--mode wheel --cadence release --min-tier 0 --max-tier 6 \
+			--require-run --require-clean \
+			--wheel "$$wheel" --out "$(OPERATIONAL_RELEASE_RESULTS)"
+
 .PHONY: verify-pr
 verify-pr: static test-cov eval-conformance eval-capability package-smoke examples-smoke operational-runtime operational-commands operational-wheel docs
 	@echo "PR verification profile passed"
@@ -452,7 +475,7 @@ verify-full: verify-pr test-process eval-reliability
 	@echo "Full verification profile passed"
 
 .PHONY: verify-release
-verify-release: verify-full
+verify-release: verify-full operational-release operational-external
 	@echo "Release verification profile passed"
 
 .PHONY: release-check

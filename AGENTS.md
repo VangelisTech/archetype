@@ -202,7 +202,7 @@ The CLI (except `serve`) is an HTTP client against the running server. See `READ
 ```bash
 make ci          # complete PR verification profile
 make verify-full # PR profile + process/reliability evidence
-make verify-release # installed-artifact release profile
+make verify-release # source profile plus installed-artifact release evidence
 make test        # fast tests, no coverage
 make static      # format/lint/type/lock/registry checks
 make test-cov    # coverage report

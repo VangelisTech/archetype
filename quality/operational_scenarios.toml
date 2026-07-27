@@ -465,7 +465,7 @@ source_command = [
 ]
 required_extras = []
 tier = 1
-applicability = ["source"]
+applicability = ["source", "wheel"]
 timeout_seconds = 300
 prerequisites = []
 missing_prerequisite = "fail"
@@ -479,6 +479,68 @@ cleanup_policy = "isolated"
 artifact_policy = "receipt"
 artifact_schema = "archetype.operational-results/v1"
 required_cadence = ["pr", "main", "release"]
+
+[[scenario]]
+id = "dogfood.runtime.shutdown"
+kind = "dogfood"
+owner = "runtime"
+owner_paths = [
+  "src/archetype/runtime",
+  "src/archetype/runtime_resources.py",
+  "src/archetype/wiring.py",
+]
+source_path = "tests/app/test_runtime_contracts.py"
+source_command = [
+  "pytest",
+  "-q",
+  "tests/app/test_runtime_contracts.py::TestShutdownIdempotency",
+]
+required_extras = []
+tier = 1
+applicability = ["source", "wheel"]
+timeout_seconds = 600
+prerequisites = []
+missing_prerequisite = "fail"
+semantic_oracle = { kind = "pytest", ref = "tests/app/test_runtime_contracts.py::TestShutdownIdempotency" }
+contracts = [
+  "runtime.lifecycle.single_flight_and_drain",
+  "runtime.lifecycle.retryable_teardown",
+]
+cleanup_policy = "isolated"
+artifact_policy = "receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["release"]
+
+[[scenario]]
+id = "dogfood.physical_ai.hosted_episode"
+kind = "dogfood"
+owner = "physical_ai"
+owner_paths = [
+  "src/archetype/physical_ai",
+  "src/archetype/activities",
+  "src/archetype/runtime",
+  "src/archetype/wiring.py",
+]
+source_path = "tests/integration/test_hosted_physical_runtime.py"
+source_command = [
+  "pytest",
+  "-q",
+  "tests/integration/test_hosted_physical_runtime.py",
+]
+required_extras = []
+tier = 1
+applicability = ["source", "wheel"]
+timeout_seconds = 600
+prerequisites = []
+missing_prerequisite = "fail"
+semantic_oracle = { kind = "pytest", ref = "tests/integration/test_hosted_physical_runtime.py" }
+contracts = [
+  "physical_ai.workflow.evidence",
+]
+cleanup_policy = "isolated"
+artifact_policy = "receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["release"]
 
 [[scenario]]
 id = "dogfood.sandbox.docker"
@@ -551,7 +613,7 @@ source_path = "tests/infrastructure/test_r2_artifact_context.py"
 source_command = ["pytest", "-q", "tests/infrastructure/test_r2_artifact_context.py"]
 required_extras = []
 tier = 5
-applicability = ["source"]
+applicability = ["source", "wheel"]
 timeout_seconds = 600
 prerequisites = [
   "credential:R2_ACCESS_KEY_ID",

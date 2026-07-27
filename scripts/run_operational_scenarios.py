@@ -981,6 +981,7 @@ def _run_one(
     python: Path,
     root: Path,
     mode: str,
+    cadence: str,
     run_root: Path,
     logs_root: Path,
     package: dict[str, object],
@@ -1012,10 +1013,21 @@ def _run_one(
         "artifact_schema": row["artifact_schema"],
     }
     if missing:
+        # Release evidence never reports a passing ``not_run``: a scenario the
+        # release requires either executes or fails, naming exactly what is
+        # absent. The registry's ``missing_prerequisite`` policy applies only
+        # below the release cadence.
+        release_forced = cadence == "release"
+        missing_status = (
+            "failed" if release_forced or row["missing_prerequisite"] != "not_run" else "not_run"
+        )
+        reason = f"missing prerequisites: {', '.join(missing)}"
+        if release_forced and row["missing_prerequisite"] == "not_run":
+            reason = f"release cadence requires execution; {reason}"
         result.update(
             {
-                "status": "not_run" if row["missing_prerequisite"] == "not_run" else "failed",
-                "reason": f"missing prerequisites: {', '.join(missing)}",
+                "status": missing_status,
+                "reason": reason,
                 "missing_prerequisites": missing,
                 "duration_seconds": round(time.perf_counter() - started, 6),
                 "cleanup": {"policy": row["cleanup_policy"], "status": "not_acquired"},
@@ -1384,6 +1396,7 @@ def run_scenarios(
                     python=python,
                     root=root,
                     mode=mode,
+                    cadence=cadence,
                     run_root=run_root,
                     logs_root=captured_logs_root,
                     package=package,

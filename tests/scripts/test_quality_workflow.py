@@ -328,10 +328,73 @@ def test_runtime_loopback_is_explicitly_required_from_source_and_wheel() -> None
         assert wheel_body.count(f"--scenario {scenario_id}") == 1
 
 
-def test_required_operational_execution_cannot_accept_not_run(
+def test_verify_release_runs_installed_artifact_evidence_not_an_alias() -> None:
+    """``verify-release`` is the source profile plus installed-artifact release
+    evidence — never a bare alias for ``verify-full``."""
+
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    verify_release = re.search(
+        r"^verify-release:(?P<dependencies>[^\n]*)$",
+        makefile,
+        re.MULTILINE,
+    )
+    assert verify_release is not None
+    dependencies = verify_release.group("dependencies").split()
+    assert "verify-full" in dependencies
+    assert "operational-release" in dependencies
+    assert "operational-external" in dependencies
+
+    release = re.search(
+        r"^operational-release:\n(?P<body>(?:\t.*\n)+)",
+        makefile,
+        re.MULTILINE,
+    )
+    assert release is not None
+    release_body = release.group("body")
+    assert "--mode wheel" in release_body
+    assert "--cadence release" in release_body
+    assert "--min-tier 0" in release_body
+    assert "--max-tier 6" in release_body
+    assert "--require-run" in release_body
+    assert "--require-clean" in release_body
+    assert "shasum -a 256" in release_body
+
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    assert "make verify-release" in workflow
+    for retained in (
+        "operational-release-results.json",
+        "operational-release-results.d/",
+        "operational-external-results.json",
+        "operational-external-results.d/",
+    ):
+        assert retained in workflow
+
+
+def test_release_scenarios_cover_the_release_definition_from_the_wheel() -> None:
+    """Runtime, API+CLI, shutdown, Mission author/critic, and hosted
+    Physical-AI evidence all run from the installed artifact at release."""
+
+    with OPERATIONAL_SCENARIOS.open("rb") as stream:
+        scenarios = {row["id"]: row for row in tomllib.load(stream)["scenario"]}
+    for scenario_id in (
+        "dogfood.runtime.loopback",
+        "dogfood.commands.local",
+        "dogfood.runtime.shutdown",
+        "dogfood.agent_mission.modal_activities",
+        "dogfood.physical_ai.hosted_episode",
+    ):
+        row = scenarios[scenario_id]
+        assert "wheel" in row["applicability"], scenario_id
+        assert "release" in row["required_cadence"], scenario_id
+
+
+def test_release_cadence_fails_credentialless_required_scenarios(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Release evidence never reports a passing ``not_run``: the scenario FAILS
+    and names exactly which prerequisite is absent."""
+
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     envelope, passed = run_scenarios(
@@ -352,7 +415,13 @@ def test_required_operational_execution_cannot_accept_not_run(
 
     assert passed is False
     assert envelope["outcome"] == "failed"
-    assert envelope["status_counts"] == {"passed": 0, "failed": 0, "not_run": 1}
+    assert envelope["status_counts"] == {"passed": 0, "failed": 1, "not_run": 0}
+    results = envelope["results"]
+    assert isinstance(results, list) and len(results) == 1
+    result = results[0]
+    assert result["status"] == "failed"
+    assert "credential:OPENAI_API_KEY" in result["reason"]
+    assert result["missing_prerequisites"] == ["credential:OPENAI_API_KEY"]
 
 
 def test_commands_operational_oracle_does_not_import_pytest_modules() -> None:

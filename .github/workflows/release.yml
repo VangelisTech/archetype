@@ -38,6 +38,10 @@ jobs:
             coverage.xml
             eval-conformance-results.json
             eval-reliability-results.json
+            operational-release-results.json
+            operational-release-results.d/
+            operational-external-results.json
+            operational-external-results.d/
           if-no-files-found: error
 
   python-compatibility:

@@ -278,6 +278,47 @@ def test_missing_credential_is_explicitly_not_available(monkeypatch) -> None:
     assert row["missing_prerequisite"] == "not_run"
 
 
+def test_release_cadence_never_reports_not_run_for_missing_prerequisites(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The registry's ``not_run`` policy applies below the release cadence only;
+    release evidence fails and names the absent prerequisite."""
+
+    monkeypatch.delenv("ARCHETYPE_TEST_ABSENT_TOKEN", raising=False)
+    row: dict[str, Any] = {
+        "id": "dogfood.test.credentialed",
+        "owner": "runtime",
+        "tier": 5,
+        "prerequisites": ["credential:ARCHETYPE_TEST_ABSENT_TOKEN"],
+        "missing_prerequisite": "not_run",
+        "contracts": ["runtime.trust.actor_free"],
+        "artifact_schema": RESULT_SCHEMA,
+        "cleanup_policy": "isolated",
+    }
+    shared: dict[str, Any] = {
+        "python": Path(sys.executable),
+        "root": ROOT,
+        "mode": "source",
+        "run_root": tmp_path / "run",
+        "logs_root": tmp_path / "logs",
+        "package": {"origin": "source"},
+        "base_env": {},
+        "expected_revision": "0" * 40,
+        "expected_dirty": False,
+        "tested_subject": {"commit": "0" * 40, "dirty": False},
+    }
+
+    pr_result = operational_runner._run_one(row, cadence="pr", **shared)
+    assert pr_result["status"] == "not_run"
+    assert pr_result["missing_prerequisites"] == ["credential:ARCHETYPE_TEST_ABSENT_TOKEN"]
+
+    release_result = operational_runner._run_one(row, cadence="release", **shared)
+    assert release_result["status"] == "failed"
+    assert "credential:ARCHETYPE_TEST_ABSENT_TOKEN" in release_result["reason"]
+    assert release_result["missing_prerequisites"] == ["credential:ARCHETYPE_TEST_ABSENT_TOKEN"]
+
+
 def test_timeout_is_failed_and_process_group_is_cleaned(tmp_path: Path) -> None:
     result = _run_process(
         [
