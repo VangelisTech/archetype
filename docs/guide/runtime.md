@@ -196,15 +196,13 @@ same experiment only after the outer call returns. Runtime shutdown therefore
 joins an admitted AutoResearch call before closing shared dependencies, without
 a research-owned task, owner reservation, or finalizer.
 
-`runtime.evaluate_physical_task(...)` and
-`runtime.sweep_physical_instructions(...)` dispatch typed requests to the
-registered physical-AI handler. The runtime does not install processors,
-reset provider state, spawn trial entities, run episodes, or collect terminal
-rows itself. Returned reports carry the durable world/run identity from which
-their values were derived. Each call pre-reserves process-owned lazy canonical
-cleanup before private-world creation; validation, compensation, and retry all
-remain on that exact owner rather than invoking lifecycle destruction through a
-parallel fallback. The sync runtime exposes the same operations.
+Physical evaluation enters through `world.run_hosted_episode(...)`, which
+dispatches the exact `RunHostedEpisode` operation to the registered
+physical-AI handler. The handle must retain explicit storage coordinates. The
+handler owns hosted Activity admission, remote Modal execution or
+reconciliation by stable operation identity, and durable result publication;
+the runtime does not run episodes or collect terminal rows itself. The sync
+world handle exposes the same operation. See [Physical AI](physical-ai.md).
 
 ### R12 — Typed artifacts and transcript evidence
 
@@ -294,8 +292,11 @@ interchange boundary.
 
 `runtime.missions(name, config=..., storage=...)` returns an async
 `RuntimeMissions` handle. It configures one mission-capable world with the
-built-in Components, graph view, transition processors, post-tick outbox, and
-injected Sandbox Backend plus coding-agent and critic drivers. The family-owned
+built-in Components, graph view, transition processors, durable
+author-and-critic Activity binding, and injected Sandbox Backend plus
+coding-agent and critic drivers. v0.5 admits only the Modal sandbox backend
+for end-to-end missions; submission rejects any other configured backend
+deterministically before admission. The family-owned
 Sandbox Service retains the author Session and owns fresh candidate-scoped
 critic Sessions. Authors submit typed tasks and critic policies; they never
 wire that bundle themselves. A custom critic driver declares `driver_id`, and
@@ -371,7 +372,7 @@ await world.update(eid, Position(x=10))
 await world.add_components(eid, Health(hp=100))
 await world.remove_components(eid, Velocity)
 
-artifact = await world.ingest_artifact(...)
+refs = await world.ingest_artifacts(ArtifactSource(...))
 
 await world.add_processor(MyProcessor())
 await world.remove_processor(MyProcessor)

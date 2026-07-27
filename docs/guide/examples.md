@@ -276,7 +276,7 @@ Source: [`examples/11_coding_agent_mission.py`](https://github.com/VangelisTech/
 - typed `AgentTask` and `CommandValidator` authoring;
 - a temporal `DependsOn` relationship instead of a JSON plan cursor;
 - an expected-nonzero validator for the red regression;
-- committed dispatch through the post-tick outbox;
+- committed dispatch admitted as a durable author Activity after its tick;
 - revision-bound validation and exact-head publication producing an immutable
   candidate rather than acceptance;
 - independent review of that exact candidate in a distinct critic sandbox;
@@ -332,17 +332,5 @@ uv run python examples/13_biome_rts.py
 
 Source: [`examples/13_biome_rts.py`](https://github.com/VangelisTech/archetype/blob/main/examples/13_biome_rts.py)
 
----
-
-## 14. Deterministic Physical-AI Evidence
-
-Use in-process scripted providers to evaluate a reach task, persist telemetry
-and frame references, compare paired instruction trials, and optimize an
-instruction. This is a deterministic mechanism check, not evidence from a real
-simulator, model, GPU, or robot.
-
-```bash
-uv run python examples/14_physical_ai.py
-```
-
-Source: [`examples/14_physical_ai.py`](https://github.com/VangelisTech/archetype/blob/main/examples/14_physical_ai.py)
+The hosted physical-AI episode path has no numbered example script; its
+runnable snippet and contract live in [Physical AI](physical-ai.md).
