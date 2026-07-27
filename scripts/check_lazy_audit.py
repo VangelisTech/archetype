@@ -61,6 +61,15 @@ The checker detects this pattern via AST analysis:
 Every other execution-capable terminal, plus ``Series.to_pylist()`` *outside*
 batch-UDF scope, still requires an entry.
 
+**Zero-exception ban — core row counting (issue #538)**
+
+``.count_rows()`` under ``src/archetype/core/`` has no diagnostic or
+empty-check exception and cannot be allowlisted. Core submits a lazy frame to
+its owning terminal append/write boundary; it never runs a count first to
+decide whether the work exists, and a receipt whose count the write did not
+naturally produce reports ``None``. The checker fails both the call site and
+any ``lazy_audit.toml`` entry that tries to admit one.
+
 Tests are intentionally out of scope: terminal materialization at the
 assertion boundary is expected. The contract being audited is the
 production execution model, not test ergonomics.
@@ -117,6 +126,21 @@ _MATERIALIZATION_METHODS = frozenset(
         "write_turbopuffer",
     }
 )
+
+
+# Maintainer decision (issue #538): core does not count rows to decide
+# whether work exists. Each pair is (path prefix, method); a matching site
+# fails the audit even with an allowlist entry, and a matching entry is
+# itself rejected.
+_BANNED_TERMINALS: tuple[tuple[str, str], ...] = (("src/archetype/core/", "count_rows"),)
+
+
+def is_banned(path: str, method: str) -> bool:
+    """True when (path, method) falls under a zero-exception terminal ban."""
+    return any(
+        path.startswith(prefix) and method == banned_method
+        for prefix, banned_method in _BANNED_TERMINALS
+    )
 
 
 MODULE_SCOPE = "<module>"
@@ -451,16 +475,27 @@ def main() -> int:
     audited_sites = [s for s in sites if not s.sanctioned]
     sanctioned_sites = [s for s in sites if s.sanctioned]
 
-    site_keys = {s.key: s for s in audited_sites}
-    allow_keys = {e.key: e for e in allow}
+    # Zero-exception terminal bans (issue #538): a banned site fails outright
+    # — no allowlist entry can admit it, so it is excluded from the entry
+    # matching below (which would otherwise print an entry template for it),
+    # and any entry that targets a banned (path, method) is itself rejected.
+    banned_sites = [s for s in audited_sites if is_banned(s.path, s.method)]
+    banned_entries = [e for e in allow if is_banned(e.path, e.method)]
+    gated_sites = [s for s in audited_sites if not is_banned(s.path, s.method)]
+    gated_allow = [e for e in allow if not is_banned(e.path, e.method)]
+
+    site_keys = {s.key: s for s in gated_sites}
+    allow_keys = {e.key: e for e in gated_allow}
 
     new_sites = [site_keys[k] for k in site_keys.keys() - allow_keys.keys()]
     stale_entries = [allow_keys[k] for k in allow_keys.keys() - site_keys.keys()]
-    weak_reasons = [e for e in allow if not _reason_is_substantive(e.reason)]
+    weak_reasons = [e for e in gated_allow if not _reason_is_substantive(e.reason)]
 
     new_sites.sort(key=lambda s: (s.path, s.line))
     stale_entries.sort(key=lambda e: (e.path, e.symbol, e.expr))
     weak_reasons.sort(key=lambda e: (e.path, e.symbol, e.expr))
+    banned_sites.sort(key=lambda s: (s.path, s.line))
+    banned_entries.sort(key=lambda e: (e.path, e.symbol, e.expr))
 
     # Always print sanctioned summary for visibility.
     if sanctioned_sites:
@@ -469,11 +504,32 @@ def main() -> int:
             f"(sanctioned @daft.method.batch / @daft.func.batch parameter access)."
         )
 
-    if not (new_sites or stale_entries or weak_reasons):
+    if not (banned_sites or banned_entries or new_sites or stale_entries or weak_reasons):
         print(f"lazy audit: {len(audited_sites)} audited site(s), all accounted for.")
         return 0
 
     print(STERN_HEADER, file=sys.stderr)
+
+    if banned_sites:
+        rendered = [f"{s.path}:{s.line}  {s.symbol}  .{s.method}()  {s.expr}" for s in banned_sites]
+        sys.stderr.write(
+            _format_section(
+                "Banned terminals (issue #538 — zero exceptions, not allowlistable):",
+                rendered,
+            )
+        )
+
+    if banned_entries:
+        rendered = [
+            f"{e.path}  {e.symbol}  .{e.method}()  {e.expr}  reason={e.reason!r}"
+            for e in banned_entries
+        ]
+        sys.stderr.write(
+            _format_section(
+                "Allowlist entries targeting banned terminals (remove them; the ban has no exceptions):",
+                rendered,
+            )
+        )
 
     if new_sites:
         rendered = [
