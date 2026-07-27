@@ -62,6 +62,7 @@ from review_test_support import (  # noqa: E402
     footgun_finding,
     normalized_design_brief,
     preliminary_bundle,
+    raw_design_brief,
     raw_result,
     reviewer_receipts,
     scope,
@@ -338,6 +339,127 @@ def test_cli_normalize_stamps_reviewer_and_prompt_provenance(tmp_path):
     assert "reviewer_id" not in receipt["result"]
 
 
+def test_cli_materializes_one_bounded_design_brief_correction(tmp_path):
+    prompt_path = tmp_path / "design-brief-prompt.txt"
+    result_path = tmp_path / "design-brief-result.json"
+    feedback_path = tmp_path / "design-brief-validation.txt"
+    output_path = tmp_path / "design-brief-retry-prompt.txt"
+    prompt_path.write_text("Original reviewed contract.\n", encoding="utf-8")
+    result_path.write_text(json.dumps({"change_cohorts": []}), encoding="utf-8")
+    feedback_path.write_text(
+        "change_cohorts do not cover every changed file: ['old.py']\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        gate.main(
+            [
+                "brief-retry-prompt",
+                "--prompt",
+                str(prompt_path),
+                "--result",
+                str(result_path),
+                "--feedback",
+                str(feedback_path),
+                "--output",
+                str(output_path),
+            ]
+        )
+        == 0
+    )
+    rendered = output_path.read_text(encoding="utf-8")
+
+    assert rendered.startswith("Original reviewed contract.")
+    assert "one bounded correction" in rendered
+    assert "change_cohorts do not cover every changed file" in rendered
+
+
+def test_cli_attempt_brief_retries_only_model_semantic_failures(tmp_path):
+    scope_path = tmp_path / "scope.json"
+    diff_path = tmp_path / "review.diff"
+    bundle_path = tmp_path / "review-bundle.json"
+    result_path = tmp_path / "design-brief-result.json"
+    output_path = tmp_path / "human-design-brief.json"
+    feedback_path = tmp_path / "design-brief-validation.txt"
+    github_output = tmp_path / "github-output.txt"
+    bundle = _final_with()
+    rejected = raw_design_brief(artifact_digest(bundle))
+    rejected["change_cohorts"][0]["files"] = ["old.py"]
+    scope_path.write_text(json.dumps(scope()), encoding="utf-8")
+    diff_path.write_text(DIFF, encoding="utf-8")
+    bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+    result_path.write_text(json.dumps(rejected), encoding="utf-8")
+
+    assert (
+        gate.main(
+            [
+                "attempt-brief",
+                "--scope",
+                str(scope_path),
+                "--diff",
+                str(diff_path),
+                "--bundle",
+                str(bundle_path),
+                "--result",
+                str(result_path),
+                "--output",
+                str(output_path),
+                "--feedback",
+                str(feedback_path),
+                "--github-output",
+                str(github_output),
+            ]
+        )
+        == 0
+    )
+
+    assert github_output.read_text(encoding="utf-8") == "valid=false\n"
+    assert "do not cover every changed file" in feedback_path.read_text(encoding="utf-8")
+    assert not output_path.exists()
+
+
+def test_cli_attempt_brief_fails_directly_on_untrusted_bundle_inputs(tmp_path):
+    scope_path = tmp_path / "scope.json"
+    diff_path = tmp_path / "review.diff"
+    bundle_path = tmp_path / "review-bundle.json"
+    result_path = tmp_path / "design-brief-result.json"
+    output_path = tmp_path / "human-design-brief.json"
+    feedback_path = tmp_path / "design-brief-validation.txt"
+    github_output = tmp_path / "github-output.txt"
+    bundle = _final_with()
+    rejected = raw_design_brief(artifact_digest(bundle))
+    bundle["head_sha"] = "f" * 40
+    scope_path.write_text(json.dumps(scope()), encoding="utf-8")
+    diff_path.write_text(DIFF, encoding="utf-8")
+    bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+    result_path.write_text(json.dumps(rejected), encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="review bundle is bound to a different head"):
+        gate.main(
+            [
+                "attempt-brief",
+                "--scope",
+                str(scope_path),
+                "--diff",
+                str(diff_path),
+                "--bundle",
+                str(bundle_path),
+                "--result",
+                str(result_path),
+                "--output",
+                str(output_path),
+                "--feedback",
+                str(feedback_path),
+                "--github-output",
+                str(github_output),
+            ]
+        )
+
+    assert not feedback_path.exists()
+    assert not github_output.exists()
+    assert not output_path.exists()
+
+
 def test_workflow_uses_reviewed_prompts_and_typed_dynamic_fan_out():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
@@ -347,6 +469,7 @@ def test_workflow_uses_reviewed_prompts_and_typed_dynamic_fan_out():
     assert "--kind lens-retry" in workflow
     assert "--kind adjudication" in workflow
     assert "--kind design-brief" in workflow
+    assert "brief-retry-prompt" in workflow
     assert '--prompt "${RUNNER_TEMP}/lens-prompt.txt"' in workflow
     assert '--reviewer "${REVIEWER_ID}"' in workflow
     assert "lists every scoped file exactly once" not in workflow
@@ -389,7 +512,7 @@ def test_human_design_brief_is_grounded_without_secret_read_capabilities():
         1,
     )[0]
     step = workflow.split("- name: Generate human design-review brief (Codex)", 1)[1]
-    step = step.split("- name: Validate human design-review brief", 1)[0]
+    step = step.split("- name: Validate initial human design-review brief", 1)[0]
 
     assert "--disable shell_tool \\" in step
     assert "--disable multi_agent \\" in step
@@ -399,6 +522,30 @@ def test_human_design_brief_is_grounded_without_secret_read_capabilities():
     assert '--diff "${DIFF_FILE}" \\' in materialize
     assert "<finalized-review-bundle>" not in materialize
     assert "for path in \\" not in materialize
+    assert 'wc -m < "${RUNNER_TEMP}/design-brief-prompt.txt"' in materialize
+    assert '> "${RUNNER_TEMP}/design-brief-raw.txt" \\' in step
+    assert '2> "${RUNNER_TEMP}/design-brief-stderr.txt"' in step
+    assert "Codex diagnostic: " not in step
+    assert "grep -E" not in step
+    assert "tail -c" not in step
+    assert workflow.count("- name: Correct human design-review brief (Codex)") == 1
+    correction = workflow.split("- name: Correct human design-review brief (Codex)", 1)[1]
+    correction = correction.split(
+        "- name: Validate corrected human design-review brief",
+        1,
+    )[0]
+    assert "--disable shell_tool \\" in correction
+    assert "--disable multi_agent \\" in correction
+
+
+def test_human_design_brief_job_budgets_time_for_one_correction():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    footgun_job = workflow.split("  footgun-review:", 1)[1]
+    footgun_job = footgun_job.split("  review-complete:", 1)[0]
+    timeouts = [int(value) for value in re.findall(r"timeout-minutes: (\d+)", footgun_job)]
+
+    assert timeouts == [60, 25, 20]
+    assert timeouts[0] >= sum(timeouts[1:]) + 10
 
 
 def test_workflow_preserves_inert_candidate_and_fail_closed_publication():

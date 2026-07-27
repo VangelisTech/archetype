@@ -64,6 +64,7 @@ from review_contracts import (
     normalize_lens_result,
     render_adjudication_prompt,
     render_design_brief_prompt,
+    render_design_brief_retry_prompt,
     render_lens_retry_prompt,
     render_lens_review_prompt,
     review_matrix,
@@ -988,7 +989,9 @@ def _finalize_command(args: argparse.Namespace) -> None:
     _write_json(args.output, final)
 
 
-def _normalize_brief_command(args: argparse.Namespace) -> None:
+def _brief_normalization_inputs(
+    args: argparse.Namespace,
+) -> tuple[Mapping[str, Any], dict[str, Any]]:
     scope = _expect_mapping(_load_json(args.scope), "scope")
     _, files = _scope_values(scope)
     bundle = validate_review_bundle(
@@ -1002,15 +1005,38 @@ def _normalize_brief_command(args: argparse.Namespace) -> None:
         str(item["cluster_id"])
         for item in _expect_list(bundle.get("clusters"), "review bundle clusters")
     }
-    normalized = normalize_human_design_brief(
-        _expect_mapping(_load_json(args.result), "human design brief"),
-        head_sha=str(bundle["head_sha"]),
-        bundle_digest=digest,
-        scoped_files=files,
-        cluster_ids=clusters,
-        required_decision_cluster_ids=_required_decision_clusters(bundle),
-    )
+    brief = _expect_mapping(_load_json(args.result), "human design brief")
+    return brief, {
+        "head_sha": str(bundle["head_sha"]),
+        "bundle_digest": digest,
+        "scoped_files": files,
+        "cluster_ids": clusters,
+        "required_decision_cluster_ids": _required_decision_clusters(bundle),
+    }
+
+
+def _normalize_brief_command(args: argparse.Namespace) -> None:
+    brief, contract = _brief_normalization_inputs(args)
+    normalized = normalize_human_design_brief(brief, **contract)
     _write_json(args.output, normalized)
+
+
+def _attempt_brief_command(args: argparse.Namespace) -> None:
+    # Loading and validating the trusted scope, diff, and finalized bundle is
+    # intentionally outside the correction catch. Only an extracted JSON
+    # object that violates the model-authored brief contract may be retried.
+    brief, contract = _brief_normalization_inputs(args)
+    try:
+        normalized = normalize_human_design_brief(brief, **contract)
+    except GateError as error:
+        args.output.unlink(missing_ok=True)
+        args.feedback.parent.mkdir(parents=True, exist_ok=True)
+        args.feedback.write_text(str(error).strip() + "\n", encoding="utf-8")
+        _append_github_outputs(args.github_output, {"valid": "false"})
+        return
+    _write_json(args.output, normalized)
+    args.feedback.unlink(missing_ok=True)
+    _append_github_outputs(args.github_output, {"valid": "true"})
 
 
 def _prepare_command(args: argparse.Namespace) -> None:
@@ -1170,6 +1196,19 @@ def _prompt_command(args: argparse.Namespace) -> None:
         args.output.write_text(prompt, encoding="utf-8")
 
 
+def _brief_retry_prompt_command(args: argparse.Namespace) -> None:
+    prompt = render_design_brief_retry_prompt(
+        original_prompt=args.prompt.read_text(encoding="utf-8"),
+        rejected_result=_expect_mapping(
+            _load_json(args.result),
+            "rejected human design brief",
+        ),
+        validation_feedback=args.feedback.read_text(encoding="utf-8"),
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(prompt, encoding="utf-8")
+
+
 def _schema_command(args: argparse.Namespace) -> None:
     if args.kind == "lens":
         schema = lens_result_schema(args.lens)
@@ -1258,6 +1297,16 @@ def _parser() -> argparse.ArgumentParser:
     prompt.add_argument("--output", type=Path)
     prompt.set_defaults(handler=_prompt_command)
 
+    brief_retry_prompt = subparsers.add_parser(
+        "brief-retry-prompt",
+        help="render one bounded human design-brief correction prompt",
+    )
+    brief_retry_prompt.add_argument("--prompt", type=Path, required=True)
+    brief_retry_prompt.add_argument("--result", type=Path, required=True)
+    brief_retry_prompt.add_argument("--feedback", type=Path, required=True)
+    brief_retry_prompt.add_argument("--output", type=Path, required=True)
+    brief_retry_prompt.set_defaults(handler=_brief_retry_prompt_command)
+
     extract = subparsers.add_parser("extract", help="extract JSON from raw model output")
     extract.add_argument("--raw", type=Path, required=True)
     extract.add_argument("--output", type=Path, required=True)
@@ -1328,6 +1377,19 @@ def _parser() -> argparse.ArgumentParser:
     normalize_brief.add_argument("--result", type=Path, required=True)
     normalize_brief.add_argument("--output", type=Path, required=True)
     normalize_brief.set_defaults(handler=_normalize_brief_command)
+
+    attempt_brief = subparsers.add_parser(
+        "attempt-brief",
+        help="validate one human design brief with bounded correction feedback",
+    )
+    attempt_brief.add_argument("--scope", type=Path, required=True)
+    attempt_brief.add_argument("--diff", type=Path, required=True)
+    attempt_brief.add_argument("--bundle", type=Path, required=True)
+    attempt_brief.add_argument("--result", type=Path, required=True)
+    attempt_brief.add_argument("--output", type=Path, required=True)
+    attempt_brief.add_argument("--feedback", type=Path, required=True)
+    attempt_brief.add_argument("--github-output", type=Path, required=True)
+    attempt_brief.set_defaults(handler=_attempt_brief_command)
 
     prepare = subparsers.add_parser(
         "prepare",

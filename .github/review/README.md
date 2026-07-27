@@ -9,6 +9,7 @@ prose is deliberately separate from workflow YAML and backend interpolation.
 | Bounded lens correction | [`prompts/lens-retry.md`](prompts/lens-retry.md) | same as the first attempt | `lens_result_schema()` | `normalize_lens_result()` |
 | Selective falsification | [`prompts/adjudication.md`](prompts/adjudication.md) | `AdjudicationResult` | `adjudication_result_schema()` | `normalize_adjudication_result()` |
 | Human design review | [`prompts/design-brief.md`](prompts/design-brief.md) | `HumanDesignBrief` | `human_design_brief_schema()` | `normalize_human_design_brief()` |
+| Bounded design correction | [`prompts/design-brief-retry.md`](prompts/design-brief-retry.md) | same as the first attempt | `human_design_brief_schema()` | `normalize_human_design_brief()` |
 
 The named Python types, schemas, lens/category assignments, and reviewer matrix
 are adjacent in `scripts/review_contracts.py`. The model-authored schemas omit
@@ -32,3 +33,20 @@ original claim.
 `design-coherence` is a separate advisory-only lens. Its rulebook is
 `.claude/skills/design-coherence/SKILL.md`; its findings can inform the human
 brief but can never become a blocking gate disposition.
+
+The human-brief prompt has a repo-owned 900,000-character budget beneath the
+provider limit. It always keeps the finalized bundle, exact scope, and exact
+diff. It first attempts the complete protected-base guidance set; if that does
+not fit, it keeps whole mandatory policy files and architecture fragments,
+including the umbrella specification, then whole changed guidance files in
+canonical order while space remains. A complete path, digest, character-count,
+and inclusion manifest records every guidance source. Nothing is truncated
+silently. If the authoritative inputs and mandatory guidance cannot fit,
+prompt materialization fails before calling the provider and the change must
+be split or the reviewed contract redesigned.
+If the first structured brief fails deterministic normalization, the workflow
+permits one schema-bound correction using the rejected result and exact
+validation feedback. The original prompt remains authoritative; a second
+invalid result fails the gate. Only a successfully extracted JSON object that
+fails semantic normalization is eligible for correction; missing or malformed
+provider output is an infrastructure failure and fails directly.
