@@ -90,6 +90,22 @@ replaces it. “The cache never loses an acknowledged append” needs a
 deterministic append-versus-flush race test before it becomes a durability
 scenario spanning flush triggers and storage backends.
 
+## Deterministic model-review evidence
+
+Schema-conforming reviewer prose is not sufficient evidence of repository
+inspection. Every independent lens result MUST declare `review_status` as
+`complete` or `blocked`, and only `complete` may become a verdict-bearing
+reviewer receipt. A reviewer MUST report `blocked` when any required changed
+file, diff, rulebook, or protected-base source could not be inspected because
+of a tool, sandbox, permission, or other admission failure. It MUST NOT turn
+that failure into an empty clean verdict.
+
+The exact-scope normalizer rejects `blocked` as a verdict and gives the seat
+its single bounded retry. If inspection remains blocked, the workflow records
+a neutral infrastructure-failure receipt rather than findings or a clean
+result. A surviving seat still owns its lens verdict; a lens whose entire
+bench is neutral fails aggregation closed.
+
 ## Scenario admission
 
 Add or retain a task in `evals/` when all of the following are true:

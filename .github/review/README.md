@@ -17,6 +17,15 @@ reviewer identity, backend/model identity, assigned-category coverage, and the
 changed-file manifest. `scripts/review_aggregation.py` stamps that trusted
 provenance into digest-bound receipts.
 
+Each lens result also declares `review_status` as `complete` or `blocked`.
+Schema validity is not review evidence by itself: only `complete` can be
+normalized into a reviewer receipt. A reviewer MUST use `blocked` when a tool,
+sandbox, permission, or other admission failure prevents any required
+repository inspection. The validator rejects that result as a verdict, gives
+the same seat its one bounded retry, and then records an infrastructure-failure
+receipt if inspection remains blocked. That receipt is neutral; if every seat
+for a lens is neutral, aggregation fails closed.
+
 Aggregation uses one exact key:
 
 ```text

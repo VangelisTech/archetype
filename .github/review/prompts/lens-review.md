@@ -27,9 +27,15 @@ contain changed paths only. Cite unchanged protected-base files inside
 assessment or finding evidence prose. Every finding must anchor to an actual
 changed line.
 
-An empty `findings` array is valid only after a complete lens review. Do not
-return schema examples, placeholders, generic style advice, missing-test
-requests, or findings outside this lens.
+Set `review_status` to `complete` only after every required changed file,
+rulebook, diff, and protected-base source was inspectable and the lens review
+finished. If a tool, sandbox, permission, or other admission failure prevents
+that inspection, set `review_status` to `blocked`, explain the exact blocker in
+`summary` and `review_context`, and return no findings. A blocked result is
+infrastructure evidence, never a clean verdict. An empty `findings` array is
+valid only with a complete lens review. Do not return schema examples,
+placeholders, generic style advice, missing-test requests, or findings outside
+this lens.
 
 Use only read, grep, glob, and list capabilities. Do not execute candidate or
 repository code, edit files, fetch URLs, post comments, or push commits.
