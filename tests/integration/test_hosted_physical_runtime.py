@@ -252,7 +252,10 @@ async def test_public_hosted_episode_recovers_without_replay_and_isolates_fork(
             world_registry=second_registry,
             audit_storage_config=storage,
             hosted_episode_provider_factory=provider_factory,
-            hosted_activity_lease_seconds=0.5,
+            # Only the crashed first runtime needs a deliberately short lease.
+            # Fresh recovery and fork work must not use wall-clock speed as
+            # their correctness oracle under full-suite load.
+            hosted_activity_lease_seconds=30.0,
         ),
     ]
     monkeypatch.setattr(
