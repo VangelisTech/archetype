@@ -232,6 +232,11 @@ INTERNAL_ONLY_EXCEPTIONS = {
         "caught and normalized into an errored AgentExecutionResult by "
         "CodingAgentHarness.run before the mission handler returns"
     ),
+    "archetype.missions.coding_agents.app_server.CodexTurnCompletionBarrierError": (
+        "caught by run_codex_app_server_turn while connector cleanup retries; "
+        "persistent cleanup failure is normalized by CodingAgentHarness before "
+        "the mission handler returns"
+    ),
     "archetype.missions.critics.harness._UnverifiableReview": (
         "caught and normalized inside CriticHarness.review before the mission handler returns"
     ),

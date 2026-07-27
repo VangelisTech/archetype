@@ -29,6 +29,7 @@ def test_error_taxonomy_governs_registered_family_exceptions() -> None:
     } <= classes.keys()
     assert set(checker.INTERNAL_ONLY_EXCEPTIONS) == {
         "archetype.missions.coding_agents.app_server.CodexAppServerError",
+        "archetype.missions.coding_agents.app_server.CodexTurnCompletionBarrierError",
         "archetype.missions.critics.harness._UnverifiableReview",
     }
     assert checker.check_error_taxonomy() == []
