@@ -197,12 +197,8 @@ def test_r2_job_runs_each_oracle_once_and_retains_the_redacted_receipt() -> None
     # passed its --require-clean guard, then return for the always-run artifact
     # upload even when the retry fails.
     assert 'attempt1_stash="$RUNNER_TEMP/r2-operational-attempt1"' in code
-    assert (
-        '> "$attempt1_stash/r2-operational-results.attempt1.json"' in code
-    )
-    assert (
-        '"$attempt1_stash/r2-operational-results.attempt1.d"' in code
-    )
+    assert '> "$attempt1_stash/r2-operational-results.attempt1.json"' in code
+    assert '"$attempt1_stash/r2-operational-results.attempt1.d"' in code
     assert "trap restore_attempt1_evidence EXIT" in code
     assert re.search(
         r"run_r2_scenario \|\| retry_status=\$\?\n"
