@@ -272,7 +272,7 @@ async def test_trusted_runtime_reaches_all_fourteen_models_and_reserved_spawn(
             max_steps=1,
             storage=storage,
         )
-        selection = TrajectorySelection(task_ids=("task-1",))
+        selection = TrajectorySelection(episode_ids=("episode-1",))
         env_client = object()
         policy_client = object()
 

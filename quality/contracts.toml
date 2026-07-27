@@ -622,7 +622,7 @@ profiles = ["pr", "main", "release"]
 [[contract]]
 id = "missions.trajectory.runtime_service"
 source = "docs/guide/trajectories.md"
-section = "Select one trajectory table"
+section = "Select one evidence table"
 owner = "missions"
 risk = "medium"
 pytest = [

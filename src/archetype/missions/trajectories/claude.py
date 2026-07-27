@@ -16,20 +16,16 @@ from datetime import datetime
 from typing import Any
 
 from archetype.episodes.contracts import ClaudeTranscriptSource
-from archetype.missions.trajectories.components import Trajectory
 from archetype.missions.trajectories.contracts import Turn
 
 _TRUNCATION_MARK = "…[truncated]"
-
-
-# PR-9 deletes this compatibility import after episode consumers repoint.
 
 
 @dataclass(frozen=True)
 class LoadedSession:
     """One parsed session held in memory until an artifact adapter publishes it."""
 
-    trajectory: Trajectory
+    episode_id: str
     turns: tuple[Turn, ...]
     source_uri: str
     mission_id: str = ""
@@ -42,6 +38,22 @@ class LoadedSession:
     started_at: str = ""
     ended_at: str = ""
     sidechain_turns_skipped: int = 0
+
+    @property
+    def model(self) -> str:
+        return self.models[0] if self.models else ""
+
+    @property
+    def total_turns(self) -> int:
+        return len(self.turns)
+
+    @property
+    def total_tokens(self) -> int:
+        return sum(turn.tokens for turn in self.turns)
+
+    @property
+    def duration_seconds(self) -> float:
+        return sum(turn.duration_ms for turn in self.turns) / 1000.0
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -224,16 +236,8 @@ def parse_claude_transcript(
         return None
 
     ordered_models = tuple(sorted(models))
-    trajectory = Trajectory.from_turns(
-        source.trajectory_id,
-        turns,
-        source="claude-code",
-        model=ordered_models[0] if ordered_models else "",
-        task_id=source.project,
-        terminal=True,
-    )
     return LoadedSession(
-        trajectory=trajectory,
+        episode_id=source.episode_id,
         turns=tuple(turns),
         source_uri=source.source_uri,
         mission_id=source.mission_id,

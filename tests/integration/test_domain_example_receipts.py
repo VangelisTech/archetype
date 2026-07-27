@@ -52,8 +52,8 @@ async def test_trajectory_receipt_is_semantic_and_stable(tmp_path: Path) -> None
     )
 
     assert result == {
-        "trajectory_id": "mission-42:cache:attempt-1",
-        "outcome": "rejected",
+        "episode_id": "episode-cache-1",
+        "roles": ["user", "assistant"],
         "grade": {"samples": 1, "total_reward": -1.0},
     }
 

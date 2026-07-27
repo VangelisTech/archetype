@@ -546,7 +546,7 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
         grader_id="runtime-dispatch",
         implementation_version="1",
     )
-    selection = TrajectorySelection(task_ids=("task-1",))
+    selection = TrajectorySelection(episode_ids=("episode-1",))
     research_config = AutoResearchConfig(
         experiment_name="runtime-dispatch",
         experiment_id="runtime-dispatch-1",

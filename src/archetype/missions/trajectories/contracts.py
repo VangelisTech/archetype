@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Non-persistent authoring and structural input contracts for trajectories."""
+"""Non-persistent authoring and structural input contracts for episode evidence."""
 
 from __future__ import annotations
 
@@ -67,12 +67,12 @@ class Turn:
             metadata=dict(data.get("metadata") or {}),
         )
 
-    def to_component(self, trajectory_id: str, seq: int) -> TrajectoryTurn:
-        """Materialize the historical typed turn row without storing metadata."""
+    def to_component(self, episode_id: str, seq: int) -> TrajectoryTurn:
+        """Materialize the typed turn row without storing metadata."""
         from archetype.missions.trajectories.components import TrajectoryTurn
 
         return TrajectoryTurn(
-            trajectory_id=trajectory_id,
+            episode_id=episode_id,
             seq=seq,
             role=self.role,
             content=self.content,
@@ -86,22 +86,10 @@ class Turn:
 
 
 class CommandRecord(Protocol):
-    """Structural command fields required by trajectory transforms."""
+    """Structural command fields required by evidence transforms."""
 
     id: object
     tick: int
     type: object
     priority: int
     version: int
-
-
-class EpisodeRecord(Protocol):
-    """Structural episode fields required by trajectory transforms."""
-
-    episode_id: object
-    terminated: bool
-    duration_steps: int
-
-
-# PR-9 deletes these identity-preserving compatibility imports after episode
-# consumers repoint.  The persistent trajectory Components are unchanged.
