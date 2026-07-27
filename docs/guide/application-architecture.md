@@ -457,6 +457,17 @@ conflict, storage refreshes the table and recomputes the anti-join before
 retrying so stale pending rows cannot duplicate an already-committed logical
 key.
 
+Managed ECS appends follow the same storage authority without changing core:
+the private Iceberg adapter materializes one Arrow payload, retains its commit
+token and physical table identity, and refreshes/retries only an exact catalog
+compare-and-swap conflict. Retry is bounded and uses full jitter. A
+commit-state-unknown response cannot prove absence, so v0.5 does not retry it
+or claim exact reconciliation. Storage raises `AmbiguousCommitError` with the
+exact table/world/run/tick identity and commit token, then rejects later
+non-empty appends to that table for the managed store's remaining lifetime.
+This also prevents a restored cached batch from replaying. The manifest-last
+protocol keeps any unconfirmed rows invisible (issue #704).
+
 The durable control plane is separate from that data plane. The local SQLite
 `ControlCatalog`, or its remote Durable Object implementation, owns world
 identity, writer fences, visibility manifests, deferred commands, and narrow
