@@ -1313,6 +1313,17 @@ def _render_template(name: str, values: Mapping[str, str]) -> str:
         raise ReviewError(f"review prompt {path} has an unresolved placeholder: {error}") from error
 
 
+def _inspection_capabilities(reviewer_id: str) -> str:
+    backend = reviewer_spec(reviewer_id)["backend"]
+    if backend == "claude-code":
+        return "Use only read, grep, glob, and list capabilities."
+    return (
+        "Use the read-only shell only for non-mutating repository inspection "
+        "commands such as `git diff`, `git show`, `rg`, `sed`, `find`, `ls`, "
+        "and `cat`."
+    )
+
+
 def render_lens_review_prompt(
     *,
     pr_number: int,
@@ -1337,6 +1348,7 @@ def render_lens_review_prompt(
             "rulebook": rulebook,
             "categories": "\n".join(f"- `{category}`" for category in lens_categories(lens)),
             "scoped_files": _render_path_manifest(scoped_files),
+            "inspection_capabilities": _inspection_capabilities(reviewer_id),
             "output_schema": json.dumps(lens_result_schema(lens), indent=2),
         },
     )
@@ -1366,6 +1378,7 @@ def render_lens_retry_prompt(
             "rulebook": rulebook,
             "categories": "\n".join(f"- `{category}`" for category in lens_categories(lens)),
             "scoped_files": _render_path_manifest(scoped_files),
+            "inspection_capabilities": _inspection_capabilities(reviewer_id),
             "output_schema": json.dumps(lens_result_schema(lens), indent=2),
         },
     )

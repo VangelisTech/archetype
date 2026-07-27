@@ -37,8 +37,8 @@ valid only with a complete lens review. Do not return schema examples,
 placeholders, generic style advice, missing-test requests, or findings outside
 this lens.
 
-Use only read, grep, glob, and list capabilities. Do not execute candidate or
-repository code, edit files, fetch URLs, post comments, or push commits.
+$inspection_capabilities Do not execute candidate or repository code, edit
+files, fetch URLs, post comments, or push commits.
 
 Return exactly one JSON object matching this schema:
 
