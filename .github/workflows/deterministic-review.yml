@@ -837,43 +837,16 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          BUNDLE_DIGEST="$(python3 scripts/footgun_review_gate.py digest \
-            --input "${REVIEW_DIR}/validated/review-bundle.json")"
           python3 scripts/footgun_review_gate.py prompt \
             --kind design-brief \
             --scope "${SCOPE_FILE}" \
+            --diff "${DIFF_FILE}" \
+            --bundle "${REVIEW_DIR}/validated/review-bundle.json" \
             --pr-number "${PR_NUMBER}" \
             --head "${HEAD_SHA}" \
-            --bundle-digest "${BUNDLE_DIGEST}" \
             --output "${RUNNER_TEMP}/design-brief-prompt.txt"
           echo "schema=$(python3 scripts/footgun_review_gate.py schema --kind design-brief)" \
             >> "${GITHUB_OUTPUT}"
-          {
-            echo
-            echo '<finalized-review-bundle>'
-            cat "${REVIEW_DIR}/validated/review-bundle.json"
-            echo '</finalized-review-bundle>'
-            echo '<exact-review-scope>'
-            cat "${SCOPE_FILE}"
-            echo '</exact-review-scope>'
-            echo '<exact-pr-diff>'
-            cat "${DIFF_FILE}"
-            echo '</exact-pr-diff>'
-          } >> "${RUNNER_TEMP}/design-brief-prompt.txt"
-          for path in \
-            AGENTS.md \
-            LEARNINGS.md \
-            .github/review/README.md \
-            docs/guide/*.md \
-            quality/architecture.toml \
-            quality/architecture.d/*.toml
-          do
-            printf '<protected-base-guidance path="%s">\n' "${path}" \
-              >> "${RUNNER_TEMP}/design-brief-prompt.txt"
-            cat "${path}" >> "${RUNNER_TEMP}/design-brief-prompt.txt"
-            printf '\n</protected-base-guidance>\n' \
-              >> "${RUNNER_TEMP}/design-brief-prompt.txt"
-          done
 
       - name: Generate human design-review brief (Codex)
         id: brief
