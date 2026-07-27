@@ -11,6 +11,13 @@
 # Generic reasons ("needed", "for the test", "convenience") are
 # rejected automatically by scripts/check_lazy_audit.py.
 #
+# Zero-exception ban (issue #538): `.count_rows()` under
+# `src/archetype/core/` cannot be allowlisted at all — core submits frames
+# to their owning append/write boundary instead of counting rows to decide
+# whether work exists; an unknown receipt count is None, not a preflight.
+# scripts/check_lazy_audit.py rejects both the call site and any entry
+# that tries to admit one.
+#
 # Entries are keyed by (path, symbol, expr, method) — never by line
 # number. `symbol` is the dotted path of the enclosing def/class (or
 # "<module>"); `expr` is the normalized source of the audited attribute
@@ -75,13 +82,6 @@ symbol = "read_head"
 expr = "materialized.to_pylist"
 method = "to_pylist"
 reason = "Single-row loop-state extract: StorageService has already admitted and materialized the query; the latest BranchHead then enters Python control flow for incumbent comparison and entity-id routing."
-
-[[entries]]
-path = "src/archetype/core/aio/async_store.py"
-symbol = "AsyncStore.append"
-expr = "df.collect"
-method = "collect"
-reason = "Storage write boundary: materialize the incoming frame once for the empty-row guard and reuse that same materialized frame for the backing-table append."
 
 [[entries]]
 path = "src/archetype/core/aio/async_world.py"
@@ -439,13 +439,6 @@ symbol = "AsyncStore._append_table"
 expr = "df.write_iceberg"
 method = "write_iceberg"
 reason = "Iceberg storage sink: explicit IO configuration requires the native Daft write at the store-owned append boundary."
-
-[[entries]]
-path = "src/archetype/core/aio/async_store.py"
-symbol = "AsyncStore.append"
-expr = "materialized.count_rows"
-method = "count_rows"
-reason = "Owned store boundary: the input is already collected once; this count reads the concrete result to preserve empty-append and committed-signature behavior without replaying the upstream plan."
 
 [[entries]]
 path = "src/archetype/core/sync/store.py"
