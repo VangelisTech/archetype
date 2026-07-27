@@ -189,6 +189,21 @@ jobs:
           if run_r2_scenario; then
             exit 0
           fi
+          # Keep attempt 1 outside the checkout while attempt 2 runs. The
+          # scenario's --require-clean guard must inspect the same pristine
+          # tree on both attempts; retaining evidence in the repository
+          # before the retry would make the retry reject itself.
+          attempt1_stash="$RUNNER_TEMP/r2-operational-attempt1"
+          mkdir -p "$attempt1_stash"
+          restore_attempt1_evidence() {
+            if [ -f "$attempt1_stash/r2-operational-results.attempt1.json" ]; then
+              mv "$attempt1_stash/r2-operational-results.attempt1.json" .
+            fi
+            if [ -d "$attempt1_stash/r2-operational-results.attempt1.d" ]; then
+              mv "$attempt1_stash/r2-operational-results.attempt1.d" .
+            fi
+          }
+          trap restore_attempt1_evidence EXIT
           # Rename attempt 1's evidence AND rewrite the log paths inside its
           # receipt: the JSON references logs under r2-operational-results.d/,
           # which the retry recreates — without the rewrite the retained
@@ -197,12 +212,20 @@ jobs:
           # digests still match their contents.
           if [ -f r2-operational-results.json ]; then
             jq '(.. | strings) |= gsub("r2-operational-results\\.d"; "r2-operational-results.attempt1.d")' \
-              r2-operational-results.json > r2-operational-results.attempt1.json
+              r2-operational-results.json \
+              > "$attempt1_stash/r2-operational-results.attempt1.json"
             rm r2-operational-results.json
           fi
-          [ -d r2-operational-results.d ] && mv r2-operational-results.d r2-operational-results.attempt1.d
+          if [ -d r2-operational-results.d ]; then
+            mv r2-operational-results.d \
+              "$attempt1_stash/r2-operational-results.attempt1.d"
+          fi
           echo "::warning::R2 scenario failed once; retrying. Attempt 1's receipt is retained in the artifact."
-          run_r2_scenario
+          retry_status=0
+          run_r2_scenario || retry_status=$?
+          restore_attempt1_evidence
+          trap - EXIT
+          exit "$retry_status"
       - name: Require R2 operational receipt
         if: always()
         run: test -f r2-operational-results.json

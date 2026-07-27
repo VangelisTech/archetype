@@ -189,10 +189,28 @@ def test_r2_job_runs_each_oracle_once_and_retains_the_redacted_receipt() -> None
     # discard attempt 1's evidence.
     code = _code_only(infrastructure)
     assert code.count("run_r2_scenario()") == 1, "scenario command must be defined exactly once"
-    assert code.count("run_r2_scenario\n") + code.count("run_r2_scenario;") == 2, (
+    assert len(re.findall(r"\brun_r2_scenario(?:;|\s+\|\|)", code)) == 2, (
         "the scenario must be invoked exactly twice: first attempt and one retry"
     )
     assert "r2-operational-results.attempt1.json" in code
+    # Retained evidence must live outside the checkout until attempt 2 has
+    # passed its --require-clean guard, then return for the always-run artifact
+    # upload even when the retry fails.
+    assert 'attempt1_stash="$RUNNER_TEMP/r2-operational-attempt1"' in code
+    assert (
+        '> "$attempt1_stash/r2-operational-results.attempt1.json"' in code
+    )
+    assert (
+        '"$attempt1_stash/r2-operational-results.attempt1.d"' in code
+    )
+    assert "trap restore_attempt1_evidence EXIT" in code
+    assert re.search(
+        r"run_r2_scenario \|\| retry_status=\$\?\n"
+        r"\s+restore_attempt1_evidence\n"
+        r"\s+trap - EXIT\n"
+        r'\s+exit "\$retry_status"',
+        code,
+    ), "attempt-1 evidence must be restored after either retry outcome"
     # Attempt 1's receipt must reference its OWN logs after the rename: the
     # retry recreates r2-operational-results.d, so without the path rewrite
     # the retained receipt resolves to attempt 2's logs.
