@@ -996,3 +996,51 @@ async def test_hosted_claim_pages_past_a_full_batch_of_live_claims(
     # the catalog's end rather than stopping at page one.
     assert await catalog.claim_episode(world_id=world_id, owner="late-worker") is None
     await physical.close()
+
+
+@pytest.mark.asyncio
+async def test_pending_results_page_past_a_full_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A durable result beyond the first page must still be delivered."""
+    import archetype.physical_ai.hosted_activities as hosted_module
+
+    monkeypatch.setattr(hosted_module, "_CLAIM_SCAN_BATCH", 2)
+    world_id = "physical-world"
+    values = LocalHostedEpisodeValueStore(tmp_path / "values")
+    physical, generic, catalog = _open_catalog(
+        tmp_path / "activities.db",
+        lease_seconds=300,
+    )
+    receipt = CommittedTickReceipt(world_id, "run-a", 1, "token-1", 0)
+
+    activity_ids = [f"episode-{position:03d}" for position in range(5)]
+    for activity_id in activity_ids:
+        request = await values.put_request(_request(world_id, activity_id))
+        await catalog.admit_episode(
+            world_id=world_id,
+            receipt=receipt,
+            activity_id=activity_id,
+            request=request,
+        )
+        claim = await catalog.claim_episode(world_id=world_id, owner="worker")
+        assert claim is not None
+        claim = await catalog.bind_provider_operation(
+            claim,
+            provider="local",
+            operation_id=hosted_episode_provider_operation_id(world_id, claim.activity_id),
+        )
+        digest = "a" * 64
+        await catalog.record_episode_result(
+            claim,
+            HostedEpisodeActivityResultRef(
+                ref=f"physical-episode-result+json:sha256:{digest}",
+                digest=digest,
+                size_bytes=10,
+            ),
+        )
+
+    deliveries = await catalog.pending_episode_results(world_id=world_id)
+
+    assert sorted(delivery.activity_id for delivery in deliveries) == activity_ids

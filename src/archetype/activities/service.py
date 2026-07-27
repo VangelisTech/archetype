@@ -158,12 +158,14 @@ class ActivityCoordinator:
         kind: str | None = None,
         world_id: str | None = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> tuple[ActivitySnapshot, ...]:
         records = await _translate_catalog_errors(
             self._catalog.list_unobserved_results(
                 kind=kind,
                 world_id=world_id,
                 limit=limit,
+                offset=offset,
             )
         )
         return tuple(_snapshot(record) for record in records)
