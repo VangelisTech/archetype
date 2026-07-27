@@ -533,3 +533,25 @@ def test_unreadable_module_is_not_silently_clean(tmp_path):
 
     with pytest.raises(OSError):
         _scan_file(missing, "gone.py")
+
+
+# ---------------------------------------------------------------------------
+# Unit: is_banned (issue #538 zero-exception terminal ban)
+# ---------------------------------------------------------------------------
+
+
+def test_core_count_rows_is_banned():
+    """count_rows under src/archetype/core/ has no allowlist path at all."""
+    from check_lazy_audit import is_banned
+
+    assert is_banned("src/archetype/core/aio/async_store.py", "count_rows")
+    assert is_banned("src/archetype/core/sync/store.py", "count_rows")
+
+
+def test_ban_is_scoped_to_core_and_count_rows():
+    """The ban covers exactly (core path, count_rows) — not other layers or methods."""
+    from check_lazy_audit import is_banned
+
+    assert not is_banned("src/archetype/evaluation/views.py", "count_rows")
+    assert not is_banned("src/archetype/core/aio/async_store.py", "collect")
+    assert not is_banned("tests/aio/test_store.py", "count_rows")

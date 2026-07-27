@@ -54,9 +54,11 @@ class MemTable:
         self.last_mut = time.time()
 
     def extend(self, other: "MemTable") -> None:
-        """Append another memtable without rebuilding its Arrow batches."""
-        if not other.rows:
-            return
+        """Append another memtable without rebuilding its Arrow batches.
+
+        An empty ``other`` is a natural no-op of the extend itself — no
+        row-count admission guard (issue #538).
+        """
         self.batches.extend(other.batches)
         self.rows += other.rows
         self.bytes += other.bytes
@@ -295,13 +297,12 @@ class AsyncCachedStore(iAsyncStore):
         commit coordinator must call flush() before publishing a manifest
         head — a head must never claim RAM-only rows are durable.
         """
-        # 1) convert the tiny incoming Daft DataFrame slice → RecordBatch
+        # 1) convert the tiny incoming Daft DataFrame slice → RecordBatch.
+        # No row-count admission guard (issue #538): an empty slice buffers
+        # nothing and the staging path below is its natural no-op.
         pending = MemTable()
         for batch in df.to_arrow_iter():
             pending.append(batch)
-
-        if pending.rows == 0:
-            return AppendReceipt(table_id=Archetype.get_name(sig), rows=0, durable=True)
 
         async with self._state_lock:
             if not self._accepting_appends:
