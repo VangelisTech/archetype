@@ -62,6 +62,7 @@ from review_test_support import (  # noqa: E402
     footgun_finding,
     normalized_design_brief,
     preliminary_bundle,
+    raw_design_brief,
     raw_result,
     reviewer_receipts,
     scope,
@@ -373,6 +374,92 @@ def test_cli_materializes_one_bounded_design_brief_correction(tmp_path):
     assert "change_cohorts do not cover every changed file" in rendered
 
 
+def test_cli_attempt_brief_retries_only_model_semantic_failures(tmp_path):
+    scope_path = tmp_path / "scope.json"
+    diff_path = tmp_path / "review.diff"
+    bundle_path = tmp_path / "review-bundle.json"
+    result_path = tmp_path / "design-brief-result.json"
+    output_path = tmp_path / "human-design-brief.json"
+    feedback_path = tmp_path / "design-brief-validation.txt"
+    github_output = tmp_path / "github-output.txt"
+    bundle = _final_with()
+    rejected = raw_design_brief(artifact_digest(bundle))
+    rejected["change_cohorts"][0]["files"] = ["old.py"]
+    scope_path.write_text(json.dumps(scope()), encoding="utf-8")
+    diff_path.write_text(DIFF, encoding="utf-8")
+    bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+    result_path.write_text(json.dumps(rejected), encoding="utf-8")
+
+    assert (
+        gate.main(
+            [
+                "attempt-brief",
+                "--scope",
+                str(scope_path),
+                "--diff",
+                str(diff_path),
+                "--bundle",
+                str(bundle_path),
+                "--result",
+                str(result_path),
+                "--output",
+                str(output_path),
+                "--feedback",
+                str(feedback_path),
+                "--github-output",
+                str(github_output),
+            ]
+        )
+        == 0
+    )
+
+    assert github_output.read_text(encoding="utf-8") == "valid=false\n"
+    assert "do not cover every changed file" in feedback_path.read_text(encoding="utf-8")
+    assert not output_path.exists()
+
+
+def test_cli_attempt_brief_fails_directly_on_untrusted_bundle_inputs(tmp_path):
+    scope_path = tmp_path / "scope.json"
+    diff_path = tmp_path / "review.diff"
+    bundle_path = tmp_path / "review-bundle.json"
+    result_path = tmp_path / "design-brief-result.json"
+    output_path = tmp_path / "human-design-brief.json"
+    feedback_path = tmp_path / "design-brief-validation.txt"
+    github_output = tmp_path / "github-output.txt"
+    bundle = _final_with()
+    rejected = raw_design_brief(artifact_digest(bundle))
+    bundle["head_sha"] = "f" * 40
+    scope_path.write_text(json.dumps(scope()), encoding="utf-8")
+    diff_path.write_text(DIFF, encoding="utf-8")
+    bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+    result_path.write_text(json.dumps(rejected), encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="review bundle is bound to a different head"):
+        gate.main(
+            [
+                "attempt-brief",
+                "--scope",
+                str(scope_path),
+                "--diff",
+                str(diff_path),
+                "--bundle",
+                str(bundle_path),
+                "--result",
+                str(result_path),
+                "--output",
+                str(output_path),
+                "--feedback",
+                str(feedback_path),
+                "--github-output",
+                str(github_output),
+            ]
+        )
+
+    assert not feedback_path.exists()
+    assert not github_output.exists()
+    assert not output_path.exists()
+
+
 def test_workflow_uses_reviewed_prompts_and_typed_dynamic_fan_out():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
@@ -441,7 +528,7 @@ def test_human_design_brief_is_grounded_without_secret_read_capabilities():
     assert "Codex diagnostic: " not in step
     assert "grep -E" not in step
     assert "tail -c" not in step
-    assert workflow.count("one bounded correction") == 1
+    assert workflow.count("- name: Correct human design-review brief (Codex)") == 1
     correction = workflow.split("- name: Correct human design-review brief (Codex)", 1)[1]
     correction = correction.split(
         "- name: Validate corrected human design-review brief",

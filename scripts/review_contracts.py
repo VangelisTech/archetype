@@ -396,6 +396,7 @@ _DESIGN_BRIEF_MANDATORY_GUIDANCE = frozenset(
         "AGENTS.md",
         "LEARNINGS.md",
         ".github/review/README.md",
+        "docs/guide/specification.md",
         "quality/architecture.toml",
     }
 )

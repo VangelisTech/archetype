@@ -306,6 +306,7 @@ def test_design_brief_renderer_selects_only_whole_relevant_guidance_under_budget
         diff=diff,
         protected_base_guidance={
             "AGENTS.md": "Mandatory guidance.\n",
+            "docs/guide/specification.md": "Normative specification.\n",
             "docs/guide/runtime.md": "y" * DESIGN_BRIEF_PROMPT_CHAR_LIMIT,
             "docs/guide/service-protocols.md": "Selected guidance.\n",
             "docs/guide/activities.md": "Unchanged optional guidance.\n",
@@ -318,6 +319,10 @@ def test_design_brief_renderer_selects_only_whole_relevant_guidance_under_budget
     assert payload["protected_base_guidance"] == [
         {"path": "AGENTS.md", "content": "Mandatory guidance.\n"},
         {
+            "path": "docs/guide/specification.md",
+            "content": "Normative specification.\n",
+        },
+        {
             "path": "docs/guide/service-protocols.md",
             "content": "Selected guidance.\n",
         },
@@ -327,6 +332,7 @@ def test_design_brief_renderer_selects_only_whole_relevant_guidance_under_budget
     }
     assert included == {
         "AGENTS.md": True,
+        "docs/guide/specification.md": True,
         "docs/guide/runtime.md": False,
         "docs/guide/service-protocols.md": True,
         "docs/guide/activities.md": False,

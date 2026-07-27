@@ -38,11 +38,12 @@ The human-brief prompt has a repo-owned 900,000-character budget beneath the
 provider limit. It always keeps the finalized bundle, exact scope, and exact
 diff. It first attempts the complete protected-base guidance set; if that does
 not fit, it keeps whole mandatory policy files and architecture fragments,
-then whole changed guidance files in canonical order while space remains. A
-complete path, digest, character-count, and inclusion manifest records every
-guidance source. Nothing is truncated silently. If the authoritative inputs
-and mandatory guidance cannot fit, prompt materialization fails before calling
-the provider and the change must be split or the reviewed contract redesigned.
+including the umbrella specification, then whole changed guidance files in
+canonical order while space remains. A complete path, digest, character-count,
+and inclusion manifest records every guidance source. Nothing is truncated
+silently. If the authoritative inputs and mandatory guidance cannot fit,
+prompt materialization fails before calling the provider and the change must
+be split or the reviewed contract redesigned.
 If the first structured brief fails deterministic normalization, the workflow
 permits one schema-bound correction using the rejected result and exact
 validation feedback. The original prompt remains authoritative; a second

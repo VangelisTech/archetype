@@ -895,22 +895,14 @@ jobs:
           python3 scripts/footgun_review_gate.py extract \
             --raw "${RUNNER_TEMP}/design-brief-last.txt" \
             --output "${REVIEW_DIR}/human-design-brief-result.json"
-          set +e
-          python3 scripts/footgun_review_gate.py normalize-brief \
+          python3 scripts/footgun_review_gate.py attempt-brief \
             --scope "${SCOPE_FILE}" \
             --diff "${DIFF_FILE}" \
             --bundle "${REVIEW_DIR}/validated/review-bundle.json" \
             --result "${REVIEW_DIR}/human-design-brief-result.json" \
             --output "${REVIEW_DIR}/validated/human-design-brief.json" \
-            2> "${RUNNER_TEMP}/design-brief-validation.txt"
-          BRIEF_STATUS=$?
-          set -e
-          if [[ "${BRIEF_STATUS}" -eq 0 ]]; then
-            echo "valid=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "valid=false" >> "${GITHUB_OUTPUT}"
-            echo "Initial design brief failed its deterministic contract; preparing one bounded correction."
-          fi
+            --feedback "${RUNNER_TEMP}/design-brief-validation.txt" \
+            --github-output "${GITHUB_OUTPUT}"
 
       - name: Materialize bounded design-brief correction
         if: >-
