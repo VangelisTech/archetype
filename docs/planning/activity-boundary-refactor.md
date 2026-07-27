@@ -349,6 +349,28 @@ evidence. Neither is a merge dependency. `WorldHost` may later describe an
 executor implementation detail, but it is not the durable semantic owner of
 Mission or whole-episode work.
 
+## Rulings closed (2026-07-26)
+
+These questions are decided; execution slices implement them and do not
+re-open them.
+
+1. **Episode identity (A8.1).** `episode_id` is the canonical persistent
+   identity of one bounded domain execution (a Mission or a hosted
+   Physical-AI execution). A trajectory is a derived DataFrame view
+   (`trajectory(...)`) over persisted episode evidence; persistent
+   `trajectory_id` is removed. Hosted Physical-AI results use the same
+   persistent episode identity. Evaluation's dataset-local integer episode
+   index and the world runtime's lifecycle episode identifier stay
+   type-distinct; unrelated identifiers are not falsely unified. Any
+   contingency branch that re-opened this contract is void — A8.1 executes
+   the ruling, it does not debate it.
+2. **A8 ships in v0.5.0.** Correctness and cleanup are the release together,
+   including "`archetype.app` is gone." There is no pre-authorized
+   "v0.5.0 without A8" contingency; if the chain misses the wall-clock, the
+   tag moves unless Everett explicitly redefines the release. v0.5 is a
+   clean pre-1.0 contract epoch: no 0.4 backfill, dual reads, schema
+   evolution, or compatibility aliases in the release window.
+
 ## Release cut lines
 
 The release consumes only the highest contiguous green slice:

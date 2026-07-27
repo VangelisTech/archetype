@@ -820,13 +820,12 @@ are first-class recovery/evidence references, but their existence has no
 implicit acceptance authority. Only an explicit typed policy may require
 their publication for a transition.
 
-Remaining target after PR4: persistent behavioral evidence converges on
-`episode_id`. A trajectory becomes a derived learning-facing DataFrame
-selected from episode evidence and has no persistent identity. Until its
-owning migration lands, the persistent trajectory contract in
-[Mission Trajectories](trajectories.md) remains current. The episode-schema
-change is an intentional pre-1.0 v0.5 migration rather than a silent
-compatibility alias.
+Persistent behavioral evidence converges on `episode_id`: evidence rows are
+keyed by `episode_id` and `seq`, and a trajectory is a derived learning-facing
+DataFrame selected from episode evidence with no persistent identity. The
+contract is documented in [Mission Trajectories](trajectories.md). The
+episode-schema change was an intentional pre-1.0 v0.5 migration — no 0.4
+backfill, dual reads, or compatibility aliases.
 
 ### v0.5 migration oracle status
 
@@ -840,7 +839,7 @@ boundary rather than relying on a pre-refactor baseline.
 | command materialization and manifest-coupled settlement | command-flow and durable-command integration contracts | Landed in world/commands |
 | lock and shutdown admission | runtime lifecycle and admitted-work race contracts | Landed in world/runtime resources |
 | UUIDv7 run identity and fork/resume continuity | command-flow, fork-storage, and world-resume contracts | Landed in world |
-| episode identity and trajectory derivation | episode-rollout and trajectory-domain contracts | Remaining episodes migration |
+| episode identity and trajectory derivation | trajectory-domain, trajectory-service, and episode-join contracts | Landed: evidence keyed by `episode_id`, trajectory is a derived view |
 | stable task base, immutable candidate, exact-head critic | coding-agent, critic, mission-service, and capability-eval contracts | Current preservation baseline; author and critic Activity cutovers must preserve it |
 | sandbox cleanup and retryable phased teardown | sandbox-service, runtime-contract, and mission-service race contracts | Process lifetime landed; Activity worker ownership remains |
 | committed required projection and provider reconciliation | generic seam and mission-consumer failpoint contracts | Generic world seam landed; Activity catalog and Mission consumers are A2–A5 |

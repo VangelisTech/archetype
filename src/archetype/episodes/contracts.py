@@ -44,36 +44,22 @@ class ClaudeTranscriptSource:
         return f"claude-session://{quote(self.project, safe='')}/{quote(self.session_id, safe='')}"
 
     @property
-    def trajectory_id(self) -> str:
-        """Stable trajectory linkage for normalized rows and the lightweight index."""
+    def episode_id(self) -> str:
+        """Stable episode identity for normalized rows and the lightweight index."""
 
         return self.source_uri
 
 
 @dataclass(frozen=True)
 class TrajectorySelection:
-    """Typed filters applied to one trajectory component table."""
+    """Typed episode filter applied to one evidence component table."""
 
-    trajectory_ids: tuple[str, ...] = ()
     episode_ids: tuple[str, ...] = ()
-    rollout_ids: tuple[str, ...] = ()
-    task_ids: tuple[str, ...] = ()
-    trial_idxs: tuple[int, ...] = ()
 
-    def requested(self) -> dict[str, tuple[str, ...] | tuple[int, ...]]:
+    def requested(self) -> dict[str, tuple[str, ...]]:
         """Return only active field filters."""
 
-        return {
-            name: values
-            for name, values in (
-                ("trajectory_id", self.trajectory_ids),
-                ("episode_id", self.episode_ids),
-                ("rollout_id", self.rollout_ids),
-                ("task_id", self.task_ids),
-                ("trial_idx", self.trial_idxs),
-            )
-            if values
-        }
+        return {"episode_id": self.episode_ids} if self.episode_ids else {}
 
 
 @dataclass(frozen=True)
@@ -82,7 +68,7 @@ class TranscriptIngestionResult:
 
     world_id: str
     run_id: str
-    trajectory_id: str
+    episode_id: str
     mission_id: str
     source_uri: str
     artifact: ArtifactRef

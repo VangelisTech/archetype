@@ -268,7 +268,7 @@ async def test_transcript_persists_sanitized_artifact_and_normalized_rows(
 
         assert [row["row_kind"] for row in rows] == ["session", "turn", "turn"]
         assert [row["seq"] for row in rows] == [-1, 0, 1]
-        assert {row["trajectory_id"] for row in rows} == {source.source_uri}
+        assert {row["episode_id"] for row in rows} == {source.source_uri}
         assert {row["mission_id"] for row in rows} == {"mission-7"}
         assert {row["project"] for row in rows} == {"project-a"}
         assert {row["session_id"] for row in rows} == {"session-1"}

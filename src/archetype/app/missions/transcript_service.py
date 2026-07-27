@@ -111,7 +111,7 @@ def _normalize_session(
     header_value = header.value
     models = header_value.get("models") or []
     common = {
-        "trajectory_id": session.trajectory.trajectory_id,
+        "episode_id": session.episode_id,
         "mission_id": session.mission_id,
         "project": str(header_value.get("project") or ""),
         "session_id": str(header_value.get("session_id") or ""),
@@ -122,9 +122,9 @@ def _normalize_session(
         "started_at": str(header_value.get("started_at") or ""),
         "ended_at": str(header_value.get("ended_at") or ""),
         "sidechain_turns_skipped": session.sidechain_turns_skipped,
-        "total_turns": session.trajectory.total_turns,
-        "total_tokens": session.trajectory.total_tokens,
-        "duration_seconds": session.trajectory.duration_seconds,
+        "total_turns": session.total_turns,
+        "total_tokens": session.total_tokens,
+        "duration_seconds": session.duration_seconds,
     }
     rows: list[dict[str, Any]] = [
         {
@@ -278,12 +278,6 @@ class TranscriptIngestionService:
                 row_receipts,
             )
             safe_project = str(normalized[0]["project"])
-            trajectory = session.trajectory.model_copy(
-                update={
-                    "task_id": safe_project,
-                    "model": str(normalized[0]["model"]),
-                }
-            )
             logical_path = f"claude/{safe_project}/{source.session_id}.jsonl"
             sanitized_digest = _file_digest(sanitized.path)
             (artifact,) = await artifact_handlers.ingest_artifacts(
@@ -319,7 +313,7 @@ class TranscriptIngestionService:
         return TranscriptIngestionResult(
             world_id=wid,
             run_id=run_id,
-            trajectory_id=trajectory.trajectory_id,
+            episode_id=session.episode_id,
             mission_id=source.mission_id,
             source_uri=source.source_uri,
             artifact=artifact,
