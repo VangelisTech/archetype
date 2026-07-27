@@ -888,6 +888,7 @@ class SqliteActivityCatalog:
         kind: str | None = None,
         world_id: str | None = None,
         limit: int = 100,
+        after_sequence: int = 0,
     ) -> list[ActivityRecord]:
         """Discover admitted work without relying on a process-local queue."""
 
@@ -896,6 +897,7 @@ class SqliteActivityCatalog:
             kind=kind,
             world_id=world_id,
             limit=limit,
+            after_sequence=after_sequence,
         )
 
     async def list_unobserved_results(
@@ -904,6 +906,7 @@ class SqliteActivityCatalog:
         kind: str | None = None,
         world_id: str | None = None,
         limit: int = 100,
+        after_sequence: int = 0,
     ) -> list[ActivityRecord]:
         """Discover durable results that a later world tick has not observed."""
 
@@ -912,6 +915,7 @@ class SqliteActivityCatalog:
             kind=kind,
             world_id=world_id,
             limit=limit,
+            after_sequence=after_sequence,
         )
 
     async def has_unsettled_activities(self, world_id: str) -> bool:
@@ -938,9 +942,12 @@ class SqliteActivityCatalog:
         kind: str | None,
         world_id: str | None,
         limit: int,
+        after_sequence: int = 0,
     ) -> list[ActivityRecord]:
         if limit < 1:
             raise ValueError("limit must be positive")
+        if after_sequence < 0:
+            raise ValueError("after_sequence must be non-negative")
 
         def _list() -> list[ActivityRecord]:
             conditions = (
@@ -955,6 +962,8 @@ class SqliteActivityCatalog:
             if world_id is not None:
                 conditions.append("source_world_id=?")
                 parameters.append(world_id)
+            conditions.append("sequence>?")
+            parameters.append(after_sequence)
             parameters.append(limit)
             rows = (
                 self._connect_sync()
@@ -1234,6 +1243,7 @@ def _claim_from_row(
 
 def _activity_from_row(row: sqlite3.Row) -> ActivityRecord:
     return ActivityRecord(
+        sequence=int(row["sequence"]),
         activity_id=str(row["activity_id"]),
         kind=str(row["kind"]),
         source_world_id=str(row["source_world_id"]),
