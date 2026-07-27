@@ -838,8 +838,8 @@ def reviewer_reported_blocked(result_paths: Sequence[Path]) -> bool:
     """Return whether any structured attempt explicitly reports blocked inspection."""
     for path in result_paths:
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            value = _load_json(path)
+        except GateError:
             continue
         if isinstance(value, Mapping) and value.get("review_status") == "blocked":
             return True
