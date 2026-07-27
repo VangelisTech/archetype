@@ -18,20 +18,6 @@ from pydantic import BaseModel
 from uuid_utils import uuid7
 
 from archetype.activities import ActivityCoordinator
-from archetype.app.missions.activity_coordinator import (
-    MissionAuthorActivityCoordinator,
-)
-from archetype.app.missions.activity_world import (
-    MissionAuthorActivityBinding,
-    StorageMissionCommittedIntentReader,
-    WorldMissionAuthorObservationStager,
-)
-from archetype.app.missions.local_activity_values import (
-    LocalMissionAuthorValueStore,
-)
-from archetype.app.missions.service import MissionService
-from archetype.app.missions.trajectory_service import TrajectoryService
-from archetype.app.missions.transcript_service import TranscriptIngestionService
 from archetype.artifacts import handlers as artifact_handlers
 from archetype.artifacts.models import (
     ArtifactStoreConfig,
@@ -64,14 +50,46 @@ from archetype.evaluation.models import (
     RunGraders,
     summarize_evaluation_operation,
 )
+from archetype.missions.activity_binding import MissionActivityBinding
+from archetype.missions.activity_coordinator import (
+    MissionAuthorActivityCoordinator,
+)
+from archetype.missions.activity_world import (
+    MissionAuthorActivityBinding,
+    StorageMissionCommittedIntentReader,
+    WorldMissionAuthorObservationStager,
+)
 from archetype.missions.coding_agents.harness import (
     CodexDriver,
     CodingAgentHarness,
     CodingAgentHarnessConfig,
 )
+from archetype.missions.critic_activity_coordinator import (
+    MissionCriticActivityCoordinator,
+)
+from archetype.missions.critic_activity_world import (
+    MissionCriticActivityBinding,
+    WorldMissionCriticObservationStager,
+)
+from archetype.missions.critics import (
+    CodexCriticDriver,
+    CriticActivityCodec,
+    CriticHarness,
+    CriticHarnessConfig,
+)
+from archetype.missions.local_activity_values import (
+    LocalMissionAuthorValueStore,
+)
+from archetype.missions.local_critic_activity_values import (
+    LocalMissionCriticValueStore,
+)
 from archetype.missions.modal_author import (
     ModalMissionAuthorExecutor,
     ModalMissionAuthorExecutorConfig,
+)
+from archetype.missions.modal_critic import (
+    ModalMissionCriticExecutor,
+    ModalMissionCriticExecutorConfig,
 )
 from archetype.missions.models import (
     RestoreMissionSandbox,
@@ -85,6 +103,9 @@ from archetype.missions.sandboxes.modal import (
 )
 from archetype.missions.sandboxes.modal_barrier import ModalProviderStartBarrier
 from archetype.missions.sandboxes.service import SandboxService
+from archetype.missions.service import MissionService
+from archetype.missions.trajectory_service import TrajectoryService
+from archetype.missions.transcript_service import TranscriptIngestionService
 from archetype.physical_ai import handlers as physical_ai_handlers
 from archetype.physical_ai.interfaces import (
     EnvClient,
@@ -321,7 +342,7 @@ class _UnsettledWorldRouter:
             await callback(receipt)
 
         projector = simulation.RequiredProjector(
-            consumer_name="missions.author-activities",
+            consumer_name="missions.activities",
             project=project,
         )
         self._projectors[key] = projector
@@ -1190,103 +1211,139 @@ async def _handle_submit_mission(
     unsettled_worlds: _UnsettledWorldRouter,
     operation: SubmitMission,
 ) -> Any:
+    backend = operation.config.sandbox_backend
+    if not isinstance(backend, ModalSandboxBackend):
+        raise ValueError("Agent Mission admission requires the Modal sandbox backend in v0.5.0")
     reservation = resources.owner(operation.owner_id)
     async with resources.admit_owner_operation(reservation):
 
         async def construct() -> MissionService:
-            sandbox = SandboxService((operation.config.sandbox_backend,))
+            sandbox = SandboxService((backend,))
             reservation.bind(sandbox, close=sandbox.shutdown)
-            author_activity_factory = None
-            backend = operation.config.sandbox_backend
-            if isinstance(backend, ModalSandboxBackend):
-                capability = ModalSandboxOperationCapability(backend)
-                backend_config = backend.config
-                assert backend_config.workspace_name is not None
-                assert backend_config.environment_name is not None
-                assert backend_config.operation_protocol_epoch is not None
-                barrier = ModalProviderStartBarrier(
-                    workspace_name=backend_config.workspace_name,
-                    environment_name=backend_config.environment_name,
-                    app_name=backend_config.app_name,
-                    protocol_epoch=backend_config.operation_protocol_epoch,
-                )
-                driver = operation.config.driver or CodexDriver(
-                    model=operation.config.model,
-                    workspace=operation.config.workspace,
-                )
-                executor = ModalMissionAuthorExecutor(
-                    capability=capability,
-                    barrier=barrier,
-                    harness=CodingAgentHarness(
-                        driver,
-                        CodingAgentHarnessConfig(
-                            workspace=operation.config.workspace,
-                        ),
-                    ),
-                    redactor=redaction,
-                    config=ModalMissionAuthorExecutorConfig(
-                        sandbox_environment=operation.config.sandbox_environment,
+            capability = ModalSandboxOperationCapability(backend)
+            backend_config = backend.config
+            assert backend_config.workspace_name is not None
+            assert backend_config.environment_name is not None
+            assert backend_config.operation_protocol_epoch is not None
+            barrier = ModalProviderStartBarrier(
+                workspace_name=backend_config.workspace_name,
+                environment_name=backend_config.environment_name,
+                app_name=backend_config.app_name,
+                protocol_epoch=backend_config.operation_protocol_epoch,
+            )
+            author_driver = operation.config.driver or CodexDriver(
+                model=operation.config.model,
+                workspace=operation.config.workspace,
+            )
+            author_executor = ModalMissionAuthorExecutor(
+                capability=capability,
+                barrier=barrier,
+                harness=CodingAgentHarness(
+                    author_driver,
+                    CodingAgentHarnessConfig(
                         workspace=operation.config.workspace,
-                        checkpoint_after_dispatch=operation.config.checkpoint_after_dispatch,
                     ),
-                    observer=operation.config.on_sandbox_event,
-                )
+                ),
+                redactor=redaction,
+                config=ModalMissionAuthorExecutorConfig(
+                    sandbox_environment=operation.config.sandbox_environment,
+                    workspace=operation.config.workspace,
+                    checkpoint_after_dispatch=operation.config.checkpoint_after_dispatch,
+                ),
+                observer=operation.config.on_sandbox_event,
+            )
+            critic_driver = operation.config.critic_driver or CodexCriticDriver(
+                workspace=operation.config.critic_workspace,
+            )
+            critic_executor = ModalMissionCriticExecutor(
+                capability=capability,
+                barrier=barrier,
+                harness=CriticHarness(
+                    critic_driver,
+                    CriticHarnessConfig(
+                        workspace=operation.config.critic_workspace,
+                    ),
+                ),
+                redactor=redaction,
+                config=ModalMissionCriticExecutorConfig(
+                    sandbox_environment=operation.config.sandbox_environment,
+                    workspace=operation.config.critic_workspace,
+                ),
+            )
 
-                async def bind_author_activity(
-                    world_id: str,
-                ) -> MissionAuthorActivityBinding:
-                    storage_record = await worlds.storage_record(world_id)
-                    if storage_record is None:
-                        raise WorldNotFoundError(world_id)
-                    storage_config = storage_record[0]
-                    catalog_path = activity_catalog_path_for(
-                        storage_config,
-                        control_catalog_config,
-                    )
-                    physical = SqliteActivityCatalog(catalog_path)
-                    values = LocalMissionAuthorValueStore(
+            async def bind_mission_activity(
+                world_id: str,
+            ) -> MissionActivityBinding:
+                storage_record = await worlds.storage_record(world_id)
+                if storage_record is None:
+                    raise WorldNotFoundError(world_id)
+                storage_config = storage_record[0]
+                catalog_path = activity_catalog_path_for(
+                    storage_config,
+                    control_catalog_config,
+                )
+                physical = SqliteActivityCatalog(catalog_path)
+                coordinator = ActivityCoordinator(physical)
+                reader = StorageMissionCommittedIntentReader(
+                    storage,
+                    storage_config,
+                )
+                author = MissionAuthorActivityBinding(
+                    world_id=world_id,
+                    owner=f"mission-author:{reservation.owner}",
+                    reader=reader,
+                    catalog=MissionAuthorActivityCoordinator(coordinator),
+                    values=LocalMissionAuthorValueStore(
                         catalog_path.with_name(f"{catalog_path.stem}-author-values"),
                         redactor=redaction,
-                    )
-                    binding: MissionAuthorActivityBinding
+                    ),
+                    executor=author_executor,
+                    stager=WorldMissionAuthorObservationStager(
+                        storage=storage,
+                        registry=worlds,
+                    ),
+                )
+                critic = MissionCriticActivityBinding(
+                    world_id=world_id,
+                    owner=f"mission-critic:{reservation.owner}",
+                    reader=reader,
+                    catalog=MissionCriticActivityCoordinator(coordinator),
+                    values=LocalMissionCriticValueStore(
+                        catalog_path.with_name(f"{catalog_path.stem}-critic-values"),
+                        codec=CriticActivityCodec(redaction),
+                    ),
+                    executor=critic_executor,
+                    stager=WorldMissionCriticObservationStager(
+                        storage=storage,
+                        registry=worlds,
+                    ),
+                )
+                binding: MissionActivityBinding
 
-                    async def close_binding() -> None:
-                        await physical.close()
-                        await unsettled_worlds.unbind(world_id, binding)
+                async def close_binding() -> None:
+                    await physical.close()
+                    await unsettled_worlds.unbind(world_id, binding)
 
-                    binding = MissionAuthorActivityBinding(
-                        world_id=world_id,
-                        owner=f"mission-author:{reservation.owner}",
-                        reader=StorageMissionCommittedIntentReader(
-                            storage,
-                            storage_config,
-                        ),
-                        catalog=MissionAuthorActivityCoordinator(
-                            ActivityCoordinator(physical),
-                        ),
-                        values=values,
-                        executor=executor,
-                        stager=WorldMissionAuthorObservationStager(
-                            storage=storage,
-                            registry=worlds,
-                        ),
-                        close=close_binding,
-                    )
-                    await unsettled_worlds.bind(world_id, binding)
-                    try:
-                        routed = unsettled_worlds.required_projector_for(world_id)
-                        if worlds.required_projector(world_id) is not routed:
-                            await worlds.bind_required_projector(
-                                world_id,
-                                binding.required_projector,
-                            )
-                    except BaseException:
-                        await unsettled_worlds.unbind(world_id, binding)
-                        await physical.close()
-                        raise
-                    return binding
-
-                author_activity_factory = bind_author_activity
+                binding = MissionActivityBinding(
+                    world_id=world_id,
+                    author=author,
+                    critic=critic,
+                    close=close_binding,
+                )
+                reservation.retain_anchor(binding)
+                await unsettled_worlds.bind(world_id, binding)
+                try:
+                    routed = unsettled_worlds.required_projector_for(world_id)
+                    if worlds.required_projector(world_id) is not routed:
+                        await worlds.bind_required_projector(
+                            world_id,
+                            binding.required_projector,
+                        )
+                except BaseException:
+                    await unsettled_worlds.unbind(world_id, binding)
+                    await physical.close()
+                    raise
+                return binding
 
             async def cleanup_factory(world_id: object) -> WorldCleanup:
                 lease = await lifecycle.begin_close(str(world_id))
@@ -1304,9 +1361,8 @@ async def _handle_submit_mission(
                 config=operation.config,
                 sandbox_service=sandbox,
                 redaction_service=redaction,
-                task_owner=reservation,
                 cleanup_factory=cleanup_factory,
-                author_activity_factory=author_activity_factory,
+                activity_factory=bind_mission_activity,
                 storage=operation.storage,
             )
 

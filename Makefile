@@ -425,7 +425,6 @@ operational-wheel:
 			--scenario dogfood.commands.local \
 			--scenario dogfood.evaluation.durable_receipt \
 			--scenario dogfood.artifacts.local \
-			--scenario dogfood.agent_mission.scripted \
 			--wheel "$$wheel" --out "$(OPERATIONAL_WHEEL_RESULTS)" || runner_status=$$?; \
 		if [ "$$build_status" -ne 0 ]; then \
 			exit "$$build_status"; \
@@ -436,7 +435,7 @@ operational-wheel:
 operational-mission:
 	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
 		--mode source --cadence pr --max-tier 1 --require-run \
-		--scenario dogfood.agent_mission.scripted \
+		--scenario dogfood.agent_mission.modal_activities \
 		--out operational-mission-results.json
 
 .PHONY: operational-external

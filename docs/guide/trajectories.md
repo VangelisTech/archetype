@@ -29,8 +29,8 @@ mission graph.
 | `archetype.missions.trajectories.contracts` | In-memory authoring values, structural inputs, and typed selection. |
 | `archetype.missions.trajectories.claude` | Claude source configuration and pure parsing of already-sanitized text. No file I/O or durability. |
 | `archetype.missions.trajectories.transforms` | Pure row transforms and the derived `trajectory(...)` view; no service access. |
-| `archetype.app.missions.trajectory_service` | Internal composition of persisted query access and evaluation graders. |
-| `archetype.app.missions.transcript_service` | Internal snapshot, redaction, sanitized-file ingestion, and normalized-row workflow. |
+| `archetype.missions.trajectory_service` | Internal composition of persisted query access and evaluation graders. |
+| `archetype.missions.transcript_service` | Internal snapshot, redaction, sanitized-file ingestion, and normalized-row workflow. |
 | `RuntimeWorld.query_trajectory()` | Recommended filtered read path. |
 | `RuntimeWorld.grade_trajectory()` | Recommended query-then-grade path. |
 | `RuntimeWorld.ingest_claude_transcript()` | Recommended source-to-artifact workflow. |

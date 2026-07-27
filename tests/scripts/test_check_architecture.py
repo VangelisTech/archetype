@@ -1554,20 +1554,23 @@ def test_repository_storage_capability_rule_keeps_canonical_owner() -> None:
     storage_rules = [
         rule
         for rule in policy["capability_rule"]
-        if rule.get("name") == "storage-execution-authority"
+        if str(rule.get("name", "")).startswith("storage-execution-authority")
     ]
 
-    assert len(storage_rules) == 1
-    assert storage_rules[0]["consumer"] == "archetype.app"
-    assert storage_rules[0]["owner"] == "archetype.storage.service"
-    assert set(storage_rules[0]["owned_attributes"]) == {
-        "collect",
-        "write_iceberg",
-        "current_catalog",
-        "create_table",
-        "create_table_if_not_exists",
+    assert {rule["consumer"] for rule in storage_rules} == {
+        "archetype.missions.activity_world",
+        "archetype.missions.critic_activity_world",
     }
-    assert storage_rules[0]["mediated_attributes"]["to_pylist"] == "materialize"
+    for rule in storage_rules:
+        assert rule["owner"] == "archetype.storage.service"
+        assert set(rule["owned_attributes"]) == {
+            "collect",
+            "write_iceberg",
+            "current_catalog",
+            "create_table",
+            "create_table_if_not_exists",
+        }
+        assert rule["mediated_attributes"]["to_pylist"] == "materialize"
 
 
 def _write_fragment(policy: Path, name: str, body: str) -> Path:

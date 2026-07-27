@@ -14,13 +14,13 @@ import pytest
 from uuid_utils import uuid7
 
 from archetype import ArchetypeRuntime
-from archetype.app.missions.transcript_service import TranscriptIngestionService
 from archetype.artifacts.models import ArtifactRef, QueryArtifacts
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
 from archetype.episodes.models import IngestClaudeTranscript, QueryTranscriptRows
 from archetype.missions.trajectories import (
     ClaudeTranscriptSource,
 )
+from archetype.missions.transcript_service import TranscriptIngestionService
 from archetype.redaction import RedactionService, SecretQuarantineError
 from archetype.storage.interfaces import iStorageService
 from archetype.world.models import CreateWorld, Run
@@ -105,7 +105,7 @@ async def test_digest_mismatch_fails_after_artifact_before_transcript_rows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import archetype.app.missions.transcript_service as transcript_service
+    import archetype.missions.transcript_service as transcript_service
 
     transcript = tmp_path / "project-digest" / "session.jsonl"
     _write_transcript(transcript)
@@ -154,7 +154,7 @@ async def test_row_failure_reports_after_sanitized_artifact_publication(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import archetype.app.missions.transcript_service as transcript_service
+    import archetype.missions.transcript_service as transcript_service
 
     secret = "sk-proj-" + "R" * 32
     transcript = tmp_path / "project-partial" / "session.jsonl"

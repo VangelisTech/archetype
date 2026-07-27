@@ -18,7 +18,7 @@ archetype.storage
   Daft execution + Catalog table registration/read/write + Iceberg retry
   durable world/run envelope + published-head authority
 
-archetype.app.missions
+archetype.missions
   transcript-specific redaction, parsing, and normalized-row publication
 ```
 

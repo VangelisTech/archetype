@@ -9,7 +9,6 @@ on:
     # owned by the operational manifest and runner.
     paths:
       - "src/archetype/missions/**"
-      - "src/archetype/app/missions/**"
       - "src/archetype/runtime/**"
       - "src/archetype/runtime_resources.py"
       - "src/archetype/commands/**"
@@ -18,9 +17,7 @@ on:
       - "src/archetype/core/hooks.py"
       - "src/archetype/wiring.py"
       - "examples/11_coding_agent_mission.py"
-      - "evals/suites/capability/agent_missions.py"
       - "tests/missions/**"
-      - "tests/integration/test_agent_mission_service.py"
       - "tests/integration/test_docker_sandbox_parity.py"
       - "quality/operational_scenarios.toml"
       - "uv.lock"

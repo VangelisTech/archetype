@@ -144,8 +144,8 @@ def _latest_entity_rows(
     return indexed
 
 
-class TaskDispatchOutbox:
-    """Project newly committed dispatch rows into bounded execution requests."""
+class _TaskDispatchProjection:
+    """Build bounded author requests from one committed snapshot."""
 
     _TASK_COMPONENTS = (
         Task,
@@ -157,8 +157,7 @@ class TaskDispatchOutbox:
     )
 
     def __init__(self) -> None:
-        self._queued: list[TaskDispatchRequest] = []
-        self._seen_dispatches: set[str] = set()
+        self.requests: list[TaskDispatchRequest] = []
 
     async def on_post_tick(self, event: PostTick) -> None:
         task_frame = _live_frame(event, *self._TASK_COMPONENTS)
@@ -269,8 +268,6 @@ class TaskDispatchOutbox:
         finding_record = CriticFinding.get_prefix()
         for row in task_rows:
             dispatch_id = str(row[f"{dispatch}dispatch_id"])
-            if dispatch_id in self._seen_dispatches:
-                continue
             task_id = int(row["entity_id"])
             sequence = int(row[f"{dispatch}sequence"])
             prior = [
@@ -334,7 +331,7 @@ class TaskDispatchOutbox:
                 if prior_candidate is not None
                 else ()
             )
-            self._queued.append(
+            self.requests.append(
                 TaskDispatchRequest(
                     mission_id=int(row[f"{membership}target"]),
                     task_id=task_id,
@@ -379,24 +376,14 @@ class TaskDispatchOutbox:
                     previous_critic_findings=previous_critic_findings,
                 )
             )
-            self._seen_dispatches.add(dispatch_id)
-
-    def drain(self) -> tuple[TaskDispatchRequest, ...]:
-        requests = tuple(self._queued)
-        self._queued.clear()
-        return requests
 
 
 async def project_task_dispatch_requests(event: PostTick) -> tuple[TaskDispatchRequest, ...]:
-    """Project dispatch requests from one exact committed mission snapshot.
+    """Project author requests from one exact committed mission snapshot."""
 
-    The legacy process-local outbox and the durable required projector share
-    this construction path so request meaning cannot drift during cutover.
-    """
-
-    projection = TaskDispatchOutbox()
+    projection = _TaskDispatchProjection()
     await projection.on_post_tick(event)
-    return projection.drain()
+    return tuple(projection.requests)
 
 
 def project_complete_author_activity_observations(
@@ -1277,35 +1264,6 @@ async def project_critic_activity_requests(
     """Return idempotent exact-candidate requests for generic Activity admission."""
 
     return (await project_critic_activity_intents(event)).requests
-
-
-class CriticReviewOutbox:
-    """Project current candidates into bounded independent review requests."""
-
-    def __init__(self) -> None:
-        self._queued: list[CandidateReviewRequest] = []
-        self._exhausted: list[CriticReviewBudgetExhausted] = []
-        self._queued_review_ids: set[str] = set()
-
-    async def on_post_tick(self, event: PostTick) -> None:
-        projection = await project_critic_activity_intents(event)
-        for request in projection.requests:
-            if request.review_id in self._queued_review_ids:
-                continue
-            self._queued.append(request)
-            self._queued_review_ids.add(request.review_id)
-        self._exhausted.extend(projection.exhausted)
-
-    def drain(self) -> tuple[CandidateReviewRequest, ...]:
-        requests = tuple(self._queued)
-        self._queued.clear()
-        self._queued_review_ids.clear()
-        return requests
-
-    def drain_exhausted(self) -> tuple[CriticReviewBudgetExhausted, ...]:
-        exhausted = tuple(self._exhausted)
-        self._exhausted.clear()
-        return exhausted
 
 
 def current_mission_status(view: GraphView, mission_id: int) -> MissionStatus | None:

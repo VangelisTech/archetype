@@ -15,11 +15,6 @@ import pytest
 from pydantic import create_model
 
 import archetype.wiring as wiring
-from archetype.app.missions.activity_world import (
-    MissionAuthorActivityBinding,
-    StorageMissionCommittedIntentReader,
-    WorldMissionAuthorObservationStager,
-)
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.core.hooks import OnSpawn
@@ -28,6 +23,12 @@ from archetype.missions.activities import (
     DurableAuthorExecutionObservation,
     complete_author_activity_fact_bundle,
     complete_author_activity_fact_count,
+)
+from archetype.missions.activity_binding import MissionActivityBinding
+from archetype.missions.activity_world import (
+    MissionAuthorActivityBinding,
+    StorageMissionCommittedIntentReader,
+    WorldMissionAuthorObservationStager,
 )
 from archetype.missions.coding_agents.contracts import (
     AgentExecutionResult,
@@ -74,6 +75,8 @@ from archetype.missions.relations import (
     Supersedes,
 )
 from archetype.missions.sandboxes import SandboxIdentity, SandboxStatus
+from archetype.missions.sandboxes.apple_container import AppleContainerSandboxBackend
+from archetype.missions.sandboxes.docker import DockerSandboxBackend
 from archetype.missions.sandboxes.modal import (
     MODAL_ACTIVITY_PROTOCOL_EPOCH,
     ModalSandboxBackend,
@@ -224,10 +227,72 @@ async def test_modal_mission_submit_binds_required_activity_before_first_tick(
 
         service = cast(Any, resources.owner(owner_id).require_bound())
         world_id = str(service.world_id)
+        binding = service._activity  # noqa: SLF001 - concrete composition oracle
+        assert isinstance(binding, MissionActivityBinding)
+        assert binding.author.world_id == binding.critic.world_id == world_id
         projector = registry.required_projector(world_id)
         assert projector is not None
-        assert projector.consumer_name == "missions.author-activities"
+        assert projector.consumer_name == "missions.activities"
         assert registry.pending_receipt(world_id) is None
+    finally:
+        await resources.aclose()
+        await storage.shutdown()
+
+
+@pytest.mark.parametrize(
+    "backend",
+    (AppleContainerSandboxBackend(), DockerSandboxBackend()),
+    ids=("apple-container", "docker"),
+)
+@pytest.mark.asyncio
+async def test_non_modal_mission_backend_is_rejected_before_admission(
+    tmp_path: Path,
+    backend: AppleContainerSandboxBackend | DockerSandboxBackend,
+) -> None:
+    control = ControlCatalogConfig(catalog_dir=tmp_path / "control")
+    storage = StorageService(control_catalog_config=control)
+    resources = build_runtime_resources(
+        RuntimeBootstrapConfig(
+            control_catalog_config=control,
+            storage_service=storage,
+        )
+    )
+    owner_id = f"unsupported-{backend.name}"
+    reservation = resources.reserve_owner(owner_id, phase="workflow-handles")
+    try:
+        with pytest.raises(ValueError, match="requires the Modal sandbox backend"):
+            await resources.dispatcher.apply(
+                SubmitMission(
+                    owner_id=owner_id,
+                    name="unsupported-mission",
+                    config=AgentMissionConfig(
+                        sandbox_backend=backend,
+                        sandbox_environment=backend.environment,
+                    ),
+                    storage=StorageConfig(
+                        uri=str(tmp_path / "world"),
+                        namespace="unsupported-mission",
+                    ),
+                    submission=MissionSubmission(
+                        repository="https://github.com/example/repository.git",
+                        branch="agent/unsupported",
+                        tasks=(
+                            AgentTask(
+                                name="reject",
+                                prompt="This must not be admitted.",
+                                validators=(
+                                    CommandValidator(
+                                        name="focused",
+                                        command=("pytest", "-q"),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+            )
+        with pytest.raises(RuntimeError, match="not bound"):
+            reservation.require_bound()
     finally:
         await resources.aclose()
         await storage.shutdown()

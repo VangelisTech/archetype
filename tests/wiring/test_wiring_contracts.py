@@ -588,11 +588,11 @@ async def test_bootstrap_environment_is_resolved_once_before_family_construction
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from archetype.app.missions.trajectory_service import TrajectoryService
-    from archetype.app.missions.transcript_service import TranscriptIngestionService
     from archetype.commands.audit import AuditLog
     from archetype.commands.policy import Policy
     from archetype.commands.scheduler import CommandScheduler
+    from archetype.missions.trajectory_service import TrajectoryService
+    from archetype.missions.transcript_service import TranscriptIngestionService
     from archetype.research.handlers import AutoResearchAdmissions
     from archetype.storage.service import StorageService
     from archetype.world.lifecycle import WorldLifecycle
@@ -698,11 +698,13 @@ async def test_no_runtime_or_api_operation_can_fall_back_to_a_legacy_bridge(
     for module in checked:
         source_path = Path(inspect.getsourcefile(module) or "")
         assert _forbidden_imports(source_path.read_text()) == set()
+    assert find_spec("archetype.app") is None
     for module_name in _DELETED_MODULES:
-        assert find_spec(module_name) is None
+        if not module_name.startswith("archetype.app."):
+            assert find_spec(module_name) is None
         with pytest.raises(ModuleNotFoundError) as caught:
             import_module(module_name)
-        assert caught.value.name == module_name
+        assert caught.value.name in {module_name, "archetype.app"}
 
     async with _built_resources(wiring, tmp_path) as resources:
         pull_forward = set(_pull_forward_types())
@@ -783,12 +785,18 @@ async def test_pull_forward_handlers_translate_exact_values_without_recursive_di
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from archetype.app.missions.service import MissionService
-    from archetype.app.missions.trajectory_service import TrajectoryService
-    from archetype.app.missions.transcript_service import TranscriptIngestionService
     from archetype.artifacts import handlers as artifact_handlers
     from archetype.evaluation import handlers as evaluation_handlers
+    from archetype.missions.contracts import AgentMissionConfig
+    from archetype.missions.sandboxes import MODAL_ACTIVITY_PROTOCOL_EPOCH
+    from archetype.missions.sandboxes.modal import (
+        ModalSandboxBackend,
+        ModalSandboxConfig,
+    )
     from archetype.missions.sandboxes.service import SandboxService
+    from archetype.missions.service import MissionService
+    from archetype.missions.trajectory_service import TrajectoryService
+    from archetype.missions.transcript_service import TranscriptIngestionService
     from archetype.physical_ai import handlers as physical_ai_handlers
     from archetype.research import handlers as research_handlers
     from archetype.world import query as world_query
@@ -910,8 +918,17 @@ async def test_pull_forward_handlers_translate_exact_values_without_recursive_di
             component = object()
             selection = object()
             owner_id = "mission-owner-1"
-            backend = SimpleNamespace(name="provider")
-            mission_config = SimpleNamespace(sandbox_backend=backend)
+            backend = ModalSandboxBackend(
+                ModalSandboxConfig(
+                    workspace_name="test-workspace",
+                    environment_name="test-environment",
+                    operation_protocol_epoch=MODAL_ACTIVITY_PROTOCOL_EPOCH,
+                )
+            )
+            mission_config = AgentMissionConfig(
+                sandbox_backend=backend,
+                sandbox_environment=backend.environment,
+            )
             mission_storage = object()
             task = object()
             submission = SimpleNamespace(

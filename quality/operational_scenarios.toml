@@ -137,7 +137,7 @@ required_cadence = ["release"]
 id = "example.06_trajectory_analysis"
 kind = "example"
 owner = "missions"
-owner_paths = ["src/archetype/missions/trajectories", "src/archetype/app/missions"]
+owner_paths = ["src/archetype/missions"]
 source_path = "examples/06_trajectory_analysis.py"
 source_command = ["python", "examples/06_trajectory_analysis.py"]
 required_extras = []
@@ -239,7 +239,7 @@ required_cadence = ["pr", "main", "release"]
 id = "example.11_coding_agent_mission.dry_run"
 kind = "example"
 owner = "missions"
-owner_paths = ["src/archetype/missions", "src/archetype/app/missions"]
+owner_paths = ["src/archetype/missions"]
 source_path = "examples/11_coding_agent_mission.py"
 source_command = [
   "python",
@@ -472,25 +472,30 @@ artifact_schema = "archetype.operational-results/v1"
 required_cadence = ["pr", "main", "release"]
 
 [[scenario]]
-id = "dogfood.agent_mission.scripted"
+id = "dogfood.agent_mission.modal_activities"
 kind = "dogfood"
 owner = "missions"
 owner_paths = [
   "src/archetype/missions",
-  "src/archetype/app/missions",
-  "src/archetype/runtime",
   "src/archetype/runtime_resources.py",
-  "evals/suites/capability/agent_missions.py",
+  "src/archetype/wiring.py",
+  "tests/missions/test_modal_activity_executors.py",
+  "tests/missions/test_mission_author_world_integration.py",
 ]
-source_path = "evals/suites/capability/agent_missions.py"
-source_command = ["python", "-m", "evals.run", "--profile", "capability"]
+source_path = "tests/missions/test_modal_activity_executors.py"
+source_command = [
+  "pytest",
+  "-q",
+  "tests/missions/test_modal_activity_executors.py",
+  "tests/missions/test_mission_author_world_integration.py",
+]
 required_extras = []
 tier = 1
-applicability = ["source", "wheel"]
-timeout_seconds = 900
+applicability = ["source"]
+timeout_seconds = 300
 prerequisites = []
 missing_prerequisite = "fail"
-semantic_oracle = { kind = "eval", ref = "evals/suites/capability/agent_missions.py::task_agent_mission_transition_authority" }
+semantic_oracle = { kind = "pytest", ref = "tests/missions/test_modal_activity_executors.py::test_modal_critic_cold_restart_recovers_exact_receipt_with_one_start" }
 contracts = [
   "missions.agent_v1.validator_gated",
   "missions.agent_v1.exact_head_critic",
@@ -507,7 +512,6 @@ kind = "dogfood"
 owner = "missions"
 owner_paths = [
   "src/archetype/missions",
-  "src/archetype/app/missions",
   "src/archetype/runtime",
   "src/archetype/commands",
   "src/archetype/world",
@@ -515,9 +519,7 @@ owner_paths = [
   "src/archetype/core/hooks.py",
   "src/archetype/wiring.py",
   "examples/11_coding_agent_mission.py",
-  "evals/suites/capability/agent_missions.py",
   "tests/missions",
-  "tests/integration/test_agent_mission_service.py",
   "tests/integration/test_docker_sandbox_parity.py",
   "quality/operational_scenarios.toml",
   "uv.lock",
@@ -546,7 +548,6 @@ required_cadence = ["release"]
 path = ".github/workflows/sandbox-backend-parity.yml"
 trigger_paths = [
   "src/archetype/missions/**",
-  "src/archetype/app/missions/**",
   "src/archetype/runtime/**",
   "src/archetype/runtime_resources.py",
   "src/archetype/commands/**",
@@ -555,9 +556,7 @@ trigger_paths = [
   "src/archetype/core/hooks.py",
   "src/archetype/wiring.py",
   "examples/11_coding_agent_mission.py",
-  "evals/suites/capability/agent_missions.py",
   "tests/missions/**",
-  "tests/integration/test_agent_mission_service.py",
   "tests/integration/test_docker_sandbox_parity.py",
   "quality/operational_scenarios.toml",
   "uv.lock",
@@ -628,21 +627,3 @@ cleanup_policy = "provider"
 artifact_policy = "redacted_receipt"
 artifact_schema = "archetype.operational-results/v1"
 required_cadence = ["release"]
-
-[[tracked_receipt]]
-id = "agent-mission-capability-baseline"
-path = "quality/baselines/agent-mission-capability-8d3700eb.json"
-scenario_id = "dogfood.agent_mission.scripted"
-expected_revision = "8d3700eb24bd295916ee9716dd6c85f11c964873"
-require_clean = true
-expected_kind = "eval"
-expected_profile = "capability"
-expected_outcome = "passed"
-invocation_entrypoint = "evals/run.py"
-required_task_id = "agent_mission_transition_authority"
-required_graders = [
-  "mission_processors_own_transitions",
-  "mission_retry_uses_repository_evidence",
-  "mission_exact_head_critic_gates_promotion",
-  "mission_publication_and_cleanup_are_real",
-]

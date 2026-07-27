@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from dataclasses import dataclass, replace
@@ -14,7 +15,6 @@ from typing import Any
 
 import pytest
 
-from archetype.app.missions.local_activity_values import LocalMissionAuthorValueStore
 from archetype.missions.activities import (
     AuthorActivityRetryGuard,
     AuthorConfirmedAbsent,
@@ -31,12 +31,33 @@ from archetype.missions.coding_agents.contracts import (
 )
 from archetype.missions.contracts import (
     CommandValidator,
+    CriticPolicy,
     RepositoryPublicationPolicy,
 )
+from archetype.missions.critics import (
+    CandidateReviewRequest,
+    CriticActivityCodec,
+    CriticActivityRequest,
+    CriticExecutionResult,
+    CriticHarnessConfig,
+    CriticPrewarmRequest,
+    CriticReceiptValue,
+    CriticRecovered,
+    CriticSubjectPolicy,
+    CriticSubjectTransport,
+    bind_critic_subject,
+)
+from archetype.missions.critics.contracts import canonical_digest
+from archetype.missions.local_activity_values import LocalMissionAuthorValueStore
+from archetype.missions.local_critic_activity_values import LocalMissionCriticValueStore
 from archetype.missions.modal_author import (
     ModalAuthorExecutionUnknown,
     ModalMissionAuthorExecutor,
     ModalMissionAuthorExecutorConfig,
+)
+from archetype.missions.modal_critic import (
+    ModalMissionCriticExecutor,
+    ModalMissionCriticExecutorConfig,
 )
 from archetype.missions.sandboxes import (
     MODAL_ACTIVITY_PROTOCOL_EPOCH,
@@ -48,7 +69,11 @@ from archetype.missions.sandboxes import (
     SandboxIdentity,
     SandboxStatus,
 )
-from archetype.missions.transitions import AgentExecutionStatus
+from archetype.missions.transitions import (
+    AgentExecutionStatus,
+    CriticConclusion,
+    CriticExecutionStatus,
+)
 from archetype.redaction import RedactionService
 
 _SECRET = "github_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
@@ -358,6 +383,81 @@ class _Harness:
         )
 
 
+class _CriticHarness:
+    def __init__(self) -> None:
+        self.config = CriticHarnessConfig()
+        self.prewarm_calls = 0
+        self.calls = 0
+
+    async def prewarm(
+        self,
+        session: _Session,
+        request: CriticPrewarmRequest,
+    ) -> str:
+        del session, request
+        self.prewarm_calls += 1
+        return "a" * 40
+
+    async def execute(
+        self,
+        session: _Session,
+        request: CandidateReviewRequest,
+        **timing: int,
+    ) -> CriticExecutionResult:
+        self.calls += 1
+        content = b"exact diff"
+        subject = bind_critic_subject(
+            CriticSubjectPolicy(
+                digest=hashlib.sha256(content).hexdigest(),
+                max_bytes=request.policy.max_subject_bytes,
+            ),
+            metadata=b"{}",
+            content=content,
+            transport=CriticSubjectTransport.SANDBOX_FILE,
+            ref="/tmp/subject.diff",
+        )
+        receipt = CriticReceiptValue(
+            review_id=request.review_id,
+            conclusion=CriticConclusion.APPROVED,
+            candidate_digest=request.candidate_digest,
+            policy_digest=request.policy.digest,
+            evidence_digest=canonical_digest({"conclusion": "approved"}),
+            reviewed_base_revision=request.base_revision,
+            reviewed_head_revision=request.head_revision,
+            reviewed_diff_digest=request.diff_digest,
+            validator_bundle_digest=request.validator_bundle_digest,
+            subject_metadata_digest=subject.metadata_digest,
+            subject_digest=subject.subject_digest,
+            subject_content_size_bytes=subject.content_size_bytes,
+            subject_metadata_size_bytes=subject.metadata_size_bytes,
+            subject_size_bytes=subject.total_size_bytes,
+            subject_media_type=subject.media_type,
+            subject_transport=subject.transport.value,
+            subject_ref=subject.ref,
+            reviewed_scope="exact task diff",
+            finding_count=0,
+            blocking_count=0,
+            output_schema_version=request.policy.output_schema_version,
+            completed_at_ms=200,
+        )
+        return CriticExecutionResult(
+            request=request,
+            status=CriticExecutionStatus.EXITED,
+            sandbox=session.identity,
+            sandbox_status=SandboxStatus.READY,
+            sandbox_acquired=True,
+            started_at_ms=150,
+            ended_at_ms=200,
+            provision_started_at_ms=timing["provision_started_at_ms"],
+            sandbox_ready_at_ms=timing["sandbox_ready_at_ms"],
+            base_hydrated_at_ms=timing["base_hydrated_at_ms"],
+            critic_started_at_ms=175,
+            raw_output=f'{{"conclusion":"approved","token":"{_SECRET}"}}',
+            trace_uri="modal://critic-trace",
+            receipt=receipt,
+        )
+
+
 def _request(dispatch_id: str = "dispatch-modal-author") -> TaskDispatchRequest:
     return TaskDispatchRequest(
         mission_id=3,
@@ -434,6 +534,57 @@ def _executor(
         observer=observer,
     )
     return executor, selected_capability, selected_harness
+
+
+def _critic_request() -> CriticActivityRequest:
+    content = b"exact diff"
+    raw = CandidateReviewRequest(
+        candidate_entity_id=11,
+        candidate_id=hashlib.sha256(b"candidate").hexdigest(),
+        mission_id=3,
+        task_id=7,
+        task_name="Review candidate",
+        task_prompt="Prove the exact candidate is correct.",
+        dispatch_id=hashlib.sha256(b"dispatch").hexdigest(),
+        dispatch_sequence=1,
+        author_execution_id=9,
+        author_sandbox_id="sb-author-original",
+        repository="https://github.com/example/repository.git",
+        branch="agent/review",
+        base_ref="main",
+        base_revision="a" * 40,
+        head_revision="b" * 40,
+        diff_digest=hashlib.sha256(content).hexdigest(),
+        validator_bundle_digest=hashlib.sha256(b"validators").hexdigest(),
+        policy=CriticPolicy(max_subject_bytes=1 << 20),
+        validation=(),
+        candidate_published_at_ms=100,
+        attempt=1,
+    )
+    return CriticActivityCodec(RedactionService()).prepare_request(raw)
+
+
+def _critic_executor(
+    registry: _ModalRegistry,
+) -> tuple[ModalMissionCriticExecutor, _Capability, _CriticHarness]:
+    capability = _Capability(registry)
+    harness = _CriticHarness()
+    barrier = ModalProviderStartBarrier(
+        workspace_name=registry.workspace_name,
+        environment_name=registry.environment_name,
+        app_name=registry.app_name,
+        protocol_epoch=MODAL_ACTIVITY_PROTOCOL_EPOCH,
+    )
+    executor = ModalMissionCriticExecutor(
+        capability=capability,  # type: ignore[arg-type]
+        barrier=barrier,
+        harness=harness,  # type: ignore[arg-type]
+        redactor=RedactionService(),
+        config=ModalMissionCriticExecutorConfig(
+            sandbox_environment="modal-agent://sha256:test",
+        ),
+    )
+    return executor, capability, harness
 
 
 @pytest.fixture
@@ -550,6 +701,56 @@ async def test_cold_restart_recovers_exact_provider_result_without_start(
     assert direct == original
     assert first_capability.starts == first_harness.calls == 1
     assert capability.starts == harness.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_modal_critic_cold_restart_recovers_exact_receipt_with_one_start(
+    fake_modal: _ModalRegistry,
+    tmp_path: Path,
+) -> None:
+    first, first_capability, first_harness = _critic_executor(fake_modal)
+    request = _critic_request()
+    operation_id = "missions.critic:world-a:review-restart"
+    original = await first.execute(
+        operation_id=operation_id,
+        request=request,
+        attempt=1,
+        fence=1,
+        retry_guard=None,
+    )
+    restarted, capability, harness = _critic_executor(fake_modal)
+
+    recovered = await restarted.reconcile(
+        operation_id=operation_id,
+        request=request,
+    )
+    direct = await restarted.execute(
+        operation_id=operation_id,
+        request=request,
+        attempt=2,
+        fence=2,
+        retry_guard=None,
+    )
+
+    assert isinstance(recovered, CriticRecovered)
+    assert recovered.result == original
+    assert direct == original
+    assert original.receipt is not None
+    assert original.receipt.reviewed_diff_digest == request.diff_digest
+    assert original.sandbox.sandbox_id != request.author_sandbox_id
+    assert first_capability.starts == 1
+    assert first_harness.prewarm_calls == first_harness.calls == 1
+    assert first_capability.sessions[0].closed == 1
+    assert capability.starts == harness.prewarm_calls == harness.calls == 0
+    assert _SECRET not in fake_modal.result_values(first)[0]
+    values = LocalMissionCriticValueStore(
+        tmp_path / "critic-values",
+        codec=CriticActivityCodec(RedactionService()),
+    )
+    result_ref = await values.put_result(original, request)
+    durable = await values.get_result(result_ref)
+    assert durable.receipt is not None
+    assert durable.receipt.reviewed_diff_digest == request.diff_digest
 
 
 @pytest.mark.asyncio

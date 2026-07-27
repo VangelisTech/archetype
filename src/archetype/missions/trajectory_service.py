@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Application composition for querying and grading mission trajectories."""
+"""Mission composition for querying and grading trajectories."""
 
 from __future__ import annotations
 

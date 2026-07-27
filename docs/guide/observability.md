@@ -217,8 +217,7 @@ replay; neither can authorize, settle, or change the typed operation outcome.
 The machine authority is one independently owned manifest per family under
 `quality/observability/<family>.toml`. The required universe begins with every
 callable member — method, async method, or property — of every `Protocol`
-declared under either a registered `src/archetype/<family>/` package or the
-temporary `src/archetype/app/<family>/` compatibility layout, not only
+declared under a registered `src/archetype/<family>/` package, not only
 protocols co-located in `interfaces.py`.
 
 A family manifest may also register an exact `concrete_operation_surface` for

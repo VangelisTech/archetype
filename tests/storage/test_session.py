@@ -6,13 +6,8 @@
 import pytest
 from daft.session import Session
 
-from archetype.app.storage.session import configure_session as compatibility_configure_session
 from archetype.core.config import StorageConfig
 from archetype.storage.session import configure_session
-
-
-def test_compatibility_module_reexports_canonical_configure_session() -> None:
-    assert compatibility_configure_session is configure_session
 
 
 def test_configure_session_preserves_supplied_session_and_builds_local_catalog(tmp_path) -> None:

@@ -31,7 +31,7 @@ from archetype.missions.projections import (
     project_critic_activity_requests,
 )
 
-from .activities import CommittedMissionSnapshot, MissionCommittedIntentReader
+from .author_activity import CommittedMissionSnapshot, MissionCommittedIntentReader
 
 
 @dataclass(frozen=True, slots=True)
@@ -301,12 +301,23 @@ class MissionCriticActivityWorker:
         """Make bounded progress without replaying provider-bound critic work."""
 
         progressed = await self._deliver_pending_results()
+        return await self._run_claim_once() or progressed
+
+    async def run_until_idle(self) -> bool:
+        """Drain currently claimable critic work outside the tick lock."""
+
+        progressed = await self._deliver_pending_results()
+        while await self._run_claim_once():
+            progressed = True
+        return progressed
+
+    async def _run_claim_once(self) -> bool:
         claim = await self._catalog.claim_critic(
             world_id=self._world_id,
             owner=self._owner,
         )
         if claim is None:
-            return progressed
+            return False
         if claim.world_id != self._world_id:
             raise ValueError("critic Activity catalog returned another world's claim")
         request = await self._values.get_request(claim.request)
