@@ -1315,13 +1315,13 @@ def _render_template(name: str, values: Mapping[str, str]) -> str:
 
 def _inspection_capabilities(reviewer_id: str) -> str:
     backend = reviewer_spec(reviewer_id)["backend"]
-    if backend == "claude-code":
-        return "Use only read, grep, glob, and list capabilities."
-    return (
-        "Use the read-only shell only for non-mutating repository inspection "
-        "commands such as `git diff`, `git show`, `rg`, `sed`, `find`, `ls`, "
-        "and `cat`."
-    )
+    if backend == "codex":
+        return (
+            "Use the read-only shell only for non-mutating repository inspection "
+            "commands such as `git diff`, `git show`, `rg`, `sed`, `find`, `ls`, "
+            "and `cat`."
+        )
+    return "Use only read, grep, glob, and list capabilities."
 
 
 def render_lens_review_prompt(
