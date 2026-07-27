@@ -1861,3 +1861,59 @@ async def test_world_identity_scopes_equal_dispatch_ids(tmp_path: Path) -> None:
     assert first_bound.provider_operation_id == first_operation
     assert second_bound.provider_operation_id == second_operation
     await physical.close()
+
+
+@pytest.mark.asyncio
+async def test_author_claim_pages_past_a_full_page_of_live_claims(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A claimable author Activity beyond the scan page must not be stranded.
+
+    The retired scan read one finite 10,000-row prefix of the pending set;
+    a prefix of foreign leases made claim_author report no work, leaving
+    later claimable Activities pending until an unrelated prefix change.
+    """
+
+    import archetype.app.missions.activity_coordinator as author_coordinator_module
+
+    monkeypatch.setattr(author_coordinator_module, "_CLAIM_SCAN_PAGE", 3)
+    world_id = "mission-world"
+    physical, generic, catalog = _open_catalog(
+        tmp_path / "activities.db",
+        lease_seconds=300,
+    )
+    receipt = CommittedTickReceipt(world_id, "run-a", 1, "token-1", 0)
+
+    activity_ids = [f"dispatch-{position:03d}" for position in range(7)]
+    for activity_id in activity_ids:
+        digest = hashlib.sha256(activity_id.encode()).hexdigest()
+        await catalog.admit_author(
+            world_id=world_id,
+            receipt=receipt,
+            activity_id=activity_id,
+            request=AuthorActivityRequestRef(
+                ref=f"mission-author+json:sha256:{digest}",
+                digest=digest,
+            ),
+        )
+    # Lease two full pages' worth so the claimable Activity sits on page 3.
+    for activity_id in activity_ids[:6]:
+        claim = await generic.claim(
+            world_id,
+            AUTHOR_ACTIVITY_KIND,
+            activity_id,
+            f"busy-{activity_id}",
+            lease_seconds=300,
+        )
+        assert claim.acquired
+
+    claim = await catalog.claim_author(world_id=world_id, owner="available-worker")
+
+    assert claim is not None
+    assert claim.activity_id == activity_ids[-1]
+
+    # Every Activity now leased: an honest None, reached only by paging to
+    # the catalog's end rather than stopping at page one.
+    assert await catalog.claim_author(world_id=world_id, owner="late-worker") is None
+    await physical.close()

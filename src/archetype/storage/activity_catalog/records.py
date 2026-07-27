@@ -36,6 +36,7 @@ class ActivityAdmissionRecord:
 
 @dataclass(frozen=True, slots=True)
 class ActivityRecord:
+    sequence: int | None
     activity_id: str
     kind: str
     source_world_id: str

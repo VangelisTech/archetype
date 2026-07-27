@@ -178,7 +178,12 @@ sequenceDiagram
 | `archetype.physical_ai.optimization` | Pure, callback-driven instruction search |
 | `archetype.physical_ai.views` | Storage-backed terminal report projection |
 | `archetype.physical_ai.handlers` | Free world/processor/episode/query workflows over declared storage and world ports |
-| `archetype.physical_ai.hosted_episode` | Canonical whole-episode Arrow schemas, codecs, identities, digests, completeness validation, and the family-owned hosted choreography target |
+| `archetype.physical_ai.hosted_episode` | Canonical whole-episode Arrow schemas, codecs, identities, digests, and completeness validation |
+| `archetype.physical_ai.hosted_activity_contracts` | Family Components, stable operation identity, bounded content references, provider protocol, and reconciliation facts |
+| `archetype.physical_ai.hosted_activities` | Exact-receipt projector, generic Activity adapter, fenced worker, result redelivery, and settlement choreography |
+| `archetype.physical_ai.hosted_activity_values` | Local content-addressed proof store, permanent-start seeded provider, and provider-durable first-result recovery |
+| `archetype.physical_ai.hosted_activity_world` | Exact storage reader, idempotent world stager, required-projector binding, and unsettled-work bridge |
+| `archetype.physical_ai.hosted_modal` | Exact Modal namespace, atomic hosted-start admission, Volume-first payload publication, and first-result reconciliation |
 | `CommandDispatcher` | Exact-operation admission and registered handler dispatch |
 | `RuntimeResources` | Process-scoped ownership and retryable close of live providers |
 | `ArchetypeRuntime` | Supported trusted Python entry point and sync parity |
@@ -197,7 +202,7 @@ The separation is intentional:
 - The runtime exposes the capability without exposing a concrete service or
   live `AsyncWorld`.
 
-### Accepted hosted-episode Activity target
+### Hosted-episode Activity boundary
 
 The current direct path above remains supported until its owning cutover
 passes. It supplies environment and policy clients to internal per-step
@@ -229,6 +234,57 @@ choreography that projects committed intent, invokes the Activity coordinator,
 publishes large results, stages factual observations, and binds settlement to
 the later committed receipt. It declares the lower-family ports that
 choreography needs; no parallel application-layer mirror is created.
+
+The provider-neutral path is:
+
+1. A tick commits `HostedEpisodeIntent`, which contains only the stable
+   Activity/operation identity and a content-addressed canonical request.
+2. `PhysicalHostedActivityProjector` reads that receipt's singleton manifest
+   head and idempotently admits the generic Activity.
+3. `PhysicalHostedActivityWorker`, outside the world lock, binds the stable
+   provider operation before asking the family provider to execute or
+   reconcile.
+4. The provider publishes a complete request/trajectory/results/manifest set
+   under a permanent operation index before the generic catalog records its
+   bounded descriptor.
+5. The worker repeatedly stages the exact `HostedEpisodeObservation`; a later
+   tick commits it, and only that exact receipt can settle the Activity.
+
+The local seeded provider acquires one permanent atomic start marker. A crash
+after complete provider publication is recovered from the first result without
+a second episode. A crash after start but before a complete result remains
+permanently unknown: deterministic seeds and lease expiry are not replay
+authority. A partial trajectory cannot produce a manifest or Activity result.
+
+The Modal provider binds its identity to the exact workspace, Environment,
+App, Function, named Dict, named Volume, and protocol epoch. Its permanent
+start is an atomic Dict put-if-absent. The GPU function writes and commits the
+canonical request, trajectory, episode-results, and manifest blobs to the
+Volume before atomically publishing their bounded result index to the Dict.
+Cold reconstruction recovers that index when a completion response or worker
+process is lost, without another function spawn. A marker with no complete
+index remains reconciliation-required.
+
+`PhysicalHostedActivityBinding` exposes the required projector, worker, and
+world-scoped unsettled-work check without creating an
+`archetype.app.physical_ai` topology. The current direct per-step evaluation
+path remains supported and unchanged until consolidation; this Activity slice
+does not silently cut over runtime operations.
+
+Both Activity admission reads and observation-idempotency reads intentionally
+use only the current world's coordinated segment. Settled parent observations
+remain visible through ordinary lineage queries, but a fork neither re-admits
+the parent's intent nor treats a parent observation as settlement for a
+world-qualified child Activity. The lifecycle unsettled-work gate is what makes
+that exact-world rule safe.
+
+The local filesystem value store and SQLite Activity catalog are restart
+oracles. They do not claim remote catalog or application-publication parity.
+The Modal Dict and Volume are provider durability, not ECS state or a
+replacement for Iceberg/artifacts. No Mission-owned Modal barrier is imported:
+the Physical-AI family supplies the recovery meaning for its own provider,
+while the generic Activity catalog continues to own claims, fences, operation
+binding, result recording, and settlement.
 
 The family-owned hosted data contract is
 `archetype.physical_ai.hosted_episode`, version
@@ -270,9 +326,10 @@ appears exactly once, its rows are contiguous from reset through exactly one
 terminal row, no row exceeds its transition budget, every echoed request field
 and digest agrees, the per-episode results are the exact trajectory derivation,
 and the one manifest binds the other three payloads and their counts. The
-validator then requires that exact canonical manifest as the fourth payload. A7
-must publish the complete trajectory and manifest before recording a bounded
-Activity result reference; a partial trajectory is never a settleable result.
+validator then requires that exact canonical manifest as the fourth payload.
+The Activity worker publishes the complete trajectory and manifest before
+recording a bounded Activity result reference; a partial trajectory is never a
+settleable result.
 
 External simulator and robot adapters should migrate to this module rather than
 copying its schemas. The proof-era names map as follows:
@@ -442,5 +499,7 @@ The workflow enforces these contracts:
     constructor, limited to embedded-XML MuJoCo model/data scratch.
 
 The credential-free contracts live under `tests/physical_ai/`. Real LIBERO,
-VLA, GPU, and Modal adapters remain external provider implementations and paid
-dogfoods; the physical-AI family does not import them.
+VLA, and robot/simulator implementations remain external provider
+implementations and paid dogfoods. The family-owned Modal delivery adapter
+loads the optional SDK lazily and has a separate, user-triggered paid proof; it
+does not make Modal a requirement for local Physical-AI evaluation.
