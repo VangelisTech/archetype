@@ -206,6 +206,8 @@ def test_prompts_render_from_named_files_with_adjacent_exact_schemas():
     assert '"recommended_severity"' in adjudication_prompt
     assert "ready-for-human-review" in brief_prompt
     assert '"change_cohorts"' in brief_prompt
+    assert "complete read-only input" in brief_prompt
+    assert "Do not use tools" in brief_prompt
 
 
 def test_prompts_are_plain_reviewable_markdown_files():

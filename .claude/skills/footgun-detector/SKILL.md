@@ -223,10 +223,10 @@ No footguns detected in this diff.
   of it — severity is the filter, not silence. Anything you can state as a
   concrete runtime consequence belongs in the output, graded `blocking` or
   `advisory` by the contract above. The merge gate blocks on `blocking` only,
-  so an uncertain finding costs a review thread, not a red build; a suppressed
-  one costs a runtime bug. What does not belong is a finding you cannot name a
-  runtime consequence for at all — that is a style nit, and the rule above
-  already excludes it.
+  so an uncertain finding costs receipt-comment noise, not a red build; a
+  suppressed one costs a runtime bug. What does not belong is a finding you
+  cannot name a runtime consequence for at all — that is a style nit, and the
+  rule above already excludes it.
 - **Diff-only.** Only report issues in changed lines (with enough context to confirm). Don't audit the entire codebase.
 - **Concrete fixes.** Every finding must include a specific fix, not "consider refactoring."
 - **Read what the lens needs.** Spend turns on surrounding context and on the
