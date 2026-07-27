@@ -24,7 +24,7 @@ from archetype.missions.relations import DependsOn, Guards, PartOfMission
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("ARCHETYPE_CATALOG_DIR", str(tmp_path / "catalogs"))
-    app = create_app()
+    app = create_app(dev_auth=True, bind_host="127.0.0.1")
     with TestClient(app) as c:
         yield c
 

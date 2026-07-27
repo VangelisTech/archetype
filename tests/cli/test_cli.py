@@ -32,7 +32,7 @@ runner = CliRunner()
 def api_client(tmp_path, monkeypatch):
     """Yield a TestClient wired to a fresh runtime resource owner."""
     monkeypatch.setenv("ARCHETYPE_CATALOG_DIR", str(tmp_path / "catalogs"))
-    fastapi_app = create_app()
+    fastapi_app = create_app(dev_auth=True, bind_host="127.0.0.1")
     with TestClient(fastapi_app) as tc:
         yield tc
 
@@ -70,6 +70,21 @@ class TestCLI:
         assert result.exit_code == 0
         assert "host" in result.output.lower()
         assert "port" in result.output.lower()
+        assert "dev-auth" in result.output.lower()
+
+    def test_serve_dev_auth_refuses_non_loopback_bind(self, monkeypatch):
+        started = False
+
+        def unexpected_run(*_args, **_kwargs):
+            nonlocal started
+            started = True
+
+        monkeypatch.setattr("uvicorn.run", unexpected_run)
+        result = runner.invoke(app, ["serve", "--dev-auth", "--host", "0.0.0.0"])
+
+        assert result.exit_code == 2
+        assert "requires a loopback" in result.output
+        assert started is False
 
     def test_world_help(self):
         result = runner.invoke(app, ["world", "--help"])

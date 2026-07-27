@@ -32,7 +32,7 @@ class QueryRouteMetric104(Component):
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("ARCHETYPE_CATALOG_DIR", str(tmp_path / "catalogs"))
-    app = create_app()
+    app = create_app(dev_auth=True, bind_host="127.0.0.1")
     with TestClient(app) as c:
         yield c
 
@@ -737,8 +737,10 @@ def test_route_modules_do_not_import_forbidden_services():
 
 @pytest.mark.asyncio
 async def test_development_principal_identity_is_stable_across_requests():
-    first = await get_actor_ctx("Bearer player")
-    second = await get_actor_ctx("Bearer player")
+    app = create_app(dev_auth=True, bind_host="127.0.0.1")
+    request = type("_Request", (), {"app": app})()
+    first = await get_actor_ctx(request, "Bearer player")
+    second = await get_actor_ctx(request, "Bearer player")
     policy = Policy(max_commands_per_tick=1)
 
     assert first.id == second.id

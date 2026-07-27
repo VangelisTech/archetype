@@ -273,6 +273,7 @@ def run_runtime_loopback(workspace: Path) -> dict[str, object]:
                         "serve",
                         "--host",
                         "127.0.0.1",
+                        "--dev-auth",
                         "--port",
                         "0",
                     ],

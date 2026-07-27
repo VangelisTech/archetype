@@ -534,14 +534,14 @@ def test_cli_serve_configures_the_server_host_before_uvicorn(monkeypatch) -> Non
         types.SimpleNamespace(run=lambda *args, **kwargs: events.append(("run", (args, kwargs)))),
     )
 
-    cli.serve(host="127.0.0.1", port=8123, reload=False)
+    cli.serve(host="127.0.0.1", port=8123, reload=False, dev_auth=False)
 
     assert events == [
         ("configure", {"service_name": "archetype-api"}),
         (
             "run",
             (
-                ("archetype.api.app:create_app",),
+                ("archetype.api.app:_create_cli_app",),
                 {"host": "127.0.0.1", "port": 8123, "reload": False, "factory": True},
             ),
         ),

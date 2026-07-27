@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import os
 from enum import StrEnum
-from typing import Any
+from typing import Annotated, Any
 
 import httpx
 import typer
@@ -67,7 +67,7 @@ ROLE_OPTION = typer.Option(
     None,
     "--role",
     "-r",
-    help="Developer role shortcut; production callers should use --token",
+    help="Role shortcut for a server started with --dev-auth",
 )
 
 
@@ -241,15 +241,40 @@ def _common_request_kwargs(
 
 @app.command()
 def serve(
-    host: str = typer.Option("0.0.0.0", help="Bind host"),
+    host: str = typer.Option("127.0.0.1", help="Bind host"),
     port: int = typer.Option(8000, help="Bind port"),
     reload: bool = typer.Option(False, help="Enable auto-reload"),
+    dev_auth: Annotated[
+        bool,
+        typer.Option(
+            "--dev-auth",
+            help="Enable role-based development auth (loopback only)",
+        ),
+    ] = False,
 ):
     """Start the FastAPI server."""
+    from archetype.api.app import (
+        _SERVE_DEV_AUTH_ENV,
+        _SERVE_HOST_ENV,
+        _is_loopback_host,
+    )
+
+    if dev_auth and not _is_loopback_host(host):
+        typer.echo("Error: --dev-auth requires a loopback --host", err=True)
+        raise typer.Exit(code=2)
+
     import uvicorn
 
     configure_host_observability(service_name="archetype-api")
-    uvicorn.run("archetype.api.app:create_app", host=host, port=port, reload=reload, factory=True)
+    os.environ[_SERVE_HOST_ENV] = host
+    os.environ[_SERVE_DEV_AUTH_ENV] = "1" if dev_auth else "0"
+    uvicorn.run(
+        "archetype.api.app:_create_cli_app",
+        host=host,
+        port=port,
+        reload=reload,
+        factory=True,
+    )
 
 
 # ── Status ───────────────────────────────────────────────────────────────
@@ -283,7 +308,7 @@ def world_create(
     role: Role | None = ROLE_OPTION,
     token: str | None = typer.Option(None, "--token", help="Bearer token to send verbatim"),
 ):
-    """Create a world. Defaults to API admin mode when auth is omitted."""
+    """Create a world."""
     body: dict[str, Any] = {
         "config": {"name": name},
         "storage_config": {"uri": storage, "namespace": namespace},

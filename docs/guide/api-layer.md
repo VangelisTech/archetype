@@ -10,7 +10,9 @@ runtime calls construct the same models and use actor-free dispatcher entry.
 
 ## Application Factory
 
-`create_app()` builds the FastAPI app with routers for worlds, commands, simulation, and queries:
+`create_app()` builds the FastAPI app with routers for worlds, commands,
+simulation, and queries. The host injects an authenticator into this factory;
+omitting it leaves protected routes fail closed:
 
 ```python
 @asynccontextmanager
@@ -60,10 +62,18 @@ async def run_world(
 ## Authentication context
 
 Production ingress authenticates a stable principal and fails closed when
-credentials are absent or invalid. A development-only anonymous-admin mode, if
-enabled explicitly, uses one stable process principal so quotas and audit
-identity do not reset on every request. The trusted runtime has no actor
-context. See [Command Gate](command-gate.md).
+credentials are absent or invalid. The factory accepts a callback that receives
+the bearer token and returns `ActorCtx`; Archetype does not ship an IdP or token
+service. If no callback is injected, protected requests receive a generic 401.
+
+The built-in development mode is disabled by default. `archetype serve
+--dev-auth` enables the role-bearing shortcut only when the server binds to
+`localhost`, an address in `127.0.0.0/8`, or `::1`; any other bind is rejected
+before Uvicorn starts. In that mode, an omitted header selects the stable
+development admin identity and `Bearer admin|operator|player|viewer` selects a
+stable development role identity. These values are role shortcuts, not
+credentials. The trusted runtime has no actor context. See [Command
+Gate](command-gate.md).
 
 ## Route Structure
 
@@ -164,7 +174,7 @@ starting Uvicorn. Every other CLI command remains an HTTP client and performs
 no local provider or handler setup.
 
 ```text
-archetype serve              Starts uvicorn with the FastAPI app
+archetype serve --dev-auth   Starts the loopback development server
 archetype world create       POST /worlds
 archetype world list         GET /worlds
 archetype world inspect      GET /worlds/{id}
@@ -182,9 +192,11 @@ archetype hooks list         GET /worlds/{id}/hooks
 archetype resources list     GET /worlds/{id}/resources
 ```
 
-The server URL defaults to `http://localhost:8000` and can be overridden with
-`ARCHETYPE_URL` or per command with `--url`. HTTP commands accept the developer
-auth shortcut `--role` / `-r` and the bearer-token option `--token`.
+The server binds to `127.0.0.1:8000` by default. The client URL defaults to
+`http://localhost:8000` and can be overridden with `ARCHETYPE_URL` or per
+command with `--url`. HTTP commands accept `--role` / `-r` only for a server
+started with `--dev-auth`; `--token` sends a bearer token to a host-injected
+authenticator.
 
 Without component types, `query` returns the world-state projection. Pass comma-separated
 component types positionally to use the lazy component-query path:
