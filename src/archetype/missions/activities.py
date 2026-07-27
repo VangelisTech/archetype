@@ -7,9 +7,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+from archetype.core.component import Component
+from archetype.graph import Relation
 from archetype.missions.coding_agents.contracts import (
     AgentExecutionResult,
     TaskDispatchRequest,
@@ -17,12 +20,29 @@ from archetype.missions.coding_agents.contracts import (
 from archetype.missions.components import (
     AgentExecution,
     AuthorActivityObservation,
+    Candidate,
+    Checkpoint,
     Commit,
+    CompleteAuthorActivityObservation,
     FrictionLog,
+    Sandbox,
     ValidationResult,
 )
-from archetype.missions.projections import author_activity_fact_bundle_digest
-from archetype.missions.sandboxes import SandboxStatus
+from archetype.missions.critics.contracts import (
+    candidate_subject_digest,
+    canonical_digest,
+)
+from archetype.missions.relations import (
+    AuthoredBy,
+    CandidateFor,
+    Executes,
+    PartOfMission,
+    ProducedBy,
+    RunsIn,
+    Supersedes,
+)
+from archetype.missions.sandboxes import CheckpointRef, SandboxStatus
+from archetype.missions.transitions import AgentExecutionStatus
 
 AUTHOR_ACTIVITY_KIND = "missions.author"
 
@@ -75,7 +95,12 @@ class AuthorActivityResultRef:
 
 @dataclass(frozen=True, slots=True)
 class AuthorActivityRetryGuard:
-    """Provider-side barrier authorizing one safe replay attempt."""
+    """Workflow binding for one provider adapter's atomic retry route.
+
+    This value is never transferable provider execution authority. The
+    adapter must still acquire its own non-transferable provider barrier while
+    performing the retry.
+    """
 
     ref: str
     digest: str
@@ -91,6 +116,8 @@ class AuthorExecutionObservation:
 
     result: AgentExecutionResult
     sandbox_status: SandboxStatus
+    bind_mission: bool = True
+    checkpoint: CheckpointRef | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "sandbox_status", SandboxStatus(self.sandbox_status))
@@ -103,6 +130,8 @@ class DurableAuthorExecutionObservation:
     result: AgentExecutionResult
     sandbox_status: SandboxStatus
     redaction_policy_id: str
+    bind_mission: bool = True
+    checkpoint: CheckpointRef | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "sandbox_status", SandboxStatus(self.sandbox_status))
@@ -119,7 +148,7 @@ class AuthorRecovered:
 
 @dataclass(frozen=True, slots=True)
 class AuthorConfirmedAbsent:
-    """Provider evidence proves absence behind an atomic replay barrier."""
+    """Provider evidence permits an attempt through an atomic retry route."""
 
     guard: AuthorActivityRetryGuard
 
@@ -157,6 +186,45 @@ class MissionAuthorExecutor(Protocol):
         operation_id: str,
         request: TaskDispatchRequest,
     ) -> AuthorReconciliation: ...
+
+
+def author_activity_fact_bundle_digest(
+    *,
+    execution_id: int,
+    execution: AgentExecution,
+    validations: Sequence[ValidationResult],
+    commits: Sequence[Commit],
+    friction: Sequence[FrictionLog],
+) -> str:
+    """Digest the execution-only A3a fact scaffold using its canonical codec."""
+
+    def ordered(values: Sequence[Component]) -> list[dict[str, object]]:
+        payloads = [value.model_dump(mode="json") for value in values]
+        return sorted(
+            payloads,
+            key=lambda value: json.dumps(
+                value,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+        )
+
+    payload = {
+        "commits": ordered(commits),
+        "execution": execution.model_dump(mode="json"),
+        "execution_id": execution_id,
+        "friction": ordered(friction),
+        "schema_version": 1,
+        "validations": ordered(validations),
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,6 +279,410 @@ class AuthorActivityFactBundle:
             friction_count=len(self.friction),
             redaction_policy_id=redaction_policy_id,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorActivityEntityFact:
+    """One entity identity and one immutable component value in an observation."""
+
+    entity_id: int
+    component: Component
+
+    def __post_init__(self) -> None:
+        if self.entity_id < 1:
+            raise ValueError("author activity fact requires a positive entity identity")
+
+    def canonical_value(self) -> dict[str, object]:
+        """Return the family-owned canonical digest value for this fact."""
+
+        component_type = type(self.component)
+        return {
+            "component": f"{component_type.__module__}.{component_type.__qualname__}",
+            "entity_id": self.entity_id,
+            "value": self.component.model_dump(mode="json"),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CompleteAuthorActivityFactBundle:
+    """Complete result-derived Mission facts staged by A3b as one batch."""
+
+    facts: tuple[AuthorActivityEntityFact, ...]
+    execution_id: int
+    sandbox_entity_id: int
+    candidate_entity_id: int = 0
+    checkpoint_entity_id: int = 0
+
+    def __post_init__(self) -> None:
+        identities = [fact.entity_id for fact in self.facts]
+        if len(identities) != len(set(identities)):
+            raise ValueError("complete author activity facts require unique entity identities")
+        if self.execution_id < 1 or self.sandbox_entity_id < 1:
+            raise ValueError("complete author activity facts require execution and sandbox ids")
+        if self.candidate_entity_id < 0:
+            raise ValueError("complete author activity candidate identity cannot be negative")
+        if self.checkpoint_entity_id < 0:
+            raise ValueError("complete author activity checkpoint identity cannot be negative")
+        by_id = {fact.entity_id: fact.component for fact in self.facts}
+        if not isinstance(by_id.get(self.execution_id), AgentExecution):
+            raise ValueError("complete author activity execution identity is not an execution")
+        if not isinstance(by_id.get(self.sandbox_entity_id), Sandbox):
+            raise ValueError("complete author activity sandbox identity is not a sandbox")
+        if self.candidate_entity_id and not isinstance(
+            by_id.get(self.candidate_entity_id),
+            Candidate,
+        ):
+            raise ValueError("complete author activity candidate identity is not a candidate")
+        if self.checkpoint_entity_id and not isinstance(
+            by_id.get(self.checkpoint_entity_id),
+            Checkpoint,
+        ):
+            raise ValueError("complete author activity checkpoint identity is not a checkpoint")
+
+    def components(self, component_type: type[Component]) -> tuple[AuthorActivityEntityFact, ...]:
+        """Return facts of one exact component type in stable entity order."""
+
+        return tuple(
+            sorted(
+                (fact for fact in self.facts if type(fact.component) is component_type),
+                key=lambda fact: fact.entity_id,
+            )
+        )
+
+    @property
+    def digest(self) -> str:
+        """Digest every semantic fact and provenance edge, including entity ids."""
+
+        payload = {
+            "facts": [
+                fact.canonical_value()
+                for fact in sorted(self.facts, key=lambda fact: fact.entity_id)
+            ],
+            "schema_version": 2,
+        }
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+    def marker(
+        self,
+        *,
+        result: AuthorActivityResultRef,
+        redaction_policy_id: str,
+    ) -> CompleteAuthorActivityObservation:
+        """Bind this entire Mission observation to the exact durable result."""
+
+        execution = self.components(AgentExecution)
+        if len(execution) != 1:
+            raise ValueError("complete author activity requires exactly one execution")
+        value = execution[0].component
+        assert isinstance(value, AgentExecution)
+        relations = tuple(fact for fact in self.facts if isinstance(fact.component, Relation))
+        return CompleteAuthorActivityObservation(
+            schema_version=2,
+            activity_id=value.dispatch_id,
+            task_id=value.task_id,
+            dispatch_sequence=value.dispatch_sequence,
+            result_ref=result.ref,
+            result_digest=result.digest,
+            fact_bundle_digest=self.digest,
+            execution_id=self.execution_id,
+            validation_count=len(self.components(ValidationResult)),
+            commit_count=len(self.components(Commit)),
+            friction_count=len(self.components(FrictionLog)),
+            checkpoint_count=len(self.components(Checkpoint)),
+            checkpoint_entity_id=self.checkpoint_entity_id,
+            sandbox_entity_id=self.sandbox_entity_id,
+            sandbox_bound=bool(self.components(PartOfMission)),
+            candidate_entity_id=self.candidate_entity_id,
+            candidate_count=int(self.candidate_entity_id > 0),
+            relation_count=len(relations),
+            redaction_policy_id=redaction_policy_id,
+        )
+
+    def staged_entities(
+        self,
+        *,
+        marker_entity_id: int,
+        result: AuthorActivityResultRef,
+        redaction_policy_id: str,
+    ) -> list[list[Component]]:
+        """Return the exact mixed-signature batch with its completion marker last."""
+
+        if marker_entity_id < 1 or marker_entity_id in {fact.entity_id for fact in self.facts}:
+            raise ValueError("author activity marker requires a fresh entity identity")
+        ordered = [[fact.component] for fact in sorted(self.facts, key=lambda fact: fact.entity_id)]
+        ordered.append(
+            [
+                self.marker(
+                    result=result,
+                    redaction_policy_id=redaction_policy_id,
+                )
+            ]
+        )
+        return ordered
+
+
+def author_result_is_green(
+    request: TaskDispatchRequest,
+    result: AgentExecutionResult,
+) -> bool:
+    """Return whether exact author evidence requires one Candidate fact."""
+
+    expected_validator_ids = {item.validator_id for item in request.validators}
+    observed_validator_ids = {item.validator_id for item in result.validation}
+    exact_validation = (
+        expected_validator_ids == observed_validator_ids
+        and len(result.validation) == len(request.validators)
+        and all(
+            item.passed and item.revision == result.final_revision for item in result.validation
+        )
+    )
+    final_publications = [
+        item
+        for item in result.commits
+        if item.sha == result.final_revision and item.pushed and item.final_revision
+    ]
+    return bool(
+        result.status is AgentExecutionStatus.EXITED
+        and exact_validation
+        and len(final_publications) == 1
+        and result.final_revision
+        and result.starting_revision
+        and result.diff_digest
+        and result.validator_bundle_digest
+    )
+
+
+def complete_author_activity_fact_count(
+    request: TaskDispatchRequest,
+    observation: DurableAuthorExecutionObservation,
+    *,
+    prior_candidate_id: int | None,
+) -> int:
+    """Return required non-marker entity identities for one complete bundle."""
+
+    output_count = (
+        len(observation.result.validation)
+        + len(observation.result.commits)
+        + len(observation.result.friction)
+        + int(observation.checkpoint is not None)
+    )
+    base = 4 + int(observation.bind_mission)  # sandbox, execution, Executes, RunsIn
+    candidate = (
+        3 + int(prior_candidate_id is not None)
+        if author_result_is_green(request, observation.result)
+        else 0
+    )
+    return base + (2 * output_count) + candidate
+
+
+def complete_author_activity_fact_bundle(
+    request: TaskDispatchRequest,
+    observation: DurableAuthorExecutionObservation,
+    *,
+    entity_ids: Sequence[int],
+    prior_candidate_id: int | None,
+    candidate_created_at_ms: int,
+) -> CompleteAuthorActivityFactBundle:
+    """Construct every Mission fact and provenance edge for one author result."""
+
+    expected_count = complete_author_activity_fact_count(
+        request,
+        observation,
+        prior_candidate_id=prior_candidate_id,
+    )
+    if len(entity_ids) != expected_count or len(set(entity_ids)) != len(entity_ids):
+        raise ValueError("author activity entity identities do not match the complete fact count")
+    if any(entity_id < 1 for entity_id in entity_ids):
+        raise ValueError("author activity entity identities must be positive")
+    if candidate_created_at_ms < 0:
+        raise ValueError("candidate creation time cannot be negative")
+
+    selected = iter(entity_ids)
+    result = observation.result
+    sandbox_entity_id = next(selected)
+    facts: list[AuthorActivityEntityFact] = [
+        AuthorActivityEntityFact(
+            sandbox_entity_id,
+            Sandbox(
+                provider=result.sandbox.provider,
+                sandbox_id=result.sandbox.sandbox_id,
+                environment=result.sandbox.environment,
+                worktree=result.worktree,
+                status=observation.sandbox_status.value,
+                error=(result.error if observation.sandbox_status is SandboxStatus.ERRORED else ""),
+            ),
+        )
+    ]
+    if observation.bind_mission:
+        facts.append(
+            AuthorActivityEntityFact(
+                next(selected),
+                PartOfMission(
+                    source=sandbox_entity_id,
+                    target=request.mission_id,
+                ),
+            )
+        )
+
+    execution_id = next(selected)
+    scaffold = author_activity_fact_bundle(
+        observation,
+        execution_id=execution_id,
+    )
+    facts.extend(
+        (
+            AuthorActivityEntityFact(execution_id, scaffold.execution),
+            AuthorActivityEntityFact(
+                next(selected),
+                Executes(source=execution_id, target=request.task_id),
+            ),
+            AuthorActivityEntityFact(
+                next(selected),
+                RunsIn(source=execution_id, target=sandbox_entity_id),
+            ),
+        )
+    )
+
+    for component in (*scaffold.validations, *scaffold.commits, *scaffold.friction):
+        output_id = next(selected)
+        facts.append(AuthorActivityEntityFact(output_id, component))
+        facts.append(
+            AuthorActivityEntityFact(
+                next(selected),
+                ProducedBy(source=output_id, target=execution_id),
+            )
+        )
+
+    checkpoint_entity_id = 0
+    if observation.checkpoint is not None:
+        checkpoint = observation.checkpoint
+        checkpoint_entity_id = next(selected)
+        facts.append(
+            AuthorActivityEntityFact(
+                checkpoint_entity_id,
+                Checkpoint(
+                    task_id=result.task_id,
+                    execution_id=execution_id,
+                    dispatch_id=result.dispatch_id,
+                    provider=checkpoint.provider,
+                    checkpoint_id=checkpoint.checkpoint_id,
+                    uri=checkpoint.uri,
+                    created_at_ms=checkpoint.created_at_ms,
+                    environment=checkpoint.environment,
+                    source_sandbox_id=checkpoint.source_sandbox_id,
+                    owner_id=checkpoint.owner_id,
+                    locality=checkpoint.locality.value,
+                    expires_at_ms=checkpoint.expires_at_ms or 0,
+                    integrity=checkpoint.integrity,
+                    restorable=checkpoint.restorable,
+                ),
+            )
+        )
+        facts.append(
+            AuthorActivityEntityFact(
+                next(selected),
+                ProducedBy(source=checkpoint_entity_id, target=execution_id),
+            )
+        )
+
+    candidate_entity_id = 0
+    if author_result_is_green(request, result):
+        candidate_entity_id = next(selected)
+        candidate_id = canonical_digest(
+            {
+                "mission_id": request.mission_id,
+                "task_id": request.task_id,
+                "dispatch_id": request.dispatch_id,
+                "author_execution_id": execution_id,
+                "head_revision": result.final_revision,
+                "policy_digest": request.critic_policy.digest,
+            }
+        )
+        subject_digest = candidate_subject_digest(
+            candidate_id=candidate_id,
+            mission_id=request.mission_id,
+            task_id=request.task_id,
+            dispatch_id=request.dispatch_id,
+            author_execution_id=execution_id,
+            repository=request.repository,
+            branch=request.branch,
+            base_ref=request.base_ref,
+            base_revision=result.starting_revision,
+            head_revision=result.final_revision,
+            diff_digest=result.diff_digest,
+            validator_bundle_digest=result.validator_bundle_digest,
+            policy_digest=request.critic_policy.digest,
+        )
+        facts.extend(
+            (
+                AuthorActivityEntityFact(
+                    candidate_entity_id,
+                    Candidate(
+                        candidate_id=candidate_id,
+                        mission_id=request.mission_id,
+                        task_id=request.task_id,
+                        dispatch_id=request.dispatch_id,
+                        dispatch_sequence=request.dispatch_sequence,
+                        author_execution_id=execution_id,
+                        author_sandbox_id=result.sandbox.sandbox_id,
+                        repository=request.repository,
+                        branch=request.branch,
+                        base_ref=request.base_ref,
+                        base_revision=result.starting_revision,
+                        head_revision=result.final_revision,
+                        diff_digest=result.diff_digest,
+                        validator_bundle_digest=result.validator_bundle_digest,
+                        policy_digest=request.critic_policy.digest,
+                        candidate_digest=subject_digest,
+                        created_at_ms=candidate_created_at_ms,
+                    ),
+                ),
+                AuthorActivityEntityFact(
+                    next(selected),
+                    CandidateFor(
+                        source=candidate_entity_id,
+                        target=request.task_id,
+                    ),
+                ),
+                AuthorActivityEntityFact(
+                    next(selected),
+                    AuthoredBy(
+                        source=candidate_entity_id,
+                        target=execution_id,
+                    ),
+                ),
+            )
+        )
+        if prior_candidate_id is not None:
+            facts.append(
+                AuthorActivityEntityFact(
+                    next(selected),
+                    Supersedes(
+                        source=candidate_entity_id,
+                        target=prior_candidate_id,
+                    ),
+                )
+            )
+
+    try:
+        next(selected)
+    except StopIteration:
+        pass
+    else:
+        raise AssertionError("author activity fact builder did not consume every entity id")
+    return CompleteAuthorActivityFactBundle(
+        facts=tuple(facts),
+        execution_id=execution_id,
+        sandbox_entity_id=sandbox_entity_id,
+        candidate_entity_id=candidate_entity_id,
+        checkpoint_entity_id=checkpoint_entity_id,
+    )
 
 
 def author_activity_fact_bundle(
@@ -287,6 +759,7 @@ def author_activity_fact_bundle(
 __all__ = [
     "AUTHOR_ACTIVITY_KIND",
     "AuthorActivityFactBundle",
+    "AuthorActivityEntityFact",
     "AuthorActivityRequestRef",
     "AuthorActivityResultRef",
     "AuthorActivityRetryGuard",
@@ -295,8 +768,13 @@ __all__ = [
     "AuthorRecovered",
     "AuthorRecoveryUnknown",
     "AuthorReconciliation",
+    "CompleteAuthorActivityFactBundle",
     "DurableAuthorExecutionObservation",
     "MissionAuthorExecutor",
     "author_activity_fact_bundle",
+    "author_activity_fact_bundle_digest",
     "author_provider_operation_id",
+    "author_result_is_green",
+    "complete_author_activity_fact_bundle",
+    "complete_author_activity_fact_count",
 ]

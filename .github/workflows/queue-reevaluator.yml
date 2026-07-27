@@ -1,0 +1,82 @@
+# Periodically reconcile auto-merge arming with actual queue-readiness.
+#
+# Why: the automerge workflow is event-driven, but GitHub Actions delivers no
+# event for the state change that most often completes queue-readiness —
+# resolving the last review thread (`pull_request_review_thread` is an Apps
+# webhook, not an Actions trigger; naming it in `on:` invalidates the
+# workflow file). Until now the workaround was to submit a synthetic review
+# comment purely to emit a `pull_request_review` event. This cron closes the
+# gap without the ritual: every few minutes, each open maintainer PR has its
+# arm reconciled against what is true right now.
+#
+# Division of labor:
+#   automerge.yml        event-driven fast path (push, review, gate runs)
+#   this workflow        event-free slow path (bounded staleness ~5 min)
+#   merge-group recheck  final verification inside the queue itself
+#
+# All three delegate the decision to scripts/gh_pr_queue_ready.sh. This
+# workflow adds no second definition of queue-ready.
+#
+# Token: arming uses AUTOMERGE_PAT for the same reason automerge.yml's arm
+# job does — the eventual merge commit must trigger `on: push` workflows
+# (docs deploy), and pushes from the default GITHUB_TOKEN do not. Scheduled
+# workflows run the default-branch workflow file with a default-branch
+# checkout, so the PAT is never exposed to PR-authored code.
+
+name: Queue Re-evaluator
+
+on:
+  schedule:
+    # Every 5 minutes (GitHub's minimum; delivery may lag under load). The
+    # bound on staleness after resolving the last thread is one period.
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  checks: read # queue-ready helper reads review-complete check runs
+  contents: write # arming (via the reconcile script)
+  pull-requests: write # arm/disarm
+
+concurrency:
+  group: queue-reevaluator
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    name: Reconcile arming for open maintainer PRs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout helpers
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      # The PR list is filtered here only to bound the loop; the authoritative
+      # eligibility filter (open, non-draft, author) lives inside the
+      # reconcile script and mirrors automerge.yml's arm job. A PR slipping
+      # through this list is re-filtered there — fail closed, not fail open.
+      - name: Reconcile each open PR
+        env:
+          GH_TOKEN: ${{ secrets.AUTOMERGE_PAT || github.token }}
+        run: |
+          chmod +x scripts/gh_pr_arm_reconcile.sh scripts/gh_pr_queue_ready.sh
+
+          prs=$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open --limit 100 \
+            --json number --jq '.[].number')
+          if [ -z "$prs" ]; then
+            echo "no open PRs; nothing to reconcile."
+            exit 0
+          fi
+
+          failed=0
+          for pr in $prs; do
+            if ! scripts/gh_pr_arm_reconcile.sh "${GITHUB_REPOSITORY}" "$pr"; then
+              echo "::warning::reconcile failed for PR #${pr}"
+              failed=$((failed + 1))
+            fi
+          done
+          if [ "$failed" -gt 0 ]; then
+            echo "::error::${failed} PR(s) failed to reconcile; see warnings above."
+            exit 1
+          fi

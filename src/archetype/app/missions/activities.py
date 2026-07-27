@@ -8,10 +8,10 @@ catalog.  Concrete composition adapts these ports to the generic activity
 coordinator and durable value storage.  The mission family retains the meaning
 of author requests, provider reconciliation, and returned observations.
 
-This substrate does not yet supply the exact receipt-pinned world reader or the
-idempotent ECS fact-bundle stager.  Those concrete adapters are the next
-integration gate; until they exist, this module is not a supported Mission
-execution cutover.
+The concrete receipt-pinned reader, atomic complete fact-bundle stager, and
+per-world binding live in :mod:`archetype.app.missions.activity_world`.
+Concrete runtime composition installs that binding for the supported Modal
+Mission author path; non-Modal backends retain the direct local path.
 """
 
 from __future__ import annotations
@@ -35,12 +35,13 @@ from archetype.missions.activities import (
     AuthorRecoveryUnknown,
     DurableAuthorExecutionObservation,
     MissionAuthorExecutor,
-    author_activity_fact_bundle,
     author_provider_operation_id,
+    complete_author_activity_fact_bundle,
 )
 from archetype.missions.coding_agents.contracts import TaskDispatchRequest
+from archetype.missions.components import Candidate
 from archetype.missions.projections import (
-    project_complete_author_activity_observations,
+    project_complete_author_activity_fact_bundles,
     project_task_dispatch_requests,
 )
 from archetype.redaction import RedactedText, RedactionReceipt
@@ -195,6 +196,8 @@ class MissionAuthorActivityCatalog(Protocol):
         receipt: CommittedTickReceipt,
     ) -> None: ...
 
+    async def has_unsettled_work(self, world_id: str) -> bool: ...
+
 
 @runtime_checkable
 class MissionAuthorValueStore(Protocol):
@@ -294,7 +297,8 @@ class MissionAuthorActivityProjector:
                 world_id=receipt.world_id,
             )
         }
-        for observation in project_complete_author_activity_observations(event):
+        for projected in project_complete_author_activity_fact_bundles(event):
+            observation = projected.marker
             delivery = pending.get(observation.activity_id)
             if delivery is None:
                 continue
@@ -309,14 +313,31 @@ class MissionAuthorActivityProjector:
                 or expected_result.dispatch_sequence != request.dispatch_sequence
             ):
                 raise ValueError("durable author result does not match its admitted request")
-            expected = author_activity_fact_bundle(
-                durable,
-                execution_id=observation.execution_id,
-            ).marker(
+            current_candidate = projected.bundle.components(Candidate)
+            candidate_created_at_ms = 0
+            if current_candidate:
+                if len(current_candidate) != 1:
+                    continue
+                candidate_value = current_candidate[0].component
+                assert isinstance(candidate_value, Candidate)
+                candidate_created_at_ms = candidate_value.created_at_ms
+            try:
+                expected_bundle = complete_author_activity_fact_bundle(
+                    request,
+                    durable,
+                    entity_ids=tuple(sorted(fact.entity_id for fact in projected.bundle.facts)),
+                    prior_candidate_id=request.prior_candidate_entity_id or None,
+                    candidate_created_at_ms=candidate_created_at_ms,
+                )
+            except ValueError:
+                # Structural self-consistency is weaker than exact durable
+                # result completeness. Leave an omission pending.
+                continue
+            expected = expected_bundle.marker(
                 result=delivery.result,
                 redaction_policy_id=durable.redaction_policy_id,
             )
-            if observation != expected:
+            if observation != expected or expected_bundle.digest != projected.bundle.digest:
                 continue
             await self._catalog.settle_author_observation(
                 world_id=receipt.world_id,
@@ -362,12 +383,23 @@ class MissionAuthorActivityWorker:
         """Make bounded progress without ever replaying provider-bound work."""
 
         progressed = await self._deliver_pending_results()
+        return await self._run_claim_once() or progressed
+
+    async def run_until_idle(self) -> bool:
+        """Drain every currently claimable author operation outside the tick lock."""
+
+        progressed = await self._deliver_pending_results()
+        while await self._run_claim_once():
+            progressed = True
+        return progressed
+
+    async def _run_claim_once(self) -> bool:
         claim = await self._catalog.claim_author(
             world_id=self._world_id,
             owner=self._owner,
         )
         if claim is None:
-            return progressed
+            return False
         if claim.world_id != self._world_id:
             raise ValueError("author activity catalog returned another world's claim")
 

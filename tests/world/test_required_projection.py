@@ -54,6 +54,40 @@ class _ReceiptWorld:
         )
 
 
+async def test_lazy_application_binds_projector_before_first_tick() -> None:
+    from archetype.core.interfaces import CommittedTickReceipt
+    from archetype.world.registry import WorldRegistry
+    from archetype.world.simulation import RequiredProjector, step
+
+    projected: list[CommittedTickReceipt] = []
+
+    async def required(receipt: CommittedTickReceipt) -> None:
+        projected.append(receipt)
+
+    registry = WorldRegistry()
+    world = _ReceiptWorld(CommittedTickReceipt, [])
+    projector = RequiredProjector(
+        consumer_name="test.lazy-application",
+        project=required,
+    )
+    await registry.insert(world)
+    await registry.bind_required_projector(world.world_id, projector)
+    await registry.bind_required_projector(world.world_id, projector)
+
+    await step(registry, world.world_id, RunConfig())
+
+    assert registry.required_projector(world.world_id) is projector
+    assert [receipt.committed_tick for receipt in projected] == [0]
+    with pytest.raises(ValueError, match="different required projector"):
+        await registry.bind_required_projector(
+            world.world_id,
+            RequiredProjector(
+                consumer_name="test.other",
+                project=required,
+            ),
+        )
+
+
 async def test_fail_once_projector_retries_exact_receipt_before_next_tick() -> None:
     registry_module = import_module("archetype.world.registry")
     simulation_module = import_module("archetype.world.simulation")

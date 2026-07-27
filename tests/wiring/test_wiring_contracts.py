@@ -1223,7 +1223,7 @@ async def test_compound_destroy_and_audit_handlers_preserve_owned_order(
         events.append(("audit", (world_id, filters)))
         return audit_result
 
-    monkeypatch.setattr(WorldRegistry, "begin_close", begin_close)
+    monkeypatch.setattr(WorldLifecycle, "begin_close", begin_close)
     monkeypatch.setattr(WorldRegistry, "validate_cleanup_lease", validate_cleanup_lease)
     monkeypatch.setattr(WorldRegistry, "cleanup_operation", cleanup_operation)
     monkeypatch.setattr(simulation, "reconcile_committed_work_locked", reconcile)
@@ -1258,7 +1258,9 @@ async def test_compound_destroy_and_audit_handlers_preserve_owned_order(
                 "cleanup-exit",
                 "destroy",
             ]
-            world_registry = cast("tuple[object, str]", events[0][1])[0]
+            lifecycle = cast("tuple[object, str]", events[0][1])[0]
+            assert isinstance(lifecycle, WorldLifecycle)
+            world_registry = cast("tuple[object, object]", events[1][1])[0]
             assert isinstance(world_registry, WorldRegistry)
             assert events[1] == ("cleanup-enter", (world_registry, lease))
             assert events[2] == ("reconcile", (world_registry, "world-1", world))

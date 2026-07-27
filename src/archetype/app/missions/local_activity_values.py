@@ -11,7 +11,6 @@ import json
 import os
 import re
 import tempfile
-from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal, overload
 
@@ -24,17 +23,12 @@ from archetype.missions.activities import (
     AuthorExecutionObservation,
     DurableAuthorExecutionObservation,
 )
-from archetype.missions.coding_agents.contracts import (
-    CommitObservation,
-    FrictionObservation,
-    TaskDispatchRequest,
-    ValidationObservation,
-)
+from archetype.missions.activity_values import MissionAuthorValueCodec
+from archetype.missions.coding_agents.contracts import TaskDispatchRequest
 
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REF_PREFIX = "mission-author+json:sha256:"
 _REQUEST_ADAPTER = TypeAdapter(TaskDispatchRequest)
-_RESULT_ADAPTER = TypeAdapter(DurableAuthorExecutionObservation)
 
 
 class LocalMissionAuthorValueStore:
@@ -47,10 +41,10 @@ class LocalMissionAuthorValueStore:
 
     def __init__(self, root: str | Path, *, redactor: MissionAuthorRedactor) -> None:
         self._root = Path(root)
-        self._redactor = redactor
+        self._codec = MissionAuthorValueCodec(redactor=redactor)
 
     async def put_request(self, request: TaskDispatchRequest) -> AuthorActivityRequestRef:
-        durable = self._sanitize_request(request)
+        durable = self._codec.sanitize_request(request)
         value = await asyncio.to_thread(
             self._put,
             "request",
@@ -68,12 +62,8 @@ class LocalMissionAuthorValueStore:
         self,
         observation: AuthorExecutionObservation,
     ) -> AuthorActivityResultRef:
-        durable = self._sanitize(observation)
-        value = await asyncio.to_thread(
-            self._put,
-            "result",
-            _RESULT_ADAPTER.dump_python(durable, mode="json"),
-        )
+        durable = self._codec.sanitize_observation(observation)
+        value = await asyncio.to_thread(self._put_result, durable)
         if not isinstance(value, AuthorActivityResultRef):
             raise AssertionError("result persistence returned a request reference")
         return value
@@ -82,141 +72,14 @@ class LocalMissionAuthorValueStore:
         self,
         value: AuthorActivityResultRef,
     ) -> DurableAuthorExecutionObservation:
-        payload = await asyncio.to_thread(self._read, value, "result")
-        return _RESULT_ADAPTER.validate_python(payload)
+        encoded = await asyncio.to_thread(self._read_encoded, value, "result")
+        return self._codec.decode_observation(encoded)
 
-    def _sanitize_request(self, request: TaskDispatchRequest) -> TaskDispatchRequest:
-        """Remove free-text secrets and reject unsafe structural identities."""
-
-        for field, value in (
-            ("author.request.dispatch_id", request.dispatch_id),
-            ("author.request.repository", request.repository),
-            ("author.request.branch", request.branch),
-            ("author.request.base_ref", request.base_ref),
-            ("author.request.task_base_revision", request.task_base_revision),
-            (
-                "author.request.previous_agent_session_id",
-                request.previous_agent_session_id,
-            ),
-        ):
-            self._safe(value, field)
-
-        value = _REQUEST_ADAPTER.dump_python(request, mode="json")
-
-        def visit(item: Any, path: tuple[str, ...]) -> Any:
-            if isinstance(item, str):
-                scope = "mission-author-request:" + ".".join(path)
-                return self._redactor.redact_text(item, scope=scope).text
-            if isinstance(item, list):
-                return [visit(child, (*path, str(position))) for position, child in enumerate(item)]
-            if isinstance(item, dict):
-                return {key: visit(child, (*path, str(key))) for key, child in item.items()}
-            return item
-
-        return _REQUEST_ADAPTER.validate_python(visit(value, ("request",)))
-
-    def _sanitize(
+    def _put_result(
         self,
-        observation: AuthorExecutionObservation,
-    ) -> DurableAuthorExecutionObservation:
-        result = observation.result
-        dispatch_id = self._safe(result.dispatch_id, "author.dispatch_id")
-        scope = f"mission:{result.mission_id}:author:{dispatch_id}"
-        sandbox = result.sandbox
-        safe_sandbox = replace(
-            sandbox,
-            provider=self._safe(sandbox.provider, "author.sandbox.provider"),
-            sandbox_id=self._safe(sandbox.sandbox_id, "author.sandbox.id"),
-            environment=self._safe(
-                sandbox.environment,
-                "author.sandbox.environment",
-            ),
-        )
-
-        validation = tuple(
-            ValidationObservation(
-                validator_id=item.validator_id,
-                name=self._redact(item.name, 1_000, f"{scope}:validator-name"),
-                command=tuple(
-                    self._redact(
-                        argument,
-                        2_000,
-                        f"{scope}:validator-command:{position}",
-                    )
-                    for position, argument in enumerate(item.command)
-                ),
-                expected_returncode=item.expected_returncode,
-                actual_returncode=item.actual_returncode,
-                revision=self._safe(item.revision, "author.validation.revision"),
-                stdout=self._redact(item.stdout, 4_000, f"{scope}:validator-stdout"),
-                stderr=self._redact(item.stderr, 4_000, f"{scope}:validator-stderr"),
-            )
-            for item in result.validation
-        )
-        commits = tuple(
-            CommitObservation(
-                sha=self._safe(item.sha, "author.commit.sha"),
-                message=self._redact(item.message, 4_000, f"{scope}:commit-message"),
-                branch=self._safe(item.branch, "author.commit.branch"),
-                pushed=item.pushed,
-                final_revision=item.final_revision,
-            )
-            for item in result.commits
-        )
-        friction = tuple(
-            FrictionObservation(
-                kind=self._safe(item.kind, "author.friction.kind"),
-                message=self._redact(item.message, 4_000, f"{scope}:friction"),
-            )
-            for item in result.friction
-        )
-        sanitized = replace(
-            result,
-            dispatch_id=dispatch_id,
-            sandbox=safe_sandbox,
-            worktree=self._safe(result.worktree, "author.worktree"),
-            agent_session_id=self._safe(
-                result.agent_session_id,
-                "author.agent_session_id",
-            ),
-            starting_revision=self._safe(
-                result.starting_revision,
-                "author.starting_revision",
-            ),
-            final_revision=self._safe(
-                result.final_revision,
-                "author.final_revision",
-            ),
-            diff_digest=self._safe(result.diff_digest, "author.diff_digest"),
-            validator_bundle_digest=self._safe(
-                result.validator_bundle_digest,
-                "author.validator_bundle_digest",
-            ),
-            agent_stdout=self._redact(result.agent_stdout, 16_000, f"{scope}:agent-stdout"),
-            agent_stderr=self._redact(result.agent_stderr, 16_000, f"{scope}:agent-stderr"),
-            trace_uri=self._safe(result.trace_uri, "author.trace_uri"),
-            validation=validation,
-            commits=commits,
-            friction=friction,
-            error=self._redact(result.error, 4_000, f"{scope}:error"),
-        )
-        return DurableAuthorExecutionObservation(
-            result=sanitized,
-            sandbox_status=observation.sandbox_status,
-            redaction_policy_id=self._redactor.policy_id,
-        )
-
-    def _redact(self, value: str, limit: int, scope: str) -> str:
-        if not value:
-            return ""
-        return self._redactor.redact_text(value, scope=scope).text[-limit:]
-
-    def _safe(self, value: str, field: str, *, limit: int = 4_096) -> str:
-        if len(value) > limit:
-            raise ValueError(f"{field} must be at most {limit} characters")
-        if value:
-            self._redactor.assert_safe_metadata(value, field=field)
-        return value
+        value: DurableAuthorExecutionObservation,
+    ) -> AuthorActivityResultRef:
+        return self._put_encoded("result", self._codec.encode_observation(value))
 
     @overload
     def _put(
@@ -237,16 +100,59 @@ class LocalMissionAuthorValueStore:
         kind: Literal["request", "result"],
         value: Any,
     ) -> AuthorActivityRequestRef | AuthorActivityResultRef:
-        encoded = json.dumps(
+        return self._put_encoded(
+            kind,
+            json.dumps(
+                {
+                    "kind": kind,
+                    "schema_version": 1,
+                    "value": value,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode(),
+        )
+
+    @overload
+    def _put_encoded(
+        self,
+        kind: Literal["request"],
+        encoded: bytes,
+    ) -> AuthorActivityRequestRef: ...
+
+    @overload
+    def _put_encoded(
+        self,
+        kind: Literal["result"],
+        encoded: bytes,
+    ) -> AuthorActivityResultRef: ...
+
+    def _put_encoded(
+        self,
+        kind: Literal["request", "result"],
+        encoded: bytes,
+    ) -> AuthorActivityRequestRef | AuthorActivityResultRef:
+        envelope = json.loads(encoded)
+        if (
+            not isinstance(envelope, dict)
+            or envelope.get("schema_version") != 1
+            or envelope.get("kind") != kind
+            or "value" not in envelope
+        ):
+            raise ValueError("author activity value has an incompatible envelope")
+        canonical = json.dumps(
             {
                 "kind": kind,
                 "schema_version": 1,
-                "value": value,
+                "value": envelope["value"],
             },
             ensure_ascii=False,
             separators=(",", ":"),
             sort_keys=True,
         ).encode()
+        if canonical != encoded:
+            raise ValueError("author activity value is not canonically encoded")
         digest = hashlib.sha256(encoded).hexdigest()
         path = self._path(digest)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -289,6 +195,14 @@ class LocalMissionAuthorValueStore:
         value: AuthorActivityRequestRef | AuthorActivityResultRef,
         expected_kind: Literal["request", "result"],
     ) -> Any:
+        encoded = self._read_encoded(value, expected_kind)
+        return json.loads(encoded)["value"]
+
+    def _read_encoded(
+        self,
+        value: AuthorActivityRequestRef | AuthorActivityResultRef,
+        expected_kind: Literal["request", "result"],
+    ) -> bytes:
         digest = self._ref_digest(value)
         encoded = self._path(digest).read_bytes()
         observed = hashlib.sha256(encoded).hexdigest()
@@ -306,7 +220,7 @@ class LocalMissionAuthorValueStore:
             or "value" not in envelope
         ):
             raise ValueError("author activity value has an incompatible envelope")
-        return envelope["value"]
+        return encoded
 
     @staticmethod
     def _ref_digest(value: AuthorActivityRequestRef | AuthorActivityResultRef) -> str:

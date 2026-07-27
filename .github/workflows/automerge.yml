@@ -81,8 +81,11 @@ on:
   # entire workflow file invalid, so GitHub loads no jobs at all and every
   # push gets a bare "Invalid workflow file" run instead. Actions cannot
   # observe thread resolution at all; to re-evaluate arming after resolving
-  # the last thread, re-run Deterministic Review Gate (that fires the
-  # workflow_run trigger below) or push.
+  # the last thread, SUBMIT A REVIEW (see the header above). Re-running
+  # Deterministic Review Gate also re-evaluates, but on a head whose
+  # findings were all advisory the gate succeeds and republishes those
+  # findings as fresh unresolved threads — straight back to
+  # not-queue-ready. Pushing is fine: a new head earns a fresh review.
   pull_request_review:
     types: [submitted, edited, dismissed]
   # The review gate's completion is the first arming signal.

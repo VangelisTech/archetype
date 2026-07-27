@@ -24,6 +24,7 @@ from archetype.core.hooks import (
     HookEvent,
     HookHandle,
 )
+from archetype.world.models import ComponentTypeRef
 
 if TYPE_CHECKING:
     from archetype.world.interfaces import iWorldRegistry
@@ -60,6 +61,108 @@ async def _create_entities_locked(
 ) -> list[int]:
     """Stage an ordered entity batch while the world lock is already held."""
     return await world.create_entities(entities)
+
+
+async def create_entities_atomically(
+    registry: iWorldRegistry,
+    world_id: str | UUID,
+    entities: list[list[Component]],
+) -> list[int]:
+    """Stage an all-or-none mixed-signature entity batch.
+
+    This is a mutation-cache transaction, not a durable tick commit. It keeps
+    a cancellation or hook failure from leaving a prefix of a factual bundle
+    available to the next tick. Durable visibility is still established only
+    by the world's ordinary manifest-last step.
+    """
+
+    async with registry.operation(world_id) as world:
+        return await _create_entities_atomically_locked(world, entities)
+
+
+async def _create_entities_atomically_locked(
+    world: AsyncWorld,
+    entities: list[list[Component]],
+) -> list[int]:
+    """Stage an all-or-none entity batch while exact-world authority is held."""
+
+    if not entities:
+        return []
+    next_entity_id = world.next_entity_id
+    entity2sig = dict(world.entity2sig)
+    spawn_cache = {signature: list(rows) for signature, rows in world.spawn_cache.items()}
+    despawn_cache = {
+        signature: list(entity_ids) for signature, entity_ids in world.despawn_cache.items()
+    }
+    try:
+        staged_ids = await world.create_entities(entities)
+        expected_ids = list(range(next_entity_id, next_entity_id + len(entities)))
+        if staged_ids != expected_ids:
+            raise RuntimeError("world did not preserve the atomic batch identity reservation")
+        return staged_ids
+    except BaseException:
+        # Rollback is deliberately synchronous. Cancellation cannot interrupt
+        # restoration and no partially staged row can escape into a later
+        # tick. Entity IDs were never returned, so restoring the counter is
+        # safe under the exact-world lock.
+        world.next_entity_id = next_entity_id
+        world.entity2sig.clear()
+        world.entity2sig.update(entity2sig)
+        world.spawn_cache.clear()
+        world.spawn_cache.update(spawn_cache)
+        world.despawn_cache.clear()
+        world.despawn_cache.update(despawn_cache)
+        # Signature interning is a monotonic canonicalization cache, not
+        # staged world state. A failed batch may leave an unused canonical
+        # signature there, but no entity or row points at it and a later spawn
+        # can safely reuse it. Do not couple world-owned rollback to a private
+        # AsyncWorld cache representation.
+        raise
+
+
+def preview_entity_ids_locked(world: AsyncWorld, n: int) -> tuple[int, ...]:
+    """Preview the exact IDs an atomic spawn will reserve under the world lock."""
+
+    if n < 0:
+        raise ValueError("entity ID preview count must be non-negative")
+    start = int(world.next_entity_id)
+    return tuple(range(start, start + n))
+
+
+def pending_components_locked(
+    world: AsyncWorld,
+    component_type: type[Component],
+) -> tuple[tuple[int, Component], ...]:
+    """Read staged components by durable schema identity under the world lock.
+
+    Mutation-cache representation stays owned here. Schema-identical component
+    twins from cold resume match, while a column-shape collision alone does
+    not establish component membership.
+    """
+
+    expected = ComponentTypeRef.from_type(component_type)
+    prefix = component_type.get_prefix()
+    values: list[tuple[int, Component]] = []
+    for signature, rows in world.spawn_cache.items():
+        if not any(
+            ComponentTypeRef.from_type(member).type_name == expected.type_name
+            and ComponentTypeRef.from_type(member).schema_fingerprint == expected.schema_fingerprint
+            for member in signature
+        ):
+            continue
+        for row in rows:
+            entity_id = int(row["entity_id"])
+            if world.entity2sig.get(entity_id) != signature:
+                continue
+            values.append(
+                (
+                    entity_id,
+                    component_type(
+                        **{field: row[f"{prefix}{field}"] for field in component_type.model_fields}
+                    ),
+                )
+            )
+    return tuple(values)
 
 
 async def reserve_entity_ids(
