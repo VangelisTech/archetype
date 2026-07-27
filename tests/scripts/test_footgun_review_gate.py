@@ -371,6 +371,47 @@ def test_workflow_has_aggregation_adjudication_and_human_review_jobs():
     assert "name: review-complete" in workflow
 
 
+def test_every_codex_reviewer_uses_the_pinned_cli():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert workflow.count('CODEX_VERSION: "0.144.0"') == 1
+    assert workflow.count('npm install -g "@openai/codex@${CODEX_VERSION}"') == 4
+
+
+def test_human_design_brief_is_grounded_without_secret_read_capabilities():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    materialize = workflow.split(
+        "- name: Materialize human design-review contract",
+        1,
+    )[1]
+    materialize = materialize.split(
+        "- name: Generate human design-review brief (Codex)",
+        1,
+    )[0]
+    step = workflow.split("- name: Generate human design-review brief (Codex)", 1)[1]
+    step = step.split("- name: Validate human design-review brief", 1)[0]
+
+    assert "--disable shell_tool \\" in step
+    assert "--disable multi_agent \\" in step
+    assert '- < "${RUNNER_TEMP}/design-brief-prompt.txt" \\' in step
+    for source in (
+        '"${REVIEW_DIR}/validated/review-bundle.json"',
+        '"${SCOPE_FILE}"',
+        '"${DIFF_FILE}"',
+    ):
+        assert f"cat {source}" in materialize
+    for guidance_source in (
+        "AGENTS.md",
+        "LEARNINGS.md",
+        ".github/review/README.md",
+        "docs/guide/*.md",
+        "quality/architecture.toml",
+        "quality/architecture.d/*.toml",
+    ):
+        assert guidance_source in materialize
+    assert 'cat "${path}" >> "${RUNNER_TEMP}/design-brief-prompt.txt"' in materialize
+
+
 def test_workflow_preserves_inert_candidate_and_fail_closed_publication():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 

@@ -105,6 +105,7 @@ def _current_guidance_files(root: Path) -> tuple[Path, ...]:
     paths = set(root.glob("*.md"))
     paths.update((root / "docs" / "guide").rglob("*.md"))
     paths.update((root / ".claude" / "skills").rglob("SKILL.md"))
+    paths.update((root / ".claude" / "agents").glob("*.md"))
     paths.add(root / "src" / "archetype" / "__init__.py")
     return tuple(sorted(path for path in paths if path.is_file()))
 

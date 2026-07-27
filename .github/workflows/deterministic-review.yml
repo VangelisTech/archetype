@@ -11,6 +11,11 @@ on:
 
 permissions: {}
 
+# Keep every reviewer on the same audited CLI instead of letting jobs with an
+# unset version silently install the latest release.
+env:
+  CODEX_VERSION: "0.144.0"
+
 concurrency:
   group: deterministic-review-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event.action != 'ready_for_review' }}
@@ -111,7 +116,6 @@ jobs:
     env:
       DIFF_FILE: ${{ github.workspace }}/.footgun-review.diff
       LENS: ${{ matrix.lens }}
-      CODEX_VERSION: "0.144.0"
       OPENCODE_VERSION: "1.18.4"
       REVIEW_DIR: ${{ github.workspace }}/.footgun-review-output
       REVIEWER_ID: ${{ matrix.reviewer }}
@@ -842,12 +846,34 @@ jobs:
             --head "${HEAD_SHA}" \
             --bundle-digest "${BUNDLE_DIGEST}" \
             --output "${RUNNER_TEMP}/design-brief-prompt.txt"
+          echo "schema=$(python3 scripts/footgun_review_gate.py schema --kind design-brief)" \
+            >> "${GITHUB_OUTPUT}"
           {
-            echo "schema=$(python3 scripts/footgun_review_gate.py schema --kind design-brief)"
-            echo 'prompt<<__ARCHETYPE_DESIGN_BRIEF_PROMPT__'
-            cat "${RUNNER_TEMP}/design-brief-prompt.txt"
-            echo '__ARCHETYPE_DESIGN_BRIEF_PROMPT__'
-          } >> "${GITHUB_OUTPUT}"
+            echo
+            echo '<finalized-review-bundle>'
+            cat "${REVIEW_DIR}/validated/review-bundle.json"
+            echo '</finalized-review-bundle>'
+            echo '<exact-review-scope>'
+            cat "${SCOPE_FILE}"
+            echo '</exact-review-scope>'
+            echo '<exact-pr-diff>'
+            cat "${DIFF_FILE}"
+            echo '</exact-pr-diff>'
+          } >> "${RUNNER_TEMP}/design-brief-prompt.txt"
+          for path in \
+            AGENTS.md \
+            LEARNINGS.md \
+            .github/review/README.md \
+            docs/guide/*.md \
+            quality/architecture.toml \
+            quality/architecture.d/*.toml
+          do
+            printf '<protected-base-guidance path="%s">\n' "${path}" \
+              >> "${RUNNER_TEMP}/design-brief-prompt.txt"
+            cat "${path}" >> "${RUNNER_TEMP}/design-brief-prompt.txt"
+            printf '\n</protected-base-guidance>\n' \
+              >> "${RUNNER_TEMP}/design-brief-prompt.txt"
+          done
 
       - name: Generate human design-review brief (Codex)
         id: brief
@@ -866,13 +892,15 @@ jobs:
           codex exec \
             -m gpt-5.6-luna \
             -s read-only \
+            --disable shell_tool \
+            --disable multi_agent \
             --ephemeral \
             --ignore-user-config \
             --color never \
             -C "${GITHUB_WORKSPACE}" \
             --output-schema "${RUNNER_TEMP}/design-brief-schema.json" \
             -o "${RUNNER_TEMP}/design-brief-last.txt" \
-            "$(cat "${RUNNER_TEMP}/design-brief-prompt.txt")" \
+            - < "${RUNNER_TEMP}/design-brief-prompt.txt" \
             > "${RUNNER_TEMP}/design-brief-raw.txt" 2>&1
 
       - name: Validate human design-review brief
