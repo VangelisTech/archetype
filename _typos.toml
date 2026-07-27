@@ -30,6 +30,8 @@ DAG = "DAG"
 pylist = "pylist"
 unnest = "unnest"
 semver = "semver"
+# Codex app-server thread ID fixture prefix
+thr = "thr"
 # Deliberate user-typo phrase matched against session transcripts
 youre = "youre"
 
