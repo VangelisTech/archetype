@@ -29,7 +29,7 @@ from pathlib import Path
 from string import Template
 from typing import Any, Literal, TypedDict
 
-MODEL_RESULT_SCHEMA_VERSION = 2
+MODEL_RESULT_SCHEMA_VERSION = 3
 REVIEW_BUNDLE_KIND = "archetype-review-bundle"
 REVIEW_BUNDLE_VERSION = 2
 ADJUDICATION_RECEIPT_KIND = "archetype-review-adjudication-receipt"
@@ -44,6 +44,7 @@ DESIGN_BRIEF_PROMPT_CHAR_LIMIT = 900_000
 DESIGN_BRIEF_RETRY_PROMPT_CHAR_LIMIT = 1_000_000
 
 SEVERITIES = ("blocking", "advisory")
+REVIEW_STATUSES = ("complete", "blocked")
 FOOTGUN_LENS_KIND = "footgun"
 DESIGN_LENS_KIND = "design"
 
@@ -74,6 +75,7 @@ class FootgunFinding(TypedDict):
 class FootgunLensResult(TypedDict):
     schema_version: int
     head_sha: str
+    review_status: Literal["complete", "blocked"]
     summary: str
     review_context: list[ReviewContext]
     findings: list[FootgunFinding]
@@ -101,6 +103,7 @@ class DesignFinding(TypedDict):
 class DesignLensResult(TypedDict):
     schema_version: int
     head_sha: str
+    review_status: Literal["complete", "blocked"]
     summary: str
     review_context: list[ReviewContext]
     findings: list[DesignFinding]
@@ -553,11 +556,12 @@ def footgun_result_schema(categories: Sequence[str]) -> dict[str, Any]:
     return _strict_object(
         {
             "head_sha": {"type": "string", "pattern": _SHA_RE},
+            "review_status": {"type": "string", "enum": list(REVIEW_STATUSES)},
             "summary": _text_schema(80),
             "review_context": _review_context_schema(),
             "findings": {"type": "array", "items": finding},
         },
-        ("head_sha", "summary", "review_context", "findings"),
+        ("head_sha", "review_status", "summary", "review_context", "findings"),
     )
 
 
@@ -603,11 +607,12 @@ def design_result_schema(categories: Sequence[str]) -> dict[str, Any]:
     return _strict_object(
         {
             "head_sha": {"type": "string", "pattern": _SHA_RE},
+            "review_status": {"type": "string", "enum": list(REVIEW_STATUSES)},
             "summary": _text_schema(80),
             "review_context": _review_context_schema(),
             "findings": {"type": "array", "items": finding},
         },
-        ("head_sha", "summary", "review_context", "findings"),
+        ("head_sha", "review_status", "summary", "review_context", "findings"),
     )
 
 
@@ -852,11 +857,19 @@ def normalize_lens_result(
 ) -> FootgunLensResult | DesignLensResult:
     _exact_keys(
         raw_result,
-        ("head_sha", "summary", "review_context", "findings"),
+        ("head_sha", "review_status", "summary", "review_context", "findings"),
         "lens result",
     )
     if raw_result.get("head_sha") != head_sha:
         raise ReviewError("review head_sha does not match the pull request head")
+    review_status = raw_result.get("review_status")
+    if review_status not in REVIEW_STATUSES:
+        raise ReviewError(f"review_status must be one of {', '.join(REVIEW_STATUSES)}")
+    if review_status != "complete":
+        raise ReviewError(
+            "review_status is 'blocked'; repository inspection must complete "
+            "before a reviewer verdict can be accepted"
+        )
     summary = _text(raw_result.get("summary"), "summary", 80)
     context = _normalize_review_context(raw_result.get("review_context"), scoped_files)
     findings = _expect_list(raw_result.get("findings"), "findings")
@@ -921,6 +934,7 @@ def normalize_lens_result(
         return {
             "schema_version": MODEL_RESULT_SCHEMA_VERSION,
             "head_sha": head_sha,
+            "review_status": "complete",
             "summary": summary,
             "review_context": context,
             "findings": normalized_footguns,
@@ -1018,6 +1032,7 @@ def normalize_lens_result(
     return {
         "schema_version": MODEL_RESULT_SCHEMA_VERSION,
         "head_sha": head_sha,
+        "review_status": "complete",
         "summary": summary,
         "review_context": context,
         "findings": normalized_design,

@@ -462,8 +462,9 @@ jobs:
       # route to adjudication — a degraded bench earns more scrutiny. A lens
       # whose entire bench records infra failure still fails the gate closed
       # at aggregation. Steps before the detector (checkout, scope) failing
-      # still fail this job: an infra receipt is only honest when the seat
-      # actually saw the diff.
+      # still fail this job. A reviewer that explicitly reports blocked
+      # repository inspection gets one retry, then a neutral runner receipt;
+      # it can never become a clean verdict.
       - name: Record infra failure when no validated receipt exists
         if: ${{ !cancelled() && steps.contract.outcome == 'success' }}
         env:
@@ -473,7 +474,14 @@ jobs:
             exit 0
           fi
           failure_class=schema
-          detail="reviewer produced no schema-valid structured output after the bounded retry"
+          detail="reviewer produced no verdict-valid structured output after the bounded retry"
+          reported_blocked="$(python3 scripts/footgun_review_gate.py reported-blocked \
+            --result "${REVIEW_DIR}/first-structured-output.json" \
+            --result "${REVIEW_DIR}/retry-structured-output.json")"
+          if [[ "$reported_blocked" == "true" ]]; then
+            failure_class=runner
+            detail="reviewer reported blocked required repository inspection after the bounded retry"
+          fi
           for raw in "${RUNNER_TEMP}/opencode-raw.txt" "${RUNNER_TEMP}/opencode-retry-raw.txt" \
                      "${RUNNER_TEMP}/codex-raw.txt" "${RUNNER_TEMP}/codex-retry-raw.txt" \
                      "${REVIEW_DIR}/first-structured-output.json" "${REVIEW_DIR}/retry-structured-output.json"; do
