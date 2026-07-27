@@ -26,6 +26,11 @@ contain no model-authored reviewer identity, assigned-category claim, or file
 manifest echo. `review_context.files` may contain changed paths only; cite
 other repository evidence in prose.
 
+Set `review_status` to `complete` only if the required repository inspection
+actually completed. If inspection is still unavailable, do not fabricate a
+verdict: set `review_status` to `blocked`, explain the blocker in `summary` and
+`review_context`, and return no findings.
+
 Use only read, grep, glob, and list capabilities. Do not execute code, edit
 files, fetch URLs, post comments, or push commits.
 

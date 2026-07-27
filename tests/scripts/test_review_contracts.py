@@ -107,7 +107,14 @@ def test_footgun_return_schema_contains_failure_evidence_not_provenance_echoes()
     properties = schema["properties"]
     finding = properties["findings"]["items"]
 
-    assert set(properties) == {"head_sha", "summary", "review_context", "findings"}
+    assert set(properties) == {
+        "head_sha",
+        "review_status",
+        "summary",
+        "review_context",
+        "findings",
+    }
+    assert properties["review_status"]["enum"] == ["complete", "blocked"]
     assert "reviewed_files" not in properties
     assert "reviewed_categories" not in properties
     assert "reviewer_id" not in properties
@@ -131,6 +138,28 @@ def test_lens_normalizer_rejects_model_authored_provenance():
     result["reviewer_id"] = "claude"
 
     with pytest.raises(ReviewError, match="fields do not match"):
+        normalize_lens_result(
+            result,
+            lens="authority",
+            head_sha=HEAD_SHA,
+            scoped_files=FILES,
+            anchors=ANCHORS,
+        )
+
+
+def test_lens_normalizer_rejects_blocked_repository_inspection():
+    result = raw_result()
+    result["review_status"] = "blocked"
+    result["summary"] = (
+        "The sandbox denied every repository read, so no changed file or protected-base "
+        "contract could be inspected and this result is not a review verdict."
+    )
+    result["review_context"][0]["assessment"] = (
+        "The changed paths are listed only to bind the failed attempt; repository "
+        "inspection was blocked before any source content could be evaluated."
+    )
+
+    with pytest.raises(ReviewError, match="repository inspection must complete"):
         normalize_lens_result(
             result,
             lens="authority",
@@ -210,7 +239,10 @@ def test_prompts_render_from_named_files_with_adjacent_exact_schemas():
     assert "independent reviewer `claude`" in lens_prompt
     assert ".claude/skills/footgun-detector/SKILL.md" in lens_prompt
     assert '"failing_input_or_sequence"' in lens_prompt
+    assert "infrastructure evidence, never a clean verdict" in lens_prompt
     assert "single bounded correction attempt" in retry_prompt
+    assert "If inspection is still unavailable" in retry_prompt
+    assert "set `review_status` to `blocked`" in retry_prompt
     assert "Act as a falsifier, not a voter" in adjudication_prompt
     assert '"recommended_severity"' in adjudication_prompt
     assert "ready-for-human-review" in brief_prompt
