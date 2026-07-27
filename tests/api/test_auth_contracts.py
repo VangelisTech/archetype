@@ -107,4 +107,7 @@ def test_authentication_and_authorization_errors_are_generic_publicly(
 
     assert raised.value.status_code == 403
     assert raised.value.detail == "Forbidden"
-    assert internal_detail in caplog.text
+    # The server-side record names the rejection without echoing the
+    # request-derived denial message (see errors.py: CodeQL-gated call site).
+    assert "API authorization rejected (PermissionError)" in caplog.text
+    assert internal_detail not in caplog.text

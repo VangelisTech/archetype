@@ -35,7 +35,10 @@ logger = logging.getLogger(__name__)
 def raise_api_error(exc: Exception, *, conflict: bool = False) -> NoReturn:
     """Map service-layer exceptions to stable REST errors."""
     if isinstance(exc, PermissionError):
-        logger.info("API authorization rejected: %s", exc)
+        # The denial message can embed request-derived values (roles parsed
+        # from the Authorization header), so log only the exception class:
+        # CodeQL py/clear-text-logging-sensitive-data gates this call site.
+        logger.info("API authorization rejected (%s)", type(exc).__name__)
         raise HTTPException(status_code=403, detail="Forbidden") from None
     # WorldNotFoundError extends LookupError, not KeyError; without the
     # explicit branch it fell through to the 500 fallback (issue #180).

@@ -70,7 +70,9 @@ class TestCLI:
         assert result.exit_code == 0
         assert "host" in result.output.lower()
         assert "port" in result.output.lower()
-        assert "dev-auth" in result.output.lower()
+        # Rich wraps help text at the terminal width and may split the flag
+        # name across lines; compare against whitespace-free output.
+        assert "--dev-auth" in "".join(result.output.lower().split())
 
     def test_serve_dev_auth_refuses_non_loopback_bind(self, monkeypatch):
         started = False
