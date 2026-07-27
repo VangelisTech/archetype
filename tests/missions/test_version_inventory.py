@@ -12,7 +12,6 @@ from typing import Any
 
 import pytest
 
-from archetype.missions.coding_agents.harness import CodexDriver
 from archetype.missions.sandboxes.versions import (
     VersionPinError,
     load_version_inventory,
@@ -35,23 +34,33 @@ def _mutated(old: str, new: str) -> bytes:
 
 def test_inventory_contains_only_the_v1_execution_dependencies() -> None:
     inventory = load_version_inventory()
-    assert inventory.schema_version == 1
+    assert inventory.schema_version == 2
     assert inventory.digest == f"sha256:{hashlib.sha256(_INVENTORY_BYTES).hexdigest()}"
     assert {artifact.artifact_id for artifact in inventory.artifacts} == {
         "codex-cli",
         "coding-agent-base-image",
         "modal-sdk",
+        "ttyd-aarch64",
+        "ttyd-x86-64",
     }
     codex = inventory.harness_pin("codex")
     assert codex.version == "0.144.6"
     assert codex.immutable_ref.startswith("sha512-")
     assert codex.harness_interface is not None
-    assert codex.harness_interface.invoke == ("codex", "exec")
-    assert (
-        CodexDriver._session_id(json.dumps({"type": "thread.started", "thread_id": "session-1"}))
-        == "session-1"
+    assert codex.harness_interface.interface_id == "modal-app-server"
+    assert codex.harness_interface.invoke == ("codex", "app-server")
+    assert codex.harness_interface.resume == ("thread/resume",)
+    assert codex.harness_interface.session_event == "turn/completed"
+    assert codex.harness_interface.session_fields == ("threadId", "turn.id")
+    assert tuple(interface.interface_id for interface in codex.harness_interfaces) == (
+        "modal-app-server",
+        "capability-exec-json",
     )
-    assert inventory.resolve("modal-sdk").version == "1.5.0"
+    assert codex.harness_interfaces[1].invoke == ("codex", "exec")
+    assert codex.harness_interfaces[1].session_event == "thread.started"
+    assert inventory.resolve("modal-sdk").version == "1.5.2"
+    assert inventory.resolve("ttyd-aarch64").immutable_ref.startswith("sha256:")
+    assert inventory.resolve("ttyd-x86-64").immutable_ref.startswith("sha256:")
     assert inventory.resolve("coding-agent-base-image").immutable_ref.startswith(
         "ghcr.io/astral-sh/uv@sha256:"
     )
@@ -74,9 +83,9 @@ def test_unknown_artifact_and_harness_fail_closed() -> None:
             'source = "https://registry.npmjs.org/@openai/codex/-/codex-0.144.6.tgz"',
             'source = "http://registry.npmjs.org/@openai/codex/codex.tgz"',
         ),
-        ('immutable_ref = "sha256:9c5687ef', 'immutable_ref = "1.5.0-'),
+        ('immutable_ref = "sha256:7508a44f', 'immutable_ref = "1.5.2-'),
         ('id = "modal-sdk"', 'id = "codex-cli"'),
-        ("schema_version = 1", "schema_version = 2"),
+        ("schema_version = 2", "schema_version = 3"),
     ],
 )
 def test_inventory_rejects_floating_or_inconsistent_pins(old: str, new: str) -> None:

@@ -120,8 +120,8 @@ A reviewed family may own a capability-scoped `Resource` implementation or
 provider adapter when the protocol and lifecycle vocabulary belong to that
 family. It must not become process-global configuration or cross-family
 authority. `archetype.missions.sandboxes` is the concrete example: it executes
-mission requests, while the app workflow owns composition and the processors
-own transitions.
+mission requests, while the missions-family workflow owns composition and the
+processors own transitions.
 
 A Resource is tick-time capability access whose process-local lifetime is not
 durable workflow truth. An Activity coordinates work admitted from one
@@ -319,10 +319,10 @@ or CLI boundary.
 | Artifacts | File values, discovery, metadata scans, immutable content-addressed objects, common/media indexes, storage-backed views, and exact free handlers | Storage port; operations carry explicit durable world and storage coordinates |
 | Evaluation | Snapshot pinning, grader contracts, grading, leasing, recovery, evidence and durable results | Storage port plus world-query functions; operations carry explicit world and storage coordinates |
 | Commands | Exact registration, authorization policy, governed direct/deferred entry, durable admission, order, leasing, lock-held materialization, retry, settlement, dead letters, transactional outbox and analytical audit projection | Storage/control catalog plus exact world handlers |
-| Activities *(accepted target)* | Generic immutable admission, claims, attempts, leases, fences, provider-operation binding, bounded result references/digests, and later-receipt settlement; no family recovery policy | Storage-owned Activity catalog |
+| Activities | Generic immutable admission, claims, attempts, leases, fences, provider-operation binding, bounded result references/digests, and later-receipt settlement; no family recovery policy | Storage-owned Activity catalog |
 | Research | AutoResearch values, ledger state, bounded persisted-control reads, experiment-keyed admission, and the directly awaited multi-run workflow | World registry/lifecycle and storage ports plus world simulation functions and explicit evaluator callbacks |
-| Physical AI | Reusable physical state, schemas, providers, views, and current direct free workflows; hosted Activity choreography moves to `app.physical_ai` | World registry/lifecycle and storage ports plus world mutation/simulation/query functions; accepted app workflow also consumes Activities |
-| Missions *(accepted Activity target)* | Graph materialization, committed-intent Activity composition, terminal projection, transcript ingestion, and trajectory query/evaluation composition. Family processors retain transition authority; Activity or trajectory evidence cannot advance tasks. | Consumes Activities, a structural mission world, family-owned sandbox resource, artifact-family handlers plus redaction/storage ports for transcripts, and world-query plus pure evaluation-grading functions for trajectory reads. |
+| Physical AI | Reusable physical state, schemas, providers, views, direct free workflows, and hosted Activity choreography | Activities plus world registry/lifecycle and storage ports, with world mutation/simulation/query functions |
+| Missions | Graph materialization, committed-intent Activity composition, terminal projection, transcript ingestion, and trajectory query/evaluation composition. Family processors retain transition authority; Activity or trajectory evidence cannot advance tasks. | Activities, a structural mission world, family-owned sandbox resources, artifact/redaction/storage handlers and ports for transcripts, projections/graph contracts, and world-query plus pure evaluation-grading functions for trajectory reads |
 | Runtime/API adapters | Construct exact family operations and select trusted or actor-aware dispatcher entry | Commands dispatcher plus family models |
 | `RuntimeResources` | Process admission, supervised work, handle ownership, and phased retryable teardown | Dispatcher, audit projection, storage, and registered owners |
 | `archetype.wiring` | Concrete construction, registration, and callback wiring | Every concrete implementation it constructs |
@@ -371,10 +371,9 @@ Durability is family-specific rather than one service-level flag:
 | Deferred command admission | Command ledger | `PENDING` record, order, payload version and principal/origin are durable |
 | Tick | Store plus commit coordinator | All tick rows are durable and the visibility manifest is published |
 | Deferred command outcome | Commit coordinator plus command ledger | Terminal applied outcomes settle atomically with the manifest that makes them visible |
-| Agent Mission dispatch *(current baseline)* | Mission world tick plus process-local post-tick outbox | A `dispatched` task row is durably visible before any sandbox request leaves the world; process restart delivery is not yet proved |
-| Agent Mission Activity *(accepted target)* | Required projector, Activity coordinator, family adapter, and later mission tick | The exact committed dispatch admits `(world_id, kind, activity_id)`; a bounded result is durable before staging; settlement requires Mission completeness evidence bound to that result reference/digest in the exact later receipt |
+| Agent Mission Activity | Required projector, Activity coordinator, family adapter, and later mission tick | The exact committed dispatch admits `(world_id, kind, activity_id)`; a bounded result is durable before staging; settlement requires Mission completeness evidence bound to that result reference/digest in the exact later receipt |
 | Agent Mission acceptance | Mission processors plus world tick | Revision-bound validation and exact-head publication first produce an immutable candidate; a separate critic sandbox stages a complete receipt bound to that candidate's base, head, diff, validator bundle, and policy; only a later task-decision tick accepts, repairs, or exhausts the task |
-| Hosted Physical-AI Activity *(accepted target)* | Physical app workflow, Activity coordinator, durable Arrow/artifact publication, and later physical tick | The complete hosted result is durable by stable operation identity before its bounded reference is observed; a seeded simulator reuses that result rather than assuming GPU replay determinism |
+| Hosted Physical-AI Activity | Physical-AI family workflow, Activity coordinator, durable Arrow/artifact publication, and later physical tick | The complete hosted result is durable by stable operation identity before its bounded reference is observed; a seeded simulator reuses that result rather than assuming GPU replay determinism |
 | Typed family rows | Owning family workflow plus `StorageService` and Iceberg | Storage resolves and stamps the durable world/run envelope, the registered schema accepts the rows, and one Iceberg append makes the selected rows visible |
 | Artifact ingestion | Artifacts-family handler plus `StorageService` | The published durable tick is selected before file effects; the immutable object and any media-specific rows are durable before the common `artifact_files` occurrence becomes visible |
 | Coding-agent transcript | Redaction, artifacts-family handler, and storage authority | Raw narrative never becomes durable; the sanitized artifact is indexed and its digest verified before normalized rows keyed to its `artifact_id` are appended |
@@ -496,7 +495,7 @@ implementations across families. It constructs one process graph:
 build_runtime_resources(...)
   -> OperationRegistry + Policy + CommandScheduler + CommandDispatcher
   -> WorldRegistry + WorldLifecycle + AuditLog + StorageService
-  -> application-family services
+  -> named family services and Activity bindings
   -> RuntimeResources
 ```
 
@@ -548,6 +547,8 @@ Together, the repository's architecture and observability checkers must:
 - reject missing, stale, duplicate, or empty top-level family registrations;
 - reject any first-party top-level package or module that lacks an explicit
   reserved-infrastructure or registered-family classification;
+- reject a stale blanket reservation for the removed `archetype.app`
+  migration root while continuing to forbid family imports of that root;
 - require one exact cross-family dependency disposition for every registered
   top-level family;
 - reject cycles in the complete registered top-level family graph;
@@ -601,8 +602,8 @@ resources within the mission family.
 
 `quality/architecture.toml` contains the scalar policy and family
 DAG. Per-family fragments under `quality/architecture.d/` register the
-top-level dispositions for `artifacts`, `commands`, `episodes`, `evaluation`,
-`graph`, `missions`, `physical_ai`, `projections`, `redaction`,
+top-level dispositions for `activities`, `artifacts`, `commands`, `episodes`,
+`evaluation`, `graph`, `missions`, `physical_ai`, `projections`, `redaction`,
 `research`, `storage`, and `world`.
 `scripts/check_architecture.py` enforces their package direction, protocol
 imports, concrete construction, concrete inheritance, and persistent
@@ -656,12 +657,10 @@ command envelope, facade bridge, or compatibility auth re-export.
 
 ## 13. Accepted v0.5 target architecture
 
-This section records the ratified v0.5 architecture and its status after PR4.
-The dispatcher, exact-operation, composition, and runtime-resource ownership
-described here are current. Later behavioral migrations are explicitly marked
-as targets and do not override their current focused specifications. Every
-move must update policy, focused specifications, and executable oracles
-atomically.
+This section records the landed v0.5 architecture. The dispatcher,
+exact-operation, Activity, composition, and runtime-resource ownership
+described here are current. Later changes must update policy, focused
+specifications, and executable oracles atomically.
 
 Families own behavior. Commands validate. Dispatcher governs entry. Scheduler
 owns command durability. The Activity coordinator owns between-tick delivery.
@@ -678,6 +677,7 @@ dependency. `errors` is the exact common-family module; `runtime`, `api`,
 
 | Consumer | Allowed top-level family dependencies |
 |---|---|
+| `activities` | `storage` |
 | `storage` | none |
 | `world` | `storage` |
 | `commands` | `storage`, `world` |
@@ -685,16 +685,11 @@ dependency. `errors` is the exact common-family module; `runtime`, `api`,
 | `redaction` | none |
 | `evaluation` | `storage`, `world` |
 | `research` | `storage`, `world` |
-| `physical_ai` | `storage`, `world` |
+| `physical_ai` | `activities`, `storage`, `world` |
 | `episodes` | `artifacts`, `evaluation` |
 | `graph` | none |
-| `missions` | `artifacts`, `episodes`, `graph` |
+| `missions` | `activities`, `artifacts`, `episodes`, `evaluation`, `graph`, `projections`, `redaction`, `storage`, `world` |
 | `projections` | `graph` |
-
-The A2 Activity slice adds one reviewed top-level edge:
-`activities -> storage`. The current graph above remains unchanged until that
-package, its policy fragment, and its executable architecture oracle land
-together.
 
 Every family may also import `archetype.core`, stable shared boundary-error
 bases from `archetype.errors`, itself, and third-party libraries. Another
@@ -715,6 +710,7 @@ src/archetype/
   core/          kernel; only the approved tick/run-identity changes
   errors.py      stable shared boundary-error bases
   storage/       Daft execution, catalogs, commits, scans, signatures, session
+  activities/    generic durable between-tick delivery over storage catalog
   world/         registry, lifecycle, simulation, mutation, query, handlers
   commands/      operation registry, dispatch, policy, scheduler, access audit
   graph/
@@ -833,20 +829,19 @@ backfill, dual reads, or compatibility aliases.
 
 ### v0.5 migration oracle status
 
-The v0.5 migration is made executable slice by slice. This table preserves
-the review decomposition and distinguishes the shipped PR4 substrate from
-remaining work; a current test must exercise the claimed owner and failure
-boundary rather than relying on a pre-refactor baseline.
+The v0.5 migration is executable slice by slice. A current test must exercise
+the claimed owner and failure boundary rather than relying on a pre-refactor
+baseline.
 
-| Contract | Executable evidence | Status after PR4 |
+| Contract | Executable evidence | v0.5 status |
 |---|---|---|
 | command materialization and manifest-coupled settlement | command-flow and durable-command integration contracts | Landed in world/commands |
 | lock and shutdown admission | runtime lifecycle and admitted-work race contracts | Landed in world/runtime resources |
 | UUIDv7 run identity and fork/resume continuity | command-flow, fork-storage, and world-resume contracts | Landed in world |
 | episode identity and trajectory derivation | trajectory-domain, trajectory-service, and episode-join contracts | Landed: evidence keyed by `episode_id`, trajectory is a derived view |
-| stable task base, immutable candidate, exact-head critic | coding-agent, critic, mission-service, and capability-eval contracts | Current preservation baseline; author and critic Activity cutovers must preserve it |
-| sandbox cleanup and retryable phased teardown | sandbox-service, runtime-contract, and mission-service race contracts | Process lifetime landed; Activity worker ownership remains |
-| committed required projection and provider reconciliation | generic seam and mission-consumer failpoint contracts | Generic world seam landed; Activity catalog and Mission consumers are A2–A5 |
+| stable task base, immutable candidate, exact-head critic | coding-agent, critic, mission-service, and capability-eval contracts | Landed on author and critic Activity paths |
+| sandbox cleanup and retryable phased teardown | sandbox-service, runtime-contract, and mission-service race contracts | Landed with durable operation-cleanup evidence |
+| committed required projection and provider reconciliation | generic seam and mission-consumer failpoint contracts | Landed for the generic catalog plus Mission and hosted Physical-AI consumers |
 
 No row permits an implementation to claim completion from an old baseline test
 alone.

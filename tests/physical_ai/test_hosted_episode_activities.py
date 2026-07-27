@@ -328,6 +328,57 @@ async def test_hosted_claim_searches_beyond_one_hundred_live_claims(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+async def test_exact_hosted_worker_does_not_claim_older_pending_activity(
+    tmp_path: Path,
+) -> None:
+    world_id = "physical-world"
+    values = LocalHostedEpisodeValueStore(tmp_path / "values")
+    physical, generic, catalog = _open_catalog(
+        tmp_path / "activities.db",
+        lease_seconds=300,
+    )
+    receipt = CommittedTickReceipt(world_id, "run-a", 1, "token-1", 0)
+    for activity_id in ("older-pending", "requested"):
+        request = await values.put_request(_request(world_id, activity_id))
+        await catalog.admit_episode(
+            world_id=world_id,
+            receipt=receipt,
+            activity_id=activity_id,
+            request=request,
+        )
+
+    stager = _ObservationStager()
+    worker = PhysicalHostedActivityWorker(
+        world_id=world_id,
+        owner="operation-worker",
+        catalog=catalog,
+        values=values,
+        provider=LocalDurableHostedEpisodeProvider(
+            tmp_path / "provider",
+            runner=SeededHostedEpisodeRunner(),
+        ),
+        stager=stager,
+    )
+
+    assert await worker.run_once(activity_id="requested")
+
+    older = await generic.get(
+        world_id,
+        HOSTED_EPISODE_ACTIVITY_KIND,
+        "older-pending",
+    )
+    requested = await generic.get(
+        world_id,
+        HOSTED_EPISODE_ACTIVITY_KIND,
+        "requested",
+    )
+    assert older is not None and older.result is None
+    assert requested is not None and requested.result is not None
+    assert set(stager.observations) == {(world_id, "requested")}
+    await physical.close()
+
+
+@pytest.mark.asyncio
 async def test_cold_restart_recovers_first_provider_result_without_second_episode(
     tmp_path: Path,
 ) -> None:

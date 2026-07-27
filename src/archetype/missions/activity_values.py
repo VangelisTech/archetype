@@ -80,6 +80,7 @@ class MissionAuthorValueCodec:
             ("author.request.branch", request.branch),
             ("author.request.base_ref", request.base_ref),
             ("author.request.task_base_revision", request.task_base_revision),
+            ("author.request.checkout_revision", request.checkout_revision),
             (
                 "author.request.previous_agent_session_id",
                 request.previous_agent_session_id,

@@ -254,6 +254,20 @@ reason = "Repair-dispatch external-I/O boundary: persisted candidate identities 
 [[entries]]
 path = "src/archetype/missions/projections.py"
 symbol = "_TaskDispatchProjection.on_post_tick"
+expr = "task_frame.to_pylist"
+method = "to_pylist"
+reason = "Post-commit branch-lineage boundary: the already component-scoped finite task snapshot becomes an identity-indexed map so a fresh external author sandbox can bind its checkout to the latest accepted head on its serialized mission branch rather than silently restarting from the original base."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "_TaskDispatchProjection.on_post_tick"
+expr = "mission_edges.to_pylist"
+method = "to_pylist"
+reason = "Post-commit external-author boundary: finite persisted mission-membership edges become a bounded mission-to-task identity index so each dispatched process hydrates the latest accepted head from its own serialized mission branch without crossing mission authority."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "_TaskDispatchProjection.on_post_tick"
 expr = "dispatched.to_pylist"
 method = "to_pylist"
 reason = "Post-commit external-I/O boundary: the lazy frame is restricted to committed DISPATCHED tasks and joined to mission identity before those bounded intents become Python requests for sandbox processes; an OS process invocation cannot remain a Daft expression."

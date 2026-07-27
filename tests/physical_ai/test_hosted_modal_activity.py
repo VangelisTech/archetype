@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
+import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -14,6 +16,7 @@ from typing import Any, cast
 
 import pytest
 
+from archetype import __version__
 from archetype.activities import ActivityCoordinator
 from archetype.core.interfaces import CommittedTickReceipt
 from archetype.physical_ai import hosted_modal
@@ -48,6 +51,16 @@ from archetype.physical_ai.hosted_modal import (
     ModalHostedEpisodeProviderUnknown,
 )
 from archetype.storage.activity_catalog import SqliteActivityCatalog
+
+
+def test_seeded_modal_image_pin_matches_release_version() -> None:
+    project = tomllib.loads(
+        (Path(__file__).parents[2] / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    assert project["project"]["version"] == __version__
+    assert f'.uv_pip_install("archetype-ecs=={__version__}")' in inspect.getsource(
+        hosted_modal.build_seeded_modal_hosted_episode_app
+    )
 
 
 def _config(**changes: object) -> ModalHostedEpisodeConfig:

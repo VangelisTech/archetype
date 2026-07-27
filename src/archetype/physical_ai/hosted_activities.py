@@ -148,6 +148,7 @@ class PhysicalHostedActivityCatalog(Protocol):
         *,
         world_id: str,
         owner: str,
+        activity_id: str | None = None,
     ) -> HostedEpisodeActivityClaim | None: ...
 
     async def bind_provider_operation(
@@ -191,6 +192,14 @@ class PhysicalHostedActivityCatalog(Protocol):
         result_digest: str,
         receipt: CommittedTickReceipt,
     ) -> None: ...
+
+    async def episode_observation_settled(
+        self,
+        *,
+        world_id: str,
+        activity_id: str,
+        result_digest: str,
+    ) -> bool: ...
 
     async def has_unsettled_work(self, world_id: str) -> bool: ...
 
@@ -479,7 +488,20 @@ class PhysicalHostedActivityCoordinator:
         *,
         world_id: str,
         owner: str,
+        activity_id: str | None = None,
     ) -> HostedEpisodeActivityClaim | None:
+        if activity_id is not None:
+            if not activity_id.strip():
+                raise ValueError("hosted episode Activity identity cannot be empty")
+            exact = await self._coordinator.claim(
+                world_id=world_id,
+                kind=HOSTED_EPISODE_ACTIVITY_KIND,
+                activity_id=activity_id,
+                owner=owner,
+                lease_seconds=self._lease_seconds,
+            )
+            return self._remember(exact) if exact.acquired else None
+
         # Page until the catalog is exhausted: a finite prefix scan stranded
         # claimable Activities beyond the batch when the head of the pending
         # set was leased by other workers.  claim_next_pending carries this
@@ -620,6 +642,25 @@ class PhysicalHostedActivityCoordinator:
             ActivitySettlement(receipt=receipt, result_digest=result_digest),
         )
 
+    async def episode_observation_settled(
+        self,
+        *,
+        world_id: str,
+        activity_id: str,
+        result_digest: str,
+    ) -> bool:
+        snapshot = await self._coordinator.get(
+            world_id,
+            HOSTED_EPISODE_ACTIVITY_KIND,
+            activity_id,
+        )
+        if snapshot is None or snapshot.result is None or snapshot.settlement is None:
+            return False
+        return (
+            snapshot.result.digest == result_digest
+            and snapshot.settlement.result_digest == result_digest
+        )
+
     async def has_unsettled_work(self, world_id: str) -> bool:
         return await self._coordinator.has_unsettled(world_id)
 
@@ -701,16 +742,29 @@ class PhysicalHostedActivityWorker:
         self._provider = provider
         self._stager = stager
 
-    async def run_once(self) -> bool:
-        progressed = await self._deliver_pending_results()
-        claim = await self._catalog.claim_episode(
-            world_id=self._world_id,
-            owner=self._owner,
-        )
+    async def run_once(self, *, activity_id: str | None = None) -> bool:
+        """Deliver and, when requested, drive exactly one logical Activity."""
+
+        if activity_id is not None and not activity_id.strip():
+            raise ValueError("hosted episode Activity identity cannot be empty")
+        progressed = await self._deliver_pending_results(activity_id=activity_id)
+        if activity_id is None:
+            claim = await self._catalog.claim_episode(
+                world_id=self._world_id,
+                owner=self._owner,
+            )
+        else:
+            claim = await self._catalog.claim_episode(
+                world_id=self._world_id,
+                owner=self._owner,
+                activity_id=activity_id,
+            )
         if claim is None:
             return progressed
         if claim.world_id != self._world_id:
             raise ValueError("hosted catalog returned another world's claim")
+        if activity_id is not None and claim.activity_id != activity_id:
+            raise ValueError("hosted catalog returned another Activity's exact claim")
         request = await self._load_claim_request(claim)
         result_claim, provider_result = await self._execute_or_reconcile(
             claim,
@@ -729,7 +783,7 @@ class PhysicalHostedActivityWorker:
             result_claim,
             published.activity_result,
         )
-        await self._deliver_pending_results()
+        await self._deliver_pending_results(activity_id=activity_id)
         return True
 
     async def _execute_or_reconcile(
@@ -803,13 +857,23 @@ class PhysicalHostedActivityWorker:
         )
         return bound, result
 
-    async def _deliver_pending_results(self) -> bool:
+    async def _deliver_pending_results(self, *, activity_id: str | None = None) -> bool:
         progressed = False
-        for delivery in await self._catalog.pending_episode_results(
-            world_id=self._world_id,
-        ):
+        if activity_id is None:
+            deliveries = await self._catalog.pending_episode_results(
+                world_id=self._world_id,
+            )
+        else:
+            delivery = await self._catalog.episode_result(
+                world_id=self._world_id,
+                activity_id=activity_id,
+            )
+            deliveries = () if delivery is None else (delivery,)
+        for delivery in deliveries:
             if delivery.world_id != self._world_id:
                 raise ValueError("hosted catalog returned another world's result")
+            if activity_id is not None and delivery.activity_id != activity_id:
+                raise ValueError("hosted catalog returned another Activity's exact result")
             published = await self._values.get_result(delivery.result)
             expected_operation = hosted_episode_provider_operation_id(
                 delivery.world_id,

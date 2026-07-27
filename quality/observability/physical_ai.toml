@@ -63,6 +63,7 @@ operations = [
   "hosted_activities.PhysicalHostedActivityCatalog.claim_episode",
   "hosted_activities.PhysicalHostedActivityCatalog.confirm_provider_operation_absent",
   "hosted_activities.PhysicalHostedActivityCatalog.episode_result",
+  "hosted_activities.PhysicalHostedActivityCatalog.episode_observation_settled",
   "hosted_activities.PhysicalHostedActivityCatalog.has_unsettled_work",
   "hosted_activities.PhysicalHostedActivityCatalog.pending_episode_results",
   "hosted_activities.PhysicalHostedActivityCatalog.record_episode_result",

@@ -23,7 +23,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any
 
 import daft
 import pyarrow as pa
@@ -63,8 +63,53 @@ from archetype.storage.config import ControlCatalogConfig
 logger = logging.getLogger(__name__)
 
 _MAX_COMMIT_ATTEMPTS = 16
-_T = TypeVar("_T")
 _WORLD_ENVELOPE_COLUMNS = ("world_id", "run_id")
+
+
+async def _run_blocking_uninterrupted[T](
+    function: Callable[..., T],
+    /,
+    *args: Any,
+    _on_cancelled_outcome: Callable[[BaseException | None], None] | None = None,
+    **kwargs: Any,
+) -> T:
+    """Join a worker thread before propagating caller cancellation.
+
+    ``asyncio.to_thread`` cannot stop its worker when the awaiting task is
+    cancelled. Terminal storage work must therefore retain its execution lane
+    until the worker has actually finished. The optional observer lets a
+    managed commit freeze a late successful or uncertain outcome before the
+    original cancellation is re-raised.
+    """
+
+    worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    caller_cancellation: asyncio.CancelledError | None = None
+    while not worker.done():
+        try:
+            await asyncio.shield(worker)
+        except asyncio.CancelledError as interrupted:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                caller_cancellation = caller_cancellation or interrupted
+            if worker.done():
+                break
+        except BaseException:
+            break
+
+    try:
+        result = worker.result()
+    except BaseException as worker_failure:
+        if caller_cancellation is not None:
+            if _on_cancelled_outcome is not None:
+                _on_cancelled_outcome(worker_failure)
+            raise caller_cancellation from worker_failure
+        raise
+
+    if caller_cancellation is not None:
+        if _on_cancelled_outcome is not None:
+            _on_cancelled_outcome(None)
+        raise caller_cancellation
+    return result
 
 
 class AmbiguousCommitError(AvailabilityError):
@@ -207,7 +252,7 @@ class _AdmittedAsyncStore(AsyncStore):
                 async with self._execution_gate.admit():
                     self._raise_if_ambiguous(sig)
                     if payload is None:
-                        payload = await asyncio.to_thread(df.to_arrow)
+                        payload = await _run_blocking_uninterrupted(df.to_arrow)
                         rows = payload.num_rows
                         if rows == 0:
                             logger.info("Append skipped (store): archetype=%s rows=0", table_id)
@@ -222,10 +267,24 @@ class _AdmittedAsyncStore(AsyncStore):
                         native.refresh()
 
                     assert table is not None
-                    await asyncio.to_thread(
+                    assert identity is not None
+
+                    def freeze_cancelled_commit(
+                        worker_failure: BaseException | None,
+                        commit_identity: tuple[str, str, int, str, int] = identity,
+                    ) -> None:
+                        # Only an exact CAS failure proves that no commit
+                        # landed. Success, commit-state-unknown, and every
+                        # other late outcome remain unsafe to replay after the
+                        # caller has already been cancelled.
+                        if not isinstance(worker_failure, CommitFailedException):
+                            self._ambiguous_commits[table_id] = commit_identity
+
+                    await _run_blocking_uninterrupted(
                         self._append_table,
                         table,
                         daft.from_arrow(payload),
+                        _on_cancelled_outcome=freeze_cancelled_commit,
                     )
                     self._committed_sigs.add(table_id)
                     return AppendReceipt(
@@ -1049,16 +1108,22 @@ class StorageService:
             raise TypeError("rows must be a daft.DataFrame")
 
     @staticmethod
-    async def _blocking(
-        function: Callable[..., _T],
+    async def _blocking[T](
+        function: Callable[..., T],
         /,
         *args: Any,
         **kwargs: Any,
-    ) -> _T:
-        return await asyncio.to_thread(function, *args, **kwargs)
+    ) -> T:
+        return await _run_blocking_uninterrupted(function, *args, **kwargs)
 
     async def shutdown(self):
         """Gracefully shuts down all managed storage backends."""
+        # Wait for any already-admitted terminal worker before closing its
+        # backend. The gate is released before cached-store shutdown because
+        # that path may reenter it while joining a background flush.
+        async with self._execution_gate.admit():
+            pass
+
         errors: list[Exception] = []
         cancelled: asyncio.CancelledError | None = None
         try:

@@ -83,6 +83,62 @@ async def test_terminal_materializations_share_one_execution_lane(monkeypatch):
         await service.shutdown()
 
 
+@pytest.mark.contract("storage.execution.single_authority")
+@pytest.mark.asyncio
+async def test_cancelled_terminal_worker_retains_lane_through_shutdown(monkeypatch):
+    service = StorageService()
+    original = daft.DataFrame.collect
+    first_started = threading.Event()
+    second_started = threading.Event()
+    release_first = threading.Event()
+    call_lock = threading.Lock()
+    calls = 0
+
+    def observed_collect(frame, *args, **kwargs):
+        nonlocal calls
+        with call_lock:
+            calls += 1
+            call = calls
+        if call == 1:
+            first_started.set()
+            assert release_first.wait(timeout=5)
+        else:
+            second_started.set()
+        return original(frame, *args, **kwargs)
+
+    monkeypatch.setattr(daft.DataFrame, "collect", observed_collect)
+    first = asyncio.create_task(service.materialize(daft.from_pydict({"value": [1]})))
+    second: asyncio.Task | None = None
+    closing: asyncio.Task | None = None
+    try:
+        assert await asyncio.to_thread(first_started.wait, 5)
+        first.cancel("cancel blocked terminal worker")
+        await asyncio.sleep(0)
+        assert not first.done()
+
+        second = asyncio.create_task(service.materialize(daft.from_pydict({"value": [2]})))
+        await asyncio.sleep(0)
+        closing = asyncio.create_task(service.shutdown())
+        await asyncio.sleep(0)
+
+        assert not second_started.is_set()
+        assert not second.done()
+        assert not closing.done()
+
+        release_first.set()
+        with pytest.raises(asyncio.CancelledError, match="cancel blocked terminal worker"):
+            await first
+        result = await asyncio.wait_for(second, timeout=5)
+        assert result.to_pydict() == {"value": [2]}
+        await asyncio.wait_for(closing, timeout=5)
+    finally:
+        release_first.set()
+        pending = [task for task in (first, second, closing) if task is not None]
+        await asyncio.gather(*pending, return_exceptions=True)
+        if closing is None or not closing.done():
+            await service.shutdown()
+
+
 @pytest.mark.asyncio
 async def test_cached_tick_can_reenter_gate_during_threshold_flush(tmp_path):
     storage_service = StorageService()
@@ -519,6 +575,91 @@ async def test_managed_iceberg_ambiguous_commit_is_typed_and_never_replayed(
         except RuntimeError as exc:
             assert isinstance(exc.__cause__, AmbiguousCommitError)
         await observer.shutdown()
+
+
+@pytest.mark.contract("storage.execution.single_authority")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("worker_outcome", ("success", "commit_state_unknown"))
+async def test_cancelled_managed_commit_freezes_late_outcome_before_propagating(
+    tmp_path,
+    monkeypatch,
+    worker_outcome,
+):
+    storage = _storage(tmp_path)
+    service = StorageService(session=configure_session(storage))
+    signature = Archetype.sig_from_components([ManagedWriteProbe()])
+    commit_started = threading.Event()
+    release_commit = threading.Event()
+    token = f"cancelled-{worker_outcome}"
+    commit_calls = 0
+    materializations = 0
+    running: asyncio.Task | None = None
+    try:
+        store = await service.get_or_create_store(storage)
+        original_to_arrow = daft.DataFrame.to_arrow
+
+        def counted_to_arrow(frame):
+            nonlocal materializations
+            materializations += 1
+            return original_to_arrow(frame)
+
+        def blocked_commit(*args, **kwargs):
+            nonlocal commit_calls
+            commit_calls += 1
+            commit_started.set()
+            assert release_commit.wait(timeout=5)
+            if worker_outcome == "commit_state_unknown":
+                raise CommitStateUnknownException("late unknown commit outcome")
+
+        monkeypatch.setattr(daft.DataFrame, "to_arrow", counted_to_arrow)
+        monkeypatch.setattr(store, "_append_table", blocked_commit)
+        running = asyncio.create_task(
+            AsyncUpdateManager(store).update(
+                _managed_rows(7),
+                signature,
+                7,
+                "cancelled-world",
+                "cancelled-run",
+                commit=CommitContext(commit_token=token, writer_epoch=9),
+            )
+        )
+        assert await asyncio.to_thread(commit_started.wait, 5)
+
+        running.cancel("cancel managed commit")
+        await asyncio.sleep(0)
+        assert not running.done()
+        release_commit.set()
+
+        with pytest.raises(asyncio.CancelledError, match="cancel managed commit") as cancelled:
+            await running
+        if worker_outcome == "commit_state_unknown":
+            assert isinstance(cancelled.value.__cause__, CommitStateUnknownException)
+
+        with pytest.raises(AmbiguousCommitError) as frozen:
+            await AsyncUpdateManager(store).update(
+                _managed_rows(8),
+                signature,
+                8,
+                "later-world",
+                "later-run",
+                commit=CommitContext(commit_token="later-token", writer_epoch=10),
+            )
+
+        assert frozen.value.physical_identity == (
+            Archetype.get_name(signature),
+            "cancelled-world",
+            "cancelled-run",
+            7,
+        )
+        assert frozen.value.commit_token == token
+        assert frozen.value.writer_epoch == 9
+        assert materializations == 1
+        assert commit_calls == 1
+    finally:
+        release_commit.set()
+        if running is not None:
+            await asyncio.gather(running, return_exceptions=True)
+        await service.shutdown()
 
 
 @pytest.mark.asyncio

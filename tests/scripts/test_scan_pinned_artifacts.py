@@ -38,7 +38,11 @@ def test_build_queries_covers_registry_pins_and_names_unscannable_kinds() -> Non
     }
     assert ("npm", "@openai/codex") in packages
     assert ("PyPI", "modal") in packages
-    assert unscannable == ["coding-agent-base-image"]
+    assert unscannable == [
+        "ttyd-x86-64",
+        "ttyd-aarch64",
+        "coding-agent-base-image",
+    ]
 
 
 def test_scan_reports_advisories_per_pinned_artifact() -> None:
@@ -51,7 +55,11 @@ def test_scan_reports_advisories_per_pinned_artifact() -> None:
     by_id = {result["artifact_id"]: result for result in report["results"]}
     assert by_id["modal-sdk"]["vulnerabilities"] == ["OSV-TEST-1", "OSV-TEST-2"]
     assert by_id["codex-cli"]["vulnerabilities"] == []
-    assert report["unscannable"] == ["coding-agent-base-image"]
+    assert report["unscannable"] == [
+        "coding-agent-base-image",
+        "ttyd-aarch64",
+        "ttyd-x86-64",
+    ]
 
 
 def test_scan_rejects_mismatched_osv_response() -> None:

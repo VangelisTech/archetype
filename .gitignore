@@ -85,6 +85,8 @@ eval-results.json
 /eval-*-results.json
 /operational*-results.json
 /operational*-results.d/
+/release-artifact.json
+/release-evidence-summary.json
 
 # mutmut: working tree of generated mutants and its on-disk cache
 mutants/

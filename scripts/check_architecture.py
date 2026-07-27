@@ -24,7 +24,10 @@ TOP_LEVEL_FAMILY_OUTWARD_PACKAGES = frozenset(
         "archetype.cli",
     }
 )
-REQUIRED_TOP_LEVEL_INFRASTRUCTURE = TOP_LEVEL_FAMILY_OUTWARD_PACKAGES | {"archetype.core"}
+LEGACY_APPLICATION_ROOT = "archetype.app"
+REQUIRED_TOP_LEVEL_INFRASTRUCTURE = (
+    TOP_LEVEL_FAMILY_OUTWARD_PACKAGES - {LEGACY_APPLICATION_ROOT}
+) | {"archetype.core"}
 ROOT_EXPORT_POLICY_ERROR = (
     "unable to statically parse archetype._EXPORTS; root-facade import enforcement is degraded"
 )
@@ -610,6 +613,16 @@ def audit_repository(
             "top_level_family_policy.reserved_infrastructure has non-top-level scopes: "
             + ", ".join(invalid_infrastructure)
         )
+    if (
+        policy_version >= 3
+        and LEGACY_APPLICATION_ROOT in reserved_infrastructure
+        and LEGACY_APPLICATION_ROOT not in actual_top_level_scopes
+    ):
+        result.policy_errors.append(
+            "top_level_family_policy.reserved_infrastructure retains stale legacy "
+            "migration root archetype.app; remove the blanket reservation when its "
+            "exact migration modules are gone"
+        )
 
     configured_common = top_level_family_config.get("common_family_imports", [])
     if not isinstance(configured_common, list):
@@ -659,7 +672,9 @@ def audit_repository(
                 "top_level_family_policy.reserved_infrastructure omits required packages: "
                 + ", ".join(missing_infrastructure)
             )
-        outward_not_reserved = sorted(outward_packages - reserved_infrastructure)
+        outward_not_reserved = sorted(
+            outward_packages - reserved_infrastructure - {LEGACY_APPLICATION_ROOT}
+        )
         if outward_not_reserved:
             result.policy_errors.append(
                 "top_level_family_policy.forbidden_outward has unclassified packages: "
@@ -673,7 +688,9 @@ def audit_repository(
     top_level_family_names: set[str] = set()
     top_level_family_scopes: dict[str, frozenset[str]] = {}
     pending_allowed_families: dict[str, list[str]] = {}
-    reserved_family_scopes = reserved_infrastructure | REQUIRED_TOP_LEVEL_INFRASTRUCTURE
+    reserved_family_scopes = (
+        reserved_infrastructure | REQUIRED_TOP_LEVEL_INFRASTRUCTURE | outward_packages
+    )
     for index, rule in enumerate(top_level_family_rules):
         name = str(rule.get("name", "")).strip()
         label = repr(name) if name else f"at index {index}"

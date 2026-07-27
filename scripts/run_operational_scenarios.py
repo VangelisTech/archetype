@@ -228,6 +228,8 @@ def _scenario_environment(
         env["ARCHETYPE_DOCKER_SANDBOX_PARITY"] = "1"
     if "service:apple-container" in prerequisites:
         env["ARCHETYPE_APPLE_CONTAINER_SANDBOX_PARITY"] = "1"
+    if row.get("id") == "dogfood.agent_mission.modal_live":
+        env["ARCHETYPE_MODAL_AGENT_MISSION_LIVE"] = "1"
     return env
 
 
@@ -601,7 +603,12 @@ def _adapt_command(
             adapted.append(str(python))
             continue
         if index == 0 and value == "pytest":
-            adapted.extend((str(python), "-m", "pytest"))
+            # The repository pytest configuration adds ``src`` to sys.path.
+            # Every installed-wheel pytest command, including a multi-file
+            # source command that cannot reuse one oracle node, must disable
+            # that setting. Source mode receives its selected checkout through
+            # the explicit PYTHONPATH built by ``_base_environment``.
+            adapted.extend((str(python), "-m", "pytest", "-o", "pythonpath="))
             continue
         candidate = root / value
         adapted.append(str(candidate.resolve()) if candidate.exists() else value)
@@ -981,6 +988,7 @@ def _run_one(
     python: Path,
     root: Path,
     mode: str,
+    cadence: str,
     run_root: Path,
     logs_root: Path,
     package: dict[str, object],
@@ -1012,10 +1020,20 @@ def _run_one(
         "artifact_schema": row["artifact_schema"],
     }
     if missing:
+        # A release-required scenario must execute. Preserve ``not_run`` for
+        # lower cadences where the registry explicitly permits it, but turn a
+        # missing release prerequisite into a concrete failed result.
+        release_forced = cadence == "release"
+        missing_status = (
+            "failed" if release_forced or row["missing_prerequisite"] != "not_run" else "not_run"
+        )
+        reason = f"missing prerequisites: {', '.join(missing)}"
+        if release_forced and row["missing_prerequisite"] == "not_run":
+            reason = f"release cadence requires execution; {reason}"
         result.update(
             {
-                "status": "not_run" if row["missing_prerequisite"] == "not_run" else "failed",
-                "reason": f"missing prerequisites: {', '.join(missing)}",
+                "status": missing_status,
+                "reason": reason,
                 "missing_prerequisites": missing,
                 "duration_seconds": round(time.perf_counter() - started, 6),
                 "cleanup": {"policy": row["cleanup_policy"], "status": "not_acquired"},
@@ -1384,6 +1402,7 @@ def run_scenarios(
                     python=python,
                     root=root,
                     mode=mode,
+                    cadence=cadence,
                     run_root=run_root,
                     logs_root=captured_logs_root,
                     package=package,

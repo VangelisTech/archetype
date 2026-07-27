@@ -65,6 +65,8 @@ help:
 	@echo "  make operational-wheel  Run representative scenarios against the built wheel"
 	@echo "  make operational-mission  Run the credential-free exact-head mission scenario"
 	@echo "  make operational-external  Require selected Tier-5/6 provider evidence"
+	@echo "  make operational-release  Run credential-free release evidence against one wheel"
+	@echo "  make operational-release-modal  Run the paid live Modal/Codex wheel evidence"
 	@echo "  make test-infra     Run external-infrastructure tests (requires configured service)"
 	@echo ""
 	@echo "Build & Release:"
@@ -72,7 +74,7 @@ help:
 	@echo "  make package-smoke  Install and probe the built wheel outside the checkout"
 	@echo "  make verify-pr      Complete pull-request profile"
 	@echo "  make verify-full    Main-branch profile"
-	@echo "  make verify-release Installed-artifact release profile"
+	@echo "  make verify-release Source profile plus exact installed-artifact release evidence"
 	@echo "  make release-check  Full pre-release validation"
 	@echo "  make publish-test   Publish to TestPyPI"
 	@echo "  make publish        Publish to PyPI"
@@ -385,6 +387,8 @@ OPERATIONAL_DIST_DIR ?= dist
 OPERATIONAL_WHEEL_RESULTS ?= operational-results.json
 OPERATIONAL_COMMANDS_RESULTS ?= operational-commands-source-results.json
 OPERATIONAL_RUNTIME_RESULTS ?= operational-runtime-source-results.json
+OPERATIONAL_RELEASE_RESULTS ?= operational-release-results.json
+RELEASE_ARTIFACT_MANIFEST ?= release-artifact.json
 
 .PHONY: operational-runtime
 operational-runtime:
@@ -434,7 +438,7 @@ operational-wheel:
 operational-mission:
 	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
 		--mode source --cadence pr --max-tier 1 --require-run \
-		--scenario dogfood.agent_mission.modal_activities \
+		--scenario dogfood.agent_mission.modal_activity_contracts \
 		--out operational-mission-results.json
 
 .PHONY: operational-external
@@ -442,6 +446,55 @@ operational-external:
 	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
 		--mode source --cadence release --min-tier 5 --max-tier 6 --require-run \
 		--out operational-external-results.json
+
+# The release workflow builds once after the source profile, package-smokes
+# those exact bytes, records both digests, and never rebuilds before upload.
+.PHONY: release-artifact
+release-artifact:
+	@$(MAKE) --no-print-directory build
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/package_smoke.py "$(OPERATIONAL_DIST_DIR)"
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/release_artifact.py record \
+		--dist "$(OPERATIONAL_DIST_DIR)" --manifest "$(RELEASE_ARTIFACT_MANIFEST)"
+
+.PHONY: verify-release-artifact
+verify-release-artifact:
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/release_artifact.py verify \
+		--dist "$(OPERATIONAL_DIST_DIR)" --manifest "$(RELEASE_ARTIFACT_MANIFEST)"
+
+define RUN_RELEASE_SCENARIOS
+	@wheel=$$(find "$(OPERATIONAL_DIST_DIR)" -maxdepth 1 -name '*.whl' -print -quit 2>/dev/null); \
+		if [ -z "$$wheel" ]; then \
+			echo "release evidence requires one wheel in $(OPERATIONAL_DIST_DIR)"; \
+			exit 1; \
+		fi; \
+		$(2) PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
+			--mode wheel --cadence release --require-run --require-clean \
+			--wheel "$$wheel" $(1)
+endef
+
+.PHONY: operational-release
+operational-release: release-artifact
+	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 4 --out "$(OPERATIONAL_RELEASE_RESULTS)")
+
+.PHONY: operational-release-openai
+operational-release-openai: verify-release-artifact
+	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario example.05_llm_agents --out operational-release-openai-results.json)
+
+.PHONY: operational-release-docker
+operational-release-docker: verify-release-artifact
+	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario dogfood.sandbox.docker --out operational-release-docker-results.json)
+
+.PHONY: operational-release-r2
+operational-release-r2: verify-release-artifact
+	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario dogfood.storage.r2 --out operational-release-r2-results.json)
+
+.PHONY: operational-release-apple
+operational-release-apple: verify-release-artifact
+	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario dogfood.sandbox.apple_container --out operational-release-apple-results.json)
+
+.PHONY: operational-release-modal
+operational-release-modal: verify-release-artifact
+	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario dogfood.agent_mission.modal_live --out operational-release-modal-results.json,ARCHETYPE_MODAL_AGENT_MISSION_LIVE=1)
 
 .PHONY: verify-pr
 verify-pr: static test-cov eval-conformance eval-capability package-smoke examples-smoke operational-runtime operational-commands operational-wheel docs
@@ -452,8 +505,10 @@ verify-full: verify-pr test-process eval-reliability
 	@echo "Full verification profile passed"
 
 .PHONY: verify-release
-verify-release: verify-full
+verify-release: verify-full operational-release
 	@echo "Release verification profile passed"
+
+.NOTPARALLEL: verify-release
 
 .PHONY: release-check
 release-check: sync-dev verify-release

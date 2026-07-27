@@ -92,7 +92,7 @@ through those handlers and its exact pre-reserved owner.
 | Family resource service `missions.SandboxService` | `missions.SandboxService` | `MissionService` | Select a configured backend and acquire, reuse, close, and shut down mission-keyed sessions; no task-transition authority |
 | Family resource port `missions.SandboxBackend` | configured Apple Container, Docker, or Modal adapter | `missions.SandboxService` | Create or restore provider-owned isolated sessions |
 | Family resource port `missions.SandboxSession` | provider session adapter | `CodingAgentHarness`, `CriticHarness`, `missions.SandboxService` | Expose capability, process, status, checkpoint, and close operations for one live sandbox |
-| Family resource port `missions.CriticDriver` | `CodexCriticDriver` or configured adapter | `CriticHarness` | Invoke one independent structured review with model capability but no Git publication capability |
+| Family resource port `missions.CriticDriver` | admitted Modal `CodexAppServerCriticDriver`; capability-only `CodexCriticDriver`; or configured adapter | `CriticHarness` | Invoke one independent structured review with model capability but no Git publication capability |
 
 ### Commands-owned machinery
 

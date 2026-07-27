@@ -48,12 +48,12 @@ def test_docker_backend_is_the_portable_protocol_reference() -> None:
     assert isinstance(backend, SandboxBackend)
     assert backend.environment == coding_agent_environment()
     assert _session().capabilities.checkpoints is True
-    assert _session().capabilities.secret_names == ("github",)
-    assert _session(oauth=True).capabilities.secret_names == ("codex_oauth", "github")
+    assert _session().capabilities.secret_names == ()
+    assert _session(oauth=True).capabilities.secret_names == ("codex_oauth",)
 
 
 @pytest.mark.asyncio
-async def test_exec_uses_no_workspace_mount_and_keeps_secret_values_out_of_argv(
+async def test_exec_rejects_same_sandbox_github_secret_injection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, ...]] = []
@@ -63,27 +63,22 @@ async def test_exec_uses_no_workspace_mount_and_keeps_secret_values_out_of_argv(
         calls.append(tuple(argv))
         return ProcessResult(tuple(argv), 0)
 
-    monkeypatch.setenv("GITHUB_TOKEN", "must-not-enter-argv")
     monkeypatch.setattr(
         "archetype.missions.sandboxes.docker.run_host",
         fake_run_host,
     )
     session = _session()
 
-    await session.exec(
-        ProcessRequest(
-            ("git", "status"),
-            workdir="/workspace/repo",
-            env=(("NO_COLOR", "1"),),
-            secret_names=("github",),
+    with pytest.raises(ValueError, match="unsupported Docker secret"):
+        await session.exec(
+            ProcessRequest(
+                ("git", "status"),
+                workdir="/workspace/repo",
+                secret_names=("github",),
+            )
         )
-    )
 
-    argv = calls[0]
-    assert argv[:4] == ("docker", "exec", "--user", "agent")
-    assert "GITHUB_TOKEN" in argv
-    assert not any("must-not-enter-argv" in value for value in argv)
-    assert "--volume" not in argv
+    assert calls == []
 
 
 @pytest.mark.asyncio
@@ -231,7 +226,6 @@ def test_docker_config_and_spec_validation_fail_closed() -> None:
         ({"cpus": 0}, "positive"),
         ({"image_name": "bad image"}, "image_name"),
         ({"auth_volume_name": "bad volume"}, "auth_volume_name"),
-        ({"github_token_env": "lowercase"}, "environment variable"),
     ):
         with pytest.raises(ValueError, match=error):
             DockerSandboxConfig(**kwargs)
@@ -317,6 +311,7 @@ async def test_docker_backend_create_restore_login_and_close_lifecycle(
     assert any(command[:2] == ("docker", "build") for command in calls)
     assert any(command[:3] == ("docker", "volume", "create") for command in calls)
     assert any("--device-auth" in command for command in calls)
+    assert any("! -name auth.json" in argument for command in calls for argument in command)
 
 
 @pytest.mark.asyncio
@@ -329,7 +324,9 @@ async def test_docker_oauth_round_trip_and_session_error_states(
         del timeout_seconds
         command = tuple(argv)
         calls.append((command, stdin))
-        stdout = "oauth-archive" if any("tar -C" in value for value in command) else ""
+        stdout = (
+            "oauth-credential" if "base64" in command and "-w" in command and "0" in command else ""
+        )
         return ProcessResult(command, 0, stdout=stdout)
 
     monkeypatch.setattr("archetype.missions.sandboxes.docker.run_host", fake_run_host)
@@ -337,7 +334,9 @@ async def test_docker_oauth_round_trip_and_session_error_states(
 
     await session._stage_oauth()
     await session._persist_and_remove_oauth()
-    assert any(stdin == "oauth-archive" for _command, stdin in calls)
+    assert any(stdin == "oauth-credential" for _command, stdin in calls)
+    assert not any("tar" in argument for command, _stdin in calls for argument in command)
+    assert any("/home/agent/.codex/auth.json" in command for command, _stdin in calls)
 
     with pytest.raises(ValueError, match="unsupported"):
         await session.exec(ProcessRequest(("true",), secret_names=("unknown",)))

@@ -144,7 +144,7 @@ class RuntimeMissions:
         mission: SubmittedMission,
         checkpoint: CheckpointRef,
     ) -> SandboxIdentity:
-        """Explicitly restore the mission's process-local sandbox before running."""
+        """Fail explicitly until checkpoint identity is bound into Activity admission."""
 
         self._ensure_open()
         return await self._dispatcher.apply(

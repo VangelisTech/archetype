@@ -7,6 +7,12 @@ on:
 
 permissions: {}
 
+# The Modal lane uses one static CODEX_AUTH_VOLUME. Keep tag workflows
+# single-flight because that credential broker has no concurrent-owner contract.
+concurrency:
+  group: archetype-release
+  cancel-in-progress: false
+
 jobs:
   release-profile:
     name: Release verification
@@ -21,7 +27,7 @@ jobs:
       - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
         with:
           version: "latest"
-      - run: uv sync --group dev --extra docs
+      - run: uv sync --group dev --extra docs --extra coding-agent
       - name: Verify tag and package version agree
         run: test "${GITHUB_REF_NAME#v}" = "$(make --no-print-directory version)"
       - run: make verify-release
@@ -38,6 +44,100 @@ jobs:
             coverage.xml
             eval-conformance-results.json
             eval-reliability-results.json
+            release-artifact.json
+            operational-release-results.json
+            operational-release-results.d/
+          if-no-files-found: error
+
+  external-evidence:
+    name: Release evidence (${{ matrix.name }})
+    needs: release-profile
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: OpenAI
+            runner: '["ubuntu-latest"]'
+            target: operational-release-openai
+            receipt: operational-release-openai-results.json
+          - name: Docker
+            runner: '["ubuntu-latest"]'
+            target: operational-release-docker
+            receipt: operational-release-docker-results.json
+          - name: Cloudflare R2
+            runner: '["ubuntu-latest"]'
+            target: operational-release-r2
+            receipt: operational-release-r2-results.json
+          - name: Apple Container
+            # Apple Container uses Virtualization.framework. This custom label
+            # is reserved for a bare-metal Apple Silicon host on macOS 26;
+            # GitHub-hosted arm64 macOS runners cannot provide nested VMs.
+            runner: '["self-hosted","macOS","ARM64","archetype-apple-container-macos-26"]'
+            target: operational-release-apple
+            receipt: operational-release-apple-results.json
+          - name: Modal Agent Mission
+            runner: '["ubuntu-latest"]'
+            target: operational-release-modal
+            receipt: operational-release-modal-results.json
+    runs-on: ${{ fromJSON(matrix.runner) }}
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    env:
+      OPENAI_API_KEY: ${{ matrix.target == 'operational-release-openai' && secrets.OPENAI_API_KEY || '' }}
+      R2_ACCESS_KEY_ID: ${{ matrix.target == 'operational-release-r2' && secrets.R2_ACCESS_KEY_ID || '' }}
+      R2_SECRET_ACCESS_KEY: ${{ matrix.target == 'operational-release-r2' && secrets.R2_SECRET_ACCESS_KEY || '' }}
+      R2_API_ENDPOINT: ${{ matrix.target == 'operational-release-r2' && vars.R2_API_ENDPOINT || '' }}
+      R2_BUCKET: ${{ matrix.target == 'operational-release-r2' && vars.R2_BUCKET || '' }}
+      MODAL_TOKEN_ID: ${{ matrix.target == 'operational-release-modal' && secrets.MODAL_TOKEN_ID || '' }}
+      MODAL_TOKEN_SECRET: ${{ matrix.target == 'operational-release-modal' && secrets.MODAL_TOKEN_SECRET || '' }}
+      MODAL_PROFILE: ${{ matrix.target == 'operational-release-modal' && vars.CODING_AGENT_MODAL_PROFILE || '' }}
+      CODING_AGENT_MODAL_WORKSPACE: ${{ matrix.target == 'operational-release-modal' && vars.CODING_AGENT_MODAL_WORKSPACE || '' }}
+      CODING_AGENT_MODAL_ENVIRONMENT: ${{ matrix.target == 'operational-release-modal' && vars.CODING_AGENT_MODAL_ENVIRONMENT || '' }}
+      MODAL_ENVIRONMENT: ${{ matrix.target == 'operational-release-modal' && vars.CODING_AGENT_MODAL_ENVIRONMENT || '' }}
+      CODING_AGENT_MODAL_APP: ${{ matrix.target == 'operational-release-modal' && vars.CODING_AGENT_MODAL_APP || '' }}
+      CODING_AGENT_MODAL_IMAGE_ID: ${{ matrix.target == 'operational-release-modal' && vars.CODING_AGENT_MODAL_IMAGE_ID || '' }}
+      CODEX_AUTH_VOLUME: ${{ matrix.target == 'operational-release-modal' && vars.CODEX_AUTH_VOLUME || '' }}
+      CODING_AGENT_GITHUB_SECRET: ${{ matrix.target == 'operational-release-modal' && vars.CODING_AGENT_GITHUB_SECRET || '' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
+        with:
+          version: "latest"
+      - run: uv sync --group dev --extra coding-agent
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist/
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-evidence
+          path: .context/downloaded-release-evidence/
+      - name: Restore exact artifact manifest
+        run: cp .context/downloaded-release-evidence/release-artifact.json release-artifact.json
+      - name: Start Apple Container service
+        if: matrix.target == 'operational-release-apple'
+        run: |
+          test "$(uname -m)" = "arm64"
+          test "$(sw_vers -productVersion | cut -d. -f1)" -ge 26
+          command -v container
+          container system start
+          container system status
+      - name: Verify Docker service
+        if: matrix.target == 'operational-release-docker'
+        run: docker info
+      - name: Run exact installed-artifact scenario
+        run: make "${{ matrix.target }}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: release-${{ matrix.target }}-evidence
+          path: |
+            ${{ matrix.receipt }}
+            operational-release-*-results.d/
           if-no-files-found: error
 
   python-compatibility:
@@ -56,8 +156,45 @@ jobs:
       - run: uv sync --group dev
       - run: make test
 
+  release-evidence-gate:
+    name: Exact release evidence
+    needs: [release-profile, external-evidence]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-evidence
+          path: evidence/
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-operational-release-*-evidence
+          path: evidence/
+          merge-multiple: true
+      - name: Verify complete exact-wheel evidence
+        run: >-
+          python scripts/verify_release_evidence.py
+          --manifest evidence/release-artifact.json
+          --out release-evidence-summary.json
+          evidence/operational-release-results.json
+          evidence/operational-release-openai-results.json
+          evidence/operational-release-docker-results.json
+          evidence/operational-release-r2-results.json
+          evidence/operational-release-apple-results.json
+          evidence/operational-release-modal-results.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-evidence-summary
+          path: release-evidence-summary.json
+          if-no-files-found: error
+
   publish:
-    needs: [release-profile, python-compatibility]
+    needs: [release-evidence-gate, python-compatibility]
     runs-on: ubuntu-latest
     environment: release-pypi
     permissions:

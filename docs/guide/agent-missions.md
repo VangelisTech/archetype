@@ -25,7 +25,7 @@ start, which observations may advance it, and why every transition occurred**.
 | Primitive | Responsibility |
 |---|---|
 | World | The durable state machine for missions, tasks, relations, dispatches, executions, and outputs. |
-| Mission | Names one repository objective and rolls its task graph into one result. |
+| Mission | Names one repository objective, persists its canonical `episode_id`, and rolls its task graph into one result. |
 | Task | Holds one atomic goal, workflow state, retry policy, and repository coordinates. |
 | Validator | Describes one executable acceptance check; `Guards` relates it to a task. |
 | Candidate | Binds authored-green validation and publication evidence to one immutable base/head/diff and critic policy. |
@@ -69,10 +69,20 @@ from archetype.missions import (
     CommandValidator,
     CriticPolicy,
 )
-from archetype.missions.sandboxes import AppleContainerSandboxBackend
+from archetype.missions.sandboxes import (
+    MODAL_ACTIVITY_PROTOCOL_EPOCH,
+    ModalSandboxBackend,
+    ModalSandboxConfig,
+)
 
 
-backend = AppleContainerSandboxBackend()
+backend = ModalSandboxBackend(
+    ModalSandboxConfig(
+        workspace_name="your-modal-workspace",
+        environment_name="main",
+        operation_protocol_epoch=MODAL_ACTIVITY_PROTOCOL_EPOCH,
+    )
+)
 MISSION_CONFIG = AgentMissionConfig(
     sandbox_backend=backend,
     sandbox_environment=backend.environment,
@@ -125,6 +135,7 @@ async def main() -> None:
             )
             result = await missions.run(mission)
 
+    print(result.episode_id)
     print(result.status)
     for task in result.tasks:
         print(task.name, task.status, task.dispatches, task.commit_shas)
@@ -136,9 +147,19 @@ asyncio.run(main())
 Initialize the selected backend's Codex subscription volume once before the
 first live run with `await backend.login_codex()`. This device login is not an
 OpenAI API key and cannot implicitly reuse the credential of the Codex process
-running on the host. The complete backend-selectable setup, including Modal
-attach monitoring, is executable in
+running on the host. The complete Modal setup, including live monitoring and
+steerable browser viewports, is executable in
 [`examples/11_coding_agent_mission.py`](https://github.com/VangelisTech/archetype/blob/main/examples/11_coding_agent_mission.py).
+
+For a live `sb-...` identity, the example's `--spectate` action mints a
+read-only browser grant and `--takeover` mints a separately writable grant.
+Both lanes require a port-scoped Modal Sandbox Connect Token. The resulting
+URL and bearer token are transient operator capabilities: they are printed
+once, excluded from Activity results, ECS rows, checkpoints, and trace
+evidence, and must not be logged or persisted. These grant actions are a
+trusted-maintainer CLI surface only. An untrusted or remote caller requires a
+future actor-authenticated exact API operation before it may receive either
+capability.
 
 `CommandValidator` and `AgentTask` are authoring values. Submission compiles
 them into Validator and Task entities plus relations. The convenient surface
@@ -162,6 +183,20 @@ tasks. V1 requires:
 The sequence is already the planner seam. A later planner may take one large
 task and emit many tasks and relationships. Task decomposition is not part of
 V1.
+
+Every task in one Mission publishes to the same branch. The dispatch processor
+therefore admits at most one outstanding author task per Mission: dependency
+edges determine eligibility, repairs take precedence over fresh eligible
+tasks, and otherwise entity identity supplies the deterministic order. A fresh
+task hydrates from the latest accepted candidate on that serialized branch; a
+rejected candidate remains available only to its own repair. This preserves
+arbitrary acyclic task graphs without creating sibling commits or allowing an
+unreviewed head to become another task's base.
+
+Submission derives one world-scoped, persistent `episode_id`, stores it on the
+Mission entity, and returns it in both `SubmittedMission` and `MissionResult`.
+That is the join key for Mission episode evidence; a trajectory remains only a
+derived view.
 
 ## 3. Architecture and ownership
 
@@ -479,6 +514,12 @@ alone, binds the exact durable result and full subject evidence to the later
 committed tick. Generic Activity retries never increment Mission review
 attempts; only committed `CriticExecution` observations do.
 
+Modal first-result envelopes also bind cleanup ownership for the exact mission
+and auth sandbox object IDs plus their cohort. Author or critic recovery retries
+that exact teardown before returning a recovered result; a failed close can
+therefore neither settle the Activity nor strand a paid pair merely because the
+worker process restarted.
+
 A blocking receipt moves the task back to `READY` only after its findings are
 durable. The next author request contains those findings. Any repair produces
 a new head, candidate identity, and receipt subject; evidence for the old head
@@ -503,28 +544,113 @@ checkpoint-capable session for a bounded, best-effort snapshot and record
 either its reference or a `FrictionLog`. A slow or failed snapshot cannot delay
 or change the valid task decision, and rejected work is still checkpointed.
 
-Restore is deliberately explicit in V1:
-
-```python
-identity = await missions.restore_sandbox(submitted, checkpoint_ref)
-result = await missions.run(submitted)
-```
-
-There is no background supervisor, fleet discovery, mission-attempt claim,
-lease, fence, settlement, or automatic retry daemon. Explicit restore closes
-and replaces any retained live session for that already-known mission; it never
-silently ignores the supplied checkpoint. The reference must match provider,
-environment, mission owner, locality, and expiry. The ordinary committed task
-graph remains workflow authority. This is sandbox replacement, not a promise
-of process-restart mission continuation.
+Checkpoint restore is not supported by the v0.5 Modal Activity execution path.
+`restore_sandbox(...)` fails explicitly before provider I/O; accepting a
+checkpoint while the Activity executor starts a different operation-scoped
+sandbox would silently discard the restored filesystem. Checkpoint references
+remain durable evidence and the backend-level restore capability remains
+independently tested. A future workflow restore slice must bind the checkpoint
+into the immutable Activity request before re-enabling the public operation.
 
 ### Supported sandbox backends
 
-| Backend | Role | Checkpoint / restore | Authentication |
+| Backend | Role | Checkpoint / restore | Credential broker |
 |---|---|---|---|
-| Apple Container | Preferred macOS operational adapter by current operator policy; VM-grade isolation through the host `container` CLI. | Stops, exports the session root filesystem to an atomic content-addressed host-local archive, restarts in `finally`, verifies integrity, and rebuilds a restore image. | Dedicated Apple Container volume and broker VM. |
-| Docker | Linux and CI reference adapter; never selected implicitly on macOS. | `docker commit`, followed by immutable image-ID inspection and same-provider restore. | Optional dedicated Docker volume and broker container. |
-| Modal | Remote paid adapter. | Modal `snapshot_filesystem`, retained with recorded environment lineage and bounded TTL, and restore by exact `im-...` image ID. Expiration may also surface from Modal while resolving the image. | Dedicated Modal Volume and broker sandbox. |
+| Apple Container | Backend-capability and parity adapter; not admitted by the v0.5 Mission workflow. | Stops, exports the session root filesystem to an atomic content-addressed host-local archive, restarts in `finally`, verifies integrity, and rebuilds a restore image. | Required named Apple Container volume plus a separate broker VM. |
+| Docker | Linux/CI backend-capability reference; not admitted by the v0.5 Mission workflow. | `docker commit`, followed by immutable image-ID inspection and same-provider restore. | Optional named Docker volume plus a separate broker container. |
+| Modal | The sole v0.5 Mission Activity backend. | Captures `snapshot_filesystem` as durable evidence. Backend-level restore accepts exact `im-...` image IDs, but workflow restore is disabled until checkpoint identity is part of Activity admission. | Required named Modal Volume plus a separate broker sandbox. |
+
+#### Authentication paths by provider
+
+Codex is the only coding-agent provider in v0.5. The three sandbox backends
+above do not introduce three model credentials; each brokers the same Codex
+subscription device credential differently. Four authorities remain separate:
+the sandbox provider control plane, Codex model access, GitHub publication, and
+any live viewport grant.
+
+| Backend | Sandbox control-plane authentication | Codex authentication | GitHub publication | Live viewport |
+|---|---|---|---|---|
+| Apple Container | The local `container` CLI and its running VM service inherit the host user's local authority. Archetype accepts no Apple cloud token; `container system status` must succeed after `container system start`. | `AppleContainerSandboxBackend.login_codex()` runs `codex login --device-auth` in the pinned image and persists only `auth.json` in `AppleContainerSandboxConfig.auth_volume_name` (default `archetype-codex-auth`). A separate broker VM mounts that volume. An exec that explicitly requests `codex_oauth` copies `auth.json` into the mission VM for the lifetime of that whole process, then copies any refresh back and removes the staged `.codex` directory. This capability adapter is not a credential-isolation boundary for an untrusted repository and is not admitted by the v0.5 Mission workflow. | Unsupported. The adapter exposes no generic `github` process secret and is not admitted by the v0.5 Mission workflow. | Not implemented. |
+| Docker | The local Docker context/daemon authenticates the host operation; `docker info` must succeed. Archetype neither runs `docker login` nor owns registry credentials for the default locally built image. | Configure a non-empty `DockerSandboxConfig.auth_volume_name`, then call `DockerSandboxBackend.login_codex()`. It runs `codex login --device-auth` and persists only `auth.json` in that named volume. An exec that explicitly requests `codex_oauth` copies the file into the mission container for the lifetime of that whole process, then copies any refresh back and removes the staged `.codex` directory. Without the volume, the adapter exposes no `codex_oauth` capability. This capability adapter is not a credential-isolation boundary for an untrusted repository and is not admitted by the v0.5 Mission workflow. | Unsupported. The adapter exposes no generic `github` process secret and is not admitted by the v0.5 Mission workflow. | Not implemented. |
+| Modal | The Modal SDK uses the selected authenticated profile or `MODAL_TOKEN_ID` plus `MODAL_TOKEN_SECRET`. The workspace, Environment, App, Volume, Dict, Secret, and Sandbox identities are explicit configuration; ordinary create/restore, named work, and login verify the configured ambient namespace before mutation. A typical workstation setup uses `modal token set`; in Actions, repository variable `CODING_AGENT_MODAL_PROFILE` is exported as the SDK selector `MODAL_PROFILE`, and `CODING_AGENT_MODAL_ENVIRONMENT` is exported as both the Archetype selector and SDK selector `MODAL_ENVIRONMENT`. | `ModalSandboxBackend.login_codex()` runs `codex login --device-auth` in a temporary login sandbox and persists only `auth.json` in `ModalSandboxConfig.auth_volume_name` (default `archetype-codex-auth`). The admitted app-server path copies that file into its mission sandbox only through app-server `thread/start`; an awaited barrier deletes and verifies absence of the exact file before `turn/start`, TUI attachment, or model-driven tool execution. Mission execution never writes its copy back to the Volume, and generic mission `exec` rejects `codex_oauth`. | `ModalSandboxConfig.github_secret_name` (default `archetype-github`) resolves a Modal Secret containing `GITHUB_TOKEN`. The controller streams the exact validated Git object bundle through a hard byte cap into the separate non-agent broker, verifies its size, digest, and Git object identity there, and attaches the Secret only to its final push process. Generic mission `exec` rejects `github`. | `issue_spectate_grant()` and `issue_takeover_grant()` mint distinct, port-scoped Modal Sandbox Connect Tokens after Modal control-plane authentication. The bearer URLs are transient trusted-maintainer capabilities. |
+
+Release parity for Apple Container runs only on the labeled self-hosted
+bare-metal Apple Silicon macOS 26 runner. A GitHub-hosted arm64 macOS runner is
+not an authentication or execution substitute: Apple Container requires local
+Virtualization.framework VM support. That lane inherits only the self-host
+operator's `container` service authority and does not receive Modal, Codex,
+GitHub, or Apple cloud credentials.
+
+For a live v0.5 Mission, set up Modal, Codex, and GitHub independently:
+
+```bash
+uv sync --extra coding-agent
+
+# Interactive workstation authentication. CI may instead provide
+# MODAL_TOKEN_ID and MODAL_TOKEN_SECRET directly to the process.
+modal token set  # prompts without placing the token secret in argv
+modal profile current
+modal environment list
+
+export CODING_AGENT_MODAL_WORKSPACE="your-workspace-slug"
+export CODING_AGENT_MODAL_ENVIRONMENT="main"
+export MODAL_ENVIRONMENT="$CODING_AGENT_MODAL_ENVIRONMENT"
+export CODING_AGENT_MODAL_APP="archetype-agent-missions"
+export CODEX_AUTH_VOLUME="archetype-codex-auth-your-runner"
+export CODING_AGENT_GITHUB_SECRET="archetype-github"
+
+# The single dash opens an editor, keeping the token out of this command's
+# argument list. Create the Secret in the same Modal Environment.
+modal secret create -e "$CODING_AGENT_MODAL_ENVIRONMENT" \
+  "$CODING_AGENT_GITHUB_SECRET" GITHUB_TOKEN=-
+
+# One-time Codex subscription device login into the named broker Volume.
+uv run --extra coding-agent python examples/11_coding_agent_mission.py --login
+
+# Run, publish, and stream the live mission.
+uv run --extra coding-agent python examples/11_coding_agent_mission.py --follow
+```
+
+The configured Modal workspace and Environment are checked against the SDK's
+authenticated context before ordinary create/restore, named provider work, and
+device login. App, Volume, Dict, and Secret lookups all use that verified
+client and the configured Environment. When using a non-default Modal
+Environment, bind `MODAL_ENVIRONMENT` to the same value as
+`CODING_AGENT_MODAL_ENVIRONMENT`; the release workflow does this explicitly.
+In Actions, optional repository variable `CODING_AGENT_MODAL_PROFILE` becomes
+the SDK's `MODAL_PROFILE`. The interactive login
+operation owns writes to the Codex auth Volume; an admitted mission reads one
+copy for thread admission and never writes a refresh back. Give each
+concurrently active runtime its own Volume because v0.5 does not claim
+cross-runtime compare-and-swap over the mutable login credential.
+
+The GitHub Secret should contain a fine-grained, expiring token scoped to the
+one destination repository, with Metadata read and Contents read/write only.
+Do not grant Actions/Workflows, administration, or organization permissions.
+Local `gh` login, SSH agents, Git credential helpers, and a host Codex session
+are not inherited by a Mission.
+
+An `OPENAI_API_KEY` is not an Agent Missions Codex authentication path. It is
+used by other OpenAI-backed examples, but Mission author/critic execution
+requires the explicit subscription device-login broker described above and
+does not reuse the host's current Codex session. Apple Container and Docker
+retain the symbolic `codex_oauth` capability for their non-admitted adapters;
+Modal's admitted path exposes neither OAuth nor GitHub as a generic process
+secret. Provider-specific values never enter a mission request, command
+argument, Activity result, ECS row, or checkpoint. This is not a claim that the Apple Container and Docker
+exec adapters isolate OAuth from their requested process: those capability-only
+adapters stage the file inside that process's container and therefore must not
+run an untrusted repository. The admitted Modal path removes the exact staged
+file before the model turn, TUI, tools, and trace-producing agent work begin.
+
+Repository hydration and critic fetch are credential-free for the v0.5 public
+repository path. The GitHub capability is leased only for author publication,
+from a clean Git repository in the separate provider-owned auth broker with
+inherited Git configuration, hooks, URL rewrites, and credential helpers
+disabled, after authored-green validation. No agent-controlled process shares
+the GitHub token's execution boundary. A
+private-repository read path requires a future distinct read-only capability;
+the publication token must not be widened to cover it.
 
 Apple Container and Docker share one digest-pinned Linux base recipe. The
 Codex tarball is fetched from the version inventory, verified against its
@@ -533,26 +659,71 @@ running user, home, parent workdir, Codex version, and recipe digest match the
 declared environment. Modal's generated image performs the same package check
 and runtime attestation; a configured Modal image is selected only by its
 provider-issued immutable `im-...` ID. The local adapters do not share host
-directories with mission containers.
-OAuth credentials are staged only around the Codex process, persisted back to
-the broker, and removed before validators and checkpoints. GitHub credentials
-are symbolic process capabilities exposed only to the push command; secret
-values are never placed in provider command arguments.
+directories with mission containers. Apple Container and Docker persist a
+possible refresh after their explicitly credentialed process and then remove
+the staged directory before validators and checkpoints. Modal instead removes
+the exact mission copy immediately after app-server thread admission and does
+not persist a mission refresh. GitHub publication is a typed provider
+capability, not a generic process secret; its value reaches only the broker
+push environment and is never placed in provider command arguments.
 
 Modal additionally records heartbeat, event, stdout, and stderr files under
 the session-owned `/tmp/archetype-agent-missions/live/` spool, outside the
 target repository. `on_sandbox_event` receives bounded `SandboxEvent` values
 and exposes the provider identity as soon as acquisition completes, while
 `ModalSandboxSession.monitor("sb-...")` can attach from another process with
-byte-offset reads and bounded disconnect recovery. Each successfully captured
-agent invocation is also copied to an execution-scoped spool path; only that
-per-call success returns the exact `trace_uri` persisted on `AgentExecution`;
-static live-output capability alone never proves a trace exists. A failed
-best-effort trace setup leaves the URI empty instead of advertising a missing
-or stale file. Raw trace URIs are ephemeral operational evidence: checkpoint
-sanitization or teardown can make them unavailable, and snapshots remove both
-current and execution-scoped raw output. The authoritative ECS copy of execution
-and validator output is bounded and redacted before persistence.
+byte-offset reads and bounded disconnect recovery.
+That recovery covers a viewer disconnect. It does not claim that loss of the
+mission controller process or its host before a durable provider result turns
+the sandbox into an independently completing server-side Mission; recovery
+then follows the Activity's fail-closed `Unknown` contract.
+
+Steerable author execution uses the Codex app-server as the process and
+conversation authority. Its exact thread/turn protocol decides completion and
+interruption; terminal bytes never do. The app-server first creates the exact
+thread and admits `turn/start`, which materializes the rollout required by
+Codex's remote-resume protocol. The real Codex TUI then resumes that thread
+inside a sandbox-owned tmux PTY and must render the active-turn interrupt
+footer stably before the read-only spectate and single-client writable
+takeover lanes open. While that exact turn is active, normal Codex input steers
+it. Both views attach to the same server-owned TUI, which stays
+alive independently of viewers. The dedicated tmux server has both command
+prefixes and its prefix key table disabled, so writable TUI input cannot open
+an unrecorded tmux shell or another window. The app-server controller closes
+the TUI and both lanes as soon as the exact mission turn completes; validator
+execution begins only after that teardown.
+
+tmux, ttyd, and the Codex TUI are viewport substrate only. They do not decide
+task state, validation, publication, Activity settlement, or Mission
+transitions. Both ttyd ports are reached through distinct port-scoped Modal
+Sandbox Connect Tokens minted by the same trusted-maintainer Modal authority,
+including the spectate lane; neither lane is an unauthenticated public tunnel.
+There is no application-actor authorization, durable grant audit, explicit
+revocation API, or user-selected TTL in v0.5. The displayed bearer may remain
+in browser history, and sandbox teardown is its practical revocation boundary.
+Takeover is intentionally a trusted-maintainer capability over an externally
+isolated sandbox: the TUI uses the mission's `never` approval and
+`danger-full-access` policy, while subsequent repository validators and the
+independent critic remain authoritative.
+
+Each operation-scoped Activity sandbox starts a new app-server thread. A prior
+`agent_session_id` is durable provenance, not a promise that local Codex rollout
+files survived in the next fresh sandbox. Repair continuity comes from the
+published repository branch plus the bounded validator and critic evidence in
+the next committed request.
+
+The app-server/TUI session is scoped to the author invocation and is closed
+before repository validators run. Operator input can steer that invocation,
+but cannot bypass the subsequent validator, critic, or processor-owned
+decisions. Each successfully captured agent invocation is also copied to an
+execution-scoped spool path; only that per-call success returns the exact
+`trace_uri` persisted on `AgentExecution`; static live-output capability alone
+never proves a trace exists. A failed best-effort trace setup leaves the URI
+empty instead of advertising a missing or stale file. Raw trace URIs are
+ephemeral operational evidence: checkpoint sanitization or teardown can make
+them unavailable, and snapshots remove both current and execution-scoped raw
+output. The authoritative ECS copy of execution and validator output is
+bounded and redacted before persistence.
 Provider-native snapshots are recovery objects, not portable or sanitized
 artifact bundles. The artifacts family accepts explicit file sources through
 its registered operation, but V1 intentionally does not crawl or publish
@@ -653,8 +824,10 @@ relationships. HTN decomposition is useful, but is not a V1 correctness gate.
 - Modal author and critic execution with exact restart recovery;
 - deterministic pre-admission rejection for Apple Container and Docker
   end-to-end Missions;
-- immediate sandbox identity observation and direct Modal live monitoring;
-- best-effort post-dispatch checkpoint evidence plus explicit restore; and
+- immediate sandbox identity observation, direct Modal live monitoring, and
+  authenticated read-only spectate plus writable takeover viewports;
+- best-effort post-dispatch checkpoint evidence, with workflow restore rejected
+  until the checkpoint is bound into Activity admission; and
 - terminal result projection and cleanup.
 
 ### Deliberately not included
@@ -667,6 +840,8 @@ relationships. HTN decomposition is useful, but is not a V1 correctness gate.
 - PR creation, CI watching, hosted review, merge, or deployment;
 - private-repository critic Git credentials, critic sandbox pools, egress
   attestation, or OS-level read-only mounts;
+- an untrusted/API viewport-grant endpoint before exact actor authorization is
+  specified;
 - a general relationship-to-sandbox placement scheduler; and
 - a requirement that checkpoints or manifests gate acceptance.
 
@@ -688,7 +863,7 @@ Component.
 | Private-repository critic materialization | V1 proves public repositories and gives critic processes no Git publication secret. | Add a distinct read-only Git capability without widening critic publication authority. |
 | Sandbox placement | Use a simple configured policy. | Add a scheduler only when multiple topologies require one. |
 | Task decomposition | Authors submit the graph. | Planner emits the same typed graph. |
-| Terminal interaction | `exec` is the required capability. | Add optional PTY/tmux/ttyd capabilities without widening workflow authority. |
+| Remote viewport authorization | Modal spectate and takeover grants are authenticated, transient trusted-maintainer capabilities; they never enter durable Mission state. | Add exact actor-authenticated API operations before exposing grants to untrusted callers. |
 | Trace/artifact ingestion | Keep bounded redacted tails in ECS. Use the registered artifacts-family operation explicitly for caller-selected file sources; do not auto-emit `AgentArtifact` or `FilesystemManifest` from sandbox contents. | Add a provider-export adapter that selects declared files, sanitizes them, ingests them, and stages provenance as one explicit application workflow. |
 | Snapshot sanitization | Credentials are removed before capture; provider snapshots remain trusted recovery objects rather than published artifacts. | Quarantine/scan before any cross-provider or R2 publication. |
 | Prefab mission libraries | Direct materialization remains authoritative. | Author reusable graphs after generic prefab registry contracts settle. |
@@ -790,8 +965,8 @@ a failed phase, rejects new admission, and retries the retained phase before
 finalization. This replaces ambient cleanup authority without weakening the
 landed create/replace/close race guarantees.
 
-That reservation covers each entire supported `RuntimeMissions` operation —
-`submit`, `run`, `restore_sandbox`, and `query` — not only individual world
+That reservation covers each entire `RuntimeMissions` operation — `submit`,
+`run`, explicitly rejected `restore_sandbox`, and `query` — not only individual world
 steps or provider subprocesses. The run enters through the registered
 dispatcher operation before it may construct or schedule work and remains
 counted as admitted until its resource ownership is either registered or
@@ -816,6 +991,7 @@ The implementation follows this layout:
 | `archetype/missions/processors.py` | Task decision, readiness, dispatch, and mission rollup authority. |
 | `archetype/missions/projections.py` | Supported mission/task/execution result projections. |
 | `archetype/missions/coding_agents/contracts.py` | Coding-agent request and driver protocols. |
+| `archetype/missions/coding_agents/app_server.py` | Exact Codex app-server thread/turn control and steering authority. |
 | `archetype/missions/coding_agents/harness.py` | Repository preparation, agent invocation, validation, Git publication, and observation translation. |
 | `archetype/missions/critics/contracts.py` | Candidate review requests, critic driver protocol, normalized findings, receipts, and stable digests. |
 | `archetype/missions/critics/harness.py` | Public-base prewarming, exact-head verification, critic invocation, and structured fail-closed normalization. |
@@ -823,7 +999,7 @@ The implementation follows this layout:
 | `archetype/missions/sandboxes/service.py` | Backend registry and live-session lifetime. |
 | `archetype/missions/sandboxes/apple_container.py` | Operational macOS backend and atomic root-filesystem archive restore. |
 | `archetype/missions/sandboxes/docker.py` | Linux/CI reference backend and immutable image restore. |
-| `archetype/missions/sandboxes/modal.py` | Remote backend, device login, snapshots, and direct live monitor. |
+| `archetype/missions/sandboxes/modal.py` | Remote backend, device login, snapshots, direct live monitor, and transient authenticated viewport grants. |
 | `archetype/missions/service.py` | Graph materialization, tick/I/O composition, family workflow, and projections. |
 | `archetype/runtime/missions.py` | Mission-author runtime handle and lifecycle. |
 | `examples/11_coding_agent_mission.py` | Real typed dogfood script. |
@@ -897,13 +1073,34 @@ The credential-free contract lane must prove:
 
 The dedicated Docker parity lane builds the shared image and proves real
 session-filesystem checkpoint/restore only when the dogfood example changes or
-an operator dispatches it manually; it is not part of ordinary CI. The live
-Modal dogfood must additionally prove real repository preparation, agent
-execution, direct monitoring, validation, commit/push publication, and
-teardown. Checkpoint/restore remains a separate sandbox-capability lane; the
-Activity author result closes its execution sandbox after publishing exact
-evidence. Modal is paid and credentialed, so it remains an explicit operation
-rather than ordinary CI.
+an operator dispatches it manually; it is not part of ordinary CI.
+
+The mandatory paid Modal release lane uses the full `CodingAgentHarness`. It
+prepares a real provider-local bare Git remote, clones and branches through the
+harness, runs the Codex app-server and attached TUI, reads the durable spool
+through `ModalSandboxSession.monitor(...)`, and performs authenticated HTTP
+requests through both the spectate and takeover Connect Token URLs. The test
+then opens both authenticated ttyd WebSockets, reads the spectate lane, and
+injects the operator steer through the takeover lane into that same tmux-owned
+Codex TUI. Deterministic topology contracts complement the live transport by
+proving that ttyd port 7681 starts read-only and port 7682 starts writable.
+Terminal bytes prove operator reachability only; the app-server protocol
+remains completion authority. The turn's first tool command verifies that
+`/root/.codex/auth.json` is already absent, and the post-completion validator
+checks the same boundary again.
+
+After the exact app-server turn completes and all interactive tmux sessions are
+gone, the harness runs an exact validator, commits the resulting change, and
+pushes that exact revision to the provider-local bare branch. It verifies the
+remote ref, unchanged base branch, clean worktree, credential removal, and
+sandbox teardown. The live lane intentionally does not mutate GitHub.
+Credential-free broker contracts complement it by proving that the exact
+validated Git bundle crosses into a separate Modal auth sandbox and that only
+the final GitHub push process receives `GITHUB_TOKEN`. Checkpoint/restore
+remains a separate sandbox-capability lane; the Activity author result closes
+its execution sandbox after publishing exact evidence. Modal is paid and
+credentialed, so it remains an explicit release operation rather than ordinary
+CI.
 
 ## Companion contracts
 

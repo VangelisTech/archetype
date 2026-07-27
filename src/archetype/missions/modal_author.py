@@ -47,6 +47,7 @@ from archetype.missions.sandboxes.contracts import (
 from archetype.missions.sandboxes.modal import (
     MODAL_ACTIVITY_PROTOCOL_EPOCH,
     ModalSandboxOperationCapability,
+    ModalSandboxOperationCleanup,
     ModalSandboxOperationIdentity,
 )
 from archetype.missions.sandboxes.modal_barrier import (
@@ -61,7 +62,7 @@ _DICT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REQUEST_ADAPTER = TypeAdapter(TaskDispatchRequest)
 _PROVIDER_RESULT_KIND = "missions.author.modal-result"
-_PROVIDER_RESULT_SCHEMA_VERSION = 1
+_PROVIDER_RESULT_SCHEMA_VERSION = 2
 _RESULT_KEY_PREFIX = "author-result-v1-"
 _RETRY_REF_PREFIX = "modal-author-retry+json:sha256:"
 _PROVIDER_ENVELOPE_OVERHEAD_BYTES = 4_096
@@ -106,6 +107,12 @@ class ModalAuthorExecutionUnknown(AvailabilityError):
         super().__init__(f"Modal author operation {operation_id!r} is Unknown: {self.reason}")
 
 
+@dataclass(frozen=True, slots=True)
+class _StoredAuthorResult:
+    observation: DurableAuthorExecutionObservation
+    cleanup: ModalSandboxOperationCleanup
+
+
 class _ModalAuthorResultCatalog:
     """One provider-native first-result register backed by a named Modal Dict."""
 
@@ -133,7 +140,7 @@ class _ModalAuthorResultCatalog:
         *,
         identity: ModalSandboxOperationIdentity,
         request_digest: str,
-    ) -> DurableAuthorExecutionObservation | None:
+    ) -> _StoredAuthorResult | None:
         dictionary = await self._dictionary()
         key = self._key(identity)
         try:
@@ -171,11 +178,13 @@ class _ModalAuthorResultCatalog:
         identity: ModalSandboxOperationIdentity,
         request_digest: str,
         observation: DurableAuthorExecutionObservation,
-    ) -> DurableAuthorExecutionObservation:
+        cleanup: ModalSandboxOperationCleanup,
+    ) -> _StoredAuthorResult:
+        stored = _StoredAuthorResult(observation=observation, cleanup=cleanup)
         encoded = self._encode(
             identity=identity,
             request_digest=request_digest,
-            observation=observation,
+            stored=stored,
         )
         dictionary = await self._dictionary()
         try:
@@ -195,7 +204,7 @@ class _ModalAuthorResultCatalog:
             )
             return recovered
         if added:
-            return observation
+            return stored
         existing = await self.get(
             identity=identity,
             request_digest=request_digest,
@@ -209,7 +218,7 @@ class _ModalAuthorResultCatalog:
             self._encode(
                 identity=identity,
                 request_digest=request_digest,
-                observation=existing,
+                stored=existing,
             )
             != encoded
         ):
@@ -223,7 +232,7 @@ class _ModalAuthorResultCatalog:
         request_digest: str,
         expected: bytes,
         cause: Exception,
-    ) -> DurableAuthorExecutionObservation:
+    ) -> _StoredAuthorResult:
         try:
             existing = await self.get(
                 identity=identity,
@@ -245,7 +254,7 @@ class _ModalAuthorResultCatalog:
             self._encode(
                 identity=identity,
                 request_digest=request_digest,
-                observation=existing,
+                stored=existing,
             )
             != expected
         ):
@@ -259,14 +268,17 @@ class _ModalAuthorResultCatalog:
         *,
         identity: ModalSandboxOperationIdentity,
         request_digest: str,
-        observation: DurableAuthorExecutionObservation,
+        stored: _StoredAuthorResult,
     ) -> bytes:
         self._validate_identity(identity)
         if not _DIGEST.fullmatch(request_digest):
             raise ValueError("Modal author request digest is invalid")
-        result_envelope = json.loads(self._codec.encode_observation(observation))
+        if stored.cleanup.identity != identity:
+            raise ValueError("Modal author cleanup belongs to another operation")
+        result_envelope = json.loads(self._codec.encode_observation(stored.observation))
         encoded = json.dumps(
             {
+                "cleanup": stored.cleanup.to_payload(),
                 "kind": _PROVIDER_RESULT_KIND,
                 "operation_digest": identity.digest,
                 "request_digest": request_digest,
@@ -289,7 +301,7 @@ class _ModalAuthorResultCatalog:
         *,
         identity: ModalSandboxOperationIdentity,
         request_digest: str,
-    ) -> DurableAuthorExecutionObservation:
+    ) -> _StoredAuthorResult:
         if len(encoded) > self._max_result_bytes:
             raise ModalAuthorExecutionUnknown(
                 identity.operation_id,
@@ -306,6 +318,7 @@ class _ModalAuthorResultCatalog:
             not isinstance(envelope, dict)
             or set(envelope)
             != {
+                "cleanup",
                 "kind",
                 "operation_digest",
                 "request_digest",
@@ -329,6 +342,10 @@ class _ModalAuthorResultCatalog:
         ).encode()
         try:
             observation = self._codec.decode_observation(result_encoded)
+            cleanup = ModalSandboxOperationCleanup.from_payload(
+                identity,
+                envelope["cleanup"],
+            )
         except (TypeError, ValueError) as exc:
             raise ModalAuthorExecutionUnknown(
                 identity.operation_id,
@@ -338,7 +355,10 @@ class _ModalAuthorResultCatalog:
             self._encode(
                 identity=identity,
                 request_digest=request_digest,
-                observation=observation,
+                stored=_StoredAuthorResult(
+                    observation=observation,
+                    cleanup=cleanup,
+                ),
             )
             != encoded
         ):
@@ -346,7 +366,7 @@ class _ModalAuthorResultCatalog:
                 identity.operation_id,
                 "provider result is not canonically encoded",
             )
-        return observation
+        return _StoredAuthorResult(observation=observation, cleanup=cleanup)
 
     async def _dictionary(self) -> Any:
         modal = self._load_modal()
@@ -493,8 +513,9 @@ class ModalMissionAuthorExecutor:
             request_digest=request_digest,
         )
         if existing is not None:
-            self._validate_result(sanitized_request, existing.result)
-            return self._codec.execution_observation(existing)
+            self._validate_result(sanitized_request, existing.observation.result)
+            await self._cleanup_completed(existing, spec=self._sandbox_spec(sanitized_request))
+            return self._codec.execution_observation(existing.observation)
 
         spec = self._sandbox_spec(sanitized_request)
         if retry_guard is None:
@@ -515,8 +536,9 @@ class ModalMissionAuthorExecutor:
                 request_digest=request_digest,
             )
             if recovered is not None:
-                self._validate_result(sanitized_request, recovered.result)
-                return self._codec.execution_observation(recovered)
+                self._validate_result(sanitized_request, recovered.observation.result)
+                await self._cleanup_completed(recovered, spec=spec)
+                return self._codec.execution_observation(recovered.observation)
             if isinstance(outcome, ModalProviderMarkerExists):
                 reason = f"permanent {outcome.phase} marker exists without a durable result"
             elif isinstance(outcome, ModalProviderBarrierUnknown):
@@ -589,9 +611,10 @@ class ModalMissionAuthorExecutor:
                 identity=identity,
                 request_digest=request_digest,
                 observation=durable,
+                cleanup=session.operation_cleanup,
             )
-            self._validate_result(sanitized_request, stored.result)
-            return self._codec.execution_observation(stored)
+            self._validate_result(sanitized_request, stored.observation.result)
+            return self._codec.execution_observation(stored.observation)
         finally:
             await session.close()
 
@@ -644,10 +667,11 @@ class ModalMissionAuthorExecutor:
             return AuthorRecoveryUnknown(exc.reason)
         if existing is not None:
             try:
-                self._validate_result(sanitized_request, existing.result)
-            except ValueError as exc:
+                self._validate_result(sanitized_request, existing.observation.result)
+                await self._cleanup_completed(existing, spec=self._sandbox_spec(sanitized_request))
+            except (ModalAuthorExecutionUnknown, ValueError) as exc:
                 return AuthorRecoveryUnknown(str(exc))
-            return AuthorRecovered(self._codec.execution_observation(existing))
+            return AuthorRecovered(self._codec.execution_observation(existing.observation))
 
         marker = await self._barrier.observe_operation_marker(identity=identity)
         if isinstance(marker, ModalProviderOperationMissing):
@@ -663,10 +687,11 @@ class ModalMissionAuthorExecutor:
             return AuthorRecoveryUnknown(exc.reason)
         if existing is not None:
             try:
-                self._validate_result(sanitized_request, existing.result)
-            except ValueError as exc:
+                self._validate_result(sanitized_request, existing.observation.result)
+                await self._cleanup_completed(existing, spec=self._sandbox_spec(sanitized_request))
+            except (ModalAuthorExecutionUnknown, ValueError) as exc:
                 return AuthorRecoveryUnknown(str(exc))
-            return AuthorRecovered(self._codec.execution_observation(existing))
+            return AuthorRecovered(self._codec.execution_observation(existing.observation))
         if isinstance(marker, ModalProviderMarkerExists):
             return AuthorRecoveryUnknown(
                 f"permanent {marker.phase} marker exists without a durable result"
@@ -674,6 +699,25 @@ class ModalMissionAuthorExecutor:
         if isinstance(marker, ModalProviderBarrierUnknown):
             return AuthorRecoveryUnknown(marker.reason)
         return AuthorRecoveryUnknown("provider marker observation returned an invalid outcome")
+
+    async def _cleanup_completed(
+        self,
+        stored: _StoredAuthorResult,
+        *,
+        spec: SandboxSpec,
+    ) -> None:
+        try:
+            await self._capability.cleanup_completed(
+                cleanup=stored.cleanup,
+                spec=spec,
+            )
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:
+            raise ModalAuthorExecutionUnknown(
+                stored.cleanup.identity.operation_id,
+                f"exact provider cleanup failed ({type(exc).__name__[:128]})",
+            ) from exc
 
     def _sandbox_spec(self, request: TaskDispatchRequest) -> SandboxSpec:
         return SandboxSpec(

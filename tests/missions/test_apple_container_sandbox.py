@@ -55,53 +55,44 @@ def test_apple_backend_uses_the_pinned_shared_image_recipe() -> None:
     assert backend.environment == coding_agent_environment()
     assert "@openai/codex@0.144.6" in coding_agent_containerfile()
     assert "sha512sum --check --strict" in coding_agent_containerfile()
+    assert "ttyd.x86_64" in coding_agent_containerfile()
+    assert "ttyd.aarch64" in coding_agent_containerfile()
+    assert "sha256sum --check --strict" in coding_agent_containerfile()
+    assert "tmux" in coding_agent_containerfile()
     assert f"ARCHETYPE_SANDBOX_ENVIRONMENT={backend.environment}" in coding_agent_containerfile()
     assert "USER agent" in coding_agent_containerfile()
 
 
 @pytest.mark.asyncio
-async def test_exec_maps_symbolic_secrets_without_putting_values_in_argv(
+async def test_exec_rejects_same_sandbox_github_secret_injection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, ...]] = []
-    observed_env_files: list[tuple[Path, str]] = []
 
     async def fake_run_host(argv, *, timeout_seconds: int, stdin: str | None = None):
         del timeout_seconds, stdin
         command = tuple(argv)
         calls.append(command)
-        env_file = Path(command[command.index("--env-file") + 1])
-        observed_env_files.append((env_file, env_file.read_text(encoding="utf-8")))
         return ProcessResult(command, 0, stdout="ok")
 
-    monkeypatch.setenv("GITHUB_TOKEN", "must-not-enter-argv")
     monkeypatch.setattr(
         "archetype.missions.sandboxes.apple_container.run_host",
         fake_run_host,
     )
     session = _session(tmp_path)
 
-    result = await session.exec(
-        ProcessRequest(
-            ("git", "status"),
-            workdir="/workspace/repo",
-            env=(("NO_COLOR", "1"),),
-            secret_names=("github",),
-            close_stdin=True,
+    with pytest.raises(ValueError, match="unsupported Apple Container secret"):
+        await session.exec(
+            ProcessRequest(
+                ("git", "status"),
+                workdir="/workspace/repo",
+                secret_names=("github",),
+            )
         )
-    )
 
-    assert result.returncode == 0
-    assert session.capabilities.home_directory == "/home/agent"
-    argv = calls[0]
-    assert argv[:4] == ("container", "exec", "--user", "agent")
-    assert "--env-file" in argv
-    assert "GITHUB_TOKEN" not in argv
-    assert not any("must-not-enter-argv" in argument for argument in argv)
-    assert "--volume" not in argv
-    assert observed_env_files[0][1] == "GITHUB_TOKEN=must-not-enter-argv\n"
-    assert not observed_env_files[0][0].exists()
+    assert session.capabilities.secret_names == ("codex_oauth",)
+    assert calls == []
 
 
 @pytest.mark.asyncio
@@ -318,7 +309,6 @@ def test_apple_config_and_spec_validation_fail_closed() -> None:
     for kwargs, error in (
         ({"cpus": 0}, "positive"),
         ({"image_name": "bad image"}, "image_name"),
-        ({"github_token_env": "lowercase"}, "environment variable"),
         ({"checkpoint_timeout_seconds": 0}, "checkpoint timeout"),
     ):
         with pytest.raises(ValueError, match=error):
@@ -407,6 +397,7 @@ async def test_apple_backend_create_restore_login_and_close_lifecycle(
     assert any(command[:2] == ("container", "build") for command in calls)
     assert any(command[:3] == ("container", "volume", "create") for command in calls)
     assert any("--device-auth" in command for command in calls)
+    assert any("! -name auth.json" in argument for command in calls for argument in command)
 
 
 @pytest.mark.asyncio
@@ -420,7 +411,9 @@ async def test_apple_oauth_round_trip_and_session_error_states(
         del timeout_seconds
         command = tuple(argv)
         calls.append((command, stdin))
-        stdout = "oauth-archive" if any("tar -C" in value for value in command) else ""
+        stdout = (
+            "oauth-credential" if "base64" in command and "-w" in command and "0" in command else ""
+        )
         return ProcessResult(command, 0, stdout=stdout)
 
     monkeypatch.setattr(
@@ -431,7 +424,9 @@ async def test_apple_oauth_round_trip_and_session_error_states(
 
     await session._stage_oauth()
     await session._persist_and_remove_oauth()
-    assert any(stdin == "oauth-archive" for _command, stdin in calls)
+    assert any(stdin == "oauth-credential" for _command, stdin in calls)
+    assert not any("tar" in argument for command, _stdin in calls for argument in command)
+    assert any("/home/agent/.codex/auth.json" in command for command, _stdin in calls)
 
     with pytest.raises(ValueError, match="unsupported"):
         await session.exec(ProcessRequest(("true",), secret_names=("unknown",)))

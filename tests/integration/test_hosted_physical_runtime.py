@@ -20,7 +20,9 @@ from archetype import (
     ModalHostedEpisodeConfig,
     StorageConfig,
 )
+from archetype.activities import ActivityAdmission, ActivityCoordinator
 from archetype.core.config import StorageBackend
+from archetype.core.interfaces import CommittedTickReceipt
 from archetype.physical_ai import hosted_modal
 from archetype.physical_ai.hosted_activity_contracts import HostedEpisodeProviderResult
 from archetype.physical_ai.hosted_activity_values import SeededHostedEpisodeRunner
@@ -29,6 +31,10 @@ from archetype.physical_ai.hosted_episode import (
     build_hosted_episode_results,
 )
 from archetype.physical_ai.hosted_modal import ModalHostedEpisodeProvider
+from archetype.storage.activity_catalog import (
+    SqliteActivityCatalog,
+    activity_catalog_path_for,
+)
 from archetype.storage.config import ControlCatalogConfig
 from archetype.wiring import RuntimeBootstrapConfig
 from archetype.world.registry import WorldRegistry
@@ -150,6 +156,68 @@ def _request() -> HostedEpisodeRequest:
         policy_id="scripted-reach@v1",
         config_json='{"reward_per_transition":0.25}',
     )
+
+
+@pytest.mark.asyncio
+async def test_public_hosted_episode_ignores_unrelated_unsettled_activity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = StorageConfig(
+        uri=str(tmp_path / "worlds"),
+        namespace="hosted-runtime",
+        backend=StorageBackend.ICEBERG,
+    )
+    catalog_config = ControlCatalogConfig(catalog_dir=tmp_path / "catalogs")
+    registry = WorldRegistry()
+    state = _ModalState(tmp_path / "modal", registry, crash_once=False)
+
+    def provider_factory(config: ModalHostedEpisodeConfig):
+        return ModalHostedEpisodeProvider(config, runtime=_ModalRuntime(state))
+
+    monkeypatch.setattr(
+        "archetype.runtime.runtime._bootstrap_config",
+        lambda **_kwargs: RuntimeBootstrapConfig(
+            control_catalog_config=catalog_config,
+            world_registry=registry,
+            audit_storage_config=storage,
+            hosted_episode_provider_factory=provider_factory,
+        ),
+    )
+
+    async with ArchetypeRuntime() as runtime:
+        world = runtime.world("hosted-with-mission-work", storage=storage)
+        info = await world.info()
+        state.world_id = str(info.world_id)
+        physical = SqliteActivityCatalog(activity_catalog_path_for(storage, catalog_config))
+        coordinator = ActivityCoordinator(physical)
+        await coordinator.admit(
+            ActivityAdmission(
+                activity_id="unrelated-mission",
+                kind="missions.author",
+                source=CommittedTickReceipt(
+                    state.world_id,
+                    str(info.run_id),
+                    info.tick,
+                    "unrelated-visible-receipt",
+                    0,
+                ),
+                input_ref="mission-request:unrelated",
+                input_digest="unrelated-mission-request",
+            )
+        )
+        await physical.close()
+
+        observation = await world.run_hosted_episode(
+            [_request()],
+            provider=_provider_config(),
+            activity_id="requested-hosted-episode",
+        )
+
+        assert observation.activity_id == "requested-hosted-episode"
+        check = SqliteActivityCatalog(activity_catalog_path_for(storage, catalog_config))
+        assert await ActivityCoordinator(check).has_unsettled(state.world_id)
+        await check.close()
 
 
 @pytest.mark.asyncio

@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import re
 import shutil
 import tempfile
@@ -42,7 +41,6 @@ from archetype.missions.sandboxes.contracts import (
 _PROVIDER = "docker"
 _CHECKPOINT_PREFIX = "docker-image://"
 _CODEX_SECRET = "codex_oauth"
-_GITHUB_SECRET = "github"
 _CODEX_AUTH_PATH = f"{CODEX_HOME}/auth.json"
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]*$")
 
@@ -55,7 +53,6 @@ class DockerSandboxConfig:
     cpus: int = 4
     memory: str = "8g"
     auth_volume_name: str = ""
-    github_token_env: str = "GITHUB_TOKEN"
     checkpoint_repository: str = "archetype-agent-checkpoints"
 
     def __post_init__(self) -> None:
@@ -69,8 +66,6 @@ class DockerSandboxConfig:
                 raise ValueError(f"invalid Docker {label}: {value!r}")
         if self.auth_volume_name and not _NAME_RE.fullmatch(self.auth_volume_name):
             raise ValueError(f"invalid Docker auth_volume_name: {self.auth_volume_name!r}")
-        if not re.fullmatch(r"[A-Z_][A-Z0-9_]*", self.github_token_env):
-            raise ValueError("github_token_env must be an environment variable name")
 
     @property
     def resolved_image_name(self) -> str:
@@ -104,9 +99,9 @@ class DockerSandboxSession:
 
     @property
     def capabilities(self) -> SandboxCapabilities:
-        secrets = (_GITHUB_SECRET,)
+        secrets: tuple[str, ...] = ()
         if self._auth_sandbox_id:
-            secrets = (_CODEX_SECRET, *secrets)
+            secrets = (_CODEX_SECRET,)
         return SandboxCapabilities(
             checkpoints=True,
             secret_names=secrets,
@@ -241,24 +236,18 @@ class DockerSandboxSession:
             argv.extend(["--workdir", request.workdir])
         for key, value in request.env:
             argv.extend(["--env", f"{key}={value}"])
-        if _GITHUB_SECRET in request.secret_names:
-            if not os.environ.get(self._config.github_token_env):
-                raise RuntimeError(
-                    f"required host environment variable is missing: "
-                    f"{self._config.github_token_env}"
-                )
-            argv.extend(["--env", self._config.github_token_env])
         argv.extend([self._sandbox_id, *request.argv])
         return await run_host(argv, timeout_seconds=request.timeout_seconds)
 
     async def _stage_oauth(self) -> None:
-        archive = await self._auth_exec(
-            "sh",
-            "-c",
-            f"tar -C {AGENT_HOME} -czf - .codex | base64 -w 0",
+        credential = await self._auth_exec(
+            "base64",
+            "-w",
+            "0",
+            _CODEX_AUTH_PATH,
             timeout=60,
         )
-        self._raise(archive, "read Codex OAuth credential")
+        self._raise(credential, "read Codex OAuth credential")
         staged = await run_host(
             (
                 "docker",
@@ -269,31 +258,37 @@ class DockerSandboxSession:
                 self._sandbox_id,
                 "sh",
                 "-c",
-                f"rm -rf {CODEX_HOME} && mkdir -p {AGENT_HOME} "
-                f"&& base64 -d | tar -xz -C {AGENT_HOME}",
+                f"rm -rf {CODEX_HOME} && install -d -m 700 {CODEX_HOME} "
+                f"&& base64 -d > {_CODEX_AUTH_PATH} "
+                f"&& chmod 600 {_CODEX_AUTH_PATH}",
             ),
             timeout_seconds=60,
-            stdin=archive.stdout,
+            stdin=credential.stdout,
         )
         self._raise(staged, "stage Codex OAuth credential")
 
     async def _persist_and_remove_oauth(self) -> None:
         persistence_error: BaseException | None = None
         try:
-            archive = await self._exec_request(
+            credential = await self._exec_request(
                 ProcessRequest(
-                    ("sh", "-c", f"tar -C {AGENT_HOME} -czf - .codex | base64 -w 0"),
+                    ("base64", "-w", "0", _CODEX_AUTH_PATH),
                     timeout_seconds=60,
                 )
             )
-            self._raise(archive, "read refreshed Codex OAuth credential")
+            self._raise(credential, "read refreshed Codex OAuth credential")
+            next_path = f"{_CODEX_AUTH_PATH}.next.{self._sandbox_id}"
             persisted = await self._auth_exec(
                 "sh",
                 "-c",
-                f"find {CODEX_HOME} -mindepth 1 -maxdepth 1 -exec rm -rf -- {{}} + "
-                f"&& base64 -d | tar -xz -C {AGENT_HOME}",
+                f"umask 077 && install -d -m 700 {CODEX_HOME} "
+                f"&& base64 -d > {next_path} "
+                f"&& chmod 600 {next_path} "
+                f"&& mv -f -- {next_path} {_CODEX_AUTH_PATH} "
+                f"&& find {CODEX_HOME} -mindepth 1 -maxdepth 1 "
+                f"! -name auth.json ! -name 'auth.json.next.*' -exec rm -rf -- {{}} +",
                 timeout=60,
-                stdin=archive.stdout,
+                stdin=credential.stdout,
             )
             self._raise(persisted, "persist refreshed Codex OAuth credential")
         except BaseException as exc:
@@ -448,6 +443,26 @@ class DockerSandboxBackend:
         )
         if returncode != 0:
             raise RuntimeError(f"Codex device login failed with exit code {returncode}")
+        narrowed = await run_host(
+            (
+                "docker",
+                "run",
+                "--rm",
+                "--user",
+                AGENT_USER,
+                "--volume",
+                f"{self.config.auth_volume_name}:{CODEX_HOME}",
+                self.config.resolved_image_name,
+                "sh",
+                "-c",
+                f"test -s {_CODEX_AUTH_PATH} "
+                f"&& chmod 600 {_CODEX_AUTH_PATH} "
+                f"&& find {CODEX_HOME} -mindepth 1 -maxdepth 1 "
+                f"! -name auth.json -exec rm -rf -- {{}} +",
+            ),
+            timeout_seconds=60,
+        )
+        DockerSandboxSession._raise(narrowed, "narrow Codex auth volume")
 
     def _validate_spec(self, spec: SandboxSpec) -> None:
         if spec.provider != self.name:

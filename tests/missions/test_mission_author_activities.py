@@ -15,6 +15,7 @@ import asyncio
 import hashlib
 import json
 import subprocess
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -112,12 +113,17 @@ def _open_catalog(
     path: Path,
     *,
     lease_seconds: float = 0.01,
+    now_seconds: Callable[[], float] | None = None,
 ) -> tuple[
     SqliteActivityCatalog,
     ActivityCoordinator,
     MissionAuthorActivityCoordinator,
 ]:
-    physical = SqliteActivityCatalog(path)
+    physical = (
+        SqliteActivityCatalog(path)
+        if now_seconds is None
+        else SqliteActivityCatalog(path, now_seconds=now_seconds)
+    )
     generic = ActivityCoordinator(physical)
     return (
         physical,
@@ -1590,7 +1596,12 @@ async def test_unknown_provider_state_fails_closed_without_author_replay(
         )
     )
     catalog_path = tmp_path / "activities.db"
-    physical, _generic, catalog = _open_catalog(catalog_path)
+    now = [1_000.0]
+    physical, _generic, catalog = _open_catalog(
+        catalog_path,
+        lease_seconds=30,
+        now_seconds=lambda: now[0],
+    )
     values = LocalMissionAuthorValueStore(tmp_path / "values", redactor=RedactionService())
     await MissionAuthorActivityProjector(
         reader=reader,
@@ -1605,7 +1616,7 @@ async def test_unknown_provider_state_fails_closed_without_author_replay(
         operation_id=author_provider_operation_id(world_id, dispatch_id),
     )
     await physical.close()
-    await asyncio.sleep(0.02)
+    now[0] += 31
 
     provider = _LocalGitProvider(
         remote,
@@ -1616,6 +1627,7 @@ async def test_unknown_provider_state_fails_closed_without_author_replay(
     recovery_physical, _recovery_generic, recovery_catalog = _open_catalog(
         catalog_path,
         lease_seconds=30,
+        now_seconds=lambda: now[0],
     )
     worker = MissionAuthorActivityWorker(
         world_id=world_id,
@@ -1643,7 +1655,12 @@ async def test_reconciliation_refuses_another_provider_adapter(
     dispatch_id = "dispatch-provider-bound"
     remote = _init_bare_remote(tmp_path / "git")
     catalog_path = tmp_path / "activities.db"
-    physical, _generic, catalog = _open_catalog(catalog_path)
+    now = [1_000.0]
+    physical, _generic, catalog = _open_catalog(
+        catalog_path,
+        lease_seconds=30,
+        now_seconds=lambda: now[0],
+    )
     values = LocalMissionAuthorValueStore(
         tmp_path / "values",
         redactor=RedactionService(),
@@ -1670,7 +1687,7 @@ async def test_reconciliation_refuses_another_provider_adapter(
     )
     assert bound.provider == "local-git"
     await physical.close()
-    await asyncio.sleep(0.02)
+    now[0] += 31
 
     provider = _OtherGitProvider(
         remote,
@@ -1680,6 +1697,7 @@ async def test_reconciliation_refuses_another_provider_adapter(
     recovery_physical, _recovery_generic, recovery_catalog = _open_catalog(
         catalog_path,
         lease_seconds=30,
+        now_seconds=lambda: now[0],
     )
     worker = MissionAuthorActivityWorker(
         world_id=world_id,

@@ -12,6 +12,10 @@ from pathlib import PurePosixPath
 from typing import Any, ClassVar
 from urllib.parse import urlsplit
 
+from archetype.missions.coding_agents.app_server import (
+    CodexAppServerConnector,
+    run_codex_app_server_turn,
+)
 from archetype.missions.critics.activities import (
     CriticSubjectPolicy,
     CriticSubjectTooLarge,
@@ -102,6 +106,36 @@ class CodexCriticDriver:
             stdout=result.stdout,
             stderr=result.stderr,
             trace_uri=result.trace_uri,
+        )
+
+
+@dataclass(frozen=True)
+class CodexAppServerCriticDriver:
+    """Independent critic over the same exact-turn app-server contract as authors."""
+
+    connector: CodexAppServerConnector
+    driver_id: ClassVar[str] = "codex"
+    workspace: str = "/workspace/review"
+
+    async def run(
+        self,
+        session: SandboxSession,
+        request: CandidateReviewRequest,
+        prompt: str,
+    ) -> CriticProcessObservation:
+        observation = await run_codex_app_server_turn(
+            session,
+            connector=self.connector,
+            workspace=self.workspace,
+            prompt=prompt,
+            model=request.policy.model,
+            timeout_seconds=request.policy.timeout_seconds,
+        )
+        return CriticProcessObservation(
+            returncode=observation.returncode,
+            stdout=observation.stdout,
+            stderr=observation.stderr,
+            trace_uri=observation.trace_uri,
         )
 
 
@@ -640,4 +674,9 @@ class _UnverifiableReview(RuntimeError):
     """Exact candidate materialization failed before critic inference."""
 
 
-__all__ = ["CodexCriticDriver", "CriticHarness", "CriticHarnessConfig"]
+__all__ = [
+    "CodexAppServerCriticDriver",
+    "CodexCriticDriver",
+    "CriticHarness",
+    "CriticHarnessConfig",
+]

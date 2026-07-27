@@ -20,6 +20,7 @@ from scripts.run_operational_scenarios import run_scenarios
 
 ROOT = Path(__file__).resolve().parents[2]
 QUALITY_WORKFLOW = ROOT / ".github" / "workflows" / "python-tests.yml"
+RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 AUTOMERGE_WORKFLOW = ROOT / ".github" / "workflows" / "automerge.yml"
 QUEUE_READY_HELPER = ROOT / "scripts" / "gh_pr_queue_ready.sh"
 MAKEFILE = ROOT / "Makefile"
@@ -237,7 +238,7 @@ def test_example_smoke_keeps_the_coding_agent_authoring_check_credential_free() 
         row for row in scenarios if row["id"] == "example.11_coding_agent_mission.dry_run"
     )
 
-    assert mission["source_command"][-3:] == ["--dry-run", "--backend", "docker"]
+    assert mission["source_command"][-3:] == ["--dry-run", "--backend", "modal"]
     assert mission["prerequisites"] == []
     assert mission["missing_prerequisite"] == "fail"
     assert mission["tier"] == 1
@@ -352,7 +353,138 @@ def test_required_operational_execution_cannot_accept_not_run(
 
     assert passed is False
     assert envelope["outcome"] == "failed"
-    assert envelope["status_counts"] == {"passed": 0, "failed": 0, "not_run": 1}
+    assert envelope["status_counts"] == {"passed": 0, "failed": 1, "not_run": 0}
+    (result,) = envelope["results"]
+    assert result["status"] == "failed"
+    assert "release cadence requires execution" in result["reason"]
+
+
+def test_release_profile_builds_and_tests_one_exact_artifact() -> None:
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    verify_release = re.search(
+        r"^verify-release:(?P<dependencies>[^\n]*)$",
+        makefile,
+        re.MULTILINE,
+    )
+    assert verify_release is not None
+    dependencies = verify_release.group("dependencies").split()
+    assert dependencies == ["verify-full", "operational-release"]
+
+    release_artifact = re.search(
+        r"^release-artifact:\n(?P<body>(?:\t.*\n)+)",
+        makefile,
+        re.MULTILINE,
+    )
+    operational_release = re.search(
+        r"^operational-release:(?P<dependencies>[^\n]*)\n"
+        r"(?P<body>(?:\t.*\n)+)",
+        makefile,
+        re.MULTILINE,
+    )
+    assert release_artifact is not None
+    assert operational_release is not None
+    artifact_body = release_artifact.group("body")
+    assert artifact_body.count("scripts/package_smoke.py") == 1
+    assert artifact_body.count("scripts/release_artifact.py record") == 1
+    assert operational_release.group("dependencies").split() == ["release-artifact"]
+    assert "--min-tier 0 --max-tier 4" in operational_release.group("body")
+
+
+def test_every_release_scenario_is_installed_wheel_applicable() -> None:
+    with OPERATIONAL_SCENARIOS.open("rb") as stream:
+        scenarios = tomllib.load(stream)["scenario"]
+    required = [row for row in scenarios if "release" in row["required_cadence"]]
+    assert required
+    assert all("wheel" in row["applicability"] for row in required)
+    ids = {row["id"] for row in required}
+    assert {
+        "dogfood.runtime.shutdown",
+        "dogfood.agent_mission.modal_activity_contracts",
+        "dogfood.physical_ai.hosted_episode",
+        "dogfood.storage.r2",
+    } <= ids
+    core_ids = {row["id"] for row in required if int(row["tier"]) <= 4}
+    assert ids - core_ids == {
+        "example.05_llm_agents",
+        "dogfood.agent_mission.modal_live",
+        "dogfood.sandbox.docker",
+        "dogfood.storage.r2",
+        "dogfood.sandbox.apple_container",
+    }
+
+
+def test_live_modal_release_scenario_is_explicitly_credentialed_and_opted_in() -> None:
+    with OPERATIONAL_SCENARIOS.open("rb") as stream:
+        scenarios = tomllib.load(stream)["scenario"]
+    modal = next(row for row in scenarios if row["id"] == "dogfood.agent_mission.modal_live")
+
+    assert modal["source_path"] == "tests/infrastructure/test_modal_agent_mission_live.py"
+    assert modal["source_command"][0] == "pytest"
+    assert modal["semantic_oracle"]["ref"] in modal["source_command"]
+    assert modal["tier"] == 6
+    assert modal["applicability"] == ["source", "wheel"]
+    assert modal["required_extras"] == ["coding-agent"]
+    assert modal["cleanup_policy"] == "provider"
+    assert modal["artifact_policy"] == "redacted_receipt"
+    assert modal["missing_prerequisite"] == "not_run"
+    assert set(modal["prerequisites"]) == {
+        "credential:MODAL_TOKEN_ID",
+        "credential:MODAL_TOKEN_SECRET",
+        "infrastructure:CODING_AGENT_MODAL_WORKSPACE",
+        "infrastructure:CODING_AGENT_MODAL_ENVIRONMENT",
+        "infrastructure:CODEX_AUTH_VOLUME",
+        "infrastructure:CODING_AGENT_GITHUB_SECRET",
+    }
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    assert "ARCHETYPE_MODAL_AGENT_MISSION_LIVE=1" in makefile
+
+
+def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    profile = _job(workflow, "release-profile")
+    external = _job(workflow, "external-evidence")
+    gate = _job(workflow, "release-evidence-gate")
+    publish = _job(workflow, "publish")
+
+    assert "make verify-release" in profile
+    assert "release-artifact.json" in profile
+    assert "operational-release-results.json" in profile
+    for target in (
+        "operational-release-openai",
+        "operational-release-docker",
+        "operational-release-r2",
+        "operational-release-apple",
+        "operational-release-modal",
+    ):
+        assert f"target: {target}" in external
+        make_target = re.search(
+            rf"^{target}:[^\n]*\n(?P<body>(?:\t.*\n)+)",
+            MAKEFILE.read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+        assert make_target is not None
+        assert "--min-tier 0 --max-tier 6" in make_target.group("body")
+    assert "name: dist" in external
+    assert "scripts/verify_release_evidence.py" in gate
+    assert "operational-release-apple-results.json" in gate
+    assert "operational-release-modal-results.json" in gate
+    assert "MODAL_TOKEN_ID:" in external
+    assert "MODAL_TOKEN_SECRET:" in external
+    assert "CODING_AGENT_MODAL_WORKSPACE:" in external
+    assert "CODING_AGENT_MODAL_ENVIRONMENT:" in external
+    assert "CODEX_AUTH_VOLUME:" in external
+    assert "CODING_AGENT_GITHUB_SECRET:" in external
+    assert "group: archetype-release" in workflow
+    assert "cancel-in-progress: false" in workflow
+    assert "runs-on: ${{ fromJSON(matrix.runner) }}" in external
+    assert "runner: macos-26" not in external
+    assert (
+        'runner: \'["self-hosted","macOS","ARM64","archetype-apple-container-macos-26"]\''
+    ) in external
+    assert 'test "$(uname -m)" = "arm64"' in external
+    assert 'test "$(sw_vers -productVersion | cut -d. -f1)" -ge 26' in external
+    assert "container system status" in external
+    assert "needs: [release-evidence-gate, python-compatibility]" in publish
 
 
 def test_commands_operational_oracle_does_not_import_pytest_modules() -> None:

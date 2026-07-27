@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import os
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,7 @@ from archetype.missions.sandboxes import (
     CheckpointRef,
     ProcessRequest,
     ProcessResult,
+    RepositoryPublicationRequest,
     SandboxCapabilities,
     SandboxIdentity,
     SandboxStatus,
@@ -72,7 +74,7 @@ class _LocalSession:
 
     @property
     def capabilities(self) -> SandboxCapabilities:
-        return SandboxCapabilities(secret_names=("github",))
+        return SandboxCapabilities()
 
     async def status(self) -> SandboxStatus:
         return SandboxStatus.CLOSED if self._closed else SandboxStatus.READY
@@ -103,6 +105,25 @@ class _LocalSession:
 
     async def close(self) -> None:
         self._closed = True
+
+
+class _BlockingValidationSession(_LocalSession):
+    def __init__(self) -> None:
+        super().__init__()
+        self.validator_started = asyncio.Event()
+        self.temporary_directories: list[Path] = []
+        self.cleanup_directories: list[Path] = []
+
+    async def exec(self, request: ProcessRequest) -> ProcessResult:
+        if request.argv == ("block-validator",):
+            self.validator_started.set()
+            await asyncio.Future()
+        result = await super().exec(request)
+        if request.argv[:2] == ("mktemp", "-d") and "validation" in request.argv[-1]:
+            self.temporary_directories.append(Path(result.stdout.strip()))
+        if request.argv[:3] == ("rm", "-rf", "--"):
+            self.cleanup_directories.append(Path(request.argv[3]))
+        return result
 
 
 class _EditingDriver:
@@ -164,6 +185,47 @@ class _RawByteEditingDriver:
         )
 
 
+class _MaliciousGitConfigDriver:
+    def __init__(
+        self,
+        workspace: Path,
+        *,
+        remote: Path,
+        trap_remote: Path,
+        hook_canary: Path,
+        helper_canary: Path,
+    ) -> None:
+        self.workspace = workspace
+        self.remote = remote
+        self.trap_remote = trap_remote
+        self.hook_canary = hook_canary
+        self.helper_canary = helper_canary
+
+    async def run(self, session, request, prompt: str) -> AgentProcessObservation:
+        del session, request, prompt
+        (self.workspace / "feature.txt").write_text("done\n", encoding="utf-8")
+        hook = self.workspace / ".git" / "hooks" / "pre-push"
+        hook.write_text(
+            f"#!/bin/sh\nprintf '%s' \"$GITHUB_TOKEN\" > {self.hook_canary}\n",
+            encoding="utf-8",
+        )
+        hook.chmod(0o755)
+        _git(
+            "config",
+            "credential.helper",
+            f"!f() {{ printf '%s' \"$GITHUB_TOKEN\" > {self.helper_canary}; }}; f",
+            cwd=self.workspace,
+        )
+        _git("config", "remote.origin.pushurl", str(self.trap_remote), cwd=self.workspace)
+        _git(
+            "config",
+            f"url.{self.trap_remote}.insteadOf",
+            str(self.remote),
+            cwd=self.workspace,
+        )
+        return AgentProcessObservation(0, session_id="malicious-config-agent")
+
+
 class _TraceSession:
     def __init__(self) -> None:
         self.requests: list[ProcessRequest] = []
@@ -196,6 +258,47 @@ class _TraceSession:
 
     async def checkpoint(self) -> CheckpointRef:
         raise NotImplementedError
+
+    async def close(self) -> None:
+        return None
+
+
+class _PublicationTraceSession:
+    def __init__(self, revision: str) -> None:
+        self.revision = revision
+        self.requests: list[ProcessRequest] = []
+        self.publication_requests: list[RepositoryPublicationRequest] = []
+
+    @property
+    def identity(self) -> SandboxIdentity:
+        return SandboxIdentity("trace", "publication-trace", "test-environment")
+
+    @property
+    def capabilities(self) -> SandboxCapabilities:
+        return SandboxCapabilities()
+
+    async def status(self) -> SandboxStatus:
+        return SandboxStatus.READY
+
+    async def exec(self, request: ProcessRequest) -> ProcessResult:
+        self.requests.append(request)
+        if request.argv[:2] == ("mktemp", "-d"):
+            stdout = "/tmp/archetype-mission-publication.trace\n"
+        elif "rev-parse" in request.argv and "--verify" in request.argv:
+            stdout = f"{self.revision}\n"
+        else:
+            stdout = ""
+        return ProcessResult(request.argv, 0, stdout=stdout)
+
+    async def checkpoint(self) -> CheckpointRef:
+        raise NotImplementedError
+
+    async def publish_repository(
+        self,
+        request: RepositoryPublicationRequest,
+    ) -> ProcessResult:
+        self.publication_requests.append(request)
+        return ProcessResult(("git", "push"), 0, stdout="published")
 
     async def close(self) -> None:
         return None
@@ -278,6 +381,257 @@ async def test_harness_preserves_agent_commits_and_publishes_the_validated_tree(
         )
         == result.final_revision
     )
+
+
+@pytest.mark.asyncio
+async def test_validator_mutation_cannot_pollute_the_bound_published_revision(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    harness = CodingAgentHarness(
+        _EditingDriver(workspace, commit=False),
+        CodingAgentHarnessConfig(workspace=str(workspace)),
+    )
+
+    result = await harness.execute(
+        _LocalSession(),
+        _request(
+            remote,
+            validator_command=(
+                "sh",
+                "-lc",
+                'test -z "$(git status --porcelain)" && '
+                "test -f feature.txt && "
+                "printf 'validator side effect\\n' > validator-only.txt",
+            ),
+        ),
+    )
+
+    assert result.status is AgentExecutionStatus.EXITED
+    assert result.validation[0].passed is True
+    assert result.validation[0].revision == result.final_revision
+    assert result.commits[-1].sha == result.final_revision
+    assert result.commits[-1].pushed is True
+    assert not (workspace / "validator-only.txt").exists()
+    published_files = _git(
+        "--git-dir",
+        str(remote),
+        "ls-tree",
+        "--name-only",
+        "-r",
+        result.final_revision,
+    ).splitlines()
+    assert "feature.txt" in published_files
+    assert "validator-only.txt" not in published_files
+
+
+@pytest.mark.asyncio
+async def test_cancellation_waits_for_owned_validation_checkout_cleanup(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    session = _BlockingValidationSession()
+    execution = asyncio.create_task(
+        CodingAgentHarness(
+            _EditingDriver(workspace, commit=False),
+            CodingAgentHarnessConfig(workspace=str(workspace)),
+        ).execute(
+            session,
+            _request(remote, validator_command=("block-validator",)),
+        )
+    )
+    await asyncio.wait_for(session.validator_started.wait(), timeout=10)
+
+    execution.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await execution
+
+    assert session.cleanup_directories == session.temporary_directories
+    assert session.temporary_directories
+    assert all(not directory.exists() for directory in session.temporary_directories)
+
+
+@pytest.mark.asyncio
+async def test_dependent_tasks_compose_from_published_head_in_fresh_sandboxes(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    first_workspace = tmp_path / "first-sandbox" / "repo"
+    first = await CodingAgentHarness(
+        _EditingDriver(first_workspace, commit=False, filename="first.txt"),
+        CodingAgentHarnessConfig(workspace=str(first_workspace)),
+    ).execute(
+        _LocalSession(),
+        _request(remote, validator_command=("sh", "-lc", "test -f first.txt")),
+    )
+    assert first.status is AgentExecutionStatus.EXITED
+    assert first.commits[-1].pushed is True
+
+    second_workspace = tmp_path / "second-sandbox" / "repo"
+    second_request = replace(
+        _request(
+            remote, validator_command=("sh", "-lc", "test -f first.txt && test -f second.txt")
+        ),
+        task_id=4,
+        task_name="dependent implementation",
+        dispatch_id="dispatch-2",
+        prompt="Create second.txt after the accepted first task.",
+        checkout_revision=first.final_revision,
+    )
+    second = await CodingAgentHarness(
+        _EditingDriver(second_workspace, commit=False, filename="second.txt"),
+        CodingAgentHarnessConfig(workspace=str(second_workspace)),
+    ).execute(_LocalSession(), second_request)
+
+    assert second.status is AgentExecutionStatus.EXITED
+    assert second.starting_revision == first.final_revision
+    assert second.final_revision != first.final_revision
+    assert (
+        _git(
+            "--git-dir",
+            str(remote),
+            "merge-base",
+            "--is-ancestor",
+            first.final_revision,
+            second.final_revision,
+        )
+        == ""
+    )
+    assert (
+        _git(
+            "--git-dir",
+            str(remote),
+            "rev-parse",
+            "refs/heads/agent/harness-contract",
+        )
+        == second.final_revision
+    )
+    assert set(
+        _git(
+            "--git-dir",
+            str(remote),
+            "ls-tree",
+            "--name-only",
+            "-r",
+            second.final_revision,
+        ).splitlines()
+    ) >= {"README.md", "first.txt", "second.txt"}
+
+
+@pytest.mark.asyncio
+async def test_publication_ignores_agent_controlled_hooks_helpers_and_remotes(
+    tmp_path: Path,
+) -> None:
+    legitimate_root = tmp_path / "legitimate"
+    legitimate_root.mkdir()
+    trap_root = tmp_path / "trap"
+    trap_root.mkdir()
+    remote = _remote(legitimate_root)
+    trap_remote = _remote(trap_root)
+    workspace = tmp_path / "sandbox" / "repo"
+    hook_canary = tmp_path / "pre-push-ran"
+    helper_canary = tmp_path / "credential-helper-ran"
+    harness = CodingAgentHarness(
+        _MaliciousGitConfigDriver(
+            workspace,
+            remote=remote,
+            trap_remote=trap_remote,
+            hook_canary=hook_canary,
+            helper_canary=helper_canary,
+        ),
+        CodingAgentHarnessConfig(workspace=str(workspace)),
+    )
+
+    result = await harness.execute(
+        _LocalSession(),
+        _request(remote, validator_command=("sh", "-lc", "test -f feature.txt")),
+    )
+
+    assert result.status is AgentExecutionStatus.EXITED
+    assert result.commits[-1].pushed is True
+    assert (
+        _git(
+            "--git-dir",
+            str(remote),
+            "rev-parse",
+            "refs/heads/agent/harness-contract",
+        )
+        == result.final_revision
+    )
+    trapped = subprocess.run(
+        (
+            "git",
+            "--git-dir",
+            str(trap_remote),
+            "rev-parse",
+            "--verify",
+            "refs/heads/agent/harness-contract",
+        ),
+        check=False,
+        capture_output=True,
+    )
+    assert trapped.returncode != 0
+    assert not hook_canary.exists()
+    assert not helper_canary.exists()
+
+
+@pytest.mark.asyncio
+async def test_github_publication_uses_only_the_provider_owned_publisher() -> None:
+    revision = "a" * 40
+    session = _PublicationTraceSession(revision)
+    request = replace(
+        _request(Path("/tmp/local.git"), validator_command=("true",)),
+        repository="https://github.com/VangelisTech/archetype.git",
+    )
+    harness = CodingAgentHarness(_EditingDriver(Path("/unused"), commit=False))
+
+    await harness._push(session, request, revision)  # noqa: SLF001 - credential boundary
+
+    assert len(session.publication_requests) == 1
+    publication = session.publication_requests[0]
+    assert publication.repository == "https://github.com/VangelisTech/archetype.git"
+    assert publication.branch_ref == "refs/heads/agent/harness-contract"
+    assert publication.revision == revision
+    assert publication.worktree == "/workspace/repo"
+    assert publication.secret_name == "github"
+    assert all(item.secret_names == () for item in session.requests)
+    assert not any("push" in item.argv for item in session.requests)
+
+
+@pytest.mark.asyncio
+async def test_github_publication_has_no_same_sandbox_secret_exec_fallback() -> None:
+    revision = "b" * 40
+    request = replace(
+        _request(Path("/tmp/local.git"), validator_command=("true",)),
+        repository="owner/repository",
+    )
+    harness = CodingAgentHarness(_EditingDriver(Path("/unused"), commit=False))
+
+    with pytest.raises(RuntimeError, match="does not support isolated GitHub publication"):
+        await harness._push(  # noqa: SLF001 - credential boundary contract
+            _LocalSession(),
+            request,
+            revision,
+        )
+
+
+@pytest.mark.parametrize(
+    "repository",
+    (
+        "http://github.com/owner/repo.git",
+        "https://example.com/owner/repo.git",
+        "https://token@github.com/owner/repo.git",
+        "git@github.com:owner/repo.git",
+        "relative/local/path.git",
+    ),
+)
+def test_publication_target_rejects_untrusted_or_credential_bearing_urls(
+    repository: str,
+) -> None:
+    with pytest.raises(ValueError, match="publication requires|invalid GitHub"):
+        CodingAgentHarness._publication_target(repository)  # noqa: SLF001
 
 
 @pytest.mark.asyncio

@@ -41,6 +41,28 @@ class RepositoryPublicationPolicy(StrEnum):
     COMMIT_AND_PUSH = "commit_and_push"
 
 
+def mission_episode_id(world_id: object, mission_id: int) -> str:
+    """Derive the persistent episode identity for one submitted Mission."""
+
+    world = str(world_id).strip()
+    if not world:
+        raise ValueError("Mission episode identity requires a non-empty world_id")
+    if mission_id < 1:
+        raise ValueError("Mission episode identity requires a positive mission_id")
+    material = json.dumps(
+        {
+            "kind": "archetype.missions.episode",
+            "mission_id": mission_id,
+            "schema_version": 1,
+            "world_id": world,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return f"mission-episode-{hashlib.sha256(material).hexdigest()}"
+
+
 @dataclass(frozen=True)
 class CriticPolicy:
     """Stable, digestible policy for one independent exact-head review."""
@@ -214,9 +236,14 @@ class SubmittedMission:
 
     mission_id: int
     task_ids: tuple[tuple[str, int], ...]
+    episode_id: str
     repository: str = ""
     branch: str = ""
     base_ref: str = "main"
+
+    def __post_init__(self) -> None:
+        if not self.episode_id.strip():
+            raise ValueError("submitted mission episode_id must not be empty")
 
     def task_id(self, name: str) -> int:
         try:
@@ -242,6 +269,7 @@ class MissionResult:
     """Terminal mission projection."""
 
     mission_id: int
+    episode_id: str
     status: str
     repository: str
     branch: str

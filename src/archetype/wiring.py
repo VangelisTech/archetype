@@ -56,8 +56,8 @@ from archetype.missions.activity_world import (
     StorageMissionCommittedIntentReader,
     WorldMissionAuthorObservationStager,
 )
+from archetype.missions.coding_agents.app_server import CodexAppServerDriver
 from archetype.missions.coding_agents.harness import (
-    CodexDriver,
     CodingAgentHarness,
     CodingAgentHarnessConfig,
 )
@@ -69,7 +69,7 @@ from archetype.missions.critic_activity_world import (
     WorldMissionCriticObservationStager,
 )
 from archetype.missions.critics import (
-    CodexCriticDriver,
+    CodexAppServerCriticDriver,
     CriticActivityCodec,
     CriticHarness,
     CriticHarnessConfig,
@@ -95,6 +95,7 @@ from archetype.missions.models import (
     summarize_mission_operation,
 )
 from archetype.missions.sandboxes.modal import (
+    ModalCodexAppServerConnector,
     ModalSandboxBackend,
     ModalSandboxOperationCapability,
 )
@@ -575,7 +576,8 @@ async def _handle_submit_mission(
                 app_name=backend_config.app_name,
                 protocol_epoch=backend_config.operation_protocol_epoch,
             )
-            author_driver = operation.config.driver or CodexDriver(
+            author_driver = operation.config.driver or CodexAppServerDriver(
+                connector=ModalCodexAppServerConnector(),
                 model=operation.config.model,
                 workspace=operation.config.workspace,
             )
@@ -596,7 +598,8 @@ async def _handle_submit_mission(
                 ),
                 observer=operation.config.on_sandbox_event,
             )
-            critic_driver = operation.config.critic_driver or CodexCriticDriver(
+            critic_driver = operation.config.critic_driver or CodexAppServerCriticDriver(
+                connector=ModalCodexAppServerConnector(),
                 workspace=operation.config.critic_workspace,
             )
             critic_executor = ModalMissionCriticExecutor(

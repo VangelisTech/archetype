@@ -66,7 +66,7 @@ async def run_hosted_episode(
             RunConfig(),
         )
 
-    await binding.worker.run_once()
+    await binding.worker.run_once(activity_id=operation.activity_id)
     observation = await binding.observation(operation.activity_id)
     if observation is None:
         raise RuntimeError("hosted episode has no durable complete result")
@@ -78,7 +78,10 @@ async def run_hosted_episode(
             world,
             RunConfig(),
         )
-    if await binding.has_unsettled_work(operation.world_id):
+    if not await binding.observation_settled(
+        activity_id=operation.activity_id,
+        result_digest=observation.result_digest,
+    ):
         raise RuntimeError("hosted episode observation did not settle")
     return observation
 

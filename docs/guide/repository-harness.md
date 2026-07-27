@@ -151,13 +151,37 @@ The evidence tiers become applicable incrementally:
 | 3 | Loopback server, real CLI, and durable command roundtrip | Wiring/dispatcher PR |
 | 4 | Process, race, crash, and leak evidence | Owning spine PR, main, release |
 | 5 | Remote storage and local container providers | Applicable PR and release |
-| 6 | Paid/external model, agent, GPU, and Apple Container dogfood | Release candidate |
+| 6 | Paid/external model, Modal Agent Mission, GPU, and Apple Container dogfood | Release candidate |
 
 The PR-0 inventory declares `main` and `release` obligations; it does not by
 itself prove that the current release workflow enforces them. Platform-split
 execution and receipt retention land with the owning release-gate slices. A
 declared cadence MUST NOT be reported as satisfied until its workflow invokes
 the scenario and retains the resulting receipt.
+
+The tag workflow builds one wheel after the source profile, records its digest,
+and runs every credential-free release scenario against that exact installed
+artifact. OpenAI, Docker, R2, Apple Container, and the Modal Agent Mission
+execute in mandatory platform/provider lanes that download the same immutable
+distribution. Publication is gated by an aggregate receipt check: every
+release-required scenario must have passed, every receipt must name the release
+commit and wheel digest, and no result may be `not_run`.
+
+Release-lane authentication is explicit and provider-scoped:
+
+| Lane | Authentication path |
+|---|---|
+| OpenAI | The job receives only `OPENAI_API_KEY` from the Actions secret of the same name. |
+| Docker | The runner's local Docker context and daemon authorize the parity operation; the lane does not perform registry login. |
+| Cloudflare R2 | `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` authenticate the account, while `R2_API_ENDPOINT` and `R2_BUCKET` select the exact substrate. |
+| Apple Container | A self-hosted bare-metal Apple Silicon runner bearing `self-hosted`, `macOS`, `ARM64`, and `archetype-apple-container-macos-26` supplies the local host authority. The job verifies macOS 26 and starts the local `container` service; no Apple cloud token is accepted. GitHub-hosted arm64 macOS runners are not substitutes because the provider needs Virtualization.framework VM support. |
+| Modal Agent Mission | `MODAL_TOKEN_ID` plus `MODAL_TOKEN_SECRET` authenticate the Modal control plane. Actions repository variable `CODING_AGENT_MODAL_PROFILE` becomes the SDK selector `MODAL_PROFILE`; `CODING_AGENT_MODAL_ENVIRONMENT` becomes both the Archetype selector and SDK selector `MODAL_ENVIRONMENT`, while the workspace and remaining Environment-scoped variables bind all named objects. `CODEX_AUTH_VOLUME` supplies the separately device-authenticated Codex `auth.json`. `CODING_AGENT_GITHUB_SECRET` names the Modal Secret resolved for the isolated publisher, but the paid live lane deliberately pushes to a provider-local bare remote and never attaches that secret or mutates GitHub. Deterministic broker contracts separately prove that only the exact GitHub push process can receive `GITHUB_TOKEN`. Modal Connect Tokens authenticate the two transient viewport URLs. |
+
+The tag workflow is serialized under one release concurrency group because its
+configured Codex auth Volume is a static mutable credential broker. Concurrent
+release runs must use distinct auth Volumes before that serialization can be
+relaxed. Agent Mission provider details and operator setup are normative in
+[Agent Missions](agent-missions.md#authentication-paths-by-provider).
 
 `not_run` is never a pass. It is acceptable only when the manifest makes the
 lane optional at the current cadence; release-required external evidence must
@@ -238,6 +262,7 @@ make observability-audit # signal safety and exact family dispositions
 make operational-audit   # scenario inventory, policy, and provenance
 make examples-local      # Tier-1 semantic examples
 make operational-wheel   # Tier-2 installed-artifact scenarios
+make operational-release # Credential-free release scenarios on one recorded wheel
 make eval        # all current repository-check groups
 make bench       # supported local ECS snapshot
 make bench-query # supported local query snapshot

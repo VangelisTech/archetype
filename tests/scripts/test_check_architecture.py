@@ -23,11 +23,11 @@ DEFAULT_RESERVED_INFRASTRUCTURE = (
     "archetype._obs",
     "archetype._storage_uri",
     "archetype.api",
-    "archetype.app",
     "archetype.cli",
     "archetype.core",
     "archetype.runtime",
 )
+LEGACY_APP_RESERVED = (*DEFAULT_RESERVED_INFRASTRUCTURE, "archetype.app")
 
 
 def _write_policy(root: Path, *, exception: str = "") -> Path:
@@ -454,7 +454,15 @@ allowed_families = []
             )
 
             result = checker.audit_repository(
-                _write_family_policy(root, rules=rules),
+                _write_family_policy(
+                    root,
+                    rules=rules,
+                    reserved_infrastructure=(
+                        LEGACY_APP_RESERVED
+                        if consumer_scope == "app"
+                        else DEFAULT_RESERVED_INFRASTRUCTURE
+                    ),
+                ),
                 repo_root=root,
             )
 
@@ -1094,7 +1102,11 @@ forbidden = [
 """
 
     result = checker.audit_repository(
-        _write_family_policy(tmp_path, rules=rules),
+        _write_family_policy(
+            tmp_path,
+            rules=rules,
+            reserved_infrastructure=LEGACY_APP_RESERVED,
+        ),
         repo_root=tmp_path,
     )
 
@@ -1127,7 +1139,11 @@ allowed_families = []
 """
 
     result = checker.audit_repository(
-        _write_family_policy(tmp_path, rules=rules),
+        _write_family_policy(
+            tmp_path,
+            rules=rules,
+            reserved_infrastructure=LEGACY_APP_RESERVED,
+        ),
         repo_root=tmp_path,
     )
 
@@ -1157,6 +1173,36 @@ def test_version_three_requires_registered_family_scope(tmp_path: Path) -> None:
     assert result.policy_errors == [
         "architecture policy registers no top-level family scopes",
         "unclassified first-party top-level scopes: archetype.unrelated",
+    ]
+
+
+def test_version_three_rejects_stale_legacy_app_blanket_reservation(
+    tmp_path: Path,
+) -> None:
+    alpha = tmp_path / "src" / "archetype" / "alpha" / "contracts.py"
+    alpha.parent.mkdir(parents=True)
+    alpha.write_text("value = 1\n", encoding="utf-8")
+    rules = """
+
+[[top_level_family_rule]]
+name = "alpha"
+consumer = "archetype.alpha"
+allowed_families = []
+"""
+
+    result = checker.audit_repository(
+        _write_family_policy(
+            tmp_path,
+            rules=rules,
+            reserved_infrastructure=LEGACY_APP_RESERVED,
+        ),
+        repo_root=tmp_path,
+    )
+
+    assert result.policy_errors == [
+        "top_level_family_policy.reserved_infrastructure retains stale legacy "
+        "migration root archetype.app; remove the blanket reservation when its "
+        "exact migration modules are gone"
     ]
 
 
@@ -1264,7 +1310,12 @@ expires = "v1"
 """
 
     result = checker.audit_repository(
-        _write_family_policy(tmp_path, rules=rules, exception=exception),
+        _write_family_policy(
+            tmp_path,
+            rules=rules,
+            exception=exception,
+            reserved_infrastructure=LEGACY_APP_RESERVED,
+        ),
         repo_root=tmp_path,
     )
 
@@ -1292,7 +1343,12 @@ expires = "v1"
 """
 
     result = checker.audit_repository(
-        _write_family_policy(tmp_path, rules=rules, exception=exception),
+        _write_family_policy(
+            tmp_path,
+            rules=rules,
+            exception=exception,
+            reserved_infrastructure=LEGACY_APP_RESERVED,
+        ),
         repo_root=tmp_path,
     )
 
@@ -1318,7 +1374,12 @@ expires = "v1"
 """
 
     result = checker.audit_repository(
-        _write_family_policy(tmp_path, rules=rules, exception=exception),
+        _write_family_policy(
+            tmp_path,
+            rules=rules,
+            exception=exception,
+            reserved_infrastructure=LEGACY_APP_RESERVED,
+        ),
         repo_root=tmp_path,
     )
 
@@ -1547,6 +1608,13 @@ def test_repository_architecture_policy_passes() -> None:
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "Architecture audit passed" in completed.stdout
+
+
+def test_repository_does_not_reserve_removed_legacy_app_root() -> None:
+    policy = checker._load_policy(checker.DEFAULT_POLICY)
+
+    assert "archetype.app" in policy["top_level_family_policy"]["forbidden_outward"]
+    assert "archetype.app" not in policy["top_level_family_policy"]["reserved_infrastructure"]
 
 
 def test_repository_storage_capability_rule_keeps_canonical_owner() -> None:
