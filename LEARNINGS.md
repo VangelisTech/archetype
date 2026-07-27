@@ -464,9 +464,11 @@ df = df.with_column("agent__normalized", normalizer.normalize(col("agent__name")
 
 ## Lazy-Audit UDF-Boundary Exemption (Jun 2026)
 
-``scripts/check_lazy_audit.py`` gates every ``.collect`` reference (including a
-bound callable) and ``.to_pylist()`` call in ``src/`` against
-``lazy_audit.toml``. There is
+``scripts/check_lazy_audit.py`` gates execution-capable DataFrame terminals in
+``src/`` against ``lazy_audit.toml``. This includes conversions, iterators,
+diagnostics, and writes such as ``.collect``, ``.count_rows()``, ``.show()``,
+``.to_arrow()``, ``.to_arrow_iter()``, ``.to_pydict()``, and ``.write_*()``.
+There is
 **one sanctioned exception** that does not require an allowlist entry:
 
 > ``Series.to_pylist()`` called on a *parameter* of a function decorated
@@ -499,6 +501,7 @@ Rules:
 - ``Series.to_pylist()`` on a **batch-UDF parameter** → exempt, no entry.
 - ``DataFrame.to_pylist()`` anywhere → requires entry.
 - ``DataFrame.collect()`` anywhere → requires entry.
+- DataFrame diagnostics, conversions, iterators, and writes → require entries.
 - ``Series.to_pylist()`` **outside** a batch-UDF → requires entry.
 - ``collect()`` inside a batch-UDF on a DataFrame (not a parameter) → requires entry.
 
@@ -594,8 +597,12 @@ Enable with `run_config.debug = True`:
 ```text
 [archetype] {"event": "tick_start", "world_id": "...", "tick": 0}
 [archetype] processor_start: PhysicsProcessor (priority=10)
-[archetype] processor_end: PhysicsProcessor (rows_out=100)
+[archetype] processor_end: PhysicsProcessor (archetype=a_2c_s...)
 ```
+
+Debug diagnostics describe orchestration and lazy plan shape. They do not
+execute a DataFrame to manufacture row counts or previews; execution remains
+at the owning terminal boundary.
 
 ---
 

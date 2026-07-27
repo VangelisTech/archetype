@@ -69,9 +69,8 @@ class QueryManager(iQueryManager):
             df = df.select(*Archetype.projection_columns(components))
 
         if run_config and run_config.debug:
-            logger.info(f"Querying {Archetype.get_name(sig)} with {df.count_rows()} rows")
+            logger.info("Querying %s", Archetype.get_name(sig))
             df.explain()
-            df.show()
 
         return df
 
