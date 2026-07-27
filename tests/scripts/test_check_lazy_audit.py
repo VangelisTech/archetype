@@ -3,7 +3,7 @@
 
 """Tests for scripts/check_lazy_audit.py — AST scope detection.
 
-Covers the two key policy assertions:
+Covers the key policy assertions:
 
 1. **Positive (sanctioned):** ``Series.to_pylist()`` on a parameter of a
    ``@daft.method.batch`` / ``@daft.func.batch`` decorated function is
@@ -12,6 +12,9 @@ Covers the two key policy assertions:
 2. **Negative (gated):** A plain ``df.to_pylist()`` at module scope (or
    outside a batch-UDF) is still flagged as an audited site that requires
    an allowlist entry.
+
+3. **Execution coverage:** diagnostic, Arrow, iterator, conversion, and sink
+   terminals are all audited.
 """
 
 from __future__ import annotations
@@ -214,6 +217,26 @@ def test_collect_call_reports_one_attribute_site(tmp_path):
     sites = _scan_file(py, "one_collect.py")
 
     assert [(site.line, site.method) for site in sites] == [(1, "collect")]
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "count_rows",
+        "show",
+        "to_arrow",
+        "to_arrow_iter",
+        "to_pydict",
+        "iter_rows",
+        "write_parquet",
+    ],
+)
+def test_execution_capable_terminals_are_gated(tmp_path, method):
+    py = _write_py(tmp_path, "terminal.py", f"result = frame.{method}()\n")
+
+    sites = _scan_file(py, "terminal.py")
+
+    assert [(site.method, site.sanctioned) for site in sites] == [(method, False)]
 
 
 def test_non_call_text_is_ignored(tmp_path):
@@ -510,3 +533,25 @@ def test_unreadable_module_is_not_silently_clean(tmp_path):
 
     with pytest.raises(OSError):
         _scan_file(missing, "gone.py")
+
+
+# ---------------------------------------------------------------------------
+# Unit: is_banned (issue #538 zero-exception terminal ban)
+# ---------------------------------------------------------------------------
+
+
+def test_core_count_rows_is_banned():
+    """count_rows under src/archetype/core/ has no allowlist path at all."""
+    from check_lazy_audit import is_banned
+
+    assert is_banned("src/archetype/core/aio/async_store.py", "count_rows")
+    assert is_banned("src/archetype/core/sync/store.py", "count_rows")
+
+
+def test_ban_is_scoped_to_core_and_count_rows():
+    """The ban covers exactly (core path, count_rows) — not other layers or methods."""
+    from check_lazy_audit import is_banned
+
+    assert not is_banned("src/archetype/evaluation/views.py", "count_rows")
+    assert not is_banned("src/archetype/core/aio/async_store.py", "collect")
+    assert not is_banned("tests/aio/test_store.py", "count_rows")

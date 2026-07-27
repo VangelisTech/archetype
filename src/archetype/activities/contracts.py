@@ -149,15 +149,23 @@ class ActivitySettlement:
 
 @dataclass(frozen=True, slots=True)
 class ActivitySnapshot:
-    """Current durable facts for one logical activity, without a status enum."""
+    """Current durable facts for one logical activity, without a status enum.
+
+    ``sequence`` is the catalog-assigned admission order: immutable,
+    strictly monotonic across admissions, and never reassigned.  Pending
+    and result scans use it as their keyset cursor.
+    """
 
     admission: ActivityAdmission
     result: ActivityResultRef | None = None
     settlement: ActivitySettlement | None = None
     result_attempt: int | None = None
     result_fence: int | None = None
+    sequence: int | None = None
 
     def __post_init__(self) -> None:
+        if self.sequence is not None and self.sequence < 1:
+            raise ValueError("activity sequence must be positive")
         result_identity = (self.result_attempt, self.result_fence)
         if self.result is None and any(value is not None for value in result_identity):
             raise ValueError("activity result identity cannot exist without a result")

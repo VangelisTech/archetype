@@ -118,7 +118,6 @@ class SyncStore(iStore):
 
         if self.debug:
             logger.debug("Reading table %s", table.name)
-            df.limit(5).show()
 
         # stored as strings; ensure filter values are strings
         # (Daft stubs type Expression.__eq__ as bool; these are Expressions.)
@@ -134,9 +133,7 @@ class SyncStore(iStore):
         table_name = table.name
 
         if self.debug:
-            df.collect()
-            logger.debug("Appending %s rows to table %s", df.count_rows(), table_name)
-            df.show()
+            logger.debug("Appending to table %s", table_name)
 
         self._append_table(table, df)
 

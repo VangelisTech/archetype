@@ -449,7 +449,9 @@ async def test_mission_supervised_task_cannot_partially_close_its_owner(tmp_path
         assert not handle._public_closing
         assert not handle._public_closed
         assert not reservation.released
-        assert await _invoke(handle, "submit") is not None
+        with pytest.raises(ValueError, match="requires the Modal sandbox backend"):
+            await _invoke(handle, "submit")
+        assert not reservation.released
 
     task = reservation.spawn(supervised_self_close, label="self-close")
     await asyncio.wait_for(task, timeout=5)

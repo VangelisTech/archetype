@@ -73,19 +73,3 @@ async def test_both_catalog_backends_satisfy_runtime_protocol(tmp_path: Path) ->
     finally:
         await sqlite.close()
         await remote.close()
-
-
-def test_legacy_catalog_modules_are_identity_preserving_reexports() -> None:
-    from archetype.app.storage.catalog import (
-        ControlCatalog as LegacyControlCatalog,
-    )
-    from archetype.app.storage.catalog import (
-        SqliteControlCatalog as LegacySqliteControlCatalog,
-    )
-    from archetype.app.storage.remote_catalog import (
-        RemoteControlCatalog as LegacyRemoteControlCatalog,
-    )
-
-    assert LegacyControlCatalog is ControlCatalog
-    assert LegacySqliteControlCatalog is SqliteControlCatalog
-    assert LegacyRemoteControlCatalog is RemoteControlCatalog

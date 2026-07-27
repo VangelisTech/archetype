@@ -73,16 +73,6 @@ expiry_condition = "Remove when #530 migrates this call to parameterized stdlib 
 
 [[legacy]]
 rule = "eager_log_interpolation"
-path = "src/archetype/core/aio/async_lancedb_store.py"
-qualified_scope = "archetype.core.aio.async_lancedb_store.AsyncLancedbStore.append"
-target = "log:info:f'Append skipped (lancedb): archetype={table_id} rows=0':interpolation"
-owner = "core"
-issue = 530
-reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
-expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
-
-[[legacy]]
-rule = "eager_log_interpolation"
 path = "src/archetype/core/aio/async_store.py"
 qualified_scope = "archetype.core.aio.async_store.AsyncStore.append"
 target = "log:info:f'Append skipped (store): archetype={table_id} empty schema':interpolation"
@@ -93,49 +83,9 @@ expiry_condition = "Remove when #530 migrates this call to parameterized stdlib 
 
 [[legacy]]
 rule = "eager_log_interpolation"
-path = "src/archetype/core/aio/async_store.py"
-qualified_scope = "archetype.core.aio.async_store.AsyncStore.append"
-target = "log:error:f'Append collect failed for {table_id}: {e}':interpolation"
-owner = "core"
-issue = 530
-reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
-expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
-
-[[legacy]]
-rule = "raw_exception_logging"
-path = "src/archetype/core/aio/async_store.py"
-qualified_scope = "archetype.core.aio.async_store.AsyncStore.append"
-target = "log:error:f'Append collect failed for {table_id}: {e}':exception"
-owner = "core"
-issue = 530
-reason = "This existing core diagnostic exports raw exception text or stack details."
-expiry_condition = "Remove when #530 replaces exception content with a bounded error classification."
-
-[[legacy]]
-rule = "eager_log_interpolation"
-path = "src/archetype/core/aio/async_store.py"
-qualified_scope = "archetype.core.aio.async_store.AsyncStore.append"
-target = "log:info:f'Append skipped (store): archetype={table_id} rows=0':interpolation"
-owner = "core"
-issue = 530
-reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
-expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
-
-[[legacy]]
-rule = "eager_log_interpolation"
 path = "src/archetype/core/aio/async_system.py"
 qualified_scope = "archetype.core.aio.async_system.AsyncSystem.execute"
 target = "log:debug:f'[archetype] processor_start: {proc_name} (priority={proc_instance.priority}, archetype={archetype_name})':interpolation"
-owner = "core"
-issue = 530
-reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
-expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
-
-[[legacy]]
-rule = "eager_log_interpolation"
-path = "src/archetype/core/aio/async_system.py"
-qualified_scope = "archetype.core.aio.async_system.AsyncSystem.execute"
-target = "log:debug:f'[archetype] processor_end: {proc_name} (rows_out={row_count})':interpolation"
 owner = "core"
 issue = 530
 reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
@@ -260,16 +210,6 @@ owner = "core"
 issue = 530
 reason = "This existing core diagnostic exports raw exception text or stack details."
 expiry_condition = "Remove when #530 replaces exception content with a bounded error classification."
-
-[[legacy]]
-rule = "eager_log_interpolation"
-path = "src/archetype/core/sync/querier.py"
-qualified_scope = "archetype.core.sync.querier.QueryManager.query_archetype"
-target = "log:info:f'Querying {Archetype.get_name(sig)} with {df.count_rows()} rows':interpolation"
-owner = "core"
-issue = 530
-reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
-expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
 
 [[legacy]]
 rule = "eager_log_interpolation"

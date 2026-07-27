@@ -18,6 +18,7 @@ from archetype.activities.contracts import (
     ActivitySettlement,
     ActivitySnapshot,
 )
+from archetype.activities.interfaces import iActivityCoordinator
 from archetype.core.interfaces import CommittedTickReceipt
 from archetype.storage.activity_catalog.interfaces import ActivityCatalog
 from archetype.storage.activity_catalog.records import (
@@ -140,12 +141,14 @@ class ActivityCoordinator:
         kind: str | None = None,
         world_id: str | None = None,
         limit: int = 100,
+        after_sequence: int = 0,
     ) -> tuple[ActivitySnapshot, ...]:
         records = await _translate_catalog_errors(
             self._catalog.list_incomplete_activities(
                 kind=kind,
                 world_id=world_id,
                 limit=limit,
+                after_sequence=after_sequence,
             )
         )
         return tuple(_snapshot(record) for record in records)
@@ -156,12 +159,14 @@ class ActivityCoordinator:
         kind: str | None = None,
         world_id: str | None = None,
         limit: int = 100,
+        after_sequence: int = 0,
     ) -> tuple[ActivitySnapshot, ...]:
         records = await _translate_catalog_errors(
             self._catalog.list_unobserved_results(
                 kind=kind,
                 world_id=world_id,
                 limit=limit,
+                after_sequence=after_sequence,
             )
         )
         return tuple(_snapshot(record) for record in records)
@@ -187,6 +192,103 @@ class ActivityCoordinator:
             )
         )
         return _snapshot(record)
+
+
+async def claim_next_pending(
+    coordinator: iActivityCoordinator,
+    *,
+    kind: str,
+    world_id: str,
+    owner: str,
+    lease_seconds: float,
+    page_size: int = 1_000,
+) -> ActivityClaim | None:
+    """Claim the first claimable pending Activity, paging until exhaustion.
+
+    A finite prefix scan strands claimable work: when other workers hold
+    leases on every row the scan can see, it reports no work even though a
+    claimable Activity sits just beyond the prefix, and that Activity stays
+    pending until an unrelated change reshuffles the prefix.  Every
+    coordinator claim scan must page to the end of the pending set before
+    concluding there is nothing to claim; a larger prefix is not a fix.
+
+    Pages advance by keyset over the catalog-assigned admission sequence:
+    each page requests rows whose ``sequence`` is strictly greater than the
+    last row of the previous page.  The cursor key is immutable and
+    monotonic, so rows that other workers complete mid-scan leave the
+    pending set without shifting the rows behind them — one pass visits
+    every Activity that stays pending throughout the scan.  A row leased
+    mid-scan is one failed claim attempt, and ``None`` means the scan
+    reached the end of the pending set, not a shifted page boundary.
+    """
+
+    if page_size < 1:
+        raise ValueError("claim scan page size must be positive")
+    after_sequence = 0
+    while True:
+        page = await coordinator.pending(
+            kind=kind,
+            world_id=world_id,
+            limit=page_size,
+            after_sequence=after_sequence,
+        )
+        for snapshot in page:
+            claim = await coordinator.claim(
+                world_id=world_id,
+                kind=kind,
+                activity_id=snapshot.admission.activity_id,
+                owner=owner,
+                lease_seconds=lease_seconds,
+            )
+            if claim.acquired:
+                return claim
+        if len(page) < page_size:
+            return None
+        after_sequence = _scan_cursor(page[-1])
+
+
+async def collect_pending_results(
+    coordinator: iActivityCoordinator,
+    *,
+    kind: str,
+    world_id: str,
+    page_size: int = 1_000,
+) -> tuple[ActivitySnapshot, ...]:
+    """Collect every unobserved durable result, paging until exhaustion.
+
+    The results-side twin of :func:`claim_next_pending`: a finite prefix
+    silently drops durable results beyond it, so an observation committed
+    on the current receipt could miss deliveries whenever a world holds
+    more than one page of unobserved results.  Pages advance by the same
+    admission-sequence keyset cursor, so results observed by other workers
+    mid-scan leave the set without shifting later rows out of the pass —
+    every result that stays unobserved throughout the scan is collected.
+    """
+
+    if page_size < 1:
+        raise ValueError("result scan page size must be positive")
+    snapshots: list[ActivitySnapshot] = []
+    after_sequence = 0
+    while True:
+        page = await coordinator.pending_results(
+            kind=kind,
+            world_id=world_id,
+            limit=page_size,
+            after_sequence=after_sequence,
+        )
+        snapshots.extend(page)
+        if len(page) < page_size:
+            return tuple(snapshots)
+        after_sequence = _scan_cursor(page[-1])
+
+
+def _scan_cursor(snapshot: ActivitySnapshot) -> int:
+    if snapshot.sequence is None:
+        raise RuntimeError(
+            "activity scan paging requires the catalog-assigned admission "
+            "sequence on every returned snapshot"
+        )
+    return snapshot.sequence
 
 
 def _admission_record(admission: ActivityAdmission) -> ActivityAdmissionRecord:
@@ -225,6 +327,7 @@ def _activity_record(snapshot: ActivitySnapshot) -> ActivityRecord:
     result = snapshot.result
     settlement = snapshot.settlement
     return ActivityRecord(
+        sequence=snapshot.sequence,
         activity_id=admission.activity_id,
         kind=admission.kind,
         source_world_id=admission.source.world_id,
@@ -354,6 +457,7 @@ def _snapshot(record: ActivityRecord) -> ActivitySnapshot:
         settlement=settlement,
         result_attempt=record.result_attempt,
         result_fence=record.result_fence,
+        sequence=record.sequence,
     )
 
 
@@ -368,4 +472,8 @@ async def _translate_catalog_errors[T](awaitable: Awaitable[T]) -> T:
         raise ActivityConflictError(str(exc)) from exc
 
 
-__all__ = ["ActivityCoordinator"]
+__all__ = [
+    "ActivityCoordinator",
+    "claim_next_pending",
+    "collect_pending_results",
+]

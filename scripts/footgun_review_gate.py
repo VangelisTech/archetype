@@ -1116,7 +1116,7 @@ def _extract_command(args: argparse.Namespace) -> None:
 
 def _prompt_command(args: argparse.Namespace) -> None:
     lens_scope: list[str] = []
-    if args.kind in ("lens-review", "lens-retry"):
+    if args.kind in ("lens-review", "lens-retry", "design-brief"):
         if args.scope is None:
             raise GateError("lens prompts require --scope for the file manifest")
         _, lens_scope = _scope_values(_load_json(args.scope))
@@ -1147,6 +1147,7 @@ def _prompt_command(args: argparse.Namespace) -> None:
             pr_number=args.pr_number,
             head_sha=args.head,
             bundle_digest=args.bundle_digest,
+            scoped_files=lens_scope,
         )
     if args.output is None:
         print(prompt, end="")

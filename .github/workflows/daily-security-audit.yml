@@ -36,7 +36,7 @@ jobs:
           version: "latest"
 
       - name: Install dependency audit tooling
-        run: python -m pip install --disable-pip-version-check pip-audit==2.7.3
+        run: python -m pip install --disable-pip-version-check pip-audit==2.10.1
 
       - name: Prepare dependency audit artifacts
         shell: bash
@@ -48,9 +48,9 @@ jobs:
           python --version > .github/security-artifacts/python-version.txt
           uv --version > .github/security-artifacts/uv-version.txt
 
-          if uv export --all-extras --format requirements-txt > .github/security-artifacts/requirements.txt 2> .github/security-artifacts/uv-export.stderr; then
+          if uv export --locked --all-extras --all-groups --no-emit-project --format requirements-txt > .github/security-artifacts/requirements.txt 2> .github/security-artifacts/uv-export.stderr; then
             printf "uv export succeeded\n" > .github/security-artifacts/dependency-audit-status.txt
-            if pip-audit -r .github/security-artifacts/requirements.txt --format json -o .github/security-artifacts/pip-audit.json > .github/security-artifacts/pip-audit.stdout 2> .github/security-artifacts/pip-audit.stderr; then
+            if pip-audit -r .github/security-artifacts/requirements.txt --no-deps --disable-pip --format json -o .github/security-artifacts/pip-audit.json > .github/security-artifacts/pip-audit.stdout 2> .github/security-artifacts/pip-audit.stderr; then
               printf "pip-audit succeeded\n" >> .github/security-artifacts/dependency-audit-status.txt
             else
               printf "pip-audit reported findings or failed; inspect pip-audit.json and stderr\n" >> .github/security-artifacts/dependency-audit-status.txt

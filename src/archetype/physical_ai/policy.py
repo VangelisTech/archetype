@@ -52,7 +52,7 @@ import daft
 from daft import DataType, Series, col
 
 from archetype.core.aio.async_processor import AsyncProcessor
-from archetype.physical_ai.boundary import external_call_indices, series_to_rows
+from archetype.physical_ai._dataframe import external_call_indices, series_to_rows
 from archetype.physical_ai.interfaces import PolicyClient
 
 from .manipulation import (

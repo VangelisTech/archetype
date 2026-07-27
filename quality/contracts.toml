@@ -90,7 +90,7 @@ source = "docs/guide/application-architecture.md"
 section = "8. Protocol policy and wiring"
 owner = "app"
 risk = "high"
-pytest = ["tests/app/test_service_protocols.py"]
+pytest = ["tests/scripts/test_check_architecture.py"]
 static = ["scripts/check_architecture.py"]
 evals = ["spec.info_class_downgrades"]
 benchmarks = []
@@ -155,7 +155,7 @@ pytest = [
   "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_workflow_cleanup_cannot_admit_a_sibling_world",
   "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_concurrent_runtime_shutdown_is_single_flight",
   "tests/app/test_runtime_contracts.py::TestShutdownIdempotency::test_cancelled_runtime_shutdown_retains_cleanup_for_retry",
-  "tests/integration/test_agent_mission_service.py::test_runtime_shutdown_retries_failed_mission_cleanup_before_finalization",
+  "tests/missions/test_mission_author_world_integration.py::test_modal_mission_submit_binds_required_activity_before_first_tick",
 ]
 static = []
 evals = []
@@ -479,7 +479,7 @@ section = "8. Transcript ingestion"
 owner = "missions"
 risk = "high"
 pytest = [
-  "tests/app/test_transcript_ingestion.py",
+  "tests/missions/test_transcript_ingestion.py",
   "tests/missions/trajectories/test_claude_parser.py",
 ]
 static = []
@@ -493,7 +493,7 @@ source = "docs/guide/artifacts.md"
 section = "8. Transcript ingestion"
 owner = "missions"
 risk = "high"
-pytest = ["tests/app/test_transcript_ingestion.py"]
+pytest = ["tests/missions/test_transcript_ingestion.py"]
 static = []
 evals = []
 benchmarks = []
@@ -505,7 +505,7 @@ source = "docs/guide/artifacts.md"
 section = "8. Transcript ingestion"
 owner = "missions"
 risk = "medium"
-pytest = ["tests/app/test_transcript_ingestion.py"]
+pytest = ["tests/missions/test_transcript_ingestion.py"]
 static = []
 evals = []
 benchmarks = []
@@ -556,16 +556,14 @@ profiles = ["pr", "main", "release"]
 [[contract]]
 id = "physical_ai.workflow.evidence"
 source = "docs/guide/physical-ai.md"
-section = "Evidence invariants"
+section = "Committed-state sequence"
 owner = "physical_ai"
 risk = "high"
 pytest = [
-  "tests/physical_ai/test_task_evaluation.py",
-  "tests/physical_ai/test_instruction_sweep.py",
-  "tests/physical_ai/test_provider_concurrency_contracts.py",
-  "tests/physical_ai/test_provider_lifetime_contracts.py",
-  "tests/physical_ai/test_frame_ref_carriage.py",
-  "tests/integration/test_physical_ai_example_receipt.py::test_physical_ai_receipt_proves_eval_sweep_optimizer_and_telemetry",
+  "tests/physical_ai/test_hosted_episode_activities.py",
+  "tests/physical_ai/test_hosted_modal_activity.py",
+  "tests/integration/test_hosted_physical_runtime.py",
+  "tests/world/test_required_projector_fanout.py",
 ]
 static = []
 evals = []
@@ -622,11 +620,11 @@ profiles = ["pr", "main", "release"]
 [[contract]]
 id = "missions.trajectory.runtime_service"
 source = "docs/guide/trajectories.md"
-section = "Select one trajectory table"
+section = "Select one evidence table"
 owner = "missions"
 risk = "medium"
 pytest = [
-  "tests/app/test_trajectory_service.py",
+  "tests/missions/test_trajectory_service.py",
   "tests/integration/test_trajectory_analysis.py",
   "tests/integration/test_domain_example_receipts.py::test_trajectory_receipt_is_semantic_and_stable",
 ]
@@ -648,8 +646,7 @@ pytest = [
   "tests/app/test_application_review_contracts.py::test_stop_admission_then_wait_drained_joins_admitted_autoresearch",
   "tests/app/test_lifecycle_parity.py::TestShutdownErrorAggregation::test_shutdown_waits_for_admitted_autoresearch",
   "tests/wiring/test_wiring_contracts.py::test_wiring_is_explicit_topological_and_has_no_setter_injection",
-  "tests/wiring/test_wiring_contracts.py::test_pull_forward_registration_has_exact_four_actor_aware_and_ten_trusted_only_specs",
-  "tests/wiring/test_wiring_contracts.py::test_pull_forward_handlers_translate_exact_values_without_recursive_dispatch",
+  "tests/wiring/test_wiring_contracts.py::test_pull_forward_registration_has_exact_four_actor_aware_and_nine_trusted_only_specs",
   "tests/integration/test_domain_example_receipts.py::test_autoresearch_receipt_pins_improvement_and_ledger_order",
 ]
 static = []
@@ -756,14 +753,14 @@ pytest = [
   "tests/missions/test_coding_agent_harness.py",
   "tests/missions/test_sandbox_service.py",
   "tests/missions/test_modal_agent_sandbox.py",
-  "tests/integration/test_agent_mission_service.py",
-  "tests/eval_framework/test_agent_mission_capability.py",
+  "tests/missions/test_mission_author_activities.py",
+  "tests/missions/test_mission_author_world_integration.py",
 ]
 static = [
   "scripts/check_architecture.py",
   "scripts/check_lazy_audit.py",
 ]
-evals = ["agent_mission_transition_authority"]
+evals = []
 benchmarks = []
 profiles = ["pr", "main", "release"]
 
@@ -775,12 +772,12 @@ owner = "missions"
 risk = "high"
 pytest = [
   "tests/missions/test_critic_harness.py",
-  "tests/integration/test_agent_mission_service.py::test_blocking_critic_findings_drive_a_new_candidate_before_acceptance",
-  "tests/integration/test_agent_mission_service.py::test_critic_infrastructure_retry_never_repeats_author_work",
-  "tests/eval_framework/test_agent_mission_capability.py",
+  "tests/missions/test_mission_critic_activities.py",
+  "tests/missions/test_mission_critic_world_integration.py",
+  "tests/missions/test_modal_activity_executors.py::test_modal_critic_cold_restart_recovers_exact_receipt_with_one_start",
 ]
 static = []
-evals = ["agent_mission_transition_authority"]
+evals = []
 benchmarks = []
 profiles = ["pr", "main", "release"]
 
@@ -792,11 +789,10 @@ owner = "missions"
 risk = "high"
 pytest = [
   "tests/missions/test_sandbox_service.py",
-  "tests/integration/test_agent_mission_service.py::test_terminal_close_failure_is_durable_and_retryable",
-  "tests/integration/test_agent_mission_service.py::test_critic_close_failure_is_durable_and_retryable",
+  "tests/missions/test_mission_author_world_integration.py::test_modal_mission_submit_binds_required_activity_before_first_tick",
 ]
 static = []
-evals = ["agent_mission_transition_authority"]
+evals = []
 benchmarks = []
 profiles = ["pr", "main", "release"]
 
@@ -808,7 +804,7 @@ owner = "redaction"
 risk = "high"
 pytest = [
   "tests/app/test_redaction_service.py",
-  "tests/app/test_transcript_ingestion.py",
+  "tests/missions/test_transcript_ingestion.py",
 ]
 static = []
 evals = ["security.pre_durability_redaction"]

@@ -44,21 +44,21 @@ machine authority; this page is its review surface.
 | `evaluation.ontology.separated` | `evaluation` | medium | [docs/guide/dataset-eval-ontology.md](../guide/dataset-eval-ontology.md) — 1. The contract in one view | pytest: 1; eval: 2 | `pr`, `main`, `release` |
 | `audit.append_only.evidence` | `commands` | high | [docs/guide/audit-log.md](../guide/audit-log.md) — 2. Append-only invariant | pytest: 1; eval: 1 | `pr`, `main`, `release` |
 | `simulation.episode.termination` | `world` | medium | [docs/guide/specification.md](../guide/specification.md) — Run contract | pytest: 1; eval: 3 | `pr`, `main`, `release` |
-| `physical_ai.workflow.evidence` | `physical_ai` | high | [docs/guide/physical-ai.md](../guide/physical-ai.md) — Evidence invariants | pytest: 6 | `pr`, `main`, `release` |
+| `physical_ai.workflow.evidence` | `physical_ai` | high | [docs/guide/physical-ai.md](../guide/physical-ai.md) — Committed-state sequence | pytest: 4 | `pr`, `main`, `release` |
 | `core.ecs.data_model` | `core` | high | [docs/guide/specification.md](../guide/specification.md) — Data Model Contracts | pytest: 2; eval: 2; benchmark: 1 | `pr`, `main`, `release` |
 | `core.processors.execution` | `core` | high | [docs/guide/specification.md](../guide/specification.md) — System and Processor Contracts | pytest: 3; eval: 1 | `pr`, `main`, `release` |
 | `core.hooks.lifecycle` | `core` | medium | [docs/guide/specification.md](../guide/specification.md) — Lifecycle Hook Contracts | pytest: 3 | `pr`, `main`, `release` |
-| `missions.trajectory.runtime_service` | `missions` | medium | [docs/guide/trajectories.md](../guide/trajectories.md) — Select one trajectory table | pytest: 3 | `pr`, `main`, `release` |
-| `research.autoresearch.ledger` | `research` | high | [docs/guide/autoresearch.md](../guide/autoresearch.md) — The Loop | pytest: 9 | `pr`, `main`, `release` |
+| `missions.trajectory.runtime_service` | `missions` | medium | [docs/guide/trajectories.md](../guide/trajectories.md) — Select one evidence table | pytest: 3 | `pr`, `main`, `release` |
+| `research.autoresearch.ledger` | `research` | high | [docs/guide/autoresearch.md](../guide/autoresearch.md) — The Loop | pytest: 8 | `pr`, `main`, `release` |
 | `graph.relations.temporal` | `graph` | medium | [docs/guide/prefab-libraries.md](../guide/prefab-libraries.md) — Current relation and temporal-view contract | pytest: 4 | `pr`, `main`, `release` |
 | `graph.prefabs.copy_on_instantiate` | `graph` | medium | [docs/guide/prefab-libraries.md](../guide/prefab-libraries.md) — Instantiation is a ledger operation | pytest: 3 | `pr`, `main`, `release` |
 | `missions.sandbox.checkpoint_restore` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — Supported sandbox backends | pytest: 3 | `pr`, `main`, `release` |
 | `release.package.installable` | `release` | high | [docs/guide/api-stability.md](../guide/api-stability.md) — What counts as public | pytest: 2; static: 1 | `release` |
 | `storage.remote.control_parity` | `storage` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 10. Supported durability profile | pytest: 2; static: 1 | `main`, `release` |
 | `missions.agent_v1.public_authoring` | `missions` | medium | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 2. Public authoring surface | pytest: 1 | `pr`, `main`, `release` |
-| `missions.agent_v1.validator_gated` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 4. State and transition protocol | pytest: 7; static: 2; eval: 1 | `pr`, `main`, `release` |
-| `missions.agent_v1.exact_head_critic` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — Independent exact-head critic | pytest: 4; eval: 1 | `pr`, `main`, `release` |
-| `missions.sandbox.cleanup_ownership` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 5. Sandbox and validator protocol | pytest: 3; eval: 1 | `pr`, `main`, `release` |
+| `missions.agent_v1.validator_gated` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 4. State and transition protocol | pytest: 7; static: 2 | `pr`, `main`, `release` |
+| `missions.agent_v1.exact_head_critic` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — Independent exact-head critic | pytest: 4 | `pr`, `main`, `release` |
+| `missions.sandbox.cleanup_ownership` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 5. Sandbox and validator protocol | pytest: 2 | `pr`, `main`, `release` |
 | `security.redaction.pre_durability` | `redaction` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 10. Security boundary | pytest: 2; eval: 1 | `pr`, `main`, `release` |
 
 Profile membership states where a contract must be enforced. Eval suite
