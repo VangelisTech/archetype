@@ -101,6 +101,17 @@ unresolved_tsv() {
   ' <<<"$1"
 }
 
+# Queue-readiness ignores outdated threads (gh_pr_queue_ready.sh counts only
+# non-outdated unresolved ones), so the signal refusal must too — otherwise
+# --signal refuses on PRs that are already queue-ready.
+gating_unresolved_tsv() {
+  jq -r '
+    .data.repository.pullRequest.reviewThreads.nodes[]
+    | select((.isResolved | not) and (.isOutdated | not))
+    | "\(.id)\t\(.path // "?"):\(.line // "?")\tcurrent\t\(.comments.nodes[0].body // "" | gsub("\n"; " ") | .[0:120])"
+  ' <<<"$1"
+}
+
 refuse_truncation() {
   echo "error: ${REPO}#${PR} has more than 100 review threads; refusing to" \
        "act on a truncated page (the unresolved list could be an artifact" \
@@ -123,7 +134,7 @@ case "$MODE" in
   --signal)
     json=$(fetch_threads_json)
     [ "$(threads_truncated "$json")" = "false" ] || refuse_truncation
-    open=$(unresolved_tsv "$json")
+    open=$(gating_unresolved_tsv "$json")
     if [ -n "$open" ]; then
       count=$(printf '%s\n' "$open" | wc -l | tr -d ' ')
       echo "error: ${count} unresolved thread(s) remain on ${REPO}#${PR};" \
@@ -207,7 +218,7 @@ case "$MODE" in
     if [ "$(threads_truncated "$json")" != "false" ]; then
       echo "note: over 100 threads on this PR; remaining count unknown."
     else
-      remaining=$(unresolved_tsv "$json")
+      remaining=$(gating_unresolved_tsv "$json")
       if [ -z "$remaining" ]; then
         echo "all threads resolved. Now run: $0 ${REPO} ${PR} --signal"
       else
