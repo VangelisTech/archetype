@@ -355,7 +355,9 @@ def retry_feedback(error: GateError) -> str:
         "Return one corrected, complete structured result for the same exact head. "
         "Use only the model-authored fields in the supplied schema. Cover every "
         "changed path in review_context, anchor findings to changed lines, and "
-        "preserve substantive analysis that remains valid.\n"
+        "preserve substantive analysis that remains valid. Set review_status to "
+        "complete only if repository inspection actually completes; otherwise "
+        "keep it blocked rather than fabricating a verdict.\n"
     )
 
 
@@ -832,6 +834,20 @@ def _append_github_outputs(path: Path, values: Mapping[str, str | int]) -> None:
             output.write(f"{key}={value}\n")
 
 
+def reviewer_reported_blocked(result_paths: Sequence[Path]) -> bool:
+    """Return whether the latest classifiable attempt reports blocked inspection."""
+    for path in reversed(result_paths):
+        try:
+            value = _load_json(path)
+        except GateError:
+            continue
+        if isinstance(value, Mapping):
+            status = value.get("review_status")
+            if status in {"complete", "blocked"}:
+                return status == "blocked"
+    return False
+
+
 def _scope_command(args: argparse.Namespace) -> None:
     scope, diff = build_scope(args.base, args.head)
     _write_json(args.scope, scope)
@@ -1131,6 +1147,10 @@ def _infra_receipt_command(args: argparse.Namespace) -> None:
     )
 
 
+def _reported_blocked_command(args: argparse.Namespace) -> None:
+    print("true" if reviewer_reported_blocked(args.results) else "false")
+
+
 def _extract_command(args: argparse.Namespace) -> None:
     raw = args.raw.read_text(encoding="utf-8")
     extracted = extract_structured_json(raw)
@@ -1427,6 +1447,19 @@ def _parser() -> argparse.ArgumentParser:
     infra.add_argument("--detail", required=True)
     infra.add_argument("--output", type=Path, required=True)
     infra.set_defaults(handler=_infra_receipt_command)
+
+    reported_blocked = subparsers.add_parser(
+        "reported-blocked",
+        help="classify whether structured reviewer output reported blocked inspection",
+    )
+    reported_blocked.add_argument(
+        "--result",
+        dest="results",
+        type=Path,
+        action="append",
+        required=True,
+    )
+    reported_blocked.set_defaults(handler=_reported_blocked_command)
     return parser
 
 

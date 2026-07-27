@@ -42,6 +42,7 @@ from review_aggregation import (  # noqa: E402
 )
 from review_contracts import (  # noqa: E402
     ReviewError,
+    artifact_digest,
     normalize_adjudication_result,
     render_adjudication_prompt,
 )
@@ -111,6 +112,24 @@ def test_fan_out_fails_closed_when_one_reviewer_receipt_is_missing():
     with pytest.raises(ReviewError, match="configured fan-out"):
         assemble_preliminary_bundle(
             receipts,
+            head_sha=HEAD_SHA,
+            scoped_files=FILES,
+            anchors=ANCHORS,
+        )
+
+
+def test_blocked_inspection_cannot_be_recast_as_a_validated_receipt():
+    receipt = reviewer_receipts()[0]
+    receipt["result"]["review_status"] = "blocked"
+    receipt["result"]["summary"] = (
+        "Repository inspection was blocked before any changed file could be read, "
+        "so this result cannot provide a reviewer verdict for the assigned lens."
+    )
+    receipt["artifact_digest"] = artifact_digest(receipt["result"])
+
+    with pytest.raises(ReviewError, match="repository inspection must complete"):
+        validate_reviewer_receipt(
+            receipt,
             head_sha=HEAD_SHA,
             scoped_files=FILES,
             anchors=ANCHORS,
