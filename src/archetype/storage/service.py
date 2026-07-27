@@ -135,6 +135,57 @@ class VisibleWorldRows:
     latest_physical_tick: int | None
 
 
+async def _join_worker[T](thread: asyncio.Task[T]) -> T:
+    """Await a worker-thread task; cancellation waits for the thread to settle.
+
+    A worker thread cannot be interrupted, so cancelling its awaiter can only
+    orphan work that is still running. For an Iceberg commit that orphaning is
+    a durability bug: the commit can land after the execution gate is released
+    and after the caller has concluded nothing happened, so a retry would
+    double-append the same payload (issue #704). The thread task is therefore
+    shielded, and when the awaiter is cancelled this coroutine keeps waiting —
+    absorbing repeated cancellation — until the thread outcome is settled,
+    then lets CancelledError propagate. Callers that must record the settled
+    outcome inspect the task in their own ``except asyncio.CancelledError``
+    handler before re-raising.
+    """
+    try:
+        return await asyncio.shield(thread)
+    except asyncio.CancelledError:
+        if thread.cancelled():
+            raise
+        while not thread.done():
+            try:
+                await asyncio.wait({thread})
+            except asyncio.CancelledError:
+                continue
+        if (error := thread.exception()) is not None:
+            # Retrieval also marks the task exception observed; commit call
+            # sites classify the settled outcome in their own handlers.
+            logger.debug(
+                "Worker thread failed while its awaiter was cancelled: %s",
+                type(error).__name__,
+            )
+        raise
+
+
+def _log_commit_outlived_cancellation(commit: asyncio.Task[Any], table_name: str) -> None:
+    """Make a cancellation-orphaned app-table commit's settled fate observable.
+
+    App tables carry no receipt or managed commit identity to fold the outcome
+    into, so a commit that landed while its caller was being cancelled is
+    recorded in the log: the caller observed CancelledError, yet the rows are
+    durable.
+    """
+    if commit.cancelled() or commit.exception() is not None:
+        return
+    logger.warning(
+        "Iceberg append to app table %r committed while its caller was "
+        "cancelled; the written rows are durable",
+        table_name,
+    )
+
+
 class _DaftExecutionGate:
     """One reentrant admission lane for terminal Daft work in this process.
 
@@ -184,6 +235,11 @@ class _AdmittedAsyncStore(AsyncStore):
         super().__init__(session, io_config=io_config)
         self._execution_gate = execution_gate
         self._ambiguous_commits: dict[str, tuple[str, str, int, str, int]] = {}
+        # Managed identities whose commit landed while the awaiting caller was
+        # being cancelled. The caller never observed the receipt, so a retried
+        # identical payload must resolve to durable success instead of a
+        # second physical append (issue #704).
+        self._unobserved_commits: dict[str, tuple[str, str, int, str, int]] = {}
 
     async def append(self, sig: ArchetypeSignature, df: DataFrame) -> AppendReceipt:
         """Materialize once and retry only proven Iceberg CAS losers.
@@ -191,7 +247,10 @@ class _AdmittedAsyncStore(AsyncStore):
         The one Arrow payload is retained across bounded attempts, so retry
         cannot re-plan or re-execute processors. A commit-state-unknown signal
         is never retried; it becomes the typed v0.5 frozen outcome ruled in
-        issue #704.
+        issue #704. Cancellation never orphans a live commit: the worker
+        thread settles before CancelledError propagates, and a commit that
+        lands during cancellation is recorded so an identical retried payload
+        resolves to its durable receipt instead of a second physical append.
         """
         table_id = Archetype.get_name(sig)
         if not df.column_names:
@@ -207,7 +266,9 @@ class _AdmittedAsyncStore(AsyncStore):
                 async with self._execution_gate.admit():
                     self._raise_if_ambiguous(sig)
                     if payload is None:
-                        payload = await asyncio.to_thread(df.to_arrow)
+                        payload = await _join_worker(
+                            asyncio.ensure_future(asyncio.to_thread(df.to_arrow))
+                        )
                         rows = payload.num_rows
                         if rows == 0:
                             logger.info("Append skipped (store): archetype=%s rows=0", table_id)
@@ -222,11 +283,32 @@ class _AdmittedAsyncStore(AsyncStore):
                         native.refresh()
 
                     assert table is not None
-                    await asyncio.to_thread(
-                        self._append_table,
-                        table,
-                        daft.from_arrow(payload),
+                    assert identity is not None
+                    if self._unobserved_commits.get(table_id) == identity:
+                        logger.info(
+                            "Append already durable (store): archetype=%s tick=%d "
+                            "committed during an earlier cancelled call; not replayed",
+                            table_id,
+                            identity[2],
+                        )
+                        return AppendReceipt(
+                            table_id=table_id,
+                            rows=payload.num_rows,
+                            durable=True,
+                            backend_ref=self._snapshot_ref(table),
+                        )
+                    commit = asyncio.ensure_future(
+                        asyncio.to_thread(
+                            self._append_table,
+                            table,
+                            daft.from_arrow(payload),
+                        )
                     )
+                    try:
+                        await _join_worker(commit)
+                    except asyncio.CancelledError:
+                        self._record_cancelled_commit(table_id, identity, commit)
+                        raise
                     self._committed_sigs.add(table_id)
                     return AppendReceipt(
                         table_id=table_id,
@@ -286,6 +368,41 @@ class _AdmittedAsyncStore(AsyncStore):
         table_id = Archetype.get_name(sig)
         if identity := self._ambiguous_commits.get(table_id):
             raise self._ambiguous_error(table_id, identity)
+
+    def _record_cancelled_commit(
+        self,
+        table_id: str,
+        identity: tuple[str, str, int, str, int],
+        commit: asyncio.Task[None],
+    ) -> None:
+        """Fold a commit that outlived its cancelled caller into bookkeeping.
+
+        ``_join_worker`` guarantees the commit task is settled before
+        cancellation propagates. A landed commit is recorded as an unobserved
+        durable outcome so an identical retried payload returns its receipt
+        instead of double-appending the tick; a lost commit response freezes
+        the table exactly like the uncancelled ambiguous path (issue #704).
+        A definite commit failure leaves nothing durable, so cancellation
+        stands and a later retry is a fresh first attempt.
+        """
+        if commit.cancelled():
+            # The thread task itself was torn down (event-loop shutdown), so
+            # the outcome is unknowable — precisely the frozen ambiguous case.
+            self._ambiguous_commits[table_id] = identity
+            return
+        error = commit.exception()
+        if error is None:
+            self._committed_sigs.add(table_id)
+            self._unobserved_commits[table_id] = identity
+            logger.warning(
+                "Append committed during cancellation (store): archetype=%s "
+                "tick=%d; the rows are durable and an identical retry will "
+                "return its receipt without replaying",
+                table_id,
+                identity[2],
+            )
+        elif isinstance(error, CommitStateUnknownException):
+            self._ambiguous_commits[table_id] = identity
 
 
 class _AdmittedAsyncLancedbStore(AsyncLancedbStore):
@@ -865,12 +982,19 @@ class StorageService:
                         )
                         rows_written = frozen.count_rows()
                     if rows_written:
-                        await self._blocking(
-                            frozen.write_iceberg,
-                            self._native_table(table),
-                            mode="append",
-                            io_config=store.io_config,
+                        commit = asyncio.ensure_future(
+                            asyncio.to_thread(
+                                frozen.write_iceberg,
+                                self._native_table(table),
+                                mode="append",
+                                io_config=store.io_config,
+                            )
                         )
+                        try:
+                            await _join_worker(commit)
+                        except asyncio.CancelledError:
+                            _log_commit_outlived_cancellation(commit, table_name)
+                            raise
                     return rows_written
             except CommitFailedException:
                 if attempt + 1 == _MAX_COMMIT_ATTEMPTS:
@@ -950,12 +1074,19 @@ class StorageService:
                         # write. Rows already present cannot disappear from an
                         # append-only table and need not be re-evaluated.
                         candidates = pending
-                    await self._blocking(
-                        pending.write_iceberg,
-                        self._native_table(table),
-                        mode="append",
-                        io_config=store.io_config,
+                    commit = asyncio.ensure_future(
+                        asyncio.to_thread(
+                            pending.write_iceberg,
+                            self._native_table(table),
+                            mode="append",
+                            io_config=store.io_config,
+                        )
                     )
+                    try:
+                        await _join_worker(commit)
+                    except asyncio.CancelledError:
+                        _log_commit_outlived_cancellation(commit, table_name)
+                        raise
                     return rows_written
             except CommitFailedException:
                 if attempt + 1 == _MAX_COMMIT_ATTEMPTS:
@@ -1055,7 +1186,15 @@ class StorageService:
         *args: Any,
         **kwargs: Any,
     ) -> _T:
-        return await asyncio.to_thread(function, *args, **kwargs)
+        """Run one blocking callable in a worker thread with a settled outcome.
+
+        Cancelling the awaiting task never abandons the thread mid-flight: the
+        shared execution lane stays held and the thread outcome settles before
+        CancelledError propagates (see ``_join_worker``).
+        """
+        return await _join_worker(
+            asyncio.ensure_future(asyncio.to_thread(function, *args, **kwargs))
+        )
 
     async def shutdown(self):
         """Gracefully shuts down all managed storage backends."""
