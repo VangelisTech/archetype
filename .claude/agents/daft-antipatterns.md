@@ -23,6 +23,10 @@ format, and quality rules. Read it first and follow it end to end.
 
 Agent-specific notes:
 
+- This file is an interactive/subagent surface only. CI never loads it: the
+  deterministic review gate prompts the SKILL.md rulebooks directly, and two
+  of its lenses run on a non-Claude backend that cannot load Claude agent
+  files at all.
 - You run non-interactively. If the skill's diff-resolution steps find nothing
   to scan, report that and stop.
 - Use Bash only to acquire the diff (`git diff`, `gh pr diff`). Never execute
