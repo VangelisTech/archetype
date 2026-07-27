@@ -1013,6 +1013,27 @@ def _run_one(
         "artifact_schema": row["artifact_schema"],
     }
     if missing:
+        platform_missing = [value for value in missing if value.startswith("platform:")]
+        if platform_missing:
+            # A platform this host can never provide makes the scenario
+            # host-inapplicable rather than failed: its release evidence must
+            # come from a suitably provisioned host, and the envelope names
+            # exactly which platform is absent. Credential/service absence on
+            # an applicable host still fails at release cadence below.
+            result.update(
+                {
+                    "status": "host_inapplicable",
+                    "reason": (
+                        "host-inapplicable (this host can never satisfy "
+                        f"{', '.join(platform_missing)}); "
+                        f"missing prerequisites: {', '.join(missing)}"
+                    ),
+                    "missing_prerequisites": missing,
+                    "duration_seconds": round(time.perf_counter() - started, 6),
+                    "cleanup": {"policy": row["cleanup_policy"], "status": "not_acquired"},
+                }
+            )
+            return result
         # Release evidence never reports a passing ``not_run``: a scenario the
         # release requires either executes or fails, naming exactly what is
         # absent. The registry's ``missing_prerequisite`` policy applies only
@@ -1488,7 +1509,7 @@ def run_scenarios(
         "cleanup": isolated_cleanup,
         "status_counts": {
             status: sum(row["status"] == status for row in results)
-            for status in ("passed", "failed", "not_run")
+            for status in ("passed", "failed", "not_run", "host_inapplicable")
         },
         "results": results,
     }
@@ -1601,7 +1622,7 @@ def main(argv: list[str] | None = None) -> int:
             "started_at": started_at,
             "duration_seconds": round(time.perf_counter() - started, 6),
             "outcome": "failed",
-            "status_counts": {"passed": 0, "failed": 1, "not_run": 0},
+            "status_counts": {"passed": 0, "failed": 1, "not_run": 0, "host_inapplicable": 0},
             "results": [],
             "error": _portable_error(exc),
         }
@@ -1612,7 +1633,8 @@ def main(argv: list[str] | None = None) -> int:
     print(
         "Operational scenarios "
         f"{envelope['outcome']}: {counts['passed']} passed, "
-        f"{counts['failed']} failed, {counts['not_run']} not run; "
+        f"{counts['failed']} failed, {counts['not_run']} not run, "
+        f"{counts.get('host_inapplicable', 0)} host-inapplicable; "
         f"receipt={output}"
     )
     return 0 if passed else 1

@@ -334,15 +334,21 @@ def test_verify_release_runs_installed_artifact_evidence_not_an_alias() -> None:
 
     makefile = MAKEFILE.read_text(encoding="utf-8")
     verify_release = re.search(
-        r"^verify-release:(?P<dependencies>[^\n]*)$",
+        r"^verify-release:(?P<dependencies>[^\n]*)\n(?P<body>(?:\t.*\n)+)",
         makefile,
         re.MULTILINE,
     )
     assert verify_release is not None
     dependencies = verify_release.group("dependencies").split()
     assert "verify-full" in dependencies
-    assert "operational-release" in dependencies
-    assert "operational-external" in dependencies
+    # Both operational lanes run from the recipe, not as prerequisites: a
+    # failing release lane must not short-circuit the external lane, or the
+    # tag workflow uploads a partial evidence set (missing external receipts).
+    release_recipe = verify_release.group("body")
+    assert "$(MAKE) operational-release || rc=1" in release_recipe
+    assert "$(MAKE) operational-external || rc=1" in release_recipe
+    assert "operational-release" not in dependencies
+    assert "operational-external" not in dependencies
 
     release = re.search(
         r"^operational-release:\n(?P<body>(?:\t.*\n)+)",
@@ -415,7 +421,12 @@ def test_release_cadence_fails_credentialless_required_scenarios(
 
     assert passed is False
     assert envelope["outcome"] == "failed"
-    assert envelope["status_counts"] == {"passed": 0, "failed": 1, "not_run": 0}
+    assert envelope["status_counts"] == {
+        "passed": 0,
+        "failed": 1,
+        "not_run": 0,
+        "host_inapplicable": 0,
+    }
     results = envelope["results"]
     assert isinstance(results, list) and len(results) == 1
     result = results[0]

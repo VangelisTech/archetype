@@ -319,6 +319,47 @@ def test_release_cadence_never_reports_not_run_for_missing_prerequisites(
     assert release_result["missing_prerequisites"] == ["credential:ARCHETYPE_TEST_ABSENT_TOKEN"]
 
 
+def test_platform_mismatch_is_host_inapplicable_not_failed(
+    tmp_path: Path,
+) -> None:
+    """A platform this host can never provide keeps the scenario out of the
+    failure set at every cadence: the tag workflow's Linux runner must not
+    fail release verification over a darwin-only sandbox scenario. Credential
+    absence on an applicable host still fails at release cadence."""
+
+    other_platform = "darwin" if sys.platform != "darwin" else "linux"
+    row: dict[str, Any] = {
+        "id": "dogfood.test.other_platform",
+        "owner": "runtime",
+        "tier": 6,
+        "prerequisites": [f"platform:{other_platform}", "credential:ARCHETYPE_TEST_ABSENT_TOKEN"],
+        "missing_prerequisite": "not_run",
+        "contracts": ["runtime.trust.actor_free"],
+        "artifact_schema": RESULT_SCHEMA,
+        "cleanup_policy": "isolated",
+    }
+    shared: dict[str, Any] = {
+        "python": Path(sys.executable),
+        "root": ROOT,
+        "mode": "source",
+        "run_root": tmp_path / "run",
+        "logs_root": tmp_path / "logs",
+        "package": {"origin": "source"},
+        "base_env": {},
+        "expected_revision": "0" * 40,
+        "expected_dirty": False,
+        "tested_subject": {"commit": "0" * 40, "dirty": False},
+    }
+
+    release_result = operational_runner._run_one(row, cadence="release", **shared)
+    assert release_result["status"] == "host_inapplicable"
+    assert f"platform:{other_platform}" in release_result["reason"]
+    assert release_result["missing_prerequisites"] == [
+        f"platform:{other_platform}",
+        "credential:ARCHETYPE_TEST_ABSENT_TOKEN",
+    ]
+
+
 def test_timeout_is_failed_and_process_group_is_cleaned(tmp_path: Path) -> None:
     result = _run_process(
         [

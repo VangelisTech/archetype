@@ -475,7 +475,14 @@ verify-full: verify-pr test-process eval-reliability
 	@echo "Full verification profile passed"
 
 .PHONY: verify-release
-verify-release: verify-full operational-release operational-external
+verify-release: verify-full
+	@rc=0; \
+	$(MAKE) operational-release || rc=1; \
+	$(MAKE) operational-external || rc=1; \
+	if [ $$rc -ne 0 ]; then \
+		echo "Release verification FAILED (both operational receipts were still produced)"; \
+		exit $$rc; \
+	fi
 	@echo "Release verification profile passed"
 
 .PHONY: release-check
