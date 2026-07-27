@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 
 import archetype
-import archetype.app.missions as app_missions
 import archetype.missions as missions
 import archetype.missions.components as components
 from archetype.core.archetype import Archetype
@@ -176,7 +175,6 @@ def test_components_have_one_family_owned_schema_identity() -> None:
         assert getattr(components, component.__name__) is component
         assert Component.get_type_by_name(component.__name__) is component
         assert _component_matches(component.__name__) == [component]
-        assert component.__name__ not in app_missions.__all__
         assert component.__name__ not in archetype.__all__
 
 

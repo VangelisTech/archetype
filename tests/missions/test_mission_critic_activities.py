@@ -18,18 +18,15 @@ import pytest
 from pydantic import TypeAdapter
 
 from archetype.activities import ActivityCoordinator
-from archetype.app.missions.critic_activities import (
+from archetype.core.interfaces import CommittedTickReceipt
+from archetype.missions import CriticPolicy
+from archetype.missions.critic_activity import (
     CriticActivityReconciliationRequired,
     MissionCriticActivityWorker,
 )
-from archetype.app.missions.critic_activity_coordinator import (
+from archetype.missions.critic_activity_coordinator import (
     MissionCriticActivityCoordinator,
 )
-from archetype.app.missions.local_critic_activity_values import (
-    LocalMissionCriticValueStore,
-)
-from archetype.core.interfaces import CommittedTickReceipt
-from archetype.missions import CriticPolicy
 from archetype.missions.critics import (
     CRITIC_ACTIVITY_KIND,
     CandidateReviewRequest,
@@ -50,6 +47,9 @@ from archetype.missions.critics import (
     critic_provider_operation_id,
 )
 from archetype.missions.critics.contracts import canonical_digest
+from archetype.missions.local_critic_activity_values import (
+    LocalMissionCriticValueStore,
+)
 from archetype.missions.sandboxes import SandboxIdentity, SandboxStatus
 from archetype.missions.transitions import CriticConclusion, CriticExecutionStatus
 from archetype.redaction import RedactionService

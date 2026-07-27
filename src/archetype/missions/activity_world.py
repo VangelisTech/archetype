@@ -80,7 +80,7 @@ from archetype.world.query import (
 )
 from archetype.world.simulation import RequiredProjector
 
-from .activities import (
+from .author_activity import (
     CommittedMissionSnapshot,
     MissionAuthorActivityCatalog,
     MissionAuthorActivityProjector,

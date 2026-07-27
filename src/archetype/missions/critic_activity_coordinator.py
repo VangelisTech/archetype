@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Agent Mission adapter over generic durable activity coordination."""
+"""Mission critic adapter over generic durable Activity coordination."""
 
 from __future__ import annotations
 
@@ -16,16 +16,17 @@ from archetype.activities import (
     collect_pending_results,
     iActivityCoordinator,
 )
-from archetype.app.missions.activities import (
-    AuthorActivityClaim,
-    AuthorActivityResultDelivery,
-)
 from archetype.core.interfaces import CommittedTickReceipt
-from archetype.missions.activities import (
-    AUTHOR_ACTIVITY_KIND,
-    AuthorActivityRequestRef,
-    AuthorActivityResultRef,
-    AuthorActivityRetryGuard,
+from archetype.missions.critics import (
+    CRITIC_ACTIVITY_KIND,
+    CriticActivityRequestRef,
+    CriticActivityResultRef,
+    CriticActivityRetryGuard,
+)
+
+from .critic_activity import (
+    CriticActivityClaim,
+    CriticActivityResultDelivery,
 )
 
 # Pending-scan page size, not a scan bound: claim and result scans page
@@ -34,8 +35,8 @@ from archetype.missions.activities import (
 _CLAIM_SCAN_PAGE = 1_000
 
 
-class MissionAuthorActivityCoordinator:
-    """Translate generic lease mechanics into the author-workflow port."""
+class MissionCriticActivityCoordinator:
+    """Translate generic lease mechanics into the critic-workflow port."""
 
     def __init__(
         self,
@@ -44,30 +45,30 @@ class MissionAuthorActivityCoordinator:
         lease_seconds: float = 300.0,
     ) -> None:
         if lease_seconds <= 0:
-            raise ValueError("mission author activity lease must be positive")
+            raise ValueError("mission critic Activity lease must be positive")
         self._coordinator = coordinator
         self._lease_seconds = lease_seconds
         self._claims: dict[tuple[str, str, int], ActivityClaim] = {}
 
-    async def admit_author(
+    async def admit_critic(
         self,
         *,
         world_id: str,
         receipt: CommittedTickReceipt,
         activity_id: str,
-        request: AuthorActivityRequestRef,
+        request: CriticActivityRequestRef,
     ) -> None:
         if world_id != receipt.world_id:
-            raise ValueError("author activity admission belongs to another world")
+            raise ValueError("critic Activity admission belongs to another world")
         admission = ActivityAdmission(
             activity_id=activity_id,
-            kind=AUTHOR_ACTIVITY_KIND,
+            kind=CRITIC_ACTIVITY_KIND,
             source=receipt,
             input_ref=request.ref,
             input_digest=request.digest,
         )
         existing = await self._coordinator.get(
-            kind=AUTHOR_ACTIVITY_KIND,
+            kind=CRITIC_ACTIVITY_KIND,
             world_id=world_id,
             activity_id=activity_id,
         )
@@ -78,7 +79,7 @@ class MissionAuthorActivityCoordinator:
             await self._coordinator.admit(admission)
         except ActivityConflictError:
             existing = await self._coordinator.get(
-                kind=AUTHOR_ACTIVITY_KIND,
+                kind=CRITIC_ACTIVITY_KIND,
                 world_id=world_id,
                 activity_id=activity_id,
             )
@@ -86,17 +87,17 @@ class MissionAuthorActivityCoordinator:
                 raise
             self._validate_existing(existing.admission, admission)
 
-    async def claim_author(
+    async def claim_critic(
         self,
         *,
         world_id: str,
         owner: str,
-    ) -> AuthorActivityClaim | None:
-        # Page until the catalog is exhausted: the old finite 10,000-row
-        # prefix stranded claimable author work behind leased rows.
+    ) -> CriticActivityClaim | None:
+        # Page until the catalog is exhausted: the old single default-sized
+        # prefix (100 rows) stranded claimable critic work behind leased rows.
         generic = await claim_next_pending(
             self._coordinator,
-            kind=AUTHOR_ACTIVITY_KIND,
+            kind=CRITIC_ACTIVITY_KIND,
             world_id=world_id,
             owner=owner,
             lease_seconds=self._lease_seconds,
@@ -108,11 +109,11 @@ class MissionAuthorActivityCoordinator:
 
     async def bind_provider_operation(
         self,
-        claim: AuthorActivityClaim,
+        claim: CriticActivityClaim,
         *,
         provider: str,
         operation_id: str,
-    ) -> AuthorActivityClaim:
+    ) -> CriticActivityClaim:
         generic = await self._coordinator.bind_provider_operation(
             self._resolve(claim),
             provider,
@@ -122,9 +123,9 @@ class MissionAuthorActivityCoordinator:
 
     async def confirm_provider_operation_absent(
         self,
-        claim: AuthorActivityClaim,
-        guard: AuthorActivityRetryGuard,
-    ) -> AuthorActivityClaim:
+        claim: CriticActivityClaim,
+        guard: CriticActivityRetryGuard,
+    ) -> CriticActivityClaim:
         generic = await self._coordinator.confirm_provider_operation_absent(
             self._resolve(claim),
             ActivityRetryGuard(ref=guard.ref, digest=guard.digest),
@@ -132,10 +133,10 @@ class MissionAuthorActivityCoordinator:
         )
         return self._remember(generic)
 
-    async def record_author_result(
+    async def record_critic_result(
         self,
-        claim: AuthorActivityClaim,
-        result: AuthorActivityResultRef,
+        claim: CriticActivityClaim,
+        result: CriticActivityResultRef,
     ) -> None:
         await self._coordinator.record_result(
             self._resolve(claim),
@@ -147,34 +148,34 @@ class MissionAuthorActivityCoordinator:
             ),
         )
 
-    async def pending_author_results(
+    async def pending_critic_results(
         self,
         *,
         world_id: str,
-    ) -> tuple[AuthorActivityResultDelivery, ...]:
+    ) -> tuple[CriticActivityResultDelivery, ...]:
         # Results-side twin of the claim scan: page to exhaustion so a
         # durable result beyond the first page still reaches observation.
         snapshots = await collect_pending_results(
             self._coordinator,
-            kind=AUTHOR_ACTIVITY_KIND,
+            kind=CRITIC_ACTIVITY_KIND,
             world_id=world_id,
             page_size=_CLAIM_SCAN_PAGE,
         )
-        deliveries: list[AuthorActivityResultDelivery] = []
+        deliveries: list[CriticActivityResultDelivery] = []
         for snapshot in snapshots:
             result = snapshot.result
             if result is None:
-                raise AssertionError("pending activity result has no result reference")
+                raise AssertionError("pending critic Activity has no result reference")
             admission = snapshot.admission
             deliveries.append(
-                AuthorActivityResultDelivery(
+                CriticActivityResultDelivery(
                     world_id=admission.source.world_id,
                     activity_id=admission.activity_id,
-                    request=AuthorActivityRequestRef(
+                    request=CriticActivityRequestRef(
                         ref=admission.input_ref,
                         digest=admission.input_digest,
                     ),
-                    result=AuthorActivityResultRef(
+                    result=CriticActivityResultRef(
                         ref=result.ref,
                         digest=result.digest,
                         media_type=result.media_type,
@@ -184,7 +185,7 @@ class MissionAuthorActivityCoordinator:
             )
         return tuple(deliveries)
 
-    async def settle_author_observation(
+    async def settle_critic_observation(
         self,
         *,
         world_id: str,
@@ -193,7 +194,7 @@ class MissionAuthorActivityCoordinator:
         receipt: CommittedTickReceipt,
     ) -> None:
         await self._coordinator.settle_observation(
-            kind=AUTHOR_ACTIVITY_KIND,
+            kind=CRITIC_ACTIVITY_KIND,
             world_id=world_id,
             activity_id=activity_id,
             settlement=ActivitySettlement(
@@ -207,21 +208,21 @@ class MissionAuthorActivityCoordinator:
 
         return await self._coordinator.has_unsettled(world_id)
 
-    def _remember(self, claim: ActivityClaim) -> AuthorActivityClaim:
+    def _remember(self, claim: ActivityClaim) -> CriticActivityClaim:
         if not claim.acquired or claim.attempt is None or claim.fence is None:
-            raise ValueError("mission author adapter requires an acquired claim")
+            raise ValueError("mission critic adapter requires an acquired claim")
         operation_id = (
             claim.reconciles_provider_operation_id
             if claim.reconciliation_required
             else claim.provider_operation_id
         )
         provider = claim.reconciles_provider if claim.reconciliation_required else claim.provider
-        semantic = AuthorActivityClaim(
+        semantic = CriticActivityClaim(
             world_id=claim.world_id,
             activity_id=claim.activity_id,
             attempt=claim.attempt,
             fence=claim.fence,
-            request=AuthorActivityRequestRef(
+            request=CriticActivityRequestRef(
                 ref=claim.snapshot.admission.input_ref,
                 digest=claim.snapshot.admission.input_digest,
             ),
@@ -229,7 +230,7 @@ class MissionAuthorActivityCoordinator:
             provider_operation_id=operation_id or "",
             reconciliation_required=claim.reconciliation_required,
             retry_guard=(
-                AuthorActivityRetryGuard(
+                CriticActivityRetryGuard(
                     ref=claim.retry_guard.ref,
                     digest=claim.retry_guard.digest,
                 )
@@ -240,11 +241,11 @@ class MissionAuthorActivityCoordinator:
         self._claims[(claim.world_id, claim.activity_id, claim.fence)] = claim
         return semantic
 
-    def _resolve(self, claim: AuthorActivityClaim) -> ActivityClaim:
+    def _resolve(self, claim: CriticActivityClaim) -> ActivityClaim:
         try:
             return self._claims[(claim.world_id, claim.activity_id, claim.fence)]
         except KeyError:
-            raise ValueError("author activity claim was not issued by this adapter") from None
+            raise ValueError("critic Activity claim was not issued by this adapter") from None
 
     @staticmethod
     def _validate_existing(
@@ -257,8 +258,8 @@ class MissionAuthorActivityCoordinator:
             or existing.input_digest != candidate.input_digest
         ):
             raise ActivityConflictError(
-                "mission author activity identity has different immutable request content"
+                "mission critic Activity identity has different immutable request content"
             )
 
 
-__all__ = ["MissionAuthorActivityCoordinator"]
+__all__ = ["MissionCriticActivityCoordinator"]

@@ -35,7 +35,6 @@ from archetype.world.mutation import _create_entities_atomically_locked
 from archetype.world.query import PinnedWorldQuerySnapshot, pin_query_snapshot
 from archetype.world.simulation import RequiredProjector
 
-from .activities import CommittedMissionSnapshot
 from .activity_world import (
     _MISSION_QUERY_GROUPS,
     StorageMissionCommittedIntentReader,
@@ -43,7 +42,8 @@ from .activity_world import (
     _has_recorded_group,
     _query_groups,
 )
-from .critic_activities import (
+from .author_activity import CommittedMissionSnapshot
+from .critic_activity import (
     MissionCriticActivityCatalog,
     MissionCriticActivityProjector,
     MissionCriticActivityWorker,

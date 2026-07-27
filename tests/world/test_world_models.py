@@ -76,7 +76,7 @@ def test_world_values_have_one_canonical_owner() -> None:
     )
 
     assert {value.__module__ for value in world_values} == {"archetype.world.models"}
-    assert find_spec("archetype.app.models") is None
+    assert find_spec("archetype.app") is None
 
     for value in world_values[:6]:
         assert getattr(archetype, value.__name__) is value

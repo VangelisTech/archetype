@@ -523,8 +523,7 @@ boundary.
 ### StorageService
 
 - Physical storage authority lives in the top-level `archetype.storage`
-  family. Temporary `archetype.app.storage` imports MUST preserve object
-  identity and MUST NOT contain a second implementation.
+  family. No compatibility storage package or second implementation exists.
 - `StorageService` is the multiton owner for backend triplets:
   `(store, querier, updater)`.
 - Worlds sharing the same effective storage pool key `(uri, namespace, backend,

@@ -165,7 +165,7 @@ tests_dir = [
 # pytest's [tool.pytest.ini_options].pythonpath puts mutants/src first on
 # sys.path, so the rest of the archetype package has to be staged into
 # mutants/ as well — otherwise tests/conftest.py fails to import
-# archetype.app. mutmut writes the mutated component.py *after*
+# other packages. mutmut writes the mutated component.py *after*
 # also_copy runs, so the unmutated copy here is harmlessly overwritten.
 also_copy = [
     "src/archetype",

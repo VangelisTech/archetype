@@ -7,12 +7,6 @@ import json
 
 import pytest
 
-from archetype.app.storage.signatures import (
-    match_signature_records as compatibility_match_signature_records,
-)
-from archetype.app.storage.signatures import (
-    resolve_signature_records as compatibility_resolve_signature_records,
-)
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.storage.catalog import (
@@ -40,11 +34,6 @@ def _record(
         schema_json=json.dumps(arrow_schema_descriptor(schema)),
         fingerprint=schema_fingerprint(schema),
     )
-
-
-def test_compatibility_module_reexports_canonical_resolvers() -> None:
-    assert compatibility_match_signature_records is match_signature_records
-    assert compatibility_resolve_signature_records is resolve_signature_records
 
 
 def test_match_signature_records_resolves_exact_durable_identity() -> None:

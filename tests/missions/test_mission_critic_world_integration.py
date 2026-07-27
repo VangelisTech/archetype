@@ -14,21 +14,10 @@ import pytest
 from daft import lit
 
 from archetype.activities import ActivityCoordinator
-from archetype.app.missions.activities import CommittedMissionSnapshot
-from archetype.app.missions.activity_world import StorageMissionCommittedIntentReader
-from archetype.app.missions.critic_activities import MissionCriticActivityProjector
-from archetype.app.missions.critic_activity_coordinator import (
-    MissionCriticActivityCoordinator,
-)
-from archetype.app.missions.critic_activity_world import (
-    MissionCriticActivityBinding,
-    WorldMissionCriticObservationStager,
-)
-from archetype.app.missions.local_critic_activity_values import (
-    LocalMissionCriticValueStore,
-)
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.core.hooks import OnSpawn
+from archetype.missions.activity_world import StorageMissionCommittedIntentReader
+from archetype.missions.author_activity import CommittedMissionSnapshot
 from archetype.missions.components import (
     AgentExecution,
     Candidate,
@@ -49,6 +38,14 @@ from archetype.missions.components import (
     ValidationResult,
 )
 from archetype.missions.contracts import CriticPolicy
+from archetype.missions.critic_activity import MissionCriticActivityProjector
+from archetype.missions.critic_activity_coordinator import (
+    MissionCriticActivityCoordinator,
+)
+from archetype.missions.critic_activity_world import (
+    MissionCriticActivityBinding,
+    WorldMissionCriticObservationStager,
+)
 from archetype.missions.critics import (
     CandidateReviewRequest,
     CriticActivityCodec,
@@ -66,6 +63,9 @@ from archetype.missions.critics import (
 from archetype.missions.critics.contracts import (
     canonical_digest,
     validator_bundle_digest,
+)
+from archetype.missions.local_critic_activity_values import (
+    LocalMissionCriticValueStore,
 )
 from archetype.missions.projections import (
     project_complete_critic_activity_fact_bundles,
@@ -213,7 +213,6 @@ class _Executor:
 @pytest.mark.asyncio
 async def test_complete_critic_observation_settles_exact_receipt_and_survives_restart(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     control = ControlCatalogConfig(catalog_dir=tmp_path / "control")
     storage_config = StorageConfig(
@@ -391,17 +390,6 @@ async def test_complete_critic_observation_settles_exact_receipt_and_survives_re
         projected_requests = await project_critic_activity_requests(snapshot.as_post_tick())
         assert projected_requests == (expected_request,)
 
-        # The new required projector is independent from the process-local
-        # compatibility outbox.
-        from archetype.missions import projections as mission_projections
-
-        monkeypatch.setattr(
-            mission_projections.CriticReviewOutbox,
-            "__init__",
-            lambda _self: (_ for _ in ()).throw(
-                AssertionError("legacy CriticReviewOutbox was instantiated")
-            ),
-        )
         await binding.projector.project(intent_receipt)
         await binding.projector.project(intent_receipt)
         admitted = await generic.pending(

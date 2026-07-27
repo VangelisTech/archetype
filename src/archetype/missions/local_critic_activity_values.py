@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Local content-addressed values for the Mission critic Activity proof."""
+"""Local content-addressed values for the Mission critic Activity."""
 
 from __future__ import annotations
 

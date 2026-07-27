@@ -118,7 +118,7 @@ on. Equivalent mutants are an inherent noise floor in mutation testing.
   `paths_to_mutate` into `mutants/` by default, but our pytest
   `pythonpath = ["src", "."]` makes `mutants/src` the import root.
   Without the `also_copy = ["src/archetype"]` entry, `tests/conftest.py`
-  fails to import `archetype.app`. The unmutated copy is harmlessly
+  fails to import the full package. The unmutated copy is harmlessly
   overwritten when mutmut writes each mutant.
 - **LanceDB fork warning.** `lance is not fork-safe`. The pilot module
   doesn't touch LanceDB during import, so the warning is benign. If
@@ -160,7 +160,7 @@ modules in rough order of value-per-effort:
    contract. Source is 81 lines but `test_resources_hooks_messaging.py`
    (~680 lines, async) sprawls; scope `tests_dir` to
    `test_resources_manager.py` only to keep wall-clock sane.
-3. `app/auth/` — RBAC logic where assertion gaps are most
+3. `commands/policy.py` — RBAC logic where assertion gaps are most
    consequential (quota math, role gating).
 
 Each expansion is a separate commit that updates `[tool.mutmut]` and

@@ -324,7 +324,6 @@ def test_runtime_loopback_is_explicitly_required_from_source_and_wheel() -> None
         "example.14_physical_ai",
         "dogfood.evaluation.durable_receipt",
         "dogfood.artifacts.local",
-        "dogfood.agent_mission.scripted",
     )
     for scenario_id in packet_scenarios:
         assert wheel_body.count(f"--scenario {scenario_id}") == 1

@@ -24,17 +24,6 @@ import pytest
 from pydantic import TypeAdapter
 
 from archetype.activities import ActivityCoordinator
-from archetype.app.missions.activities import (
-    AuthorActivityClaim,
-    AuthorActivityReconciliationRequired,
-    CommittedMissionSnapshot,
-    MissionAuthorActivityProjector,
-    MissionAuthorActivityWorker,
-)
-from archetype.app.missions.activity_coordinator import (
-    MissionAuthorActivityCoordinator,
-)
-from archetype.app.missions.local_activity_values import LocalMissionAuthorValueStore
 from archetype.core.component import Component
 from archetype.core.interfaces import CommittedTickReceipt
 from archetype.missions.activities import (
@@ -53,6 +42,16 @@ from archetype.missions.activities import (
     author_provider_operation_id,
     complete_author_activity_fact_bundle,
     complete_author_activity_fact_count,
+)
+from archetype.missions.activity_coordinator import (
+    MissionAuthorActivityCoordinator,
+)
+from archetype.missions.author_activity import (
+    AuthorActivityClaim,
+    AuthorActivityReconciliationRequired,
+    CommittedMissionSnapshot,
+    MissionAuthorActivityProjector,
+    MissionAuthorActivityWorker,
 )
 from archetype.missions.coding_agents.contracts import (
     AgentExecutionResult,
@@ -82,6 +81,7 @@ from archetype.missions.contracts import (
     CriticPolicy,
     RepositoryPublicationPolicy,
 )
+from archetype.missions.local_activity_values import LocalMissionAuthorValueStore
 from archetype.missions.relations import (
     AuthoredBy,
     CandidateFor,
@@ -1875,7 +1875,7 @@ async def test_author_claim_pages_past_a_full_page_of_live_claims(
     later claimable Activities pending until an unrelated prefix change.
     """
 
-    import archetype.app.missions.activity_coordinator as author_coordinator_module
+    import archetype.missions.activity_coordinator as author_coordinator_module
 
     monkeypatch.setattr(author_coordinator_module, "_CLAIM_SCAN_PAGE", 3)
     world_id = "mission-world"

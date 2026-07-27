@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Local durable values for the Mission author-activity substrate proof."""
+"""Local durable values for the Mission author Activity."""
 
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from typing import Any, Literal, overload
 
 from pydantic import TypeAdapter
 
-from archetype.app.missions.activities import MissionAuthorRedactor
 from archetype.missions.activities import (
     AuthorActivityRequestRef,
     AuthorActivityResultRef,
@@ -24,6 +23,7 @@ from archetype.missions.activities import (
     DurableAuthorExecutionObservation,
 )
 from archetype.missions.activity_values import MissionAuthorValueCodec
+from archetype.missions.author_activity import MissionAuthorRedactor
 from archetype.missions.coding_agents.contracts import TaskDispatchRequest
 
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")

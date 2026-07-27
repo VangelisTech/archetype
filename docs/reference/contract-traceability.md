@@ -56,9 +56,9 @@ machine authority; this page is its review surface.
 | `release.package.installable` | `release` | high | [docs/guide/api-stability.md](../guide/api-stability.md) — What counts as public | pytest: 2; static: 1 | `release` |
 | `storage.remote.control_parity` | `storage` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 10. Supported durability profile | pytest: 2; static: 1 | `main`, `release` |
 | `missions.agent_v1.public_authoring` | `missions` | medium | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 2. Public authoring surface | pytest: 1 | `pr`, `main`, `release` |
-| `missions.agent_v1.validator_gated` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 4. State and transition protocol | pytest: 7; static: 2; eval: 1 | `pr`, `main`, `release` |
-| `missions.agent_v1.exact_head_critic` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — Independent exact-head critic | pytest: 4; eval: 1 | `pr`, `main`, `release` |
-| `missions.sandbox.cleanup_ownership` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 5. Sandbox and validator protocol | pytest: 3; eval: 1 | `pr`, `main`, `release` |
+| `missions.agent_v1.validator_gated` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 4. State and transition protocol | pytest: 7; static: 2 | `pr`, `main`, `release` |
+| `missions.agent_v1.exact_head_critic` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — Independent exact-head critic | pytest: 4 | `pr`, `main`, `release` |
+| `missions.sandbox.cleanup_ownership` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 5. Sandbox and validator protocol | pytest: 2 | `pr`, `main`, `release` |
 | `security.redaction.pre_durability` | `redaction` | high | [docs/guide/artifacts.md](../guide/artifacts.md) — 10. Security boundary | pytest: 2; eval: 1 | `pr`, `main`, `release` |
 
 Profile membership states where a contract must be enforced. Eval suite
