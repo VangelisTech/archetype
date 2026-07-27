@@ -36,6 +36,8 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
     "typer>=0.9",
+    # Keep Typer's runtime Click resolution past PYSEC-2026-2132.
+    "click>=8.3.3",
     "httpx>=0.27",
     # Observability is vendor-neutral: archetype emits through the OTel API
     # only (archetype._obs). The SDK ships so ARCHETYPE_LOG=debug works out
@@ -67,11 +69,11 @@ docs       = [
     "mkdocs-material>=9.6,<10",
     "mkdocs-mermaid2-plugin",
     "mkdocstrings[python]>=0.27",
-    "pymdown-extensions",
+    "pymdown-extensions>=11.0",
 ]
 
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=83.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
@@ -142,6 +144,9 @@ dev = [
     # explicit host adapter; the published base package remains vendor-neutral.
     "logfire[fastapi]>=4.32.0",
     "python-dotenv>=1.2.2",
+    "setuptools>=83.0.0",
+    # Blocking quality gate for the complete uv lock projection.
+    "pip-audit==2.10.1",
 ]
 
 # Mutation testing. Scoped narrowly: mutmut runs each mutation as a full
@@ -188,6 +193,10 @@ starlette = "2026-06-13T00:00:00Z"
 # Dependabot alerts #116-117 (pypdf), #112 (msgpack), and #98-110 (Pillow).
 pypdf = "2026-06-24T00:00:00Z"
 msgpack = "2026-06-19T00:00:00Z"
+# Security releases admitted for the blocking lockfile audit:
+# GHSA-9xwg-3r6f-jcx2 and PYSEC-2026-3447.
+pymdown-extensions = "2026-06-24T00:00:00Z"
+setuptools = "2026-07-05T00:00:00Z"
 pillow = "2026-07-02T00:00:00Z"
 
 [tool.ruff]
