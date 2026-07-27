@@ -420,7 +420,9 @@ UDFs are the escape hatch, not the default.
 
 ### 5. `with_columns` over chained `with_column`
 
-Use `with_columns(dict)` for multiple column updates. Chained `with_column` can cause Daft plan dependency issues.
+Use `with_columns(dict)` for multiple independent column updates. Positional
+args (`with_columns(expr1, expr2)`) raise `TypeError` in Daft 0.7.x — the dict
+form is the fix, not one call per column.
 
 ```python
 # Prefer
@@ -429,6 +431,14 @@ df = df.with_columns({
     "col_b": col("y") * 2,
 })
 ```
+
+Chained `with_column` is not itself a bug, and much of `src/` uses it. Reach for
+it when a later column genuinely reads an earlier one's new value. The real
+hazard is narrower than "chaining": a UDF column argument resolves to that
+column's *final* value within a projection set, so splitting a
+read-then-overwrite across calls makes the reader see the overwritten value.
+Consolidate that case into one struct-returning UDF — see Rule 10.9 and
+LEARNINGS "UDF column args resolve to the column's FINAL value".
 
 ### 6. UDF patterns reference
 
