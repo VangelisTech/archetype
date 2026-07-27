@@ -457,6 +457,17 @@ conflict, storage refreshes the table and recomputes the anti-join before
 retrying so stale pending rows cannot duplicate an already-committed logical
 key.
 
+Commit outcomes are classified, and the classification is a deliberate v0.5
+posture. A definite commit conflict (`CommitFailedException` — the catalog
+proved the commit did not land) retries a bounded number of times, reusing the
+payload the first attempt already materialized; the upstream Daft plan is never
+re-executed. An ambiguous outcome (`CommitStateUnknownException` — the commit
+may or may not have landed) freezes as a typed `AmbiguousCommitError` instead
+of retrying or leaking the raw provider exception: a blind retry could
+double-append, and v0.5 does not attempt automatic reconciliation. The caller
+or operator inspects the table before resubmitting. There is no global storage
+lock, write broker, or general transaction layer behind this contract.
+
 The durable control plane is separate from that data plane. The local SQLite
 `ControlCatalog`, or its remote Durable Object implementation, owns world
 identity, writer fences, visibility manifests, deferred commands, and narrow

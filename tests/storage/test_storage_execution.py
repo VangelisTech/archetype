@@ -9,10 +9,11 @@ import time
 
 import daft
 import pytest
+from pyiceberg.exceptions import CommitStateUnknownException
 
 from archetype.core.component import Component
 from archetype.core.config import CacheConfig, RunConfig, StorageBackend, StorageConfig, WorldConfig
-from archetype.storage.service import StorageService
+from archetype.storage.service import AmbiguousCommitError, StorageService
 from archetype.storage.session import configure_session
 from archetype.world.lifecycle import WorldLifecycle
 from archetype.world.registry import WorldRegistry
@@ -303,3 +304,101 @@ async def test_real_iceberg_conflict_recomputes_conditional_append(tmp_path):
     finally:
         await first.shutdown()
         await second.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_definite_conflict_losers_retry_append_to_success(tmp_path):
+    """Racing appends: the CAS loser retries the same frozen payload to success.
+
+    C1 managed-write contract (#704): definite Iceberg commit conflicts retry
+    boundedly with the already-materialized payload; each payload commits
+    exactly once.
+    """
+    storage = _storage(tmp_path)
+    first = StorageService(session=configure_session(storage))
+    second = StorageService(session=configure_session(storage))
+    barrier = threading.Barrier(2)
+    try:
+        await first.append_table(
+            storage,
+            "events",
+            daft.from_pydict({"event_id": ["seed"], "writer": ["seed"]}),
+        )
+
+        def arm(catalog):
+            original = catalog._write_metadata
+            armed = True
+
+            def synchronized_metadata(*args, **kwargs):
+                nonlocal armed
+                result = original(*args, **kwargs)
+                if armed:
+                    armed = False
+                    barrier.wait(timeout=10)
+                return result
+
+            catalog._write_metadata = synchronized_metadata
+
+        for service in (first, second):
+            store = await service.get_or_create_store(storage)
+            native = store.session.current_catalog().get_table("ns.events")._inner
+            arm(native.catalog)
+
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                first.append_table(
+                    storage,
+                    "events",
+                    daft.from_pydict({"event_id": ["a"], "writer": ["first"]}),
+                ),
+                second.append_table(
+                    storage,
+                    "events",
+                    daft.from_pydict({"event_id": ["b"], "writer": ["second"]}),
+                ),
+            ),
+            timeout=20,
+        )
+
+        assert results == [1, 1]
+        rows = (await first.read_table(storage, "events")).sort("event_id").to_pylist()
+        assert [row["event_id"] for row in rows] == ["a", "b", "seed"]
+    finally:
+        await first.shutdown()
+        await second.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_commit_freezes_as_typed_outcome(tmp_path):
+    """An unknown commit state freezes: typed error, no retry, no duplicate.
+
+    C1 managed-write contract (#704): ambiguity must not silently retry (a
+    retry could double-append) and must not leak a raw provider exception.
+    """
+    storage = _storage(tmp_path)
+    service = StorageService(session=configure_session(storage))
+    try:
+        await service.append_table(storage, "events", daft.from_pydict({"event_id": ["seed"]}))
+        store = await service.get_or_create_store(storage)
+        native = store.session.current_catalog().get_table("ns.events")._inner
+        calls = 0
+
+        def unknown_commit(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            raise CommitStateUnknownException("catalog response lost")
+
+        original = native.catalog.commit_table
+        native.catalog.commit_table = unknown_commit
+        try:
+            with pytest.raises(AmbiguousCommitError) as raised:
+                await service.append_table(storage, "events", daft.from_pydict({"event_id": ["x"]}))
+        finally:
+            native.catalog.commit_table = original
+
+        assert calls == 1, "an ambiguous commit must freeze, not retry"
+        assert raised.value.table_name == "events"
+        rows = (await service.read_table(storage, "events")).to_pylist()
+        assert [row["event_id"] for row in rows] == ["seed"]
+    finally:
+        await service.shutdown()

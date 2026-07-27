@@ -227,6 +227,12 @@ INTENTIONAL_UNMAPPED = {
     "archetype.storage.catalog.records.CatalogSchemaMismatchError": (
         "integrity violation intentionally surfaces as 500; decision recorded in #413"
     ),
+    "archetype.storage.service.AmbiguousCommitError": (
+        "frozen ambiguous Iceberg commit intentionally surfaces as 500: the "
+        "append may or may not have landed, no HTTP status invites a safe "
+        "client retry, and the operator reconciles server-side; C1 posture "
+        "recorded in #704"
+    ),
 }
 
 # Private control-flow exceptions proven not to cross a registered handler

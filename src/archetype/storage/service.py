@@ -29,7 +29,11 @@ from daft import DataFrame, DataType, col, lit, read_iceberg
 from daft.catalog import Catalog, Table
 from daft.io import IOConfig
 from daft.session import Session
-from pyiceberg.exceptions import CommitFailedException, TableAlreadyExistsError
+from pyiceberg.exceptions import (
+    CommitFailedException,
+    CommitStateUnknownException,
+    TableAlreadyExistsError,
+)
 
 from archetype.core.aio import AsyncCachedStore, AsyncLancedbStore, AsyncStore
 from archetype.core.config import CacheConfig, StorageBackend, StorageConfig
@@ -57,6 +61,28 @@ logger = logging.getLogger(__name__)
 _MAX_COMMIT_ATTEMPTS = 16
 _T = TypeVar("_T")
 _WORLD_ENVELOPE_COLUMNS = ("world_id", "run_id")
+
+
+class AmbiguousCommitError(RuntimeError):
+    """An Iceberg commit whose outcome cannot be proven either way.
+
+    Raised when the catalog reports an unknown commit state
+    (``CommitStateUnknownException``): the append may or may not have become
+    part of the table. Retrying could double-append and swallowing could drop
+    a durable write, so the operation freezes as this typed outcome — the
+    deliberate v0.5 posture. The caller (or operator) reconciles by inspecting
+    the table before resubmitting.
+    """
+
+    def __init__(self, table_name: str, attempt: int) -> None:
+        super().__init__(
+            f"Iceberg commit outcome unknown for table {table_name!r} "
+            f"(attempt {attempt + 1}): the append may or may not have "
+            "committed; not retrying (a retry could double-append). "
+            "Inspect the table before resubmitting."
+        )
+        self.table_name = table_name
+        self.attempt = attempt
 
 
 @dataclass(frozen=True, slots=True)
@@ -725,6 +751,10 @@ class StorageService:
                             io_config=store.io_config,
                         )
                     return rows_written
+            except CommitStateUnknownException as exc:
+                # Ambiguous: the commit may have landed. A definite-conflict
+                # retry would risk a double-append; freeze as a typed outcome.
+                raise AmbiguousCommitError(table_name, attempt) from exc
             except CommitFailedException:
                 if attempt + 1 == _MAX_COMMIT_ATTEMPTS:
                     raise
@@ -810,6 +840,10 @@ class StorageService:
                         io_config=store.io_config,
                     )
                     return rows_written
+            except CommitStateUnknownException as exc:
+                # Same freeze as append_table: an anti-join retry against a
+                # table whose commit state is unknown could double-append.
+                raise AmbiguousCommitError(table_name, attempt) from exc
             except CommitFailedException:
                 if attempt + 1 == _MAX_COMMIT_ATTEMPTS:
                     raise
