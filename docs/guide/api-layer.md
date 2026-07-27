@@ -59,11 +59,18 @@ async def run_world(
 
 ## Authentication context
 
-Production ingress authenticates a stable principal and fails closed when
-credentials are absent or invalid. A development-only anonymous-admin mode, if
-enabled explicitly, uses one stable process principal so quotas and audit
-identity do not reset on every request. The trusted runtime has no actor
-context. See [Command Gate](command-gate.md).
+The served API is a single-tenant development surface, and this is the
+deliberate v0.5 posture. There is no authentication system: every caller is
+the tenant. A request with no `Authorization` header receives the admin role;
+`Bearer <role>` self-asserts one of admin/operator/player/viewer. Roles
+therefore scope cooperating agents — a client instructed to send
+`Bearer viewer` is genuinely viewer-scoped by the command gate — but they are
+not a security boundary against an adversarial caller, and binding the server
+beyond loopback exposes an unauthenticated admin API. The credentials that
+matter are the storage credentials in Daft's `IOConfig`. Real
+authentication/authorization against an external identity provider is a
+post-0.5 slice. The trusted runtime has no actor context. See
+[Command Gate](command-gate.md).
 
 ## Route Structure
 
