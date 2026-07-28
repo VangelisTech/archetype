@@ -59,6 +59,7 @@ def test_apple_backend_uses_the_pinned_shared_image_recipe() -> None:
     assert "ttyd.aarch64" in coding_agent_containerfile()
     assert "sha256sum --check --strict" in coding_agent_containerfile()
     assert "tmux" in coding_agent_containerfile()
+    assert "util-linux" in coding_agent_containerfile()
     assert f"ARCHETYPE_SANDBOX_ENVIRONMENT={backend.environment}" in coding_agent_containerfile()
     assert "USER agent" in coding_agent_containerfile()
 
@@ -396,8 +397,23 @@ async def test_apple_backend_create_restore_login_and_close_lifecycle(
 
     assert any(command[:2] == ("container", "build") for command in calls)
     assert any(command[:3] == ("container", "volume", "create") for command in calls)
-    assert any("--device-auth" in command for command in calls)
-    assert any("! -name auth.json" in argument for command in calls for argument in command)
+    login = next(
+        command for command in calls if any("--device-auth" in argument for argument in command)
+    )
+    narrowed = next(
+        command for command in calls if any("! -name auth.json" in argument for argument in command)
+    )
+    for command, label in (
+        (login, "archetype-oauth-login"),
+        (narrowed, "archetype-oauth-narrow"),
+    ):
+        assert command[-2:] == (
+            label,
+            "/home/agent/.codex/.auth-json.persist.lock",
+        )
+        assert 'exec 9>>"$lock_path"' in command[-3]
+        assert "flock -x 9" in command[-3]
+    assert "! -name '.auth-json.persist.lock'" in narrowed[-3]
 
 
 @pytest.mark.asyncio
@@ -527,7 +543,7 @@ async def test_apple_oauth_reports_persistence_and_removal_failures(
 
     async def auth_exec(*arguments: str, timeout: int, stdin: str | None = None):
         del timeout, stdin
-        if arguments[:3] == ("rm", "-f", "--"):
+        if len(arguments) > 3 and arguments[3] == "archetype-oauth-cleanup":
             return ProcessResult(tuple(arguments), 7, stderr="staging cleanup failed")
         return ProcessResult(tuple(arguments), 8, stderr="persist failed")
 
@@ -543,12 +559,13 @@ async def test_apple_oauth_reports_persistence_and_removal_failures(
 
 
 @pytest.mark.asyncio
-async def test_apple_oauth_persistence_failure_removes_only_owned_staging_file(
+async def test_apple_oauth_persistence_failure_reclaims_crash_orphans_under_lock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session = _session(tmp_path)
-    owned = "/home/agent/.codex/auth.json.next.mission-vm"
+    lock = "/home/agent/.codex/.auth-json.persist.lock"
+    owned = "/home/agent/.codex/auth.json.next"
     foreign = "/home/agent/.codex/auth.json.next.foreign-vm"
     staging_files = {owned, foreign}
     cleanup_commands: list[tuple[str, ...]] = []
@@ -559,18 +576,24 @@ async def test_apple_oauth_persistence_failure_removes_only_owned_staging_file(
     async def auth_exec(*arguments: str, timeout: int, stdin: str | None = None):
         del timeout, stdin
         command = tuple(arguments)
-        if command[:2] == ("sh", "-c"):
+        if command[3] == "archetype-oauth-persist":
             persistence_script = command[2]
-            assert command[3:] == ("archetype-oauth-persist", owned)
-            assert persistence_script.count('rm -f -- "$next_path"') == 4
+            assert command[3:] == ("archetype-oauth-persist", lock, owned)
+            assert persistence_script.count('rm -f -- "$next_path"') == 5
+            assert 'exec 9>>"$lock_path"' in persistence_script
+            assert "flock -x 9" in persistence_script
             assert 'exit "$status"\' EXIT' in persistence_script
             assert "exit 129' HUP" in persistence_script
             assert "exit 130' INT" in persistence_script
             assert "exit 143' TERM" in persistence_script
-            assert "! -name 'auth.json.next.*'" in persistence_script
+            assert "-name 'auth.json.next.*'" in persistence_script
+            assert "! -name '.auth-json.persist.lock'" in persistence_script
             return ProcessResult(command, 8, stderr="persist failed")
-        cleanup_commands.append(command)
-        staging_files.discard(command[-1])
+        assert command[3:] == ("archetype-oauth-cleanup", lock, owned)
+        assert 'exec 9>>"$lock_path"' in command[2]
+        assert "flock -x 9" in command[2]
+        cleanup_commands.append(command[3:])
+        staging_files.clear()
         return ProcessResult(command, 0)
 
     monkeypatch.setattr(session, "_exec_request", exec_request)
@@ -579,8 +602,8 @@ async def test_apple_oauth_persistence_failure_removes_only_owned_staging_file(
     with pytest.raises(RuntimeError, match="persist refreshed"):
         await session._persist_and_remove_oauth()
 
-    assert cleanup_commands == [("rm", "-f", "--", owned)]
-    assert staging_files == {foreign}
+    assert cleanup_commands == [("archetype-oauth-cleanup", lock, owned)]
+    assert staging_files == set()
 
 
 @pytest.mark.asyncio
@@ -592,7 +615,8 @@ async def test_apple_oauth_owned_staging_cleanup_finishes_after_cancellation(
     persist_started = asyncio.Event()
     cleanup_started = asyncio.Event()
     release_cleanup = asyncio.Event()
-    owned = "/home/agent/.codex/auth.json.next.mission-vm"
+    lock = "/home/agent/.codex/.auth-json.persist.lock"
+    owned = "/home/agent/.codex/auth.json.next"
     cleanup_commands: list[tuple[str, ...]] = []
 
     async def exec_request(request: ProcessRequest) -> ProcessResult:
@@ -601,12 +625,15 @@ async def test_apple_oauth_owned_staging_cleanup_finishes_after_cancellation(
     async def auth_exec(*arguments: str, timeout: int, stdin: str | None = None):
         del timeout, stdin
         command = tuple(arguments)
-        if command[:2] == ("sh", "-c"):
-            assert command[3:] == ("archetype-oauth-persist", owned)
-            assert command[2].count('rm -f -- "$next_path"') == 4
+        if command[3] == "archetype-oauth-persist":
+            assert command[3:] == ("archetype-oauth-persist", lock, owned)
+            assert command[2].count('rm -f -- "$next_path"') == 5
+            assert "flock -x 9" in command[2]
             persist_started.set()
             await asyncio.Future()
-        cleanup_commands.append(command)
+        assert command[3:] == ("archetype-oauth-cleanup", lock, owned)
+        assert "flock -x 9" in command[2]
+        cleanup_commands.append(command[3:])
         cleanup_started.set()
         await release_cleanup.wait()
         return ProcessResult(command, 0)
@@ -626,7 +653,78 @@ async def test_apple_oauth_owned_staging_cleanup_finishes_after_cancellation(
     with pytest.raises(asyncio.CancelledError):
         await persistence
 
-    assert cleanup_commands == [("rm", "-f", "--", owned)]
+    assert cleanup_commands == [("archetype-oauth-cleanup", lock, owned)]
+
+
+@pytest.mark.asyncio
+async def test_apple_oauth_concurrent_sessions_share_one_persistence_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = AppleContainerSandboxConfig(state_dir=str(tmp_path))
+    sessions = tuple(
+        AppleContainerSandboxSession(
+            spec=_spec(config),
+            config=config,
+            sandbox_id=f"mission-{label}",
+            auth_sandbox_id=f"auth-{label}",
+        )
+        for label in ("a", "b")
+    )
+    broker_lock = asyncio.Lock()
+    first_persist_started = asyncio.Event()
+    second_persist_attempted = asyncio.Event()
+    release_first = asyncio.Event()
+    order: list[str] = []
+    active_writers = 0
+
+    async def exec_request(request: ProcessRequest) -> ProcessResult:
+        return ProcessResult(request.argv, 0, stdout="oauth-credential")
+
+    def auth_exec(label: str):
+        async def run(*arguments: str, timeout: int, stdin: str | None = None):
+            nonlocal active_writers
+            del timeout, stdin
+            command = tuple(arguments)
+            kind = command[3].removeprefix("archetype-oauth-")
+            assert command[4:] == (
+                "/home/agent/.codex/.auth-json.persist.lock",
+                "/home/agent/.codex/auth.json.next",
+            )
+            assert "flock -x 9" in command[2]
+            if label == "b" and kind == "persist":
+                second_persist_attempted.set()
+            async with broker_lock:
+                assert active_writers == 0
+                if kind == "persist":
+                    active_writers = 1
+                    order.append(f"{label}:persist")
+                    if label == "a":
+                        first_persist_started.set()
+                        await release_first.wait()
+                    active_writers = 0
+                else:
+                    order.append(f"{label}:cleanup")
+                return ProcessResult(command, 0)
+
+        return run
+
+    for label, session in zip(("a", "b"), sessions, strict=True):
+        monkeypatch.setattr(session, "_exec_request", exec_request)
+        monkeypatch.setattr(session, "_auth_exec", auth_exec(label))
+
+    first = asyncio.create_task(sessions[0]._persist_and_remove_oauth())
+    await first_persist_started.wait()
+    second = asyncio.create_task(sessions[1]._persist_and_remove_oauth())
+    await second_persist_attempted.wait()
+    await asyncio.sleep(0)
+    assert order == ["a:persist"]
+
+    release_first.set()
+    await asyncio.gather(first, second)
+
+    assert order[:2] == ["a:persist", "b:persist"]
+    assert sorted(order[2:]) == ["a:cleanup", "b:cleanup"]
 
 
 @pytest.mark.asyncio

@@ -44,6 +44,8 @@ _PROVIDER = "apple-container"
 _CHECKPOINT_PREFIX = "apple-container-rootfs://"
 _CODEX_SECRET = "codex_oauth"
 _CODEX_AUTH_PATH = f"{CODEX_HOME}/auth.json"
+_CODEX_AUTH_LOCK_PATH = f"{CODEX_HOME}/.auth-json.persist.lock"
+_CODEX_AUTH_NEXT_PATH = f"{CODEX_HOME}/auth.json.next"
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]*$")
 
 
@@ -285,7 +287,7 @@ class AppleContainerSandboxSession:
         self._raise(staged, "stage Codex OAuth credential")
 
     async def _persist_and_remove_oauth(self) -> None:
-        next_path = f"{_CODEX_AUTH_PATH}.next.{self._sandbox_id}"
+        next_path = _CODEX_AUTH_NEXT_PATH
         persistence_error: BaseException | None = None
         try:
             credential = await self._exec_request(
@@ -298,7 +300,13 @@ class AppleContainerSandboxSession:
             persisted = await self._auth_exec(
                 "sh",
                 "-c",
-                "next_path=$1 && umask 077 "
+                "lock_path=$1 && next_path=$2 && umask 077 "
+                f"&& install -d -m 700 {CODEX_HOME} "
+                '&& exec 9>>"$lock_path" '
+                "&& flock -x 9 "
+                '&& rm -f -- "$next_path" '
+                f"&& find {CODEX_HOME} -mindepth 1 -maxdepth 1 "
+                f"-name 'auth.json.next.*' -exec rm -rf -- {{}} + "
                 "&& trap 'status=$?; trap - EXIT HUP INT TERM; "
                 'rm -f -- "$next_path"; exit "$status"\' EXIT '
                 "&& trap 'trap - EXIT HUP INT TERM; "
@@ -307,14 +315,15 @@ class AppleContainerSandboxSession:
                 'rm -f -- "$next_path"; exit 130\' INT '
                 "&& trap 'trap - EXIT HUP INT TERM; "
                 'rm -f -- "$next_path"; exit 143\' TERM '
-                f"&& install -d -m 700 {CODEX_HOME} "
                 '&& base64 -d > "$next_path" '
                 '&& chmod 600 "$next_path" '
                 f'&& mv -f -- "$next_path" {_CODEX_AUTH_PATH} '
                 f"&& find {CODEX_HOME} -mindepth 1 -maxdepth 1 "
-                f"! -name auth.json ! -name 'auth.json.next.*' -exec rm -rf -- {{}} + "
+                f"! -name auth.json ! -name '.auth-json.persist.lock' "
+                f"-exec rm -rf -- {{}} + "
                 "&& trap - EXIT HUP INT TERM",
                 "archetype-oauth-persist",
+                _CODEX_AUTH_LOCK_PATH,
                 next_path,
                 timeout=60,
                 stdin=credential.stdout,
@@ -372,9 +381,17 @@ class AppleContainerSandboxSession:
 
     async def _remove_oauth_persistence_stage(self, next_path: str) -> None:
         removed = await self._auth_exec(
-            "rm",
-            "-f",
-            "--",
+            "sh",
+            "-c",
+            "lock_path=$1 && next_path=$2 && umask 077 "
+            f"&& install -d -m 700 {CODEX_HOME} "
+            '&& exec 9>>"$lock_path" '
+            "&& flock -x 9 "
+            '&& rm -f -- "$next_path" '
+            f"&& find {CODEX_HOME} -mindepth 1 -maxdepth 1 "
+            f"-name 'auth.json.next.*' -exec rm -rf -- {{}} +",
+            "archetype-oauth-cleanup",
+            _CODEX_AUTH_LOCK_PATH,
             next_path,
             timeout=60,
         )
@@ -515,9 +532,14 @@ class AppleContainerSandboxBackend:
                 "--volume",
                 f"{self.config.auth_volume_name}:{CODEX_HOME}",
                 self.config.resolved_image_name,
-                "codex",
-                "login",
-                "--device-auth",
+                "sh",
+                "-c",
+                "lock_path=$1 && umask 077 "
+                '&& exec 9>>"$lock_path" '
+                "&& flock -x 9 "
+                "&& exec codex login --device-auth",
+                "archetype-oauth-login",
+                _CODEX_AUTH_LOCK_PATH,
             )
         )
         if returncode != 0:
@@ -534,10 +556,16 @@ class AppleContainerSandboxBackend:
                 self.config.resolved_image_name,
                 "sh",
                 "-c",
-                f"test -s {_CODEX_AUTH_PATH} "
+                "lock_path=$1 && umask 077 "
+                '&& exec 9>>"$lock_path" '
+                "&& flock -x 9 "
+                f"&& test -s {_CODEX_AUTH_PATH} "
                 f"&& chmod 600 {_CODEX_AUTH_PATH} "
                 f"&& find {CODEX_HOME} -mindepth 1 -maxdepth 1 "
-                f"! -name auth.json -exec rm -rf -- {{}} +",
+                f"! -name auth.json ! -name '.auth-json.persist.lock' "
+                f"-exec rm -rf -- {{}} +",
+                "archetype-oauth-narrow",
+                _CODEX_AUTH_LOCK_PATH,
             ),
             timeout_seconds=60,
         )
