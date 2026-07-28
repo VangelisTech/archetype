@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-from uuid import uuid4
 
 import pytest
 
@@ -43,14 +42,10 @@ async def _container(*arguments: str) -> tuple[int, str, str]:
 async def test_apple_container_checkpoint_restores_session_owned_rootfs(
     tmp_path: Path,
 ) -> None:
-    auth_volume = f"archetype-test-auth-{uuid4().hex[:12]}"
-    returncode, _stdout, stderr = await _container("volume", "create", auth_volume)
-    assert returncode == 0, stderr
     config = AppleContainerSandboxConfig(
         state_dir=str(tmp_path / "checkpoints"),
         cpus=1,
         memory="1g",
-        auth_volume_name=auth_volume,
     )
     backend = AppleContainerSandboxBackend(config)
     spec = SandboxSpec(
@@ -113,5 +108,3 @@ async def test_apple_container_checkpoint_restores_session_owned_rootfs(
                 "--force",
                 f"archetype-agent:restore-{checkpoint.checkpoint_id[:24]}",
             )
-        returncode, _stdout, stderr = await _container("volume", "delete", auth_volume)
-        assert returncode == 0, stderr

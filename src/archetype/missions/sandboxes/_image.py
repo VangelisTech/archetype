@@ -17,7 +17,7 @@ AGENT_HOME = "/home/agent"
 CODEX_HOME = f"{AGENT_HOME}/.codex"
 WORKSPACE_ROOT = "/workspace"
 BASE_IMAGE_REF = load_version_inventory().resolve("coding-agent-base-image").immutable_ref
-_APT_PACKAGES = "ca-certificates curl git make nodejs npm openssh-client tmux util-linux"
+_APT_PACKAGES = "ca-certificates curl git make nodejs npm openssh-client tmux"
 _TTYD_ARTIFACT_IDS = ("ttyd-x86-64", "ttyd-aarch64")
 
 
@@ -162,7 +162,6 @@ async def verify_coding_agent_environment(
             timeout_seconds=60,
         ),
         "codex": ProcessRequest(("codex", "--version"), timeout_seconds=60),
-        "flock": ProcessRequest(("flock", "--version"), timeout_seconds=60),
         "tmux": ProcessRequest(("tmux", "-V"), timeout_seconds=60),
         "ttyd": ProcessRequest(("ttyd", "--version"), timeout_seconds=60),
     }

@@ -43,7 +43,6 @@ class _ProbeSession:
             'printf %s "$HOME"': ProcessResult(request.argv, 0, stdout=f"{AGENT_HOME}\n"),
             "pwd": ProcessResult(request.argv, 0, stdout="/workspace\n"),
             "codex": ProcessResult(request.argv, 0, stdout="codex-cli 0.144.6\n"),
-            "flock": ProcessResult(request.argv, 0, stdout="flock from util-linux 2.38.1\n"),
             "tmux": ProcessResult(request.argv, 0, stdout="tmux 3.3a\n"),
             "ttyd": ProcessResult(request.argv, 0, stdout="ttyd version 1.7.7-40e79c7\n"),
             'printf %s "$ARCHETYPE_SANDBOX_ENVIRONMENT"': ProcessResult(
@@ -93,13 +92,6 @@ async def test_environment_attestation_reports_probe_and_identity_mismatches() -
             expected_user="agent",
             verify_environment=False,
         )
-
-    session = _ProbeSession(
-        spec,
-        {"flock": ProcessResult(("flock",), 127, stderr="flock missing")},
-    )
-    with pytest.raises(RuntimeError, match="probe flock failed"):
-        await verify_coding_agent_environment(session, spec, expected_user="agent")
 
     other = SandboxSpec("fake", "other-environment", "/workspace/repo")
     with pytest.raises(RuntimeError, match="different environment identity"):

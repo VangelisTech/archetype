@@ -69,7 +69,6 @@ from archetype.missions.sandboxes import (
     ModalSandboxBackend,
     ModalSandboxConfig,
     ModalSandboxSession,
-    SandboxBackend,
     SandboxEvent,
     SandboxEventType,
 )
@@ -188,7 +187,7 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument(
         "--login",
         action="store_true",
-        help="initialize the selected backend's Codex subscription credential and exit",
+        help="initialize Modal's Codex subscription credential and exit",
     )
     parser.add_argument(
         "--follow",
@@ -214,7 +213,7 @@ def _arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _backend(name: str) -> tuple[SandboxBackend, str]:
+def _backend(name: str) -> tuple[ModalSandboxBackend, str]:
     if name != "modal":
         raise ValueError("Agent Missions v0.5 admits only the Modal backend")
     auth_volume = os.environ.get("CODEX_AUTH_VOLUME", "archetype-codex-auth")
@@ -295,11 +294,8 @@ async def main() -> None:
         )
     backend, environment = _backend(arguments.backend)
     if arguments.login:
-        login = getattr(backend, "login_codex", None)
-        if login is None:
-            raise RuntimeError(f"{arguments.backend} does not support Codex device login")
-        await login()
-        print(f"Codex subscription credential initialized for {arguments.backend}")
+        await backend.login_codex()
+        print("Codex subscription credential initialized for Modal")
         return
     if arguments.monitor:
         await ModalSandboxSession.monitor(

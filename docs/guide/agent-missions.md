@@ -144,11 +144,11 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-Initialize the selected backend's Codex subscription volume once before the
-first live run with `await backend.login_codex()`. This device login is not an
-OpenAI API key and cannot implicitly reuse the credential of the Codex process
-running on the host. The complete Modal setup, including live monitoring and
-steerable browser viewports, is executable in
+Initialize Modal's Codex subscription Volume once before the first live run
+with `await backend.login_codex()`. This device login is not an OpenAI API key
+and cannot implicitly reuse the credential of the Codex process running on the
+host. The complete Modal setup, including live monitoring and steerable browser
+viewports, is executable in
 [`examples/11_coding_agent_mission.py`](https://github.com/VangelisTech/archetype/blob/main/examples/11_coding_agent_mission.py).
 
 For a live `sb-...` identity, the example's `--spectate` action mints a
@@ -554,24 +554,25 @@ into the immutable Activity request before re-enabling the public operation.
 
 ### Supported sandbox backends
 
-| Backend | Role | Checkpoint / restore | Credential broker |
+| Backend | Role | Checkpoint / restore | Credential capabilities |
 |---|---|---|---|
-| Apple Container | Backend-capability and parity adapter; not admitted by the v0.5 Mission workflow. | Stops, exports the session root filesystem to an atomic content-addressed host-local archive, restarts in `finally`, verifies integrity, and rebuilds a restore image. | Required named Apple Container volume plus a separate broker VM. |
-| Docker | Linux/CI backend-capability reference; not admitted by the v0.5 Mission workflow. | `docker commit`, followed by immutable image-ID inspection and same-provider restore. | Optional named Docker volume plus a separate broker container. |
+| Apple Container | Backend-capability and parity adapter; not admitted by the v0.5 Mission workflow. | Stops, exports the session root filesystem to an atomic content-addressed host-local archive, restarts in `finally`, verifies integrity, and rebuilds a restore image. | None. The parity adapter exposes no Codex OAuth, auth-volume, login, or process-secret capability. |
+| Docker | Linux/CI backend-capability reference; not admitted by the v0.5 Mission workflow. | `docker commit`, followed by immutable image-ID inspection and same-provider restore. | None. The parity adapter exposes no Codex OAuth, auth-volume, login, or process-secret capability. |
 | Modal | The sole v0.5 Mission Activity backend. | Captures `snapshot_filesystem` as durable evidence. Backend-level restore accepts exact `im-...` image IDs, but workflow restore is disabled until checkpoint identity is part of Activity admission. | Required named Modal Volume plus a separate broker sandbox. |
 
 #### Authentication paths by provider
 
-Codex is the only coding-agent provider in v0.5. The three sandbox backends
-above do not introduce three model credentials; each brokers the same Codex
-subscription device credential differently. Four authorities remain separate:
-the sandbox provider control plane, Codex model access, GitHub publication, and
-any live viewport grant.
+Codex is the only coding-agent provider in v0.5, and Modal is the sole backend
+that brokers its subscription device credential. Apple Container and Docker
+exercise lifecycle and checkpoint parity only; they expose no Codex
+authentication or provider-secret surface. Four Modal authorities remain
+separate: the sandbox provider control plane, Codex model access, GitHub
+publication, and any live viewport grant.
 
 | Backend | Sandbox control-plane authentication | Codex authentication | GitHub publication | Live viewport |
 |---|---|---|---|---|
-| Apple Container | The local `container` CLI and its running VM service inherit the host user's local authority. Archetype accepts no Apple cloud token; `container system status` must succeed after `container system start`. | `AppleContainerSandboxBackend.login_codex()` runs `codex login --device-auth` in the pinned image and persists only `auth.json` as credential material in `AppleContainerSandboxConfig.auth_volume_name` (default `archetype-codex-auth`). A separate broker VM mounts that volume. An exec that explicitly requests `codex_oauth` copies `auth.json` into the mission VM for the lifetime of that whole process, then copies any refresh back and removes the staged `.codex` directory. Device login and refresh publication are serialized through an empty, non-secret shared-volume lock file; the next lock holder reclaims staging files left by a killed writer. This capability adapter is not a credential-isolation boundary for an untrusted repository and is not admitted by the v0.5 Mission workflow. | Unsupported. The adapter exposes no generic `github` process secret and is not admitted by the v0.5 Mission workflow. | Not implemented. |
-| Docker | The local Docker context/daemon authenticates the host operation; `docker info` must succeed. Archetype neither runs `docker login` nor owns registry credentials for the default locally built image. | Configure a non-empty `DockerSandboxConfig.auth_volume_name`, then call `DockerSandboxBackend.login_codex()`. It runs `codex login --device-auth` and persists only `auth.json` as credential material in that named volume. An exec that explicitly requests `codex_oauth` copies the file into the mission container for the lifetime of that whole process, then copies any refresh back and removes the staged `.codex` directory. Device login and refresh publication are serialized through an empty, non-secret shared-volume lock file; the next lock holder reclaims staging files left by a killed writer. Without the volume, the adapter exposes no `codex_oauth` capability. This capability adapter is not a credential-isolation boundary for an untrusted repository and is not admitted by the v0.5 Mission workflow. | Unsupported. The adapter exposes no generic `github` process secret and is not admitted by the v0.5 Mission workflow. | Not implemented. |
+| Apple Container | The local `container` CLI and its running VM service inherit the host user's local authority. Archetype accepts no Apple cloud token; `container system status` must succeed after `container system start`. | Unsupported. The parity adapter has no `login_codex()`, auth-volume configuration, or `codex_oauth` execution capability. | Unsupported. The parity adapter exposes no GitHub or generic process-secret capability. | Not implemented. |
+| Docker | The local Docker context/daemon authenticates the host operation; `docker info` must succeed. Archetype neither runs `docker login` nor owns registry credentials for the default locally built image. | Unsupported. The parity adapter has no `login_codex()`, auth-volume configuration, or `codex_oauth` execution capability. | Unsupported. The parity adapter exposes no GitHub or generic process-secret capability. | Not implemented. |
 | Modal | The Modal SDK uses the selected authenticated profile or `MODAL_TOKEN_ID` plus `MODAL_TOKEN_SECRET`. The workspace, Environment, App, Volume, Dict, Secret, and Sandbox identities are explicit configuration. Ordinary create/restore and login verify the configured workspace and Environment against the ambient SDK context before mutation. Named provider work verifies the ambient workspace, then scopes every provider object lookup and mutation explicitly to the configured Environment. A typical workstation setup uses `modal token set`; in Actions, repository variable `CODING_AGENT_MODAL_PROFILE` is exported as the SDK selector `MODAL_PROFILE`, and `CODING_AGENT_MODAL_ENVIRONMENT` is exported as both the Archetype selector and SDK selector `MODAL_ENVIRONMENT`. | `ModalSandboxBackend.login_codex()` runs `codex login --device-auth` in a temporary login sandbox and persists only `auth.json` in `ModalSandboxConfig.auth_volume_name` (default `archetype-codex-auth`). The admitted app-server path copies that file into its mission sandbox only through app-server `thread/start`; an awaited barrier deletes and verifies absence of the exact file before `turn/start`, TUI attachment, or model-driven tool execution. Mission execution never writes its copy back to the Volume, and generic mission `exec` rejects `codex_oauth`. | `ModalSandboxConfig.github_secret_name` (default `archetype-github`) resolves a Modal Secret containing `GITHUB_TOKEN`. The controller streams the exact validated Git object bundle through a hard byte cap into the separate non-agent broker, verifies its size, digest, and Git object identity there, and attaches the Secret only to its final push process. Generic mission `exec` rejects `github`. | `issue_spectate_grant()` and `issue_takeover_grant()` mint distinct, port-scoped Modal Sandbox Connect Tokens after Modal control-plane authentication. The bearer URLs are transient trusted-maintainer capabilities. |
 
 Release parity for Apple Container runs only on the labeled self-hosted
@@ -634,14 +635,13 @@ An `OPENAI_API_KEY` is not an Agent Missions Codex authentication path. It is
 used by other OpenAI-backed examples, but Mission author/critic execution
 requires the explicit subscription device-login broker described above and
 does not reuse the host's current Codex session. Apple Container and Docker
-retain the symbolic `codex_oauth` capability for their non-admitted adapters;
+are credential-free parity adapters: they have no `codex_oauth` capability,
+auth-volume configuration, device-login method, or provider-secret injection.
 Modal's admitted path exposes neither OAuth nor GitHub as a generic process
 secret. Provider-specific values never enter a mission request, command
-argument, Activity result, ECS row, or checkpoint. This is not a claim that the Apple Container and Docker
-exec adapters isolate OAuth from their requested process: those capability-only
-adapters stage the file inside that process's container and therefore must not
-run an untrusted repository. The admitted Modal path removes the exact staged
-file before the model turn, TUI, tools, and trace-producing agent work begin.
+argument, Activity result, ECS row, or checkpoint. The admitted Modal path
+removes the exact staged file before the model turn, TUI, tools, and
+trace-producing agent work begin.
 
 Repository hydration and critic fetch are credential-free for the v0.5 public
 repository path. The GitHub capability is leased only for author publication,
@@ -659,11 +659,10 @@ running user, home, parent workdir, Codex version, and recipe digest match the
 declared environment. Modal's generated image performs the same package check
 and runtime attestation; a configured Modal image is selected only by its
 provider-issued immutable `im-...` ID. The local adapters do not share host
-directories with mission containers. Apple Container and Docker persist a
-possible refresh after their explicitly credentialed process and then remove
-the staged directory before validators and checkpoints. Modal instead removes
-the exact mission copy immediately after app-server thread admission and does
-not persist a mission refresh. GitHub publication is a typed provider
+directories with mission containers and never receive Codex authentication or
+publication secrets; they provide lifecycle and checkpoint parity only. Modal
+removes the exact mission copy immediately after app-server thread admission
+and does not persist a mission refresh. GitHub publication is a typed provider
 capability, not a generic process secret; its value reaches only the broker
 push environment and is never placed in provider command arguments.
 
