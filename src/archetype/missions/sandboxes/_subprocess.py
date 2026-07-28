@@ -11,6 +11,53 @@ from collections.abc import Sequence
 from archetype.missions.sandboxes.contracts import ProcessResult
 
 
+async def _join_uninterrupted[T](
+    completion: asyncio.Future[T],
+    *,
+    cancellation: asyncio.CancelledError | None,
+) -> tuple[T, asyncio.CancelledError | None]:
+    while not completion.done():
+        try:
+            await asyncio.shield(completion)
+        except asyncio.CancelledError as interrupted:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                cancellation = cancellation or interrupted
+        except BaseException:
+            break
+
+    try:
+        result = completion.result()
+    except BaseException as completion_error:
+        if cancellation is not None:
+            raise cancellation from completion_error
+        raise
+    return result, cancellation
+
+
+async def _kill_and_join[T](
+    process: asyncio.subprocess.Process,
+    completion: asyncio.Future[T],
+    *,
+    cancellation: asyncio.CancelledError | None,
+) -> T:
+    """Kill one owned child and join its completion despite repeated cancellation."""
+
+    if process.returncode is None:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+
+    result, cancellation = await _join_uninterrupted(
+        completion,
+        cancellation=cancellation,
+    )
+    if cancellation is not None:
+        raise cancellation
+    return result
+
+
 async def run_host(
     argv: Sequence[str],
     *,
@@ -20,20 +67,42 @@ async def run_host(
     """Run one host command with bounded output and deterministic stdin closure."""
 
     command = tuple(argv)
-    process = await asyncio.create_subprocess_exec(
-        *command,
-        stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+    creation = asyncio.create_task(
+        asyncio.create_subprocess_exec(
+            *command,
+            stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    )
+    try:
+        process = await asyncio.shield(creation)
+    except asyncio.CancelledError as cancellation:
+        process, cancellation = await _join_uninterrupted(
+            creation,
+            cancellation=cancellation,
+        )
+        completion = asyncio.create_task(process.communicate())
+        await _kill_and_join(
+            process,
+            completion,
+            cancellation=cancellation,
+        )
+        raise
+    completion = asyncio.create_task(
+        process.communicate(stdin.encode() if stdin is not None else None)
     )
     try:
         stdout, stderr = await asyncio.wait_for(
-            process.communicate(stdin.encode() if stdin is not None else None),
+            asyncio.shield(completion),
             timeout=timeout_seconds,
         )
     except TimeoutError:
-        process.kill()
-        stdout, stderr = await process.communicate()
+        stdout, stderr = await _kill_and_join(
+            process,
+            completion,
+            cancellation=None,
+        )
         stderr += f"\ncommand timed out after {timeout_seconds}s".encode()
         return ProcessResult(
             command,
@@ -41,6 +110,13 @@ async def run_host(
             stdout.decode(errors="replace"),
             stderr.decode(errors="replace"),
         )
+    except asyncio.CancelledError as cancellation:
+        await _kill_and_join(
+            process,
+            completion,
+            cancellation=cancellation,
+        )
+        raise
     return ProcessResult(
         command,
         int(process.returncode or 0),
@@ -52,8 +128,31 @@ async def run_host(
 async def run_host_passthrough(argv: Sequence[str]) -> int:
     """Run an interactive host command without capturing its terminal."""
 
-    process = await asyncio.create_subprocess_exec(*tuple(argv))
-    return int(await process.wait())
+    creation = asyncio.create_task(asyncio.create_subprocess_exec(*tuple(argv)))
+    try:
+        process = await asyncio.shield(creation)
+    except asyncio.CancelledError as cancellation:
+        process, cancellation = await _join_uninterrupted(
+            creation,
+            cancellation=cancellation,
+        )
+        completion = asyncio.create_task(process.wait())
+        await _kill_and_join(
+            process,
+            completion,
+            cancellation=cancellation,
+        )
+        raise
+    completion = asyncio.create_task(process.wait())
+    try:
+        return int(await asyncio.shield(completion))
+    except asyncio.CancelledError as cancellation:
+        await _kill_and_join(
+            process,
+            completion,
+            cancellation=cancellation,
+        )
+        raise
 
 
 __all__ = ["run_host", "run_host_passthrough"]
