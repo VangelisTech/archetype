@@ -596,6 +596,30 @@ def test_every_codex_reviewer_uses_the_pinned_cli():
     assert workflow.count('npm install -g "@openai/codex@${CODEX_VERSION}"') == 4
 
 
+def test_codex_lens_retry_resumes_the_job_scoped_read_only_session():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    first = workflow.split("- name: Run read-only reviewer (Codex)", 1)[1]
+    first = first.split("- name: Validate first reviewer result", 1)[0]
+    retry = workflow.split(
+        "- name: Retry reviewer with validator feedback (Codex)",
+        1,
+    )[1]
+    retry = retry.split("- name: Validate bounded retry", 1)[0]
+
+    for step in (first, retry):
+        assert 'export CODEX_HOME="${RUNNER_TEMP}/codex-home"' in step
+        assert "--ignore-user-config \\" in step
+        assert '--output-schema "${RUNNER_TEMP}/lens-schema.json" \\' in step
+        assert "--ephemeral" not in step
+
+    assert "codex exec \\" in first
+    assert "-s read-only \\" in first
+    assert "codex exec resume \\" in retry
+    assert "--last \\" in retry
+    assert "-c 'sandbox_mode=\"read-only\"' \\" in retry
+    assert '- < "${RUNNER_TEMP}/lens-retry-prompt.txt" \\' in retry
+
+
 def test_human_design_brief_is_grounded_without_secret_read_capabilities():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     materialize = workflow.split(

@@ -272,7 +272,9 @@ jobs:
         timeout-minutes: 25
         env:
           # Subscription OAuth, same trust posture as CLAUDE_CODE_OAUTH_TOKEN;
-          # materialized into an ephemeral CODEX_HOME, never the workspace.
+          # materialized into a job-scoped CODEX_HOME, never the workspace.
+          # The session persists only in runner temp so the bounded retry can
+          # continue the repository inspection instead of starting over.
           # Read-only enforcement is the codex sandbox itself (-s read-only);
           # --output-schema yields schema-conforming JSON natively and still
           # flows through the same extract/validate pipeline.
@@ -290,7 +292,6 @@ jobs:
           codex exec \
             -m "${CODEX_MODEL}" \
             -s read-only \
-            --ephemeral \
             --ignore-user-config \
             --color never \
             -C "${GITHUB_WORKSPACE}" \
@@ -417,23 +418,22 @@ jobs:
           SCHEMA: ${{ steps.contract.outputs.schema }}
         run: |
           # Auth and schema rewritten: the first attempt may have failed
-          # before writing them.
+          # before writing them. On the pinned CLI, --last resumes the
+          # job-scoped session when present and starts fresh when absent.
           export CODEX_HOME="${RUNNER_TEMP}/codex-home"
           mkdir -p "${CODEX_HOME}"
           printf '%s' "${CODEX_AUTH_JSON}" > "${CODEX_HOME}/auth.json"
           chmod 600 "${CODEX_HOME}/auth.json"
           npm install -g "@openai/codex@${CODEX_VERSION}"
           printf '%s' "${SCHEMA}" > "${RUNNER_TEMP}/lens-schema.json"
-          codex exec \
+          codex exec resume \
+            --last \
             -m "${CODEX_MODEL}" \
-            -s read-only \
-            --ephemeral \
+            -c 'sandbox_mode="read-only"' \
             --ignore-user-config \
-            --color never \
-            -C "${GITHUB_WORKSPACE}" \
             --output-schema "${RUNNER_TEMP}/lens-schema.json" \
             -o "${RUNNER_TEMP}/codex-retry-last.txt" \
-            "$(cat "${RUNNER_TEMP}/lens-retry-prompt.txt")" \
+            - < "${RUNNER_TEMP}/lens-retry-prompt.txt" \
             > "${RUNNER_TEMP}/codex-retry-raw.txt" 2>&1
           python3 scripts/footgun_review_gate.py extract \
             --raw "${RUNNER_TEMP}/codex-retry-last.txt" \
