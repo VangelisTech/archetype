@@ -14,9 +14,10 @@ assigned categories:
 
 $categories
 
-The scope manifest is exactly these changed files, and your `reviewed_files`
-array must equal exactly this list — never the rulebook, the diff file, or
-anything else you merely opened:
+The scope manifest is exactly these changed files. Collectively, your
+`review_context[*].files` arrays must cover every path in this list and contain
+no path outside it — never the rulebook, the diff file, or anything else you
+merely opened:
 
 $scoped_files
 
