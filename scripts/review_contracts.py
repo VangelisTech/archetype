@@ -1318,8 +1318,10 @@ def _inspection_capabilities(reviewer_id: str) -> str:
     if backend == "codex":
         return (
             "Use the read-only shell only for non-mutating repository inspection "
-            "commands such as `git diff`, `git show`, `rg`, `sed`, `find`, `ls`, "
-            "and `cat`."
+            "commands such as `git show`, `rg`, `sed`, `find`, `ls`, and `cat`. "
+            "Read `.footgun-review.diff` directly with `sed` or `cat`; do not run "
+            "`git diff` against it because it is an untracked inert data file, not "
+            "the checkout."
         )
     return "Use only read, grep, glob, and list capabilities."
 

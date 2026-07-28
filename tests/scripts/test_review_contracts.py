@@ -312,7 +312,9 @@ def test_lens_prompts_match_each_reviewer_tool_surface():
     for prompt in (codex_prompt, codex_retry):
         normalized = " ".join(prompt.split())
         assert "read-only shell only for non-mutating repository inspection" in normalized
-        assert "`git diff`, `git show`, `rg`, `sed`, `find`, `ls`, and `cat`" in normalized
+        assert "`git show`, `rg`, `sed`, `find`, `ls`, and `cat`" in normalized
+        assert "Read `.footgun-review.diff` directly with `sed` or `cat`" in normalized
+        assert "do not run `git diff` against it" in normalized
         assert "Use only read, grep, glob, and list capabilities." not in normalized
     for prompt in (
         claude_prompt,
@@ -333,6 +335,8 @@ def test_lens_prompts_match_each_reviewer_tool_surface():
                 "push commits",
             )
         )
+        assert "`reviewed_files`" not in normalized
+        assert "`review_context[*].files` arrays must cover every path" in normalized
 
 
 def test_candidate_paths_cannot_escape_the_prompt_data_manifest():
