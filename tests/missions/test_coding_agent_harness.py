@@ -163,6 +163,27 @@ class _SelectiveCleanupFailureSession(_BlockingValidationSession):
         return result
 
 
+class _OperationAndCleanupFailureSession(_SelectiveCleanupFailureSession):
+    def __init__(self, phase: str, *, cleanup_raises: bool = False) -> None:
+        super().__init__(phase)
+        self.cleanup_raises = cleanup_raises
+        self.operation_error = RuntimeError(f"simulated {phase} operation failure")
+
+    async def exec(self, request: ProcessRequest) -> ProcessResult:
+        if self.phase == "validation" and request.argv == ("fail-validator-transport",):
+            raise self.operation_error
+        result = await super().exec(request)
+        if (
+            self.cleanup_raises
+            and request.argv[:3] == ("rm", "-rf", "--")
+            and self.phase in Path(request.argv[3]).name
+        ):
+            raise RuntimeError("simulated cleanup exception")
+        if self.phase == "publication" and "push" in request.argv:
+            raise self.operation_error
+        return result
+
+
 class _EditingDriver:
     def __init__(
         self,
@@ -524,6 +545,62 @@ async def test_successful_local_push_cleanup_failure_preserves_publication(
     assert cleanup.message.startswith("publication repository cleanup failed with exit code 17")
     assert cleanup.message.endswith("simulated cleanup failure")
     assert len(cleanup.message) <= 1024
+
+
+@pytest.mark.asyncio
+async def test_cleanup_failure_cannot_replace_validator_operation_failure(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    session = _OperationAndCleanupFailureSession("validation", cleanup_raises=True)
+    result = await CodingAgentHarness(
+        _EditingDriver(workspace, commit=False),
+        CodingAgentHarnessConfig(workspace=str(workspace)),
+    ).execute(
+        session,
+        _request(remote, validator_command=("fail-validator-transport",)),
+    )
+
+    assert result.status is AgentExecutionStatus.ERRORED
+    assert result.error == "RuntimeError: simulated validation operation failure"
+    assert isinstance(session.operation_error.__cause__, RuntimeError)
+    assert str(session.operation_error.__cause__) == "simulated cleanup exception"
+
+
+@pytest.mark.asyncio
+async def test_cleanup_failure_cannot_replace_indeterminate_local_push(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    session = _OperationAndCleanupFailureSession("publication")
+    result = await CodingAgentHarness(
+        _EditingDriver(workspace, commit=False),
+        CodingAgentHarnessConfig(workspace=str(workspace)),
+    ).execute(
+        session,
+        _request(remote, validator_command=("sh", "-lc", "test -f feature.txt")),
+    )
+
+    assert result.status is AgentExecutionStatus.ERRORED
+    assert result.error == "RuntimeError: simulated publication operation failure"
+    assert result.validation[0].passed is True
+    assert result.commits[-1].pushed is False
+    assert (
+        _git(
+            "--git-dir",
+            str(remote),
+            "rev-parse",
+            "refs/heads/agent/harness-contract",
+        )
+        == result.final_revision
+    )
+    assert isinstance(session.operation_error.__cause__, RuntimeError)
+    assert "publication repository cleanup failed with exit code 17" in str(
+        session.operation_error.__cause__
+    )
+    assert "simulated cleanup failure" in str(session.operation_error.__cause__)
 
 
 @pytest.mark.asyncio

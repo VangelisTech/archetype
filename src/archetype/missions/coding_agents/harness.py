@@ -687,7 +687,7 @@ class CodingAgentHarness:
             if caller_cancellation is not None:
                 raise caller_cancellation from cleanup_error
             if operation_error is not None:
-                raise cleanup_error from operation_error
+                raise operation_error from cleanup_error
             return self._cleanup_friction(prefix, cleanup_error)
         if cleanup.returncode != 0:
             cleanup_error = RuntimeError(
@@ -700,7 +700,7 @@ class CodingAgentHarness:
             if caller_cancellation is not None:
                 raise caller_cancellation from cleanup_error
             if operation_error is not None:
-                raise cleanup_error from operation_error
+                raise operation_error from cleanup_error
             return FrictionObservation(kind="cleanup", message=str(cleanup_error))
         if caller_cancellation is not None and caller_cancellation is not operation_error:
             if operation_error is not None:
