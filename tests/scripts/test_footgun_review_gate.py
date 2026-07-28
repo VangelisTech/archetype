@@ -639,6 +639,14 @@ def test_shell_enabled_codex_reviews_use_the_read_only_landlock_fallback():
     assert workflow.count("--enable use_legacy_landlock \\") == 3
 
 
+def test_incomplete_review_comment_does_not_require_a_checkout():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    report = workflow.split("- name: Report incomplete review", 1)[1]
+
+    assert "REPOSITORY: ${{ github.repository }}" in report
+    assert 'gh pr comment "${PR_NUMBER}" --repo "${REPOSITORY}" \\' in report
+
+
 def test_human_design_brief_is_grounded_without_secret_read_capabilities():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     materialize = workflow.split(

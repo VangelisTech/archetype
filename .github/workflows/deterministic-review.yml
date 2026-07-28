@@ -1160,6 +1160,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           {
@@ -1169,4 +1170,5 @@ jobs:
             echo
             echo "[Inspect the failed workflow run](${RUN_URL})"
           } > "${RUNNER_TEMP}/review-failed.md"
-          gh pr comment "${PR_NUMBER}" --body-file "${RUNNER_TEMP}/review-failed.md" || true
+          gh pr comment "${PR_NUMBER}" --repo "${REPOSITORY}" \
+            --body-file "${RUNNER_TEMP}/review-failed.md" || true
