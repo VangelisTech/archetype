@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import PurePosixPath
 from urllib.parse import urlsplit
 
@@ -285,13 +285,7 @@ class CodingAgentHarness:
                 publication_cleanup = await self._push(session, request, final_revision)
                 if publication_cleanup is not None:
                     friction.append(publication_cleanup)
-                commits = await self._commits(
-                    session,
-                    starting_revision,
-                    request.branch,
-                    final_revision,
-                    pushed=True,
-                )
+                commits = tuple(replace(item, pushed=True) for item in candidate_commits)
             else:
                 for result in validation:
                     if not result.passed:

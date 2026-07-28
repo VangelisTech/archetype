@@ -107,6 +107,19 @@ class _LocalSession:
         self._closed = True
 
 
+class _SingleCommitReadSession(_LocalSession):
+    def __init__(self) -> None:
+        super().__init__()
+        self.commit_reads = 0
+
+    async def exec(self, request: ProcessRequest) -> ProcessResult:
+        if request.argv[0] == "git" and "log" in request.argv:
+            self.commit_reads += 1
+            if self.commit_reads > 1:
+                raise AssertionError("commit evidence was read again after publication")
+        return await super().exec(request)
+
+
 class _BlockingValidationSession(_LocalSession):
     def __init__(self) -> None:
         super().__init__()
@@ -430,6 +443,37 @@ async def test_harness_preserves_agent_commits_and_publishes_the_validated_tree(
     assert [commit.message for commit in result.commits] == [
         "agent-authored change" if agent_commits else "implementation: Create feature.txt."
     ]
+    assert (
+        _git(
+            "--git-dir",
+            str(remote),
+            "rev-parse",
+            "refs/heads/agent/harness-contract",
+        )
+        == result.final_revision
+    )
+
+
+@pytest.mark.asyncio
+async def test_confirmed_push_marks_captured_commits_without_post_push_git_io(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    session = _SingleCommitReadSession()
+    result = await CodingAgentHarness(
+        _EditingDriver(workspace, commit=False),
+        CodingAgentHarnessConfig(workspace=str(workspace)),
+    ).execute(
+        session,
+        _request(remote, validator_command=("sh", "-lc", "test -f feature.txt")),
+    )
+
+    assert result.status is AgentExecutionStatus.EXITED
+    assert session.commit_reads == 1
+    assert result.commits[-1].sha == result.final_revision
+    assert result.commits[-1].pushed is True
+    assert result.commits[-1].final_revision is True
     assert (
         _git(
             "--git-dir",
