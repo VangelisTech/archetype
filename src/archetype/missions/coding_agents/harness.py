@@ -58,6 +58,7 @@ _GITHUB_REPOSITORY_RE = re.compile(
     r"(?P<repository>[A-Za-z0-9][A-Za-z0-9_.-]*?)(?:\.git)?"
 )
 _GIT_REVISION_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+_CLEANUP_FRICTION_MAX_CHARS = 1024
 _PUBLICATION_PREFIX = "archetype-mission-publication."
 _PUBLICATION_REF = "refs/archetype/validated"
 _VALIDATION_PREFIX = "archetype-mission-validation."
@@ -256,6 +257,7 @@ class CodingAgentHarness:
                 request,
                 task_base_revision=starting_revision,
                 candidate_revision=final_revision,
+                cleanup_friction=friction,
             )
             validators_passed = all(
                 result.returncode == validator.spec.expected_returncode
@@ -280,7 +282,9 @@ class CodingAgentHarness:
                     raise RuntimeError(
                         "validators passed but the task produced no repository change"
                     )
-                await self._push(session, request, final_revision)
+                publication_cleanup = await self._push(session, request, final_revision)
+                if publication_cleanup is not None:
+                    friction.append(publication_cleanup)
                 commits = await self._commits(
                     session,
                     starting_revision,
@@ -412,6 +416,7 @@ class CodingAgentHarness:
         *,
         task_base_revision: str,
         candidate_revision: str,
+        cleanup_friction: list[FrictionObservation],
     ) -> tuple[tuple[DispatchedValidator, ProcessResult], ...]:
         if not _GIT_REVISION_RE.fullmatch(candidate_revision):
             raise RuntimeError("candidate revision is not a full Git object ID")
@@ -422,6 +427,7 @@ class CodingAgentHarness:
                 validator,
                 task_base_revision=task_base_revision,
                 candidate_revision=candidate_revision,
+                cleanup_friction=cleanup_friction,
             )
             results.append((validator, result))
         return tuple(results)
@@ -433,6 +439,7 @@ class CodingAgentHarness:
         *,
         task_base_revision: str,
         candidate_revision: str,
+        cleanup_friction: list[FrictionObservation],
     ) -> ProcessResult:
         created = await self._checked(
             session,
@@ -508,12 +515,14 @@ class CodingAgentHarness:
             operation_error = exc
             raise
         finally:
-            await self._cleanup_temp_directory(
+            observed_cleanup_friction = await self._cleanup_temp_directory(
                 session,
                 validation_directory,
                 prefix=_VALIDATION_PREFIX,
                 operation_error=operation_error,
             )
+            if observed_cleanup_friction is not None:
+                cleanup_friction.append(observed_cleanup_friction)
 
     async def _verify_checkout_revision(
         self,
@@ -533,7 +542,7 @@ class CodingAgentHarness:
         session: SandboxSession,
         request: TaskDispatchRequest,
         final_revision: str,
-    ) -> None:
+    ) -> FrictionObservation | None:
         if not _GIT_REVISION_RE.fullmatch(final_revision):
             raise RuntimeError("validated revision is not a full Git object ID")
         target, authenticated = self._publication_target(request.repository)
@@ -562,7 +571,7 @@ class CodingAgentHarness:
                 )
             )
             self._raise(published, "git push")
-            return
+            return None
 
         created = await self._checked(
             session,
@@ -633,12 +642,13 @@ class CodingAgentHarness:
             operation_error = exc
             raise
         finally:
-            await self._cleanup_temp_directory(
+            cleanup_friction = await self._cleanup_temp_directory(
                 session,
                 publication_directory,
                 prefix=_PUBLICATION_PREFIX,
                 operation_error=operation_error,
             )
+        return cleanup_friction
 
     async def _cleanup_temp_directory(
         self,
@@ -647,7 +657,7 @@ class CodingAgentHarness:
         *,
         prefix: str,
         operation_error: BaseException | None,
-    ) -> None:
+    ) -> FrictionObservation | None:
         if self._owned_temp_directory(directory, prefix) is None:
             raise RuntimeError("refusing to remove an unowned temporary directory")
         cleanup_task = asyncio.create_task(
@@ -678,21 +688,51 @@ class CodingAgentHarness:
                 raise caller_cancellation from cleanup_error
             if operation_error is not None:
                 raise cleanup_error from operation_error
-            raise
+            return self._cleanup_friction(prefix, cleanup_error)
         if cleanup.returncode != 0:
             cleanup_error = RuntimeError(
-                "remove clean temporary directory failed with exit code "
-                f"{cleanup.returncode}: {cleanup.stderr or cleanup.stdout}"
+                self._cleanup_failure_message(
+                    prefix,
+                    f"exit code {cleanup.returncode}",
+                    cleanup.stderr or cleanup.stdout,
+                )
             )
             if caller_cancellation is not None:
                 raise caller_cancellation from cleanup_error
             if operation_error is not None:
                 raise cleanup_error from operation_error
-            raise cleanup_error
+            return FrictionObservation(kind="cleanup", message=str(cleanup_error))
         if caller_cancellation is not None and caller_cancellation is not operation_error:
             if operation_error is not None:
                 raise caller_cancellation from operation_error
             raise caller_cancellation
+        return None
+
+    @classmethod
+    def _cleanup_friction(
+        cls,
+        prefix: str,
+        cleanup_error: BaseException,
+    ) -> FrictionObservation:
+        message = cls._cleanup_failure_message(
+            prefix,
+            f"raised {type(cleanup_error).__name__}",
+            str(cleanup_error),
+        )
+        return FrictionObservation(kind="cleanup", message=message)
+
+    @staticmethod
+    def _cleanup_failure_message(prefix: str, outcome: str, detail: str) -> str:
+        phase = {
+            _VALIDATION_PREFIX: "validation checkout",
+            _PUBLICATION_PREFIX: "publication repository",
+        }.get(prefix, "owned temporary directory")
+        message = f"{phase} cleanup failed with {outcome}"
+        stripped = detail.strip()
+        if stripped:
+            available = _CLEANUP_FRICTION_MAX_CHARS - len(message) - 2
+            message = f"{message}: {stripped[-max(available, 0) :]}"
+        return message[:_CLEANUP_FRICTION_MAX_CHARS]
 
     async def _commits(
         self,

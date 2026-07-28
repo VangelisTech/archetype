@@ -146,6 +146,23 @@ class _BlockingCleanupFailureSession(_BlockingValidationSession):
         )
 
 
+class _SelectiveCleanupFailureSession(_BlockingValidationSession):
+    def __init__(self, phase: str) -> None:
+        super().__init__()
+        self.phase = phase
+
+    async def exec(self, request: ProcessRequest) -> ProcessResult:
+        result = await super().exec(request)
+        if request.argv[:3] == ("rm", "-rf", "--") and self.phase in Path(request.argv[3]).name:
+            return ProcessResult(
+                request.argv,
+                17,
+                stdout=result.stdout,
+                stderr=("x" * 2048) + " simulated cleanup failure",
+            )
+        return result
+
+
 class _EditingDriver:
     def __init__(
         self,
@@ -444,6 +461,69 @@ async def test_validator_mutation_cannot_pollute_the_bound_published_revision(
     ).splitlines()
     assert "feature.txt" in published_files
     assert "validator-only.txt" not in published_files
+
+
+@pytest.mark.asyncio
+async def test_green_validator_cleanup_failure_is_bounded_friction(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    result = await CodingAgentHarness(
+        _EditingDriver(workspace, commit=False),
+        CodingAgentHarnessConfig(workspace=str(workspace)),
+    ).execute(
+        _SelectiveCleanupFailureSession("validation"),
+        _request(remote, validator_command=("sh", "-lc", "test -f feature.txt")),
+    )
+
+    assert result.status is AgentExecutionStatus.EXITED
+    assert result.error == ""
+    assert len(result.validation) == 1
+    assert result.validation[0].passed is True
+    assert result.commits[-1].pushed is True
+    assert len(result.friction) == 1
+    cleanup = result.friction[0]
+    assert cleanup.kind == "cleanup"
+    assert cleanup.message.startswith("validation checkout cleanup failed with exit code 17")
+    assert cleanup.message.endswith("simulated cleanup failure")
+    assert len(cleanup.message) <= 1024
+
+
+@pytest.mark.asyncio
+async def test_successful_local_push_cleanup_failure_preserves_publication(
+    tmp_path: Path,
+) -> None:
+    remote = _remote(tmp_path)
+    workspace = tmp_path / "sandbox" / "repo"
+    result = await CodingAgentHarness(
+        _EditingDriver(workspace, commit=False),
+        CodingAgentHarnessConfig(workspace=str(workspace)),
+    ).execute(
+        _SelectiveCleanupFailureSession("publication"),
+        _request(remote, validator_command=("sh", "-lc", "test -f feature.txt")),
+    )
+
+    assert result.status is AgentExecutionStatus.EXITED
+    assert result.error == ""
+    assert result.validation[0].passed is True
+    assert result.commits[-1].pushed is True
+    assert result.commits[-1].final_revision is True
+    assert (
+        _git(
+            "--git-dir",
+            str(remote),
+            "rev-parse",
+            "refs/heads/agent/harness-contract",
+        )
+        == result.final_revision
+    )
+    assert len(result.friction) == 1
+    cleanup = result.friction[0]
+    assert cleanup.kind == "cleanup"
+    assert cleanup.message.startswith("publication repository cleanup failed with exit code 17")
+    assert cleanup.message.endswith("simulated cleanup failure")
+    assert len(cleanup.message) <= 1024
 
 
 @pytest.mark.asyncio
