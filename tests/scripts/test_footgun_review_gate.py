@@ -620,6 +620,25 @@ def test_codex_lens_retry_resumes_the_job_scoped_read_only_session():
     assert '- < "${RUNNER_TEMP}/lens-retry-prompt.txt" \\' in retry
 
 
+def test_shell_enabled_codex_reviews_use_the_read_only_landlock_fallback():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    first = workflow.split("- name: Run read-only reviewer (Codex)", 1)[1]
+    first = first.split("- name: Validate first reviewer result", 1)[0]
+    retry = workflow.split(
+        "- name: Retry reviewer with validator feedback (Codex)",
+        1,
+    )[1]
+    retry = retry.split("- name: Validate bounded retry", 1)[0]
+    adjudication = workflow.split("- name: Falsify disputed claim (Codex)", 1)[1]
+    adjudication = adjudication.split("- name: Validate adjudication receipt", 1)[0]
+
+    for step in (first, retry, adjudication):
+        assert "--enable use_legacy_landlock \\" in step
+        assert "read-only" in step
+
+    assert workflow.count("--enable use_legacy_landlock \\") == 3
+
+
 def test_human_design_brief_is_grounded_without_secret_read_capabilities():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     materialize = workflow.split(

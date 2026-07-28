@@ -289,9 +289,13 @@ jobs:
           npm install -g "@openai/codex@${CODEX_VERSION}"
           printf '%s' "${SCHEMA}" > "${RUNNER_TEMP}/lens-schema.json"
           mkdir -p "${REVIEW_DIR}"
+          # GitHub's Ubuntu runner can reject bwrap loopback namespace setup.
+          # The pinned CLI's legacy Landlock backend retains the read-only
+          # sandbox and mount protections without relaxing review isolation.
           codex exec \
             -m "${CODEX_MODEL}" \
             -s read-only \
+            --enable use_legacy_landlock \
             --ignore-user-config \
             --color never \
             -C "${GITHUB_WORKSPACE}" \
@@ -430,6 +434,7 @@ jobs:
             --last \
             -m "${CODEX_MODEL}" \
             -c 'sandbox_mode="read-only"' \
+            --enable use_legacy_landlock \
             --ignore-user-config \
             --output-schema "${RUNNER_TEMP}/lens-schema.json" \
             -o "${RUNNER_TEMP}/codex-retry-last.txt" \
@@ -702,6 +707,7 @@ jobs:
           codex exec \
             -m gpt-5.6-luna \
             -s read-only \
+            --enable use_legacy_landlock \
             --ephemeral \
             --ignore-user-config \
             --color never \
