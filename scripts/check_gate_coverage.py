@@ -240,6 +240,12 @@ INTERNAL_ONLY_EXCEPTIONS = {
     "archetype.missions.critics.harness._UnverifiableReview": (
         "caught and normalized inside CriticHarness.review before the mission handler returns"
     ),
+    "archetype.missions.sandboxes._subprocess._CleanupTimeout": (
+        "caught inside run_host and normalized into a bounded timeout ProcessResult"
+    ),
+    "archetype.missions.sandboxes._subprocess._JoinTimeout": (
+        "caught inside the private subprocess cleanup path before run_host returns"
+    ),
 }
 
 
