@@ -366,7 +366,7 @@ async def test_create_restore_and_close_launch_only_mission_vms(
 
 
 @pytest.mark.asyncio
-async def test_exec_cancellation_interrupts_the_session(
+async def test_exec_failures_are_terminal_for_the_session(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -380,6 +380,35 @@ async def test_exec_cancellation_interrupts_the_session(
     with pytest.raises(asyncio.CancelledError):
         await session.exec(ProcessRequest(("true",)))
     assert await session.status() is SandboxStatus.INTERRUPTED
+
+    executed = False
+
+    async def should_not_execute(_request: ProcessRequest) -> ProcessResult:
+        nonlocal executed
+        executed = True
+        return ProcessResult(("true",), 0)
+
+    monkeypatch.setattr(session, "_exec_request", should_not_execute)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        await session.exec(ProcessRequest(("true",)))
+    with pytest.raises(RuntimeError, match="interrupted"):
+        await session.checkpoint()
+
+    async def errored(_request: ProcessRequest) -> ProcessResult:
+        raise RuntimeError("provider exec failed")
+
+    errored_session = _session(tmp_path)
+    monkeypatch.setattr(errored_session, "_exec_request", errored)
+    with pytest.raises(RuntimeError, match="provider exec failed"):
+        await errored_session.exec(ProcessRequest(("true",)))
+    assert await errored_session.status() is SandboxStatus.ERRORED
+
+    monkeypatch.setattr(errored_session, "_exec_request", should_not_execute)
+    with pytest.raises(RuntimeError, match="errored"):
+        await errored_session.exec(ProcessRequest(("true",)))
+    with pytest.raises(RuntimeError, match="errored"):
+        await errored_session.checkpoint()
+    assert executed is False
 
 
 @pytest.mark.asyncio
@@ -417,6 +446,20 @@ async def test_close_waits_for_active_exec(
     await close_task
     assert removed == ["mission-vm"]
     assert await session.status() is SandboxStatus.CLOSED
+
+    executed_after_close = False
+
+    async def should_not_execute(_request: ProcessRequest) -> ProcessResult:
+        nonlocal executed_after_close
+        executed_after_close = True
+        return ProcessResult(("true",), 0)
+
+    monkeypatch.setattr(session, "_exec_request", should_not_execute)
+    with pytest.raises(RuntimeError, match="closed"):
+        await session.exec(ProcessRequest(("true",)))
+    with pytest.raises(RuntimeError, match="closed"):
+        await session.checkpoint()
+    assert executed_after_close is False
 
 
 @pytest.mark.asyncio
