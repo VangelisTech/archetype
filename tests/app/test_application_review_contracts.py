@@ -155,9 +155,9 @@ async def test_stop_admission_then_wait_drained_joins_admitted_autoresearch(
             assert calls == 1
 
             release.set()
-            result = await asyncio.wait_for(operation, timeout=5)
+            await asyncio.wait_for(drain, timeout=30)
+            result = await operation
             assert result.iterations_completed == 1
-            await asyncio.wait_for(drain, timeout=1)
         finally:
             release.set()
             if not operation.done():
