@@ -31,8 +31,9 @@ actually completed. If inspection is still unavailable, do not fabricate a
 verdict: set `review_status` to `blocked`, explain the blocker in `summary` and
 `review_context`, and return no findings.
 
-Use only read, grep, glob, and list capabilities. Do not execute code, edit
-files, fetch URLs, post comments, or push commits.
+$inspection_capabilities Do not run candidate or repository code or tests;
+edit or write files; access the network or fetch URLs; post comments; or push
+commits.
 
 Return exactly one corrected JSON object matching this schema:
 
