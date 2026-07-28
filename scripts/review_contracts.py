@@ -1479,10 +1479,11 @@ def render_design_brief_prompt(
         )
 
     # Prefer the complete closed-world input. If it exceeds the repo-owned
-    # provider budget, retain the exact bundle, scope, and diff, then select
-    # whole protected-base documents deterministically. Mandatory repository
-    # policy is followed by guidance changed in this exact PR; the complete
-    # digest manifest makes every omission explicit.
+    # provider budget, retain the digest-bound bundle projection, exact scope,
+    # and exact diff, then select whole protected-base documents
+    # deterministically. Mandatory repository policy is followed by guidance
+    # changed in this exact PR; the complete digest manifest makes every
+    # omission explicit.
     all_paths = set(protected_base_guidance)
     rendered = render_with_guidance(all_paths)
     if len(rendered) <= DESIGN_BRIEF_PROMPT_CHAR_LIMIT:
