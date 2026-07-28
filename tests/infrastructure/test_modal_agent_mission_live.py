@@ -161,11 +161,36 @@ async def _wait_for_takeover(
 set -eu
 events="$1/events.jsonl"
 executions="$1/executions"
+expected_sandbox_id="$2"
+takeover_ready() {
+    python3 - "$events" "$expected_sandbox_id" <<'PY'
+import json
+import sys
+
+events_path, expected_sandbox_id = sys.argv[1:]
+try:
+    with open(events_path, encoding="utf-8") as source:
+        for line in source:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (
+                isinstance(event, dict)
+                and event.get("schema_version") == 1
+                and event.get("type") == "session_ready"
+                and event.get("operation") == "codex"
+                and event.get("sandbox_id") == expected_sandbox_id
+            ):
+                raise SystemExit(0)
+except FileNotFoundError:
+    pass
+raise SystemExit(1)
+PY
+}
 i=0
 while [ "$i" -lt 600 ]; do
-    if [ -f "$events" ] \
-        && grep -E '"type"[[:space:]]*:[[:space:]]*"session_ready"' "$events" >/dev/null \
-        && grep -E '"operation"[[:space:]]*:[[:space:]]*"codex"' "$events" >/dev/null; then
+    if [ -f "$events" ] && takeover_ready; then
         directory="$(find "$executions" -mindepth 1 -maxdepth 1 -type d -print)"
         test -n "$directory"
         test "$(printf '%s\n' "$directory" | wc -l)" -eq 1
@@ -186,6 +211,7 @@ exit 1
             script,
             "wait-modal-takeover",
             _OBSERVATION_ROOT,
+            session.identity.sandbox_id,
             timeout_seconds=165,
         )
     )
