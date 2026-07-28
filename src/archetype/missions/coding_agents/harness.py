@@ -245,6 +245,7 @@ class CodingAgentHarness:
                 final_revision,
                 pushed=False,
             )
+            commits = candidate_commits
             if starting_revision and final_revision:
                 diff_digest = await self._diff_digest(
                     session,
@@ -277,7 +278,6 @@ class CodingAgentHarness:
                 for validator, result in raw_validation
             )
             if validators_passed:
-                commits = candidate_commits
                 if final_revision == starting_revision:
                     raise RuntimeError(
                         "validators passed but the task produced no repository change"

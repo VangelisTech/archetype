@@ -1023,12 +1023,16 @@ async def test_validator_task_base_diff_includes_dirty_tracked_changes(tmp_path:
     assert result.commits[-1].pushed is True
 
 
+@pytest.mark.parametrize("agent_commits", [False, True])
 @pytest.mark.asyncio
-async def test_failed_validator_is_an_observation_not_a_sandbox_verdict(tmp_path: Path) -> None:
+async def test_failed_validator_is_an_observation_not_a_sandbox_verdict(
+    tmp_path: Path,
+    agent_commits: bool,
+) -> None:
     remote = _remote(tmp_path)
     workspace = tmp_path / "sandbox" / "repo"
     harness = CodingAgentHarness(
-        _EditingDriver(workspace, commit=False),
+        _EditingDriver(workspace, commit=agent_commits),
         CodingAgentHarnessConfig(workspace=str(workspace)),
     )
     result = await harness.execute(
@@ -1039,7 +1043,10 @@ async def test_failed_validator_is_an_observation_not_a_sandbox_verdict(tmp_path
     assert result.status is AgentExecutionStatus.EXITED
     assert result.validation[0].actual_returncode == 7
     assert result.validation[0].passed is False
-    assert result.commits == ()
+    assert len(result.commits) == 1
+    assert result.commits[0].sha == result.final_revision
+    assert result.commits[0].pushed is False
+    assert result.commits[0].final_revision is True
     assert result.error == ""
     assert [friction.kind for friction in result.friction] == ["validation"]
     assert "outcome" not in result.__dataclass_fields__
