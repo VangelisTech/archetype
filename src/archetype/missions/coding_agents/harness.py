@@ -282,7 +282,12 @@ class CodingAgentHarness:
                     raise RuntimeError(
                         "validators passed but the task produced no repository change"
                     )
-                publication_cleanup = await self._push(session, request, final_revision)
+                publication_cleanup = await self._push(
+                    session,
+                    request,
+                    final_revision,
+                    cleanup_friction=friction,
+                )
                 if publication_cleanup is not None:
                     friction.append(publication_cleanup)
                 commits = tuple(replace(item, pushed=True) for item in candidate_commits)
@@ -514,6 +519,7 @@ class CodingAgentHarness:
                 validation_directory,
                 prefix=_VALIDATION_PREFIX,
                 operation_error=operation_error,
+                cleanup_friction=cleanup_friction,
             )
             if observed_cleanup_friction is not None:
                 cleanup_friction.append(observed_cleanup_friction)
@@ -536,6 +542,8 @@ class CodingAgentHarness:
         session: SandboxSession,
         request: TaskDispatchRequest,
         final_revision: str,
+        *,
+        cleanup_friction: list[FrictionObservation] | None = None,
     ) -> FrictionObservation | None:
         if not _GIT_REVISION_RE.fullmatch(final_revision):
             raise RuntimeError("validated revision is not a full Git object ID")
@@ -636,13 +644,14 @@ class CodingAgentHarness:
             operation_error = exc
             raise
         finally:
-            cleanup_friction = await self._cleanup_temp_directory(
+            cleanup_observation = await self._cleanup_temp_directory(
                 session,
                 publication_directory,
                 prefix=_PUBLICATION_PREFIX,
                 operation_error=operation_error,
+                cleanup_friction=cleanup_friction,
             )
-        return cleanup_friction
+        return cleanup_observation
 
     async def _cleanup_temp_directory(
         self,
@@ -651,6 +660,7 @@ class CodingAgentHarness:
         *,
         prefix: str,
         operation_error: BaseException | None,
+        cleanup_friction: list[FrictionObservation] | None = None,
     ) -> FrictionObservation | None:
         if self._owned_temp_directory(directory, prefix) is None:
             raise RuntimeError("refusing to remove an unowned temporary directory")
@@ -680,9 +690,12 @@ class CodingAgentHarness:
         except BaseException as cleanup_error:
             if caller_cancellation is not None:
                 raise caller_cancellation from cleanup_error
+            observed_cleanup_friction = self._cleanup_friction(prefix, cleanup_error)
             if operation_error is not None:
+                if cleanup_friction is not None:
+                    cleanup_friction.append(observed_cleanup_friction)
                 raise operation_error from cleanup_error
-            return self._cleanup_friction(prefix, cleanup_error)
+            return observed_cleanup_friction
         if cleanup.returncode != 0:
             cleanup_error = RuntimeError(
                 self._cleanup_failure_message(
@@ -693,9 +706,15 @@ class CodingAgentHarness:
             )
             if caller_cancellation is not None:
                 raise caller_cancellation from cleanup_error
+            observed_cleanup_friction = FrictionObservation(
+                kind="cleanup",
+                message=str(cleanup_error),
+            )
             if operation_error is not None:
+                if cleanup_friction is not None:
+                    cleanup_friction.append(observed_cleanup_friction)
                 raise operation_error from cleanup_error
-            return FrictionObservation(kind="cleanup", message=str(cleanup_error))
+            return observed_cleanup_friction
         if caller_cancellation is not None and caller_cancellation is not operation_error:
             if operation_error is not None:
                 raise caller_cancellation from operation_error

@@ -608,6 +608,11 @@ async def test_cleanup_failure_cannot_replace_validator_operation_failure(
 
     assert result.status is AgentExecutionStatus.ERRORED
     assert result.error == "RuntimeError: simulated validation operation failure"
+    assert [item.kind for item in result.friction] == ["cleanup", "execution"]
+    cleanup = result.friction[0]
+    assert cleanup.message.startswith("validation checkout cleanup failed with raised RuntimeError")
+    assert cleanup.message.endswith("simulated cleanup exception")
+    assert len(cleanup.message) <= 1024
     assert isinstance(session.operation_error.__cause__, RuntimeError)
     assert str(session.operation_error.__cause__) == "simulated cleanup exception"
 
@@ -629,6 +634,11 @@ async def test_cleanup_failure_cannot_replace_indeterminate_local_push(
 
     assert result.status is AgentExecutionStatus.ERRORED
     assert result.error == "RuntimeError: simulated publication operation failure"
+    assert [item.kind for item in result.friction] == ["cleanup", "execution"]
+    cleanup = result.friction[0]
+    assert cleanup.message.startswith("publication repository cleanup failed with exit code 17")
+    assert cleanup.message.endswith("simulated cleanup failure")
+    assert len(cleanup.message) <= 1024
     assert result.validation[0].passed is True
     assert result.commits[-1].pushed is False
     assert (
