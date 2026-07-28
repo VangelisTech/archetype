@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import fields
 
 import pytest
 
@@ -52,6 +53,8 @@ def test_docker_backend_is_a_credential_free_protocol_reference() -> None:
     assert _session().capabilities.checkpoints is True
     assert _session().capabilities.secret_names == ()
     assert "util-linux" not in coding_agent_containerfile()
+    assert "auth_volume_name" not in {field.name for field in fields(DockerSandboxConfig)}
+    assert not hasattr(DockerSandboxBackend, "login_codex")
 
 
 @pytest.mark.asyncio

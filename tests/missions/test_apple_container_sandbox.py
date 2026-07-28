@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from dataclasses import fields
 from pathlib import Path
 
 import pytest
@@ -61,6 +62,8 @@ def test_apple_backend_uses_the_pinned_credential_free_image_recipe() -> None:
     assert "util-linux" not in image
     assert f"ARCHETYPE_SANDBOX_ENVIRONMENT={backend.environment}" in image
     assert "USER agent" in image
+    assert "auth_volume_name" not in {field.name for field in fields(AppleContainerSandboxConfig)}
+    assert not hasattr(AppleContainerSandboxBackend, "login_codex")
 
 
 @pytest.mark.asyncio
