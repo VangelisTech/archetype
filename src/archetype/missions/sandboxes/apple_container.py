@@ -285,6 +285,7 @@ class AppleContainerSandboxSession:
         self._raise(staged, "stage Codex OAuth credential")
 
     async def _persist_and_remove_oauth(self) -> None:
+        next_path = f"{_CODEX_AUTH_PATH}.next.{self._sandbox_id}"
         persistence_error: BaseException | None = None
         try:
             credential = await self._exec_request(
@@ -294,36 +295,90 @@ class AppleContainerSandboxSession:
                 )
             )
             self._raise(credential, "read refreshed Codex OAuth credential")
-            next_path = f"{_CODEX_AUTH_PATH}.next.{self._sandbox_id}"
             persisted = await self._auth_exec(
                 "sh",
                 "-c",
-                f"umask 077 && install -d -m 700 {CODEX_HOME} "
-                f"&& base64 -d > {next_path} "
-                f"&& chmod 600 {next_path} "
-                f"&& mv -f -- {next_path} {_CODEX_AUTH_PATH} "
+                "next_path=$1 && umask 077 "
+                "&& trap 'status=$?; trap - EXIT HUP INT TERM; "
+                'rm -f -- "$next_path"; exit "$status"\' EXIT '
+                "&& trap 'trap - EXIT HUP INT TERM; "
+                'rm -f -- "$next_path"; exit 129\' HUP '
+                "&& trap 'trap - EXIT HUP INT TERM; "
+                'rm -f -- "$next_path"; exit 130\' INT '
+                "&& trap 'trap - EXIT HUP INT TERM; "
+                'rm -f -- "$next_path"; exit 143\' TERM '
+                f"&& install -d -m 700 {CODEX_HOME} "
+                '&& base64 -d > "$next_path" '
+                '&& chmod 600 "$next_path" '
+                f'&& mv -f -- "$next_path" {_CODEX_AUTH_PATH} '
                 f"&& find {CODEX_HOME} -mindepth 1 -maxdepth 1 "
-                f"! -name auth.json ! -name 'auth.json.next.*' -exec rm -rf -- {{}} +",
+                f"! -name auth.json ! -name 'auth.json.next.*' -exec rm -rf -- {{}} + "
+                "&& trap - EXIT HUP INT TERM",
+                "archetype-oauth-persist",
+                next_path,
                 timeout=60,
                 stdin=credential.stdout,
             )
             self._raise(persisted, "persist refreshed Codex OAuth credential")
         except BaseException as exc:
             persistence_error = exc
-        removal_error: BaseException | None = None
+
+        async def cleanup() -> tuple[BaseException, ...]:
+            results = await asyncio.gather(
+                self._remove_oauth_persistence_stage(next_path),
+                self._remove_oauth(),
+                return_exceptions=True,
+            )
+            return tuple(result for result in results if isinstance(result, BaseException))
+
+        cleanup_task = asyncio.create_task(cleanup())
+        caller_cancellation = (
+            persistence_error if isinstance(persistence_error, asyncio.CancelledError) else None
+        )
+        while not cleanup_task.done():
+            try:
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError as interrupted:
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    caller_cancellation = caller_cancellation or interrupted
+            except BaseException:
+                break
+
         try:
-            await self._remove_oauth()
+            cleanup_errors = cleanup_task.result()
         except BaseException as exc:
-            removal_error = exc
-        if persistence_error is not None and removal_error is not None:
+            cleanup_errors = (exc,)
+
+        failures = (
+            ()
+            if persistence_error is None or caller_cancellation is persistence_error
+            else (persistence_error,)
+        ) + cleanup_errors
+        if caller_cancellation is not None:
+            if failures:
+                raise caller_cancellation from BaseExceptionGroup(
+                    "Apple Container OAuth cleanup failed while its caller was cancelled",
+                    list(failures),
+                )
+            raise caller_cancellation
+        if len(failures) > 1:
             raise BaseExceptionGroup(
                 "failed to persist and remove Apple Container OAuth credential",
-                [persistence_error, removal_error],
+                list(failures),
             )
-        if persistence_error is not None:
-            raise persistence_error
-        if removal_error is not None:
-            raise removal_error
+        if failures:
+            raise failures[0]
+
+    async def _remove_oauth_persistence_stage(self, next_path: str) -> None:
+        removed = await self._auth_exec(
+            "rm",
+            "-f",
+            "--",
+            next_path,
+            timeout=60,
+        )
+        self._raise(removed, "remove owned Codex OAuth persistence staging file")
 
     async def _remove_oauth(self) -> None:
         removed = await self._exec_request(

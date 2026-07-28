@@ -435,6 +435,8 @@ async def test_docker_oauth_reports_persistence_and_removal_failures(
 
     async def auth_exec(*arguments: str, timeout: int, stdin: str | None = None):
         del timeout, stdin
+        if arguments[:3] == ("rm", "-f", "--"):
+            return ProcessResult(tuple(arguments), 7, stderr="staging cleanup failed")
         return ProcessResult(tuple(arguments), 8, stderr="persist failed")
 
     monkeypatch.setattr(session, "_exec_request", exec_request)
@@ -444,7 +446,93 @@ async def test_docker_oauth_reports_persistence_and_removal_failures(
         await session._persist_and_remove_oauth()
 
     assert "persist refreshed" in str(raised.value.exceptions[0])
-    assert "remove staged" in str(raised.value.exceptions[1])
+    assert "persistence staging file" in str(raised.value.exceptions[1])
+    assert "remove staged" in str(raised.value.exceptions[2])
+
+
+@pytest.mark.asyncio
+async def test_docker_oauth_persistence_failure_removes_only_owned_staging_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(oauth=True)
+    owned = "/home/agent/.codex/auth.json.next.mission-container"
+    foreign = "/home/agent/.codex/auth.json.next.foreign-container"
+    staging_files = {owned, foreign}
+    cleanup_commands: list[tuple[str, ...]] = []
+
+    async def exec_request(request: ProcessRequest) -> ProcessResult:
+        return ProcessResult(request.argv, 0, stdout="oauth-credential")
+
+    async def auth_exec(*arguments: str, timeout: int, stdin: str | None = None):
+        del timeout, stdin
+        command = tuple(arguments)
+        if command[:2] == ("sh", "-c"):
+            persistence_script = command[2]
+            assert command[3:] == ("archetype-oauth-persist", owned)
+            assert persistence_script.count('rm -f -- "$next_path"') == 4
+            assert 'exit "$status"\' EXIT' in persistence_script
+            assert "exit 129' HUP" in persistence_script
+            assert "exit 130' INT" in persistence_script
+            assert "exit 143' TERM" in persistence_script
+            assert "! -name 'auth.json.next.*'" in persistence_script
+            return ProcessResult(command, 8, stderr="persist failed")
+        cleanup_commands.append(command)
+        staging_files.discard(command[-1])
+        return ProcessResult(command, 0)
+
+    monkeypatch.setattr(session, "_exec_request", exec_request)
+    monkeypatch.setattr(session, "_auth_exec", auth_exec)
+
+    with pytest.raises(RuntimeError, match="persist refreshed"):
+        await session._persist_and_remove_oauth()
+
+    assert cleanup_commands == [("rm", "-f", "--", owned)]
+    assert staging_files == {foreign}
+
+
+@pytest.mark.asyncio
+async def test_docker_oauth_owned_staging_cleanup_finishes_after_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(oauth=True)
+    persist_started = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    owned = "/home/agent/.codex/auth.json.next.mission-container"
+    cleanup_commands: list[tuple[str, ...]] = []
+
+    async def exec_request(request: ProcessRequest) -> ProcessResult:
+        return ProcessResult(request.argv, 0, stdout="oauth-credential")
+
+    async def auth_exec(*arguments: str, timeout: int, stdin: str | None = None):
+        del timeout, stdin
+        command = tuple(arguments)
+        if command[:2] == ("sh", "-c"):
+            assert command[3:] == ("archetype-oauth-persist", owned)
+            assert command[2].count('rm -f -- "$next_path"') == 4
+            persist_started.set()
+            await asyncio.Future()
+        cleanup_commands.append(command)
+        cleanup_started.set()
+        await release_cleanup.wait()
+        return ProcessResult(command, 0)
+
+    monkeypatch.setattr(session, "_exec_request", exec_request)
+    monkeypatch.setattr(session, "_auth_exec", auth_exec)
+
+    persistence = asyncio.create_task(session._persist_and_remove_oauth())
+    await persist_started.wait()
+    persistence.cancel()
+    await cleanup_started.wait()
+    persistence.cancel()
+    await asyncio.sleep(0)
+    assert not persistence.done()
+
+    release_cleanup.set()
+    with pytest.raises(asyncio.CancelledError):
+        await persistence
+
+    assert cleanup_commands == [("rm", "-f", "--", owned)]
 
 
 @pytest.mark.asyncio
