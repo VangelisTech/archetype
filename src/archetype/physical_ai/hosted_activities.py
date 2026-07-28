@@ -747,7 +747,11 @@ class PhysicalHostedActivityWorker:
 
         if activity_id is not None and not activity_id.strip():
             raise ValueError("hosted episode Activity identity cannot be empty")
-        progressed = await self._deliver_pending_results(activity_id=activity_id)
+        # Result delivery is a world-scoped recovery sweep even when execution
+        # is pinned to one requested Activity. Otherwise a process crash after
+        # durable result recording can strand that result forever when the
+        # caller's next operation uses another Activity identity.
+        progressed = await self._deliver_pending_results()
         if activity_id is None:
             claim = await self._catalog.claim_episode(
                 world_id=self._world_id,
@@ -783,7 +787,7 @@ class PhysicalHostedActivityWorker:
             result_claim,
             published.activity_result,
         )
-        await self._deliver_pending_results(activity_id=activity_id)
+        await self._deliver_pending_results()
         return True
 
     async def _execute_or_reconcile(

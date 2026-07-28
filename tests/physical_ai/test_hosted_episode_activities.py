@@ -384,6 +384,77 @@ async def test_exact_hosted_worker_does_not_claim_older_pending_activity(
 
 
 @pytest.mark.asyncio
+async def test_exact_hosted_worker_redelivers_older_result_after_staging_crash(
+    tmp_path: Path,
+) -> None:
+    world_id = "physical-world"
+    values = LocalHostedEpisodeValueStore(tmp_path / "values")
+    physical, generic, catalog = _open_catalog(
+        tmp_path / "activities.db",
+        lease_seconds=300,
+    )
+    receipt = CommittedTickReceipt(world_id, "run-a", 1, "token-1", 0)
+    for activity_id in ("completed-before-crash", "requested-after-restart"):
+        request = await values.put_request(_request(world_id, activity_id))
+        await catalog.admit_episode(
+            world_id=world_id,
+            receipt=receipt,
+            activity_id=activity_id,
+            request=request,
+        )
+
+    provider_path = tmp_path / "provider"
+    runner = SeededHostedEpisodeRunner(tmp_path / "provider-executions.json")
+    crashed = PhysicalHostedActivityWorker(
+        world_id=world_id,
+        owner="worker-before-staging-crash",
+        catalog=catalog,
+        values=values,
+        provider=LocalDurableHostedEpisodeProvider(
+            provider_path,
+            runner=runner,
+        ),
+        stager=_ObservationStager(crash_once=True),
+    )
+    with pytest.raises(RuntimeError, match="before observation staging"):
+        await crashed.run_once(activity_id="completed-before-crash")
+    assert runner.execution_count == 1
+
+    await physical.close()
+    physical, generic, catalog = _open_catalog(
+        tmp_path / "activities.db",
+        lease_seconds=300,
+    )
+    recovered_stager = _ObservationStager()
+    recovered = PhysicalHostedActivityWorker(
+        world_id=world_id,
+        owner="worker-after-restart",
+        catalog=catalog,
+        values=LocalHostedEpisodeValueStore(tmp_path / "values"),
+        provider=LocalDurableHostedEpisodeProvider(
+            provider_path,
+            runner=runner,
+        ),
+        stager=recovered_stager,
+    )
+    assert await recovered.run_once(activity_id="requested-after-restart")
+
+    assert runner.execution_count == 2
+    assert set(recovered_stager.observations) == {
+        (world_id, "completed-before-crash"),
+        (world_id, "requested-after-restart"),
+    }
+    for activity_id in ("completed-before-crash", "requested-after-restart"):
+        snapshot = await generic.get(
+            world_id,
+            HOSTED_EPISODE_ACTIVITY_KIND,
+            activity_id,
+        )
+        assert snapshot is not None and snapshot.result is not None
+    await physical.close()
+
+
+@pytest.mark.asyncio
 async def test_cold_restart_recovers_first_provider_result_without_second_episode(
     tmp_path: Path,
 ) -> None:
