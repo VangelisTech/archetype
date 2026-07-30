@@ -18,7 +18,7 @@ import pytest
 
 from scripts.run_operational_scenarios import run_scenarios
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[4]
 QUALITY_WORKFLOW = ROOT / ".github" / "workflows" / "python-tests.yml"
 AUTOMERGE_WORKFLOW = ROOT / ".github" / "workflows" / "automerge.yml"
 QUEUE_READY_HELPER = ROOT / "scripts" / "gh_pr_queue_ready.sh"

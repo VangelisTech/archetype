@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[4]
 RECONCILE_SCRIPT = ROOT / "scripts" / "gh_pr_arm_reconcile.sh"
 REEVALUATOR_WORKFLOW = ROOT / ".github" / "workflows" / "queue-reevaluator.yml"
 AUTOMERGE_WORKFLOW = ROOT / ".github" / "workflows" / "automerge.yml"
