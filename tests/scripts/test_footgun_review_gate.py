@@ -593,7 +593,70 @@ def test_every_codex_reviewer_uses_the_pinned_cli():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
     assert workflow.count('CODEX_VERSION: "0.144.0"') == 1
-    assert workflow.count('npm install -g "@openai/codex@${CODEX_VERSION}"') == 4
+    assert workflow.count('npm install -g "@openai/codex@${CODEX_VERSION}"') == 3
+
+
+def test_codex_lens_retry_resumes_the_job_scoped_read_only_session():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    first = workflow.split("- name: Run read-only reviewer (Codex)", 1)[1]
+    first = first.split("- name: Validate first reviewer result", 1)[0]
+    retry = workflow.split(
+        "- name: Retry reviewer with validator feedback (Codex)",
+        1,
+    )[1]
+    retry = retry.split("- name: Validate bounded retry", 1)[0]
+
+    for step in (first, retry):
+        assert 'export CODEX_HOME="${RUNNER_TEMP}/codex-home"' in step
+        assert "--ignore-user-config \\" in step
+        assert '--output-schema "${RUNNER_TEMP}/lens-schema.json" \\' in step
+        assert "--ephemeral" not in step
+
+    assert "codex exec \\" in first
+    assert "-s read-only \\" in first
+    assert "codex exec resume \\" in retry
+    assert "--last \\" in retry
+    assert "-c 'sandbox_mode=\"read-only\"' \\" in retry
+    assert '- < "${RUNNER_TEMP}/lens-retry-prompt.txt" \\' in retry
+
+
+def test_shell_enabled_codex_reviews_require_verified_bubblewrap():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    first = workflow.split("- name: Run read-only reviewer (Codex)", 1)[1]
+    first = first.split("- name: Validate first reviewer result", 1)[0]
+    retry = workflow.split(
+        "- name: Retry reviewer with validator feedback (Codex)",
+        1,
+    )[1]
+    retry = retry.split("- name: Validate bounded retry", 1)[0]
+    adjudication = workflow.split("- name: Falsify disputed claim (Codex)", 1)[1]
+    adjudication = adjudication.split("- name: Validate adjudication receipt", 1)[0]
+
+    for step in (first, retry, adjudication):
+        assert "--disable use_legacy_landlock \\" in step
+        assert "read-only" in step
+
+    preflights = workflow.split("- name: Prepare Codex bubblewrap sandbox")[1:]
+    assert len(preflights) == 2
+    for preflight in preflights:
+        preflight = preflight.split("\n      - name:", 1)[0]
+        assert "kernel.unprivileged_userns_clone=1" in preflight
+        assert "kernel.apparmor_restrict_unprivileged_userns=0" in preflight
+        assert preflight.count("--disable use_legacy_landlock \\") == 2
+        assert "-c 'sandbox_mode=\"read-only\"' sandbox -- /usr/bin/true" in preflight
+        assert "-c 'sandbox_mode=\"read-only\"' sandbox -- /usr/bin/touch" in preflight
+        assert "CODEX_AUTH_JSON" not in preflight
+
+    assert "--enable use_legacy_landlock" not in workflow
+    assert workflow.count("--disable use_legacy_landlock \\") == 7
+
+
+def test_incomplete_review_comment_does_not_require_a_checkout():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    report = workflow.split("- name: Report incomplete review", 1)[1]
+
+    assert "REPOSITORY: ${{ github.repository }}" in report
+    assert 'gh pr comment "${PR_NUMBER}" --repo "${REPOSITORY}" \\' in report
 
 
 def test_human_design_brief_is_grounded_without_secret_read_capabilities():
