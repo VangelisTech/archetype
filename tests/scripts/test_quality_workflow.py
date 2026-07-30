@@ -8,6 +8,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from scripts.run_operational_scenarios import _select_scenarios
+from scripts.validate_operational_scenarios import load_scenarios
+
 ROOT = Path(__file__).resolve().parents[2]
 QUALITY_WORKFLOW = ROOT / ".github" / "workflows" / "python-tests.yml"
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
@@ -98,3 +101,14 @@ def test_release_publish_requires_credentialed_r2_evidence() -> None:
     assert "--require-run" in r2_release
     assert "r2-release-results.json" in r2_release
     assert "needs: [release-profile, python-compatibility, r2-release]" in publish
+
+    selected = _select_scenarios(
+        load_scenarios(),
+        mode="source",
+        cadence="release",
+        scenario_ids={"dogfood.storage.r2"},
+        kind=None,
+        min_tier=5,
+        max_tier=5,
+    )
+    assert [row["id"] for row in selected] == ["dogfood.storage.r2"]
