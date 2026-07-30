@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import random
 from collections.abc import AsyncIterator, Callable
@@ -27,6 +28,7 @@ from typing import Any, TypeVar
 
 import daft
 import pyarrow as pa
+import pyarrow.compute as pc
 from daft import DataFrame, DataType, col, lit, read_iceberg
 from daft.catalog import Catalog, Table
 from daft.io import IOConfig
@@ -169,6 +171,21 @@ async def _join_worker[T](thread: asyncio.Task[T]) -> T:
         raise
 
 
+def _frame_fingerprint(frame: DataFrame) -> bytes:
+    """Content digest of a materialized frame for app-table replay detection.
+
+    The frame is already collected, so ``to_arrow`` is an in-memory
+    conversion, not a plan execution. IPC-stream bytes are deterministic for
+    identical schema and row content, which is exactly the "same batch
+    resubmitted after cancellation" case this guards.
+    """
+    table = frame.to_arrow()
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, table.schema) as writer:
+        writer.write_table(table)
+    return hashlib.sha256(sink.getvalue().to_pybytes()).digest()
+
+
 def _log_commit_outlived_cancellation(commit: asyncio.Task[Any], table_name: str) -> None:
     """Make a cancellation-orphaned app-table commit's settled fate observable.
 
@@ -237,9 +254,11 @@ class _AdmittedAsyncStore(AsyncStore):
         self._ambiguous_commits: dict[str, tuple[str, str, int, str, int]] = {}
         # Managed identities whose commit landed while the awaiting caller was
         # being cancelled. The caller never observed the receipt, so a retried
-        # identical payload must resolve to durable success instead of a
-        # second physical append (issue #704).
-        self._unobserved_commits: dict[str, tuple[str, str, int, str, int]] = {}
+        # payload containing those identities must resolve to durable success
+        # instead of a second physical append (issue #704). Every identity is
+        # retained for the life of the store: dropping one after a successful
+        # retry would let a second retry of the same payload replay it.
+        self._unobserved_commits: dict[str, set[tuple[str, str, int, str, int]]] = {}
 
     async def append(self, sig: ArchetypeSignature, df: DataFrame) -> AppendReceipt:
         """Materialize once and retry only proven Iceberg CAS losers.
@@ -257,9 +276,10 @@ class _AdmittedAsyncStore(AsyncStore):
             logger.info("Append skipped (store): archetype=%s empty schema", table_id)
             return AppendReceipt(table_id=table_id, rows=0, durable=True)
 
+        total_rows = 0
         payload: pa.Table | None = None
         table: Table | None = None
-        identity: tuple[str, str, int, str, int] | None = None
+        identities: tuple[tuple[str, str, int, str, int], ...] | None = None
 
         for attempt in range(_MAX_COMMIT_ATTEMPTS):
             try:
@@ -269,12 +289,34 @@ class _AdmittedAsyncStore(AsyncStore):
                         payload = await _join_worker(
                             asyncio.ensure_future(asyncio.to_thread(df.to_arrow))
                         )
-                        rows = payload.num_rows
-                        if rows == 0:
+                        total_rows = payload.num_rows
+                        if total_rows == 0:
                             logger.info("Append skipped (store): archetype=%s rows=0", table_id)
                             return AppendReceipt(table_id=table_id, rows=0, durable=True)
-                        identity = self._managed_identity(payload, table_id)
                         table = self._ensure_table(sig)
+                        identities = self._payload_identities(payload, table_id)
+                        unobserved = self._unobserved_commits.get(table_id, set())
+                        already_durable = tuple(i for i in identities if i in unobserved)
+                        if already_durable:
+                            logger.info(
+                                "Append partially durable (store): archetype=%s "
+                                "tick(s)=%s committed during an earlier cancelled "
+                                "call; not replayed",
+                                table_id,
+                                sorted({i[2] for i in already_durable}),
+                            )
+                            if len(already_durable) == len(identities):
+                                return AppendReceipt(
+                                    table_id=table_id,
+                                    rows=total_rows,
+                                    durable=True,
+                                    backend_ref=self._snapshot_ref(table),
+                                )
+                            # A cached-store retry can merge an already-landed
+                            # batch in front of newer rows; append only the
+                            # rows whose identity has never committed.
+                            payload = self._without_identities(payload, already_durable)
+                            identities = tuple(i for i in identities if i not in unobserved)
                     else:
                         assert table is not None
                         native = getattr(table, "_inner", None)
@@ -283,20 +325,7 @@ class _AdmittedAsyncStore(AsyncStore):
                         native.refresh()
 
                     assert table is not None
-                    assert identity is not None
-                    if self._unobserved_commits.get(table_id) == identity:
-                        logger.info(
-                            "Append already durable (store): archetype=%s tick=%d "
-                            "committed during an earlier cancelled call; not replayed",
-                            table_id,
-                            identity[2],
-                        )
-                        return AppendReceipt(
-                            table_id=table_id,
-                            rows=payload.num_rows,
-                            durable=True,
-                            backend_ref=self._snapshot_ref(table),
-                        )
+                    assert identities is not None
                     commit = asyncio.ensure_future(
                         asyncio.to_thread(
                             self._append_table,
@@ -307,12 +336,12 @@ class _AdmittedAsyncStore(AsyncStore):
                     try:
                         await _join_worker(commit)
                     except asyncio.CancelledError:
-                        self._record_cancelled_commit(table_id, identity, commit)
+                        self._record_cancelled_commit(table_id, identities, commit)
                         raise
                     self._committed_sigs.add(table_id)
                     return AppendReceipt(
                         table_id=table_id,
-                        rows=payload.num_rows,
+                        rows=total_rows,
                         durable=True,
                         backend_ref=self._snapshot_ref(table),
                     )
@@ -322,31 +351,72 @@ class _AdmittedAsyncStore(AsyncStore):
                 ceiling = min(0.005 * (2**attempt), 0.1)
                 await asyncio.sleep(random.uniform(0.0, ceiling))
             except CommitStateUnknownException as exc:
-                assert identity is not None
-                self._ambiguous_commits[table_id] = identity
-                raise self._ambiguous_error(table_id, identity) from exc
+                assert identities is not None
+                self._ambiguous_commits[table_id] = identities[0]
+                raise self._ambiguous_error(table_id, identities[0]) from exc
 
         raise AssertionError("unreachable managed Iceberg append retry state")
 
-    @staticmethod
-    def _managed_identity(
+    _IDENTITY_COLUMNS = ("world_id", "run_id", "tick", "commit_token", "writer_epoch")
+
+    @classmethod
+    def _payload_identities(
+        cls,
         payload: pa.Table,
         table_id: str,
-    ) -> tuple[str, str, int, str, int]:
-        required = ("world_id", "run_id", "tick", "commit_token", "writer_epoch")
-        missing = [name for name in required if name not in payload.column_names]
+    ) -> tuple[tuple[str, str, int, str, int], ...]:
+        """Every distinct managed commit identity present in the payload.
+
+        A payload normally carries exactly one identity, but a cached-store
+        retry after a cancelled flush can merge rows from more than one tick
+        into a single batch, so durability bookkeeping must never assume the
+        first row speaks for the rest.
+        """
+        missing = [name for name in cls._IDENTITY_COLUMNS if name not in payload.column_names]
         if missing:
             raise ValueError(
                 f"managed Iceberg payload for table {table_id!r} is missing identity "
                 f"column(s): {', '.join(missing)}"
             )
-        return (
-            str(payload["world_id"][0].as_py()),
-            str(payload["run_id"][0].as_py()),
-            int(payload["tick"][0].as_py()),
-            str(payload["commit_token"][0].as_py()),
-            int(payload["writer_epoch"][0].as_py()),
+        unique = (
+            payload.select(cls._IDENTITY_COLUMNS)
+            .group_by(list(cls._IDENTITY_COLUMNS))
+            .aggregate([])
         )
+        return tuple(
+            (
+                str(world_id),
+                str(run_id),
+                int(tick),
+                str(commit_token),
+                int(writer_epoch),
+            )
+            for world_id, run_id, tick, commit_token, writer_epoch in zip(
+                unique["world_id"].to_pylist(),
+                unique["run_id"].to_pylist(),
+                unique["tick"].to_pylist(),
+                unique["commit_token"].to_pylist(),
+                unique["writer_epoch"].to_pylist(),
+                strict=True,
+            )
+        )
+
+    @classmethod
+    def _without_identities(
+        cls,
+        payload: pa.Table,
+        excluded: tuple[tuple[str, str, int, str, int], ...],
+    ) -> pa.Table:
+        """Drop every row whose managed identity is in ``excluded``."""
+        mask = None
+        for identity in excluded:
+            match = None
+            for column, value in zip(cls._IDENTITY_COLUMNS, identity, strict=True):
+                clause = pc.equal(payload[column], pa.scalar(value))  # ty: ignore[unresolved-attribute]
+                match = clause if match is None else pc.and_(match, clause)  # ty: ignore[unresolved-attribute]
+            mask = match if mask is None else pc.or_(mask, match)  # ty: ignore[unresolved-attribute]
+        assert mask is not None
+        return payload.filter(pc.invert(mask))  # ty: ignore[unresolved-attribute]
 
     @staticmethod
     def _ambiguous_error(
@@ -372,37 +442,38 @@ class _AdmittedAsyncStore(AsyncStore):
     def _record_cancelled_commit(
         self,
         table_id: str,
-        identity: tuple[str, str, int, str, int],
+        identities: tuple[tuple[str, str, int, str, int], ...],
         commit: asyncio.Task[None],
     ) -> None:
         """Fold a commit that outlived its cancelled caller into bookkeeping.
 
         ``_join_worker`` guarantees the commit task is settled before
-        cancellation propagates. A landed commit is recorded as an unobserved
-        durable outcome so an identical retried payload returns its receipt
-        instead of double-appending the tick; a lost commit response freezes
-        the table exactly like the uncancelled ambiguous path (issue #704).
-        A definite commit failure leaves nothing durable, so cancellation
-        stands and a later retry is a fresh first attempt.
+        cancellation propagates. A landed commit records every identity in the
+        appended payload as an unobserved durable outcome, so a retried payload
+        containing any of them resolves to its receipt instead of
+        double-appending those rows; a lost commit response freezes the table
+        exactly like the uncancelled ambiguous path (issue #704). A definite
+        commit failure leaves nothing durable, so cancellation stands and a
+        later retry is a fresh first attempt.
         """
         if commit.cancelled():
             # The thread task itself was torn down (event-loop shutdown), so
             # the outcome is unknowable — precisely the frozen ambiguous case.
-            self._ambiguous_commits[table_id] = identity
+            self._ambiguous_commits[table_id] = identities[0]
             return
         error = commit.exception()
         if error is None:
             self._committed_sigs.add(table_id)
-            self._unobserved_commits[table_id] = identity
+            self._unobserved_commits.setdefault(table_id, set()).update(identities)
             logger.warning(
                 "Append committed during cancellation (store): archetype=%s "
-                "tick=%d; the rows are durable and an identical retry will "
-                "return its receipt without replaying",
+                "tick(s)=%s; the rows are durable and a retry carrying their "
+                "identities will not replay them",
                 table_id,
-                identity[2],
+                sorted({identity[2] for identity in identities}),
             )
         elif isinstance(error, CommitStateUnknownException):
-            self._ambiguous_commits[table_id] = identity
+            self._ambiguous_commits[table_id] = identities[0]
 
 
 class _AdmittedAsyncLancedbStore(AsyncLancedbStore):
@@ -559,6 +630,13 @@ class StorageService:
         # authoritative for discovery, and its location is a pure function
         # of the storage identity (see storage/catalog/sqlite.py).
         self._catalogs: dict[str, ControlCatalog] = {}
+        # App-table batches whose unconditional append committed while the
+        # caller was being cancelled. App tables carry no managed identity, so
+        # the batch is remembered by content fingerprint: a caller that treats
+        # CancelledError as "nothing happened" (e.g. the command audit log
+        # keeps its pending buffer) and resubmits the identical batch resolves
+        # durably instead of double-appending (issue #704).
+        self._unobserved_app_commits: dict[str, list[tuple[int, bytes]]] = {}
 
     @property
     def has_injected_session(self) -> bool:
@@ -962,10 +1040,17 @@ class StorageService:
         table_name: str,
         rows: DataFrame,
     ) -> int:
-        """Register, align, materialize, and append with optimistic retry."""
+        """Register, align, materialize, and append with optimistic retry.
+
+        An unconditional append has no key to dedup on, so a commit that lands
+        while the caller is being cancelled is remembered by content
+        fingerprint; a resubmission of the identical batch consumes that
+        record and reports durable success without a second physical write.
+        """
         self._require_frame(rows)
         store = await self._iceberg_store(storage_config)
         frozen: DataFrame | None = None
+        fingerprint: bytes | None = None
         rows_written = 0
 
         for attempt in range(_MAX_COMMIT_ATTEMPTS):
@@ -981,6 +1066,21 @@ class StorageService:
                             num_preview_rows=0,
                         )
                         rows_written = frozen.count_rows()
+                        unobserved = self._unobserved_app_commits.get(table_name)
+                        if unobserved:
+                            fingerprint = _frame_fingerprint(frozen)
+                            record = (rows_written, fingerprint)
+                            if record in unobserved:
+                                unobserved.remove(record)
+                                if not unobserved:
+                                    del self._unobserved_app_commits[table_name]
+                                logger.info(
+                                    "Append already durable (app table %r): the "
+                                    "identical batch committed during an earlier "
+                                    "cancelled call; not replayed",
+                                    table_name,
+                                )
+                                return rows_written
                     if rows_written:
                         commit = asyncio.ensure_future(
                             asyncio.to_thread(
@@ -993,6 +1093,12 @@ class StorageService:
                         try:
                             await _join_worker(commit)
                         except asyncio.CancelledError:
+                            if not commit.cancelled() and commit.exception() is None:
+                                if fingerprint is None:
+                                    fingerprint = _frame_fingerprint(frozen)
+                                self._unobserved_app_commits.setdefault(table_name, []).append(
+                                    (rows_written, fingerprint)
+                                )
                             _log_commit_outlived_cancellation(commit, table_name)
                             raise
                     return rows_written
