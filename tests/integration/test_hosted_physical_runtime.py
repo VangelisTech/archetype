@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,6 +30,7 @@ from archetype.physical_ai.hosted_episode import (
     build_hosted_episode_results,
 )
 from archetype.physical_ai.hosted_modal import ModalHostedEpisodeProvider
+from archetype.storage.activity_catalog import SqliteActivityCatalog
 from archetype.storage.config import ControlCatalogConfig
 from archetype.wiring import RuntimeBootstrapConfig
 from archetype.world.registry import WorldRegistry
@@ -177,19 +179,29 @@ async def test_public_hosted_episode_recovers_without_replay_and_isolates_fork(
             world_registry=first_registry,
             audit_storage_config=storage,
             hosted_episode_provider_factory=provider_factory,
-            hosted_activity_lease_seconds=0.5,
+            hosted_activity_lease_seconds=300,
         ),
         RuntimeBootstrapConfig(
             control_catalog_config=catalog,
             world_registry=second_registry,
             audit_storage_config=storage,
             hosted_episode_provider_factory=provider_factory,
-            hosted_activity_lease_seconds=0.5,
+            hosted_activity_lease_seconds=300,
         ),
     ]
     monkeypatch.setattr(
         "archetype.runtime.runtime._bootstrap_config",
         lambda **_kwargs: configs.pop(0),
+    )
+    # Lease expiry between the two runtime generations is driven by this
+    # manual clock instead of racing a sub-second wall-clock lease against
+    # runner load (issue #720): within a phase the clock is frozen, so the
+    # crashed generation's claim cannot expire while its episode is still
+    # running.
+    clock = [time.time()]
+    monkeypatch.setattr(
+        "archetype.wiring.SqliteActivityCatalog",
+        lambda path: SqliteActivityCatalog(path, now_seconds=lambda: clock[0]),
     )
 
     activity_id = "restart-proof"
@@ -206,7 +218,7 @@ async def test_public_hosted_episode_recovers_without_replay_and_isolates_fork(
             )
 
     assert state.execution_count == 1
-    await asyncio.sleep(0.55)
+    clock[0] += 301.0
 
     state.registry = second_registry
     async with ArchetypeRuntime() as runtime:

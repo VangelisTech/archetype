@@ -141,7 +141,9 @@ async def test_stop_admission_then_wait_drained_joins_admitted_autoresearch(
             prepare_candidate=prepare_candidate,
         )
         operation = asyncio.create_task(dispatcher.apply(model))
-        await asyncio.wait_for(entered.wait(), timeout=1)
+        # Generous under CI load (issue #720): reaching prepare_candidate
+        # includes Iceberg writes and admission on a shared loaded runner.
+        await asyncio.wait_for(entered.wait(), timeout=30)
 
         drain: asyncio.Task[None] | None = None
         try:
