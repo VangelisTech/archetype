@@ -380,7 +380,10 @@ def _task() -> AgentTask:
         (
             CommandValidator(
                 "focused",
-                ("sh", "-lc", 'test "$(cat implementation.txt)" = fixed'),
+                # Plain non-login shell: -l would source the runner's profile
+                # (bash-specific in the CI container) and make the validator's
+                # return code environment-dependent.
+                ("sh", "-c", 'test "$(cat implementation.txt)" = fixed'),
             ),
         ),
         max_dispatches=1,
