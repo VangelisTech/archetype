@@ -682,3 +682,86 @@ def test_adjudication_evidence_paths_must_be_real():
         scoped_files=["new.py", "old.py"],
     )
     assert normalized["evidence"][0]["path"] == "pyproject.toml"
+
+
+def test_adjudication_evidence_line_suffix_is_normalized():
+    """``path:line`` citations of real files validate as the bare path.
+
+    Adjudicator models habitually append ``:line`` or ``:start-end`` to the
+    files they cite; the location belongs in the explanation, but it must not
+    fail the seat when the underlying file is real.
+    """
+    raw = {
+        "head_sha": HEAD_SHA,
+        "cluster_id": "cluster-1",
+        "disposition": "confirmed",
+        "recommended_severity": "blocking",
+        "evidence": [
+            {
+                "path": "old.py:12-40",
+                "explanation": "The failing sequence is reproducible at lines 12-40.",
+            },
+            {
+                "path": "pyproject.toml:7",
+                "explanation": "The declared dependency contradicts the claim baseline.",
+            },
+        ],
+        "rationale": (
+            "Both citations point at real repository files; the line suffixes "
+            "are a formatting habit, not fabricated evidence."
+        ),
+        "recommended_action": "Keep the claim blocking in the receipt.",
+    }
+
+    normalized = normalize_adjudication_result(
+        raw,
+        head_sha=HEAD_SHA,
+        cluster_id="cluster-1",
+        scoped_files=["new.py", "old.py"],
+    )
+    assert [item["path"] for item in normalized["evidence"]] == [
+        "old.py",
+        "pyproject.toml",
+    ]
+
+
+def test_adjudication_evidence_rejects_review_working_files():
+    """The gate's own scratch files are prompt inputs, never evidence.
+
+    They exist in the working directory while the gate runs, so the
+    filesystem check alone would accept them even though they prove nothing
+    about the repository.
+    """
+    raw = {
+        "head_sha": HEAD_SHA,
+        "cluster_id": "cluster-1",
+        "disposition": "confirmed",
+        "recommended_severity": "advisory",
+        "evidence": [
+            {
+                "path": ".footgun-review.diff:7607-7631",
+                "explanation": "The hunk shows the claimed behavior in the diff itself.",
+            }
+        ],
+        "rationale": (
+            "Citing the review diff instead of the repository file must fail "
+            "validation deterministically rather than by filesystem accident."
+        ),
+        "recommended_action": "Downgrade the claim to advisory in the receipt.",
+    }
+
+    for path in (
+        ".footgun-review.diff:7607-7631",
+        ".footgun-review.diff",
+        ".footgun-review-scope.json",
+        ".footgun-review-output/validated/preliminary-review-bundle.json:2390-2424",
+        ".footgun-review-output/validated/preliminary-review-bundle.json",
+    ):
+        raw["evidence"][0]["path"] = path
+        with pytest.raises(ReviewError, match="review working file"):
+            normalize_adjudication_result(
+                raw,
+                head_sha=HEAD_SHA,
+                cluster_id="cluster-1",
+                scoped_files=["new.py", "old.py"],
+            )

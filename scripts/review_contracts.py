@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from string import Template
@@ -1059,6 +1060,31 @@ def normalize_lens_result(
     }
 
 
+# The gate's own scratch files. The adjudication prompt directs the model to
+# read them, so models cite them as evidence; they prove nothing about the
+# repository and must be rejected by name rather than by filesystem accident
+# (they exist in the working directory while the gate runs).
+_REVIEW_WORKING_FILES = frozenset(
+    {
+        ".footgun-review.diff",
+        ".footgun-review-scope.json",
+    }
+)
+_REVIEW_WORKING_DIR_PREFIX = ".footgun-review-output/"
+_EVIDENCE_LINE_SUFFIX = re.compile(r":\d+(?:-\d+)?$")
+
+
+def _adjudication_evidence_path(path: str) -> str:
+    """Normalize a model-cited evidence path to a bare repository path.
+
+    Models habitually cite ``path:line`` or ``path:start-end``. The location
+    detail is welcome in the explanation, but the existence check needs the
+    bare path — otherwise every line-suffixed citation of a real file fails
+    validation and the adjudication seat dies for a formatting habit.
+    """
+    return _EVIDENCE_LINE_SUFFIX.sub("", path)
+
+
 def normalize_adjudication_result(
     raw_result: Mapping[str, Any],
     *,
@@ -1097,13 +1123,21 @@ def normalize_adjudication_result(
         label = f"adjudication evidence[{index}]"
         item = _expect_mapping(raw_evidence, label)
         _exact_keys(item, ("path", "explanation"), label)
-        path = _text(item.get("path"), f"{label}.path")
+        path = _adjudication_evidence_path(
+            _text(item.get("path"), f"{label}.path"),
+        )
         # An adjudication can downgrade a blocking claim to advisory — and
         # advisory findings no longer publish as threads — so a hallucinated
         # evidence path would make a blocking claim silently disappear from
         # review. Evidence must name a file the adjudicator could actually
         # have seen: a scoped changed file or a real protected-base file
         # (the gate runs with the protected base as the working directory).
+        # The gate's own working files are prompt inputs, not evidence.
+        if path in _REVIEW_WORKING_FILES or path.startswith(_REVIEW_WORKING_DIR_PREFIX):
+            raise ReviewError(
+                f"{label}.path {path!r} is a review working file; cite the "
+                "repository file that carries the evidence instead"
+            )
         if path not in scoped_files and not Path(path).is_file():
             raise ReviewError(
                 f"{label}.path {path!r} is neither a scoped file nor a "

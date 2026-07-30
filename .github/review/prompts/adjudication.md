@@ -21,6 +21,14 @@ refutation. Preserve disagreement:
 Do not edit files, run code, fetch URLs, post comments, or inspect another
 cluster. Use only read, grep, glob, and list capabilities.
 
+Every `evidence[].path` must be a repository file — a scoped changed file or a
+protected-base file — written as the bare path with no line-number suffix
+(`src/pkg/module.py`, never `src/pkg/module.py:12-40`). Put line numbers in the
+explanation. The review working files you were told to read
+(`.footgun-review.diff`, `.footgun-review-scope.json`, anything under
+`.footgun-review-output/`) are prompt inputs, not evidence; citing them fails
+validation.
+
 Return exactly one JSON object matching this schema:
 
 $output_schema
