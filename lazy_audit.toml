@@ -351,6 +351,48 @@ reason = "Managed-write boundary: the admitted world append materializes its pla
 
 [[entries]]
 path = "src/archetype/storage/service.py"
+symbol = "_frame_fingerprint"
+expr = "frame.to_arrow"
+method = "to_arrow"
+reason = "Replay-detection boundary: the frame is the already-collected append_table payload, so this is an in-memory Arrow conversion hashed to recognize an identical batch resubmitted after a cancellation-landed commit; no plan re-executes."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "_AdmittedAsyncStore._payload_identities"
+expr = "unique['world_id'].to_pylist"
+method = "to_pylist"
+reason = "Durability bookkeeping on the already-materialized Arrow payload: the distinct managed identity keys (bounded by ticks per batch, normally one) enter Python so cancellation-landed commits are never replayed and merged cached retries never acknowledge unwritten rows."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "_AdmittedAsyncStore._payload_identities"
+expr = "unique['run_id'].to_pylist"
+method = "to_pylist"
+reason = "Durability bookkeeping on the already-materialized Arrow payload: the distinct managed identity keys (bounded by ticks per batch, normally one) enter Python so cancellation-landed commits are never replayed and merged cached retries never acknowledge unwritten rows."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "_AdmittedAsyncStore._payload_identities"
+expr = "unique['tick'].to_pylist"
+method = "to_pylist"
+reason = "Durability bookkeeping on the already-materialized Arrow payload: the distinct managed identity keys (bounded by ticks per batch, normally one) enter Python so cancellation-landed commits are never replayed and merged cached retries never acknowledge unwritten rows."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "_AdmittedAsyncStore._payload_identities"
+expr = "unique['commit_token'].to_pylist"
+method = "to_pylist"
+reason = "Durability bookkeeping on the already-materialized Arrow payload: the distinct managed identity keys (bounded by ticks per batch, normally one) enter Python so cancellation-landed commits are never replayed and merged cached retries never acknowledge unwritten rows."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "_AdmittedAsyncStore._payload_identities"
+expr = "unique['writer_epoch'].to_pylist"
+method = "to_pylist"
+reason = "Durability bookkeeping on the already-materialized Arrow payload: the distinct managed identity keys (bounded by ticks per batch, normally one) enter Python so cancellation-landed commits are never replayed and merged cached retries never acknowledge unwritten rows."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
 symbol = "StorageService.append_missing"
 expr = "aligned.collect"
 method = "collect"

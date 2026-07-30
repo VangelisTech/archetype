@@ -522,6 +522,130 @@ async def test_managed_iceberg_ambiguous_commit_is_typed_and_never_replayed(
 
 
 @pytest.mark.asyncio
+async def test_cancelled_conditional_append_holds_until_commit_settles(tmp_path, monkeypatch):
+    """Cancellation cannot orphan a live Iceberg commit thread (issue #704).
+
+    The commit worker cannot be interrupted, so the service must not let
+    CancelledError escape — releasing the execution gate — while the commit is
+    still in flight: a retry issued after such an escape would race the
+    orphaned commit and double-append the same payload.
+    """
+    service = StorageService()
+    storage = _storage(tmp_path)
+    rows = {"event_id": ["e1"], "value": [1]}
+    order: list[str] = []
+    commit_started = threading.Event()
+    original_write = daft.DataFrame.write_iceberg
+
+    def slow_write(frame, *args, **kwargs):
+        commit_started.set()
+        time.sleep(0.25)
+        result = original_write(frame, *args, **kwargs)
+        order.append("commit-settled")
+        return result
+
+    monkeypatch.setattr(daft.DataFrame, "write_iceberg", slow_write)
+    try:
+        append = asyncio.create_task(
+            service.append_missing(
+                storage,
+                "unique_events",
+                daft.from_pydict(rows),
+                key_columns=("event_id",),
+            )
+        )
+        assert await asyncio.to_thread(commit_started.wait, 10)
+        append.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(append, timeout=30)
+        order.append("cancellation-escaped")
+        assert order == ["commit-settled", "cancellation-escaped"]
+
+        monkeypatch.setattr(daft.DataFrame, "write_iceberg", original_write)
+        retried = await asyncio.wait_for(
+            service.append_missing(
+                storage,
+                "unique_events",
+                daft.from_pydict(rows),
+                key_columns=("event_id",),
+            ),
+            timeout=30,
+        )
+        assert retried == 0
+        stored = (await service.read_table(storage, "unique_events")).to_pylist()
+        assert stored == [{"event_id": "e1", "value": 1}]
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_managed_commit_is_durable_and_never_replayed(tmp_path, monkeypatch):
+    """A managed tick commit that lands during cancellation is not re-appended.
+
+    The commit outcome settles before CancelledError escapes the store, the
+    committed-signature bookkeeping reflects the landed commit, and retrying
+    the identical payload resolves durably without a second physical copy
+    (issue #704).
+    """
+    storage = _storage(tmp_path)
+    service = StorageService(session=configure_session(storage))
+    signature = Archetype.sig_from_components([ManagedWriteProbe()])
+    order: list[str] = []
+    commit_started = threading.Event()
+    try:
+        store = await service.get_or_create_store(storage)
+        original_append_table = store._append_table
+
+        def slow_append_table(table, frame):
+            commit_started.set()
+            time.sleep(0.25)
+            original_append_table(table, frame)
+            order.append("commit-settled")
+
+        monkeypatch.setattr(store, "_append_table", slow_append_table)
+        updater = AsyncUpdateManager(store)
+        update = asyncio.create_task(
+            updater.update(
+                _managed_rows(5),
+                signature,
+                5,
+                "cancel-world",
+                "cancel-run",
+                commit=CommitContext(commit_token="cancel-token", writer_epoch=2),
+            )
+        )
+        assert await asyncio.to_thread(commit_started.wait, 10)
+        update.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(update, timeout=30)
+        order.append("cancellation-escaped")
+        assert order == ["commit-settled", "cancellation-escaped"]
+
+        # The slow write stays patched: a replay would append a second
+        # "commit-settled" entry and a second physical row.
+        await asyncio.wait_for(
+            updater.update(
+                _managed_rows(5),
+                signature,
+                5,
+                "cancel-world",
+                "cancel-run",
+                commit=CommitContext(commit_token="cancel-token", writer_epoch=2),
+            ),
+            timeout=30,
+        )
+        assert order == ["commit-settled", "cancellation-escaped"]
+        physical = (
+            await store.get_archetype_df(signature, "cancel-world", "cancel-run")
+        ).to_pylist()
+        assert [(row["managedwriteprobe__value"], row["commit_token"]) for row in physical] == [
+            (5, "cancel-token")
+        ]
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_real_iceberg_conflict_recomputes_conditional_append(tmp_path):
     """A losing writer refreshes and anti-joins again instead of duplicating a key."""
     storage = _storage(tmp_path)
@@ -578,3 +702,197 @@ async def test_real_iceberg_conflict_recomputes_conditional_append(tmp_path):
     finally:
         await first.shutdown()
         await second.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_two_cancelled_landed_commits_both_resolve_without_replay(tmp_path, monkeypatch):
+    """Unobserved commit identities accumulate instead of overwriting.
+
+    Two different ticks each land during a cancelled call. Retrying the first
+    tick must still recognize it as durable even though the second landed
+    later — one recorded identity per table is not enough (PR #727 review).
+    """
+    storage = _storage(tmp_path)
+    service = StorageService(session=configure_session(storage))
+    signature = Archetype.sig_from_components([ManagedWriteProbe()])
+    commits: list[int] = []
+    commit_started = threading.Event()
+    try:
+        store = await service.get_or_create_store(storage)
+        original_append_table = store._append_table
+
+        def slow_append_table(table, frame):
+            commit_started.set()
+            time.sleep(0.25)
+            original_append_table(table, frame)
+            commits.append(1)
+
+        monkeypatch.setattr(store, "_append_table", slow_append_table)
+        updater = AsyncUpdateManager(store)
+
+        async def cancelled_landed_update(tick: int, token: str) -> None:
+            commit_started.clear()
+            update = asyncio.create_task(
+                updater.update(
+                    _managed_rows(tick),
+                    signature,
+                    tick,
+                    "cancel-world",
+                    "cancel-run",
+                    commit=CommitContext(commit_token=token, writer_epoch=2),
+                )
+            )
+            assert await asyncio.to_thread(commit_started.wait, 10)
+            update.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(update, timeout=30)
+
+        await cancelled_landed_update(5, "token-five")
+        await cancelled_landed_update(6, "token-six")
+        assert len(commits) == 2
+
+        # Retry the FIRST tick: with single-slot bookkeeping the tick-6 record
+        # would have evicted tick 5 and this replay would double-append.
+        for tick, token in ((5, "token-five"), (6, "token-six")):
+            await asyncio.wait_for(
+                updater.update(
+                    _managed_rows(tick),
+                    signature,
+                    tick,
+                    "cancel-world",
+                    "cancel-run",
+                    commit=CommitContext(commit_token=token, writer_epoch=2),
+                ),
+                timeout=30,
+            )
+        assert len(commits) == 2
+
+        physical = (
+            await store.get_archetype_df(signature, "cancel-world", "cancel-run")
+        ).to_pylist()
+        assert sorted(row["tick"] for row in physical) == [5, 6]
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cached_retry_after_cancelled_flush_appends_only_new_rows(tmp_path, monkeypatch):
+    """A merged cached flush never loses newer rows behind a landed batch.
+
+    When a cached flush is cancelled after its inner commit lands, the cache
+    restores the batch ahead of newer rows and retries them as one payload.
+    The store must not acknowledge the merged payload from the first row's
+    identity: the landed rows are filtered out, the newer rows are physically
+    appended (PR #727 review).
+    """
+    storage = _storage(tmp_path)
+    service = StorageService(session=configure_session(storage))
+    signature = Archetype.sig_from_components([ManagedWriteProbe()])
+    commit_started = threading.Event()
+    slow = True
+    try:
+        cached = await service.get_or_create_store(
+            storage,
+            cache_config=CacheConfig(flush_rows=1, flush_mb=64, global_mb=64, idle_sec=999),
+        )
+        inner = cached._inner
+        original_append_table = inner._append_table
+
+        def observed_append_table(table, frame):
+            commit_started.set()
+            if slow:
+                time.sleep(0.25)
+            original_append_table(table, frame)
+
+        monkeypatch.setattr(inner, "_append_table", observed_append_table)
+        updater = AsyncUpdateManager(cached)
+
+        flush = asyncio.create_task(
+            updater.update(
+                _managed_rows(1),
+                signature,
+                1,
+                "cache-world",
+                "cache-run",
+                commit=CommitContext(commit_token="token-one", writer_epoch=1),
+            )
+        )
+        assert await asyncio.to_thread(commit_started.wait, 10)
+        flush.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(flush, timeout=30)
+
+        # The cache restored the landed tick-1 batch; tick 2 now merges behind
+        # it and the next flush submits both ticks as one payload.
+        slow = False
+        await asyncio.wait_for(
+            updater.update(
+                _managed_rows(2),
+                signature,
+                2,
+                "cache-world",
+                "cache-run",
+                commit=CommitContext(commit_token="token-two", writer_epoch=1),
+            ),
+            timeout=30,
+        )
+
+        physical = (await inner.get_archetype_df(signature, "cache-world", "cache-run")).to_pylist()
+        assert sorted(row["tick"] for row in physical) == [1, 2]
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_append_table_resubmission_after_cancelled_landed_commit(tmp_path, monkeypatch):
+    """An identical app-table batch resubmitted after cancellation is not duplicated.
+
+    ``append_table`` is an unconditional append; a caller that buffers rows
+    (the command audit log) treats CancelledError as "nothing happened" and
+    resubmits the same batch. When the first commit landed during the
+    cancellation, the resubmission must resolve durably without a second
+    physical copy (PR #727 review).
+    """
+    service = StorageService()
+    storage = _storage(tmp_path)
+    batch = {"event_id": ["e1", "e2"], "value": [1, 2]}
+    commit_started = threading.Event()
+    original_write = daft.DataFrame.write_iceberg
+
+    def slow_write(frame, *args, **kwargs):
+        commit_started.set()
+        time.sleep(0.25)
+        return original_write(frame, *args, **kwargs)
+
+    monkeypatch.setattr(daft.DataFrame, "write_iceberg", slow_write)
+    try:
+        append = asyncio.create_task(
+            service.append_table(storage, "audit_rows", daft.from_pydict(batch))
+        )
+        assert await asyncio.to_thread(commit_started.wait, 10)
+        append.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(append, timeout=30)
+
+        retried = await asyncio.wait_for(
+            service.append_table(storage, "audit_rows", daft.from_pydict(batch)),
+            timeout=30,
+        )
+        assert retried == 2
+        stored = (await service.read_table(storage, "audit_rows")).sort("event_id").to_pylist()
+        assert [row["event_id"] for row in stored] == ["e1", "e2"]
+
+        # A genuinely different batch afterwards appends normally.
+        appended = await asyncio.wait_for(
+            service.append_table(
+                storage,
+                "audit_rows",
+                daft.from_pydict({"event_id": ["e3"], "value": [3]}),
+            ),
+            timeout=30,
+        )
+        assert appended == 1
+        stored = (await service.read_table(storage, "audit_rows")).sort("event_id").to_pylist()
+        assert [row["event_id"] for row in stored] == ["e1", "e2", "e3"]
+    finally:
+        await service.shutdown()
