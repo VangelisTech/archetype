@@ -2,76 +2,63 @@
 
 This file is the canonical record of what Archetype is, in the words of its founder, Everett Kleven (everettVT, the human)
 
-**The rule:** when describing Archetype's purpose, concepts, or vocabulary — in documentation, specifications, plans, prompts, commit messages, or PR bodies — cite this file verbatim or mark the sentence as an **unratified proposal**. Never silently coin a term. Never paraphrase a quote and present the paraphrase as the project's position. Everett ratifies additions; nothing enters this file by summarization. 
+**The rule:** when describing Archetype's purpose, concepts, or vocabulary — in documentation, specifications, plans, prompts, commit messages, or PR bodies — cite this file verbatim or mark the sentence as an **unratified proposal**. Never silently coin a term. Never paraphrase a quote and present the paraphrase as the project's position. Everett ratifies additions; nothing enters this file by summarization.
 
 Everything in quotation blocks below is verbatim Everett, dated. Connective
 prose outside quote blocks is scaffolding and carries no authority.
 
 ---
 
-
-
 ## What is Archetype?
 
-## Archetype is an AI-Native experimentation engine. 
+## Archetype is an AI-Native experimentation engine
 
-Build Worlds and run counterfactuals in parallel, locally or distributed. 
+Build Worlds and run counterfactuals in parallel, locally or distributed.
 
+Results are persisted as append-only ledger using Apache Iceberg.  or LanceDB so no state is lost and history is queryable with the same code you used to
 
-Results are persisted as append-only ledger using Apache Iceberg.  or LanceDB so no state is lost and history is queryable with the same code you used to 
+## What Daft gives us
 
-
-# What Daft gives us:
-
-- Distributed multimodal data processing. 
+- Distributed multimodal data processing.
 - Lazy evaluation
 - World-class I/O and AI integrations
 - Cloud-scale simulation and control
 
-# What Iceberg gives us:
+## What Iceberg gives us
 
 - ACID transactions - Ensures reliable, concurrent reads and writes with full data integrity.
 - Optimized metadata - Avoids costly full table scans by using indexed metadata for faster queries.
 - Full schema evolution - Allows adding, renaming, and deleting columns without rewriting data.
 
-Interact with Agent Sandboxes, Simulators, and other systems with Activities. 
+Interact with Agent Sandboxes, Simulators, and other systems with Activities.
 
-Run as many simulations as you want locally or distributed with native parallel world execution. 
+Run as many simulations as you want locally or distributed with native parallel world execution.
 
-Interact with Agent Sandboxes, Simulators, and 
+Interact with Agent Sandboxes, Simulators, and
 
+It combines the  lazy evaluation within the Entity-Component-System Game loop, its
 
+Big Data decouple Compute from Storage.
 
-It combines the  lazy evaluation within the Entity-Component-System Game loop, its 
+ECS decouples State from Behavior.
 
-Big Data decouple Compute from Storage. 
+Daft's lazy evaluation and world-class I/O and AI integrations provide the foundation for Petabyte scale simulation and control.
 
-ECS decouples State from Behavior. 
+It's data-centric design combines the following patterns to achieve cloud-scale
 
-Daft's lazy evaluation and world-class I/O and AI integrations provide the foundation for Petabyte scale simulation and control. 
+## data-centric design - distributed
 
-It's data-centric design combines the following patterns to achieve cloud-scale 
+The core engine is an ECS state machine powered by Daft Dataframes.
 
+Daft is a lazily evaluated multimodal dataengine optimized for Multimodal Data processing and Model Inference.
 
-
-## data-centric design - distributed. 
-
-The core engine is an ECS state machine powered by Daft Dataframes. 
-
-Daft is a lazily evaluated multimodal dataengine optimized for Multimodal Data processing and Model Inference. 
-
-
-
-Powered by Daft and Apache Iceberg (Apache Arrow Native), 
-
+Powered by Daft and Apache Iceberg (Apache Arrow Native),
 
 ### Worlds
 
-
-
 ### Components
 
-Components are typed entity state expressed as Pydantic dataclasses with convenience methods PyArrow schemas. 
+Components are typed entity state expressed as Pydantic dataclasses with convenience methods PyArrow schemas.
 
 ```python
 from archetype import Component
@@ -95,7 +82,7 @@ class Health(Component):
 >>> from archetype import Component
 >>> class Health(Component):
 ...     current: int = 100
-... 
+...
 >>> Health.to_arrow_schema()
 Schema(fields=[Field(name='current', dtype=int64, nullable=False)])
 ```
@@ -107,10 +94,9 @@ entity_id = await world.spawn(Position(x=1, y=2), Velocity(dx=3))
 await world.update(entity_id, Position(x=4, y=2))
 ```
 
-
 ### Processors
 
-Processors are modular behavior expressed as Daft Dataframes pipelines. 
+Processors are modular behavior expressed as Daft Dataframes pipelines.
 
 ```python
 
@@ -118,7 +104,7 @@ from daft import DataFrame
 from archetype import Processor
 
 # Stateless Daft User Defined Function
-@daft.func 
+@daft.func
 def add_ten(x: int) -> int:
     "Vectorized method for the processor."
     return x + 10
@@ -127,16 +113,7 @@ class HealthRegen(Processor):
     def process(self, df: DataFrame) -> DataFrame:
         return df.with_column("current", add_ten(col("current")))
 
-    
-
 Entities
-
-
-
-
-
-
-
 
 > Archetype is the result me, who takes on the design challenge of "what can Daft not do," goes as far as he can take it.
 >
@@ -170,8 +147,6 @@ Entities
 >
 > — Everett, 2026-07-26
 
-
-
 ## The tick
 
 > We're only ever running Daft for a single tick. A single tick could take a
@@ -185,8 +160,6 @@ Entities
 > transition authority from a task level for agents.
 >
 > — Everett, 2026-07-26
-
-
 
 ## Resources and Activities
 
@@ -210,11 +183,9 @@ Entities
 >
 > — Everett, 2026-07-26
 
-
-
 ## Vocabulary
 
-Components (Modular Schema) expressed as Pydantic Classes that are automatically converted into PyArrow Schemas. 
+Components (Modular Schema) expressed as Pydantic Classes that are automatically converted into PyArrow Schemas.
 
 Processors (Modular Behavior
 
@@ -223,7 +194,7 @@ Entities (The composition of multiple components. identity keyed by monotonicall
 Worlds: a runtime container for a simulation
 
 - forks
-- 
+-
 
 Simulations
 
@@ -257,8 +228,6 @@ names; use them.
 (Everett, 2026-07-25). Domain-specific participant, policy, agent,
 environment, and task context remain domain-owned.
 
-
-
 ## Design posture
 
 > We identified that the durability we were building distracted from the
@@ -280,8 +249,6 @@ environment, and task context remain domain-owned.
 
 ---
 
-
-
 ## Maintenance
 
 - Additions are verbatim, dated quotes ratified by Everett. No summaries.
@@ -289,4 +256,3 @@ environment, and task context remain domain-owned.
 the documentation is the bug.
 - Agents proposing new concepts or names must label them proposals and leave
 them out of docs, specs, and schemas until ratified here.
-
