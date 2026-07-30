@@ -9,7 +9,7 @@ machine authority; this page is its review surface.
 | --- | --- | --- | --- | --- | --- |
 | `observability.signals.safe` | `observability` | high | [docs/guide/observability.md](../guide/observability.md) — 1. Safe signal contract | pytest: 2 | `pr`, `main`, `release` |
 | `observability.logging.correlated` | `observability` | medium | [docs/guide/observability.md](../guide/observability.md) — 5. Process-host ownership | pytest: 2 | `pr`, `main`, `release` |
-| `observability.repository.enforced` | `observability` | high | [docs/guide/observability.md](../guide/observability.md) — 6. Family dispositions | pytest: 2; static: 1 | `pr`, `main`, `release` |
+| `observability.repository.enforced` | `observability` | high | [docs/guide/observability.md](../guide/observability.md) — 6. Family dispositions | pytest: 1; static: 1 | `pr`, `main`, `release` |
 | `missions.environment.pinned` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 5. Sandbox and validator protocol | pytest: 3; static: 1 | `pr`, `main`, `release` |
 | `architecture.dependencies.enforced` | `app` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 11. Static enforcement | pytest: 1; static: 1; eval: 2 | `pr`, `main`, `release` |
 | `architecture.v0_5.target_dag` | `architecture` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 13. Accepted v0.5 target architecture | pytest: 1 | `pr`, `main`, `release` |

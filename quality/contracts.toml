@@ -35,7 +35,6 @@ owner = "observability"
 risk = "high"
 pytest = [
     "tests/scripts/test_check_observability.py",
-    "tests/scripts/test_footgun_review_gate.py",
 ]
 static = ["scripts/check_observability.py"]
 evals = []

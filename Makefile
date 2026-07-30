@@ -444,11 +444,11 @@ operational-external:
 		--out operational-external-results.json
 
 .PHONY: verify-pr
-verify-pr: static test-cov eval-conformance eval-capability package-smoke examples-smoke operational-runtime operational-commands operational-wheel docs
+verify-pr: static test
 	@echo "PR verification profile passed"
 
 .PHONY: verify-full
-verify-full: verify-pr test-process eval-reliability
+verify-full: static test-cov eval-conformance eval-capability package-smoke examples-smoke operational-runtime operational-commands operational-wheel docs test-process eval-reliability
 	@echo "Full verification profile passed"
 
 .PHONY: verify-release

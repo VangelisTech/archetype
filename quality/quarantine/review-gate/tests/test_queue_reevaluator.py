@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Contracts for the scheduled queue-readiness re-evaluator.
+"""Quarantined contracts for the retired queue-readiness re-evaluator.
 
 The automerge workflow is event-driven; the re-evaluator is the event-free
 half of the same arming contract (thread resolution emits no Actions event).

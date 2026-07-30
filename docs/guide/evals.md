@@ -98,16 +98,12 @@ diagnostic groupings:
 An empty requested profile or suite is a failure, never a vacuous success. A
 full unprofiled run requires all four suites to be present and passing.
 
-The local PR verification profile runs static validation, pytest with coverage,
-conformance and capability evals, installed-wheel smoke checks, executable
-examples, and documentation validation. The required GitHub `evals` context
-also runs reliability once on Python 3.12 before verifying the installed wheel;
-the ordinary Python matrix owns compatibility tests, while examples and docs
-retain their own required contexts. Credentialed infrastructure remains a
-separate conditional job. Main additionally runs process tests. Local release
-verification extends the PR profile with process and reliability evidence, so
-capability, examples, and documentation cannot silently disappear from a
-release.
+The local PR verification profile runs static validation and the fast pytest
+suite on Python 3.12. Coverage, conformance, capability, reliability,
+installed-wheel smoke checks, executable examples, documentation,
+credentialed infrastructure, and compatibility evidence do not block ordinary
+pull requests. The full and release profiles retain that deeper evidence so it
+cannot silently disappear from a release.
 
 ## Suite package layout
 

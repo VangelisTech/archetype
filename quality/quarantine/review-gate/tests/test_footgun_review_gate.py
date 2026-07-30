@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""End-to-end contracts for deterministic scope, rendering, and workflow wiring."""
+"""Quarantined contracts for the retired deterministic review workflow."""
 
 from __future__ import annotations
 
