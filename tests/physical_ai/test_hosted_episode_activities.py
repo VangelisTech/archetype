@@ -5,7 +5,8 @@
 
 from __future__ import annotations
 
-import asyncio
+import time
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -263,12 +264,17 @@ def _open_catalog(
     path: Path,
     *,
     lease_seconds: float = 0.01,
+    now_seconds: Callable[[], float] | None = None,
 ) -> tuple[
     SqliteActivityCatalog,
     ActivityCoordinator,
     PhysicalHostedActivityCoordinator,
 ]:
-    physical = SqliteActivityCatalog(path)
+    physical = (
+        SqliteActivityCatalog(path)
+        if now_seconds is None
+        else SqliteActivityCatalog(path, now_seconds=now_seconds)
+    )
     generic = ActivityCoordinator(physical)
     return (
         physical,
@@ -353,7 +359,15 @@ async def test_cold_restart_recovers_first_provider_result_without_second_episod
             intent=intent,
         )
     )
-    physical, generic, catalog = _open_catalog(catalog_path)
+    # Lease expiry between process generations is driven by this manual
+    # clock, not by racing wall-clock leases against runner load (issue
+    # #720). Within a phase the clock is frozen, so no lease can expire
+    # mid-run.
+    clock = [time.time()]
+    physical, generic, catalog = _open_catalog(
+        catalog_path,
+        now_seconds=lambda: clock[0],
+    )
     projector = PhysicalHostedActivityProjector(
         reader=reader,
         catalog=catalog,
@@ -388,7 +402,7 @@ async def test_cold_restart_recovers_first_provider_result_without_second_episod
         await first_worker.run_once()
     assert first_runner.execution_count == 1
     await physical.close()
-    await asyncio.sleep(0.02)
+    clock[0] += 301.0
 
     # Reconstruct every Archetype-side object. The provider index is the first
     # durable result, so generic catalog recording cannot trigger another run.
@@ -396,6 +410,7 @@ async def test_cold_restart_recovers_first_provider_result_without_second_episod
     recovered_physical, recovered_generic, recovered_catalog = _open_catalog(
         catalog_path,
         lease_seconds=30,
+        now_seconds=lambda: clock[0],
     )
     recovered_runner = SeededHostedEpisodeRunner(counter_path)
     crash_before_stage = _ObservationStager(crash_once=True)
@@ -418,7 +433,10 @@ async def test_cold_restart_recovers_first_provider_result_without_second_episod
     await recovered_physical.close()
 
     # A third process redelivers the bounded result and stages the same marker.
-    final_physical, _final_generic, final_catalog = _open_catalog(catalog_path)
+    final_physical, _final_generic, final_catalog = _open_catalog(
+        catalog_path,
+        now_seconds=lambda: clock[0],
+    )
     final_stager = _ObservationStager()
     final_runner = SeededHostedEpisodeRunner(counter_path)
     final_worker = PhysicalHostedActivityWorker(
@@ -444,7 +462,10 @@ async def test_cold_restart_recovers_first_provider_result_without_second_episod
     # The worker dies after staging but before a tick commits. A new process has
     # no staged mutation, so it redelivers the same immutable marker and still
     # does not touch the provider.
-    restage_physical, restage_generic, restage_catalog = _open_catalog(catalog_path)
+    restage_physical, restage_generic, restage_catalog = _open_catalog(
+        catalog_path,
+        now_seconds=lambda: clock[0],
+    )
     restage_stager = _ObservationStager()
     restage_worker = PhysicalHostedActivityWorker(
         world_id=world_id,
@@ -567,7 +588,14 @@ async def test_lease_expiry_does_not_replay_an_ambiguous_provider_start(
             intent=intent,
         )
     )
-    physical, _generic, catalog = _open_catalog(catalog_path)
+    # Lease expiry is driven by this manual clock, not by racing a 10ms
+    # wall-clock lease against runner load (issue #720). Within a phase the
+    # clock is frozen, so no lease can expire mid-run.
+    clock = [time.time()]
+    physical, _generic, catalog = _open_catalog(
+        catalog_path,
+        now_seconds=lambda: clock[0],
+    )
     await PhysicalHostedActivityProjector(
         reader=reader,
         catalog=catalog,
@@ -589,9 +617,12 @@ async def test_lease_expiry_does_not_replay_an_ambiguous_provider_start(
         await first.run_once()
     assert seeded.execution_count == 1
     await physical.close()
-    await asyncio.sleep(0.02)
+    clock[0] += 301.0
 
-    recovered_physical, _generic, recovered_catalog = _open_catalog(catalog_path)
+    recovered_physical, _generic, recovered_catalog = _open_catalog(
+        catalog_path,
+        now_seconds=lambda: clock[0],
+    )
     healthy_runner = SeededHostedEpisodeRunner(counter_path)
     recovered = PhysicalHostedActivityWorker(
         world_id=world_id,
@@ -1044,3 +1075,130 @@ async def test_pending_results_page_past_a_full_batch(
     deliveries = await catalog.pending_episode_results(world_id=world_id)
 
     assert sorted(delivery.activity_id for delivery in deliveries) == activity_ids
+
+
+@pytest.mark.asyncio
+async def test_scoped_run_once_processes_its_own_episode_not_an_older_claim(
+    tmp_path: Path,
+) -> None:
+    """An operation-scoped run_once must execute exactly its admitted Activity.
+
+    With two in-flight episodes in one world, the unscoped claim previously
+    handed the newer operation the older pending Activity, so the newer call
+    executed foreign work and then failed over its own missing observation.
+    """
+
+    world_id = "physical-world"
+    values = LocalHostedEpisodeValueStore(tmp_path / "values")
+    physical, _generic, catalog = _open_catalog(
+        tmp_path / "activities.db",
+        lease_seconds=300,
+    )
+    receipt = CommittedTickReceipt(world_id, "run-a", 1, "token-1", 0)
+    for activity_id in ("episode-older", "episode-newer"):
+        request = await values.put_request(_request(world_id, activity_id))
+        await catalog.admit_episode(
+            world_id=world_id,
+            receipt=receipt,
+            activity_id=activity_id,
+            request=request,
+        )
+
+    runner = SeededHostedEpisodeRunner(tmp_path / "provider-executions.json")
+    stager = _ObservationStager()
+    worker = PhysicalHostedActivityWorker(
+        world_id=world_id,
+        owner="operation-worker",
+        catalog=catalog,
+        values=values,
+        provider=LocalDurableHostedEpisodeProvider(tmp_path / "provider", runner=runner),
+        stager=stager,
+    )
+
+    assert await worker.run_once(activity_id="episode-newer")
+
+    assert set(stager.observations) == {(world_id, "episode-newer")}
+    assert await catalog.episode_result(world_id=world_id, activity_id="episode-newer") is not None
+    assert await catalog.episode_result(world_id=world_id, activity_id="episode-older") is None
+    assert runner.execution_count == 1
+
+    # A completed Activity is redelivered, never re-executed, by another
+    # scoped pass; the older episode still executes only under its own scope.
+    assert await worker.run_once(activity_id="episode-newer")
+    assert runner.execution_count == 1
+    assert await worker.run_once(activity_id="episode-older")
+    assert set(stager.observations) == {
+        (world_id, "episode-newer"),
+        (world_id, "episode-older"),
+    }
+    assert runner.execution_count == 2
+    await physical.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_unsettled_episode_does_not_unsettle_a_completed_one(
+    tmp_path: Path,
+) -> None:
+    """Settlement is per exact Activity and digest, not world quiescence.
+
+    A stale pending Activity from another episode previously flipped the
+    world-global unsettled oracle and failed an operation whose own
+    observation had already settled.
+    """
+
+    world_id = "physical-world"
+    values = LocalHostedEpisodeValueStore(tmp_path / "values")
+    physical, _generic, catalog = _open_catalog(
+        tmp_path / "activities.db",
+        lease_seconds=300,
+    )
+    receipt = CommittedTickReceipt(world_id, "run-a", 1, "token-1", 0)
+    for activity_id in ("episode-stale", "episode-done"):
+        request = await values.put_request(_request(world_id, activity_id))
+        await catalog.admit_episode(
+            world_id=world_id,
+            receipt=receipt,
+            activity_id=activity_id,
+            request=request,
+        )
+
+    stager = _ObservationStager()
+    worker = PhysicalHostedActivityWorker(
+        world_id=world_id,
+        owner="operation-worker",
+        catalog=catalog,
+        values=values,
+        provider=LocalDurableHostedEpisodeProvider(
+            tmp_path / "provider",
+            runner=SeededHostedEpisodeRunner(tmp_path / "provider-executions.json"),
+        ),
+        stager=stager,
+    )
+    assert await worker.run_once(activity_id="episode-done")
+    observation = stager.observations[(world_id, "episode-done")]
+    await catalog.settle_episode_observation(
+        world_id=world_id,
+        activity_id="episode-done",
+        result_digest=observation.result_digest,
+        receipt=CommittedTickReceipt(world_id, "run-a", 2, "token-2", 0),
+    )
+
+    # The stale episode keeps the world globally unsettled...
+    assert await catalog.has_unsettled_work(world_id)
+    # ...yet the completed operation's own settlement holds exactly.
+    assert await catalog.episode_settled(
+        world_id=world_id,
+        activity_id="episode-done",
+        result_digest=observation.result_digest,
+    )
+    assert not await catalog.episode_settled(
+        world_id=world_id,
+        activity_id="episode-stale",
+        result_digest=observation.result_digest,
+    )
+    assert not await catalog.episode_settled(
+        world_id=world_id,
+        activity_id="episode-done",
+        result_digest="b" * 64,
+    )
+    await physical.close()

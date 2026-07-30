@@ -420,6 +420,26 @@ def _text_manifest(value: str) -> dict[str, str | int]:
     }
 
 
+def _design_brief_bundle_projection(review_bundle: Mapping[str, Any]) -> dict[str, Any]:
+    raw_lenses = review_bundle.get("lenses", [])
+    if not isinstance(raw_lenses, list):
+        raise ReviewError("review bundle lenses must be a list")
+    canonical_lenses = json.dumps(
+        raw_lenses,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    projection = {key: value for key, value in review_bundle.items() if key != "lenses"}
+    projection["lenses_manifest"] = {
+        "count": len(raw_lenses),
+        "sha256": hashlib.sha256(canonical_lenses.encode("utf-8")).hexdigest(),
+        "character_count": len(canonical_lenses),
+    }
+    projection["artifact_digest"] = artifact_digest(review_bundle)
+    return projection
+
+
 def _render_path_manifest(paths: Sequence[str]) -> str:
     # Repository paths are candidate-controlled and Git permits control
     # characters. JSON string encoding keeps each path on one inert line
@@ -1313,6 +1333,19 @@ def _render_template(name: str, values: Mapping[str, str]) -> str:
         raise ReviewError(f"review prompt {path} has an unresolved placeholder: {error}") from error
 
 
+def _inspection_capabilities(reviewer_id: str) -> str:
+    backend = reviewer_spec(reviewer_id)["backend"]
+    if backend == "codex":
+        return (
+            "Use the read-only shell only for non-mutating repository inspection "
+            "commands such as `git show`, `rg`, `sed`, `find`, `ls`, and `cat`. "
+            "Read `.footgun-review.diff` directly with `sed` or `cat`; do not run "
+            "`git diff` against it because it is an untracked inert data file, not "
+            "the checkout."
+        )
+    return "Use only read, grep, glob, and list capabilities."
+
+
 def render_lens_review_prompt(
     *,
     pr_number: int,
@@ -1337,6 +1370,7 @@ def render_lens_review_prompt(
             "rulebook": rulebook,
             "categories": "\n".join(f"- `{category}`" for category in lens_categories(lens)),
             "scoped_files": _render_path_manifest(scoped_files),
+            "inspection_capabilities": _inspection_capabilities(reviewer_id),
             "output_schema": json.dumps(lens_result_schema(lens), indent=2),
         },
     )
@@ -1366,6 +1400,7 @@ def render_lens_retry_prompt(
             "rulebook": rulebook,
             "categories": "\n".join(f"- `{category}`" for category in lens_categories(lens)),
             "scoped_files": _render_path_manifest(scoped_files),
+            "inspection_capabilities": _inspection_capabilities(reviewer_id),
             "output_schema": json.dumps(lens_result_schema(lens), indent=2),
         },
     )
@@ -1414,9 +1449,11 @@ def render_design_brief_prompt(
         },
     )
 
+    bundle_projection = _design_brief_bundle_projection(review_bundle)
+
     def render_with_guidance(included_paths: set[str]) -> str:
         complete_input = {
-            "finalized_review_bundle": review_bundle,
+            "finalized_review_bundle_projection": bundle_projection,
             "exact_review_scope": review_scope,
             "exact_pr_diff": diff,
             "protected_base_guidance": [
@@ -1442,10 +1479,11 @@ def render_design_brief_prompt(
         )
 
     # Prefer the complete closed-world input. If it exceeds the repo-owned
-    # provider budget, retain the exact bundle, scope, and diff, then select
-    # whole protected-base documents deterministically. Mandatory repository
-    # policy is followed by guidance changed in this exact PR; the complete
-    # digest manifest makes every omission explicit.
+    # provider budget, retain the digest-bound bundle projection, exact scope,
+    # and exact diff, then select whole protected-base documents
+    # deterministically. Mandatory repository policy is followed by guidance
+    # changed in this exact PR; the complete digest manifest makes every
+    # omission explicit.
     all_paths = set(protected_base_guidance)
     rendered = render_with_guidance(all_paths)
     if len(rendered) <= DESIGN_BRIEF_PROMPT_CHAR_LIMIT:
@@ -1458,12 +1496,18 @@ def render_design_brief_prompt(
     }
     rendered = render_with_guidance(mandatory_paths)
     if len(rendered) > DESIGN_BRIEF_PROMPT_CHAR_LIMIT:
-        bundle_chars = len(json.dumps(review_bundle, separators=(",", ":"), ensure_ascii=False))
+        bundle_source_chars = len(
+            json.dumps(review_bundle, separators=(",", ":"), ensure_ascii=False)
+        )
+        bundle_projection_chars = len(
+            json.dumps(bundle_projection, separators=(",", ":"), ensure_ascii=False)
+        )
         scope_chars = len(json.dumps(review_scope, separators=(",", ":"), ensure_ascii=False))
         raise ReviewError(
             "design brief prompt exceeds the repo-owned character budget: "
             f"prompt={len(rendered)} limit={DESIGN_BRIEF_PROMPT_CHAR_LIMIT} "
-            f"bundle={bundle_chars} scope={scope_chars} "
+            f"bundle_source={bundle_source_chars} "
+            f"bundle_projection={bundle_projection_chars} scope={scope_chars} "
             f"diff_source={len(diff)} "
             f"guidance_source={sum(len(content) for content in protected_base_guidance.values())}"
         )
