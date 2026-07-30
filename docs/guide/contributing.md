@@ -272,7 +272,7 @@ make static           # format, lint, types, lock, contracts, benchmarks
 make eval-conformance # blocking regression + specification evidence
 make eval-reliability # blocking retry/replay/crash/recovery evidence
 make eval-capability  # blocking architectural capability evidence
-make verify-pr        # local equivalent of the required PR profile
+make verify-pr        # static checks + fast tests required on pull requests
 make verify-release   # installed-artifact release profile
 make bench            # record one local ECS microbenchmark report
 make bench-query      # record materialized durable-world read latency

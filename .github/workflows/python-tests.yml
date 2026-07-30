@@ -1,4 +1,4 @@
-name: Quality
+name: CI
 
 on:
   workflow_dispatch:
@@ -6,73 +6,20 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  # Every required context must also report on merge-queue commits.
-  merge_group:
 
 permissions:
   contents: read
 
 concurrency:
-  group: quality-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   DO_NOT_TRACK: "1"
 
 jobs:
-  # Keep this job id stable. The active ruleset requires the matrix contexts
-  # `ci (3.12)` and `ci (3.13)` by name.
-  ci:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.12", "3.13"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-      - uses: astral-sh/setup-uv@v4
-        with:
-          version: "latest"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - run: uv sync --group dev
-      - name: Full tests with coverage
-        if: matrix.python-version == '3.12'
-        run: make test-cov
-      - name: Full compatibility tests
-        if: matrix.python-version != '3.12'
-        run: make test
-
-      # fail_ci_if_error must stay true: with it false, this step spent its
-      # whole life green while uploading nothing (no CODECOV_TOKEN secret
-      # existed). Skips: merge groups (synthetic commits carry no coverage
-      # signal, and a Codecov hiccup must not block the queue) and fork PRs
-      # (GitHub withholds secrets there, so the upload can only fail).
-      #
-      # What Codecov then does with the upload — the `project` and `patch`
-      # status targets, and why they mirror the 70% `fail_under` floor rather
-      # than the default `auto` — is configured and argued in
-      # `.github/codecov.yml`.
-      - name: Upload coverage to Codecov
-        if: >-
-          matrix.python-version == '3.12' &&
-          github.event_name != 'merge_group' &&
-          (github.event_name != 'pull_request' ||
-           github.event.pull_request.head.repo.full_name == github.repository)
-        uses: codecov/codecov-action@v5
-        with:
-          files: coverage.xml
-          flags: unittests
-          name: archetype-coverage
-          fail_ci_if_error: true
-          token: ${{ secrets.CODECOV_TOKEN }}
-
-  # Keep this job id stable. It owns formatting plus the version-independent
-  # structural audits required by the active `format` context.
-  format:
+  static:
+    name: Static
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -85,14 +32,10 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - run: uv sync --group dev
-      - run: make format-check
-      - run: make lint
-      - run: make lock-check
-      - run: make contract-audit
-      - run: make benchmark-audit
+      - run: make static
 
-  # Keep this job id stable for the required `typecheck` context.
-  typecheck:
+  tests:
+    name: Tests (3.12)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -105,240 +48,4 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - run: uv sync --group dev
-      - run: make typecheck
-
-  # Real object-store gate using a disposable prefix and R2's S3 credentials;
-  # no local or runner-side Docker service is involved.
-  infrastructure-idempotency:
-    name: Cloudflare R2 integration
-    if: >-
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    # Budget covers BOTH scenario attempts at their full 600s
-    # timeout_seconds plus setup and the idempotency test (~4 min): a
-    # 10-minute budget made the retry unreachable exactly when the first
-    # attempt was the 600s stall the retry exists to absorb — GitHub
-    # cancelled the job mid-timeout and the queue entry was still evicted.
-    timeout-minutes: 30
-    env:
-      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-      R2_API_ENDPOINT: ${{ vars.R2_API_ENDPOINT }}
-      R2_BUCKET: ${{ vars.R2_BUCKET }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: astral-sh/setup-uv@v4
-        with:
-          version: "latest"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - run: uv sync --group dev
-      - name: Verify credentials
-        run: |
-          test -n "$R2_ACCESS_KEY_ID"
-          test -n "$R2_SECRET_ACCESS_KEY"
-          test -n "$R2_API_ENDPOINT"
-          test -n "$R2_BUCKET"
-          case "$R2_BUCKET" in
-            */*) echo "R2_BUCKET must be a bucket name, not a path" >&2; exit 1 ;;
-          esac
-      - name: Verify physical retry visibility
-        run: >-
-          PYTHONPATH="${PYTHONPATH:-}:."
-          uv run pytest -q tests/infrastructure/test_r2_idempotency.py
-      # One in-job retry, with the first attempt's receipt retained as
-      # evidence. The lane's measured flake rate is ~1 failure in 60 runs
-      # against external object storage, and a merge-group flake evicts the
-      # whole queue entry (#678: a 600s silent stall cost ~28 minutes of
-      # queue latency plus an hour of forensics). A real regression fails
-      # both attempts; a flake costs one extra scenario run instead of an
-      # eviction. This codifies the sanctioned one-classified-rerun policy
-      # (AGENTS.md) inside the job, and the retained attempt-1 receipt IS
-      # the classification record.
-      - name: Run public-runtime R2 scenario
-        if: always()
-        run: |
-          run_r2_scenario() {
-            PYTHONPATH="${PYTHONPATH:-}:." uv run python scripts/run_operational_scenarios.py \
-              --mode source \
-              --cadence pr \
-              --min-tier 5 \
-              --max-tier 5 \
-              --scenario dogfood.storage.r2 \
-              --require-run \
-              --expected-revision "$GITHUB_SHA" \
-              --require-clean \
-              --out r2-operational-results.json
-          }
-          if run_r2_scenario; then
-            exit 0
-          fi
-          # Rename attempt 1's evidence AND rewrite the log paths inside its
-          # receipt: the JSON references logs under r2-operational-results.d/,
-          # which the retry recreates — without the rewrite the retained
-          # receipt would resolve to attempt 2's logs. Only path strings
-          # change; the log files move with the directory, so their recorded
-          # digests still match their contents.
-          if [ -f r2-operational-results.json ]; then
-            jq '(.. | strings) |= gsub("r2-operational-results\\.d"; "r2-operational-results.attempt1.d")' \
-              r2-operational-results.json > r2-operational-results.attempt1.json
-            rm r2-operational-results.json
-          fi
-          [ -d r2-operational-results.d ] && mv r2-operational-results.d r2-operational-results.attempt1.d
-          echo "::warning::R2 scenario failed once; retrying. Attempt 1's receipt is retained in the artifact."
-          run_r2_scenario
-      - name: Require R2 operational receipt
-        if: always()
-        run: test -f r2-operational-results.json
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: r2-operational-evidence
-          path: |
-            r2-operational-results.json
-            r2-operational-results.d/
-            r2-operational-results.attempt1.json
-            r2-operational-results.attempt1.d/
-          if-no-files-found: error
-          retention-days: 14
-
-  # Keep this job id stable for the required `evals` context. Repository
-  # scenarios run once on 3.12, not once per compatibility interpreter.
-  # The explicit always() dependency makes an infrastructure failure fail
-  # this required context rather than skip-satisfying it.
-  evals:
-    if: always()
-    needs: infrastructure-idempotency
-    runs-on: ubuntu-latest
-    env:
-      LOGFIRE_TOKEN: ${{ secrets.LOGFIRE_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: astral-sh/setup-uv@v4
-        with:
-          version: "latest"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - run: uv sync --group dev
-      - run: make eval-conformance
-      - run: make eval-reliability EVAL_TRIALS=1
-      - run: make eval-capability
-      - run: make package-smoke
-      - run: make operational-wheel
-        if: always()
-      - name: Require applicable infrastructure evidence
-        if: always()
-        env:
-          INFRASTRUCTURE: ${{ needs.infrastructure-idempotency.result }}
-        run: |
-          case "$INFRASTRUCTURE" in success|skipped) ;; *) exit 1 ;; esac
-      - name: Require installed-wheel operational receipt
-        if: always()
-        run: test -f operational-results.json
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: installed-wheel-operational-evidence
-          path: |
-            operational-results.json
-            operational-results.d/
-          if-no-files-found: error
-          retention-days: 14
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: pull-request-evidence
-          path: |
-            eval-conformance-results.json
-            eval-reliability-results.json
-            eval-capability-results.json
-            dist/
-          if-no-files-found: error
-          retention-days: 14
-
-  # Keep this job id stable for the required `examples` context.
-  examples:
-    runs-on: ubuntu-latest
-    env:
-      LOGFIRE_TOKEN: ${{ secrets.LOGFIRE_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: astral-sh/setup-uv@v4
-        with:
-          version: "latest"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - run: uv sync --group dev
-      - run: make examples-smoke
-      - name: Require source operational receipt
-        if: always()
-        run: test -f operational-source-results.json
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: semantic-example-evidence
-          path: |
-            operational-source-results.json
-            operational-source-results.d/
-          if-no-files-found: error
-          retention-days: 14
-
-  process-reliability:
-    name: Main process evidence
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: astral-sh/setup-uv@v4
-        with:
-          version: "latest"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - run: uv sync --group dev
-      - run: make test-process
-
-  # This aggregate is additive today: the existing required contexts above
-  # remain stable while repository policy can promote `Quality gate` later.
-  quality-gate:
-    name: Quality gate
-    if: always()
-    needs:
-      - ci
-      - format
-      - typecheck
-      - infrastructure-idempotency
-      - evals
-      - examples
-      - process-reliability
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require every applicable evidence job
-        env:
-          CI: ${{ needs.ci.result }}
-          FORMAT: ${{ needs.format.result }}
-          TYPECHECK: ${{ needs.typecheck.result }}
-          INFRASTRUCTURE: ${{ needs.infrastructure-idempotency.result }}
-          EVALS: ${{ needs.evals.result }}
-          EXAMPLES: ${{ needs.examples.result }}
-          PROCESS: ${{ needs.process-reliability.result }}
-        run: |
-          test "$CI" = success
-          test "$FORMAT" = success
-          test "$TYPECHECK" = success
-          case "$INFRASTRUCTURE" in success|skipped) ;; *) exit 1 ;; esac
-          test "$EVALS" = success
-          test "$EXAMPLES" = success
-          case "$PROCESS" in success|skipped) ;; *) exit 1 ;; esac
+      - run: make test

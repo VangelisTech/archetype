@@ -241,15 +241,16 @@ outcome authority and retry/failure behavior.
 
 ## Gate ownership
 
-The ordinary Python matrix owns product tests and static checks. Repository
-scenario groups run once on the harness job rather than once per supported
-Python interpreter. Benchmarks stay user-triggered because shared CI hardware
-does not provide a trustworthy performance baseline.
+The required PR workflow owns static checks and fast product tests on Python
+3.12. Repository scenarios, coverage, packaging, examples, documentation, and
+compatibility evidence belong to full or release validation. Benchmarks stay
+user-triggered because shared CI hardware does not provide a trustworthy
+performance baseline.
 
 Use these entry points:
 
 ```bash
-make ci          # complete pull-request verification profile
+make ci          # required PR profile: static checks + fast tests
 make observability-audit # signal safety and exact family dispositions
 make operational-audit   # scenario inventory, policy, and provenance
 make examples-local      # Tier-1 semantic examples

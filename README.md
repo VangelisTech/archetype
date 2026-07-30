@@ -162,7 +162,7 @@ make sync-dev  # install development dependencies
 make test      # run the fast test suite
 make check     # format and lint
 make docs      # generate references and build the docs site
-make ci        # run the merge gate
+make ci        # run required static checks and fast tests
 ```
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing the engine. The

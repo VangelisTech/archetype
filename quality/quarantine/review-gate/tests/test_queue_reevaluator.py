@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Contracts for the scheduled queue-readiness re-evaluator.
+"""Quarantined contracts for the retired queue-readiness re-evaluator.
 
 The automerge workflow is event-driven; the re-evaluator is the event-free
 half of the same arming contract (thread resolution emits no Actions event).
@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[4]
 RECONCILE_SCRIPT = ROOT / "scripts" / "gh_pr_arm_reconcile.sh"
 REEVALUATOR_WORKFLOW = ROOT / ".github" / "workflows" / "queue-reevaluator.yml"
 AUTOMERGE_WORKFLOW = ROOT / ".github" / "workflows" / "automerge.yml"

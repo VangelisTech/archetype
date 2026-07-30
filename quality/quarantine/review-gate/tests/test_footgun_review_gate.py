@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""End-to-end contracts for deterministic scope, rendering, and workflow wiring."""
+"""Quarantined contracts for the retired deterministic review workflow."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from typing import Any
 
 import pytest
 
-_ROOT = Path(__file__).resolve().parents[2]
+_ROOT = Path(__file__).resolve().parents[4]
 _SCRIPTS = _ROOT / "scripts"
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
