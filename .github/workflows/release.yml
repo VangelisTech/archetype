@@ -56,8 +56,63 @@ jobs:
       - run: uv sync --group dev
       - run: make test
 
+  r2-release:
+    name: Cloudflare R2 release verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_API_ENDPOINT: ${{ vars.R2_API_ENDPOINT }}
+      R2_BUCKET: ${{ vars.R2_BUCKET }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
+        with:
+          version: "latest"
+      - run: uv sync --group dev
+      - name: Require release R2 configuration
+        run: |
+          test -n "$R2_ACCESS_KEY_ID"
+          test -n "$R2_SECRET_ACCESS_KEY"
+          test -n "$R2_API_ENDPOINT"
+          test -n "$R2_BUCKET"
+          case "$R2_BUCKET" in
+            */*) echo "R2_BUCKET must be a bucket name, not a path" >&2; exit 1 ;;
+          esac
+      - name: Verify physical retry visibility
+        run: >-
+          PYTHONPATH="${PYTHONPATH:-}:."
+          uv run pytest -q tests/infrastructure/test_r2_idempotency.py
+      - name: Verify the public-runtime R2 scenario
+        run: >-
+          PYTHONPATH="${PYTHONPATH:-}:."
+          uv run python scripts/run_operational_scenarios.py
+          --mode source
+          --cadence release
+          --min-tier 5
+          --max-tier 5
+          --scenario dogfood.storage.r2
+          --require-run
+          --expected-revision "$GITHUB_SHA"
+          --require-clean
+          --out r2-release-results.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: r2-release-evidence
+          path: |
+            r2-release-results.json
+            r2-release-results.d/
+          if-no-files-found: error
+
   publish:
-    needs: [release-profile, python-compatibility]
+    needs: [release-profile, python-compatibility, r2-release]
     runs-on: ubuntu-latest
     environment: release-pypi
     permissions:

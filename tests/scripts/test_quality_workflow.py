@@ -8,8 +8,12 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from scripts.run_operational_scenarios import _select_scenarios
+from scripts.validate_operational_scenarios import load_scenarios
+
 ROOT = Path(__file__).resolve().parents[2]
 QUALITY_WORKFLOW = ROOT / ".github" / "workflows" / "python-tests.yml"
+RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 MAKEFILE = ROOT / "Makefile"
 QUARANTINE = ROOT / "quality" / "quarantine" / "review-gate"
 
@@ -75,3 +79,36 @@ def test_review_gate_and_merge_queue_are_not_executable_workflows() -> None:
     ):
         assert not (active / name).exists()
         assert (QUARANTINE / "workflows" / name).is_file()
+
+
+def test_release_publish_requires_credentialed_r2_evidence() -> None:
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    r2_release = _job(workflow, "r2-release")
+    publish = _job(workflow, "publish")
+
+    for variable in (
+        "R2_ACCESS_KEY_ID",
+        "R2_SECRET_ACCESS_KEY",
+        "R2_API_ENDPOINT",
+        "R2_BUCKET",
+    ):
+        assert variable in r2_release
+    assert "tests/infrastructure/test_r2_idempotency.py" in r2_release
+    assert "--min-tier 5" in r2_release
+    assert "--max-tier 5" in r2_release
+    assert "--scenario dogfood.storage.r2" in r2_release
+    assert "--cadence release" in r2_release
+    assert "--require-run" in r2_release
+    assert "r2-release-results.json" in r2_release
+    assert "needs: [release-profile, python-compatibility, r2-release]" in publish
+
+    selected = _select_scenarios(
+        load_scenarios(),
+        mode="source",
+        cadence="release",
+        scenario_ids={"dogfood.storage.r2"},
+        kind=None,
+        min_tier=5,
+        max_tier=5,
+    )
+    assert [row["id"] for row in selected] == ["dogfood.storage.r2"]
