@@ -9,11 +9,13 @@ import json
 import os
 import random
 import re
+import statistics
 import subprocess
 import threading
 import time
 import urllib.request
 from collections.abc import Iterable
+from typing import Any
 
 METRICS = {
     "generation_tokens": "vllm:generation_tokens_total",
@@ -27,6 +29,45 @@ METRICS = {
     "waiting": "vllm:num_requests_waiting",
 }
 SAMPLE = re.compile(r"^([^\s{]+)(?:{[^}]*})?\s+([-+eE.0-9]+)$")
+
+
+def endpoint_json(
+    url: str,
+    key: str,
+    path: str,
+) -> Any:
+    request = urllib.request.Request(
+        f"{url.rstrip('/')}{path}",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return json.load(response)
+
+
+def percentile(values: list[float], quantile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    return ordered[round((len(ordered) - 1) * quantile)]
+
+
+def gpu_summary(samples: list[dict[str, float]]) -> dict[str, float | int | None]:
+    active = [sample for sample in samples if sample["active_requests"] > 0]
+    sm = [sample["sm"] for sample in active]
+    power = [sample["power_w"] for sample in active]
+    return {
+        "gpu_active_samples": len(active),
+        "gpu_sm_avg": round(statistics.fmean(sm), 1) if sm else None,
+        "gpu_sm_p50": percentile(sm, 0.50),
+        "gpu_sm_p95": percentile(sm, 0.95),
+        "gpu_sm_peak": max(sm, default=None),
+        "gpu_power_avg_w": round(statistics.fmean(power), 1) if power else None,
+        "gpu_power_peak_w": max(power, default=None),
+        "gpu_memory_peak_mib": max(
+            (sample["memory_mib"] for sample in active),
+            default=None,
+        ),
+    }
 
 
 def metrics(url: str, key: str) -> dict[str, float]:
@@ -86,6 +127,7 @@ def run_frontier(
     model: str,
 ) -> dict[str, object]:
     before = metrics(endpoint, key)
+    gpu_start = int(endpoint_json(endpoint, key, "/gpu/mark")["time_ns"])
     samples: list[dict[str, float]] = []
     stop = threading.Event()
     watcher = threading.Thread(
@@ -119,6 +161,12 @@ def run_frontier(
         },
     )
     elapsed = time.perf_counter() - started
+    gpu_end = int(endpoint_json(endpoint, key, "/gpu/mark")["time_ns"])
+    gpu_samples = endpoint_json(
+        endpoint,
+        key,
+        f"/gpu/samples?since_ns={gpu_start}&until_ns={gpu_end}",
+    )
     stop.set()
     watcher.join()
     after = metrics(endpoint, key)
@@ -161,6 +209,7 @@ def run_frontier(
         "prefix_cache_queries": int(delta(after, before, "prefix_queries")),
         "server_successes": int(delta(after, before, "successes")),
         "stderr_tail": completed.stderr[-500:] if completed.returncode else "",
+        **gpu_summary(gpu_samples),
     }
 
 

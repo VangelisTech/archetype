@@ -1,0 +1,40 @@
+{
+  "id": "issue-655",
+  "issue_number": 655,
+  "issue_url": "https://github.com/VangelisTech/archetype/issues/655",
+  "title": "bug(world): concurrent duplicate destroy raises ValueError instead of a no-op",
+  "task": "Make two concurrent destroy_world calls for the same exact world compose as an idempotent no-op after one caller completes. Preserve rejection of a lease bound to a superseded world identity. Add deterministic regression coverage for both conditions.",
+  "base": "origin/main",
+  "pr_base": "main",
+  "branch_prefix": "agent/daft-modal-issue-655",
+  "commit_title": "fix(world): make concurrent duplicate destroy idempotent",
+  "mre": "experiments/github_missions/issue_655_mre.py",
+  "baseline_contains": "cleanup lease no longer owns its exact world",
+  "allowed_paths": [
+    "src/archetype/world/lifecycle.py",
+    "src/archetype/world/registry.py",
+    "tests/world/test_close_retry.py"
+  ],
+  "required_paths": [
+    "tests/world/test_close_retry.py"
+  ],
+  "context": [
+    {
+      "path": "src/archetype/world/registry.py",
+      "ranges": [[1, 90], [404, 485], [570, 625]]
+    },
+    {
+      "path": "src/archetype/world/lifecycle.py",
+      "ranges": [[670, 740]]
+    },
+    {
+      "path": "tests/world/test_close_retry.py",
+      "ranges": [[1, 75], [320, 380], [720, 815]]
+    }
+  ],
+  "validation": [
+    ["-m", "pytest", "-q", "tests/world/test_close_retry.py"],
+    ["-m", "ruff", "check", "src/archetype/world/lifecycle.py", "src/archetype/world/registry.py", "tests/world/test_close_retry.py"],
+    ["-m", "ruff", "format", "--check", "src/archetype/world/lifecycle.py", "src/archetype/world/registry.py", "tests/world/test_close_retry.py"]
+  ]
+}
