@@ -19,7 +19,6 @@ from archetype.missions.components import (
     AgentExecution,
     Candidate,
     Commit,
-    CriticExecution,
     CriticReceipt,
     Mission,
     MissionState,
@@ -204,11 +203,9 @@ class TaskDecisionProcessor(AsyncProcessor):
         candidate = Candidate.get_prefix()
         review_conclusion = "_review_conclusion"
         review_policy_digest = "_review_policy_digest"
-        review_attempts = "_review_attempt_count"
         receipts = view.frame(CriticReceipt)
-        critic_executions = view.frame(CriticExecution)
-        candidates = (
-            candidate_frame.select(
+        if candidate_frame is not None and receipts is not None:
+            candidates = candidate_frame.select(
                 col("entity_id").alias("_candidate_entity_id"),
                 col(f"{candidate}task_id").alias("_candidate_task_id"),
                 col(f"{candidate}dispatch_id").alias("_candidate_dispatch_id"),
@@ -222,10 +219,6 @@ class TaskDecisionProcessor(AsyncProcessor):
                 col(f"{candidate}policy_digest").alias("_candidate_policy_digest"),
                 col(f"{candidate}candidate_digest").alias("_candidate_digest"),
             )
-            if candidate_frame is not None
-            else None
-        )
-        if candidates is not None and receipts is not None:
             receipt = CriticReceipt.get_prefix()
             reviews = receipts.join(
                 candidates,
@@ -258,32 +251,6 @@ class TaskDecisionProcessor(AsyncProcessor):
         else:
             df = df.with_column(review_conclusion, lit(None))
             df = df.with_column(review_policy_digest, lit(None))
-        if candidates is not None and critic_executions is not None:
-            # Committed CriticExecution facts are the consumed review budget —
-            # the same domain counter the critic-Activity projection reads, so
-            # a candidate the projection stops admitting also resolves here
-            # instead of waiting out the caller's tick budget.
-            critic_execution = CriticExecution.get_prefix()
-            attempt_counts = critic_executions.groupby(
-                f"{critic_execution}candidate_entity_id"
-            ).agg(col("entity_id").count().alias(review_attempts))
-            attempted = candidates.join(
-                attempt_counts,
-                left_on="_candidate_entity_id",
-                right_on=f"{critic_execution}candidate_entity_id",
-            ).select(
-                col("_candidate_task_id").alias("_attempt_task_id"),
-                col("_candidate_dispatch_id").alias("_attempt_dispatch_id"),
-                col(review_attempts),
-            )
-            df = df.join(
-                attempted,
-                left_on=["entity_id", f"{dispatch}dispatch_id"],
-                right_on=["_attempt_task_id", "_attempt_dispatch_id"],
-                how="left",
-            )
-        else:
-            df = df.with_column(review_attempts, lit(0))
 
         critic_policy = TaskCriticPolicy.get_prefix()
         candidate_created = dispatched & author_green
@@ -306,14 +273,6 @@ class TaskDecisionProcessor(AsyncProcessor):
             & cast(Expression, col(review_conclusion) == CriticConclusion.BLOCKING.value)
         )
         blocked = blocked.fill_null(False)
-        # A candidate with no matching independent receipt after its whole
-        # committed review budget can never be approved or repaired; without a
-        # terminal decision it waits out the caller's tick budget instead.
-        review_budget_exhausted = (
-            awaiting_review
-            & col(review_conclusion).is_null()
-            & (col(review_attempts).fill_null(0) >= col(f"{critic_policy}max_reviews"))
-        )
         author_retryable = author_rejected & (
             col(f"{dispatch}sequence") < col(f"{policy}max_dispatches")
         )
@@ -335,16 +294,11 @@ class TaskDecisionProcessor(AsyncProcessor):
                 .when(approved, then=lit(TaskStatus.ACCEPTED.value))
                 .when(repairable, then=lit(TaskStatus.READY.value))
                 .when(repair_exhausted, then=lit(TaskStatus.FAILED.value))
-                .when(review_budget_exhausted, then=lit(TaskStatus.FAILED.value))
                 .otherwise(col(f"{state}status")),
                 f"{state}reason": when(author_exhausted, then=failure_reason)
                 .when(
                     repair_exhausted,
                     then=lit("independent critic found blocking issues"),
-                )
-                .when(
-                    review_budget_exhausted,
-                    then=lit("independent critic review budget exhausted"),
                 )
                 .otherwise(col(f"{state}reason")),
             }

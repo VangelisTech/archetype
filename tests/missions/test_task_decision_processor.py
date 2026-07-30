@@ -1,7 +1,15 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Terminal review-budget decisions for candidates without receipts."""
+"""Review-budget exhaustion leaves the candidate pending and is reported.
+
+Normative contract (docs/guide/agent-missions.md, runtime.md,
+service-protocols.md): reviewer infrastructure failure consumes only the
+bounded review budget — it never becomes a task failure or an implicit
+approval. The decision processor leaves the candidate in ``CANDIDATE``; the
+run boundary projects the exhaustion and raises
+``CriticReviewBudgetExhaustedError`` instead of waiting out its tick budget.
+"""
 
 from __future__ import annotations
 
@@ -19,12 +27,18 @@ from archetype.missions.components import (
     Candidate,
     CriticExecution,
     CriticReceipt,
+    Task,
     TaskCriticPolicy,
     TaskDispatch,
     TaskPolicy,
     TaskState,
 )
 from archetype.missions.processors import TaskDecisionProcessor
+from archetype.missions.projections import (
+    CriticReviewBudgetExhausted,
+    CriticReviewBudgetExhaustedError,
+    project_pending_review_exhaustion,
+)
 from archetype.missions.relations import Guards
 from archetype.missions.transitions import (
     AgentExecutionStatus,
@@ -33,6 +47,7 @@ from archetype.missions.transitions import (
     TaskStatus,
 )
 
+_MISSION_ID = 1
 _TASK_ID = 11
 _CANDIDATE_ENTITY_ID = 31
 
@@ -53,7 +68,7 @@ def _signature_frame(entities: list[tuple[int, tuple[Component, ...]]]) -> daft.
 def _candidate() -> Candidate:
     return Candidate(
         candidate_id="candidate-1",
-        mission_id=1,
+        mission_id=_MISSION_ID,
         task_id=_TASK_ID,
         dispatch_id="dispatch-1",
         dispatch_sequence=1,
@@ -115,27 +130,26 @@ def _receipt() -> CriticReceipt:
     )
 
 
-def _candidate_task_frame(max_reviews: int) -> daft.DataFrame:
-    return _signature_frame(
-        [
-            (
-                _TASK_ID,
-                (
-                    TaskState(status=TaskStatus.CANDIDATE.value),
-                    TaskDispatch(dispatch_id="dispatch-1", sequence=1),
-                    TaskPolicy(),
-                    _critic_policy(max_reviews),
-                ),
-            )
-        ]
+def _candidate_task_components(max_reviews: int) -> tuple[Component, ...]:
+    return (
+        Task(name="task", prompt="do the work"),
+        TaskState(status=TaskStatus.CANDIDATE.value),
+        TaskDispatch(dispatch_id="dispatch-1", sequence=1),
+        TaskPolicy(),
+        _critic_policy(max_reviews),
     )
 
 
-def _resources(
+def _candidate_task_frame(max_reviews: int) -> daft.DataFrame:
+    return _signature_frame([(_TASK_ID, _candidate_task_components(max_reviews))])
+
+
+def _view(
     *,
+    max_reviews: int,
     attempts: int,
     receipts: tuple[CriticReceipt, ...] = (),
-) -> Resources:
+) -> GraphView:
     results: dict[tuple[type[Component], ...], daft.DataFrame] = {
         # Unrelated task keeps the author-evidence frames non-empty without
         # matching this task's dispatch join keys.
@@ -156,6 +170,9 @@ def _resources(
             ]
         ),
         (Guards,): _signature_frame([(92, (Guards(source=93, target=999),))]),
+        (Task, TaskState, TaskDispatch, TaskPolicy, TaskCriticPolicy): _signature_frame(
+            [(_TASK_ID, _candidate_task_components(max_reviews))]
+        ),
         (Candidate,): _signature_frame([(_CANDIDATE_ENTITY_ID, (_candidate(),))]),
     }
     if attempts:
@@ -168,6 +185,10 @@ def _resources(
         )
     view = GraphView()
     view.on_post_tick_sync(PostTick(world_id="mission-world", tick=2, results=results))
+    return view
+
+
+def _resources(view: GraphView) -> Resources:
     resources = Resources()
     resources.insert(view)
     return resources
@@ -182,7 +203,7 @@ async def _decide(
     processor = TaskDecisionProcessor()
     result = await processor.process(
         _candidate_task_frame(max_reviews),
-        resources=_resources(attempts=attempts, receipts=receipts),
+        resources=_resources(_view(max_reviews=max_reviews, attempts=attempts, receipts=receipts)),
     )
     rows = result.to_pylist()
     assert len(rows) == 1
@@ -190,14 +211,14 @@ async def _decide(
 
 
 @pytest.mark.asyncio
-async def test_exhausted_review_budget_fails_candidate_without_receipt() -> None:
-    """The whole budget spent with no receipt is a terminal decision, not a hang."""
+async def test_exhausted_review_budget_leaves_candidate_pending() -> None:
+    """Reviewer failure never becomes a task decision; the candidate waits."""
 
     row = await _decide(max_reviews=2, attempts=2)
 
     state = TaskState.get_prefix()
-    assert row[f"{state}status"] == TaskStatus.FAILED.value
-    assert row[f"{state}reason"] == "independent critic review budget exhausted"
+    assert row[f"{state}status"] == TaskStatus.CANDIDATE.value
+    assert row[f"{state}reason"] == ""
 
 
 @pytest.mark.asyncio
@@ -215,3 +236,37 @@ async def test_matching_receipt_decides_even_at_the_review_budget() -> None:
 
     state = TaskState.get_prefix()
     assert row[f"{state}status"] == TaskStatus.ACCEPTED.value
+
+
+def test_exhausted_review_budget_is_projected_for_the_run_boundary() -> None:
+    """The whole budget spent with no receipt is reported, not a hang."""
+
+    pending = project_pending_review_exhaustion(
+        _view(max_reviews=2, attempts=2),
+        _MISSION_ID,
+    )
+
+    assert pending == (
+        CriticReviewBudgetExhausted(
+            mission_id=_MISSION_ID,
+            task_id=_TASK_ID,
+            candidate_id="candidate-1",
+            attempts=2,
+            max_reviews=2,
+        ),
+    )
+    error = CriticReviewBudgetExhaustedError(_MISSION_ID, pending)
+    assert "pending independent review" in str(error)
+
+
+def test_candidate_within_budget_is_not_projected_as_exhausted() -> None:
+    assert project_pending_review_exhaustion(_view(max_reviews=2, attempts=1), _MISSION_ID) == ()
+
+
+def test_receipt_bearing_candidate_is_not_projected_as_exhausted() -> None:
+    view = _view(max_reviews=2, attempts=2, receipts=(_receipt(),))
+    assert project_pending_review_exhaustion(view, _MISSION_ID) == ()
+
+
+def test_other_missions_exhaustion_is_not_reported() -> None:
+    assert project_pending_review_exhaustion(_view(max_reviews=2, attempts=2), 999) == ()

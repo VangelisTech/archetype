@@ -14,6 +14,7 @@ from daft import DataFrame, Expression, col
 
 from archetype.core.component import Component
 from archetype.core.hooks import PostTick
+from archetype.errors import AvailabilityError
 from archetype.graph import GraphView, Relation
 from archetype.missions.activities import (
     AuthorActivityEntityFact,
@@ -938,6 +939,193 @@ class CriticReviewBudgetExhausted:
     max_reviews: int
 
 
+class CriticReviewBudgetExhaustedError(AvailabilityError):
+    """Candidates remain pending review after their whole independent budget.
+
+    Reviewer infrastructure failure never decides a task: the candidate stays
+    ``CANDIDATE`` and never becomes a task failure or an implicit approval
+    (docs/guide/agent-missions.md). ``missions`` ``run()`` raises this instead
+    of waiting out its tick budget once no further review can be admitted.
+    """
+
+    public_detail = "Independent review is still pending; the review budget is exhausted"
+
+    def __init__(
+        self,
+        mission_id: int,
+        pending: tuple[CriticReviewBudgetExhausted, ...],
+    ) -> None:
+        self.mission_id = mission_id
+        self.pending = pending
+        described = ", ".join(
+            f"task {item.task_id} candidate {item.candidate_id!r} "
+            f"({item.attempts}/{item.max_reviews} reviews)"
+            for item in pending
+        )
+        super().__init__(
+            f"mission {mission_id} candidates remain pending independent review "
+            f"after their whole review budget: {described}"
+        )
+
+
+def _current_candidate_rows(
+    tasks: DataFrame,
+    candidates: DataFrame,
+) -> dict[int, dict[str, Any]]:
+    """The single current candidate row per CANDIDATE-status task."""
+    state = TaskState.get_prefix()
+    candidate = Candidate.get_prefix()
+    candidate_tasks = tasks.where(
+        cast(Expression, col(f"{state}status") == TaskStatus.CANDIDATE.value)
+    )
+    candidate_task_rows = _latest_entity_rows(
+        candidate_tasks.to_pylist(),
+        label="candidate task",
+        allow_updates=True,
+    )
+    candidate_rows = _latest_entity_rows(
+        candidates.to_pylist(),
+        label="candidate",
+    )
+    rows: list[dict[str, Any]] = []
+    for candidate_entity_id, candidate_row in candidate_rows.items():
+        task_id = int(candidate_row[f"{candidate}task_id"])
+        task_row = candidate_task_rows.get(task_id)
+        if task_row is None:
+            continue
+        joined = dict(task_row)
+        joined.update(
+            {key: value for key, value in candidate_row.items() if key not in {"entity_id", "tick"}}
+        )
+        joined["_candidate_entity_id"] = candidate_entity_id
+        rows.append(joined)
+    if not rows:
+        return {}
+
+    candidates_by_task: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        candidates_by_task[int(row["entity_id"])].append(row)
+
+    current_by_task: dict[int, dict[str, Any]] = {}
+    for task_id, task_candidates in candidates_by_task.items():
+        current_sequence = max(int(row[f"{candidate}dispatch_sequence"]) for row in task_candidates)
+        current = tuple(
+            row
+            for row in task_candidates
+            if int(row[f"{candidate}dispatch_sequence"]) == current_sequence
+        )
+        current_ids = {int(row["_candidate_entity_id"]) for row in current}
+        if len(current_ids) != 1:
+            raise ValueError("task has multiple current candidates at one dispatch sequence")
+        first = current[0]
+        if any(row != first for row in current[1:]):
+            raise ValueError("task current candidate has conflicting committed rows")
+        current_by_task[task_id] = first
+    return current_by_task
+
+
+def _has_matching_independent_receipt(
+    row: dict[str, Any],
+    receipt_rows: tuple[dict[str, Any], ...],
+) -> bool:
+    """Whether a policy- and digest-bound non-author receipt exists for the row."""
+    candidate = Candidate.get_prefix()
+    receipt = CriticReceipt.get_prefix()
+    candidate_entity_id = int(row["_candidate_entity_id"])
+    return any(
+        int(item[f"{receipt}candidate_entity_id"]) == candidate_entity_id
+        and str(item[f"{receipt}critic_sandbox_id"]) != str(row[f"{candidate}author_sandbox_id"])
+        and str(item[f"{receipt}candidate_digest"]) == str(row[f"{candidate}candidate_digest"])
+        and str(item[f"{receipt}policy_digest"]) == str(row[f"{candidate}policy_digest"])
+        and str(item[f"{receipt}reviewed_base_revision"]) == str(row[f"{candidate}base_revision"])
+        and str(item[f"{receipt}reviewed_head_revision"]) == str(row[f"{candidate}head_revision"])
+        and str(item[f"{receipt}reviewed_diff_digest"]) == str(row[f"{candidate}diff_digest"])
+        and str(item[f"{receipt}validator_bundle_digest"])
+        == str(row[f"{candidate}validator_bundle_digest"])
+        for item in receipt_rows
+    )
+
+
+def _committed_review_attempts(
+    row: dict[str, Any],
+    critic_execution_rows: tuple[dict[str, Any], ...],
+) -> int:
+    """Committed CriticExecution facts consumed by this candidate."""
+    critic_execution = CriticExecution.get_prefix()
+    candidate_entity_id = int(row["_candidate_entity_id"])
+    return sum(
+        int(item[f"{critic_execution}candidate_entity_id"]) == candidate_entity_id
+        for item in critic_execution_rows
+    )
+
+
+def project_pending_review_exhaustion(
+    view: GraphView,
+    mission_id: int,
+) -> tuple[CriticReviewBudgetExhausted, ...]:
+    """Candidates of one mission still pending review after their whole budget.
+
+    The same committed evidence the critic-Activity intent projection reads:
+    the current candidate of each CANDIDATE task with no matching independent
+    receipt and ``CriticExecution`` attempts at or over ``max_reviews``. Such
+    a candidate can never be approved or repaired by a further admitted
+    review, so the run boundary reports it instead of spending its remaining
+    tick budget.
+    """
+    tasks = view.frame(Task, TaskCriticPolicy, TaskState)
+    candidates = view.frame(Candidate)
+    if tasks is None or candidates is None:
+        return ()
+    current_by_task = _current_candidate_rows(tasks, candidates)
+    if not current_by_task:
+        return ()
+
+    critic_executions = view.frame(CriticExecution)
+    critic_receipts = view.frame(CriticReceipt)
+    critic_execution_rows = (
+        tuple(
+            _latest_entity_rows(
+                critic_executions.to_pylist(),
+                label="critic execution",
+            ).values()
+        )
+        if critic_executions is not None
+        else ()
+    )
+    receipt_rows = (
+        tuple(
+            _latest_entity_rows(
+                critic_receipts.to_pylist(),
+                label="critic receipt",
+            ).values()
+        )
+        if critic_receipts is not None
+        else ()
+    )
+
+    candidate = Candidate.get_prefix()
+    policy = TaskCriticPolicy.get_prefix()
+    exhausted: list[CriticReviewBudgetExhausted] = []
+    for row in current_by_task.values():
+        if int(row[f"{candidate}mission_id"]) != mission_id:
+            continue
+        if _has_matching_independent_receipt(row, receipt_rows):
+            continue
+        attempts = _committed_review_attempts(row, critic_execution_rows)
+        max_reviews = int(row[f"{policy}max_reviews"])
+        if attempts >= max_reviews:
+            exhausted.append(
+                CriticReviewBudgetExhausted(
+                    mission_id=mission_id,
+                    task_id=int(row[f"{candidate}task_id"]),
+                    candidate_id=str(row[f"{candidate}candidate_id"]),
+                    attempts=attempts,
+                    max_reviews=max_reviews,
+                )
+            )
+    return tuple(sorted(exhausted, key=lambda item: item.task_id))
+
+
 @dataclass(frozen=True, slots=True)
 class CriticActivityIntentProjection:
     """Pure committed-snapshot projection of critic requests and exhaustion."""
@@ -973,7 +1161,6 @@ async def project_critic_activity_intents(
     assert validators is not None
     assert validation_results is not None
 
-    state = TaskState.get_prefix()
     task = Task.get_prefix()
     policy = TaskCriticPolicy.get_prefix()
     candidate = Candidate.get_prefix()
@@ -981,53 +1168,10 @@ async def project_critic_activity_intents(
     validator = TaskValidator.get_prefix()
     validation = ValidationResult.get_prefix()
 
-    candidate_tasks = tasks.where(
-        cast(Expression, col(f"{state}status") == TaskStatus.CANDIDATE.value)
-    )
-    candidate_task_rows = _latest_entity_rows(
-        candidate_tasks.to_pylist(),
-        label="candidate task",
-        allow_updates=True,
-    )
-    candidate_rows = _latest_entity_rows(
-        candidates.to_pylist(),
-        label="candidate",
-    )
-    rows: list[dict[str, Any]] = []
-    for candidate_entity_id, candidate_row in candidate_rows.items():
-        task_id = int(candidate_row[f"{candidate}task_id"])
-        task_row = candidate_task_rows.get(task_id)
-        if task_row is None:
-            continue
-        joined = dict(task_row)
-        joined.update(
-            {key: value for key, value in candidate_row.items() if key not in {"entity_id", "tick"}}
-        )
-        joined["_candidate_entity_id"] = candidate_entity_id
-        rows.append(joined)
-    if not rows:
+    current_by_task = _current_candidate_rows(tasks, candidates)
+    if not current_by_task:
         return CriticActivityIntentProjection((), ())
     subject_bounds = _critic_subject_bounds(event)
-
-    candidates_by_task: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    for row in rows:
-        candidates_by_task[int(row["entity_id"])].append(row)
-
-    current_by_task: dict[int, dict[str, Any]] = {}
-    for task_id, task_candidates in candidates_by_task.items():
-        current_sequence = max(int(row[f"{candidate}dispatch_sequence"]) for row in task_candidates)
-        current = tuple(
-            row
-            for row in task_candidates
-            if int(row[f"{candidate}dispatch_sequence"]) == current_sequence
-        )
-        current_ids = {int(row["_candidate_entity_id"]) for row in current}
-        if len(current_ids) != 1:
-            raise ValueError("task has multiple current candidates at one dispatch sequence")
-        first = current[0]
-        if any(row != first for row in current[1:]):
-            raise ValueError("task current candidate has conflicting committed rows")
-        current_by_task[task_id] = first
 
     author_rows = _latest_entity_rows(
         author_executions.to_pylist(),
@@ -1065,35 +1209,15 @@ async def project_critic_activity_intents(
         if critic_receipts is not None
         else ()
     )
-    critic_execution = CriticExecution.get_prefix()
-    receipt = CriticReceipt.get_prefix()
-
     requests: list[CandidateReviewRequest] = []
     exhausted: list[CriticReviewBudgetExhausted] = []
     for row in current_by_task.values():
         task_id = int(row["entity_id"])
         candidate_entity_id = int(row["_candidate_entity_id"])
         candidate_id = str(row[f"{candidate}candidate_id"])
-        if any(
-            int(item[f"{receipt}candidate_entity_id"]) == candidate_entity_id
-            and str(item[f"{receipt}critic_sandbox_id"])
-            != str(row[f"{candidate}author_sandbox_id"])
-            and str(item[f"{receipt}candidate_digest"]) == str(row[f"{candidate}candidate_digest"])
-            and str(item[f"{receipt}policy_digest"]) == str(row[f"{candidate}policy_digest"])
-            and str(item[f"{receipt}reviewed_base_revision"])
-            == str(row[f"{candidate}base_revision"])
-            and str(item[f"{receipt}reviewed_head_revision"])
-            == str(row[f"{candidate}head_revision"])
-            and str(item[f"{receipt}reviewed_diff_digest"]) == str(row[f"{candidate}diff_digest"])
-            and str(item[f"{receipt}validator_bundle_digest"])
-            == str(row[f"{candidate}validator_bundle_digest"])
-            for item in receipt_rows
-        ):
+        if _has_matching_independent_receipt(row, receipt_rows):
             continue
-        attempts = sum(
-            int(item[f"{critic_execution}candidate_entity_id"]) == candidate_entity_id
-            for item in critic_execution_rows
-        )
+        attempts = _committed_review_attempts(row, critic_execution_rows)
         max_reviews = int(row[f"{policy}max_reviews"])
         if attempts >= max_reviews:
             exhausted.append(
