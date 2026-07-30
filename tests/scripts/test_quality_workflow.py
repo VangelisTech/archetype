@@ -91,6 +91,8 @@ def test_release_publish_requires_credentialed_r2_evidence() -> None:
     ):
         assert variable in r2_release
     assert "tests/infrastructure/test_r2_idempotency.py" in r2_release
+    assert "--min-tier 5" in r2_release
+    assert "--max-tier 5" in r2_release
     assert "--scenario dogfood.storage.r2" in r2_release
     assert "--cadence release" in r2_release
     assert "--require-run" in r2_release
