@@ -4,8 +4,8 @@
 # ///
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
-"""Daft-vectorized coding missions through isolated Git worktrees and PRs.
-Run locally with --agents 3; add --git-repo, --pr-base, --publish for draft PRs."""
+"""Daft-vectorized coding missions through isolated Git worktrees and draft PRs."""
+
 # fmt: off
 from __future__ import annotations
 
