@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib.metadata
 import json
 import os
 import re
@@ -742,9 +743,14 @@ def build_seeded_modal_hosted_episode_app(
         create_if_missing=True,
     )
     if image is None:
+        # Pin the installed distribution to the running version so the seeded
+        # image never reports a different version than the overlaid sources
+        # (scripts/package_smoke.py version-consistency contract). Callers on
+        # unpublished versions pass an explicit image instead.
+        installed = importlib.metadata.version("archetype-ecs")
         image = (
             modal.Image.debian_slim(python_version="3.12")
-            .uv_pip_install("archetype-ecs==0.4.1")
+            .uv_pip_install(f"archetype-ecs=={installed}")
             .add_local_python_source("archetype", copy=True)
         )
     app = modal.App(config.app_name)
