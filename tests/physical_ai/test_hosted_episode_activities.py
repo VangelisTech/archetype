@@ -1044,3 +1044,130 @@ async def test_pending_results_page_past_a_full_batch(
     deliveries = await catalog.pending_episode_results(world_id=world_id)
 
     assert sorted(delivery.activity_id for delivery in deliveries) == activity_ids
+
+
+@pytest.mark.asyncio
+async def test_scoped_run_once_processes_its_own_episode_not_an_older_claim(
+    tmp_path: Path,
+) -> None:
+    """An operation-scoped run_once must execute exactly its admitted Activity.
+
+    With two in-flight episodes in one world, the unscoped claim previously
+    handed the newer operation the older pending Activity, so the newer call
+    executed foreign work and then failed over its own missing observation.
+    """
+
+    world_id = "physical-world"
+    values = LocalHostedEpisodeValueStore(tmp_path / "values")
+    physical, _generic, catalog = _open_catalog(
+        tmp_path / "activities.db",
+        lease_seconds=300,
+    )
+    receipt = CommittedTickReceipt(world_id, "run-a", 1, "token-1", 0)
+    for activity_id in ("episode-older", "episode-newer"):
+        request = await values.put_request(_request(world_id, activity_id))
+        await catalog.admit_episode(
+            world_id=world_id,
+            receipt=receipt,
+            activity_id=activity_id,
+            request=request,
+        )
+
+    runner = SeededHostedEpisodeRunner(tmp_path / "provider-executions.json")
+    stager = _ObservationStager()
+    worker = PhysicalHostedActivityWorker(
+        world_id=world_id,
+        owner="operation-worker",
+        catalog=catalog,
+        values=values,
+        provider=LocalDurableHostedEpisodeProvider(tmp_path / "provider", runner=runner),
+        stager=stager,
+    )
+
+    assert await worker.run_once(activity_id="episode-newer")
+
+    assert set(stager.observations) == {(world_id, "episode-newer")}
+    assert await catalog.episode_result(world_id=world_id, activity_id="episode-newer") is not None
+    assert await catalog.episode_result(world_id=world_id, activity_id="episode-older") is None
+    assert runner.execution_count == 1
+
+    # A completed Activity is redelivered, never re-executed, by another
+    # scoped pass; the older episode still executes only under its own scope.
+    assert await worker.run_once(activity_id="episode-newer")
+    assert runner.execution_count == 1
+    assert await worker.run_once(activity_id="episode-older")
+    assert set(stager.observations) == {
+        (world_id, "episode-newer"),
+        (world_id, "episode-older"),
+    }
+    assert runner.execution_count == 2
+    await physical.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_unsettled_episode_does_not_unsettle_a_completed_one(
+    tmp_path: Path,
+) -> None:
+    """Settlement is per exact Activity and digest, not world quiescence.
+
+    A stale pending Activity from another episode previously flipped the
+    world-global unsettled oracle and failed an operation whose own
+    observation had already settled.
+    """
+
+    world_id = "physical-world"
+    values = LocalHostedEpisodeValueStore(tmp_path / "values")
+    physical, _generic, catalog = _open_catalog(
+        tmp_path / "activities.db",
+        lease_seconds=300,
+    )
+    receipt = CommittedTickReceipt(world_id, "run-a", 1, "token-1", 0)
+    for activity_id in ("episode-stale", "episode-done"):
+        request = await values.put_request(_request(world_id, activity_id))
+        await catalog.admit_episode(
+            world_id=world_id,
+            receipt=receipt,
+            activity_id=activity_id,
+            request=request,
+        )
+
+    stager = _ObservationStager()
+    worker = PhysicalHostedActivityWorker(
+        world_id=world_id,
+        owner="operation-worker",
+        catalog=catalog,
+        values=values,
+        provider=LocalDurableHostedEpisodeProvider(
+            tmp_path / "provider",
+            runner=SeededHostedEpisodeRunner(tmp_path / "provider-executions.json"),
+        ),
+        stager=stager,
+    )
+    assert await worker.run_once(activity_id="episode-done")
+    observation = stager.observations[(world_id, "episode-done")]
+    await catalog.settle_episode_observation(
+        world_id=world_id,
+        activity_id="episode-done",
+        result_digest=observation.result_digest,
+        receipt=CommittedTickReceipt(world_id, "run-a", 2, "token-2", 0),
+    )
+
+    # The stale episode keeps the world globally unsettled...
+    assert await catalog.has_unsettled_work(world_id)
+    # ...yet the completed operation's own settlement holds exactly.
+    assert await catalog.episode_settled(
+        world_id=world_id,
+        activity_id="episode-done",
+        result_digest=observation.result_digest,
+    )
+    assert not await catalog.episode_settled(
+        world_id=world_id,
+        activity_id="episode-stale",
+        result_digest=observation.result_digest,
+    )
+    assert not await catalog.episode_settled(
+        world_id=world_id,
+        activity_id="episode-done",
+        result_digest="b" * 64,
+    )
+    await physical.close()

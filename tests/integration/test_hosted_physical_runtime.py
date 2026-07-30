@@ -230,3 +230,114 @@ async def test_public_hosted_episode_recovers_without_replay_and_isolates_fork(
         assert child_observation.activity_id == activity_id
         assert child_observation.operation_id != observation.operation_id
         assert state.execution_count == 2
+
+
+def _single_bootstrap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    namespace: str,
+    crash_once: bool,
+) -> tuple[StorageConfig, _ModalState]:
+    storage = StorageConfig(
+        uri=str(tmp_path / "worlds"),
+        namespace=namespace,
+        backend=StorageBackend.ICEBERG,
+    )
+    catalog = ControlCatalogConfig(catalog_dir=tmp_path / "catalogs")
+    registry = WorldRegistry()
+    state = _ModalState(tmp_path / "modal", registry, crash_once=crash_once)
+
+    def provider_factory(config: ModalHostedEpisodeConfig):
+        provider = ModalHostedEpisodeProvider(config, runtime=_ModalRuntime(state))
+        if crash_once:
+            return _CrashAfterProviderPublication(provider, state)
+        return provider
+
+    bootstrap = RuntimeBootstrapConfig(
+        control_catalog_config=catalog,
+        world_registry=registry,
+        audit_storage_config=storage,
+        hosted_episode_provider_factory=provider_factory,
+        hosted_activity_lease_seconds=30,
+    )
+    monkeypatch.setattr(
+        "archetype.runtime.runtime._bootstrap_config",
+        lambda **_kwargs: bootstrap,
+    )
+    return storage, state
+
+
+@pytest.mark.asyncio
+async def test_concurrent_hosted_episodes_each_complete_their_own_activity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two in-flight episodes must not claim or settle across each other."""
+
+    storage, state = _single_bootstrap(
+        tmp_path,
+        monkeypatch,
+        namespace="hosted-concurrent",
+        crash_once=False,
+    )
+    provider_config = _provider_config()
+    async with ArchetypeRuntime() as runtime:
+        world = runtime.world("hosted-concurrent", storage=storage)
+        state.world_id = str((await world.info()).world_id)
+        first, second = await asyncio.gather(
+            world.run_hosted_episode(
+                [_request()],
+                provider=provider_config,
+                activity_id="episode-one",
+            ),
+            world.run_hosted_episode(
+                [_request()],
+                provider=provider_config,
+                activity_id="episode-two",
+            ),
+        )
+
+    assert first.activity_id == "episode-one"
+    assert second.activity_id == "episode-two"
+    assert first.operation_id != second.operation_id
+    assert state.execution_count == 2
+
+
+@pytest.mark.asyncio
+async def test_stale_unsettled_episode_does_not_fail_a_completed_operation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A leftover unsettled Activity is not a later operation's failure.
+
+    The stale episode's worker dies before generic result recording, so its
+    Activity stays unsettled.  A subsequent episode must complete on its own
+    activity's settlement rather than requiring a globally quiet world.
+    """
+
+    storage, state = _single_bootstrap(
+        tmp_path,
+        monkeypatch,
+        namespace="hosted-stale",
+        crash_once=True,
+    )
+    provider_config = _provider_config()
+    async with ArchetypeRuntime() as runtime:
+        world = runtime.world("hosted-stale", storage=storage)
+        state.world_id = str((await world.info()).world_id)
+        with pytest.raises(RuntimeError, match="before generic result"):
+            await world.run_hosted_episode(
+                [_request()],
+                provider=provider_config,
+                activity_id="episode-stale",
+            )
+
+        observation = await world.run_hosted_episode(
+            [_request()],
+            provider=provider_config,
+            activity_id="episode-fresh",
+        )
+
+    assert observation.activity_id == "episode-fresh"
+    assert state.execution_count == 2
