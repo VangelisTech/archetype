@@ -204,17 +204,31 @@ reason = "Exact post-commit critic-Activity fact boundary: each already componen
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
-symbol = "project_critic_activity_intents"
+symbol = "_current_candidate_rows"
 expr = "candidate_tasks.to_pylist"
 method = "to_pylist"
-reason = "Durable critic-Activity admission boundary: the frame is already restricted to committed CANDIDATE task rows, whose bounded histories must be reduced independently before matching immutable candidates; a Daft join of the two snapshot histories crashes the native runtime during the real closed-loop mission."
+reason = "Durable critic-Activity admission boundary (shared by intent projection and run-boundary exhaustion): the frame is already restricted to committed CANDIDATE task rows, whose bounded histories must be reduced independently before matching immutable candidates; a Daft join of the two snapshot histories crashes the native runtime during the real closed-loop mission."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
-symbol = "project_critic_activity_intents"
+symbol = "_current_candidate_rows"
 expr = "candidates.to_pylist"
 method = "to_pylist"
-reason = "Durable critic-Activity admission boundary: bounded committed candidate histories must retain their entity identities while they are reduced and matched to current task rows; provider execution occurs only after the resulting exact request is admitted."
+reason = "Durable critic-Activity admission boundary (shared by intent projection and run-boundary exhaustion): bounded committed candidate histories must retain their entity identities while they are reduced and matched to current task rows; provider execution occurs only after the resulting exact request is admitted."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "project_pending_review_exhaustion"
+expr = "critic_executions.to_pylist"
+method = "to_pylist"
+reason = "Committed domain-budget boundary at the run boundary: finite CriticExecution facts are counted against max_reviews so an exhausted, receipt-less candidate is reported as still pending review instead of waiting out the caller's tick budget."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "project_pending_review_exhaustion"
+expr = "critic_receipts.to_pylist"
+method = "to_pylist"
+reason = "Durable review-evidence boundary at the run boundary: bounded committed CriticReceipt identities are compared with the exact candidate so a matched receipt is never misreported as reviewer-budget exhaustion."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"

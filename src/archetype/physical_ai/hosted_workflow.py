@@ -66,6 +66,10 @@ async def run_hosted_episode(
             RunConfig(),
         )
 
+    # Scope execution and completion to this operation's exact Activity:
+    # with several in-flight episodes, an unscoped claim can execute another
+    # episode's older pending Activity, and world-global settlement lets an
+    # unrelated unsettled episode fail an otherwise-complete call.
     await binding.worker.run_once(activity_id=operation.activity_id)
     observation = await binding.observation(operation.activity_id)
     if observation is None:

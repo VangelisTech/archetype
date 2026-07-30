@@ -78,7 +78,7 @@ from archetype.missions.sandboxes import (
 
 backend = ModalSandboxBackend(
     ModalSandboxConfig(
-        workspace_name="your-modal-workspace",
+        workspace_name="my-workspace",
         environment_name="main",
         operation_protocol_epoch=MODAL_ACTIVITY_PROTOCOL_EPOCH,
     )
@@ -144,11 +144,11 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-Initialize Modal's Codex subscription Volume once before the first live run
-with `await backend.login_codex()`. This device login is not an OpenAI API key
-and cannot implicitly reuse the credential of the Codex process running on the
-host. The complete Modal setup, including live monitoring and steerable browser
-viewports, is executable in
+Initialize the Modal backend's Codex subscription volume once before the
+first live run with `await backend.login_codex()`. This device login is not an
+OpenAI API key and cannot implicitly reuse the credential of the Codex process
+running on the host. The complete backend-selectable setup, including Modal
+attach monitoring, is executable in
 [`examples/11_coding_agent_mission.py`](https://github.com/VangelisTech/archetype/blob/main/examples/11_coding_agent_mission.py).
 
 For a live `sb-...` identity, the example's `--spectate` action mints a
@@ -301,11 +301,11 @@ sequenceDiagram
     Service-->>Author: terminal projection
 ```
 
-The current PostTick boundary establishes one safety property: no sandbox sees
+The committed-tick boundary establishes one safety property: no sandbox sees
 speculative work. If tick persistence fails, its dispatch cannot leak an
-external side effect. The accepted [Activity](activities.md) target replaces
-process-local delivery after that boundary with exact-receipt projection,
-durable admission, and later-receipt settlement.
+external side effect. The [Activity](activities.md) contract carries delivery
+after that boundary with exact-receipt projection, durable admission, and
+later-receipt settlement.
 
 ### Task state
 
@@ -849,9 +849,9 @@ this contract. Cleanup stops creating or consuming its tables and routes while
 leaving existing persisted tables inert; deleting historical operator data is
 a separate, explicit migration decision.
 
-This list describes the shipped V1 Mission/ECS model. The accepted Activity
-target adds generic claim, attempt, and fence mechanics outside that model; it
-does not restore the retired mission-specific subsystem or create an `Attempt`
+This list describes the shipped V1 Mission/ECS model. The Activity contract
+adds generic claim, attempt, and fence mechanics outside that model; it does
+not restore the retired mission-specific subsystem or create an `Attempt`
 Component.
 
 ### Current hardening gaps
@@ -996,9 +996,9 @@ The implementation follows this layout:
 | `archetype/missions/critics/harness.py` | Public-base prewarming, exact-head verification, critic invocation, and structured fail-closed normalization. |
 | `archetype/missions/sandboxes/contracts.py` | Sandbox Backend, Session, process, status, and snapshot value contracts. |
 | `archetype/missions/sandboxes/service.py` | Backend registry and live-session lifetime. |
-| `archetype/missions/sandboxes/apple_container.py` | Operational macOS backend and atomic root-filesystem archive restore. |
-| `archetype/missions/sandboxes/docker.py` | Linux/CI reference backend and immutable image restore. |
-| `archetype/missions/sandboxes/modal.py` | Remote backend, device login, snapshots, direct live monitor, and transient authenticated viewport grants. |
+| `archetype/missions/sandboxes/apple_container.py` | macOS sandbox-capability backend (rejected for end-to-end admission) and atomic root-filesystem archive restore. |
+| `archetype/missions/sandboxes/docker.py` | Linux/CI sandbox-capability backend (rejected for end-to-end admission) and immutable image restore. |
+| `archetype/missions/sandboxes/modal.py` | Supported end-to-end remote backend, device login, snapshots, and direct live monitor. |
 | `archetype/missions/service.py` | Graph materialization, tick/I/O composition, family workflow, and projections. |
 | `archetype/runtime/missions.py` | Mission-author runtime handle and lifecycle. |
 | `examples/11_coding_agent_mission.py` | Real typed dogfood script. |
@@ -1006,6 +1006,7 @@ The implementation follows this layout:
 | `tests/missions/test_mission_author_world_integration.py` | Exact committed author admission, staging, restart, and settlement oracle. |
 | `tests/missions/test_mission_critic_world_integration.py` | Exact committed critic admission, staging, restart, and settlement oracle. |
 | `tests/missions/test_modal_activity_executors.py` | Modal author and critic provider restart/reconciliation oracle. |
+| `tests/integration/test_mission_runtime_drain.py` | Issue #627 whole-operation shutdown/close drain oracle for admitted mission operations. |
 
 No author imports a Component, processor, `GraphView`, application service, or
 provider SDK to run the built-in workflow.

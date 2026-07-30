@@ -242,10 +242,13 @@ class WorldHostedEpisodeObservationStager:
         existing: tuple[HostedEpisodeObservation, ...],
         candidate: HostedEpisodeObservation,
     ) -> None:
+        # A committed marker is listed once per persisted tick, so equal
+        # re-listings of one durable fact are idempotent acceptance; only a
+        # value that disagrees with the candidate fails closed.
         matching = tuple(value for value in existing if value.activity_id == candidate.activity_id)
         if not matching:
             return
-        if len(matching) != 1 or matching[0] != candidate:
+        if any(value != candidate for value in matching):
             raise ValueError("hosted Activity has conflicting or duplicate observation markers")
 
 
@@ -295,6 +298,20 @@ class PhysicalHostedActivityBinding:
         if str(world_id) != self.world_id:
             return False
         return await self._catalog.has_unsettled_work(self.world_id)
+
+    async def episode_settled(self, activity_id: str, result_digest: str) -> bool:
+        """Report settlement of one exact Activity's exact result digest.
+
+        Operation completion must not depend on the world being globally
+        quiet: another episode's pending or reconciling Activity is not this
+        operation's failure.
+        """
+
+        return await self._catalog.episode_settled(
+            world_id=self.world_id,
+            activity_id=activity_id,
+            result_digest=result_digest,
+        )
 
     async def observation(self, activity_id: str) -> HostedEpisodeObservation | None:
         delivery = await self._catalog.episode_result(

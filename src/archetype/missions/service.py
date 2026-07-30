@@ -42,8 +42,10 @@ from archetype.missions.contracts import (
 )
 from archetype.missions.processors import mission_processors
 from archetype.missions.projections import (
+    CriticReviewBudgetExhaustedError,
     current_mission_status,
     project_mission_result,
+    project_pending_review_exhaustion,
 )
 from archetype.missions.relations import (
     DependsOn,
@@ -353,6 +355,15 @@ class MissionService:
                     mission,
                     ticks_completed=int(info.tick),
                 )
+            # Reviewer infrastructure failure never decides a task: once a
+            # current candidate's whole committed review budget is consumed
+            # with no matching independent receipt, no further review can be
+            # admitted, so report the still-pending candidate now instead of
+            # waiting out the remaining tick budget (docs/guide/
+            # agent-missions.md, runtime.md).
+            pending = project_pending_review_exhaustion(self._view, mission.mission_id)
+            if pending:
+                raise CriticReviewBudgetExhaustedError(mission.mission_id, pending)
 
         status = current_mission_status(self._view, mission.mission_id)
         raise RuntimeError(

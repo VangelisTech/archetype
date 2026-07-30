@@ -193,6 +193,14 @@ class PhysicalHostedActivityCatalog(Protocol):
         receipt: CommittedTickReceipt,
     ) -> None: ...
 
+    async def episode_settled(
+        self,
+        *,
+        world_id: str,
+        activity_id: str,
+        result_digest: str,
+    ) -> bool: ...
+
     async def episode_observation_settled(
         self,
         *,
@@ -372,12 +380,18 @@ class PhysicalHostedActivityProjector:
     def _unique_observations(
         observations: tuple[HostedEpisodeIntent | HostedEpisodeObservation, ...],
     ) -> dict[str, HostedEpisodeObservation]:
+        # The committed view lists one durable marker once per persisted tick,
+        # so equal re-listings collapse exactly as committed intents do; only
+        # conflicting values for one Activity fail closed.
         unique: dict[str, HostedEpisodeObservation] = {}
         for value in observations:
             if not isinstance(value, HostedEpisodeObservation):
                 raise TypeError("hosted observation projection returned another component")
-            if value.activity_id in unique:
-                raise ValueError("one hosted Activity has multiple committed observation markers")
+            existing = unique.get(value.activity_id)
+            if existing is not None and existing != value:
+                raise ValueError(
+                    "one hosted Activity has conflicting committed observation markers"
+                )
             unique[value.activity_id] = value
         return unique
 
@@ -493,15 +507,21 @@ class PhysicalHostedActivityCoordinator:
         if activity_id is not None:
             if not activity_id.strip():
                 raise ValueError("hosted episode Activity identity cannot be empty")
-            exact = await self._coordinator.claim(
-                world_id=world_id,
-                kind=HOSTED_EPISODE_ACTIVITY_KIND,
-                activity_id=activity_id,
-                owner=owner,
+            # Operation-scoped delivery: claim exactly the admitted Activity so
+            # one hosted call never executes another episode's older pending
+            # claim.  An unacquired claim means the Activity is leased by
+            # another live owner or already holds its durable result; both are
+            # "nothing to execute here", not errors.
+            generic = await self._coordinator.claim(
+                world_id,
+                HOSTED_EPISODE_ACTIVITY_KIND,
+                activity_id,
+                owner,
                 lease_seconds=self._lease_seconds,
             )
-            return self._remember(exact) if exact.acquired else None
-
+            if not generic.acquired:
+                return None
+            return self._remember(generic)
         # Page until the catalog is exhausted: a finite prefix scan stranded
         # claimable Activities beyond the batch when the head of the pending
         # set was leased by other workers.  claim_next_pending carries this
@@ -642,6 +662,22 @@ class PhysicalHostedActivityCoordinator:
             ActivitySettlement(receipt=receipt, result_digest=result_digest),
         )
 
+    async def episode_settled(
+        self,
+        *,
+        world_id: str,
+        activity_id: str,
+        result_digest: str,
+    ) -> bool:
+        snapshot = await self._coordinator.get(
+            world_id,
+            HOSTED_EPISODE_ACTIVITY_KIND,
+            activity_id,
+        )
+        if snapshot is None or snapshot.settlement is None:
+            return False
+        return snapshot.settlement.result_digest == result_digest
+
     async def episode_observation_settled(
         self,
         *,
@@ -743,32 +779,32 @@ class PhysicalHostedActivityWorker:
         self._stager = stager
 
     async def run_once(self, *, activity_id: str | None = None) -> bool:
-        """Deliver and, when requested, drive exactly one logical Activity."""
+        """Deliver durable results, then execute one claim.
+
+        ``activity_id`` scopes the claim to one exact admitted Activity so an
+        operation-driven call never executes another episode's older pending
+        claim; ``None`` keeps drain semantics and claims the next pending
+        episode in the world. Result delivery stays a world-scoped recovery
+        sweep even when execution is pinned to one requested Activity:
+        otherwise a process crash after durable result recording could strand
+        that result forever when the caller's next operation uses another
+        Activity identity.
+        """
 
         if activity_id is not None and not activity_id.strip():
             raise ValueError("hosted episode Activity identity cannot be empty")
-        # Result delivery is a world-scoped recovery sweep even when execution
-        # is pinned to one requested Activity. Otherwise a process crash after
-        # durable result recording can strand that result forever when the
-        # caller's next operation uses another Activity identity.
         progressed = await self._deliver_pending_results()
-        if activity_id is None:
-            claim = await self._catalog.claim_episode(
-                world_id=self._world_id,
-                owner=self._owner,
-            )
-        else:
-            claim = await self._catalog.claim_episode(
-                world_id=self._world_id,
-                owner=self._owner,
-                activity_id=activity_id,
-            )
+        claim = await self._catalog.claim_episode(
+            world_id=self._world_id,
+            owner=self._owner,
+            activity_id=activity_id,
+        )
         if claim is None:
             return progressed
         if claim.world_id != self._world_id:
             raise ValueError("hosted catalog returned another world's claim")
         if activity_id is not None and claim.activity_id != activity_id:
-            raise ValueError("hosted catalog returned another Activity's exact claim")
+            raise ValueError("hosted catalog returned another Activity's claim")
         request = await self._load_claim_request(claim)
         result_claim, provider_result = await self._execute_or_reconcile(
             claim,
