@@ -323,6 +323,18 @@ class PhysicalHostedActivityBinding:
         published = await self._values.get_result(delivery.result)
         return published.observation(activity_id)
 
+    async def observation_settled(
+        self,
+        *,
+        activity_id: str,
+        result_digest: str,
+    ) -> bool:
+        return await self._catalog.episode_observation_settled(
+            world_id=self.world_id,
+            activity_id=activity_id,
+            result_digest=result_digest,
+        )
+
     async def prepare_intent(
         self,
         *,

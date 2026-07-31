@@ -11,12 +11,16 @@ import os
 import subprocess
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+import archetype.missions.critics.harness as critic_harness_module
 from archetype.missions import CriticPolicy
+from archetype.missions.coding_agents.contracts import AgentProcessObservation
 from archetype.missions.critics import (
     CandidateReviewRequest,
+    CodexAppServerCriticDriver,
     CodexCriticDriver,
     CriticHarness,
     CriticHarnessConfig,
@@ -479,3 +483,45 @@ async def test_codex_critic_receives_model_capability_but_never_git_publication_
     process = session.requests[0]
     assert process.secret_names == ("critic_oauth",)
     assert "github" not in process.secret_names
+
+
+@pytest.mark.asyncio
+async def test_app_server_critic_uses_the_shared_exact_turn_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote, base, head, diff = _repository(tmp_path)
+    session = _CaptureSession()
+    calls: list[dict[str, Any]] = []
+
+    async def run_turn(
+        selected_session: object,
+        **kwargs: Any,
+    ) -> AgentProcessObservation:
+        assert selected_session is session
+        calls.append(kwargs)
+        return AgentProcessObservation(
+            returncode=0,
+            stdout='{"conclusion":"accept","summary":"clean","findings":[]}',
+            trace_uri="modal-sandbox://sb-critic/trace",
+        )
+
+    class _Connector:
+        def connect(self, selected_session: object) -> Any:
+            raise AssertionError(f"unexpected direct connector call for {selected_session!r}")
+
+    monkeypatch.setattr(critic_harness_module, "run_codex_app_server_turn", run_turn)
+    request = _request(remote, base, head, diff)
+    driver = CodexAppServerCriticDriver(
+        connector=_Connector(),
+        workspace="/workspace/review",
+    )
+
+    observed = await driver.run(session, request, "review exact head")
+
+    assert observed.returncode == 0
+    assert observed.trace_uri == "modal-sandbox://sb-critic/trace"
+    assert len(calls) == 1
+    assert calls[0]["workspace"] == "/workspace/review"
+    assert calls[0]["model"] == request.policy.model
+    assert calls[0]["timeout_seconds"] == request.policy.timeout_seconds

@@ -26,7 +26,7 @@ from archetype.missions.sandboxes._image import (
     local_image_name,
     verify_coding_agent_environment,
 )
-from archetype.missions.sandboxes._subprocess import run_host, run_host_passthrough
+from archetype.missions.sandboxes._subprocess import run_host
 from archetype.missions.sandboxes.contracts import (
     CheckpointLocality,
     CheckpointRef,
@@ -42,8 +42,6 @@ from archetype.missions.sandboxes.contracts import (
 
 _PROVIDER = "apple-container"
 _CHECKPOINT_PREFIX = "apple-container-rootfs://"
-_CODEX_SECRET = "codex_oauth"
-_GITHUB_SECRET = "github"
 _CODEX_AUTH_PATH = f"{CODEX_HOME}/auth.json"
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]*$")
 
@@ -56,21 +54,14 @@ class AppleContainerSandboxConfig:
     state_dir: str = ".context/apple-container-checkpoints"
     cpus: int = 4
     memory: str = "8g"
-    auth_volume_name: str = "archetype-codex-auth"
-    github_token_env: str = "GITHUB_TOKEN"
     checkpoint_timeout_seconds: int = 5 * 60
 
     def __post_init__(self) -> None:
         if self.cpus < 1 or not self.memory.strip():
             raise ValueError("Apple Container resources require positive CPUs and memory")
-        for label, value in (
-            ("image_name", self.resolved_image_name),
-            ("auth_volume_name", self.auth_volume_name),
-        ):
+        for label, value in (("image_name", self.resolved_image_name),):
             if not _NAME_RE.fullmatch(value):
                 raise ValueError(f"invalid Apple Container {label}: {value!r}")
-        if not re.fullmatch(r"[A-Z_][A-Z0-9_]*", self.github_token_env):
-            raise ValueError("github_token_env must be an environment variable name")
         if self.checkpoint_timeout_seconds < 1:
             raise ValueError("checkpoint timeout must be positive")
 
@@ -80,7 +71,7 @@ class AppleContainerSandboxConfig:
 
 
 class AppleContainerSandboxSession:
-    """One Apple Container VM plus a separate OAuth broker VM."""
+    """One Apple Container VM."""
 
     def __init__(
         self,
@@ -88,18 +79,13 @@ class AppleContainerSandboxSession:
         spec: SandboxSpec,
         config: AppleContainerSandboxConfig,
         sandbox_id: str,
-        auth_sandbox_id: str,
     ) -> None:
         self._spec = spec
         self._config = config
         self._sandbox_id = sandbox_id
-        self._auth_sandbox_id = auth_sandbox_id
         self._status = SandboxStatus.READY
         self._lock = asyncio.Lock()
-        self._close_resources = {
-            "mission": sandbox_id,
-            "OAuth broker": auth_sandbox_id,
-        }
+        self._close_resources = {"mission": sandbox_id}
 
     @property
     def identity(self) -> SandboxIdentity:
@@ -109,7 +95,7 @@ class AppleContainerSandboxSession:
     def capabilities(self) -> SandboxCapabilities:
         return SandboxCapabilities(
             checkpoints=True,
-            secret_names=(_CODEX_SECRET, _GITHUB_SECRET),
+            secret_names=(),
             home_directory=AGENT_HOME,
         )
 
@@ -123,34 +109,14 @@ class AppleContainerSandboxSession:
         async with self._lock:
             if self._status is not SandboxStatus.READY:
                 raise RuntimeError(f"Apple Container sandbox session is {self._status.value}")
-            uses_oauth = _CODEX_SECRET in request.secret_names
-            oauth_staged = False
-            operation_error: BaseException | None = None
             try:
-                if uses_oauth:
-                    await self._stage_oauth()
-                    oauth_staged = True
                 result = await self._exec_request(request)
-            except asyncio.CancelledError as exc:
-                operation_error = exc
+            except asyncio.CancelledError:
                 self._status = SandboxStatus.INTERRUPTED
                 raise
-            except BaseException as exc:
-                operation_error = exc
+            except BaseException:
                 self._status = SandboxStatus.ERRORED
                 raise
-            finally:
-                if uses_oauth:
-                    try:
-                        if oauth_staged:
-                            await self._persist_and_remove_oauth()
-                        else:
-                            await self._remove_oauth()
-                    except BaseException as exc:
-                        self._status = SandboxStatus.ERRORED
-                        if operation_error is not None:
-                            raise exc from operation_error
-                        raise
             return result
 
     async def checkpoint(self) -> CheckpointRef:
@@ -253,117 +219,12 @@ class AppleContainerSandboxSession:
 
     async def _exec_request(self, request: ProcessRequest) -> ProcessResult:
         argv = ["container", "exec", "--user", AGENT_USER]
-        secret_env_file: Path | None = None
         if request.workdir:
             argv.extend(["--workdir", request.workdir])
         for key, value in request.env:
             argv.extend(["--env", f"{key}={value}"])
-        if _GITHUB_SECRET in request.secret_names:
-            token = os.environ.get(self._config.github_token_env)
-            if not token:
-                raise RuntimeError(
-                    f"required host environment variable is missing: "
-                    f"{self._config.github_token_env}"
-                )
-            if any(character in token for character in ("\x00", "\r", "\n")):
-                raise RuntimeError("GitHub token contains an invalid environment-file character")
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                prefix="archetype-apple-secret-",
-                suffix=".env",
-                delete=False,
-            ) as env_file:
-                os.fchmod(env_file.fileno(), 0o600)
-                env_file.write(f"{self._config.github_token_env}={token}\n")
-                secret_env_file = Path(env_file.name)
-            argv.extend(["--env-file", str(secret_env_file)])
         argv.extend([self._sandbox_id, *request.argv])
-        try:
-            return await run_host(argv, timeout_seconds=request.timeout_seconds)
-        finally:
-            if secret_env_file is not None:
-                secret_env_file.unlink(missing_ok=True)
-
-    async def _stage_oauth(self) -> None:
-        archive = await self._auth_exec(
-            "sh",
-            "-c",
-            f"tar -C {AGENT_HOME} -czf - .codex | base64 -w 0",
-            timeout=60,
-        )
-        self._raise(archive, "read Codex OAuth credential")
-        staged = await run_host(
-            (
-                "container",
-                "exec",
-                "--interactive",
-                "--user",
-                AGENT_USER,
-                self._sandbox_id,
-                "sh",
-                "-c",
-                f"rm -rf {CODEX_HOME} && mkdir -p {AGENT_HOME} "
-                f"&& base64 -d | tar -xz -C {AGENT_HOME}",
-            ),
-            timeout_seconds=60,
-            stdin=archive.stdout,
-        )
-        self._raise(staged, "stage Codex OAuth credential")
-
-    async def _persist_and_remove_oauth(self) -> None:
-        persistence_error: BaseException | None = None
-        try:
-            archive = await self._exec_request(
-                ProcessRequest(
-                    ("sh", "-c", f"tar -C {AGENT_HOME} -czf - .codex | base64 -w 0"),
-                    timeout_seconds=60,
-                )
-            )
-            self._raise(archive, "read refreshed Codex OAuth credential")
-            persisted = await self._auth_exec(
-                "sh",
-                "-c",
-                f"find {CODEX_HOME} -mindepth 1 -maxdepth 1 -exec rm -rf -- {{}} + "
-                f"&& base64 -d | tar -xz -C {AGENT_HOME}",
-                timeout=60,
-                stdin=archive.stdout,
-            )
-            self._raise(persisted, "persist refreshed Codex OAuth credential")
-        except BaseException as exc:
-            persistence_error = exc
-        removal_error: BaseException | None = None
-        try:
-            await self._remove_oauth()
-        except BaseException as exc:
-            removal_error = exc
-        if persistence_error is not None and removal_error is not None:
-            raise BaseExceptionGroup(
-                "failed to persist and remove Apple Container OAuth credential",
-                [persistence_error, removal_error],
-            )
-        if persistence_error is not None:
-            raise persistence_error
-        if removal_error is not None:
-            raise removal_error
-
-    async def _remove_oauth(self) -> None:
-        removed = await self._exec_request(
-            ProcessRequest(("rm", "-rf", CODEX_HOME), timeout_seconds=60)
-        )
-        self._raise(removed, "remove staged Codex OAuth credential")
-
-    async def _auth_exec(
-        self,
-        *arguments: str,
-        timeout: int,
-        stdin: str | None = None,
-    ) -> ProcessResult:
-        argv = ["container", "exec"]
-        if stdin is not None:
-            argv.append("--interactive")
-        argv.extend(["--user", AGENT_USER, self._auth_sandbox_id, *arguments])
-        return await run_host(argv, timeout_seconds=timeout, stdin=stdin)
+        return await run_host(argv, timeout_seconds=request.timeout_seconds)
 
     @staticmethod
     async def _host(*arguments: str, timeout: int) -> ProcessResult:
@@ -430,66 +291,6 @@ class AppleContainerSandboxBackend:
             raise
         return session
 
-    async def login_codex(self) -> None:
-        """Persist a Codex subscription device login in the broker volume."""
-
-        await self._require_runtime()
-        await self._ensure_image(self.config.resolved_image_name)
-        inspected = await run_host(
-            ("container", "volume", "inspect", self.config.auth_volume_name),
-            timeout_seconds=30,
-        )
-        if inspected.returncode != 0:
-            created = await run_host(
-                (
-                    "container",
-                    "volume",
-                    "create",
-                    "--label",
-                    "archetype.kind=codex-auth",
-                    self.config.auth_volume_name,
-                ),
-                timeout_seconds=30,
-            )
-            AppleContainerSandboxSession._raise(created, "Codex auth volume create")
-        initialized = await run_host(
-            (
-                "container",
-                "run",
-                "--remove",
-                "--user",
-                "root",
-                "--volume",
-                f"{self.config.auth_volume_name}:{CODEX_HOME}",
-                self.config.resolved_image_name,
-                "chown",
-                "-R",
-                f"{AGENT_USER}:{AGENT_USER}",
-                CODEX_HOME,
-            ),
-            timeout_seconds=60,
-        )
-        AppleContainerSandboxSession._raise(initialized, "Codex auth volume initialization")
-        returncode = await run_host_passthrough(
-            (
-                "container",
-                "run",
-                "--remove",
-                "--interactive",
-                "--tty",
-                "--user",
-                AGENT_USER,
-                "--volume",
-                f"{self.config.auth_volume_name}:{CODEX_HOME}",
-                self.config.resolved_image_name,
-                "codex",
-                "login",
-                "--device-auth",
-            )
-        )
-        if returncode != 0:
-            raise RuntimeError(f"Codex device login failed with exit code {returncode}")
-
     def _validate_spec(self, spec: SandboxSpec) -> None:
         if spec.provider != self.name:
             raise ValueError("Apple Container backend received a different provider")
@@ -501,15 +302,6 @@ class AppleContainerSandboxBackend:
 
     async def _preflight(self) -> None:
         await self._require_runtime()
-        volume = await run_host(
-            ("container", "volume", "inspect", self.config.auth_volume_name),
-            timeout_seconds=30,
-        )
-        if volume.returncode != 0:
-            raise RuntimeError(
-                "Codex OAuth is not initialized; call "
-                "AppleContainerSandboxBackend.login_codex() once and retry"
-            )
 
     @staticmethod
     async def _require_runtime() -> None:
@@ -557,7 +349,6 @@ class AppleContainerSandboxBackend:
 
     async def _launch(self, spec: SandboxSpec, image_name: str) -> AppleContainerSandboxSession:
         sandbox_id = f"archetype-codex-{uuid4().hex[:12]}"
-        auth_sandbox_id = f"{sandbox_id}-auth"
         launched = await run_host(
             (
                 "container",
@@ -581,55 +372,10 @@ class AppleContainerSandboxBackend:
             timeout_seconds=120,
         )
         AppleContainerSandboxSession._raise(launched, "container run")
-        broker = await run_host(
-            (
-                "container",
-                "run",
-                "--detach",
-                "--init",
-                "--name",
-                auth_sandbox_id,
-                "--cpus",
-                "1",
-                "--memory",
-                "1g",
-                "--cap-drop",
-                "ALL",
-                "--label",
-                "archetype.kind=codex-auth-broker",
-                "--volume",
-                f"{self.config.auth_volume_name}:{CODEX_HOME}",
-                self.config.resolved_image_name,
-                "sleep",
-                "infinity",
-            ),
-            timeout_seconds=120,
-        )
-        if broker.returncode != 0:
-            try:
-                AppleContainerSandboxSession._raise(broker, "Codex auth broker run")
-            except RuntimeError as broker_error:
-                try:
-                    cleanup = await run_host(
-                        ("container", "delete", "--force", sandbox_id),
-                        timeout_seconds=60,
-                    )
-                    AppleContainerSandboxSession._raise(
-                        cleanup,
-                        f"delete mission container {sandbox_id} after broker failure",
-                    )
-                except Exception as cleanup_error:
-                    raise ExceptionGroup(
-                        f"Codex auth broker launch failed and mission container "
-                        f"{sandbox_id!r} may remain live",
-                        [broker_error, cleanup_error],
-                    ) from broker_error
-                raise
         session = AppleContainerSandboxSession(
             spec=spec,
             config=self.config,
             sandbox_id=sandbox_id,
-            auth_sandbox_id=auth_sandbox_id,
         )
         try:
             await verify_coding_agent_environment(session, spec, expected_user=AGENT_USER)

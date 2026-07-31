@@ -763,10 +763,10 @@ async def test_runtime_shutdown_drains_each_admitted_mission_operation(
 
     release.set()
     if operation == "restore_sandbox":
-        # The checkpoint names another provider; the admitted operation
-        # completes with its own factual provider-contract error, never a
+        # The v0.5 Modal Activity path rejects restore by contract; the
+        # admitted operation completes with that factual error, never a
         # runtime-closed error.
-        with pytest.raises(ValueError, match="checkpoint provider does not match"):
+        with pytest.raises(NotImplementedError, match="checkpoint restore is unavailable"):
             await asyncio.wait_for(admitted, timeout=60)
     else:
         outcome = await asyncio.wait_for(admitted, timeout=60)
@@ -799,6 +799,7 @@ async def test_closed_mission_handle_rejects_new_operations_by_contract(
     submitted = SubmittedMission(
         mission_id=1,
         task_ids=(),
+        episode_id="episode-released-handle",
         repository="owner/repository",
         branch="agent/released-handle",
     )

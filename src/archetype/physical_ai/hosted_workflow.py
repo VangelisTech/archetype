@@ -82,7 +82,10 @@ async def run_hosted_episode(
             world,
             RunConfig(),
         )
-    if not await binding.episode_settled(operation.activity_id, observation.result_digest):
+    if not await binding.observation_settled(
+        activity_id=operation.activity_id,
+        result_digest=observation.result_digest,
+    ):
         raise RuntimeError("hosted episode observation did not settle")
     return observation
 

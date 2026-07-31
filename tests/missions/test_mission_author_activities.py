@@ -1853,7 +1853,10 @@ async def test_confirmed_absence_mints_fresh_fence_before_execution(
 @pytest.mark.asyncio
 async def test_world_identity_scopes_equal_dispatch_ids(tmp_path: Path) -> None:
     dispatch_id = "world-local-id"
-    physical, generic, catalog = _open_catalog(tmp_path / "activities.db")
+    physical, generic, catalog = _open_catalog(
+        tmp_path / "activities.db",
+        now_seconds=lambda: 1_000.0,
+    )
     values = LocalMissionAuthorValueStore(tmp_path / "values", redactor=RedactionService())
     for world_id in ("world-a", "world-b"):
         receipt = CommittedTickReceipt(world_id, f"run-{world_id}", 1, "token", 0)

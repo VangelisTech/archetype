@@ -120,8 +120,8 @@ A reviewed family may own a capability-scoped `Resource` implementation or
 provider adapter when the protocol and lifecycle vocabulary belong to that
 family. It must not become process-global configuration or cross-family
 authority. `archetype.missions.sandboxes` is the concrete example: it executes
-mission requests, while the app workflow owns composition and the processors
-own transitions.
+mission requests, while the missions-family workflow owns composition and the
+processors own transitions.
 
 A Resource is tick-time capability access whose process-local lifetime is not
 durable workflow truth. An Activity coordinates work admitted from one
@@ -489,7 +489,7 @@ implementations across families. It constructs one process graph:
 build_runtime_resources(...)
   -> OperationRegistry + Policy + CommandScheduler + CommandDispatcher
   -> WorldRegistry + WorldLifecycle + AuditLog + StorageService
-  -> application-family services
+  -> named family services and Activity bindings
   -> RuntimeResources
 ```
 
@@ -541,6 +541,8 @@ Together, the repository's architecture and observability checkers must:
 - reject missing, stale, duplicate, or empty top-level family registrations;
 - reject any first-party top-level package or module that lacks an explicit
   reserved-infrastructure or registered-family classification;
+- reject a stale blanket reservation for the removed `archetype.app`
+  migration root while continuing to forbid family imports of that root;
 - require one exact cross-family dependency disposition for every registered
   top-level family;
 - reject cycles in the complete registered top-level family graph;
@@ -649,12 +651,10 @@ command envelope, facade bridge, or compatibility auth re-export.
 
 ## 13. Accepted v0.5 target architecture
 
-This section records the ratified v0.5 architecture and its status after PR4.
-The dispatcher, exact-operation, composition, and runtime-resource ownership
-described here are current. Later behavioral migrations are explicitly marked
-as targets and do not override their current focused specifications. Every
-move must update policy, focused specifications, and executable oracles
-atomically.
+This section records the landed v0.5 architecture. The dispatcher,
+exact-operation, Activity, composition, and runtime-resource ownership
+described here are current. Later changes must update policy, focused
+specifications, and executable oracles atomically.
 
 Families own behavior. Commands validate. Dispatcher governs entry. Scheduler
 owns command durability. The Activity coordinator owns between-tick delivery.
@@ -671,6 +671,7 @@ dependency. `errors` is the exact common-family module; `runtime`, `api`,
 
 | Consumer | Allowed top-level family dependencies |
 |---|---|
+| `activities` | `storage` |
 | `storage` | none |
 | `world` | `storage` |
 | `commands` | `storage`, `world` |
@@ -710,6 +711,7 @@ src/archetype/
   core/          kernel; only the approved tick/run-identity changes
   errors.py      stable shared boundary-error bases
   storage/       Daft execution, catalogs, commits, scans, signatures, session
+  activities/    generic durable between-tick delivery over storage catalog
   world/         registry, lifecycle, simulation, mutation, query, handlers
   commands/      operation registry, dispatch, policy, scheduler, access audit
   activities/
@@ -829,12 +831,11 @@ backfill, dual reads, or compatibility aliases.
 
 ### v0.5 migration oracle status
 
-The v0.5 migration is made executable slice by slice. This table preserves
-the review decomposition and distinguishes the shipped PR4 substrate from
-remaining work; a current test must exercise the claimed owner and failure
-boundary rather than relying on a pre-refactor baseline.
+The v0.5 migration is executable slice by slice. A current test must exercise
+the claimed owner and failure boundary rather than relying on a pre-refactor
+baseline.
 
-| Contract | Executable evidence | Status after PR4 |
+| Contract | Executable evidence | v0.5 status |
 |---|---|---|
 | command materialization and manifest-coupled settlement | command-flow and durable-command integration contracts | Landed in world/commands |
 | lock and shutdown admission | runtime lifecycle and admitted-work race contracts | Landed in world/runtime resources |

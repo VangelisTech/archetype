@@ -380,8 +380,9 @@ def _begin_dispatch(
     task_status: str,
     dispatch_id: str,
     sequence: int,
+    permitted: bool,
 ) -> dict[str, Any]:
-    if task_status != TaskStatus.READY.value:
+    if task_status != TaskStatus.READY.value or not permitted:
         return {
             "task_status": task_status,
             "dispatch_id": dispatch_id,
@@ -397,14 +398,92 @@ def _begin_dispatch(
 
 
 class TaskDispatchProcessor(AsyncProcessor):
-    """Turn ready tasks into durable external-work intent."""
+    """Serialize each mission branch into one durable external-work intent."""
 
     components = (Task, TaskState, TaskDispatch)
     priority = 30
 
-    async def process(self, df: DataFrame, **_: Any) -> DataFrame:
+    async def process(
+        self,
+        df: DataFrame,
+        resources: Resources | None = None,
+        **_: Any,
+    ) -> DataFrame:
+        if resources is None:
+            raise KeyError("TaskDispatchProcessor requires world resources")
+        memberships = resources.require(GraphView).frame(PartOfMission)
+        if memberships is None:
+            return df
+
         state = TaskState.get_prefix()
         dispatch = TaskDispatch.get_prefix()
+        membership = PartOfMission.get_prefix()
+        original = tuple(df.column_names)
+        sentinel = (1 << 63) - 1
+        membership_by_task = memberships.groupby(f"{membership}source").agg(
+            col(f"{membership}target").count().alias("_mission_count"),
+            col(f"{membership}target").min().alias("_mission_id"),
+        )
+        df = df.join(
+            membership_by_task,
+            left_on="entity_id",
+            right_on=f"{membership}source",
+            how="left",
+        )
+        exact_membership = cast(
+            Expression,
+            col("_mission_count").fill_null(0) == 1,
+        )
+        ready = cast(
+            Expression,
+            col(f"{state}status") == TaskStatus.READY.value,
+        )
+        repair = ready & cast(
+            Expression,
+            col(f"{dispatch}sequence") > 0,  # ty: ignore[unsupported-operator]
+        )
+        outstanding = col(f"{state}status").is_in(
+            [
+                TaskStatus.DISPATCHED.value,
+                TaskStatus.CANDIDATE.value,
+                TaskStatus.FAILED.value,
+            ]
+        )
+        df = df.with_columns(
+            {
+                "_mission_outstanding": when(
+                    exact_membership & outstanding,
+                    then=lit(1),
+                ).otherwise(lit(0)),
+                "_mission_repair": when(
+                    exact_membership & repair,
+                    then=col("entity_id"),
+                ).otherwise(lit(sentinel)),
+                "_mission_fresh": when(
+                    exact_membership & ready & ~repair,
+                    then=col("entity_id"),
+                ).otherwise(lit(sentinel)),
+            }
+        )
+        mission_rollup = df.groupby("_mission_id").agg(
+            col("_mission_outstanding").sum().alias("_outstanding_count"),
+            col("_mission_repair").min().alias("_repair_task_id"),
+            col("_mission_fresh").min().alias("_fresh_task_id"),
+        )
+        mission_rollup = mission_rollup.with_column(
+            "_selected_task_id",
+            when(
+                (col("_outstanding_count") == 0) & (col("_repair_task_id") != sentinel),
+                then=col("_repair_task_id"),
+            )
+            .when(
+                (col("_outstanding_count") == 0) & (col("_fresh_task_id") != sentinel),
+                then=col("_fresh_task_id"),
+            )
+            .otherwise(lit(-1)),
+        )
+        df = df.join(mission_rollup, on="_mission_id", how="left")
+        permitted = exact_membership & (col("entity_id") == col("_selected_task_id"))
         df = df.with_column(
             "_agent_mission_dispatch",
             _begin_dispatch(
@@ -412,12 +491,13 @@ class TaskDispatchProcessor(AsyncProcessor):
                 col(f"{state}status"),
                 col(f"{dispatch}dispatch_id"),
                 col(f"{dispatch}sequence"),
+                permitted,
             ),
         )
         df = df.with_column(f"{state}status", col("_agent_mission_dispatch")["task_status"])
         for field in ("dispatch_id", "sequence"):
             df = df.with_column(f"{dispatch}{field}", col("_agent_mission_dispatch")[field])
-        return df.exclude("_agent_mission_dispatch")
+        return df.select(*original)
 
 
 class MissionRollupProcessor(AsyncProcessor):

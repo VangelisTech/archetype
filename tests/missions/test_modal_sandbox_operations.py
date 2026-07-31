@@ -246,11 +246,17 @@ class _ModalRegistry:
     def create(self, *command: str, **kwargs: Any) -> _RemoteSandbox:
         name = str(kwargs["name"])
         app = kwargs["app"]
-        environment_name = str(kwargs["environment_name"])
         assert isinstance(app, _RemoteApp)
-        assert app.environment_name == environment_name
+        assert "environment_name" not in kwargs
+        environment_name = app.environment_name
         assert kwargs["client"] is self.client
-        self.create_calls.append({"command": command, **kwargs})
+        self.create_calls.append(
+            {
+                "command": command,
+                "inherited_environment_name": environment_name,
+                **kwargs,
+            }
+        )
         if name in self.resources:
             raise _AlreadyExistsError(name)
         self._sequence += 1
@@ -621,7 +627,7 @@ async def test_named_modal_operation_reports_running_without_sharing_execution_h
         assert call["tags"]["operation_digest"] == identity.digest
         assert call["tags"]["operation_cohort"] == created.operation_cohort_id
         assert call["tags"]["operation_protocol_epoch"] == str(identity.protocol_epoch)
-        assert call["environment_name"] == identity.environment_name
+        assert call["inherited_environment_name"] == identity.environment_name
         assert call["client"] is registry.client
         assert call["tags"]["kind"] in {
             "archetype-agent-auth",
@@ -673,6 +679,46 @@ async def test_named_modal_operation_reports_running_without_sharing_execution_h
     assert isinstance(blocked_after_close, ModalProviderMarkerExists)
     assert len(registry.create_calls) == creates_before_delayed_replay
     assert len(registry.persistent_objects) == 2
+
+
+@pytest.mark.asyncio
+async def test_completed_operation_cleanup_reopens_only_exact_durable_cohort(
+    modal_operation,
+) -> None:
+    registry, backend, capability, spec = modal_operation
+    operation_id = "missions.author:world-a:dispatch-cleanup"
+    _barrier, started = await _start_once(capability, spec, operation_id)
+    cleanup = started.session.operation_cleanup
+
+    restarted = ModalSandboxOperationCapability(ModalSandboxBackend(backend.config))
+    await restarted.cleanup_completed(cleanup=cleanup, spec=spec)
+
+    assert registry.resources == {}
+
+
+@pytest.mark.asyncio
+async def test_completed_operation_cleanup_rejects_reused_provider_generation(
+    modal_operation,
+) -> None:
+    registry, backend, capability, spec = modal_operation
+    operation_id = "missions.author:world-a:dispatch-cleanup-reused"
+    identity = capability.identity(operation_id)
+    _barrier, started = await _start_once(capability, spec, operation_id)
+    cleanup = started.session.operation_cleanup
+    newer = _remote_sandbox(
+        registry,
+        identity,
+        role="mission",
+        object_id="sb-newer-mission",
+        cohort_id=cleanup.cohort_id,
+    )
+    registry.resources[identity.mission_sandbox_name] = newer
+
+    restarted = ModalSandboxOperationCapability(ModalSandboxBackend(backend.config))
+    with pytest.raises(RuntimeError, match="different Modal sandbox generation"):
+        await restarted.cleanup_completed(cleanup=cleanup, spec=spec)
+
+    assert newer.terminated == 0
 
 
 @pytest.mark.asyncio

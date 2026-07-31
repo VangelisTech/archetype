@@ -47,6 +47,7 @@ from archetype.missions.critics.contracts import (
     CriticValidationEvidence,
 )
 from archetype.missions.critics.harness import (
+    CodexAppServerCriticDriver,
     CodexCriticDriver,
     CriticHarness,
     CriticHarnessConfig,
@@ -56,6 +57,7 @@ __all__ = [
     "CRITIC_ACTIVITY_KIND",
     "CRITIC_ACTIVITY_MEDIA_TYPE",
     "CandidateReviewRequest",
+    "CodexAppServerCriticDriver",
     "CodexCriticDriver",
     "CriticActivityCodec",
     "CriticActivityReceipt",

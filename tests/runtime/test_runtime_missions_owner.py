@@ -158,6 +158,7 @@ def _mission() -> SubmittedMission:
     return SubmittedMission(
         mission_id=1,
         task_ids=(),
+        episode_id="mission-episode-owner",
         repository="repo",
         branch="branch",
     )
@@ -221,6 +222,7 @@ async def test_mission_facade_anchor_survives_failed_close_until_retry_release()
             SubmittedMission(
                 mission_id=1,
                 task_ids=(),
+                episode_id="mission-episode-owner",
                 repository="repo",
                 branch="branch",
             )

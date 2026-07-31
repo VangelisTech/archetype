@@ -201,6 +201,14 @@ class PhysicalHostedActivityCatalog(Protocol):
         result_digest: str,
     ) -> bool: ...
 
+    async def episode_observation_settled(
+        self,
+        *,
+        world_id: str,
+        activity_id: str,
+        result_digest: str,
+    ) -> bool: ...
+
     async def has_unsettled_work(self, world_id: str) -> bool: ...
 
 
@@ -497,6 +505,8 @@ class PhysicalHostedActivityCoordinator:
         activity_id: str | None = None,
     ) -> HostedEpisodeActivityClaim | None:
         if activity_id is not None:
+            if not activity_id.strip():
+                raise ValueError("hosted episode Activity identity cannot be empty")
             # Operation-scoped delivery: claim exactly the admitted Activity so
             # one hosted call never executes another episode's older pending
             # claim.  An unacquired claim means the Activity is leased by
@@ -668,6 +678,25 @@ class PhysicalHostedActivityCoordinator:
             return False
         return snapshot.settlement.result_digest == result_digest
 
+    async def episode_observation_settled(
+        self,
+        *,
+        world_id: str,
+        activity_id: str,
+        result_digest: str,
+    ) -> bool:
+        snapshot = await self._coordinator.get(
+            world_id,
+            HOSTED_EPISODE_ACTIVITY_KIND,
+            activity_id,
+        )
+        if snapshot is None or snapshot.result is None or snapshot.settlement is None:
+            return False
+        return (
+            snapshot.result.digest == result_digest
+            and snapshot.settlement.result_digest == result_digest
+        )
+
     async def has_unsettled_work(self, world_id: str) -> bool:
         return await self._coordinator.has_unsettled(world_id)
 
@@ -755,9 +784,15 @@ class PhysicalHostedActivityWorker:
         ``activity_id`` scopes the claim to one exact admitted Activity so an
         operation-driven call never executes another episode's older pending
         claim; ``None`` keeps drain semantics and claims the next pending
-        episode in the world.
+        episode in the world. Result delivery stays a world-scoped recovery
+        sweep even when execution is pinned to one requested Activity:
+        otherwise a process crash after durable result recording could strand
+        that result forever when the caller's next operation uses another
+        Activity identity.
         """
 
+        if activity_id is not None and not activity_id.strip():
+            raise ValueError("hosted episode Activity identity cannot be empty")
         progressed = await self._deliver_pending_results()
         claim = await self._catalog.claim_episode(
             world_id=self._world_id,
@@ -862,13 +897,23 @@ class PhysicalHostedActivityWorker:
         )
         return bound, result
 
-    async def _deliver_pending_results(self) -> bool:
+    async def _deliver_pending_results(self, *, activity_id: str | None = None) -> bool:
         progressed = False
-        for delivery in await self._catalog.pending_episode_results(
-            world_id=self._world_id,
-        ):
+        if activity_id is None:
+            deliveries = await self._catalog.pending_episode_results(
+                world_id=self._world_id,
+            )
+        else:
+            delivery = await self._catalog.episode_result(
+                world_id=self._world_id,
+                activity_id=activity_id,
+            )
+            deliveries = () if delivery is None else (delivery,)
+        for delivery in deliveries:
             if delivery.world_id != self._world_id:
                 raise ValueError("hosted catalog returned another world's result")
+            if activity_id is not None and delivery.activity_id != activity_id:
+                raise ValueError("hosted catalog returned another Activity's exact result")
             published = await self._values.get_result(delivery.result)
             expected_operation = hosted_episode_provider_operation_id(
                 delivery.world_id,

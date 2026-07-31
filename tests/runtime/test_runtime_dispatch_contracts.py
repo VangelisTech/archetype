@@ -650,6 +650,7 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
     submitted = SubmittedMission(
         mission_id=17,
         task_ids=(("task-1", 18),),
+        episode_id="mission-episode-runtime",
         repository="repo",
         branch="branch",
     )

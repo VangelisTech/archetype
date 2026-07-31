@@ -5,10 +5,16 @@
 
 from __future__ import annotations
 
+import ast
+import json
 import re
+import subprocess
+import tomllib
 from pathlib import Path
 
-from scripts.run_operational_scenarios import _select_scenarios
+import pytest
+
+from scripts.run_operational_scenarios import _select_scenarios, run_scenarios
 from scripts.validate_operational_scenarios import load_scenarios
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -16,6 +22,7 @@ QUALITY_WORKFLOW = ROOT / ".github" / "workflows" / "python-tests.yml"
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 MAKEFILE = ROOT / "Makefile"
 QUARANTINE = ROOT / "quality" / "quarantine" / "review-gate"
+OPERATIONAL_SCENARIOS = ROOT / "quality" / "operational_scenarios.toml"
 
 
 def _job(workflow: str, job_id: str) -> str:
@@ -83,7 +90,8 @@ def test_review_gate_and_merge_queue_are_not_executable_workflows() -> None:
 
 def test_release_publish_requires_credentialed_r2_evidence() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-    r2_release = _job(workflow, "r2-release")
+    external = _job(workflow, "external-evidence")
+    gate = _job(workflow, "release-evidence-gate")
     publish = _job(workflow, "publish")
 
     for variable in (
@@ -92,23 +100,272 @@ def test_release_publish_requires_credentialed_r2_evidence() -> None:
         "R2_API_ENDPOINT",
         "R2_BUCKET",
     ):
-        assert variable in r2_release
-    assert "tests/infrastructure/test_r2_idempotency.py" in r2_release
-    assert "--min-tier 5" in r2_release
-    assert "--max-tier 5" in r2_release
-    assert "--scenario dogfood.storage.r2" in r2_release
-    assert "--cadence release" in r2_release
-    assert "--require-run" in r2_release
-    assert "r2-release-results.json" in r2_release
-    assert "needs: [release-profile, python-compatibility, r2-release]" in publish
+        assert variable in external
+    assert "target: operational-release-r2" in external
+    assert "tests/infrastructure/test_r2_idempotency.py" in external
+    assert "operational-release-r2-results.json" in gate
+    assert "needs: [release-evidence-gate, python-compatibility]" in publish
 
     selected = _select_scenarios(
         load_scenarios(),
-        mode="source",
+        mode="wheel",
         cadence="release",
         scenario_ids={"dogfood.storage.r2"},
         kind=None,
-        min_tier=5,
-        max_tier=5,
+        min_tier=0,
+        max_tier=6,
     )
     assert [row["id"] for row in selected] == ["dogfood.storage.r2"]
+
+
+def test_example_smoke_keeps_mission_authoring_credential_free() -> None:
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    assert re.search(r"^examples-smoke: examples-local$", makefile, re.MULTILINE)
+    assert "--mode source --cadence pr --kind example --max-tier 1" in makefile
+
+    with OPERATIONAL_SCENARIOS.open("rb") as stream:
+        scenarios = tomllib.load(stream)["scenario"]
+    mission = next(
+        row for row in scenarios if row["id"] == "example.11_coding_agent_mission.dry_run"
+    )
+
+    assert mission["source_command"][-3:] == ["--dry-run", "--backend", "modal"]
+    assert mission["prerequisites"] == []
+    assert mission["missing_prerequisite"] == "fail"
+    assert mission["tier"] == 1
+    assert "pr" in mission["required_cadence"]
+
+
+def test_operational_receipts_cover_commands_and_runtime_from_source_and_wheel() -> None:
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    with OPERATIONAL_SCENARIOS.open("rb") as stream:
+        scenarios = tomllib.load(stream)["scenario"]
+    commands = next(row for row in scenarios if row["id"] == "dogfood.commands.local")
+
+    assert commands["owner"] == "commands"
+    assert commands["applicability"] == ["source", "wheel"]
+    assert commands["prerequisites"] == []
+    assert commands["missing_prerequisite"] == "fail"
+
+    source_commands = re.search(
+        r"^operational-commands:\n(?P<body>(?:\t.*\n)+)", makefile, re.MULTILINE
+    )
+    source_runtime = re.search(
+        r"^operational-runtime:\n(?P<body>(?:\t.*\n)+)", makefile, re.MULTILINE
+    )
+    wheel = re.search(r"^operational-wheel:\n(?P<body>(?:\t.*\n)+)", makefile, re.MULTILINE)
+    verify_full = re.search(r"^verify-full:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE)
+    assert source_commands is not None
+    assert source_runtime is not None
+    assert wheel is not None
+    assert verify_full is not None
+    assert source_commands.group("body").count("--scenario dogfood.commands.local") == 1
+    assert wheel.group("body").count("--scenario dogfood.commands.local") == 1
+    assert source_runtime.group("body").count("--scenario dogfood.runtime.loopback") == 1
+    assert wheel.group("body").count("--scenario dogfood.runtime.loopback") == 1
+    dependencies = verify_full.group("dependencies").split()
+    assert "operational-commands" in dependencies
+    assert "operational-runtime" in dependencies
+
+
+def test_required_release_execution_cannot_accept_not_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    envelope, passed = run_scenarios(
+        root=ROOT,
+        registry=OPERATIONAL_SCENARIOS,
+        output=tmp_path / "required-not-run.json",
+        mode="source",
+        wheel=None,
+        cadence="release",
+        scenario_ids={"example.05_llm_agents"},
+        kind="example",
+        min_tier=6,
+        max_tier=6,
+        expected_revision=None,
+        require_clean=False,
+        require_run=True,
+    )
+
+    assert passed is False
+    assert envelope["outcome"] == "failed"
+    assert envelope["status_counts"] == {"passed": 0, "failed": 1, "not_run": 0}
+    (result,) = envelope["results"]
+    assert result["status"] == "failed"
+    assert "release cadence requires execution" in result["reason"]
+
+
+def test_release_profile_builds_and_tests_one_exact_artifact() -> None:
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    verify_release = re.search(r"^verify-release:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE)
+    release_artifact = re.search(
+        r"^release-artifact:\n(?P<body>(?:\t.*\n)+)", makefile, re.MULTILINE
+    )
+    operational_release = re.search(
+        r"^operational-release:(?P<dependencies>[^\n]*)\n(?P<body>(?:\t.*\n)+)",
+        makefile,
+        re.MULTILINE,
+    )
+    assert verify_release is not None
+    assert verify_release.group("dependencies").split() == [
+        "verify-full",
+        "operational-release",
+    ]
+    assert release_artifact is not None
+    assert operational_release is not None
+    artifact_body = release_artifact.group("body")
+    assert artifact_body.count("scripts/package_smoke.py") == 1
+    assert artifact_body.count("scripts/release_artifact.py record") == 1
+    assert operational_release.group("dependencies").split() == ["release-artifact"]
+    assert "--min-tier 0 --max-tier 4" in operational_release.group("body")
+
+
+def test_every_release_scenario_is_installed_wheel_applicable() -> None:
+    with OPERATIONAL_SCENARIOS.open("rb") as stream:
+        scenarios = tomllib.load(stream)["scenario"]
+    required = [row for row in scenarios if "release" in row["required_cadence"]]
+    assert required
+    assert all("wheel" in row["applicability"] for row in required)
+    ids = {row["id"] for row in required}
+    assert {
+        "dogfood.runtime.shutdown",
+        "dogfood.agent_mission.modal_activity_contracts",
+        "dogfood.physical_ai.hosted_episode",
+        "dogfood.storage.r2",
+    } <= ids
+    core_ids = {row["id"] for row in required if int(row["tier"]) <= 4}
+    assert ids - core_ids == {
+        "example.05_llm_agents",
+        "dogfood.agent_mission.modal_live",
+        "dogfood.sandbox.docker",
+        "dogfood.storage.r2",
+        "dogfood.sandbox.apple_container",
+    }
+
+
+def test_live_modal_release_scenario_is_credentialed_and_opted_in() -> None:
+    with OPERATIONAL_SCENARIOS.open("rb") as stream:
+        scenarios = tomllib.load(stream)["scenario"]
+    modal = next(row for row in scenarios if row["id"] == "dogfood.agent_mission.modal_live")
+
+    assert modal["source_path"] == "tests/infrastructure/test_modal_agent_mission_live.py"
+    assert modal["semantic_oracle"]["ref"] in modal["source_command"]
+    assert modal["tier"] == 6
+    assert modal["applicability"] == ["source", "wheel"]
+    assert modal["required_extras"] == ["coding-agent"]
+    assert modal["cleanup_policy"] == "provider"
+    assert modal["artifact_policy"] == "redacted_receipt"
+    assert set(modal["prerequisites"]) == {
+        "credential:MODAL_TOKEN_ID",
+        "credential:MODAL_TOKEN_SECRET",
+        "infrastructure:CODING_AGENT_MODAL_WORKSPACE",
+        "infrastructure:CODING_AGENT_MODAL_ENVIRONMENT",
+        "infrastructure:CODEX_AUTH_VOLUME",
+        "infrastructure:CODING_AGENT_GITHUB_SECRET",
+    }
+    assert "ARCHETYPE_MODAL_AGENT_MISSION_LIVE=1" in MAKEFILE.read_text(encoding="utf-8")
+
+
+def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    profile = _job(workflow, "release-profile")
+    external = _job(workflow, "external-evidence")
+    compatibility = _job(workflow, "python-compatibility")
+    gate = _job(workflow, "release-evidence-gate")
+    publish = _job(workflow, "publish")
+
+    assert "make verify-release" in profile
+    assert "release-artifact.json" in profile
+    assert "operational-release-results.json" in profile
+    for target in (
+        "operational-release-openai",
+        "operational-release-docker",
+        "operational-release-r2",
+        "operational-release-apple",
+        "operational-release-modal",
+    ):
+        assert f"target: {target}" in external
+        make_target = re.search(
+            rf"^{target}:[^\n]*\n(?P<body>(?:\t.*\n)+)",
+            MAKEFILE.read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+        assert make_target is not None
+        assert "--min-tier 0 --max-tier 6" in make_target.group("body")
+    assert "tests/infrastructure/test_r2_idempotency.py" in external
+    assert "scripts/verify_release_evidence.py" in gate
+    assert "operational-release-apple-results.json" in gate
+    assert "operational-release-modal-results.json" in gate
+    assert "group: archetype-release" in workflow
+    assert "cancel-in-progress: false" in workflow
+    assert "runs-on: ${{ fromJSON(matrix.runner) }}" in external
+    assert (
+        'runner: \'["self-hosted","macOS","ARM64","archetype-apple-container-macos-26"]\''
+        in external
+    )
+    assert 'test "$(uname -m)" = "arm64"' in external
+    assert "container system status" in external
+    assert 'UV_PYTHON: "3.13"' in compatibility
+    assert 'uv sync --python "3.13" --group dev' in compatibility
+    assert "sys.version_info[:2] == (3, 13)" in compatibility
+    assert "needs: [release-evidence-gate, python-compatibility]" in publish
+
+
+def test_commands_operational_oracle_does_not_import_pytest_modules() -> None:
+    path = ROOT / "tests" / "integration" / "test_commands_operational.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    imported_modules = [
+        module
+        for node in ast.walk(tree)
+        for module in (
+            [alias.name for alias in node.names]
+            if isinstance(node, ast.Import)
+            else [node.module or ""]
+            if isinstance(node, ast.ImportFrom)
+            else []
+        )
+    ]
+    assert not [
+        module
+        for module in imported_modules
+        if any(part.startswith("test_") for part in module.split("."))
+    ]
+
+
+def test_operational_wheel_failures_still_emit_a_receipt(tmp_path: Path) -> None:
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    target = re.search(
+        r"^operational-wheel:(?P<dependencies>[^\n]*)\n(?P<body>(?:\t.*\n)+)",
+        makefile,
+        re.MULTILINE,
+    )
+    assert target is not None
+    assert target.group("dependencies").strip() == ""
+    body = target.group("body")
+    assert "$(OPERATIONAL_BUILD_COMMAND) || build_status=$$?" in body
+    assert 'wheel="$(OPERATIONAL_DIST_DIR)/.missing-operational-wheel.whl"' in body
+
+    for label, build_command in (("build-failed", "false"), ("wheel-missing", "true")):
+        output = tmp_path / f"{label}.json"
+        completed = subprocess.run(
+            [
+                "make",
+                "--no-print-directory",
+                "operational-wheel",
+                f"OPERATIONAL_BUILD_COMMAND={build_command}",
+                f"OPERATIONAL_DIST_DIR={tmp_path / label / 'dist'}",
+                f"OPERATIONAL_WHEEL_RESULTS={output}",
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert completed.returncode != 0
+        receipt = json.loads(output.read_text(encoding="utf-8"))
+        assert receipt["schema"] == "archetype.operational-results/v1"
+        assert receipt["outcome"] == "failed"
+        assert "--wheel must name one built wheel" in receipt["error"]

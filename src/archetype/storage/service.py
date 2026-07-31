@@ -1304,6 +1304,12 @@ class StorageService:
 
     async def shutdown(self):
         """Gracefully shuts down all managed storage backends."""
+        # Wait for any already-admitted terminal worker before closing its
+        # backend. The gate is released before cached-store shutdown because
+        # that path may reenter it while joining a background flush.
+        async with self._execution_gate.admit():
+            pass
+
         errors: list[Exception] = []
         cancelled: asyncio.CancelledError | None = None
         try:

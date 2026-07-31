@@ -43,6 +43,7 @@ from archetype.missions.contracts import (
     RepositoryPublicationPolicy,
     SubmittedMission,
     TaskResult,
+    mission_episode_id,
 )
 from archetype.missions.relations import (
     AuthoredBy,
@@ -104,6 +105,7 @@ __all__ = [
     "MissionState",
     "MissionStatus",
     "MissionSubmission",
+    "mission_episode_id",
     "PartOfMission",
     "ProducedBy",
     "RepositoryPublicationPolicy",

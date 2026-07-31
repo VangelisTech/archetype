@@ -145,6 +145,43 @@ def _latest_entity_rows(
     return indexed
 
 
+def _latest_accepted_mission_checkout_revision(
+    *,
+    mission_id: int,
+    mission_task_ids: Sequence[int],
+    task_rows: Mapping[int, dict[str, Any]],
+    candidate_rows: Sequence[dict[str, Any]],
+) -> str:
+    """Resolve the latest accepted head on one serialized mission branch."""
+
+    state = TaskState.get_prefix()
+    dispatch = TaskDispatch.get_prefix()
+    candidate = Candidate.get_prefix()
+    accepted: list[dict[str, Any]] = []
+    for task_id in mission_task_ids:
+        task = task_rows.get(task_id)
+        if task is None:
+            continue
+        if str(task[f"{state}status"]) != TaskStatus.ACCEPTED.value:
+            continue
+        task_candidates = [
+            row
+            for row in candidate_rows
+            if int(row[f"{candidate}mission_id"]) == mission_id
+            and int(row[f"{candidate}task_id"]) == task_id
+            and str(row[f"{candidate}dispatch_id"]) == str(task[f"{dispatch}dispatch_id"])
+        ]
+        if len(task_candidates) != 1:
+            raise ValueError("accepted mission task has no unique published candidate")
+        accepted.extend(task_candidates)
+    if not accepted:
+        return ""
+    # One outstanding task plus monotonic world allocation makes candidate
+    # identity the durable branch-order authority; wall clocks are not.
+    latest = max(accepted, key=lambda row: int(row["entity_id"]))
+    return str(latest[f"{candidate}head_revision"])
+
+
 class _TaskDispatchProjection:
     """Build bounded author requests from one committed snapshot."""
 
@@ -173,7 +210,15 @@ class _TaskDispatchProjection:
         assert mission_edges is not None
         assert validator_frame is not None
         assert guard_edges is not None
-
+        all_task_rows = _latest_entity_rows(
+            task_frame.to_pylist(),
+            label="task dispatch state",
+            allow_updates=True,
+        )
+        membership = PartOfMission.get_prefix()
+        mission_task_ids: dict[int, set[int]] = defaultdict(set)
+        for row in mission_edges.to_pylist():
+            mission_task_ids[int(row[f"{membership}target"])].add(int(row[f"{membership}source"]))
         state = TaskState.get_prefix()
         dispatch = TaskDispatch.get_prefix()
         dispatched = task_frame.where(
@@ -182,7 +227,6 @@ class _TaskDispatchProjection:
                 col(f"{state}status") == TaskStatus.DISPATCHED.value,
             )
         )
-        membership = PartOfMission.get_prefix()
         dispatched = dispatched.join(
             mission_edges.select(f"{membership}source", f"{membership}target"),
             left_on="entity_id",
@@ -313,6 +357,16 @@ class _TaskDispatchProjection:
                 key=lambda item: int(item[f"{candidate_record}dispatch_sequence"]),
                 default=None,
             )
+            checkout_revision = (
+                str(prior_candidate[f"{candidate_record}head_revision"])
+                if prior_candidate is not None
+                else _latest_accepted_mission_checkout_revision(
+                    mission_id=int(row[f"{membership}target"]),
+                    mission_task_ids=tuple(mission_task_ids[int(row[f"{membership}target"])]),
+                    task_rows=all_task_rows,
+                    candidate_rows=candidate_rows,
+                )
+            )
             previous_critic_findings = (
                 tuple(
                     CriticRepairFinding(
@@ -370,6 +424,7 @@ class _TaskDispatchProjection:
                     task_base_revision=(
                         str(previous["_prior_starting_revision"]) if previous is not None else ""
                     ),
+                    checkout_revision=checkout_revision,
                     previous_agent_session_id=(
                         str(previous["_prior_agent_session_id"]) if previous is not None else ""
                     ),
@@ -1469,8 +1524,12 @@ def project_mission_result(
     )
     mission = Mission.get_prefix()
     mission_state = MissionState.get_prefix()
+    episode_id = str(mission_row[f"{mission}episode_id"])
+    if not episode_id or episode_id != submitted.episode_id:
+        raise RuntimeError("terminal mission episode identity does not match its submission")
     return MissionResult(
         mission_id=submitted.mission_id,
+        episode_id=episode_id,
         status=str(mission_row[f"{mission_state}status"]),
         repository=str(mission_row[f"{mission}repository"]),
         branch=str(mission_row[f"{mission}branch"]),

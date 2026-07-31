@@ -53,7 +53,6 @@ import os
 import re
 import sys
 import time
-from pathlib import Path
 
 from archetype import ArchetypeRuntime
 from archetype.core.config import StorageConfig
@@ -74,7 +73,6 @@ from archetype.missions.sandboxes.modal import MODAL_ACTIVITY_PROTOCOL_EPOCH
 
 ISSUE = "https://github.com/VangelisTech/archetype/issues/543"
 REPOSITORY = "VangelisTech/archetype"
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 REGRESSION_TEST = "tests/world/test_query_schema_evolution.py"
 QUERY_SOURCE = "src/archetype/world/query.py"
 
@@ -211,12 +209,12 @@ def _host_default_backend() -> str:
 def _backend(name: str) -> tuple[SandboxBackend, str]:
     auth_volume = os.environ.get("CODEX_AUTH_VOLUME", "archetype-codex-auth")
     if name == "apple-container":
-        backend = AppleContainerSandboxBackend(
-            AppleContainerSandboxConfig(auth_volume_name=auth_volume)
-        )
+        # Sandbox-capability lane only: the parity adapters expose no Codex
+        # auth-volume or login surface in v0.5.
+        backend = AppleContainerSandboxBackend(AppleContainerSandboxConfig())
         return backend, backend.environment
     if name == "docker":
-        backend = DockerSandboxBackend(DockerSandboxConfig(auth_volume_name=auth_volume))
+        backend = DockerSandboxBackend(DockerSandboxConfig())
         return backend, backend.environment
     image_id = os.environ.get("CODING_AGENT_MODAL_IMAGE_ID", "")
     backend = ModalSandboxBackend(
@@ -236,7 +234,7 @@ def _backend(name: str) -> tuple[SandboxBackend, str]:
 async def run_demo(
     storage_uri: str,
     *,
-    backend_name: str = "docker",
+    backend_name: str = "modal",
 ) -> dict[str, object]:
     """Return the credential-free typed authoring receipt without external work."""
     if not storage_uri:
@@ -265,11 +263,9 @@ async def run_demo(
         "task_paths": {
             "implementation": {
                 "path": QUERY_SOURCE,
-                "exists": (REPOSITORY_ROOT / QUERY_SOURCE).is_file(),
             },
             "regression": {
                 "path": REGRESSION_TEST,
-                "parent_exists": (REPOSITORY_ROOT / REGRESSION_TEST).parent.is_dir(),
             },
         },
         "external_work_started": False,
