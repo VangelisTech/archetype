@@ -1,3 +1,4 @@
+# Quarantined after the 2026-07-30 SEV-1. This file is not an active workflow.
 # Arm auto-merge (squash) on maintainer PRs ONLY after the PR is queue-ready —
 # and disarm on every new push until it is queue-ready again.
 #

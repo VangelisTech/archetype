@@ -1,3 +1,4 @@
+# Quarantined after the 2026-07-30 SEV-1. This file is not an active workflow.
 # Periodically reconcile auto-merge arming with actual queue-readiness.
 #
 # Why: the automerge workflow is event-driven, but GitHub Actions delivers no

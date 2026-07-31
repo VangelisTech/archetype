@@ -107,10 +107,10 @@ Every target below is a `.PHONY` rule. Run `make help` for the quick version.
 
 | Target | Steps | Purpose |
 |--------|-------|---------|
-| `make ci` | `format-check` + `lint` + `lock-check` + `test-cov` | **The CI gate. Run before every push.** |
+| `make ci` | `make static` + `make test` | **The required PR profile. Run before every push.** |
 
 `make ci` is the single command that must pass for any PR to merge. It runs
-exactly what the `ci` job in GitHub Actions runs.
+the same two targets as the required GitHub Actions jobs.
 
 ### Build & Release
 
@@ -140,23 +140,22 @@ exactly what the `ci` job in GitHub Actions runs.
 
 ## CI / GitHub Actions
 
-Four workflows live in `.github/workflows/`. Here is exactly what each one
-does and when it runs.
+### `python-tests.yml` (CI) — on push to main + PRs
 
-### `python-tests.yml` (Tests) — on push to main + PRs
-
-The primary CI workflow. Contains three jobs:
+The primary CI workflow intentionally contains two required jobs:
 
 | Job | What it runs | Required to merge? |
 |-----|--------------|-------------------|
-| `ci (3.12)` | `make ci` (format-check + lint + lock-check + tests w/ 70% coverage) | **Yes** |
-| `format` | `ruff format --check src/ tests/` | **Yes** |
-| `typecheck` | `pyright src/archetype/` | No (`continue-on-error: true`) |
-
-The `ci` job also uploads coverage to Codecov (`fail_ci_if_error: false` — informational only).
+| `Static` | `make static` | **Yes** |
+| `Tests (3.12)` | `make test` | **Yes** |
 
 Concurrency: grouped by `ci-${{ github.ref }}`, cancels in-progress runs on
 the same branch.
+
+Coverage, evals, external infrastructure, examples, packaging, docs, and
+compatibility evidence are not part of the PR merge path. They remain in the
+full and release profiles. The retired deterministic review and merge-queue
+workflows are preserved under `quality/quarantine/review-gate/`.
 
 ### `release.yml` (Release) — on `v*` tags
 
@@ -172,7 +171,7 @@ GitHub Release is auto-created with generated release notes.
 Runs Claude Code via `@claude` mentions in issues and PR comments. Restricted
 to the `everettVT` actor.
 
-### `docs.yml` (Docs) — on every pull request and docs-related push to `main`
+### `docs.yml` (Docs) — on docs-related pull requests and pushes to `main`
 
 The workflow checks prose, links, and a generated MkDocs build. Pushes to
 `main` deploy the built site to Cloudflare Pages; pull requests get a preview
@@ -187,8 +186,8 @@ Documentation quality checks:
 | `link-check` | lychee link validation (config: `lychee.toml`) | **Yes** (Tier 0) |
 | `build` | generate references + `mkdocs build` | **Yes** (Tier 0) |
 
-The checks run on every pull request so required status checks are never
-missing.
+These checks are advisory for merges and run only when documentation inputs
+change.
 
 ### `daily-security-audit.yml` — daily at 09:00 UTC + manual
 
@@ -204,9 +203,8 @@ what to run locally to reproduce a CI failure.
 
 | CI Job | Local equivalent | Notes |
 |--------|------------------|-------|
-| `ci (3.12)` | `make ci` | Exact match — same Makefile target |
-| `format` | `make format-check` | Read-only check; use `make format` to fix |
-| `typecheck` | `uv run pyright src/archetype/` | No Makefile target yet; non-blocking in CI |
+| `Static` | `make static` | Formatting, lint, types, lock, contract, and benchmark audits |
+| `Tests (3.12)` | `make test` | Fast parallel test suite without coverage |
 | `spelling` | `typos` (via `make docs-lint`) | Requires typos-cli installed locally |
 | `markdown-lint` | `markdownlint-cli2` (via `make docs-lint`) | Requires markdownlint-cli2 or npx |
 | `link-check` | `lychee` (via `make docs-lint`) | Requires lychee installed locally |
@@ -282,8 +280,9 @@ chore:     Build process, CI, deps
 1. Create a feature branch from `main`
 2. Make changes, ensure `make ci` passes locally
 3. Push and open a PR targeting `main`
-4. CI runs `ci` + `format` + `typecheck` (typecheck is non-blocking)
-5. PRs require `ci` and `format` to pass before merge
+4. CI runs `Static` and `Tests (3.12)`
+5. Address concrete Codex and Cursor Bugbot findings
+6. Squash merge manually when both required checks pass
 
 ## Dependencies
 

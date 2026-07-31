@@ -129,6 +129,21 @@ jobs:
       - name: Verify Docker service
         if: matrix.target == 'operational-release-docker'
         run: docker info
+      - name: Require release R2 configuration
+        if: matrix.target == 'operational-release-r2'
+        run: |
+          test -n "$R2_ACCESS_KEY_ID"
+          test -n "$R2_SECRET_ACCESS_KEY"
+          test -n "$R2_API_ENDPOINT"
+          test -n "$R2_BUCKET"
+          case "$R2_BUCKET" in
+            */*) echo "R2_BUCKET must be a bucket name, not a path" >&2; exit 1 ;;
+          esac
+      - name: Verify physical retry visibility
+        if: matrix.target == 'operational-release-r2'
+        run: >-
+          PYTHONPATH="${PYTHONPATH:-}:."
+          uv run pytest -q tests/infrastructure/test_r2_idempotency.py
       - name: Run exact installed-artifact scenario
         run: make "${{ matrix.target }}"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

@@ -11,14 +11,16 @@ on:
       # The generated Python, CLI, and REST references derive from source.
       - "src/archetype/**"
       - ".github/workflows/docs.yml"
-  # Merge queue: required contexts must report on the queue's merge groups
-  # (path filters are not supported on merge_group; the jobs are fast).
-  merge_group:
-  # No path filter on pull_request: Spelling, Markdown lint, and Build docs
-  # are required status checks on main, and a required check that never runs
-  # blocks the merge forever. The jobs cost ~30s combined per PR.
   pull_request:
     branches: [main]
+    paths:
+      - "docs/**"
+      - "**/*.md"
+      - "mkdocs.yml"
+      - "_typos.toml"
+      - ".markdownlint.yaml"
+      - "lychee.toml"
+      - ".github/workflows/docs.yml"
 
 concurrency:
   group: docs-${{ github.ref }}

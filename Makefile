@@ -497,11 +497,11 @@ operational-release-modal: verify-release-artifact
 	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario dogfood.agent_mission.modal_live --out operational-release-modal-results.json,ARCHETYPE_MODAL_AGENT_MISSION_LIVE=1)
 
 .PHONY: verify-pr
-verify-pr: static test-cov eval-conformance eval-capability package-smoke examples-smoke operational-runtime operational-commands operational-wheel docs
+verify-pr: static test
 	@echo "PR verification profile passed"
 
 .PHONY: verify-full
-verify-full: verify-pr test-process eval-reliability
+verify-full: static test-cov eval-conformance eval-capability package-smoke examples-smoke operational-runtime operational-commands operational-wheel docs test-process eval-reliability
 	@echo "Full verification profile passed"
 
 .PHONY: verify-release

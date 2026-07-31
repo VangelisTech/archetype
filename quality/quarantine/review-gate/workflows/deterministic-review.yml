@@ -1,3 +1,4 @@
+# Quarantined after the 2026-07-30 SEV-1. This file is not an active workflow.
 name: Deterministic Review Gate
 
 on:
