@@ -580,6 +580,48 @@ artifact_schema = "archetype.operational-results/v1"
 required_cadence = ["release"]
 
 [[scenario]]
+id = "dogfood.physical_ai.modal_r2_live"
+kind = "dogfood"
+owner = "physical_ai"
+owner_paths = [
+  "src/archetype/physical_ai",
+  "src/archetype/activities",
+  "src/archetype/runtime",
+  "src/archetype/wiring.py",
+  "tests/infrastructure/test_modal_physical_r2_live.py",
+]
+source_path = "tests/infrastructure/test_modal_physical_r2_live.py"
+source_command = [
+  "pytest",
+  "-q",
+  "tests/infrastructure/test_modal_physical_r2_live.py",
+]
+required_extras = ["coding-agent"]
+tier = 6
+applicability = ["source", "wheel"]
+timeout_seconds = 900
+prerequisites = [
+  "credential:MODAL_TOKEN_ID",
+  "credential:MODAL_TOKEN_SECRET",
+  "credential:R2_ACCESS_KEY_ID",
+  "credential:R2_SECRET_ACCESS_KEY",
+  "infrastructure:CODING_AGENT_MODAL_WORKSPACE",
+  "infrastructure:CODING_AGENT_MODAL_ENVIRONMENT",
+  "infrastructure:R2_API_ENDPOINT",
+  "infrastructure:R2_BUCKET",
+]
+missing_prerequisite = "not_run"
+semantic_oracle = { kind = "pytest", ref = "tests/infrastructure/test_modal_physical_r2_live.py" }
+contracts = [
+  "physical_ai.workflow.evidence",
+  "world.run_identity.cold_resume",
+]
+cleanup_policy = "provider"
+artifact_policy = "redacted_receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["release"]
+
+[[scenario]]
 id = "dogfood.sandbox.docker"
 kind = "dogfood"
 owner = "missions"
