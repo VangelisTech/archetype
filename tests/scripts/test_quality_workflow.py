@@ -273,6 +273,7 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     profile = _job(workflow, "release-profile")
     external = _job(workflow, "external-evidence")
+    apple = _job(workflow, "apple-evidence")
     compatibility = _job(workflow, "python-compatibility")
     gate = _job(workflow, "release-evidence-gate")
     publish = _job(workflow, "publish")
@@ -284,7 +285,6 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
         "operational-release-openai",
         "operational-release-docker",
         "operational-release-r2",
-        "operational-release-apple",
         "operational-release-modal",
     ):
         assert f"target: {target}" in external
@@ -302,16 +302,39 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
     assert "group: archetype-release" in workflow
     assert "cancel-in-progress: false" in workflow
     assert "runs-on: ${{ fromJSON(matrix.runner) }}" in external
-    assert (
-        'runner: \'["self-hosted","macOS","ARM64","archetype-apple-container-macos-26"]\''
-        in external
-    )
-    assert 'test "$(uname -m)" = "arm64"' in external
-    assert "container system status" in external
+    assert "operational-release-apple" not in external
+    assert "group: archetype-release-macos" in apple
+    assert "archetype-apple-container-macos-26" in apple
+    assert "environment: release-apple-macos" in apple
+    assert 'test "$(uname -m)" = "arm64"' in apple
+    assert "container system status" in apple
+    assert "make operational-release-apple" in apple
+    assert "needs: [release-profile, external-evidence, apple-evidence]" in gate
     assert 'UV_PYTHON: "3.13"' in compatibility
     assert 'uv sync --python "3.13" --group dev' in compatibility
     assert "sys.version_info[:2] == (3, 13)" in compatibility
     assert "needs: [release-evidence-gate, python-compatibility]" in publish
+
+
+def test_release_workflow_is_operator_dispatched_from_an_immutable_tag() -> None:
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    authorize = _job(workflow, "authorize-release")
+    profile = _job(workflow, "release-profile")
+    compatibility = _job(workflow, "python-compatibility")
+    github_release = _job(workflow, "github-release")
+
+    assert "workflow_dispatch:" in workflow
+    assert "push:\n    tags:" not in workflow
+    assert "RELEASE_ACTOR: ${{ github.actor }}" in authorize
+    assert "RELEASE_TRIGGERING_ACTOR: ${{ github.triggering_actor }}" in authorize
+    assert 'test "$RELEASE_ACTOR" = "everettVT"' in authorize
+    assert 'test "$RELEASE_TRIGGERING_ACTOR" = "everettVT"' in authorize
+    assert 'test "$RELEASE_REF_TYPE" = "tag"' in authorize
+    assert 'test "$RELEASE_INPUT_TAG" = "$RELEASE_REF_NAME"' in authorize
+    assert "needs: authorize-release" in profile
+    assert "needs: authorize-release" in compatibility
+    assert 'git merge-base --is-ancestor "${GITHUB_REF_NAME}^{commit}" origin/main' in profile
+    assert "tag_name: ${{ github.ref_name }}" in github_release
 
 
 def test_commands_operational_oracle_does_not_import_pytest_modules() -> None:

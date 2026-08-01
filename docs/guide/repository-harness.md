@@ -175,13 +175,72 @@ execution and receipt retention land with the owning release-gate slices. A
 declared cadence MUST NOT be reported as satisfied until its workflow invokes
 the scenario and retains the resulting receipt.
 
-The tag workflow builds one wheel after the source profile, records its digest,
-and runs every credential-free release scenario against that exact installed
-artifact. OpenAI, Docker, R2, Apple Container, and the Modal Agent Mission
-execute in mandatory platform/provider lanes that download the same immutable
-distribution. Publication is gated by an aggregate receipt check: every
-release-required scenario must have passed, every receipt must name the release
-commit and wheel digest, and no result may be `not_run`.
+The operator-dispatched tag workflow builds one wheel after the source profile,
+records its digest, and runs every credential-free release scenario against
+that exact installed artifact. OpenAI, Docker, R2, Apple Container, and the
+Modal Agent Mission execute in mandatory platform/provider lanes that download
+the same immutable distribution. Publication is gated by an aggregate receipt
+check: every release-required scenario must have passed, every receipt must name
+the release commit and wheel digest, and no result may be `not_run`.
+
+Release execution is operator-only. The `Release tags — everettVT only`
+repository ruleset permits only `everettVT` to create `v*` tags; the separate
+immutable-tag ruleset continues to deny tag updates and deletion for everyone.
+The workflow requires both `github.actor` and `github.triggering_actor` to be
+`everettVT`, so another user's run cannot become authorized through a rerun. A
+tag push does not start release work: the operator dispatches `release.yml` at
+the existing tag and supplies the same tag as its confirmation input.
+
+The Apple lane has a second, infrastructure-level boundary. Organization runner
+group `archetype-release-macos` allows only this repository and an exact
+tag-qualified `.github/workflows/release.yml`; the job must request that group,
+not merely a guessable label. Environment `release-apple-macos` permits only
+`v*` tags and requires approval from `everettVT` before the job reaches the Mac.
+The runner MUST be ephemeral, MUST be registered only after the group is pinned
+to the exact release tag, and MUST run from a disposable directory under a
+dedicated macOS account that has no access to the operator's normal home,
+keychain, SSH agent, or cloud credentials. Never install this runner as a
+persistent service. These controls are required because GitHub does not treat a
+self-hosted runner for a public repository as an isolated trusted machine.
+
+For each release, use this order:
+
+```bash
+# 1. Create the reviewed tag. The ruleset rejects every other GitHub actor.
+git fetch origin main
+git tag -a v0.5.0 origin/main -m "Release v0.5.0"
+git push origin refs/tags/v0.5.0
+
+# 2. Before registering any runner, pin its group to the immutable tag.
+uv run python scripts/configure_release_runner_group.py v0.5.0
+
+# 3. In a fresh runner directory under the dedicated macOS account, use the
+#    current organization-runner package and a one-hour registration token.
+export ARCHETYPE_RUNNER_TOKEN="$(
+  gh api --method POST orgs/VangelisTech/actions/runners/registration-token \
+    --jq .token
+)"
+./config.sh \
+  --url https://github.com/VangelisTech \
+  --token "$ARCHETYPE_RUNNER_TOKEN" \
+  --runnergroup archetype-release-macos \
+  --name archetype-release-macos \
+  --labels archetype-apple-container-macos-26 \
+  --ephemeral \
+  --unattended
+unset ARCHETYPE_RUNNER_TOKEN
+./run.sh
+
+# 4. From a second terminal, dispatch only at the same immutable tag.
+gh workflow run release.yml \
+  --repo VangelisTech/archetype \
+  --ref v0.5.0 \
+  -f tag=v0.5.0
+```
+
+Approve `release-apple-macos`, then approve `release-pypi` only after its
+evidence gate succeeds. The ephemeral runner deregisters after the Apple job;
+discard its working directory before preparing a rerun or future release.
 
 Release-lane authentication is explicit and provider-scoped:
 
@@ -190,13 +249,14 @@ Release-lane authentication is explicit and provider-scoped:
 | OpenAI | The job receives only `OPENAI_API_KEY` from the Actions secret of the same name. |
 | Docker | The runner's local Docker context and daemon authorize the parity operation; the lane does not perform registry login. |
 | Cloudflare R2 | `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` authenticate the account, while `R2_API_ENDPOINT` and `R2_BUCKET` select the exact substrate. |
-| Apple Container | A self-hosted bare-metal Apple Silicon runner bearing `self-hosted`, `macOS`, `ARM64`, and `archetype-apple-container-macos-26` supplies the local host authority. The job verifies macOS 26 and starts the local `container` service; no Apple cloud token is accepted. GitHub-hosted arm64 macOS runners are not substitutes because the provider needs Virtualization.framework VM support. |
+| Apple Container | A one-job ephemeral, dedicated-account, bare-metal Apple Silicon runner in the exact-workflow-restricted `archetype-release-macos` group supplies the local host authority. It also bears `self-hosted`, `macOS`, `ARM64`, and `archetype-apple-container-macos-26`. The job verifies macOS 26 and starts the local `container` service; no Apple cloud token is accepted. GitHub-hosted arm64 macOS runners are not substitutes because the provider needs Virtualization.framework VM support. |
 | Modal Agent Mission | `MODAL_TOKEN_ID` plus `MODAL_TOKEN_SECRET` authenticate the Modal control plane. Actions repository variable `CODING_AGENT_MODAL_PROFILE` becomes the SDK selector `MODAL_PROFILE`; `CODING_AGENT_MODAL_ENVIRONMENT` becomes both the Archetype selector and SDK selector `MODAL_ENVIRONMENT`, while the workspace and remaining Environment-scoped variables bind all named objects. `CODEX_AUTH_VOLUME` supplies the separately device-authenticated Codex `auth.json`. `CODING_AGENT_GITHUB_SECRET` names the Modal Secret resolved for the isolated publisher, but the paid live lane deliberately pushes to a provider-local bare remote and never attaches that secret or mutates GitHub. Deterministic broker contracts separately prove that only the exact GitHub push process can receive `GITHUB_TOKEN`. Modal Connect Tokens authenticate the two transient viewport URLs. |
 
-The tag workflow is serialized under one release concurrency group because its
-configured Codex auth Volume is a static mutable credential broker. Concurrent
-release runs must use distinct auth Volumes before that serialization can be
-relaxed. Agent Mission provider details and operator setup are normative in
+The operator-dispatched release workflow is serialized under one release
+concurrency group because its configured Codex auth Volume is a static mutable
+credential broker. Concurrent release runs must use distinct auth Volumes
+before that serialization can be relaxed. Agent Mission provider details and
+operator setup are normative in
 [Agent Missions](agent-missions.md#authentication-paths-by-provider).
 
 `not_run` is never a pass. It is acceptable only when the manifest makes the
