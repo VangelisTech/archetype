@@ -496,6 +496,10 @@ operational-release-apple: verify-release-artifact
 operational-release-modal: verify-release-artifact
 	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario dogfood.agent_mission.modal_live --out operational-release-modal-results.json,ARCHETYPE_MODAL_AGENT_MISSION_LIVE=1)
 
+.PHONY: operational-release-physical-modal-r2
+operational-release-physical-modal-r2: verify-release-artifact
+	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario dogfood.physical_ai.modal_r2_live --out operational-release-physical-modal-r2-results.json,ARCHETYPE_MODAL_PHYSICAL_R2_LIVE=1)
+
 .PHONY: verify-pr
 verify-pr: static test
 	@echo "PR verification profile passed"

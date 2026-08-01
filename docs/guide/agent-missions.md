@@ -608,6 +608,15 @@ export CODING_AGENT_GITHUB_SECRET="archetype-github"
 modal secret create -e "$CODING_AGENT_MODAL_ENVIRONMENT" \
   "$CODING_AGENT_GITHUB_SECRET" GITHUB_TOKEN=-
 
+# Create the v2 auth Volume if it does not already exist. The lookup also
+# verifies that an existing Volume has the required version.
+if ! uv run --extra coding-agent python -c \
+  'import modal, sys; modal.Volume.from_name(sys.argv[1], environment_name=sys.argv[2], version=2).hydrate()' \
+  "$CODEX_AUTH_VOLUME" "$CODING_AGENT_MODAL_ENVIRONMENT"; then
+  modal volume create -e "$CODING_AGENT_MODAL_ENVIRONMENT" \
+    "$CODEX_AUTH_VOLUME" --version 2
+fi
+
 # One-time Codex subscription device login into the named broker Volume.
 uv run --extra coding-agent python examples/11_coding_agent_mission.py --login
 

@@ -91,6 +91,13 @@ The provider adapter owns Modal recovery meaning:
 - a permanent start without a complete result remains unknown and fails
   closed.
 
+The release profile additionally runs one paid seeded episode on a real Modal
+T4 while the World's committed intent and observation rows use a unique
+Cloudflare R2 prefix. A fresh runtime cold-resumes that R2-backed World,
+reconstructs the exact result digest, and reconciles the same Activity without
+a second provider completion. The job deletes its unique Modal Dict, Modal
+Volume, and R2 prefix on both success and failure.
+
 Lease expiry by itself never authorizes provider replay.
 
 ## Canonical episode contract

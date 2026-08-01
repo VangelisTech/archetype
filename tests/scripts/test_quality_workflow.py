@@ -240,6 +240,7 @@ def test_every_release_scenario_is_installed_wheel_applicable() -> None:
     assert ids - core_ids == {
         "example.05_llm_agents",
         "dogfood.agent_mission.modal_live",
+        "dogfood.physical_ai.modal_r2_live",
         "dogfood.sandbox.docker",
         "dogfood.storage.r2",
         "dogfood.sandbox.apple_container",
@@ -269,6 +270,31 @@ def test_live_modal_release_scenario_is_credentialed_and_opted_in() -> None:
     assert "ARCHETYPE_MODAL_AGENT_MISSION_LIVE=1" in MAKEFILE.read_text(encoding="utf-8")
 
 
+def test_live_physical_ai_release_scenario_binds_modal_compute_to_r2() -> None:
+    with OPERATIONAL_SCENARIOS.open("rb") as stream:
+        scenarios = tomllib.load(stream)["scenario"]
+    physical = next(row for row in scenarios if row["id"] == "dogfood.physical_ai.modal_r2_live")
+
+    assert physical["source_path"] == "tests/infrastructure/test_modal_physical_r2_live.py"
+    assert physical["semantic_oracle"]["ref"] in physical["source_command"]
+    assert physical["tier"] == 6
+    assert physical["applicability"] == ["source", "wheel"]
+    assert physical["required_extras"] == ["coding-agent"]
+    assert physical["cleanup_policy"] == "provider"
+    assert physical["artifact_policy"] == "redacted_receipt"
+    assert set(physical["prerequisites"]) == {
+        "credential:MODAL_TOKEN_ID",
+        "credential:MODAL_TOKEN_SECRET",
+        "credential:R2_ACCESS_KEY_ID",
+        "credential:R2_SECRET_ACCESS_KEY",
+        "infrastructure:CODING_AGENT_MODAL_WORKSPACE",
+        "infrastructure:CODING_AGENT_MODAL_ENVIRONMENT",
+        "infrastructure:R2_API_ENDPOINT",
+        "infrastructure:R2_BUCKET",
+    }
+    assert "ARCHETYPE_MODAL_PHYSICAL_R2_LIVE=1" in MAKEFILE.read_text(encoding="utf-8")
+
+
 def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     profile = _job(workflow, "release-profile")
@@ -286,6 +312,7 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
         "operational-release-docker",
         "operational-release-r2",
         "operational-release-modal",
+        "operational-release-physical-modal-r2",
     ):
         assert f"target: {target}" in external
         make_target = re.search(
@@ -299,6 +326,7 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
     assert "scripts/verify_release_evidence.py" in gate
     assert "operational-release-apple-results.json" in gate
     assert "operational-release-modal-results.json" in gate
+    assert "operational-release-physical-modal-r2-results.json" in gate
     assert "group: archetype-release" in workflow
     assert "cancel-in-progress: false" in workflow
     assert "runs-on: ${{ fromJSON(matrix.runner) }}" in external
