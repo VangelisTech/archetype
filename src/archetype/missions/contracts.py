@@ -240,6 +240,7 @@ class SubmittedMission:
     repository: str = ""
     branch: str = ""
     base_ref: str = "main"
+    world_id: str = ""
 
     def __post_init__(self) -> None:
         if not self.episode_id.strip():

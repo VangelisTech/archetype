@@ -133,6 +133,9 @@ class RuntimeMissions:
         return await self._dispatcher.apply(
             RunMission(
                 owner_id=self._owner_id,
+                name=self._name,
+                config=self._config,
+                storage=self._storage,
                 mission=mission,
                 max_ticks=max_ticks,
             )

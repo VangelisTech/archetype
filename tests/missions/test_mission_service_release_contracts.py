@@ -115,6 +115,7 @@ async def test_submit_persists_and_returns_real_episode_identity_while_restore_f
         if isinstance(component, Mission)
     )
     assert submitted.episode_id == expected
+    assert submitted.world_id == world.world_id
     assert mission.episode_id == expected
 
     with pytest.raises(NotImplementedError, match="would otherwise ignore"):

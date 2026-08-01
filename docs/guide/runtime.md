@@ -310,8 +310,13 @@ durable repair input. Reviewer outages do not consume author dispatches;
 exhausted review budget raises while leaving the task pending review.
 
 The handle owns a strongly registered workflow reservation. Its first submit
-constructs and binds the internal mission service exactly once; run and restore
-resolve that same owner without a parallel service registry. Closing the handle
+or run constructs and binds the internal mission service exactly once; later
+operations resolve that same owner without a parallel service registry.
+`SubmittedMission` carries the exact durable World identity. Therefore a
+replacement process can recreate the handle with the same storage coordinates
+and call `run(submitted)` directly: wiring binds the Activity projector before
+mutable World reconstruction, reinstalls process-local processors, resources,
+and hooks, and reconciles provider-bound work instead of replaying it. Closing the handle
 strictly stops and drains the reservation's exact-task admission before it
 joins supervised critic work and closes sandbox resources plus its exact
 mission-world cleanup without closing the parent runtime. Facade calls and the
