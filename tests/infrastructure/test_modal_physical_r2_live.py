@@ -179,8 +179,7 @@ async def test_modal_episode_round_trips_durable_evidence_through_r2(
                 world_id = str(world.world_id)
 
             assert first is not None
-            assert first.success_count == 1
-            assert first.failure_count == 0
+            assert first.episode_count == first.success_count == 1
             assert len(first.result_digest) == 64
             completion = provider_runtimes[0].last_completion
             assert isinstance(completion, dict)
