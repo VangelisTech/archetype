@@ -334,6 +334,10 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
     assert "group: archetype-release-macos" in apple
     assert "archetype-apple-container-macos-26" in apple
     assert "environment: release-apple-macos" in apple
+    assert "- uses: actions/setup-python@" not in apple
+    assert 'UV_PYTHON: "3.12"' in apple
+    assert 'uv sync --python "3.12" --group dev --extra coding-agent' in apple
+    assert "sys.version_info[:2] == (3, 12)" in apple
     assert 'test "$(uname -m)" = "arm64"' in apple
     assert "container system status" in apple
     assert "make operational-release-apple" in apple
