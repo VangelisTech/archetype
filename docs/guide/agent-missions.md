@@ -575,12 +575,15 @@ publication, and any live viewport grant.
 | Docker | The local Docker context/daemon authenticates the host operation; `docker info` must succeed. Archetype neither runs `docker login` nor owns registry credentials for the default locally built image. | Unsupported. The parity adapter has no `login_codex()`, auth-volume configuration, or `codex_oauth` execution capability. | Unsupported. The parity adapter exposes no GitHub or generic process-secret capability. | Not implemented. |
 | Modal | The Modal SDK uses the selected authenticated profile or `MODAL_TOKEN_ID` plus `MODAL_TOKEN_SECRET`. The workspace, Environment, App, Volume, Dict, Secret, and Sandbox identities are explicit configuration. Ordinary create/restore and login verify the configured workspace and Environment against the ambient SDK context before mutation. Named provider work verifies the ambient workspace, then scopes every provider object lookup and mutation explicitly to the configured Environment. A typical workstation setup uses `modal token set`; in Actions, repository variable `CODING_AGENT_MODAL_PROFILE` is exported as the SDK selector `MODAL_PROFILE`, and `CODING_AGENT_MODAL_ENVIRONMENT` is exported as both the Archetype selector and SDK selector `MODAL_ENVIRONMENT`. | `ModalSandboxBackend.login_codex()` runs `codex login --device-auth` in a temporary login sandbox and persists only `auth.json` in `ModalSandboxConfig.auth_volume_name` (default `archetype-codex-auth`). The admitted app-server path copies that file into its mission sandbox only through app-server `thread/start`; an awaited barrier deletes and verifies absence of the exact file before `turn/start`, TUI attachment, or model-driven tool execution. Mission execution never writes its copy back to the Volume, and generic mission `exec` rejects `codex_oauth`. | `ModalSandboxConfig.github_secret_name` (default `archetype-github`) resolves a Modal Secret containing `GITHUB_TOKEN`. The controller streams the exact validated Git object bundle through a hard byte cap into the separate non-agent broker, verifies its size, digest, and Git object identity there, and attaches the Secret only to its final push process. Generic mission `exec` rejects `github`. | `issue_spectate_grant()` and `issue_takeover_grant()` mint distinct, port-scoped Modal Sandbox Connect Tokens after Modal control-plane authentication. The bearer URLs are transient trusted-maintainer capabilities. |
 
-Release parity for Apple Container runs only on the labeled self-hosted
-bare-metal Apple Silicon macOS 26 runner. A GitHub-hosted arm64 macOS runner is
-not an authentication or execution substitute: Apple Container requires local
-Virtualization.framework VM support. That lane inherits only the self-host
-operator's `container` service authority and does not receive Modal, Codex,
-GitHub, or Apple cloud credentials.
+Release parity for Apple Container runs only on the one-job ephemeral,
+dedicated-account, bare-metal Apple Silicon macOS 26 runner. The organization
+runner group is restricted to the exact tag-qualified release workflow, the
+release actor and rerun actor must both be `everettVT`, and the protected Apple
+environment requires that operator's approval. A GitHub-hosted arm64 macOS
+runner is not an authentication or execution substitute: Apple Container
+requires local Virtualization.framework VM support. That lane inherits only
+the dedicated runner account's `container` service authority and does not
+receive Modal, Codex, GitHub, or Apple cloud credentials.
 
 For a live v0.5 Mission, set up Modal, Codex, and GitHub independently:
 
