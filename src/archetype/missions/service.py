@@ -309,6 +309,7 @@ class MissionService:
             mission_id=mission_id,
             task_ids=tuple((task.name, task_ids[task.name]) for task in submission.tasks),
             episode_id=episode_id,
+            world_id=str(self._world.world_id),
             repository=submission.repository,
             branch=submission.branch,
             base_ref=submission.base_ref,
@@ -338,6 +339,11 @@ class MissionService:
         limit = max_ticks if max_ticks is not None else self._max_ticks
         if limit < 1:
             raise ValueError("max_ticks must be positive")
+        # A replacement process has a lazy RuntimeWorld with no active identity
+        # until its durable catalog entry is resolved.  Resolve it before the
+        # exact-world Activity binding so run(SubmittedMission) can recover
+        # without an artificial second submit().
+        await self._world.info()
         await self._ensure_activity()
 
         for _ in range(limit):
@@ -418,6 +424,11 @@ class MissionService:
         if self._activity is not None:
             await self._activity.aclose()
         self._closed = True
+
+    async def bind_activity(self) -> None:
+        """Bind exact-world recovery before a cold writer is reconstructed."""
+
+        await self._ensure_activity()
 
     async def query(self, *components: type[Component]) -> DataFrame:
         """Query persisted mission state through the mission-world read path."""

@@ -879,6 +879,14 @@ Component.
 | Snapshot sanitization | Credentials are removed before capture; provider snapshots remain trusted recovery objects rather than published artifacts. | Quarantine/scan before any cross-provider or R2 publication. |
 | Prefab mission libraries | Direct materialization remains authoritative. | Author reusable graphs after generic prefab registry contracts settle. |
 
+`SubmittedMission.world_id` is the cold-recovery coordinate. After process
+loss, construct `runtime.missions(...)` with the same storage configuration and
+pass the retained submission directly to `run()`. The replacement handle binds
+the required projector before resuming that exact World writer, then reinstalls
+the process-local Mission behavior. A provider-bound Activity is reconciled by
+its recorded operation identity; cold recovery never creates a second Mission
+or blindly repeats the provider operation.
+
 ### Accepted v0.5 control-plane contract
 
 This subsection is normative for v0.5. The supported Modal author and

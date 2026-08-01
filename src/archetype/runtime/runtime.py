@@ -94,6 +94,8 @@ def _runtime_world_for_resources(
     processors: list | None = None,
     resources: list | None = None,
     hooks: list[tuple[type[HookEvent], Any]] | None = None,
+    world_id: str | UUID | None = None,
+    install_initializers: bool = False,
 ) -> RuntimeWorld:
     """Construct the narrow world surface used by wiring-owned workflows."""
 
@@ -106,6 +108,8 @@ def _runtime_world_for_resources(
         init_processors=list(processors or []),
         init_resources=list(resources or []),
         init_hooks=list(hooks or []),
+        world_id=world_id,
+        install_initializers=install_initializers,
     )
     return host._bind_world_state(state)
 
