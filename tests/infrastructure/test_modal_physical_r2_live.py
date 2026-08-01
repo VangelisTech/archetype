@@ -10,7 +10,6 @@ from dataclasses import replace
 from pathlib import Path
 from urllib.parse import urlparse
 
-import modal
 import pytest
 from pyarrow.fs import FileSelector, S3FileSystem
 from uuid_utils import uuid7
@@ -28,6 +27,10 @@ from archetype.physical_ai.hosted_modal import (
     build_seeded_modal_hosted_episode_app,
 )
 from archetype.runtime import runtime as runtime_module
+
+modal = pytest.importorskip(
+    "modal", reason="the live provider test requires the coding-agent extra"
+)
 
 ACCESS_KEY_ID = os.environ.get("R2_ACCESS_KEY_ID")
 SECRET_ACCESS_KEY = os.environ.get("R2_SECRET_ACCESS_KEY")
