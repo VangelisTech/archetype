@@ -107,22 +107,26 @@ jobs:
             runner: '["ubuntu-latest"]'
             target: operational-release-modal
             receipt: operational-release-modal-results.json
+          - name: Physical AI (Modal + R2)
+            runner: '["ubuntu-latest"]'
+            target: operational-release-physical-modal-r2
+            receipt: operational-release-physical-modal-r2-results.json
     runs-on: ${{ fromJSON(matrix.runner) }}
     timeout-minutes: 35
     permissions:
       contents: read
     env:
       OPENAI_API_KEY: ${{ matrix.target == 'operational-release-openai' && secrets.OPENAI_API_KEY || '' }}
-      R2_ACCESS_KEY_ID: ${{ matrix.target == 'operational-release-r2' && secrets.R2_ACCESS_KEY_ID || '' }}
-      R2_SECRET_ACCESS_KEY: ${{ matrix.target == 'operational-release-r2' && secrets.R2_SECRET_ACCESS_KEY || '' }}
-      R2_API_ENDPOINT: ${{ matrix.target == 'operational-release-r2' && vars.R2_API_ENDPOINT || '' }}
-      R2_BUCKET: ${{ matrix.target == 'operational-release-r2' && vars.R2_BUCKET || '' }}
-      MODAL_TOKEN_ID: ${{ matrix.target == 'operational-release-modal' && secrets.MODAL_TOKEN_ID || '' }}
-      MODAL_TOKEN_SECRET: ${{ matrix.target == 'operational-release-modal' && secrets.MODAL_TOKEN_SECRET || '' }}
+      R2_ACCESS_KEY_ID: ${{ (matrix.target == 'operational-release-r2' || matrix.target == 'operational-release-physical-modal-r2') && secrets.R2_ACCESS_KEY_ID || '' }}
+      R2_SECRET_ACCESS_KEY: ${{ (matrix.target == 'operational-release-r2' || matrix.target == 'operational-release-physical-modal-r2') && secrets.R2_SECRET_ACCESS_KEY || '' }}
+      R2_API_ENDPOINT: ${{ (matrix.target == 'operational-release-r2' || matrix.target == 'operational-release-physical-modal-r2') && vars.R2_API_ENDPOINT || '' }}
+      R2_BUCKET: ${{ (matrix.target == 'operational-release-r2' || matrix.target == 'operational-release-physical-modal-r2') && vars.R2_BUCKET || '' }}
+      MODAL_TOKEN_ID: ${{ (matrix.target == 'operational-release-modal' || matrix.target == 'operational-release-physical-modal-r2') && secrets.MODAL_TOKEN_ID || '' }}
+      MODAL_TOKEN_SECRET: ${{ (matrix.target == 'operational-release-modal' || matrix.target == 'operational-release-physical-modal-r2') && secrets.MODAL_TOKEN_SECRET || '' }}
       MODAL_PROFILE: ${{ matrix.target == 'operational-release-modal' && vars.CODING_AGENT_MODAL_PROFILE || '' }}
-      CODING_AGENT_MODAL_WORKSPACE: ${{ matrix.target == 'operational-release-modal' && vars.CODING_AGENT_MODAL_WORKSPACE || '' }}
-      CODING_AGENT_MODAL_ENVIRONMENT: ${{ matrix.target == 'operational-release-modal' && vars.CODING_AGENT_MODAL_ENVIRONMENT || '' }}
-      MODAL_ENVIRONMENT: ${{ matrix.target == 'operational-release-modal' && vars.CODING_AGENT_MODAL_ENVIRONMENT || '' }}
+      CODING_AGENT_MODAL_WORKSPACE: ${{ (matrix.target == 'operational-release-modal' || matrix.target == 'operational-release-physical-modal-r2') && vars.CODING_AGENT_MODAL_WORKSPACE || '' }}
+      CODING_AGENT_MODAL_ENVIRONMENT: ${{ (matrix.target == 'operational-release-modal' || matrix.target == 'operational-release-physical-modal-r2') && vars.CODING_AGENT_MODAL_ENVIRONMENT || '' }}
+      MODAL_ENVIRONMENT: ${{ (matrix.target == 'operational-release-modal' || matrix.target == 'operational-release-physical-modal-r2') && vars.CODING_AGENT_MODAL_ENVIRONMENT || '' }}
       CODING_AGENT_MODAL_APP: ${{ matrix.target == 'operational-release-modal' && vars.CODING_AGENT_MODAL_APP || '' }}
       CODING_AGENT_MODAL_IMAGE_ID: ${{ matrix.target == 'operational-release-modal' && vars.CODING_AGENT_MODAL_IMAGE_ID || '' }}
       CODEX_AUTH_VOLUME: ${{ matrix.target == 'operational-release-modal' && vars.CODEX_AUTH_VOLUME || '' }}
@@ -150,7 +154,7 @@ jobs:
         if: matrix.target == 'operational-release-docker'
         run: docker info
       - name: Require release R2 configuration
-        if: matrix.target == 'operational-release-r2'
+        if: matrix.target == 'operational-release-r2' || matrix.target == 'operational-release-physical-modal-r2'
         run: |
           test -n "$R2_ACCESS_KEY_ID"
           test -n "$R2_SECRET_ACCESS_KEY"
@@ -286,6 +290,7 @@ jobs:
           evidence/operational-release-r2-results.json
           evidence/operational-release-apple-results.json
           evidence/operational-release-modal-results.json
+          evidence/operational-release-physical-modal-r2-results.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-evidence-summary
