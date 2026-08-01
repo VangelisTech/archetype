@@ -33,6 +33,7 @@ from typing import Any
 import pytest
 
 from archetype import ArchetypeRuntime
+from archetype import wiring as wiring_module
 from archetype.core.config import StorageConfig
 from archetype.errors import RuntimeShutdownError
 from archetype.missions import (
@@ -45,7 +46,7 @@ from archetype.missions import (
     TaskState,
     ValidationResult,
 )
-from archetype.missions.activities import AuthorExecutionObservation
+from archetype.missions.activities import AuthorExecutionObservation, AuthorRecovered
 from archetype.missions.coding_agents.contracts import (
     AgentExecutionResult,
     CommitObservation,
@@ -72,6 +73,7 @@ from archetype.missions.transitions import (
     CriticExecutionStatus,
 )
 from archetype.projections import latest
+from archetype.storage.activity_catalog import SqliteActivityCatalog
 from archetype.world.errors import WorldHasUnsettledWorkError
 
 
@@ -137,6 +139,7 @@ class _DrainAuthorExecutor:
         self.probe_outcomes: list[str] = []
         self.on_execute: Any = None
         self.execute_calls = 0
+        self.observation: AuthorExecutionObservation | None = None
 
     async def execute(
         self,
@@ -243,6 +246,7 @@ class _DrainAuthorExecutor:
             ),
             sandbox_status=SandboxStatus.CLOSED,
         )
+        self.observation = observation
         if self.probe is not None:
             probe = self.probe
             self.probe = None
@@ -259,7 +263,10 @@ class _DrainAuthorExecutor:
         return observation
 
     async def reconcile(self, *, operation_id: str, request: Any) -> Any:
-        raise AssertionError("the drain author fake never reconciles")
+        del operation_id, request
+        if self.observation is None:
+            raise AssertionError("author recovery requires a completed provider observation")
+        return AuthorRecovered(self.observation)
 
 
 class _DrainCriticExecutor:
@@ -685,6 +692,76 @@ async def test_cancelling_admitted_run_does_not_wedge_runtime_shutdown(
     with pytest.raises(RuntimeShutdownError):
         await runtime.shutdown()
     assert not missions._reservation.released  # noqa: SLF001 - retained for retry
+
+
+@pytest.mark.asyncio
+async def test_replacement_runtime_recovers_cancelled_mission_without_provider_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The public run surface cold-binds the exact durable Mission world."""
+
+    clock = [0.0]
+    monkeypatch.setattr(
+        wiring_module,
+        "SqliteActivityCatalog",
+        lambda path: SqliteActivityCatalog(path, now_seconds=lambda: clock[0]),
+    )
+    remote = _remote(tmp_path)
+    author = _DrainAuthorExecutor(remote, tmp_path / "author")
+    critic = _DrainCriticExecutor(remote, tmp_path / "critic")
+    storage = StorageConfig(
+        uri=str(tmp_path / "mission_cold_resume"),
+        namespace="mission_cold_resume_contract",
+    )
+    first_runtime = ArchetypeRuntime()
+    first = first_runtime.missions(
+        "cold-resume",
+        config=_config(_modal_backend()),
+        storage=storage,
+    )
+    submitted = await first.submit(
+        repository=str(remote),
+        branch="agent/cold-resume",
+        tasks=(_task(),),
+    )
+    _swap_executors(first, author, critic)
+    interrupted = asyncio.create_task(first.run(submitted))
+    await asyncio.wait_for(author.blocked.wait(), timeout=30)
+    interrupted.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await interrupted
+
+    # Simulate the durable lease elapsing after process loss. The replacement
+    # adapters recover the provider-bound result and review; execute() must not
+    # run a second time for the author Activity.
+    clock[0] = 301.0
+    monkeypatch.setattr(
+        wiring_module,
+        "ModalMissionAuthorExecutor",
+        lambda **kwargs: author,
+    )
+    monkeypatch.setattr(
+        wiring_module,
+        "ModalMissionCriticExecutor",
+        lambda **kwargs: critic,
+    )
+    replacement = ArchetypeRuntime()
+    resumed_handle = replacement.missions(
+        "cold-resume",
+        config=_config(_modal_backend()),
+        storage=storage,
+    )
+    result = await resumed_handle.run(submitted)
+
+    assert result.status == "succeeded"
+    assert result.mission_id == submitted.mission_id
+    assert submitted.world_id == str(first.world_id)
+    assert author.execute_calls == 1
+    assert critic.execute_calls == 1
+
+    await replacement.shutdown()
+    await first_runtime.shutdown()
 
 
 @pytest.mark.asyncio

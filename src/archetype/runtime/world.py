@@ -198,6 +198,9 @@ class _RuntimeWorldState:
         init_hooks: list[tuple[type[HookEvent], Any]],
         # Pre-activated fork state (set when forking from an existing world)
         world_id: str | UUID | None = None,
+        # Wiring-owned workflows can pre-bind an exact resumed writer and ask
+        # the first handle operation to reinstall its process-local behavior.
+        install_initializers: bool = False,
         # Attached handles (runtime.attach) reference a world they did not
         # create; shutdown must not destroy it.
         owns_world: bool = True,
@@ -212,7 +215,8 @@ class _RuntimeWorldState:
         self.owns_world = owns_world
 
         self.world_id: str | UUID | None = world_id
-        self.initialized: bool = world_id is not None
+        self._create_on_init = world_id is None
+        self.initialized = world_id is not None and not install_initializers
         self.init_lock = asyncio.Lock()
         self.close_lock = asyncio.Lock()
         self.destroying = False
@@ -234,14 +238,15 @@ class _RuntimeWorldState:
             effective_storage_config = self.storage_config or StorageConfig()
 
             try:
-                info = await dispatcher.apply(
-                    CreateWorld(
-                        config=WorldConfig(name=self.name),
-                        storage_config=effective_storage_config,
-                        cache_config=self.cache_config,
+                if self.world_id is None:
+                    info = await dispatcher.apply(
+                        CreateWorld(
+                            config=WorldConfig(name=self.name),
+                            storage_config=effective_storage_config,
+                            cache_config=self.cache_config,
+                        )
                     )
-                )
-                self.world_id = info.world_id
+                    self.world_id = info.world_id
 
                 for proc in self.init_processors:
                     await dispatcher.apply(AddProcessor(world_id=self.world_id, processor=proc))
@@ -261,9 +266,9 @@ class _RuntimeWorldState:
                 self.storage_config = effective_storage_config
                 self.initialized = True
             except BaseException:
-                if self.world_id is not None:
+                if self._create_on_init and self.world_id is not None:
                     await dispatcher.apply(DestroyWorld(world_id=self.world_id))
-                self.world_id = None
+                    self.world_id = None
                 self.initialized = False
                 raise
 
@@ -340,14 +345,12 @@ class RuntimeWorld:
     def active_world_id(self) -> str | UUID | None:
         """Return the durable identity without activating this lazy handle."""
 
-        if not self._state.initialized:
-            return None
         return self._state.world_id
 
     @property
     def world_id(self) -> str | UUID:
         """Return the durable world identifier after activation."""
-        if not self._state.initialized or self._state.world_id is None:
+        if self._state.world_id is None:
             raise RuntimeError("World has not been activated yet")
         return self._state.world_id
 

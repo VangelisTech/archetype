@@ -534,18 +534,29 @@ async def _handle_grade_trajectory(
     )
 
 
-def _runtime_world_factory(resources: RuntimeResources) -> Callable[..., Any]:
+def _runtime_world_factory(
+    resources: RuntimeResources,
+    *,
+    world_id: str | None = None,
+    install_initializers: bool = False,
+) -> Callable[..., Any]:
     """Resolve the runtime-owned mission-world constructor without import cycles."""
 
     def create(*args: Any, **kwargs: Any) -> Any:
         from archetype.runtime.runtime import _runtime_world_for_resources
 
-        return _runtime_world_for_resources(resources, *args, **kwargs)
+        return _runtime_world_for_resources(
+            resources,
+            *args,
+            world_id=world_id,
+            install_initializers=install_initializers,
+            **kwargs,
+        )
 
     return create
 
 
-async def _handle_submit_mission(
+async def _handle_mission(
     resources: RuntimeResources,
     worlds: WorldRegistry,
     lifecycle: WorldLifecycle,
@@ -554,15 +565,23 @@ async def _handle_submit_mission(
     redaction: RedactionService,
     control_catalog_config: ControlCatalogConfig,
     unsettled_worlds: RequiredProjectorFanout,
-    operation: SubmitMission,
+    operation: SubmitMission | RunMission,
 ) -> Any:
     backend = operation.config.sandbox_backend
     if not isinstance(backend, ModalSandboxBackend):
         raise ValueError("Agent Mission admission requires the Modal sandbox backend in v0.5.0")
     reservation = resources.owner(operation.owner_id)
     async with resources.admit_owner_operation(reservation):
+        cold_constructed = False
 
         async def construct() -> MissionService:
+            nonlocal cold_constructed
+            cold_world_id: str | None = None
+            if isinstance(operation, RunMission):
+                cold_world_id = operation.mission.world_id.strip()
+                if not cold_world_id:
+                    raise ValueError("cold Mission run requires SubmittedMission.world_id")
+                cold_constructed = True
             sandbox = SandboxService((backend,))
             reservation.bind(sandbox, close=sandbox.shutdown)
             capability = ModalSandboxOperationCapability(backend)
@@ -681,7 +700,10 @@ async def _handle_submit_mission(
                 await unsettled_worlds.bind(world_id, binding)
                 try:
                     routed = unsettled_worlds.required_projector_for(world_id)
-                    if worlds.required_projector(world_id) is not routed:
+                    if (
+                        await worlds.live_world(world_id) is not None
+                        and worlds.required_projector(world_id) is not routed
+                    ):
                         await worlds.bind_required_projector(
                             world_id,
                             routed,
@@ -703,7 +725,11 @@ async def _handle_submit_mission(
                 )
 
             return MissionService(
-                world_factory=_runtime_world_factory(resources),
+                world_factory=_runtime_world_factory(
+                    resources,
+                    world_id=cold_world_id,
+                    install_initializers=cold_world_id is not None,
+                ),
                 name=operation.name,
                 config=operation.config,
                 sandbox_service=sandbox,
@@ -714,23 +740,26 @@ async def _handle_submit_mission(
             )
 
         service = await reservation.construct(construct)
-        submission = operation.submission
-        return await service.submit(
-            repository=submission.repository,
-            branch=submission.branch,
-            tasks=submission.tasks,
-            name=submission.name,
-            base_ref=submission.base_ref,
-        )
+        if cold_constructed:
+            from archetype.runtime._config import coerce_storage
 
-
-async def _handle_run_mission(
-    resources: RuntimeResources,
-    operation: RunMission,
-) -> Any:
-    reservation = resources.owner(operation.owner_id)
-    async with resources.admit_owner_operation(reservation):
-        service = cast(MissionService, reservation.require_bound())
+            assert isinstance(operation, RunMission)
+            world_id = operation.mission.world_id
+            storage_config = coerce_storage(operation.storage) or StorageConfig()
+            await worlds.remember_storage_identity(world_id, storage_config)
+            # Bind the exact required projector before mutable reconstruction,
+            # so lifecycle recovery retains and projects the committed head.
+            await service.bind_activity()
+            await lifecycle.open_world_mutable(storage_config, world_id)
+        if isinstance(operation, SubmitMission):
+            submission = operation.submission
+            return await service.submit(
+                repository=submission.repository,
+                branch=submission.branch,
+                tasks=submission.tasks,
+                name=submission.name,
+                base_ref=submission.base_ref,
+            )
         return await service.run(operation.mission, max_ticks=operation.max_ticks)
 
 
@@ -907,7 +936,7 @@ def _pull_forward_handler(
         SubmitMission: cast(
             Any,
             partial(
-                _handle_submit_mission,
+                _handle_mission,
                 resources,
                 worlds,
                 lifecycle,
@@ -918,7 +947,20 @@ def _pull_forward_handler(
                 unsettled_worlds,
             ),
         ),
-        RunMission: cast(Any, partial(_handle_run_mission, resources)),
+        RunMission: cast(
+            Any,
+            partial(
+                _handle_mission,
+                resources,
+                worlds,
+                lifecycle,
+                scheduler,
+                storage,
+                redaction,
+                control_catalog_config,
+                unsettled_worlds,
+            ),
+        ),
         RestoreMissionSandbox: cast(
             Any,
             partial(_handle_restore_mission_sandbox, resources),
