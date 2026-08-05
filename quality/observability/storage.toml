@@ -20,6 +20,14 @@ operations = [
   "activity_catalog.interfaces.ActivityCatalog.record_activity_result",
   "activity_catalog.interfaces.ActivityCatalog.release_activity",
   "activity_catalog.interfaces.ActivityCatalog.settle_activity_observation",
+  "activity_catalog.migration.ActivityCatalogMigrationInspector.inspect_activity_catalog",
+  "catalog.migration.MigrationControlCatalog.activate_migration",
+  "catalog.migration.MigrationControlCatalog.complete_migration",
+  "catalog.migration.MigrationControlCatalog.export_migration_snapshot",
+  "catalog.migration.MigrationControlCatalog.get_migration_reservation",
+  "catalog.migration.MigrationControlCatalog.list_migration_reservations",
+  "catalog.migration.MigrationControlCatalog.reserve_migration",
+  "catalog.migration.MigrationControlCatalog.stage_migration_control",
   "catalog.interface.ControlCatalog.register_world",
   "catalog.interface.ControlCatalog.retire_world_registration",
   "catalog.interface.ControlCatalog.set_world_status",
@@ -58,6 +66,11 @@ operations = [
   "service.StorageService.read_world_rows",
   "service.StorageService.get_or_create_store",
   "service.StorageService.materialize",
+  "service.StorageService.capture_table_snapshot",
+  "service.StorageService.export_table_snapshot",
+  "service.StorageService.find_table_snapshot",
+  "service.StorageService.import_table_snapshot",
+  "service.StorageService.list_table_names",
   "service.StorageService.read_table",
   "service.StorageService.append_table",
   "service.StorageService.append_missing",
@@ -70,12 +83,15 @@ evidence = [
   "docs/guide/atomic-visibility.md",
   "docs/guide/artifacts.md",
   "docs/guide/service-protocols.md",
+  "docs/guide/storage-migration.md",
   "tests/activities/test_activity_catalog_contracts.py",
+  "tests/activities/test_activity_migration.py",
   "tests/app/test_application_atomic_visibility.py",
   "tests/storage/test_remote_catalog_parity.py",
   "tests/storage/test_storage_execution.py",
+  "tests/storage/test_table_transfer.py",
 ]
-rationale = "StorageService centralizes terminal Daft admission, table registration, schema checks, and conflict retry. Only the target world's control authority atomically publishes its manifest, command settlement, and control-outbox rows after durable data flush; Iceberg and remote directory discovery remain separate durable boundaries."
+rationale = "StorageService centralizes terminal Daft admission, table registration, schema checks, snapshot transfer, and conflict retry. SQLite administrative migration state and Activity inventory remain durable or typed evidence rather than a second advisory signal. Only the target world's control authority atomically makes its manifest, command settlement, and control-outbox rows visible after durable data flush; Iceberg and remote directory discovery remain separate durable boundaries."
 
 [[legacy]]
 rule = "raw_exception_logging"

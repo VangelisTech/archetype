@@ -305,6 +305,11 @@ families. Its narrow substrate operations include:
 | Operation | Contract |
 |---|---|
 | `materialize(frame)` | Admit and execute one Archetype-owned lazy plan, returning the completed frame |
+| `list_table_names(config)` | Enumerate the exact attached Iceberg namespace for administrative inventory |
+| `capture_table_snapshot(config, name)` | Pin one table's snapshot identity, schema, row count, and deterministic content evidence |
+| `export_table_snapshot(config, evidence)` | Read the exact pinned source snapshot and return its verified Arrow payload |
+| `find_table_snapshot(config, name)` | Return current evidence for an existing destination table, or absence |
+| `import_table_snapshot(config, exported, destination_evidence=...)` | Create one exact destination table, verify read-back, and reconcile ambiguous commit outcomes from complete evidence |
 | `read_table(config, name)` | Resolve an existing registered app table and return a lazy Iceberg read |
 | `append_table(config, name, rows)` | Register or schema-check the table, materialize the producer once, and append all rows |
 | `append_missing(config, name, rows, key_columns=...)` | Register or schema-check the table, anti-join visible keys, and append only missing rows |
@@ -360,6 +365,25 @@ materialization or table persistence from `iStorageService`; they do not call
 Daft collection, Iceberg read/write, or catalog table-creation primitives
 directly. Public query callers still own execution of the lazy DataFrames
 returned across the runtime boundary.
+
+## Whole-storage migration (local v1)
+
+Archetype provides an offline administrative workflow for moving one complete
+local storage identity between already-composed endpoints. Local v1 supports
+only Iceberg to Iceberg with SQLite-backed Iceberg catalogs and SQLite control
+catalogs. The destination namespace and control identity must be empty, the
+source must remain quiescent, and any Activity history rejects preflight.
+Remote migration is deferred.
+
+Storage owns namespace enumeration, pinned table evidence, exact table import,
+typed control export/import, migration reservation, staged control state,
+writer-fence floors, and activation records. The migration family orders those
+primitives with the artifacts participant; it does not copy warehouse files or
+replay ordinary catalog operations. Destination World discovery is activated
+only after every table and referenced Artifact object verifies.
+
+See [Storage Migration](storage-migration.md) for the complete profile,
+resumption rules, and cold-verification contract.
 
 ## Store API
 

@@ -84,6 +84,100 @@ benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
+id = "architecture.migration.family_edges"
+source = "docs/guide/storage-migration.md"
+section = "10. Architecture and executable evidence"
+owner = "architecture"
+risk = "high"
+pytest = [
+  "tests/scripts/test_check_architecture.py::test_migration_family_allows_only_artifacts_and_storage",
+]
+static = ["scripts/check_architecture.py"]
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "migration.local_v1.whole_identity"
+source = "docs/guide/storage-migration.md"
+section = "1. Local v1 profile"
+owner = "migration"
+risk = "high"
+pytest = [
+  "tests/integration/test_storage_migration.py::test_local_whole_storage_identity_migrates_and_cold_resumes",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "migration.local_v1.fail_closed"
+source = "docs/guide/storage-migration.md"
+section = "3. Preflight, quiescence, and destination emptiness"
+owner = "migration"
+risk = "high"
+pytest = ["tests/migration/test_handlers.py"]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "migration.tables.deterministic_evidence"
+source = "docs/guide/storage-migration.md"
+section = "4. Data-plane transfer"
+owner = "storage"
+risk = "high"
+pytest = [
+  "tests/storage/test_transfer.py",
+  "tests/storage/test_table_transfer.py",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "migration.artifacts.occurrence_relocation"
+source = "docs/guide/storage-migration.md"
+section = "5. Artifact relocation without re-ingestion"
+owner = "artifacts"
+risk = "high"
+pytest = ["tests/artifacts/test_migration.py"]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "migration.control.exact_activation"
+source = "docs/guide/storage-migration.md"
+section = "6. Control import and writer fencing"
+owner = "storage"
+risk = "high"
+pytest = ["tests/storage/test_control_catalog_migration.py"]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "migration.activities.empty_only"
+source = "docs/guide/storage-migration.md"
+section = "3. Preflight, quiescence, and destination emptiness"
+owner = "migration"
+risk = "high"
+pytest = [
+  "tests/activities/test_activity_migration.py",
+  "tests/migration/test_handlers.py::test_any_activity_history_rejects_before_destination_initialization",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
 id = "architecture.protocols.complete"
 source = "docs/guide/application-architecture.md"
 section = "8. Protocol policy and wiring"

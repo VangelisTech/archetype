@@ -212,6 +212,32 @@ class ArtifactStoreConfig(BaseModel):
         return cls(object_uri=Path(root))
 
 
+def resolve_artifact_object_root(
+    storage_config: StorageConfigValue,
+    store_config: ArtifactStoreConfig,
+) -> str:
+    """Resolve the one object authority paired with a storage endpoint.
+
+    Keep this address rule shared by ordinary ingestion and offline migration;
+    otherwise the two workflows can silently derive different content paths
+    from the same endpoint configuration.
+    """
+
+    from archetype.core.config import StorageConfig
+    from archetype.core.paths import local_storage_path
+
+    if not isinstance(storage_config, StorageConfig):
+        raise TypeError("artifact object-root resolution requires a StorageConfig")
+    if not isinstance(store_config, ArtifactStoreConfig):
+        raise TypeError("artifact object-root resolution requires an ArtifactStoreConfig")
+    if store_config.object_uri is not None:
+        return str(store_config.object_uri)
+    local = local_storage_path(str(storage_config.uri))
+    if local is not None:
+        return str(local / "artifacts")
+    return str(storage_config.uri).rstrip("/") + "/artifacts"
+
+
 class _ArtifactOperation(BaseModel):
     model_config = ConfigDict(
         frozen=True,
@@ -290,5 +316,6 @@ __all__ = [
     "ArtifactStoreConfig",
     "IngestArtifacts",
     "QueryArtifacts",
+    "resolve_artifact_object_root",
     "summarize_artifact_operation",
 ]
