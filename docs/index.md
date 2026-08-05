@@ -1,12 +1,13 @@
 # Build simulations that keep their history
 
-Archetype is a Python runtime for simulations and agent workflows. Components
-describe state. Processors transform matching entities as Daft DataFrames.
-Each tick is stored, so inspecting an earlier state or branching a run does
-not require a separate replay system.
+Archetype is an opinionated pythonic runtime for massively parallel simulations and agent workflows. 
+
+It leverages the Entity-Component-System (ECS) pattern to simplify data management at scale. 
+
+The same primitives you use to write scripts are also used to query previous runs. Stop worrying about building datasets or managing tables, Archetype lets you focus on the code, with Components, Processors, and World's as the first class citizens. 
 
 ```bash
-pip install archetype-ecs
+uv add archetype-ecs
 ```
 
 [Start the quickstart](guide/quickstart.md) ·
