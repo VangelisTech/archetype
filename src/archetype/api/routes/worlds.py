@@ -17,12 +17,19 @@
 from fastapi import APIRouter, Depends, Response, status
 from uuid_utils import UUID
 
-from archetype.api.deps import get_actor_ctx, get_command_gateway
+from archetype.api.deps import get_actor_ctx, get_dispatcher
 from archetype.api.errors import raise_api_error
 from archetype.api.models import CreateWorldRequest, ForkWorldRequest
-from archetype.app.gateway.auth.models import ActorCtx
-from archetype.app.gateway.interfaces import iCommandGateway
-from archetype.app.models import WorldInfo
+from archetype.commands.dispatch import CommandDispatcher
+from archetype.commands.models import ActorCtx
+from archetype.world.models import (
+    CreateWorld,
+    DestroyWorld,
+    ForkWorld,
+    GetWorldInfo,
+    ListWorlds,
+    WorldInfo,
+)
 
 router = APIRouter(prefix="/worlds", tags=["worlds"])
 
@@ -30,24 +37,31 @@ router = APIRouter(prefix="/worlds", tags=["worlds"])
 @router.post("", response_model=WorldInfo, status_code=status.HTTP_201_CREATED)
 async def create_world(
     req: CreateWorldRequest,
-    cs: iCommandGateway = Depends(get_command_gateway),
+    dispatcher: CommandDispatcher = Depends(get_dispatcher),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Create a world. Requires admin."""
     try:
-        return await cs.create_world(ctx, req.world_config(), req.storage(), req.cache_config)
+        return await dispatcher.apply_as(
+            ctx,
+            CreateWorld(
+                config=req.world_config(),
+                storage_config=req.storage(),
+                cache_config=req.cache_config,
+            ),
+        )
     except Exception as exc:
         raise_api_error(exc, conflict=True)
 
 
 @router.get("", response_model=list[WorldInfo])
 async def list_worlds(
-    cs: iCommandGateway = Depends(get_command_gateway),
+    dispatcher: CommandDispatcher = Depends(get_dispatcher),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """List live worlds. Requires admin."""
     try:
-        return await cs.list_worlds(ctx)
+        return await dispatcher.apply_as(ctx, ListWorlds())
     except Exception as exc:
         raise_api_error(exc)
 
@@ -55,12 +69,13 @@ async def list_worlds(
 @router.get("/{world_id}", response_model=WorldInfo)
 async def get_world(
     world_id: str,
-    cs: iCommandGateway = Depends(get_command_gateway),
+    dispatcher: CommandDispatcher = Depends(get_dispatcher),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Get world metadata. Requires viewer, player, operator, or admin."""
     try:
-        return await cs.get_world_info(ctx, world_id)
+        UUID(world_id)
+        return await dispatcher.apply_as(ctx, GetWorldInfo(world_id=world_id))
     except Exception as exc:
         raise_api_error(exc)
 
@@ -68,7 +83,7 @@ async def get_world(
 @router.delete("/{world_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def destroy_world(
     world_id: str,
-    cs: iCommandGateway = Depends(get_command_gateway),
+    dispatcher: CommandDispatcher = Depends(get_dispatcher),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Drop the in-memory world instance. Persisted storage and audit rows are retained.
@@ -78,7 +93,7 @@ async def destroy_world(
     """
     try:
         UUID(world_id)  # the no-op contract covers missing worlds, not bad ids
-        await cs.destroy_world(ctx, world_id)
+        await dispatcher.apply_as(ctx, DestroyWorld(world_id=world_id))
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except Exception as exc:
         raise_api_error(exc)
@@ -88,17 +103,19 @@ async def destroy_world(
 async def fork_world(
     world_id: str,
     req: ForkWorldRequest,
-    cs: iCommandGateway = Depends(get_command_gateway),
+    dispatcher: CommandDispatcher = Depends(get_dispatcher),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Fork a world. Requires operator or admin."""
     try:
-        return await cs.fork_world(
+        return await dispatcher.apply_as(
             ctx,
-            world_id,
-            req.name,
-            storage_config=req.storage_config,
-            cache_config=req.cache_config,
+            ForkWorld(
+                source_world_id=world_id,
+                name=req.name,
+                storage_config=req.storage_config,
+                cache_config=req.cache_config,
+            ),
         )
     except Exception as exc:
         raise_api_error(exc, conflict=True)

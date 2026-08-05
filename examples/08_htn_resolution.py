@@ -37,7 +37,7 @@ import json
 from daft import col
 
 from archetype import ArchetypeRuntime
-from archetype.core.config import RunConfig
+from archetype.core.config import RunConfig, StorageConfig
 from archetype.missions.planning import (
     Branch,
     HtnDomain,
@@ -129,7 +129,7 @@ async def resolve_htn(
     net0 = build_initial_network(domain, tn0)
     await world.spawn(Branch.make("r", s0, net0, max_depth=max_depth))
 
-    rc = RunConfig(num_steps=1)  # ONE reused run_id for the whole resolution (Inv HTN-V2.14)
+    rc = RunConfig(num_steps=1)  # Reusable policy; immutable run identity belongs to the world.
     solutions: list[dict] = []
     solved_ids: set[str] = set()
     ticks: list[dict] = []
@@ -218,45 +218,82 @@ async def resolve_htn(
 # ============================================================================
 
 
-def _format_plan(plan: list[dict]) -> str:
-    return " -> ".join(step["op"] for step in sorted(plan, key=lambda s: s["seq"]))
-
-
-async def main() -> None:
+async def run_demo(storage_uri: str = "./archetype_data") -> dict[str, object]:
+    """Resolve the dogfood HTN and return stable, semantic evidence."""
     domain = resolve_issue_domain()
     s0 = ["issue_open"]
     tn0 = [("resolve_issue", [])]
 
     async with ArchetypeRuntime() as runtime:
-        world = runtime.world("htn-resolve-issue", processors=htn_processors())
-
-        print("Resolving HTN: resolve_issue  (fix has 2 rival methods → fan-out)\n")
+        world = runtime.world(
+            "htn-resolve-issue",
+            storage=StorageConfig(uri=storage_uri, namespace="htn_resolution"),
+            processors=htn_processors(),
+        )
         result = await resolve_htn(world, domain, s0, tn0, max_depth=32)
-
-        print(f"{'tick':>4}  {'live':>4}  {'solved':>6}  {'exp':>3}  frontier")
-        for t in result["ticks"]:
-            fr = ", ".join(f"{k}×{v}" for k, v in t["frontier"].items() if k)
-            print(f"{t['tick']:>4}  {t['live']:>4}  {t['solved']:>6}  {t['expansions']:>3}  {fr}")
-
-        print(f"\n{len(result['solutions'])} solution plan(s) found via fan-out:\n")
-        for s in sorted(result["solutions"], key=lambda x: len(x["plan"])):
-            print(f"  [{s['plan_id']}]  ({len(s['plan'])} ops)  {_format_plan(s['plan'])}")
 
         # Solutions are first-class, queryable artifacts — reference them through the world.
         info = await world.info()
-        solved = (
+        persisted = (
             (await world.query(Branch, Solved))
             .where(col("tick") == info.tick - 1)
             .select("solved__plan_id", "solved__plan_length", "branch__atoms_json")
             .collect()
             .to_pylist()
         )
-        print(f"\nSolved branches queryable via query(Branch, Solved): {len(solved)}")
-        for row in solved:
-            print(
-                f"  plan_id={row['solved__plan_id']}  len={row['solved__plan_length']}  "
-                f"final_state={json.loads(row['branch__atoms_json'])}"
+        solutions = []
+        for solution in sorted(result["solutions"], key=lambda item: item["plan_id"]):
+            plan = sorted(solution["plan"], key=lambda step: step["seq"])
+            solutions.append(
+                {
+                    "plan_id": solution["plan_id"],
+                    "operations": [step["op"] for step in plan],
+                    "depth": solution["depth"],
+                }
             )
+        persisted_solutions = []
+        for row in sorted(persisted, key=lambda item: item["solved__plan_id"]):
+            persisted_solutions.append(
+                {
+                    "plan_id": row["solved__plan_id"],
+                    "plan_length": row["solved__plan_length"],
+                    "final_state": json.loads(row["branch__atoms_json"]),
+                }
+            )
+        return {
+            "solutions": solutions,
+            "tick_trace": result["ticks"],
+            "persisted_solutions": persisted_solutions,
+        }
+
+
+async def main() -> None:
+    result = await run_demo()
+
+    print("Resolving HTN: resolve_issue  (fix has 2 rival methods → fan-out)\n")
+    print(f"{'tick':>4}  {'live':>4}  {'solved':>6}  {'exp':>3}  frontier")
+    for tick in result["tick_trace"]:
+        frontier = ", ".join(f"{name}×{count}" for name, count in tick["frontier"].items() if name)
+        print(
+            f"{tick['tick']:>4}  {tick['live']:>4}  {tick['solved']:>6}  "
+            f"{tick['expansions']:>3}  {frontier}"
+        )
+
+    solutions = result["solutions"]
+    print(f"\n{len(solutions)} solution plan(s) found via fan-out:\n")
+    for solution in sorted(solutions, key=lambda item: len(item["operations"])):
+        print(
+            f"  [{solution['plan_id']}]  ({len(solution['operations'])} ops)  "
+            f"{' -> '.join(solution['operations'])}"
+        )
+
+    persisted = result["persisted_solutions"]
+    print(f"\nSolved branches queryable via query(Branch, Solved): {len(persisted)}")
+    for row in persisted:
+        print(
+            f"  plan_id={row['plan_id']}  len={row['plan_length']}  "
+            f"final_state={row['final_state']}"
+        )
 
 
 if __name__ == "__main__":

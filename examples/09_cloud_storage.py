@@ -227,22 +227,36 @@ def _print_banner(example: ProviderExample) -> None:
     print()
 
 
+async def run_demo(storage_uri: str) -> dict[str, object]:
+    """Exercise the cloud-compatible storage API against isolated local storage."""
+    storage = StorageConfig(
+        uri=storage_uri,
+        namespace="cloud_storage_smoke",
+        backend=StorageBackend.LANCEDB,
+    )
+    async with ArchetypeRuntime() as runtime:
+        world = runtime.world("cloud-storage-smoke", storage=storage)
+        await world.spawn(StorageProbe(provider="local", note="same storage API"))
+        await world.step()
+        rows = (await world.query(StorageProbe)).collect().to_pylist()
+        active = [row for row in rows if row.get("is_active", True)]
+        info = await world.info()
+        return {
+            "backend": storage.backend.value,
+            "provider": active[0]["storageprobe__provider"],
+            "note": active[0]["storageprobe__note"],
+            "spawned_entities": len(active),
+            "ticks_completed": info.tick,
+        }
+
+
 async def _smoke_local() -> None:
     with tempfile.TemporaryDirectory() as tmp:
-        storage = StorageConfig(
-            uri=tmp,
-            namespace="cloud_storage_smoke",
-            backend=StorageBackend.LANCEDB,
-        )
-        async with ArchetypeRuntime() as runtime:
-            world = runtime.world("cloud-storage-smoke", storage=storage)
-            await world.spawn(StorageProbe(provider="local", note="same storage API"))
-            await world.step()
-            rows = (await world.query(StorageProbe)).collect().to_pylist()
-            active = [row for row in rows if row.get("is_active", True)]
+        result = await run_demo(tmp)
     print("Local smoke")
-    print(f"  spawned_entities={len(active)}")
-    print(f"  provider={active[0]['storageprobe__provider']}")
+    print(f"  spawned_entities={result['spawned_entities']}")
+    print(f"  provider={result['provider']}")
+    print(f"  backend={result['backend']}")
     print()
 
 

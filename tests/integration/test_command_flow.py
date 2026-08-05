@@ -1,39 +1,62 @@
 # Copyright 2025 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Integration test: reserved spawn ID preservation through the command flow.
+"""Integration contracts for exact direct/deferred command flow."""
 
-Test that submit_spawn reserves an ID, and drain_and_apply uses that exact ID.
-Flow: submit_spawn -> durable scheduler -> dispatcher -> entity materialized with reserved ID
-"""
+from __future__ import annotations
+
+import asyncio
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from functools import partial
+from pathlib import Path
+from typing import Any
 
 import pytest
+from pydantic import BaseModel
 from uuid_utils import uuid7
 
-from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth import guard as guard_state
-from archetype.app.gateway.auth.errors import GuardrailError
-from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
-from archetype.app.gateway.auth.models import ActorCtx
-from archetype.app.models import Command, CommandType
+from archetype.commands.dispatch import CommandDispatcher
+from archetype.commands.models import ActorCtx, DeferredItem, DurableOptions
+from archetype.commands.scheduler import CommandScheduler
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
-
-_DEFERRED_COMMAND_TYPES = frozenset(
-    {
-        CommandType.SPAWN,
-        CommandType.UPDATE,
-        CommandType.DESPAWN,
-        CommandType.ADD_COMPONENT,
-        CommandType.REMOVE_COMPONENT,
-        CommandType.MESSAGE,
-        CommandType.CUSTOM,
-        CommandType.QUERY_WORLD,
-    }
+from archetype.errors import WorldNotFoundError
+from archetype.runtime_resources import RuntimeResources
+from archetype.storage.service import StorageService
+from archetype.world.errors import WorldClosingError
+from archetype.world.lifecycle import WorldLifecycle
+from archetype.world.models import (
+    PORTABLE_TICK_OPERATION_TYPES,
+    WORLD_OPERATION_TYPES,
+    AddComponents,
+    ComponentTypeRef,
+    ComponentValue,
+    CreateWorld,
+    Despawn,
+    DestroyWorld,
+    QueryComponents,
+    ReserveEntityIds,
+    Run,
+    Spawn,
+    SpawnReserved,
+    Step,
+    Update,
+    WorldInfo,
 )
-_DIRECT_COMMAND_TYPES = tuple(
-    sorted(set(CommandType) - _DEFERRED_COMMAND_TYPES, key=lambda command_type: command_type.value)
+from archetype.world.registry import WorldRegistry
+from tests._runtime import build_test_runtime
+
+_PORTABLE_TYPES = frozenset(PORTABLE_TICK_OPERATION_TYPES)
+_DIRECT_OPERATION_TYPES = tuple(
+    sorted(
+        (
+            operation_type
+            for operation_type in WORLD_OPERATION_TYPES
+            if operation_type not in _PORTABLE_TYPES
+        ),
+        key=lambda operation_type: str(operation_type.model_fields["operation"].default),
+    )
 )
 
 
@@ -41,320 +64,504 @@ class CommandFlowMarker(Component):
     tag: str = ""
 
 
-@pytest.fixture(autouse=True)
-def _reset_quotas():
-    reset_tick_counters()
-    reset_daily_tokens()
-    yield
-    reset_tick_counters()
-    reset_daily_tokens()
+@dataclass
+class _FlowRuntime:
+    resources: RuntimeResources
+    dispatcher: CommandDispatcher
+    worlds: WorldRegistry
+    lifecycle: WorldLifecycle
+    scheduler: CommandScheduler
+    storage: StorageService
 
 
-@pytest.mark.asyncio
-async def test_submit_spawn_reserved_id_survives_drain(tmp_path):
-    c = ServiceContainer()
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+@asynccontextmanager
+async def _flow_runtime(tmp_path: Path):
+    storage = StorageService()
+    resources = build_test_runtime(
+        tmp_path,
+        storage_service=storage,
+    )
+    dispatcher = resources.dispatcher
+    step_handler = dispatcher._registry.resolve_name("step").handler  # noqa: SLF001
+    create_handler = dispatcher._registry.resolve_name("create_world").handler  # noqa: SLF001
+    assert isinstance(step_handler, partial)
+    assert isinstance(create_handler, partial)
+    worlds = step_handler.args[0]
+    lifecycle = getattr(create_handler.args[0], "__self__", None)
+    assert isinstance(worlds, WorldRegistry)
+    assert isinstance(lifecycle, WorldLifecycle)
+    scheduler = dispatcher._scheduler  # noqa: SLF001 - exact composed-owner oracle
+    assert isinstance(scheduler, CommandScheduler)
+    harness = _FlowRuntime(
+        resources=resources,
+        dispatcher=dispatcher,
+        worlds=worlds,
+        lifecycle=lifecycle,
+        scheduler=scheduler,
+        storage=storage,
+    )
     try:
-        world = await c.world_service.create_world(
-            WorldConfig(name="flow"), StorageConfig(uri=str(tmp_path / "store"))
-        )
-        # Reserve an entity ID via submit_spawn
-        reserved_id = await c.command_gateway.submit_spawn(
-            ctx, world.world_id, [CommandFlowMarker(tag="reserved")], tick=0
-        )
-        # Tick-boundary dispatch and manifest settlement are one application path.
-        applied = await c.simulation_service.step(world.world_id, RunConfig())
-        assert applied == 1
-        # The entity should exist with the reserved ID
-        assert reserved_id in world.entity2sig
-        (record,) = await c.command_scheduler.records(world.world_id)
-        assert record.status == "APPLIED"
+        yield harness
     finally:
-        await c.shutdown()
+        for world in await worlds.list_worlds():
+            await lifecycle.destroy_world(world.world_id)
+        await resources.aclose()
+        await storage.shutdown()
+
+
+async def _create_world(
+    harness: _FlowRuntime,
+    *,
+    name: str,
+    storage: StorageConfig,
+) -> WorldInfo:
+    return await harness.dispatcher.apply(
+        CreateWorld(
+            config=WorldConfig(name=name),
+            storage_config=storage,
+        )
+    )
+
+
+async def _marker_rows(
+    harness: _FlowRuntime,
+    info: WorldInfo,
+    storage: StorageConfig,
+    *,
+    ticks: tuple[int, ...] | None = None,
+) -> list[dict[str, Any]]:
+    frame = await harness.dispatcher.apply(
+        QueryComponents(
+            components=(ComponentTypeRef.from_type(CommandFlowMarker),),
+            world_id=info.world_id,
+            run_id=info.run_id,
+            storage_config=storage,
+            ticks=ticks,
+        )
+    )
+    return frame.to_pylist()
 
 
 @pytest.mark.asyncio
-async def test_replayed_reserved_spawn_is_not_applied_twice(tmp_path):
-    """The drain path enforces the same double-spawn guard as direct mutation calls."""
-    c = ServiceContainer()
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
-    try:
-        world = await c.world_service.create_world(
-            WorldConfig(name="spawn-replay"),
-            StorageConfig(uri=str(tmp_path / "store")),
-        )
-        (entity_id,) = world.reserve_entity_ids(1)
-        first = Command(
-            type=CommandType.SPAWN,
-            payload={
-                "entity_id": entity_id,
-                "components": [CommandFlowMarker(tag="first")],
-            },
-        )
-        replay = Command(
-            type=CommandType.SPAWN,
-            payload={
-                "entity_id": entity_id,
-                "components": [CommandFlowMarker(tag="replay")],
-            },
-        )
-        await c.command_gateway.submit_batch(ctx, world.world_id, [first, replay])
+async def test_deferred_spawn_reserved_id_survives_drain(tmp_path: Path) -> None:
+    actor = ActorCtx(id=uuid7(), roles={"admin"})
+    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="flow")
+    async with _flow_runtime(tmp_path) as harness:
+        info = await _create_world(harness, name="flow", storage=storage)
 
-        applied = await c.simulation_service.step(world.world_id, RunConfig())
+        reserved_id, _command_id = await harness.dispatcher.defer_spawn_as(
+            actor,
+            Spawn.from_components(
+                world_id=info.world_id,
+                components=[CommandFlowMarker(tag="reserved")],
+            ),
+            DurableOptions(target_tick=0),
+        )
+        applied = await harness.dispatcher.apply(
+            Step(world_id=info.world_id, run_config=RunConfig())
+        )
+
+        world = await harness.worlds.live_world(str(info.world_id))
+        assert world is not None
+        assert applied == 1
+        assert reserved_id in world.entity2sig
+        rows = await _marker_rows(harness, info, storage)
+        assert [(row["entity_id"], row["tick"]) for row in rows] == [(reserved_id, 0)]
+        (record,) = await harness.scheduler.records(info.world_id)
+        assert record.status == "APPLIED"
+
+
+@pytest.mark.asyncio
+async def test_materializer_failure_fails_tick_before_settlement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    actor = ActorCtx(id=uuid7(), roles={"admin"})
+    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="materializer")
+    async with _flow_runtime(tmp_path) as harness:
+        info = await _create_world(
+            harness,
+            name="materializer-failure",
+            storage=storage,
+        )
+        await harness.dispatcher.defer_spawn_as(
+            actor,
+            Spawn.from_components(
+                world_id=info.world_id,
+                components=[CommandFlowMarker(tag="retry")],
+            ),
+            DurableOptions(target_tick=0),
+        )
+        world = await harness.worlds.live_world(str(info.world_id))
+        assert world is not None
+        real_materialize = world._materialize_commands
+
+        async def unavailable_materializer(_world: object, _tick: int) -> None:
+            raise RuntimeError("command materializer unavailable")
+
+        monkeypatch.setattr(
+            world,
+            "_materialize_commands",
+            unavailable_materializer,
+        )
+        with pytest.raises(RuntimeError, match="command materializer unavailable"):
+            await harness.dispatcher.apply(Step(world_id=info.world_id))
+
+        assert world.tick == 0
+        (pending,) = await harness.scheduler.records(info.world_id)
+        assert pending.status == "PENDING"
+        assert world.entity2sig == {}
+
+        monkeypatch.setattr(world, "_materialize_commands", real_materialize)
+        assert await harness.dispatcher.apply(Step(world_id=info.world_id)) == 1
+        (applied,) = await harness.scheduler.records(info.world_id)
+        assert applied.status == "APPLIED"
+        assert applied.applied_tick == 0
+
+
+@pytest.mark.asyncio
+async def test_replayed_reserved_spawn_is_not_applied_twice(tmp_path: Path) -> None:
+    """The drain path enforces the direct mutation double-spawn guard."""
+
+    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="spawn-replay")
+    async with _flow_runtime(tmp_path) as harness:
+        info = await _create_world(harness, name="spawn-replay", storage=storage)
+        (entity_id,) = await harness.dispatcher.apply(
+            ReserveEntityIds(world_id=info.world_id, count=1)
+        )
+        first = SpawnReserved(
+            world_id=info.world_id,
+            entity_id=entity_id,
+            components=(ComponentValue.from_component(CommandFlowMarker(tag="first")),),
+        )
+        replay = SpawnReserved(
+            world_id=info.world_id,
+            entity_id=entity_id,
+            components=(ComponentValue.from_component(CommandFlowMarker(tag="replay")),),
+        )
+        await harness.dispatcher.defer_batch(
+            (
+                DeferredItem(
+                    operation=first,
+                    options=DurableOptions(target_tick=0),
+                ),
+                DeferredItem(
+                    operation=replay,
+                    options=DurableOptions(target_tick=0),
+                ),
+            )
+        )
+
+        applied = await harness.dispatcher.apply(Step(world_id=info.world_id))
 
         assert applied == 1
-        records = await c.command_scheduler.records(world.world_id)
+        records = await harness.scheduler.records(info.world_id)
         assert [record.status for record in records] == ["APPLIED", "REJECTED"]
-        rows = (await world.get_components([CommandFlowMarker])).to_pylist()
+        rows = await _marker_rows(harness, info, storage)
         assert len(rows) == 1
         assert rows[0][f"{CommandFlowMarker.get_prefix()}tag"] == "first"
-    finally:
-        await c.shutdown()
 
 
 @pytest.mark.asyncio
-async def test_queued_update_is_applied_during_drain(tmp_path):
-    c = ServiceContainer()
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+async def test_queued_update_is_applied_during_drain(tmp_path: Path) -> None:
+    actor = ActorCtx(id=uuid7(), roles={"admin"})
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="updates")
-    try:
-        world = await c.world_service.create_world(WorldConfig(name="updates"), storage)
-        entity_id = await world.create_entity([CommandFlowMarker(tag="before")])
-        await c.simulation_service.step(world.world_id, RunConfig())
+    async with _flow_runtime(tmp_path) as harness:
+        info = await _create_world(harness, name="updates", storage=storage)
+        entity_id = await harness.dispatcher.apply(
+            Spawn.from_components(
+                world_id=info.world_id,
+                components=[CommandFlowMarker(tag="before")],
+            )
+        )
+        await harness.dispatcher.apply(Step(world_id=info.world_id))
 
-        await c.command_gateway.submit(
-            ctx,
-            world.world_id,
-            Command(
-                type=CommandType.UPDATE,
-                payload={
-                    "entity_id": entity_id,
-                    "components": [CommandFlowMarker(tag="after").to_payload()],
-                },
+        await harness.dispatcher.defer_as(
+            actor,
+            Update(
+                world_id=info.world_id,
+                entity_id=entity_id,
+                components=(ComponentValue.from_component(CommandFlowMarker(tag="after")),),
+            ),
+            DurableOptions(target_tick=1),
+        )
+        applied = await harness.dispatcher.apply(Step(world_id=info.world_id))
+
+        assert applied == 1
+        rows = await _marker_rows(harness, info, storage, ticks=(1,))
+        assert rows[0][f"{CommandFlowMarker.get_prefix()}tag"] == "after"
+
+
+@pytest.mark.asyncio
+async def test_defer_to_unknown_world_is_rejected(tmp_path: Path) -> None:
+    actor = ActorCtx(id=uuid7(), roles={"admin"})
+    phantom = uuid7()
+    async with _flow_runtime(tmp_path) as harness:
+        operation = Despawn(world_id=phantom, entity_id=1)
+        options = DurableOptions(target_tick=0)
+
+        with pytest.raises(WorldNotFoundError):
+            await harness.dispatcher.defer_as(actor, operation, options)
+
+        with pytest.raises(WorldNotFoundError):
+            await harness.dispatcher.defer_batch_as(
+                actor,
+                (DeferredItem(operation=operation, options=options),),
+            )
+
+        with pytest.raises(WorldNotFoundError):
+            await harness.dispatcher.defer_spawn_as(
+                actor,
+                Spawn.from_components(
+                    world_id=phantom,
+                    components=[CommandFlowMarker(tag="x")],
+                ),
+                options,
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation_type", _DIRECT_OPERATION_TYPES)
+async def test_direct_only_operations_cannot_enter_deferred_scheduler(
+    tmp_path: Path,
+    operation_type: type[BaseModel],
+) -> None:
+    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="direct-only")
+    async with _flow_runtime(tmp_path) as harness:
+        info = await _create_world(harness, name="direct-only", storage=storage)
+        operation = operation_type.model_construct()
+
+        with pytest.raises(ValueError, match="direct-only"):
+            await harness.dispatcher.defer(
+                operation,
+                DurableOptions(target_tick=0),
+            )
+
+        assert await harness.scheduler.pending_count(info.world_id) == 0
+        assert await harness.scheduler.history(info.world_id) == []
+
+
+@pytest.mark.asyncio
+async def test_direct_only_operation_rejects_entire_deferred_batch(
+    tmp_path: Path,
+) -> None:
+    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="batch-direct")
+    async with _flow_runtime(tmp_path) as harness:
+        info = await _create_world(harness, name="batch-direct", storage=storage)
+        items = (
+            DeferredItem(
+                operation=Despawn(world_id=info.world_id, entity_id=1),
+                options=DurableOptions(target_tick=0),
+            ),
+            DeferredItem(
+                operation=CreateWorld(config=WorldConfig(name="not-admitted")),
+                options=DurableOptions(target_tick=0),
             ),
         )
-        applied = await c.simulation_service.step(world.world_id, RunConfig())
-        assert applied == 1
-        rows = (await world.get_components([CommandFlowMarker])).to_pylist()
-        assert rows[0][f"{CommandFlowMarker.get_prefix()}tag"] == "after"
-    finally:
-        await c.shutdown()
+
+        with pytest.raises(ValueError, match="direct-only"):
+            await harness.dispatcher.defer_batch(items)
+
+        assert await harness.scheduler.pending_count(info.world_id) == 0
+        assert await harness.scheduler.history(info.world_id) == []
 
 
 @pytest.mark.asyncio
-async def test_submit_to_unknown_world_rejected():
-    """spec: docs/guide/specification.md 'Required Hardening Work' item 3.
+async def test_rejected_deferred_batch_does_not_debit_quota(
+    tmp_path: Path,
+) -> None:
+    actor = ActorCtx(id=uuid7(), roles={"player"})
+    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="batch-quota")
+    async with _flow_runtime(tmp_path) as harness:
+        info = await _create_world(harness, name="batch-quota", storage=storage)
+        items = (
+            DeferredItem(
+                operation=Despawn(world_id=info.world_id, entity_id=1),
+                options=DurableOptions(target_tick=0),
+            ),
+            DeferredItem(
+                operation=AddComponents(
+                    world_id=info.world_id,
+                    entity_id=1,
+                    components=(ComponentValue.from_component(CommandFlowMarker(tag="denied")),),
+                ),
+                options=DurableOptions(target_tick=0),
+            ),
+        )
 
-    submit() and submit_batch() must reject commands targeted at a world_id
-    that was never created. The previous behavior silently queued an orphan
-    command, debited quota, and emitted an audit row, with no way for the
-    caller to learn the command would never run.
-    """
-    from archetype.app.errors import WorldNotFoundError
-    from archetype.app.models import Command, CommandType
+        with pytest.raises(PermissionError):
+            await harness.dispatcher.defer_batch_as(actor, items)
 
-    c = ServiceContainer()
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
-    try:
-        phantom = uuid7()
+        policy = harness.dispatcher._policy  # noqa: SLF001 - atomic debit oracle
+        assert policy._tick_debits == {}
+        assert policy._daily_token_debits == {}
+        assert await harness.scheduler.pending_count(info.world_id) == 0
+        assert await harness.scheduler.history(info.world_id) == []
 
-        with pytest.raises(WorldNotFoundError):
-            await c.command_gateway.submit(
-                ctx, phantom, Command(type=CommandType.DESPAWN, payload={"entity_id": 1})
+
+@pytest.mark.asyncio
+async def test_admission_racing_destroy_is_cancelled_without_orphaning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    actor = ActorCtx(id=uuid7(), roles={"admin"})
+    storage = StorageConfig(
+        uri=str(tmp_path / "store"),
+        namespace="admit-destroy-race",
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    async with _flow_runtime(tmp_path) as harness:
+        info = await _create_world(
+            harness,
+            name="admit-destroy-race",
+            storage=storage,
+        )
+        catalog = harness.storage.get_control_catalog(storage)
+        admit_commands = catalog.admit_commands
+
+        async def blocked_admit(world_id: str, admissions: object) -> object:
+            entered.set()
+            await release.wait()
+            return await admit_commands(world_id, admissions)
+
+        monkeypatch.setattr(catalog, "admit_commands", blocked_admit)
+        submit = asyncio.create_task(
+            harness.dispatcher.defer_as(
+                actor,
+                Despawn(world_id=info.world_id, entity_id=9_999),
+                DurableOptions(target_tick=10_000),
+            )
+        )
+        await entered.wait()
+
+        destroy = asyncio.create_task(
+            harness.dispatcher.apply(DestroyWorld(world_id=info.world_id))
+        )
+        await asyncio.sleep(0)
+        assert not destroy.done()
+
+        release.set()
+        command_id = await submit
+        await destroy
+
+        (record,) = await harness.scheduler.records(info.world_id)
+        assert str(command_id) == record.command_id
+        assert record.status == "REJECTED"
+        assert not await harness.worlds.contains(str(info.world_id))
+
+        with pytest.raises((WorldClosingError, WorldNotFoundError)):
+            await harness.dispatcher.defer_as(
+                actor,
+                Despawn(world_id=info.world_id, entity_id=1),
+                DurableOptions(target_tick=0),
             )
 
-        with pytest.raises(WorldNotFoundError):
-            await c.command_gateway.submit_batch(
-                ctx,
-                phantom,
-                [Command(type=CommandType.DESPAWN, payload={"entity_id": 1})],
-            )
-
-        # Reserved-id path already validates via get_world; tighten to the
-        # same error type for consistency.
-        with pytest.raises(WorldNotFoundError):
-            await c.command_gateway.submit_spawn(ctx, phantom, [CommandFlowMarker(tag="x")])
-
-        # No world means no durable catalog can receive an orphan command.
-    finally:
-        await c.shutdown()
-
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "command_type",
-    _DIRECT_COMMAND_TYPES,
-)
-async def test_direct_only_commands_cannot_enter_tick_deferred_scheduler(tmp_path, command_type):
-    """Direct operations cannot be acknowledged as tick-deferred queue work."""
-    c = ServiceContainer()
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
-    try:
-        world = await c.world_service.create_world(
-            WorldConfig(name="lifecycle-submit"),
-            StorageConfig(uri=str(tmp_path / "store")),
+async def test_run_result_run_id_round_trips_to_query(tmp_path: Path) -> None:
+    actor = ActorCtx(id=uuid7(), roles={"admin"})
+    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="run-id")
+    async with _flow_runtime(tmp_path) as harness:
+        info = await harness.dispatcher.apply_as(
+            actor,
+            CreateWorld(
+                config=WorldConfig(name="run-id"),
+                storage_config=storage,
+            ),
+        )
+        await harness.dispatcher.apply_as(
+            actor,
+            Spawn.from_components(
+                world_id=info.world_id,
+                components=[CommandFlowMarker(tag="x")],
+            ),
         )
 
-        with pytest.raises(ValueError, match="no tick-deferred dispatcher"):
-            await c.command_gateway.submit(ctx, world.world_id, Command(type=command_type))
-
-        assert await c.command_scheduler.pending_count(world.world_id) == 0
-        assert await c.command_scheduler.history(world.world_id) == []
-    finally:
-        await c.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_lifecycle_command_rejects_entire_submit_batch(tmp_path):
-    """Batch validation happens before any command is gated, audited, or enqueued."""
-    c = ServiceContainer()
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
-    try:
-        world = await c.world_service.create_world(
-            WorldConfig(name="lifecycle-batch"),
-            StorageConfig(uri=str(tmp_path / "store")),
+        result = await harness.dispatcher.apply_as(
+            actor,
+            Run(
+                world_id=info.world_id,
+                run_config=RunConfig(num_steps=1),
+            ),
         )
-        commands = [
-            Command(type=CommandType.CUSTOM),
-            Command(type=CommandType.FORK_WORLD),
-        ]
-
-        with pytest.raises(ValueError, match="no tick-deferred dispatcher"):
-            await c.command_gateway.submit_batch(ctx, world.world_id, commands)
-
-        assert await c.command_scheduler.pending_count(world.world_id) == 0
-        assert await c.command_scheduler.history(world.world_id) == []
-    finally:
-        await c.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_rejected_submit_batch_does_not_debit_quota(tmp_path):
-    """All batch members pass authorization before any quota is committed."""
-    c = ServiceContainer()
-    ctx = ActorCtx(id=uuid7(), roles={"player"})
-    try:
-        world = await c.world_service.create_world(
-            WorldConfig(name="batch-quota"),
-            StorageConfig(uri=str(tmp_path / "store")),
-        )
-        commands = [
-            Command(type=CommandType.CUSTOM),
-            Command(type=CommandType.ADD_COMPONENT),
-        ]
-
-        with pytest.raises(GuardrailError):
-            await c.command_gateway.submit_batch(ctx, world.world_id, commands)
-
-        assert guard_state._tick_counters.get(ctx.id, 0) == 0
-        assert guard_state._daily_tokens.get(ctx.id, 0) == 0
-        assert await c.command_scheduler.pending_count(world.world_id) == 0
-        assert await c.command_scheduler.history(world.world_id) == []
-    finally:
-        await c.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_run_result_run_id_round_trips_to_query(tmp_path):
-    """spec: docs/guide/specification.md Inv O3 — Query defaults SHOULD use
-    world's active run_id.
-
-    RunResult.run_id MUST match the run_id stamped on persisted rows so
-    callers can round-trip the value back into a query and find the data
-    they just wrote. Previously RunResult returned RunConfig.run_id while
-    AsyncWorld stamped its construction-time uuid; the two diverged and the
-    round-trip lost data.
-    """
-    from uuid_utils import UUID, uuid7
-
-    c = ServiceContainer()
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
-    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-    try:
-        info = await c.command_gateway.create_world(ctx, WorldConfig(name="r"), storage)
-        await c.command_gateway.create_entity(ctx, info.world_id, [CommandFlowMarker(tag="x")])
-
-        rc = RunConfig(run_id=str(uuid7()), num_steps=1)
-        result = await c.command_gateway.run(ctx, info.world_id, rc)
-
-        world = c.world_service.get_world(UUID(str(info.world_id)))
+        world = await harness.worlds.live_world(str(info.world_id))
+        assert world is not None
         assert str(result.run_id) == str(world.run_id)
 
-        df = await c.command_gateway.query_components(
-            ctx,
-            [CommandFlowMarker],
-            str(info.world_id),
-            str(result.run_id),
-            storage_config=storage,
+        frame = await harness.dispatcher.apply_as(
+            actor,
+            QueryComponents(
+                components=(ComponentTypeRef.from_type(CommandFlowMarker),),
+                world_id=info.world_id,
+                run_id=result.run_id,
+                storage_config=storage,
+            ),
         )
-        assert df.count_rows() >= 1, (
-            "RunResult.run_id did not round-trip back into a query; data was "
-            "stamped with a different run_id than RunResult reported."
-        )
-    finally:
-        await c.shutdown()
+        assert frame.count_rows() >= 1
 
 
 @pytest.mark.asyncio
-async def test_submit_to_destroyed_world_rejected(tmp_path):
-    """A destroyed world_id is no longer a valid submit target."""
-    from archetype.app.errors import WorldNotFoundError
-    from archetype.app.models import Command, CommandType
-
-    c = ServiceContainer()
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
-    try:
-        world = await c.world_service.create_world(
-            WorldConfig(name="ephemeral"),
-            StorageConfig(uri=str(tmp_path / "store")),
-        )
-        wid = world.world_id
-        await c.world_service.destroy_world(wid)
+async def test_defer_to_destroyed_world_is_rejected(tmp_path: Path) -> None:
+    actor = ActorCtx(id=uuid7(), roles={"admin"})
+    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="destroyed")
+    async with _flow_runtime(tmp_path) as harness:
+        info = await _create_world(harness, name="ephemeral", storage=storage)
+        await harness.dispatcher.apply(DestroyWorld(world_id=info.world_id))
 
         with pytest.raises(WorldNotFoundError):
-            await c.command_gateway.submit(
-                ctx, wid, Command(type=CommandType.DESPAWN, payload={"entity_id": 1})
+            await harness.dispatcher.defer_as(
+                actor,
+                Despawn(world_id=info.world_id, entity_id=1),
+                DurableOptions(target_tick=0),
             )
-    finally:
-        await c.shutdown()
 
 
 @pytest.mark.asyncio
-async def test_consecutive_runs_share_world_run_id(tmp_path):
-    """spec: docs/guide/execution-hierarchy.md section 2 — vanilla pattern is
-    repeated run calls on a single world; state accumulates with run_id
-    stable across steps. World run_id stays stable across consecutive run
-    calls so cross-run reads/writes remain continuous in append-only storage.
-    """
-    from uuid_utils import UUID, uuid7
-
-    c = ServiceContainer()
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
-    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-    try:
-        info = await c.command_gateway.create_world(ctx, WorldConfig(name="r2"), storage)
-        await c.command_gateway.create_entity(ctx, info.world_id, [CommandFlowMarker(tag="x")])
-
-        result_a = await c.command_gateway.run(
-            ctx, info.world_id, RunConfig(run_id=str(uuid7()), num_steps=1)
+async def test_consecutive_runs_share_world_run_id(tmp_path: Path) -> None:
+    actor = ActorCtx(id=uuid7(), roles={"admin"})
+    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="runs")
+    async with _flow_runtime(tmp_path) as harness:
+        info = await harness.dispatcher.apply_as(
+            actor,
+            CreateWorld(
+                config=WorldConfig(name="runs"),
+                storage_config=storage,
+            ),
         )
-        result_b = await c.command_gateway.run(
-            ctx, info.world_id, RunConfig(run_id=str(uuid7()), num_steps=1)
+        await harness.dispatcher.apply_as(
+            actor,
+            Spawn.from_components(
+                world_id=info.world_id,
+                components=[CommandFlowMarker(tag="x")],
+            ),
         )
 
-        assert str(result_a.run_id) == str(result_b.run_id), (
-            "Consecutive runs reported different run_ids; the world's active "
-            "run_id must stay stable across runs for append-only state continuity."
+        result_a = await harness.dispatcher.apply_as(
+            actor,
+            Run(
+                world_id=info.world_id,
+                run_config=RunConfig(num_steps=1),
+            ),
+        )
+        result_b = await harness.dispatcher.apply_as(
+            actor,
+            Run(
+                world_id=info.world_id,
+                run_config=RunConfig(num_steps=1),
+            ),
         )
 
-        world = c.world_service.get_world(UUID(str(info.world_id)))
-        df = await c.command_gateway.query_components(
-            ctx,
-            [CommandFlowMarker],
-            str(info.world_id),
-            str(world.run_id),
-            storage_config=storage,
+        assert str(result_a.run_id) == str(result_b.run_id)
+        world = await harness.worlds.live_world(str(info.world_id))
+        assert world is not None
+        frame = await harness.dispatcher.apply_as(
+            actor,
+            QueryComponents(
+                components=(ComponentTypeRef.from_type(CommandFlowMarker),),
+                world_id=info.world_id,
+                run_id=world.run_id,
+                storage_config=storage,
+            ),
         )
-        assert df.count_rows() >= 1
-    finally:
-        await c.shutdown()
+        assert frame.count_rows() >= 1

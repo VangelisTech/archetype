@@ -14,8 +14,8 @@
 
 """Policy-in-the-loop: actions on the ledger with full provenance.
 
-Stage 3 of the LIBERO/VLA-JEPA ladder. A ``PolicyActionProcessor``
-(priority 1) writes the action *before* ``EnvStepProcessor`` (priority 10)
+Stage 3 of the LIBERO/VLA-JEPA ladder. The internal policy-action processor
+(priority 1) writes the action *before* the environment-step processor (priority 10)
 consumes it, so each ledger row t >= 1 carries both the action chosen from
 the previous observation and the observation that action produced:
 
@@ -32,41 +32,28 @@ real thing. The tick-0 row keeps its spawn action
 untouched — like the reset observation, the initial action slot is given,
 not computed.
 
-Resources reconciliation
-------------------------
-``PolicyActionProcessor`` and ``EnvStepProcessor`` accept either a client
-instance (constructor injection, existing tests continue to work) OR, when
-constructed with ``client=None``, pull a ``PolicyClientSpec`` /
-``EnvClientSpec`` from the Resources container on the first ``process()``
-call and build the client + UDF wrapper lazily (cached on the processor).
-
-Why live handles cannot live in Resources
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Daft batch UDFs (``@daft.cls``) run on Daft workers — they may execute in
-threads, sub-processes, or remote Ray/Modal workers depending on the cluster.
-The ``@daft.cls`` class is **serialized per worker**: pickle is the boundary.
-Resources lives in the driver process; you cannot put a non-picklable live
-handle (a Modal stub, a network socket, an OS-level thread) in Resources and
-expect it to cross the Daft worker boundary.  The spec dataclasses
-(``PolicyClientSpec``, ``EnvClientSpec``) store only plain scalars that
-**do** pickle.  The actual client is built inside ``_PolicyCaller.__init__``
-(which runs once per worker, the same pattern as every other ``@daft.cls``
-in this module).
+Provider ownership
+------------------
+Processors require an already-constructed host provider. Registered physical
+operations bind each unique provider to the runtime before constructing the
+processor. Daft 0.7.19 has no deterministic user teardown hook for
+``@daft.cls`` instances, so a serialized handle may reconnect to the
+host-owned backing resource but must not construct an independently owned
+worker-local environment, model, socket, or process.
 """
 
 from __future__ import annotations
 
 import re
-from abc import ABC, abstractmethod
 from collections.abc import Iterable
-from typing import Any, Protocol
+from typing import Any
 
 import daft
 from daft import DataType, Series, col
 
 from archetype.core.aio.async_processor import AsyncProcessor
-from archetype.core.resources import Resources
-from archetype.physical_ai.boundary import external_call_indices, series_to_rows
+from archetype.physical_ai._dataframe import external_call_indices, series_to_rows
+from archetype.physical_ai.interfaces import PolicyClient
 
 from .manipulation import (
     ACTION_DIM,
@@ -75,51 +62,6 @@ from .manipulation import (
     ManipStatus,
     ManipTask,
 )
-
-
-class PolicyClient(Protocol):
-    """Boundary to a policy. Implementations may hold per-env recurrent
-    state (action chunks, image history) keyed by ``env_key``."""
-
-    def act(
-        self,
-        env_keys: list[int],
-        instructions: list[str],
-        observations: list[dict[str, Any]],
-    ) -> list[list[float]]:
-        """Return one action per env given its latest observation dict
-        (keys: eef_pos, eef_quat, gripper, gripper_qpos, agentview_ref,
-        wrist_ref)."""
-        ...
-
-
-# ---------------------------------------------------------------------------
-# Resources-spec contract
-# ---------------------------------------------------------------------------
-
-
-class PolicyClientSpec(ABC):
-    """Picklable, benchmark-supplied recipe for building a ``PolicyClient``.
-
-    Registered in a world's ``Resources``; ``PolicyActionProcessor`` pulls it
-    and calls ``build()`` to construct the live client — in the driver process
-    or, for ``@daft.cls`` UDFs, once per Daft worker after the spec's scalars
-    cross the pickle boundary (a live Modal handle / socket does not pickle;
-    the scalars in a concrete spec do).
-
-    The framework defines only this contract. Concrete specs — and the models,
-    GPUs, and dependencies they pull in (VLA-JEPA/Modal) — live in the
-    benchmark, so nothing under ``src/archetype`` imports a policy model.
-    Register a concrete spec under this base type::
-
-        world.resources.insert_as(MyPolicySpec(checkpoint="..."), PolicyClientSpec)
-    """
-
-    @abstractmethod
-    def build(self) -> PolicyClient:
-        """Construct the live ``PolicyClient`` from this spec's scalar config."""
-        ...
-
 
 # ---------------------------------------------------------------------------
 # _PolicyCaller — Daft batch UDF wrapping any PolicyClient
@@ -132,20 +74,10 @@ _ACTION_TYPE = DataType.list(DataType.float64())
 class _PolicyCaller:
     """Policy inference as a batch UDF: one client call per batch, the
     same sanctioned boundary pattern as the env and MuJoCo crossings.
-
-    Accepts either a live ``PolicyClient`` (for constructor-injection) or
-    a ``PolicyClientSpec`` (for Resources-spec construction).  The live
-    client is built in ``__init__`` — once per Daft worker — by hydrating
-    the spec.
     """
 
-    def __init__(self, client: PolicyClient | PolicyClientSpec):
-        if isinstance(client, PolicyClientSpec):
-            # Hydrate from spec: delegate to spec.build() so subclasses can
-            # override (e.g., return a test double via resources.insert_as).
-            self._client: PolicyClient = client.build()
-        else:
-            self._client = client
+    def __init__(self, client: PolicyClient):
+        self._client = client
 
     @daft.method.batch(return_dtype=_ACTION_TYPE)
     def act(
@@ -215,15 +147,11 @@ class _PolicyCaller:
 
 @daft.cls()
 class _PolicyCallerNoRefs:
-    """Legacy variant without frame refs — used by PolicyActionProcessor
+    """Legacy variant without frame refs — used by the policy-action processor
     when the archetype does not include ManipFrameRef (backwards compat)."""
 
-    def __init__(self, client: PolicyClient | PolicyClientSpec):
-        if isinstance(client, PolicyClientSpec):
-            # Delegate to spec.build() so subclasses can return a test double.
-            self._client: PolicyClient = client.build()
-        else:
-            self._client = client
+    def __init__(self, client: PolicyClient):
+        self._client = client
 
     @daft.method.batch(return_dtype=_ACTION_TYPE)
     def act(
@@ -280,32 +208,18 @@ class _PolicyCallerNoRefs:
 
 
 # ---------------------------------------------------------------------------
-# PolicyActionProcessor
+# Internal policy-action processor
 # ---------------------------------------------------------------------------
 
 
-class PolicyActionProcessor(AsyncProcessor):
-    """Write the policy action before EnvStepProcessor consumes it.
+class _PolicyActionProcessor(AsyncProcessor):
+    """Write the policy action before the environment-step processor consumes it.
 
-    Same archetype as the env step; must run BEFORE EnvStepProcessor so
+    Same archetype as the env step; must run before the environment step so
     the env consumes this tick's action, not last tick's.
 
-    Supports two construction modes:
-
-    1. Constructor injection (existing tests)::
-
-           PolicyActionProcessor(client=my_policy)
-
-    2. Resources-spec construction (no live handle at construction time)::
-
-           PolicyActionProcessor()  # client=None
-           # Resources must carry a PolicyClientSpec at process() time.
-
-    In mode 2 the processor builds the ``_PolicyCaller`` UDF wrapper on the
-    first ``process()`` call and caches it.  Because ``_PolicyCaller`` is a
-    ``@daft.cls``, it is serialized per Daft worker on UDF execution — the
-    live ``PolicyClient`` is reconstructed inside ``_PolicyCaller.__init__``
-    from the spec scalars.
+    The explicit client is registered with the runtime owner before this
+    processor is constructed.
 
     With ManipFrameRef
     ~~~~~~~~~~~~~~~~~~
@@ -323,33 +237,11 @@ class PolicyActionProcessor(AsyncProcessor):
     components = (ManipProprio, ManipAction, ManipStatus, ManipTask)
     priority = 1
 
-    def __init__(self, client: PolicyClient | PolicyClientSpec | None = None):
-        self._client_or_spec = client
-        # Lazily built on first process() when client is None. @daft.cls()
-        # instances aren't statically typeable (decorator returns a UDF
-        # wrapper, not the class), so the slot is annotated Any.
-        self._caller: Any = None
-        if client is not None:
-            self._caller_no_refs = _PolicyCallerNoRefs(client)
-            self._caller = _PolicyCaller(client)
+    def __init__(self, client: PolicyClient):
+        self._caller_no_refs = _PolicyCallerNoRefs(client)
+        self._caller = _PolicyCaller(client)
 
-    def _ensure_callers(self, resources: Resources | None) -> None:
-        """Build callers from Resources on first call if not already built."""
-        if self._caller is not None:
-            return
-        if resources is None:
-            raise RuntimeError(
-                "PolicyActionProcessor has no client and no Resources were passed. "
-                "Either pass a client to the constructor or register a PolicyClientSpec "
-                "in the world's Resources."
-            )
-        spec: PolicyClientSpec = resources.require(PolicyClientSpec)
-        self._caller_no_refs = _PolicyCallerNoRefs(spec)
-        self._caller = _PolicyCaller(spec)
-
-    async def process(self, df, resources: Resources | None = None, **kwargs):
-        self._ensure_callers(resources)
-
+    async def process(self, df, **kwargs):
         # Detect whether the archetype has ManipFrameRef columns.
         schema_names = set(df.schema().column_names())
         has_refs = (
@@ -429,6 +321,9 @@ class ScriptedReachPolicy:
             actions.append(action)
         return actions
 
+    async def aclose(self) -> None:
+        """Release this dependency-free provider (a deliberate no-op)."""
+
 
 # ---------------------------------------------------------------------------
 # InstructionConditionedReachPolicy — competence scales with the instruction
@@ -468,7 +363,7 @@ class InstructionConditionedReachPolicy:
     plays for the provenance contract, extended along the instruction axis.
 
     Conforms to the ``PolicyClient`` protocol, so it drops into
-    ``PolicyActionProcessor`` and the physical instruction-sweep workflow where a
+    the internal policy-action processor and instruction-sweep workflow where a
     direct model policy such as ``InProcessVlaJepaPolicy`` goes.
     """
 
@@ -504,3 +399,6 @@ class InstructionConditionedReachPolicy:
                 action[axis] = max(-self._max_step, min(self._max_step, delta))
             actions.append(action)
         return actions
+
+    async def aclose(self) -> None:
+        """Release this dependency-free provider (a deliberate no-op)."""

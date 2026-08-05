@@ -34,50 +34,43 @@ uv run python examples/01_world_mutations.py
 Source: [`examples/01_world_mutations.py`](https://github.com/VangelisTech/archetype/blob/main/examples/01_world_mutations.py)
 
 This example uses actor-free `ArchetypeRuntime`. RBAC is intentionally absent
-from trusted scripting; the command-gateway and API tests cover role policy.
+from trusted scripting; the dispatcher-policy and API tests cover role policy.
 
 **What it demonstrates:**
 
-- **SPAWN / DESPAWN / UPDATE** through the runtime application surface
+- **SPAWN / DESPAWN / UPDATE** through the runtime world surface
 - **ADD_COMPONENT / REMOVE_COMPONENT** with archetype migration at tick boundaries
 - **ADD_PROCESSOR** to inject a `MovementProcessor` at runtime
 - **FORK** while preserving runtime ownership and independent world identity
 - **History reads** through `world.history()` without fabricating access events
 
-Output:
-
-```text
-1. SPAWN
-   runtime spawned: scout=1, dummy=2
-
-2. UPDATE + COMPONENT MUTATIONS
-   scout after update/add_components: pos=(2.0, 1.0), vel=(1.5, 0.5), hp=80
-
-3. PROCESSOR MUTATIONS
-   MovementProcessor installed and removed
-```
+Its structured receipt checks component migration, despawn, processor
+installation/removal, fork isolation, and the fact that trusted runtime calls
+do not fabricate actor-aware access rows.
 
 **Runtime operations in this example (curated, not exhaustive):**
 
-| Runtime call | Owning application family |
+| Runtime call | Owning behavior |
 |---|---|
-| `world.step()` / `world.run()` | simulation |
-| entity/component mutations | mutation |
-| processor mutations | mutation |
-| `world.fork()` / `world.info()` | world lifecycle |
-| `world.query()` | query |
-| `world.history()` | audit projection |
+| `world.step()` / `world.run()` | `world.simulation`, registered through commands |
+| entity/component mutations | `world.mutation`, registered through commands |
+| processor mutations | `world.mutation`, registered through commands |
+| `world.fork()` / `world.info()` | world lifecycle, registered through commands |
+| `world.query()` | `world.query`, registered through commands |
+| `world.history()` | commands-owned `AuditLog` projection |
 
-The runtime delegates directly to `iRuntimeApplication`; it does not construct
-an `ActorCtx` or pass through `CommandGateway`. See the normative
-[Command Gate](command-gate.md#3-the-permissions-matrix) for the separate
+The runtime constructs exact family operations and uses trusted dispatcher
+entry; it does not construct an `ActorCtx`. See the normative
+[Command Gate](command-gate.md#3-four-roles-and-permissions) for the separate
 untrusted-adapter permission matrix.
 
 ---
 
 ## 2. Fork for Counterfactuals
 
-Fork a world three times, run each branch, compare results.
+Run three logistic-map regimes on one prime timeline, fork once, perturb each
+forked value by `1e-9`, then advance both worlds and compare their append-only
+histories with one Daft join.
 
 ```bash
 uv run python examples/02_fork_counterfactual.py
@@ -85,43 +78,11 @@ uv run python examples/02_fork_counterfactual.py
 
 Source: [`examples/02_fork_counterfactual.py`](https://github.com/VangelisTech/archetype/blob/main/examples/02_fork_counterfactual.py)
 
-```python
-import asyncio
-from archetype import ArchetypeRuntime, Component, StorageConfig
-
-
-class Probe(Component):
-    label: str = ""
-
-
-async def main():
-    storage = StorageConfig(uri="./archetype_data", namespace="counterfactuals")
-
-    async with ArchetypeRuntime() as runtime:
-        base = runtime.world("base", storage=storage)
-        await base.spawn(Probe(label="seed"))
-        await base.run(steps=1)
-
-        for branch in ["low", "baseline", "high"]:
-            fork = await base.fork(f"branch-{branch}", storage=storage)
-            result = await fork.run(steps=10)
-            rows = (await fork.query(Probe)).collect().to_pylist()
-            print(f"{branch}: tick={result.final_tick}, entities={len(rows)}")
-
-asyncio.run(main())
-```
-
-Output:
-
-```text
-low: tick=11
-baseline: tick=11
-high: tick=11
-```
-
-All three branches start from the same base state and diverge independently.
-Forks share resource instances by default; trusted scripts attach replacement
-resources through the runtime when per-branch resource isolation is required.
+The receipt proves distinct world identity, an identical pre-fork prefix, the
+exact perturbation at the branch point, aligned post-fork histories, and
+regime-specific divergence. Forks share resource instances by default; trusted
+scripts attach replacement resources through the runtime when per-branch
+resource isolation is required.
 
 ---
 
@@ -175,28 +136,10 @@ Source: [`examples/04_messaging.py`](https://github.com/VangelisTech/archetype/b
 - **Processors**: `GreetingProcessor` (deposits messages), `MessageRealizationProcessor` (drains the mailbox into inboxes), `MoodProcessor` (updates mood based on inbox)
 - **Hooks**: `PreTick` and `PostTick` lifecycle callbacks
 
-Selected output (earlier history rows omitted):
-
-```text
-Archetype Messaging Demo: Resources + Shared Mailbox + Hooks
-
--> Pre-tick 1: Starting processing...
-<- Post-tick 2: Completed!
-   Messages delivered so far: 0
-   Messages pending in mailbox: 6
-
--> Pre-tick 2: Starting processing...
-<- Post-tick 3: Completed!
-   Messages delivered so far: 6
-   Messages pending in mailbox: 6
-
-Message counts:
-  Alice: 2 messages received
-  Bob: 2 messages received
-  Charlie: 2 messages received
-
-Total messages delivered: 6
-```
+The structured receipt verifies the one-tick mailbox delay, six realized
+messages, two received messages per agent, sender/receiver pairs, hook tick
+sequences, and the final energy values without retaining temporary storage
+paths.
 
 ---
 
@@ -213,9 +156,10 @@ Source: [`examples/05_llm_agents.py`](https://github.com/VangelisTech/archetype/
 
 **What it demonstrates:**
 
-- **Component**: `Agent` with name, role, and a JSON journal of thoughts
+- **Component**: `Agent` with name, role, a `journal_json`, and durable thought count
 - **Processor**: `ThinkProcessor` uses `daft.functions.prompt` to call an LLM for every agent entity in a single DataFrame operation
-- **Pattern**: `ArchetypeRuntime` keeps the script surface to `world.spawn(...)`, `world.run(...)`, and `world.query(...)`
+- **Pattern**: spawn, persist the raw initial state with `world.step()`, run five model-processing ticks, then filter the append-only query to the latest tick
+- **Receipt**: proves three latest agent rows, five processor calls per agent, and five valid JSON journal entries without retaining model text
 
 Requires an OpenAI API key (or any provider via `daft.set_provider()`).
 
@@ -223,9 +167,9 @@ Requires an OpenAI API key (or any provider via `daft.set_provider()`).
 
 ## 6. Mission Trajectory Analysis
 
-Persist normalized trajectory headers, turns, and rewards, then select and
-grade one trajectory through the runtime-owned application service. The example
-is deterministic and requires no model credentials.
+Persist normalized turn and reward rows keyed by `episode_id`, then select
+and grade one episode's evidence through the runtime-owned application
+service. The example is deterministic and requires no model credentials.
 
 ```bash
 uv run python examples/06_trajectory_analysis.py
@@ -235,8 +179,9 @@ Source: [`examples/06_trajectory_analysis.py`](https://github.com/VangelisTech/a
 
 **What it demonstrates:**
 
-- **Normalized evidence**: header, turn, and reward rows remain independently queryable.
-- **Typed selection**: `TrajectorySelection` applies only fields stored by the requested table.
+- **Normalized evidence**: turn and reward rows remain independently queryable per episode.
+- **Typed selection**: `TrajectorySelection` filters one evidence table by `episode_id`.
+- **Derived view**: `trajectory(...)` reconstructs one episode's seq-ordered evidence lazily.
 - **Application composition**: `query_trajectory()` uses persisted query access; `grade_trajectory()` delegates graders to evaluation.
 - **No duplicate trajectory model**: the example consumes `archetype.missions.trajectories` directly.
 
@@ -306,6 +251,8 @@ Source: [`examples/10_autoresearch.py`](https://github.com/VangelisTech/archetyp
 
 AutoResearch is a sibling workflow, not a coding-agent mission subfamily. It
 may consume an agent callback without inheriting mission transition authority.
+Its transient `ResearchCandidateContext` is not the persisted missions
+`Candidate` review subject.
 
 ---
 
@@ -329,9 +276,61 @@ Source: [`examples/11_coding_agent_mission.py`](https://github.com/VangelisTech/
 - typed `AgentTask` and `CommandValidator` authoring;
 - a temporal `DependsOn` relationship instead of a JSON plan cursor;
 - an expected-nonzero validator for the red regression;
-- committed dispatch through the post-tick outbox;
-- same-worktree, evidence-carrying repair after validator rejection; and
-- accepted-only commit and push through the Modal/Codex resource.
+- committed dispatch admitted as a durable author Activity after its tick;
+- revision-bound validation and exact-head publication producing an immutable
+  candidate rather than acceptance;
+- independent review of that exact candidate in a distinct critic sandbox;
+- processor-owned acceptance only after a complete candidate-bound critic
+  receipt; and
+- same-worktree repair carrying durable validator failures or blocking critic
+  findings into a new dispatch and candidate.
 
 See [Agent Missions V1](agent-missions.md) for the complete state machine,
 sequence diagram, ownership map, dogfood result, and explicit limits.
+
+---
+
+## 11. Graph Relationships
+
+Represent hierarchy edges as temporal ECS entities, traverse a bounded command
+tree, read it at an earlier tick, and cascade cleanup after a despawn.
+
+```bash
+uv run python examples/11_graph_relationships.py
+```
+
+Source: [`examples/11_graph_relationships.py`](https://github.com/VangelisTech/archetype/blob/main/examples/11_graph_relationships.py)
+
+The receipt proves traversal order, temporal edge visibility, and the remaining
+unit/edge counts after cascade.
+
+---
+
+## 12. PreFabs
+
+Author a prefab subtree, instantiate isolated copies with overrides and `IsA`
+lineage, then edit the template and re-instantiate without mutating prior
+instances.
+
+```bash
+uv run python examples/12_prefabs.py
+```
+
+Source: [`examples/12_prefabs.py`](https://github.com/VangelisTech/archetype/blob/main/examples/12_prefabs.py)
+
+---
+
+## 13. Biome-Inspired RTS
+
+Compose a prefab asset catalog into a live RTS command hierarchy with
+registered processors, minimap and fog-of-war projections, and a
+possessed-unit view.
+
+```bash
+uv run python examples/13_biome_rts.py
+```
+
+Source: [`examples/13_biome_rts.py`](https://github.com/VangelisTech/archetype/blob/main/examples/13_biome_rts.py)
+
+The hosted physical-AI episode path has no numbered example script; its
+runnable snippet and contract live in [Physical AI](physical-ai.md).

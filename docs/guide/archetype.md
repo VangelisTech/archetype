@@ -195,7 +195,7 @@ token and writer epoch before append.
 
 ## Entities
 
-An entity is an integer ID (`entity_id`). It carries no logic — its state is the union of its component fields. The world tracks each entity's current archetype signature via an internal `_entity2sig` mapping.
+An entity is an integer ID (`entity_id`). It carries no logic — its state is the union of its component fields. The world tracks each entity's current archetype signature via its `entity2sig` mapping.
 
 When you add or remove components from an entity, it migrates to a different archetype: the old row is marked inactive, and a new row is spawned in the target archetype's table with the updated component set. See [Worlds -- Entity Migration](worlds.md#entity-migration) for the full algorithm.
 

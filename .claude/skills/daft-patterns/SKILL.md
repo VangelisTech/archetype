@@ -1,9 +1,44 @@
 ---
 name: daft-patterns
-description: Enforces correct Daft DataFrame patterns. Use when writing or editing Python that touches Daft, DataFrames, UDFs, or column expressions — anywhere under src/, tests/, or examples/.
+description: Enforces correct Daft DataFrame patterns and the Daft mental model. Use when writing or editing Python that touches Daft, DataFrames, UDFs, column expressions, multimodal IO, lakehouse sinks, or physical-AI boundaries — anywhere under src/, tests/, or examples/.
 paths: "src/**/*.py,tests/**/*.py,examples/**/*.py"
 user_invocable: true
 ---
+
+## Mental model (internalize first)
+
+One-sentence essence: Daft is a **lazy, streaming query engine with a DataFrame
+skin**, built so that a multi-megabyte image or a GPU model inference is just
+another column expression — treated by the optimizer like `col("a") + 1`.
+
+Four core ideas:
+
+1. **You are building a plan, not running code.** Transformations append to a
+   `LogicalPlan`. Nothing runs until a materializing action (`collect`, `show`,
+   `write_*`, `to_pydict`, Archetype's `StorageService.materialize`). The
+   optimizer must see the whole pipeline at once.
+2. **Data streams in bounded batches.** Memory stays bounded except at
+   inflationary ops (decode, explode), blocking ops (sort, agg, join),
+   memory-hungry UDFs, and over-concurrent downloads.
+3. **An AI / multimodal op is just an expression.** `prompt(...)`, `download`,
+   `decode_image`, and Python UDFs are plan nodes. The optimizer isolates
+   expensive projections and runs them as late as correctness allows — so it
+   does not waste GPU work on rows a later filter would discard.
+4. **Logic is runner-agnostic.** Same plan on Swordfish (local) or Flotilla
+   (Ray). Correctness transfers; shuffle/cost characteristics do not.
+
+What this predicts in practice:
+
+- Printing a DataFrame shows schema + "not materialized" — that is success, not a bug.
+- An expensive `prompt` written early may execute last (or not at all on filtered rows).
+- A UDF bug surfaces at materialization, not at the `with_column` line.
+- Calling `.collect()` twice re-runs the whole plan unless you hold the concrete result.
+- `show(n)` is cheap (limit pushes upstream); `collect()` computes everything.
+
+Full distillation lives in-repo under this skill's Mental model section.
+Workspace notes (optional): `.context/daft-deep-wiki-mental-model.md`.
+For silently-wrong runtime bugs, use `/footgun-detector`. For wrong-shape
+Daft usage on a diff, use `/daft-antipatterns`.
 
 ## Daft built-ins to reach for first
 
@@ -38,7 +73,7 @@ df = df.with_columns({
     "agent__decision": prompt(
         col("agent__context"),
         model="gpt-5-mini",
-        response_format=Decision,
+        return_format=Decision,
     ),
 })
 # Access fields: col("agent__decision")["action"]
@@ -60,7 +95,7 @@ df = df.with_columns({
 })
 ```
 
-**Key parameters:** `model`, `messages` (list of expressions — text, image, file), `system_message`, `response_format` (Pydantic model), `tools`, `tool_choice`, `max_output_tokens`, `use_chat_completions` (set `True` for vLLM/OpenAI-compatible endpoints).
+**Key parameters:** `model`, `messages` (list of expressions — text, image, file), `system_message`, `return_format` (Pydantic model), plus provider options (`tools`, `tool_choice`, `max_output_tokens`, `use_chat_completions`, …).
 
 #### `embed_text()` / `embed_image()` — embeddings
 
@@ -97,7 +132,7 @@ df = df.with_columns({
 
 #### Images
 
-Prefer standalone `daft.functions.*` or direct Expression methods for image operations. The legacy `.image.*` accessor still works but is deprecated.
+Prefer standalone `daft.functions.*` or direct Expression methods for image operations. The legacy `.image.*` accessor is removed in the pinned daft 0.7.x — it raises `AttributeError`.
 
 ```python
 from daft.functions import download, decode_image, resize, crop, encode_image
@@ -180,7 +215,7 @@ df = df.unnest("decision")
 
 ### String, numeric, and utility functions
 
-Replaces: most simple `@daft.func` string/math UDFs. Prefer standalone `daft.functions.*` or direct Expression methods. The legacy `.str.*` accessor still works but is deprecated — use the flat API instead.
+Replaces: most simple `@daft.func` string/math UDFs. Prefer standalone `daft.functions.*` or direct Expression methods. The legacy `.str.*` accessor is removed in the pinned daft 0.7.x (`AttributeError`) — use the flat API.
 
 ```python
 from daft.functions import (
@@ -335,7 +370,8 @@ Check in this order — stop at the first match:
 
 **`@daft.udf` is removed.** Deprecated 0.7.0, gone 0.8.0. Never use it. Use `@daft.func.batch` instead.
 
-**If you loop inside a batch UDF, you're not batching.** Use `@daft.func` row-wise instead.
+**If you loop inside a batch UDF for a pure Python transform, you're not
+batching.** Use `@daft.func` row-wise instead.
 
 ```python
 # WRONG — looping inside batch, no batching benefit
@@ -349,10 +385,21 @@ def process(value: str) -> str:
     return transform(value)
 ```
 
+**Exception — Physical AI / external-system boundaries.** A loop (or
+`series_to_rows` → filtered live rows → one batched client call / C step)
+inside `@daft.method.batch` is the *sanctioned* pattern when:
+
+- state is loaded once in `@daft.cls.__init__` (model, env handle, Modal stub),
+- the UDF talks to an external system that cannot be a lazy expression, and
+- inactive/`done` rows are pass-through via `external_call_indices`.
+
+See `src/archetype/physical_ai/boundary.py` and Rule 7 below. Do **not**
+false-flag `_EnvStepper` / `_PolicyCaller` / `_CartpoleStepper` style UDFs.
+
 ### 3. Struct access
 
 ```python
-# WRONG — deprecated
+# WRONG — removed in daft 0.7.x; raises AttributeError at plan build
 col("result").struct.get("field")
 
 # RIGHT
@@ -373,7 +420,9 @@ UDFs are the escape hatch, not the default.
 
 ### 5. `with_columns` over chained `with_column`
 
-Use `with_columns(dict)` for multiple column updates. Chained `with_column` can cause Daft plan dependency issues.
+Use `with_columns(dict)` for multiple independent column updates. Positional
+args (`with_columns(expr1, expr2)`) raise `TypeError` in Daft 0.7.x — the dict
+form is the fix, not one call per column.
 
 ```python
 # Prefer
@@ -382,6 +431,10 @@ df = df.with_columns({
     "col_b": col("y") * 2,
 })
 ```
+
+Chained `with_column` is appropriate when a later column genuinely reads an
+earlier one's new value. For the narrower read-then-overwrite UDF hazard, see
+Rule 10.9 and LEARNINGS "UDF column args resolve to the column's FINAL value".
 
 ### 6. UDF patterns reference
 
@@ -427,3 +480,115 @@ df = df.with_column("response", agent.respond(col("agent__name"), col("context")
 def flaky_call(x: str) -> str:
     return external_api(x)
 ```
+
+### 7. Physical AI / external-boundary stack
+
+External systems (MuJoCo, env RPC, policy inference) are escape hatches, not
+expressions. Canonical stack in Archetype:
+
+1. Module-level `@daft.cls` (must be importable — dynamic/factory classes fail to pickle).
+2. `@daft.method.batch` → `series_to_rows` → call external system → struct `Series`.
+3. Processor: UDF via `col(...)` → `unpack_struct` → exclude scratch.
+
+```python
+from archetype.physical_ai.boundary import (
+    external_call_indices,
+    series_to_rows,
+    unpack_struct,
+)
+
+@daft.cls()
+class _EnvStepper:
+    def __init__(self, spec):
+        self.client = spec.build()  # live handle — created on the worker
+
+    @daft.method.batch(return_dtype=OBS_STRUCT)
+    def step(self, is_active: Series, done: Series, action: Series) -> Series:
+        rows = series_to_rows(
+            ["is_active", "done", "action"], is_active, done, action
+        )
+        out = [None] * len(rows)
+        for i in external_call_indices(rows):
+            out[i] = self.client.step(rows[i]["action"])
+        for i, row in enumerate(rows):
+            if out[i] is None:
+                out[i] = {...passthrough from row...}
+        return Series.from_pylist(out)
+```
+
+Invariants:
+
+- **Specs in Resources, live handles in `__init__`.** Non-picklable sockets /
+  stubs must not ride in Resources across workers.
+- **`Series.to_pylist` on batch-UDF params is sanctioned** (lazy_audit exemption).
+  `DataFrame.collect().to_pylist()` mid-processor is not.
+- **Lifecycle freeze.** Only `is_active && !done` cross the boundary.
+- **Success latches.** `success = obs["success"] or prior_success`.
+- **Policy before env.** Policy processor priority < env priority so ledger
+  provenance stays `a_t = π(obs_{t-1})`, `obs_t = env.step(a_t)`.
+- **Thin ledger columns.** Prefer `ManipFrameRef` volume refs over image blobs
+  on components.
+- **App grading boundary.** Await `StorageService.materialize(...)` before
+  converting terminal frames to Python at HTTP/report boundaries.
+- **GL/EGL is thread-bound.** Marshal all create/reset/step/render onto one
+  persistent thread — Daft UDF worker threads go blind (LEARNINGS Jul 2026).
+- **Torch/CUDA:** first `import torch` in the driver/caller process before the
+  class-UDF runs on a worker (daft-physical-ai hands facade lesson).
+
+### 8. Materialization boundaries
+
+| Intent | Reach for |
+|--------|-----------|
+| Inspect during development | `df.show(n)` or `df.limit(n).collect()` once |
+| Large result to storage | `write_parquet` / `write_iceberg` / `write_lance` (streams out) |
+| Full result in memory for Python work | `collect()` — rare, deliberate |
+| Archetype terminal / grading | `await StorageService.materialize(df)` then `to_pylist` |
+| Debug plan shape | `df.explain()` — never mid-pipeline collect |
+
+Re-materializing re-runs the plan. If an expensive stage must be reused,
+materialize once and hold the concrete result (or write a checkpoint parquet /
+Lance table — the daft-examples pattern after costly AI).
+
+Filter and `limit` **before** explode/decode/frame expansion (LeRobot,
+EgoDex, DROID lesson): never decode video/HDF5 then filter episodes.
+
+### 9. Lakehouse / object IO (eventual-analytics practice)
+
+- Prefer lazy `sess.read_table` → `where` / `groupby` / `Window` / `daft.functions`
+  until the sink.
+- `collect()` once before merge/upload when the plan would otherwise re-scan
+  and re-execute side effects.
+- Discover files with `daft.from_glob_path` + URI/`IOConfig`, not pathlib walks
+  of object-store data. `Path` is fine for local catalog roots only.
+- Explicit schemas; never yield empty `RecordBatch`es into Iceberg (null-typed
+  columns reject).
+- Stream + aggregate huge event feeds inside DataSource tasks; fan out tasks
+  for parallelism.
+- Custom streaming IO that Daft cannot express yet → `@daft.func` inside the
+  plan (constant-memory chunked upload), not a driver-side `for path in paths`.
+
+### 10. Judgment calls (taste)
+
+1. **Expression vs UDF.** Exhaust built-ins first. Every UDF is a known
+   performance liability.
+2. **AI function vs hand-rolled client.** Use `prompt` / `embed_*` /
+   `classify_*` + `daft.set_provider(...)` for provider calls. Hand-roll
+   `@daft.cls` only for local/custom models or exotic batching.
+3. **Structured LLM output.** Pass a Pydantic `return_format` to `prompt()`;
+   index struct fields. Do not regex free-text.
+4. **Dirty multimodal IO.** Pass `on_error="null"` on `download` /
+   `decode_image`, then quarantine nulls.
+5. **Inflation points.** `into_batches(small_n)` and capped `max_connections`
+   before decode/explode; decode late after selective filters.
+6. **UDF memory knobs.** `concurrency × batch_size` is the budget. OOM-kill
+   churn → lower concurrency first.
+7. **Thin UDF returns.** Write large media/tensors to disk/Volume; return
+   paths + metadata structs (cosmos3 / pose_sequence lesson).
+8. **Fuse GPU stages** when host round-trips dominate (VAD→ASR→diarize in one
+   device-resident actor), rather than splitting across separate UDF stages.
+9. **Read-then-overwrite.** UDF column args resolve to the column's *final*
+   value in a plan. Consolidate every read-then-overwrite into one
+   struct-returning UDF (LEARNINGS). Do not `with_column("x", udf(col("x")))`
+   then read the pre-overwrite `x` elsewhere in the same projection set.
+10. **Know when not to use Daft.** Batch/streaming transform engine — not a
+    serving layer, transactional store, or interactive BI cache.

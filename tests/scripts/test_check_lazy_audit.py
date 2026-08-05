@@ -3,7 +3,7 @@
 
 """Tests for scripts/check_lazy_audit.py — AST scope detection.
 
-Covers the two key policy assertions:
+Covers the key policy assertions:
 
 1. **Positive (sanctioned):** ``Series.to_pylist()`` on a parameter of a
    ``@daft.method.batch`` / ``@daft.func.batch`` decorated function is
@@ -12,10 +12,14 @@ Covers the two key policy assertions:
 2. **Negative (gated):** A plain ``df.to_pylist()`` at module scope (or
    outside a batch-UDF) is still flagged as an audited site that requires
    an allowlist entry.
+
+3. **Execution coverage:** diagnostic, Arrow, iterator, conversion, and sink
+   terminals are all audited.
 """
 
 from __future__ import annotations
 
+import json
 import sys
 import textwrap
 from pathlib import Path
@@ -53,7 +57,8 @@ def _write_toml(tmp_path: Path, entries: list[dict]) -> Path:
     for e in entries:
         lines.append("[[entries]]")
         for k, v in e.items():
-            lines.append(f"{k} = {v!r}")
+            # json.dumps, not repr: expressions legitimately contain quotes.
+            lines.append(f"{k} = {json.dumps(v)}")
         lines.append("")
     p = tmp_path / "lazy_audit.toml"
     p.write_text("\n".join(lines), encoding="utf-8")
@@ -191,6 +196,49 @@ def test_collect_is_never_sanctioned(tmp_path):
         assert not s.sanctioned, ".collect() must never be sanctioned"
 
 
+def test_bound_collect_reference_is_gated(tmp_path):
+    py = _write_py(
+        tmp_path,
+        "bound_collect.py",
+        """\
+        async def execute(df, blocking):
+            return await blocking(df.collect)
+        """,
+    )
+
+    sites = _scan_file(py, "bound_collect.py")
+
+    assert [(site.line, site.method, site.sanctioned) for site in sites] == [(2, "collect", False)]
+
+
+def test_collect_call_reports_one_attribute_site(tmp_path):
+    py = _write_py(tmp_path, "one_collect.py", "result = frame.collect()\n")
+
+    sites = _scan_file(py, "one_collect.py")
+
+    assert [(site.line, site.method) for site in sites] == [(1, "collect")]
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "count_rows",
+        "show",
+        "to_arrow",
+        "to_arrow_iter",
+        "to_pydict",
+        "iter_rows",
+        "write_parquet",
+    ],
+)
+def test_execution_capable_terminals_are_gated(tmp_path, method):
+    py = _write_py(tmp_path, "terminal.py", f"result = frame.{method}()\n")
+
+    sites = _scan_file(py, "terminal.py")
+
+    assert [(site.method, site.sanctioned) for site in sites] == [(method, False)]
+
+
 def test_non_call_text_is_ignored(tmp_path):
     py = _write_py(
         tmp_path,
@@ -271,6 +319,16 @@ def _make_fake_src(tmp_path: Path) -> Path:
     return tmp_path
 
 
+# The single gated site in the fake tree, expressed as a stable-key entry.
+_BOUNDARY_ENTRY = {
+    "path": "src/mypkg/boundary_module.py",
+    "symbol": "query_rows",
+    "expr": "df.to_pylist",
+    "method": "to_pylist",
+    "reason": "Terminal query result returned to caller; cannot remain lazy past function boundary.",
+}
+
+
 def test_full_scan_sanctioned_exempt(tmp_path):
     """Sanctioned sites are exempt; the gated site requires an entry."""
     fake_root = _make_fake_src(tmp_path)
@@ -300,19 +358,7 @@ def test_full_scan_with_allowlist_passes(tmp_path):
     """When the gated site has an allowlist entry the audit exits 0."""
     fake_root = _make_fake_src(tmp_path)
 
-    # Write an allowlist that covers the gated boundary_module.py site.
-    # The fake scan will find it at line 5.
-    _write_toml(
-        fake_root,
-        [
-            {
-                "path": "src/mypkg/boundary_module.py",
-                "line": 5,
-                "method": "to_pylist",
-                "reason": "Terminal query result returned to caller; cannot remain lazy past function boundary.",
-            }
-        ],
-    )
+    _write_toml(fake_root, [_BOUNDARY_ENTRY])
 
     import check_lazy_audit as mod
 
@@ -328,8 +374,8 @@ def test_full_scan_with_allowlist_passes(tmp_path):
 
         assert err is None
         audited = [s for s in sites if not s.sanctioned]
-        site_keys = {(s.path, s.line, s.method) for s in audited}
-        allow_keys = {(e.path, e.line, e.method) for e in allow}
+        site_keys = {s.key for s in audited}
+        allow_keys = {e.key for e in allow}
         new_sites = site_keys - allow_keys
         stale = allow_keys - site_keys
         assert not new_sites, f"unexpected new sites: {new_sites}"
@@ -358,9 +404,154 @@ def test_missing_allowlist_entry_fails(tmp_path):
 
         assert err is None
         audited = [s for s in sites if not s.sanctioned]
-        site_keys = {(s.path, s.line, s.method) for s in audited}
-        allow_keys = {(e.path, e.line, e.method) for e in allow}
-        new_sites = site_keys - allow_keys
+        new_sites = {s.key for s in audited} - {e.key for e in allow}
         assert new_sites, "boundary_module.py gated site must be flagged as missing"
     finally:
         mod._project_root = orig_root  # type: ignore[method-assign]
+
+
+# ---------------------------------------------------------------------------
+# Allowlist keying: entries survive line shifts, not content changes
+# ---------------------------------------------------------------------------
+
+
+def _keys_after(fake_root: Path) -> tuple[set, set]:
+    """Return (unaccounted_site_keys, stale_entry_keys) for a scanned tree."""
+    import check_lazy_audit as mod
+
+    sites = [s for s in mod.scan(fake_root) if not s.sanctioned]
+    allow, err = mod.load_allowlist(fake_root)
+    assert err is None, err
+    site_keys = {s.key for s in sites}
+    allow_keys = {e.key for e in allow}
+    return site_keys - allow_keys, allow_keys - site_keys
+
+
+def test_unrelated_line_shift_does_not_invalidate_an_entry(tmp_path):
+    """The regression this keying exists for.
+
+    Inserting an unrelated import above an audited call shifts its line
+    number. A line-keyed allowlist reports both a new undocumented site and a
+    stale entry for a change that touched nothing it audits.
+    """
+    fake_root = _make_fake_src(tmp_path)
+    _write_toml(fake_root, [_BOUNDARY_ENTRY])
+    module = fake_root / "src" / "mypkg" / "boundary_module.py"
+
+    before_line = [s for s in _scan_file(module, "src/mypkg/boundary_module.py")][0].line
+    module.write_text("import os\nimport sys\n" + module.read_text(), encoding="utf-8")
+    after_line = [s for s in _scan_file(module, "src/mypkg/boundary_module.py")][0].line
+
+    assert after_line != before_line, "the edit must actually move the call"
+    assert _keys_after(fake_root) == (set(), set())
+
+
+def test_moving_the_call_to_another_function_invalidates_the_entry(tmp_path):
+    """Keying on the enclosing symbol still fails when the call relocates."""
+    fake_root = _make_fake_src(tmp_path)
+    _write_toml(fake_root, [_BOUNDARY_ENTRY])
+    _write_py(
+        fake_root / "src" / "mypkg",
+        "boundary_module.py",
+        """\
+        import daft
+
+        def renamed_query_rows():
+            df = daft.from_pydict({"x": [1]})
+            return df.to_pylist()
+        """,
+    )
+
+    unaccounted, stale = _keys_after(fake_root)
+
+    assert unaccounted, "a call that moved to a different symbol is a new site"
+    assert stale, "the entry for the old symbol is stale"
+
+
+def test_changing_the_audited_expression_invalidates_the_entry(tmp_path):
+    """Editing what is materialized re-opens review; that is the point."""
+    fake_root = _make_fake_src(tmp_path)
+    _write_toml(fake_root, [_BOUNDARY_ENTRY])
+    _write_py(
+        fake_root / "src" / "mypkg",
+        "boundary_module.py",
+        """\
+        import daft
+
+        def query_rows():
+            df = daft.from_pydict({"x": [1]})
+            return df.where(df["x"] > 0).to_pylist()
+        """,
+    )
+
+    unaccounted, stale = _keys_after(fake_root)
+
+    assert unaccounted and stale
+
+
+def test_reformatting_the_audited_expression_keeps_the_entry(tmp_path):
+    """ast.unparse normalizes layout, so a reflow is not a content change."""
+    fake_root = _make_fake_src(tmp_path)
+    _write_toml(fake_root, [_BOUNDARY_ENTRY])
+    _write_py(
+        fake_root / "src" / "mypkg",
+        "boundary_module.py",
+        """\
+        import daft
+
+        def query_rows():
+            df = daft.from_pydict({"x": [1]})
+            return (
+                df
+                .to_pylist()
+            )
+        """,
+    )
+
+    assert _keys_after(fake_root) == (set(), set())
+
+
+def test_line_keyed_entry_is_rejected(tmp_path):
+    """A stale line-keyed entry fails loudly instead of silently matching nothing."""
+    import check_lazy_audit as mod
+
+    fake_root = _make_fake_src(tmp_path)
+    _write_toml(
+        fake_root,
+        [{**{k: v for k, v in _BOUNDARY_ENTRY.items() if k != "symbol"}, "line": 5}],
+    )
+
+    allow, err = mod.load_allowlist(fake_root)
+
+    assert allow == []
+    assert err is not None and "line number" in err
+
+
+def test_unreadable_module_is_not_silently_clean(tmp_path):
+    """An unreadable file must raise, not report zero materialization sites."""
+    missing = tmp_path / "gone.py"
+
+    with pytest.raises(OSError):
+        _scan_file(missing, "gone.py")
+
+
+# ---------------------------------------------------------------------------
+# Unit: is_banned (issue #538 zero-exception terminal ban)
+# ---------------------------------------------------------------------------
+
+
+def test_core_count_rows_is_banned():
+    """count_rows under src/archetype/core/ has no allowlist path at all."""
+    from check_lazy_audit import is_banned
+
+    assert is_banned("src/archetype/core/aio/async_store.py", "count_rows")
+    assert is_banned("src/archetype/core/sync/store.py", "count_rows")
+
+
+def test_ban_is_scoped_to_core_and_count_rows():
+    """The ban covers exactly (core path, count_rows) — not other layers or methods."""
+    from check_lazy_audit import is_banned
+
+    assert not is_banned("src/archetype/evaluation/views.py", "count_rows")
+    assert not is_banned("src/archetype/core/aio/async_store.py", "collect")
+    assert not is_banned("tests/aio/test_store.py", "count_rows")

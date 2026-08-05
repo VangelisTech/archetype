@@ -12,37 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""FastAPI dependency injection from ServiceContainer."""
+"""FastAPI dependencies over the process-owned command dispatcher."""
 
 from __future__ import annotations
 
 from fastapi import Header, HTTPException, Request
 from uuid_utils import NAMESPACE_URL, uuid5
 
-from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.models import ActorCtx
-from archetype.app.gateway.interfaces import iCommandGateway
-
-# Test/development override. The lifespan handler attaches the resolved
-# container to app.state; request dependencies read from app.state.
-_container: ServiceContainer | None = None
+from archetype.commands.dispatch import CommandDispatcher
+from archetype.commands.models import ActorCtx
 
 
-def get_container() -> ServiceContainer:
-    global _container
-    if _container is None:
-        _container = ServiceContainer()
-    return _container
-
-
-def set_container(container: ServiceContainer | None) -> None:
-    # Accepts None to reset the override (used by tests/teardown).
-    global _container
-    _container = container
-
-
-async def get_command_gateway(request: Request) -> iCommandGateway:
-    return request.app.state.container.command_gateway
+async def get_dispatcher(request: Request) -> CommandDispatcher:
+    """Return only the governed ingress surface from lifespan-owned state."""
+    return request.app.state.resources.dispatcher
 
 
 async def get_actor_ctx(authorization: str | None = Header(None)) -> ActorCtx:

@@ -20,11 +20,16 @@ import asyncio
 from daft import DataFrame, col
 from daft.functions import when
 
-from archetype import ArchetypeRuntime, AsyncProcessor, Component
-from archetype.app.models import EpisodeConfig, RolloutResult
-from archetype.app.research.service import AutoResearchConfig
+from archetype import (
+    ArchetypeRuntime,
+    AsyncProcessor,
+    Component,
+    EpisodeConfig,
+    RolloutResult,
+)
 from archetype.core.config import RunConfig
 from archetype.core.hooks import PostTick
+from archetype.research.models import AutoResearchConfig
 
 # ── Components ────────────────────────────────────────────────────────────
 
@@ -233,7 +238,6 @@ async def main():
         print(f"Max steps per episode: {max_steps}")
         print()
 
-        svc = rt._container.autoresearch_service
         results: dict[float, float] = {}
 
         for regen in regen_rates:
@@ -260,9 +264,7 @@ async def main():
                 destroy_forks_on_complete=True,
             )
 
-            fork_info = await fork.info()
-            result = await svc.run(
-                fork_info.world_id,
+            result = await fork.autoresearch(
                 config,
                 make_cooperation_score(max_steps),
             )

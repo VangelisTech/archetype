@@ -12,25 +12,29 @@ import pytest
 from fastapi import HTTPException
 
 from archetype.api.errors import raise_api_error
-from archetype.app.audit.service import AuditBackpressureError
-from archetype.app.errors import AvailabilityError, ConflictError, PayloadRejectedError
-from archetype.app.redaction import SecretQuarantineError
-from archetype.app.storage.catalog import (
+from archetype.commands.audit import AuditBackpressureError
+from archetype.core.errors import AmbiguousTickCommitError, TickExecutionError, TickFailure
+from archetype.core.interfaces import CommittedTickReceipt
+from archetype.errors import (
+    AvailabilityError,
+    ConflictError,
+    PayloadRejectedError,
+)
+from archetype.missions.sandboxes import SandboxIdentity, SandboxTeardownError
+from archetype.redaction import SecretQuarantineError
+from archetype.storage.catalog import (
     CatalogConflictError,
     CatalogSchemaMismatchError,
-    ClaimConflictError,
-    ClaimPendingError,
     SqliteControlCatalog,
 )
-from archetype.core.errors import TickExecutionError, TickFailure
+from archetype.world.errors import WorldClosingError
+from archetype.world.simulation import PostCommitProjectionError
 
 
 @pytest.mark.parametrize(
     ("error_type", "public_detail"),
     [
         (CatalogConflictError, "Catalog entry conflicts with existing state"),
-        (ClaimConflictError, "Claim conflicts with existing state"),
-        (ClaimPendingError, "Claim is currently pending"),
     ],
 )
 def test_catalog_conflicts_map_through_public_contract(
@@ -79,6 +83,75 @@ def test_availability_contract_defaults_to_a_safe_public_detail() -> None:
 
     assert raised.value.status_code == 503
     assert raised.value.detail == "Service is temporarily unavailable"
+
+
+def test_world_closing_maps_to_a_bounded_conflict() -> None:
+    error = WorldClosingError("private-world-id")
+
+    with pytest.raises(HTTPException) as raised:
+        raise_api_error(error)
+
+    assert raised.value.status_code == 409
+    assert raised.value.detail == "World is closing"
+    assert "private-world-id" not in raised.value.detail
+
+
+def test_required_projection_failure_maps_to_a_bounded_retry_signal() -> None:
+    error = PostCommitProjectionError(
+        CommittedTickReceipt(
+            world_id="private-world-id",
+            run_id="00000000-0000-7000-8000-000000000001",
+            committed_tick=3,
+            visibility_token="private-visibility-token",
+            commands_applied=0,
+        ),
+        "private-projector",
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        raise_api_error(error)
+
+    assert raised.value.status_code == 503
+    assert (
+        raised.value.detail == "Required projection is temporarily unavailable; retry the request"
+    )
+    assert "private" not in raised.value.detail
+
+
+def test_sandbox_teardown_maps_to_a_bounded_retry_signal() -> None:
+    error = SandboxTeardownError(
+        SandboxIdentity(
+            provider="private-provider",
+            sandbox_id="private-sandbox-id",
+            environment="private-environment",
+        ),
+        RuntimeError("private provider teardown detail"),
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        raise_api_error(error)
+
+    assert raised.value.status_code == 503
+    assert raised.value.detail == "Sandbox cleanup is temporarily unavailable"
+    assert "private" not in raised.value.detail
+
+
+def test_ambiguous_tick_commit_is_public_and_maps_to_bounded_retry_signal() -> None:
+    import archetype
+
+    secret_token = "private-commit-token"
+    error = AmbiguousTickCommitError(tick=7, commit_token=secret_token)
+
+    assert archetype.AmbiguousTickCommitError is AmbiguousTickCommitError
+    assert isinstance(error, RuntimeError)
+    with pytest.raises(HTTPException) as raised:
+        raise_api_error(error)
+
+    assert raised.value.status_code == 503
+    assert raised.value.detail == (
+        "Tick commit status is temporarily unavailable; retry the request"
+    )
+    assert secret_token not in raised.value.detail
 
 
 def test_payload_rejection_contract_maps_to_safe_unprocessable_content() -> None:

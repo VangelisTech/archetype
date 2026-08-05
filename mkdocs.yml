@@ -64,6 +64,7 @@ nav:
       - Configuration: guide/run-config.md
   - APPLICATION LAYER:
       - Overview: guide/app-overview.md
+      - Activities: guide/activities.md
       - Access Control and Audit: guide/command-gate.md
       - Custom Commands: guide/custom-commands.md
       - Token Quotas: guide/token-quotas.md
@@ -79,14 +80,13 @@ nav:
           - Runtime: reference/python/runtime.md
           - World Handle: reference/python/world-handle.md
           - Runtime Models: reference/python/runtime-models.md
-          - Durable Artifact Bundles: reference/python/artifact-bundles.md
+          - File Artifacts: reference/python/artifacts.md
           - Coding-Agent Transcripts: reference/python/transcripts.md
           - Building Blocks: reference/python/building-blocks.md
           - Hooks and Identity: reference/python/hooks.md
           - Configuration: reference/python/configuration.md
           - AutoResearch and Evaluation: reference/python/autoresearch.md
           - Physical AI: reference/python/physical-ai.md
-          - Command Models: reference/python/commands.md
           - Core Engine: reference/python/core.md
           - Storage Backends: reference/python/storage.md
           - Compatibility: reference/python/compatibility.md
@@ -108,7 +108,6 @@ nav:
       - Durable Discovery: guide/durable-discovery.md
       - Atomic Visibility: guide/atomic-visibility.md
       - Artifacts: guide/artifacts.md
-      - Artifact Finalization: guide/artifact-finalization.md
       - Dataset and Evaluation Ontology: guide/dataset-eval-ontology.md
       - Audit Log: guide/audit-log.md
       - Repository Harness: guide/repository-harness.md

@@ -25,28 +25,29 @@ That distinction is intentional:
 - `RuntimeWorld` is the trusted public script surface. Its entity and processor
   mutations (`spawn`, `despawn`, `update`, `add_components`,
   `remove_components`, `add_processor`, `remove_processor`) route through the
-  actor-free `iRuntimeApplication` facade.
-- Runtime handles never accept or retain `ActorCtx`. RBAC belongs to
-  `CommandGateway` for untrusted adapters.
+  trusted `CommandDispatcher`.
+- Runtime handles never accept or retain `ActorCtx`. For untrusted adapters,
+  API authentication constructs the actor and commands-owned `Policy` and
+  `CommandDispatcher` perform RBAC.
 - `AsyncWorld` remains the direct engine API. Calling it directly may bypass
   command-gate semantics, which is appropriate for engine and service-layer code.
 
 The runtime keeps handle construction declarative through
 `runtime.world(...)`, `runtime.attach(...)`, and `runtime.resume(...)`.
 World activation, resource attachment, hook registration, mutations, reads,
-simulation, fork, and destroy all go through `iRuntimeApplication`.
+simulation, fork, and destroy all use exact registered operations.
 
 The rest of this page describes the engine-level `AsyncWorld` behavior that
 those runtime calls ultimately drive.
 
-Lower-level via the service layer:
+The supported runtime can expose the resulting durable identity:
 
 ```python
-from archetype.core.config import WorldConfig
-from archetype.app.container import ServiceContainer
+from archetype import ArchetypeRuntime
 
-container = ServiceContainer()
-world = await container.world_service.create_world(WorldConfig(name="my-sim"))
+async with ArchetypeRuntime() as runtime:
+    info = await runtime.world("my-sim").info()
+    print(info.world_id)
 ```
 
 Direct construction is core-internal / advanced:
@@ -222,7 +223,7 @@ After `_move_entity` returns the new row:
 
 - The old entity is marked for despawn in the old archetype
 - The new row is added to the spawn cache for the new archetype
-- `_entity2sig` is updated atomically
+- `entity2sig` is updated atomically
 
 ## Lifecycle Hooks
 
@@ -282,10 +283,11 @@ See [Processors](processors.md) and [Systems](system-execution.md) for how proce
 
 ## Forking Internals
 
-`WorldService.fork_world()` creates a new world from a snapshot of an existing one.
+The world family's `fork_world()` lifecycle operation creates a new world from
+a snapshot of an existing one.
 
 The runtime surface is `await world.fork(name="branch-A")`, which calls the
-actor-free application facade and returns a new handle owned by the same
+exact trusted `ForkWorld` operation and returns a new handle owned by the same
 runtime.
 
 ### What's Cloned
@@ -298,7 +300,7 @@ bookkeeping:
 | `world_id` | Fresh | New `uuid7()` |
 | `run_id` | Fresh | Fork starts a new run lineage |
 | `tick` | Yes | Fork continues from the same tick |
-| `_entity2sig` | Yes | Deep copy of entity-to-signature mapping |
+| `entity2sig` | Yes | Deep copy of entity-to-signature mapping |
 | `_next_entity_id` | Yes | Entity ID counter |
 | Spawn/despawn caches | Yes | Pending mutations transfer to the fork |
 | Lifecycle hooks | Yes | Registrations at fork time copy; later registrations do not propagate |
@@ -313,7 +315,9 @@ The fork writes to the same physical store by default, partitioned by its new
 `world_id`. A fork may be created with a different storage config through the
 runtime or, for untrusted ingress, the gated adapter call.
 
-Destroying a fork later removes only the live world object. Storage and audit rows remain queryable.
+Destroying a fork terminally cancels its unsettled commands, records its
+destroyed control state, and removes its live binding. Storage and audit rows
+remain queryable.
 
 ### Usage
 
@@ -329,4 +333,5 @@ For normative lifecycle semantics, see [World Lifecycle](world-lifecycle.md).
 ## Source Reference
 
 - World: `src/archetype/core/aio/async_world.py`
-- World service: `src/archetype/app/world/service.py`
+- Managed world lifecycle: `src/archetype/world/lifecycle.py`
+- Managed world behavior and durable reads: `src/archetype/world/`

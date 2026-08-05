@@ -1,6 +1,16 @@
 # Resources
 
-`Resources` is a type-keyed dependency injection container for world-level shared state. It holds configuration, services, and context that processors need but that is not entity data.
+`Resources` is a type-keyed dependency injection container for world-level
+shared state. It holds configuration, services, and context that processors
+need but that is not entity data.
+
+> A Resource is a capability available while executing a tick. Correctness
+> must not depend on its process-local lifetime. It should be read-only,
+> reconstructible, or safely idempotent.
+
+The container supplies capabilities; it does not make their effects durable.
+Work whose external outcome must survive process loss belongs behind the
+post-commit [Activity](activities.md) boundary.
 
 ```python
 class Resources:
@@ -33,7 +43,9 @@ Runtime users usually stage resources when creating a handle:
 world = runtime.world("sim", resources=[SimConfig(gravity=9.8)])
 ```
 
-Post-activation resource attachment is a gated operator/admin action through `iCommandGateway.add_resource(...)`.
+Post-activation resource attachment is the exact `AddResource` operation.
+Trusted runtime entry uses `apply`; authenticated API entry, when exposed,
+uses `apply_as` and requires operator/admin permission.
 
 ```text
 runtime.world(..., resources=[SimConfig(...)])
@@ -104,6 +116,25 @@ Resources are not entity data. They are the scaffolding around it:
 
 In RL terms: MDP parameters, hyperparameters, shared infrastructure.
 
+### Resource or Activity?
+
+Use a Resource when a processor needs tick-time access to configuration, a
+read-only service, a reconstructible client, or an operation that is safely
+idempotent at the real retry boundary.
+
+Use an Activity when one committed tick authorizes work whose result must be
+recovered and observed by a later committed tick. Sandboxed agent execution,
+Git publication, whole hosted episodes, and hardware actions are examples.
+
+A persistent NATS, inference, or simulator client may still be a useful
+executor optimization. Its host owns readiness and teardown. The durable
+workflow may not depend on that Python object surviving, and provider lifetime
+does not replace Activity identity, result durability, or reconciliation.
+
+The `AsyncResources`/WorldHost prototype is frozen as evidence while the
+Activity migration is implemented. The core `Resources` bag and its supported
+API remain unchanged.
+
 ## Usage in Processors
 
 Processors receive `resources` as a keyword argument in `process()`:
@@ -123,12 +154,13 @@ class PhysicsProcessor(AsyncProcessor):
 
 ### Workflow clients in processors
 
-The framework does not inject `CommandScheduler`, `CommandGateway`, or
-`ServiceContainer` into world resources. Doing so would cross the application
+The framework does not inject `CommandScheduler`, `CommandDispatcher`, or
+`RuntimeResources` into world resources. Doing so would cross the application
 boundary from inside tick execution and can create re-entrant lifecycle locks.
 Processors transform their DataFrame and may use application-supplied,
-concurrency-safe domain clients. Schedule later work from the owning workflow
-outside the processor call.
+concurrency-safe domain clients only when their use satisfies the Resource
+boundary above. Schedule durably coordinated work from committed intent through
+the owning application's Activity workflow, outside the processor call.
 
 ## World Forking
 

@@ -15,14 +15,27 @@
 """Lazy-evaluation audit.
 
 Daft is lazily evaluated. DataFrames represent computations, not results.
-Calling ``.collect()`` or ``.to_pylist()`` forces the frame through Python
-memory, defeats query planning, and stops scaling at in-memory size.
+Execution-capable terminals such as ``.collect()``, ``.count_rows()``,
+``.show()``, ``.to_arrow()``, ``.to_pylist()``, and ``.write_*()`` execute
+the lazy plan. Conversion terminals may also force the frame through Python
+memory and stop scaling at in-memory size.
 
-Every such call inside ``src/`` is a contract exception against Archetype's
-lazy execution model. This script enumerates production call sites and
+Every such reference inside ``src/`` is a contract exception against
+Archetype's lazy execution model. This includes bound callables such as
+``await blocking(frame.collect)``. This script enumerates production sites and
 gates them against ``lazy_audit.toml``. New, undocumented sites cause a
-non-zero exit; stale entries (allowlisted lines that no longer hold a
-matching call) are also surfaced so the audit stays honest under refactors.
+non-zero exit; stale entries (allowlisted keys that no longer hold a matching
+call) are also surfaced so the audit stays honest under refactors.
+
+**Entry keying**
+
+An entry is keyed by ``(path, symbol, expr, method)`` — never by line number.
+``symbol`` is the dotted path of the enclosing def/class (``<module>`` at file
+scope) and ``expr`` is ``ast.unparse`` of the audited attribute access. An
+unrelated edit above the call cannot invalidate an entry, and neither can
+reformatting the call, because both inputs are structural. Editing the audited
+expression or moving it to another symbol *does* invalidate the entry, which is
+the review the audit exists to force.
 
 **UDF-boundary exemption (sanctioned pattern)**
 
@@ -45,8 +58,17 @@ The checker detects this pattern via AST analysis:
   classified as **udf-boundary (sanctioned)** and reported separately.  It
   does not need an entry in ``lazy_audit.toml``.
 
-``DataFrame.collect()`` and ``DataFrame.to_pylist()`` anywhere, and
-``Series.to_pylist()`` *outside* batch-UDF scope, still require entries.
+Every other execution-capable terminal, plus ``Series.to_pylist()`` *outside*
+batch-UDF scope, still requires an entry.
+
+**Zero-exception ban — core row counting (issue #538)**
+
+``.count_rows()`` under ``src/archetype/core/`` has no diagnostic or
+empty-check exception and cannot be allowlisted. Core submits a lazy frame to
+its owning terminal append/write boundary; it never runs a count first to
+decide whether the work exists, and a receipt whose count the write did not
+naturally produce reports ``None``. The checker fails both the call site and
+any ``lazy_audit.toml`` entry that tries to admit one.
 
 Tests are intentionally out of scope: terminal materialization at the
 assertion boundary is expected. The contract being audited is the
@@ -68,7 +90,60 @@ ROOTS: tuple[str, ...] = ("src",)
 ALLOWLIST_FILENAME = "lazy_audit.toml"
 SELF_RELATIVE = "scripts/check_lazy_audit.py"
 
-_MATERIALIZATION_METHODS = frozenset({"collect", "to_pylist"})
+# Daft 0.7.19 DataFrame methods that execute a plan, create an execution-backed
+# iterator/dataset, or write a sink. Keep this as the single source of truth;
+# tests exercise representative conversion, diagnostic, iterator, and sink
+# terminals without carrying a second full inventory.
+_MATERIALIZATION_METHODS = frozenset(
+    {
+        "collect",
+        "count_rows",
+        "iter_partitions",
+        "iter_rows",
+        "show",
+        "to_arrow",
+        "to_arrow_iter",
+        "to_dask_dataframe",
+        "to_pandas",
+        "to_pydict",
+        "to_pylist",
+        "to_ray_dataset",
+        "to_torch_dataloader",
+        "to_torch_iter_dataset",
+        "to_torch_map_dataset",
+        "write_bigtable",
+        "write_clickhouse",
+        "write_csv",
+        "write_deltalake",
+        "write_huggingface",
+        "write_iceberg",
+        "write_json",
+        "write_lance",
+        "write_paimon",
+        "write_parquet",
+        "write_sink",
+        "write_sql",
+        "write_turbopuffer",
+    }
+)
+
+
+# Maintainer decision (issue #538): core does not count rows to decide
+# whether work exists. Each pair is (path prefix, method); a matching site
+# fails the audit even with an allowlist entry, and a matching entry is
+# itself rejected.
+_BANNED_TERMINALS: tuple[tuple[str, str], ...] = (("src/archetype/core/", "count_rows"),)
+
+
+def is_banned(path: str, method: str) -> bool:
+    """True when (path, method) falls under a zero-exception terminal ban."""
+    return any(
+        path.startswith(prefix) and method == banned_method
+        for prefix, banned_method in _BANNED_TERMINALS
+    )
+
+
+MODULE_SCOPE = "<module>"
 
 
 @dataclass(frozen=True)
@@ -77,15 +152,26 @@ class Site:
     line: int
     method: str
     snippet: str
+    symbol: str = MODULE_SCOPE
+    expr: str = ""
     sanctioned: bool = False  # True → udf-boundary, no allowlist entry needed
+
+    @property
+    def key(self) -> tuple[str, str, str, str]:
+        return (self.path, self.symbol, self.expr, self.method)
 
 
 @dataclass(frozen=True)
 class Entry:
     path: str
-    line: int
+    symbol: str
+    expr: str
     method: str
     reason: str
+
+    @property
+    def key(self) -> tuple[str, str, str, str]:
+        return (self.path, self.symbol, self.expr, self.method)
 
 
 def _project_root() -> Path:
@@ -168,30 +254,53 @@ def _collect_batch_udf_param_lines(source: str) -> dict[int, frozenset[str]]:
     return line_to_params
 
 
+def _symbol_scopes(tree: ast.Module) -> dict[int, str]:
+    """Map each line to the dotted symbol path of its innermost def/class.
+
+    Lines outside any definition map to ``<module>``. This is what makes an
+    allowlist entry survive a line shift: the entry names the enclosing symbol,
+    not the offset of the call inside the file.
+    """
+    scopes: dict[int, str] = {}
+
+    def walk(parent: ast.AST, prefix: str) -> None:
+        for child in ast.iter_child_nodes(parent):
+            if not isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                walk(child, prefix)
+                continue
+            qualified = f"{prefix}.{child.name}" if prefix else child.name
+            for line in range(child.lineno, (child.end_lineno or child.lineno) + 1):
+                scopes[line] = qualified
+            walk(child, qualified)
+
+    walk(tree, "")
+    return scopes
+
+
 def _scan_file(path: Path, rel: str) -> list[Site]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return []
+    # A file we cannot read must not read as "no materialization sites here".
+    # Silently returning [] is how an audit reports clean without auditing.
+    text = path.read_text(encoding="utf-8")
 
     tree = ast.parse(text)
 
     batch_line_params = _collect_batch_udf_param_lines(text)
+    symbol_scopes = _symbol_scopes(tree)
     lines = text.splitlines()
     sites: list[Site] = []
     seen: set[tuple[int, str]] = set()
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+        if not isinstance(node, ast.Attribute):
             continue
-        method = node.func.attr
+        method = node.attr
         if method not in _MATERIALIZATION_METHODS:
             continue
-        method_line = node.func.end_lineno or node.lineno
+        method_line = node.end_lineno or node.lineno
         key = (method_line, method)
         if key in seen:
             continue
         seen.add(key)
-        receiver = node.func.value
+        receiver = node.value
         sanctioned = (
             method == "to_pylist"
             and method_line in batch_line_params
@@ -204,6 +313,10 @@ def _scan_file(path: Path, rel: str) -> list[Site]:
                 line=method_line,
                 method=method,
                 snippet=lines[method_line - 1].lstrip(),
+                symbol=symbol_scopes.get(node.lineno, MODULE_SCOPE),
+                # ast.unparse normalizes formatting, so reflowing the call does
+                # not change the key; editing the expression itself does.
+                expr=ast.unparse(node),
                 sanctioned=sanctioned,
             )
         )
@@ -235,11 +348,18 @@ def load_allowlist(root: Path) -> tuple[list[Entry], str | None]:
     raw_entries = data.get("entries", [])
     out: list[Entry] = []
     for raw in raw_entries:
+        if "line" in raw:
+            return [], (
+                f"entry still keyed by line number in {ALLOWLIST_FILENAME}: {raw!r}. "
+                "Entries are keyed by (path, symbol, expr, method); rerun "
+                "scripts/check_lazy_audit.py --list to regenerate."
+            )
         try:
             out.append(
                 Entry(
                     path=str(raw["path"]),
-                    line=int(raw["line"]),
+                    symbol=str(raw["symbol"]),
+                    expr=str(raw["expr"]),
                     method=str(raw["method"]),
                     reason=str(raw.get("reason", "")).strip(),
                 )
@@ -279,18 +399,19 @@ STERN_HEADER = (
 
 STERN_BODY = """\
 Daft is lazily evaluated. DataFrames represent computations, not results.
-.collect() and .to_pylist() force the frame through Python memory, defeat
-query planning, and stop scaling at in-memory dataset sizes. Every such
-call is a contract exception against Archetype's lazy execution model.
+Execution-capable terminals run the lazy plan. Conversion terminals may also
+force the frame through Python memory, defeat query planning, and stop scaling
+at in-memory dataset sizes. Every such call is a contract exception against
+Archetype's lazy execution model.
 
 If you are reading this, the most likely answer is to rewrite the
 expression in Daft. Reach for where, select, with_column, agg, join,
-sort, distinct, count_rows before pulling rows into Python. See
-LEARNINGS.md and docs/guide/specification.md for the lazy contract.
+sort, and distinct, or use explain for plan diagnostics. See LEARNINGS.md
+and docs/guide/specification.md for the lazy contract.
 
 If the materialization is genuinely unavoidable (storage write boundary,
-single-row migration extract, debug logging, terminal test assertion),
-the exception must be documented in writing and visible in code review:
+single-row migration extract, terminal transport conversion), the exception
+must be documented in writing and visible in code review:
 
   * The reason field in lazy_audit.toml must state the technical reason
     the boundary cannot be expressed lazily. Generic phrases ("needed",
@@ -324,7 +445,7 @@ def main() -> int:
     parser.add_argument(
         "--list",
         action="store_true",
-        help="Print every detected materialization site and exit 0 (no gating).",
+        help="Print every detected execution-capable terminal and exit 0 (no gating).",
     )
     parser.add_argument(
         "files",
@@ -340,7 +461,7 @@ def main() -> int:
     if "--list" in sys.argv:
         for s in sites:
             tag = " [udf-boundary]" if s.sanctioned else ""
-            print(f"{s.path}:{s.line}  .{s.method}(){tag}  {s.snippet}")
+            print(f"{s.path}:{s.line}  {s.symbol}  .{s.method}(){tag}  {s.expr}")
         return 0
 
     allow, allow_err = load_allowlist(root)
@@ -354,16 +475,27 @@ def main() -> int:
     audited_sites = [s for s in sites if not s.sanctioned]
     sanctioned_sites = [s for s in sites if s.sanctioned]
 
-    site_keys = {(s.path, s.line, s.method): s for s in audited_sites}
-    allow_keys = {(e.path, e.line, e.method): e for e in allow}
+    # Zero-exception terminal bans (issue #538): a banned site fails outright
+    # — no allowlist entry can admit it, so it is excluded from the entry
+    # matching below (which would otherwise print an entry template for it),
+    # and any entry that targets a banned (path, method) is itself rejected.
+    banned_sites = [s for s in audited_sites if is_banned(s.path, s.method)]
+    banned_entries = [e for e in allow if is_banned(e.path, e.method)]
+    gated_sites = [s for s in audited_sites if not is_banned(s.path, s.method)]
+    gated_allow = [e for e in allow if not is_banned(e.path, e.method)]
+
+    site_keys = {s.key: s for s in gated_sites}
+    allow_keys = {e.key: e for e in gated_allow}
 
     new_sites = [site_keys[k] for k in site_keys.keys() - allow_keys.keys()]
     stale_entries = [allow_keys[k] for k in allow_keys.keys() - site_keys.keys()]
-    weak_reasons = [e for e in allow if not _reason_is_substantive(e.reason)]
+    weak_reasons = [e for e in gated_allow if not _reason_is_substantive(e.reason)]
 
     new_sites.sort(key=lambda s: (s.path, s.line))
-    stale_entries.sort(key=lambda e: (e.path, e.line))
-    weak_reasons.sort(key=lambda e: (e.path, e.line))
+    stale_entries.sort(key=lambda e: (e.path, e.symbol, e.expr))
+    weak_reasons.sort(key=lambda e: (e.path, e.symbol, e.expr))
+    banned_sites.sort(key=lambda s: (s.path, s.line))
+    banned_entries.sort(key=lambda e: (e.path, e.symbol, e.expr))
 
     # Always print sanctioned summary for visibility.
     if sanctioned_sites:
@@ -372,27 +504,58 @@ def main() -> int:
             f"(sanctioned @daft.method.batch / @daft.func.batch parameter access)."
         )
 
-    if not (new_sites or stale_entries or weak_reasons):
+    if not (banned_sites or banned_entries or new_sites or stale_entries or weak_reasons):
         print(f"lazy audit: {len(audited_sites)} audited site(s), all accounted for.")
         return 0
 
     print(STERN_HEADER, file=sys.stderr)
 
-    if new_sites:
-        rendered = [f"{s.path}:{s.line}  .{s.method}()  {s.snippet}" for s in new_sites]
-        sys.stderr.write(_format_section("New, undocumented materialization points:", rendered))
-
-    if stale_entries:
-        rendered = [f"{e.path}:{e.line}  .{e.method}()  reason={e.reason!r}" for e in stale_entries]
+    if banned_sites:
+        rendered = [f"{s.path}:{s.line}  {s.symbol}  .{s.method}()  {s.expr}" for s in banned_sites]
         sys.stderr.write(
             _format_section(
-                "Stale allowlist entries (line no longer holds a matching call):",
+                "Banned terminals (issue #538 — zero exceptions, not allowlistable):",
+                rendered,
+            )
+        )
+
+    if banned_entries:
+        rendered = [
+            f"{e.path}  {e.symbol}  .{e.method}()  {e.expr}  reason={e.reason!r}"
+            for e in banned_entries
+        ]
+        sys.stderr.write(
+            _format_section(
+                "Allowlist entries targeting banned terminals (remove them; the ban has no exceptions):",
+                rendered,
+            )
+        )
+
+    if new_sites:
+        rendered = [
+            f"{s.path}:{s.line}  {s.symbol}  .{s.method}()  {s.expr}\n"
+            f'    [[entries]]\n    path = "{s.path}"\n    symbol = "{s.symbol}"\n'
+            f'    expr = "{s.expr}"\n    method = "{s.method}"\n    reason = "..."'
+            for s in new_sites
+        ]
+        sys.stderr.write(_format_section("New, undocumented execution points:", rendered))
+
+    if stale_entries:
+        rendered = [
+            f"{e.path}  {e.symbol}  .{e.method}()  {e.expr}  reason={e.reason!r}"
+            for e in stale_entries
+        ]
+        sys.stderr.write(
+            _format_section(
+                "Stale allowlist entries (no matching call for this symbol/expression):",
                 rendered,
             )
         )
 
     if weak_reasons:
-        rendered = [f"{e.path}:{e.line}  .{e.method}()  reason={e.reason!r}" for e in weak_reasons]
+        rendered = [
+            f"{e.path}  {e.symbol}  .{e.method}()  reason={e.reason!r}" for e in weak_reasons
+        ]
         sys.stderr.write(
             _format_section(
                 "Allowlist entries with unjustified reasons (rejected at review):",

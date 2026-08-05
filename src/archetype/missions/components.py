@@ -10,13 +10,20 @@ from pydantic import field_validator, model_validator
 from archetype.core.component import Component
 from archetype.missions.contracts import RepositoryPublicationPolicy
 from archetype.missions.sandboxes.contracts import SandboxStatus
-from archetype.missions.transitions import AgentExecutionStatus, MissionStatus, TaskStatus
+from archetype.missions.transitions import (
+    AgentExecutionStatus,
+    CriticConclusion,
+    CriticExecutionStatus,
+    MissionStatus,
+    TaskStatus,
+)
 
 
 class Mission(Component):
     """Immutable repository identity for one submitted mission."""
 
     name: str = "agent-mission"
+    episode_id: str = ""
     repository: str = ""
     branch: str = ""
     base_ref: str = "main"
@@ -66,6 +73,59 @@ class TaskPolicy(Component):
     @classmethod
     def _valid_publication_policy(cls, value: str) -> str:
         return RepositoryPublicationPolicy(value).value
+
+
+class TaskCriticPolicy(Component):
+    """Immutable independent-review policy materialized with one task."""
+
+    policy_id: str = ""
+    version: str = ""
+    digest: str = ""
+    perspective: str = ""
+    information_view: str = ""
+    driver: str = ""
+    model: str = ""
+    sampling: str = ""
+    max_reviews: int = 1
+    timeout_seconds: int = 2700
+    output_schema_version: int = 1
+    max_output_chars: int = 16_000
+
+    @model_validator(mode="after")
+    def _valid_policy(self) -> TaskCriticPolicy:
+        required = (
+            self.policy_id,
+            self.version,
+            self.digest,
+            self.perspective,
+            self.information_view,
+            self.driver,
+            self.sampling,
+        )
+        if any(not value.strip() for value in required):
+            raise ValueError("critic policy identity fields must not be empty")
+        if self.max_reviews < 1 or self.timeout_seconds < 1:
+            raise ValueError("critic review budgets must be positive")
+        if self.output_schema_version < 1 or self.max_output_chars < 1:
+            raise ValueError("critic output schema and bound must be positive")
+        if self.information_view != "task-diff-validators":
+            raise ValueError("unsupported critic information_view")
+        if self.sampling != "provider-default":
+            raise ValueError("unsupported critic sampling policy")
+        return self
+
+
+class TaskCriticSubjectPolicy(Component):
+    """Versioned exact-subject byte budget kept outside the legacy policy schema."""
+
+    max_subject_bytes: int = 4 << 20
+
+    @field_validator("max_subject_bytes")
+    @classmethod
+    def _positive_subject_bound(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("critic max_subject_bytes must be positive")
+        return value
 
 
 class TaskState(Component):
@@ -142,6 +202,10 @@ class AgentExecution(Component):
     sandbox_id: str = ""
     agent_session_id: str = ""
     agent_returncode: int = -1
+    agent_stdout: str = ""
+    agent_stderr: str = ""
+    trace_uri: str = ""
+    redaction_policy_id: str = ""
     starting_revision: str = ""
     final_revision: str = ""
     error: str = ""
@@ -150,6 +214,102 @@ class AgentExecution(Component):
     @classmethod
     def _valid_status(cls, value: str) -> str:
         return AgentExecutionStatus(value).value
+
+
+class AuthorActivityObservation(Component):
+    """Complete committed fact bundle for one durable author result."""
+
+    activity_id: str = ""
+    task_id: int = 0
+    dispatch_sequence: int = 0
+    result_ref: str = ""
+    result_digest: str = ""
+    fact_bundle_digest: str = ""
+    execution_id: int = 0
+    validation_count: int = 0
+    commit_count: int = 0
+    friction_count: int = 0
+    redaction_policy_id: str = ""
+
+    @model_validator(mode="after")
+    def _valid_observation(self) -> AuthorActivityObservation:
+        required = (
+            self.activity_id,
+            self.result_ref,
+            self.result_digest,
+            self.fact_bundle_digest,
+            self.redaction_policy_id,
+        )
+        if any(not value.strip() for value in required):
+            raise ValueError("author activity observation identity cannot be empty")
+        if self.task_id < 1 or self.dispatch_sequence < 1 or self.execution_id < 1:
+            raise ValueError(
+                "author activity observation requires dispatch and execution identities"
+            )
+        if min(self.validation_count, self.commit_count, self.friction_count) < 0:
+            raise ValueError("author activity observation counts cannot be negative")
+        return self
+
+
+class CompleteAuthorActivityObservation(Component):
+    """Complete v2 fact bundle for one durable author result."""
+
+    schema_version: int = 2
+    activity_id: str = ""
+    task_id: int = 0
+    dispatch_sequence: int = 0
+    result_ref: str = ""
+    result_digest: str = ""
+    fact_bundle_digest: str = ""
+    execution_id: int = 0
+    validation_count: int = 0
+    commit_count: int = 0
+    friction_count: int = 0
+    checkpoint_count: int = 0
+    checkpoint_entity_id: int = 0
+    sandbox_entity_id: int = 0
+    sandbox_bound: bool = False
+    candidate_entity_id: int = 0
+    candidate_count: int = 0
+    relation_count: int = 0
+    redaction_policy_id: str = ""
+
+    @model_validator(mode="after")
+    def _valid_observation(self) -> CompleteAuthorActivityObservation:
+        required = (
+            self.activity_id,
+            self.result_ref,
+            self.result_digest,
+            self.fact_bundle_digest,
+            self.redaction_policy_id,
+        )
+        if any(not value.strip() for value in required):
+            raise ValueError("complete author activity observation identity cannot be empty")
+        if self.task_id < 1 or self.dispatch_sequence < 1 or self.execution_id < 1:
+            raise ValueError(
+                "complete author activity observation requires dispatch and execution identities"
+            )
+        if min(self.validation_count, self.commit_count, self.friction_count) < 0:
+            raise ValueError("complete author activity observation counts cannot be negative")
+        if self.checkpoint_count not in {0, 1}:
+            raise ValueError("complete author activity observation has at most one checkpoint")
+        if self.checkpoint_count != int(self.checkpoint_entity_id > 0):
+            raise ValueError("complete author activity checkpoint identity is inconsistent")
+        if self.schema_version != 2:
+            raise ValueError("complete author activity observation requires schema version 2")
+        if self.candidate_count not in {0, 1}:
+            raise ValueError(
+                "complete author activity observation candidate count must be zero or one"
+            )
+        if self.candidate_count != int(self.candidate_entity_id > 0):
+            raise ValueError(
+                "complete author activity observation candidate identity is inconsistent"
+            )
+        if self.sandbox_entity_id < 1:
+            raise ValueError("complete author activity observation requires a sandbox")
+        if self.relation_count < 2:
+            raise ValueError("complete author activity observation requires provenance")
+        return self
 
 
 class ValidationResult(Component):
@@ -184,6 +344,229 @@ class Commit(Component):
     final_revision: bool = False
 
 
+class Candidate(Component):
+    """Immutable authored-green exact-head review subject."""
+
+    candidate_id: str = ""
+    mission_id: int = 0
+    task_id: int = 0
+    dispatch_id: str = ""
+    dispatch_sequence: int = 0
+    author_execution_id: int = 0
+    author_sandbox_id: str = ""
+    repository: str = ""
+    branch: str = ""
+    base_ref: str = ""
+    base_revision: str = ""
+    head_revision: str = ""
+    diff_digest: str = ""
+    validator_bundle_digest: str = ""
+    policy_digest: str = ""
+    candidate_digest: str = ""
+    created_at_ms: int = 0
+
+    @model_validator(mode="after")
+    def _valid_candidate(self) -> Candidate:
+        required = (
+            self.candidate_id,
+            self.dispatch_id,
+            self.author_sandbox_id,
+            self.repository,
+            self.branch,
+            self.base_ref,
+            self.base_revision,
+            self.head_revision,
+            self.diff_digest,
+            self.validator_bundle_digest,
+            self.policy_digest,
+            self.candidate_digest,
+        )
+        if any(not value.strip() for value in required):
+            raise ValueError("candidate identity fields must not be empty")
+        if self.dispatch_sequence < 1 or self.created_at_ms < 0:
+            raise ValueError("candidate sequence must be positive and time non-negative")
+        return self
+
+
+class CriticExecution(Component):
+    """Factual lifecycle and bounded output for one review attempt."""
+
+    candidate_entity_id: int = 0
+    candidate_id: str = ""
+    review_id: str = ""
+    attempt: int = 0
+    status: str = CriticExecutionStatus.STARTING.value
+    sandbox_id: str = ""
+    driver: str = ""
+    model: str = ""
+    started_at_ms: int = 0
+    ended_at_ms: int = 0
+    provision_started_at_ms: int = 0
+    sandbox_ready_at_ms: int = 0
+    base_hydrated_at_ms: int = 0
+    candidate_published_at_ms: int = 0
+    head_ready_at_ms: int = 0
+    critic_started_at_ms: int = 0
+    receipt_staged_at_ms: int = 0
+    raw_output: str = ""
+    trace_uri: str = ""
+    redaction_policy_id: str = ""
+    error: str = ""
+
+    @field_validator("status")
+    @classmethod
+    def _valid_status(cls, value: str) -> str:
+        return CriticExecutionStatus(value).value
+
+
+class CriticFinding(Component):
+    """One typed, provider-neutral critic finding."""
+
+    candidate_entity_id: int = 0
+    critic_execution_id: int = 0
+    finding_id: str = ""
+    severity: str = ""
+    category: str = ""
+    confidence: float = 0.0
+    title: str = ""
+    detail: str = ""
+    evidence_location: str = ""
+    reproduction: str = ""
+
+    @model_validator(mode="after")
+    def _valid_finding(self) -> CriticFinding:
+        if self.severity not in {"blocking", "advisory"}:
+            raise ValueError("critic finding severity must be blocking or advisory")
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("critic finding confidence must be between zero and one")
+        if not self.finding_id or not self.category or not self.title or not self.detail:
+            raise ValueError("critic finding identity and description must not be empty")
+        return self
+
+
+class CriticReceipt(Component):
+    """Verified exact-subject receipt consumed by task transition processors."""
+
+    candidate_entity_id: int = 0
+    critic_execution_id: int = 0
+    critic_sandbox_id: str = ""
+    review_id: str = ""
+    conclusion: str = CriticConclusion.APPROVED.value
+    candidate_digest: str = ""
+    policy_digest: str = ""
+    evidence_digest: str = ""
+    reviewed_base_revision: str = ""
+    reviewed_head_revision: str = ""
+    reviewed_diff_digest: str = ""
+    validator_bundle_digest: str = ""
+    reviewed_scope: str = ""
+    finding_count: int = 0
+    blocking_count: int = 0
+    output_schema_version: int = 1
+    completed_at_ms: int = 0
+
+    @field_validator("conclusion")
+    @classmethod
+    def _valid_conclusion(cls, value: str) -> str:
+        return CriticConclusion(value).value
+
+
+class CompleteCriticActivityObservation(Component):
+    """Complete result-bound fact bundle for one durable critic Activity."""
+
+    schema_version: int = 1
+    activity_id: str = ""
+    candidate_entity_id: int = 0
+    domain_review_attempt: int = 0
+    result_ref: str = ""
+    result_digest: str = ""
+    fact_bundle_digest: str = ""
+    execution_id: int = 0
+    sandbox_entity_id: int = 0
+    finding_count: int = 0
+    receipt_entity_id: int = 0
+    receipt_count: int = 0
+    relation_count: int = 0
+    author_sandbox_id: str = ""
+    critic_sandbox_id: str = ""
+    subject_content_digest: str = ""
+    subject_metadata_digest: str = ""
+    subject_digest: str = ""
+    subject_content_size_bytes: int = 0
+    subject_metadata_size_bytes: int = 0
+    subject_size_bytes: int = 0
+    subject_media_type: str = ""
+    subject_transport: str = ""
+    subject_ref: str = ""
+    redaction_policy_id: str = ""
+
+    @model_validator(mode="after")
+    def _valid_observation(self) -> CompleteCriticActivityObservation:
+        required = (
+            self.activity_id,
+            self.result_ref,
+            self.result_digest,
+            self.fact_bundle_digest,
+            self.author_sandbox_id,
+            self.critic_sandbox_id,
+            self.redaction_policy_id,
+        )
+        if any(not value.strip() for value in required):
+            raise ValueError("complete critic Activity observation identity cannot be empty")
+        if self.schema_version != 1:
+            raise ValueError("complete critic Activity observation requires schema version 1")
+        if (
+            min(
+                self.candidate_entity_id,
+                self.domain_review_attempt,
+                self.execution_id,
+                self.sandbox_entity_id,
+            )
+            < 1
+        ):
+            raise ValueError("complete critic Activity observation identities must be positive")
+        if self.critic_sandbox_id == self.author_sandbox_id:
+            raise ValueError("complete critic Activity observation reused the author sandbox")
+        if min(self.finding_count, self.relation_count) < 0:
+            raise ValueError("complete critic Activity observation counts cannot be negative")
+        if self.relation_count < 2:
+            raise ValueError("complete critic Activity observation requires provenance")
+        if self.receipt_count not in {0, 1}:
+            raise ValueError("complete critic Activity receipt count must be zero or one")
+        if self.receipt_entity_id < 0:
+            raise ValueError("complete critic Activity receipt identity cannot be negative")
+        if self.receipt_count != int(self.receipt_entity_id > 0):
+            raise ValueError("complete critic Activity receipt identity is inconsistent")
+
+        subject_text = (
+            self.subject_content_digest,
+            self.subject_metadata_digest,
+            self.subject_digest,
+            self.subject_media_type,
+            self.subject_transport,
+            self.subject_ref,
+        )
+        subject_sizes = (
+            self.subject_content_size_bytes,
+            self.subject_metadata_size_bytes,
+            self.subject_size_bytes,
+        )
+        if min(subject_sizes) < 0:
+            raise ValueError("complete critic Activity subject sizes cannot be negative")
+        if self.receipt_count:
+            if any(not value.strip() for value in subject_text):
+                raise ValueError("complete critic Activity receipt requires subject identity")
+            if self.subject_transport not in {"sandbox_file", "stdin"}:
+                raise ValueError("complete critic Activity subject transport is invalid")
+            if self.subject_size_bytes != (
+                self.subject_content_size_bytes + self.subject_metadata_size_bytes
+            ):
+                raise ValueError("complete critic Activity subject size is inconsistent")
+        elif any(subject_text) or any(subject_sizes):
+            raise ValueError("receipt-free critic Activity cannot claim subject evidence")
+        return self
+
+
 class Checkpoint(Component):
     """Optional provider-native recovery point for a sandbox."""
 
@@ -194,6 +577,12 @@ class Checkpoint(Component):
     checkpoint_id: str = ""
     uri: str = ""
     created_at_ms: int = 0
+    environment: str = ""
+    source_sandbox_id: str = ""
+    owner_id: str = ""
+    locality: str = ""
+    expires_at_ms: int = 0
+    integrity: str = ""
     restorable: bool = False
     error: str = ""
 
@@ -225,6 +614,8 @@ class AgentArtifact(Component):
     task_id: int = 0
     execution_id: int = 0
     dispatch_id: str = ""
+    artifact_id: str = ""
+    logical_path: str = ""
     digest: str = ""
     uri: str = ""
     media_type: str = "application/octet-stream"
@@ -235,13 +626,22 @@ TASK_COMPONENTS = (
     Task,
     TaskWorkspace,
     TaskPolicy,
+    TaskCriticPolicy,
+    TaskCriticSubjectPolicy,
     TaskState,
     TaskDispatch,
 )
 
 OUTPUT_COMPONENTS = (
+    AuthorActivityObservation,
+    CompleteAuthorActivityObservation,
     ValidationResult,
     Commit,
+    Candidate,
+    CriticExecution,
+    CriticFinding,
+    CriticReceipt,
+    CompleteCriticActivityObservation,
     Checkpoint,
     FilesystemManifest,
     FrictionLog,

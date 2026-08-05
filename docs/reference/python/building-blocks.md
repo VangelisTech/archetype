@@ -8,6 +8,4 @@
 
 ::: archetype.core.AsyncProcessor
 
-::: archetype.artifacts.contracts.ArtifactProcessor
-
 ::: archetype.core.Resources

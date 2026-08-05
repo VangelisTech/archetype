@@ -1,4 +1,4 @@
-name: Quality
+name: CI
 
 on:
   workflow_dispatch:
@@ -6,68 +6,20 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  # Every required context must also report on merge-queue commits.
-  merge_group:
 
 permissions:
   contents: read
 
 concurrency:
-  group: quality-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   DO_NOT_TRACK: "1"
 
 jobs:
-  # Keep this job id stable. The active ruleset requires the matrix contexts
-  # `ci (3.12)` and `ci (3.13)` by name.
-  ci:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.12", "3.13"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-      - uses: astral-sh/setup-uv@v4
-        with:
-          version: "latest"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - run: uv sync --group dev
-      - name: Full tests with coverage
-        if: matrix.python-version == '3.12'
-        run: make test-cov
-      - name: Full compatibility tests
-        if: matrix.python-version != '3.12'
-        run: make test
-
-      # fail_ci_if_error must stay true: with it false, this step spent its
-      # whole life green while uploading nothing (no CODECOV_TOKEN secret
-      # existed). Skips: merge groups (synthetic commits carry no coverage
-      # signal, and a Codecov hiccup must not block the queue) and fork PRs
-      # (GitHub withholds secrets there, so the upload can only fail).
-      - name: Upload coverage to Codecov
-        if: >-
-          matrix.python-version == '3.12' &&
-          github.event_name != 'merge_group' &&
-          (github.event_name != 'pull_request' ||
-           github.event.pull_request.head.repo.full_name == github.repository)
-        uses: codecov/codecov-action@v5
-        with:
-          files: coverage.xml
-          flags: unittests
-          name: archetype-coverage
-          fail_ci_if_error: true
-          token: ${{ secrets.CODECOV_TOKEN }}
-
-  # Keep this job id stable. It owns formatting plus the version-independent
-  # structural audits required by the active `format` context.
-  format:
+  static:
+    name: Static
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -80,14 +32,10 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - run: uv sync --group dev
-      - run: make format-check
-      - run: make lint
-      - run: make lock-check
-      - run: make contract-audit
-      - run: make benchmark-audit
+      - run: make static
 
-  # Keep this job id stable for the required `typecheck` context.
-  typecheck:
+  tests:
+    name: Tests (3.12)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -100,150 +48,4 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - run: uv sync --group dev
-      - run: make typecheck
-
-  # Real object-store gate using a disposable prefix and R2's S3 credentials;
-  # no local or runner-side Docker service is involved.
-  infrastructure-idempotency:
-    name: Cloudflare R2 integration
-    if: >-
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    env:
-      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-      R2_API_ENDPOINT: ${{ vars.R2_API_ENDPOINT }}
-      R2_BUCKET: ${{ vars.R2_BUCKET }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: astral-sh/setup-uv@v4
-        with:
-          version: "latest"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - run: uv sync --group dev
-      - name: Verify credentials
-        run: |
-          test -n "$R2_ACCESS_KEY_ID"
-          test -n "$R2_SECRET_ACCESS_KEY"
-          test -n "$R2_API_ENDPOINT"
-          test -n "$R2_BUCKET"
-          case "$R2_BUCKET" in
-            */*) echo "R2_BUCKET must be a bucket name, not a path" >&2; exit 1 ;;
-          esac
-      - run: make test-infra
-
-  # Keep this job id stable for the required `evals` context. Repository
-  # scenarios run once on 3.12, not once per compatibility interpreter.
-  # The explicit always() dependency makes an infrastructure failure fail
-  # this required context rather than skip-satisfying it.
-  evals:
-    if: always()
-    needs: infrastructure-idempotency
-    runs-on: ubuntu-latest
-    env:
-      LOGFIRE_TOKEN: ${{ secrets.LOGFIRE_TOKEN }}
-    steps:
-      - name: Require applicable infrastructure evidence
-        env:
-          INFRASTRUCTURE: ${{ needs.infrastructure-idempotency.result }}
-        run: |
-          case "$INFRASTRUCTURE" in success|skipped) ;; *) exit 1 ;; esac
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: astral-sh/setup-uv@v4
-        with:
-          version: "latest"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - run: uv sync --group dev
-      - run: make eval-conformance
-      - run: make eval-reliability EVAL_TRIALS=1
-      - run: make eval-capability
-      - run: make package-smoke
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: pull-request-evidence
-          path: |
-            eval-conformance-results.json
-            eval-reliability-results.json
-            eval-capability-results.json
-            dist/
-          if-no-files-found: error
-          retention-days: 14
-
-  # Keep this job id stable for the required `examples` context.
-  examples:
-    runs-on: ubuntu-latest
-    env:
-      LOGFIRE_TOKEN: ${{ secrets.LOGFIRE_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: astral-sh/setup-uv@v4
-        with:
-          version: "latest"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - run: uv sync --group dev
-      - run: make examples-smoke
-
-  process-reliability:
-    name: Main process evidence
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: astral-sh/setup-uv@v4
-        with:
-          version: "latest"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - run: uv sync --group dev
-      - run: make test-process
-
-  # This aggregate is additive today: the existing required contexts above
-  # remain stable while repository policy can promote `Quality gate` later.
-  quality-gate:
-    name: Quality gate
-    if: always()
-    needs:
-      - ci
-      - format
-      - typecheck
-      - infrastructure-idempotency
-      - evals
-      - examples
-      - process-reliability
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require every applicable evidence job
-        env:
-          CI: ${{ needs.ci.result }}
-          FORMAT: ${{ needs.format.result }}
-          TYPECHECK: ${{ needs.typecheck.result }}
-          INFRASTRUCTURE: ${{ needs.infrastructure-idempotency.result }}
-          EVALS: ${{ needs.evals.result }}
-          EXAMPLES: ${{ needs.examples.result }}
-          PROCESS: ${{ needs.process-reliability.result }}
-        run: |
-          test "$CI" = success
-          test "$FORMAT" = success
-          test "$TYPECHECK" = success
-          case "$INFRASTRUCTURE" in success|skipped) ;; *) exit 1 ;; esac
-          test "$EVALS" = success
-          test "$EXAMPLES" = success
-          case "$PROCESS" in success|skipped) ;; *) exit 1 ;; esac
+      - run: make test

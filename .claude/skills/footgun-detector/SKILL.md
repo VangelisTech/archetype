@@ -31,7 +31,9 @@ Before analyzing, read these files for context — they contain the rules the di
 - `AGENTS.md` — Architecture, service layer, RBAC, conventions
 - `.claude/skills/archetype-processors/SKILL.md` — Processor rules
 - `.claude/skills/archetype-components/SKILL.md` — Component rules
-- `.claude/skills/daft-patterns/SKILL.md` — Daft DataFrame rules
+- `.claude/skills/daft-patterns/SKILL.md` — Daft DataFrame rules (mental model + authoring)
+- For wrong-shape Daft that is not a silent runtime bug, defer to `/daft-antipatterns`
+  rather than stretching these categories into taste nits.
 
 You do NOT need to read these if you already have them in context from this session.
 
@@ -53,11 +55,19 @@ In deterministic CI, the working tree is the protected base. Use it for
 surrounding context and `.footgun-review.diff` for the exact candidate changes;
 a newly added file is represented in full by its diff.
 
-When deterministic CI requests structured output, `reviewed_files` and every
-`review_context.files` array are changed-file coverage fields: they may contain
-only paths from `.footgun-review-scope.json`. Name any protected-base files used
-as implementation evidence in the assessment prose instead. Never substitute
-schema examples or placeholder paths/categories for the authoritative scope.
+When deterministic CI requests structured output, every
+`review_context.files` array is changed-file coverage metadata and may contain
+only paths from `.footgun-review-scope.json`. Name protected-base evidence
+paths in assessment or finding prose instead. Reviewer identity, category
+assignment, and the exact file manifest are trusted orchestration provenance;
+do not echo them as model-authored completion claims.
+
+Deterministic CI reviews these categories as five parallel footgun lenses with
+two independent reviewers each. The lens partition and reviewer policy live in
+`scripts/review_contracts.py`; aggregation fails closed if either receipt is
+missing or a category below is unassigned. When a CI prompt names a lens,
+report findings only in that lens's categories. Local and interactive runs
+review all categories in one pass.
 
 ### Footgun categories
 
@@ -68,25 +78,52 @@ Code that reduces the number of rows in a DataFrame representing world state. `d
 `daft.functions.prompt()` or LLM client calls applied to ALL rows when only a subset are relevant. If only sampled/active/filtered entities need LLM calls, the DataFrame must be split or filtered BEFORE the prompt call, not after.
 
 #### API signature mismatch
-Calling a function with wrong keyword arguments — especially `fork_world()`, `create_world()`, `WorldConfig()`, `Command()`, `ServiceContainer` methods. Check that kwargs match the actual function signature in the codebase.
+Calling a function or exact operation model with wrong keyword arguments —
+especially `ForkWorld`, `CreateWorld`, `WorldConfig`, `DurableOptions`, or
+`CommandDispatcher.apply*`/`defer*`. Check that kwargs match the actual
+signature in the codebase.
 
 #### Missing type key
-`Component.from_dict()` and SPAWN command payloads require a `"type"` key for subclass hydration. Dicts without `"type"` silently fail to reconstruct the correct Component subclass.
+Serialized component dictionaries passed to `Component.from_dict()` require a
+`"type"` key for subclass hydration. Dicts without `"type"` cannot reconstruct
+the correct Component subclass.
 
 #### Private API coupling
-Code outside `core/` accessing private attributes: `_live`, `_spawn_cache`, `_despawn_cache`, `_entity2sig`, `_next_entity_id`. Use the public API (`get_components()`, `spawn()`, `despawn()`).
+Code outside `core/` accessing private world internals — the commit machinery
+(`_commit_coordinator`, `_commit_ctx`, `_prepared_tick_commit`) or interning
+state (`_sig_intern`, `_querier_caps`). Reads go through `get_components()` /
+`query_archetype()`; mutation goes through `spawn()` / `despawn()` and the
+command path. The `entity2sig` / `spawn_cache` / `despawn_cache` caches are
+public to read, but mutating them directly bypasses that path.
 
 #### Monotonic state
 Boolean or filter columns that AND onto existing state instead of recomputing from config each tick. This causes state to monotonically narrow (e.g., once `sampled=False`, always False). The fix: recompute predicates from source data each tick.
 
-#### Shared mutable state across forks
-Sharing a `ServiceContainer`, `CommandBroker`, `Resources`, or other stateful object between a parent world and its fork. Forks must get independent copies. Double-shutdown, cross-world mutation, and state leakage are the consequences.
+#### Fork ownership mismatch
+Sharing a live world, commit coordinator, required projector, or hook registry
+between a parent and fork. A managed fork has a distinct world/run,
+coordinator, projector, and hook registry while intentionally sharing the
+source's `Resources` container. Confusing those lifetimes causes cross-world
+mutation, incorrect visibility, or duplicate cleanup.
 
 #### Store vs live reads
-Querying the persistent store (LanceDB) when `_live` / `get_components()` has the correct in-memory data. After `fork_world`, pre-fork ticks resolve through the fork's `lineage` (ancestor world/run segments) — but only on lineage-aware paths (`AsyncWorld.query_archetype` / `get_components`, gated `QueryService` reads). Raw store queries by the fork's `(world_id, run_id)` alone still miss pre-fork history.
+Reading committed component values through raw `(world_id, run_id)` storage
+queries instead of the lineage-aware world facade. `AsyncWorld.get_components`
+and `query_archetype` delegate to the world's querier and resolve pre-fork
+ticks through the fork's `lineage` (ancestor world/run segments); raw reads by
+the fork's `(world_id, run_id)` alone miss pre-fork history. The facade paths
+are NOT in-memory caches: `spawn_cache` / `despawn_cache` hold only pending
+mutations and `entity2sig` holds only signatures, so none of them is a
+complete source of committed values — flag code that treats a pending cache
+as one, and flag raw storage reads where the lineage-aware facade is the
+correct source.
 
 #### Governance bypass
-Mutating world state (spawn, despawn, modify entities) without going through `CommandService.submit()` / `CommandBroker`. Direct mutations skip RBAC checks, audit history, and serialized writes.
+Runtime or API code invoking lifecycle, mutation, simulation, or an application
+workflow directly instead of constructing its exact family operation and
+entering `CommandDispatcher`. This skips process admission and, at untrusted
+ingress, policy and bounded access evidence. Calls from the registered handler
+to the owning family behavior are the intended internal path.
 
 #### Dead code contracts
 Config fields, constructor parameters, or Component fields that are defined but never read or wired to behavior. These create false expectations (e.g., a `temperature` field that's ignored when building the LLM prompt).
@@ -120,7 +157,10 @@ Returning indices, booleans, or placeholder values instead of actual identifiers
 Using `df.with_columns(expr1, expr2)` with multiple positional args — raises `TypeError` in Daft 0.7.x. Use `df.with_columns({...})` dict form or chain `df.with_column()`.
 
 #### Deprecated Daft APIs
-Using `@daft.udf` (removed in 0.8.0), `.struct.get()` (use `[]` indexing), or `Expression.if_else()` (use `@daft.func`).
+Using `@daft.udf` — deprecated, removed in 0.8.0; migrate to `@daft.func` /
+`@daft.cls`. Do not report `.struct.get()` or `Expression.if_else()`: both are
+already removed in the pinned daft 0.7.x and raise `AttributeError` when the
+plan is built — loud build failures, not footguns.
 
 #### Arrow serialization violations
 Component fields containing `dict`, `list[dict]`, custom objects, or other non-Arrow types without JSON encoding. Must use `_json: str` suffix pattern.
@@ -141,13 +181,34 @@ For each footgun found, output exactly this format:
 ```
 ### <CATEGORY> in `<file>:<line>`
 
+**Severity:** <blocking | advisory>
+
 **What it does:** <one sentence describing the code>
 
 **What goes wrong:** <the runtime consequence — data loss, silent wrong results, crash, cost waste>
 
+**Failing input or sequence:** <the concrete input, state, or ordered events that reproduce it>
+
 **Fix:**
 <concrete code suggestion or description of the fix>
 ```
+
+### Severity
+
+Every finding carries exactly one severity:
+
+- **blocking** — a reproducible defect: you can name the concrete input,
+  state, or sequence under which the change misbehaves. In deterministic CI,
+  blocking findings fail the merge gate until the code changes.
+- **advisory** — a real risk whose harm depends on judgment, convention, or
+  context the diff cannot settle. Advisory findings publish inside the
+  review's receipt comment, not as review threads, and never block the
+  merge queue: fixing one or recording a written disposition in the PR
+  conversation are both sanctioned outcomes.
+
+Reserve `blocking` for findings you would stake the review on: if you cannot
+name the failing input or sequence, it is advisory. A finding too speculative
+for advisory is not a finding at all.
 
 If no footguns are found, say so explicitly:
 
@@ -158,7 +219,16 @@ No footguns detected in this diff.
 ## Rules for this skill
 
 - **No style nits.** No "consider adding tests." No "this could be cleaner."
-- **No false positives.** If you're not confident it's a real footgun, don't report it. Uncertainty destroys trust.
+- **Report it, then rank it.** Do not suppress a finding because you are unsure
+  of it — severity is the filter, not silence. Anything you can state as a
+  concrete runtime consequence belongs in the output, graded `blocking` or
+  `advisory` by the contract above. The merge gate blocks on `blocking` only,
+  so an uncertain finding costs receipt-comment noise, not a red build; a
+  suppressed one costs a runtime bug. What does not belong is a finding you
+  cannot name a runtime consequence for at all — that is a style nit, and the
+  rule above already excludes it.
 - **Diff-only.** Only report issues in changed lines (with enough context to confirm). Don't audit the entire codebase.
 - **Concrete fixes.** Every finding must include a specific fix, not "consider refactoring."
-- **Fast.** This should take seconds, not minutes. Don't read files you don't need.
+- **Read what the lens needs.** Spend turns on surrounding context and on the
+  sibling sweep; skip files your lens's categories cannot reach. Depth on the
+  changed surface beats a fast pass.

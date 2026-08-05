@@ -347,19 +347,20 @@ class AsyncLancedbStore(iAsyncStore):
         return [sig for key, sig in self._known_sigs.items() if key in self._committed_sigs]
 
     async def append(self, sig, df: DataFrame) -> AppendReceipt:
-        # ONE materialization. Lance rejects zero-row / schemaless frames, so the
-        # empty guard stays — but the row count comes free from the Arrow table we
-        # must build anyway. A separate df.collect() + df.count_rows() re-ran the
-        # Daft plan twice for nothing; this redundancy is a recurring rewrite
-        # regression (perf-fixed before in the predecessor stores) — keep it lean.
+        # ONE materialization: to_arrow() is the conversion the backend add()
+        # requires, and the receipt's row count is metadata that conversion
+        # already produced. Core never asks whether the frame is empty before
+        # the write (issue #538) — a zero-row add() is LanceDB's own
+        # successful no-op. A separate df.collect() + df.count_rows() re-ran
+        # the Daft plan twice for nothing; this redundancy is a recurring
+        # rewrite regression (perf-fixed before in the predecessor stores).
         table_id = Archetype.get_name(sig)
         if not df.column_names:
+            # Schema availability, not row cardinality: a schemaless frame
+            # cannot even name a backing table.
             logger.info(f"Append skipped (lancedb): archetype={table_id} empty schema")
             return AppendReceipt(table_id=table_id, rows=0, durable=True)
         arrow_table = df.to_arrow()
-        if arrow_table.num_rows == 0:
-            logger.info(f"Append skipped (lancedb): archetype={table_id} rows=0")
-            return AppendReceipt(table_id=table_id, rows=0, durable=True)
 
         async_table = await self._ensure_table(sig)
         result = await async_table.add(arrow_table, mode="append")

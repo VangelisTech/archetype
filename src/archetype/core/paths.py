@@ -33,6 +33,13 @@ import os
 import re
 from pathlib import Path
 
+from archetype._storage_uri import (
+    local_storage_path,
+)
+from archetype._storage_uri import (
+    normalized_storage_uri as normalized_storage_uri,
+)
+
 _NAMESPACE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 
 
@@ -63,8 +70,6 @@ def resolve_local_root(path_like: str) -> Path:
         ValueError: On an embedded NUL byte, a non-local URI, or — when
             ``ARCHETYPE_DATA_ROOT`` is set — a resolved path escaping it.
     """
-    from archetype._storage_uri import local_storage_path
-
     if "\x00" in path_like:
         raise ValueError("storage path contains a NUL byte")
     base = local_storage_path(path_like)

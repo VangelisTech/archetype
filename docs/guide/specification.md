@@ -15,23 +15,23 @@ The current contract set is split across design docs and executable tests.
 | Contract source | Scope | Notes |
 |---|---|---|
 | `docs/guide/specification.md` | Umbrella contract overview | This page. Broad contracts plus links to focused specifications. |
-| [Runtime](runtime.md) | Trusted script boundary | `ArchetypeRuntime`, `RuntimeWorld`, sync parity, lifecycle, and actor-free application access. |
+| [Runtime](runtime.md) | Trusted script boundary | `ArchetypeRuntime`, `RuntimeWorld`, sync parity, exact-operation dispatch, and process lifetime. |
 | [Observability](observability.md) | Safe advisory signals | Vendor-neutral trace/metric vocabulary, bounded failure semantics, context, and process-host provider ownership. |
-| [Application Architecture](application-architecture.md) | Supported boundaries and dependency policy | Normative ownership, composition, encapsulation, and lint inputs. |
-| [Service Protocols](service-protocols.md) | Internal application ports | Active family interfaces behind `iRuntimeApplication` and `iCommandGateway`. |
+| [Application Architecture](application-architecture.md) | Supported boundaries and dependency policy | Normative current ownership plus the accepted v0.5 target family DAG, composition, encapsulation, and lint inputs. |
+| [Service Protocols](service-protocols.md) | Internal application ports | Active family interfaces composed by wiring and consumed by registered handlers. |
 | [Command Gate](command-gate.md) | Authorization and roles | Four-role model, permissions matrix, audit emission shape. |
 | [Execution Hierarchy](execution-hierarchy.md) | Step/run/episode/rollout | Simulation levels and rollout fork semantics. |
 | [World Lifecycle](world-lifecycle.md) | Create/fork/destroy | Append-only lifecycle, info-class downgrade, fork sharing/copy rules. |
 | [Durable Discovery](durable-discovery.md) | Control catalog and cold reads | Catalog authority, `discover_worlds`/`open_world_readonly`, fail-closed cold queries. |
 | [Atomic Visibility](atomic-visibility.md) | Tick commit identity | Manifest-published ticks, commit tokens, writer fencing, epoch-0 legacy reads. |
-| [Artifacts](artifacts.md) | External-artifact ingestion | Typed Iceberg tables, Daft file processors, content identity, and claim-backed receipt compatibility. |
-| [Artifact Finalization](artifact-finalization.md) | Sandbox evidence durability | Provider checkpoints, portable bundle publication/replay, pre-durability redaction, indexing, and retention. |
-| [Agent Missions V1](agent-missions.md) | Coding-agent software factory | Typed task graphs, previous-tick readiness, post-commit sandbox dispatch, validator-gated retry, and terminal mission rollup. |
-| [Dataset and Evaluation Ontology](dataset-eval-ontology.md) | Dataset/eval identity and vocabulary | Dataset-vs-runtime coordinates, trial/episode cardinality, typed-artifact ownership, and grader composition. |
+| [Activities](activities.md) | Work between committed states | Resource/Activity boundary, post-commit admission, fenced attempts, provider reconciliation, result references, and later-receipt settlement. |
+| [Artifacts](artifacts.md) | External-artifact ingestion | Family-owned file/media scans and handlers over explicit durable coordinates, storage-owned typed Iceberg tables, occurrence identity, and content-addressed objects. |
+| [Agent Missions V1](agent-missions.md) | Coding-agent software factory | Typed task graphs, revision-bound validators, immutable candidates, independent exact-head critic receipts, durable repair findings, and terminal mission rollup. |
+| [Dataset and Evaluation Ontology](dataset-eval-ontology.md) | Dataset/eval identity and vocabulary | Dataset-vs-runtime coordinates, trial/episode cardinality, typed-ingestion ownership, and grader composition. |
 | [Audit Log](audit-log.md) | Audit rows | Append-only audit history and query contract. |
 | [Repository Harness](repository-harness.md) | Executable evidence | Focused tests, contract matrices, repository scenarios, benchmarks, static audits, and mutation probes. |
 | [`tests/app/test_runtime_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_contracts.py) | Executable runtime contracts | Enforces activation single-flight, runtime-vs-world lifetime, fork isolation, spawn visibility, the actor-free trust boundary, and smoke paths. |
-| [`tests/app/test_runtime_fork_storage.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_fork_storage.py) | Runtime fork storage contracts | Enforces fork storage inheritance through the runtime layer, lineage reads on fork handles, fork run_id minting, and gate-side storage resolution. |
+| [`tests/storage/test_runtime_fork_storage.py`](https://github.com/VangelisTech/archetype/blob/main/tests/storage/test_runtime_fork_storage.py) | Runtime fork storage contracts | Enforces fork storage inheritance through the runtime layer, lineage reads on fork handles, fork run_id minting, and gate-side storage resolution. |
 | [`tests/sync/test_sync_stack_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/sync/test_sync_stack_contracts.py) | Executable sync engine contracts | Enforces store/querier/updater/world behavior, mutation materialization, component migration, and despawn semantics. |
 | [`tests/integration/test_command_flow.py`](https://github.com/VangelisTech/archetype/blob/main/tests/integration/test_command_flow.py) | Reserved spawn chain | Verifies reserved `entity_id` survives submit -> drain -> apply -> materialize. |
 | [`tests/app/test_services.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_services.py) | Service-layer execution contracts | Covers simulation service boundaries, processor metadata, and read-service expectations. |
@@ -74,6 +74,9 @@ Normative language:
 - `SHOULD` means strongly preferred unless a documented exception exists.
 - `CURRENT GAP` marks behavior that is inconsistent, incomplete, or not yet
   aligned with the intended contract.
+- `ACCEPTED TARGET` marks ratified migration behavior that is normative for its
+  owning slice but is not a claim about the current implementation. The slice
+  must land its executable oracle with the behavior.
 
 ## Scope
 
@@ -86,6 +89,8 @@ This specification covers:
 - top-level runtime API constraints
 - multi-world orchestration and world forking
 - idempotency expectations and non-idempotent boundaries
+- Resources available during a tick and Activities coordinated between
+  committed ticks
 - typed external artifacts and dataset/evaluation identity
 - typed coding-agent task graphs, committed dispatch, and validator-gated transitions
 
@@ -104,20 +109,26 @@ implementation work must satisfy.
 | `Live snapshot` | The in-memory active DataFrame per signature for the latest completed tick |
 | `Mutation cache` | The staged spawn/despawn data applied at the next tick |
 | `World lifecycle command` | Create, destroy, or fork world operations |
-| `RuntimeApplication` | Actor-free application facade shared by trusted runtime and authorized gateway paths |
+| Exact operation | Frozen owning-family model resolved by `OperationRegistry` |
+| `Resource` | Tick-time capability whose process-local lifetime is not durable workflow truth |
+| `Activity` | Durably coordinated work admitted from one committed tick and observed by a later committed tick |
+| `RuntimeResources` | Explicit process owner for dispatcher admission, supervised work, handles, audit, and storage |
 | `Runtime` | Trusted scripting facade and process-lifetime owner |
 
 ## Layer Boundaries
 
 Core execution is composed from a store-backed querier and updater, a system,
-and a world. The application layer owns actor-free product semantics through
-`RuntimeApplication` and its world, storage, query, artifact, evaluation,
-commands, audit, and research families.
+and a world. Reusable families own product behavior. The top-level commands
+family owns exact operation registration, governed entry, policy, durable
+scheduling, and audit projection. The application layer owns cross-family
+workflow authority behind registered handlers.
 
-Trusted Python scripts use `ArchetypeRuntime -> RuntimeApplication`. Untrusted
-clients use `CLI/HTTP -> API authentication -> CommandGateway authorization ->
-RuntimeApplication`. The CLI is an HTTP client except for server startup.
-Lower packages never depend on their outer consumers.
+Trusted Python scripts use `ArchetypeRuntime -> CommandDispatcher.apply/defer`.
+Untrusted clients use `CLI/HTTP -> API authentication ->
+CommandDispatcher.apply_as/defer_as`. Both paths construct the same exact
+owning-family models; registered handlers never receive `ActorCtx`. The CLI is
+an HTTP client except for server startup. Lower packages never depend on their
+outer consumers.
 
 The complete allowed service edges, composition rules, and public/internal
 classification are normative in
@@ -305,6 +316,7 @@ Idempotency:
 A world owns:
 
 - the `world_id` and human-readable name
+- one immutable UUIDv7 `run_id`
 - entity-to-signature bookkeeping
 - the next world-local entity ID counter
 - staged spawn/despawn caches
@@ -316,17 +328,35 @@ A world owns:
 
 One tick MUST follow this order:
 
-1. fire `PreTick` hooks
-2. determine active signatures from live state plus staged mutations
-3. for each signature:
+1. materialize due durable commands against the exact already-locked world
+2. fire `PreTick` hooks
+3. determine active signatures from live state plus staged mutations
+4. compute every signature without writing:
    - load previous state
    - apply staged despawns to the existing population
    - execute processors over the existing population
    - concat staged spawn rows, raw
-   - persist through the updater
-4. replace the live snapshot with active rows only
-5. increment the world tick
-6. fire `PostTick` hooks
+5. append every computed frame, flush durable storage, then publish the tick
+   manifest and command settlement
+6. if the publish response is uncertain, retain the exact prepared commit and
+   reconcile it before admitting any mutation or later tick; exact-token
+   recovery releases only coordinator-local staging and MUST NOT replay
+   materialization, processing, append, or a second fenced catalog write
+7. consume staged mutations and replace the live snapshot with active rows
+8. increment the world tick and record the manifest-bound
+   `CommittedTickReceipt`
+9. fire advisory `PostTick` hooks
+10. return the already-recorded receipt
+
+Managed simulation retains that receipt until its one required projector
+acknowledges the exact receipt identity. Projection occurs after commit and
+outside advisory hooks. A projection failure does not roll back or replay the
+tick, and its retained receipt MUST be retried before another managed tick.
+Caller cancellation after publication cannot discard the recorded receipt:
+the managed boundary retains it before propagating cancellation. The required
+projector executes under exact-world authority and may only persist
+deterministic, idempotent intent; provider and sandbox I/O belong to a
+downstream resource consumer outside the world lock.
 
 ### Initial conditions
 
@@ -351,11 +381,11 @@ One tick MUST follow this order:
 ### Run contract
 
 - A world owns one active `run_id`. A new world mints it at construction,
-  mutable resume restores it, and a fork mints a fresh identity for its new
-  lineage.
-- `RunConfig.run_id` is a call-level candidate retained for lower-level
-  compatibility. Execution MUST NOT replace an active world's `run_id` with
-  it.
+  mutable resume restores it, and a fork mints a fresh UUIDv7 identity for its
+  new lineage. Managed lifecycle registers the final identity before it binds
+  the writer coordinator and constructs the world.
+- `RunConfig` contains execution policy only. It cannot supply or replace a
+  world's identity, and `world.run_id` is read-only.
 - `world.run(run_config)` MUST stamp the world's active `run_id` across every
   tick in the call and across repeated calls on that world.
 - Query defaults that rely on the current run SHOULD use the world's active
@@ -420,20 +450,66 @@ One tick MUST follow this order:
 - Hook removal SHOULD be idempotent.
 - Spawn, despawn, and component migration hooks SHOULD fire from every public
   mutation path that queues the corresponding mutation.
+- A required post-commit projector is a separate managed-world port. It is
+  idempotent by `(consumer_name, receipt.identity)`, is never registered in the
+  hook bus, persists only deterministic intent under exact-world authority,
+  and reports failure as committed-but-unprojected work. Provider or sandbox
+  I/O MUST NOT execute through this port.
+- A downstream Activity worker MAY claim that intent and perform provider work
+  outside the world lock. Its bounded result becomes a factual observation in
+  a later tick; it MUST NOT directly advance family workflow state. See
+  [Activities](activities.md).
 
 ## Application Layer Contracts
 
 [Application Architecture](application-architecture.md) owns service placement
-and dependency direction. Concrete services and `ServiceContainer` are internal
-implementation machinery. The target policy boundary is `CommandGateway :
-iCommandGateway` for untrusted ingress and `RuntimeApplication :
-iRuntimeApplication` for actor-free application execution.
+and dependency direction. Concrete services, `RuntimeResources`, and
+`archetype.wiring` are internal implementation machinery. Runtime and API
+construct exact family models and select trusted or actor-aware dispatcher
+entry. The commands-owned `CommandDispatcher` and `Policy` are the policy
+boundary.
+
+### Activity boundary
+
+- Commands enter a tick and settle with its manifest. Activities leave one
+  committed tick and settle only against the later committed receipt that
+  observes their result.
+- Activity source and observation receipts MUST carry a durable visibility
+  token. Tokenless bare-core or uncoordinated ticks cannot admit or settle an
+  Activity.
+- Activity delivery uses at-least-once claims plus provider reconciliation. A
+  lease or fence prevents stale control writes but MUST NOT be interpreted as
+  exactly-once external execution.
+- A stable logical provider operation identity MUST become durable before any
+  external effect. If it cannot, the adapter fails closed. A later
+  provider-returned handle is supplemental evidence, not replay permission.
+- Confirmed provider absence alone MUST NOT authorize another attempt: a stale
+  claimant can start after the absence check. The adapter MUST first provide a
+  bounded durable retry guard proving atomic provider deduplication/fencing or
+  that every stale claimant is irrevocably unable to start.
+- Generic Activity mechanics own identity, claims, attempts, fences, bounded
+  retry-guard/result references, and settlement. Provider-specific recovery
+  meaning remains with the owning family or adapter.
+- Activity control records are not generic ECS Components. Components and
+  processors remain the semantic state and transition authority.
+- Settlement MUST require family-owned completeness evidence that binds the
+  Activity kind and identity to the exact recorded result reference/digest. A
+  correlation identity or partial result-derived fact set is insufficient.
+- Large results MUST become durable through storage or artifacts before the
+  Activity catalog records their bounded reference and digest.
+- V1 does not transfer in-flight Activities across lineage. Before an
+  Activity-backed family is wired into lifecycle operations, `fork_world` and
+  `destroy_world` MUST hold the source exact-world lock, reconcile retained
+  required projection, and refuse while that source has any unsettled
+  Activity. A permitted fork inherits only the complete committed observation,
+  not the source control record.
 
 ### Service error taxonomy
 
-- Public cross-service error contracts MUST live in `archetype.app.errors`.
-  Private service implementations subclass those contracts; transport adapters
-  MUST NOT import private implementation modules to classify failures.
+- Public cross-family error contracts MUST live in `archetype.errors`.
+  Private implementations subclass the canonical contracts; transport
+  adapters MUST NOT import private implementation modules to classify
+  failures.
 - The REST adapter maps `WorldNotFoundError` to HTTP 404, `ConflictError` to
   HTTP 409, and `AvailabilityError` to HTTP 503. Conflict and availability
   responses expose only the contract's client-safe `public_detail`; internal
@@ -446,6 +522,8 @@ iRuntimeApplication` for actor-free application execution.
 
 ### StorageService
 
+- Physical storage authority lives in the top-level `archetype.storage`
+  family. No compatibility storage package or second implementation exists.
 - `StorageService` is the multiton owner for backend triplets:
   `(store, querier, updater)`.
 - Worlds sharing the same effective storage pool key `(uri, namespace, backend,
@@ -469,20 +547,83 @@ iRuntimeApplication` for actor-free application execution.
   read/write operations.
 - Per-store credentials MUST NOT rely solely on process-global Daft planning
   config.
+- A `StorageService`-managed ECS append MUST materialize its producer into
+  Arrow exactly once. A retry MUST reuse that payload, commit token, and
+  physical table identity; it MUST NOT collect, plan, or execute the producer
+  again.
+- Only an exact Iceberg `CommitFailedException`, which proves the catalog
+  compare-and-swap did not land, MAY be retried. Retry MUST refresh table
+  metadata and stop after a bounded number of full-jitter attempts.
+- An exact Iceberg `CommitStateUnknownException` MUST NOT authorize replay.
+  The v0.5 contract freezes it as `AmbiguousCommitError`, preserving the
+  table, world, run, tick, commit token, and writer epoch for the caller.
+  The managed store MUST reject later non-empty appends to that physical table
+  for its remaining lifetime before materialization, including a restored
+  cached batch. Exact snapshot reconciliation and restart-persistent freeze
+  state are not shipped in v0.5; the physical append may be durable, but it
+  remains logically invisible unless its tick manifest is later published
+  (issue #704).
+- Control-catalog bootstrap MUST be captured once in an immutable
+  `ControlCatalogConfig`. `RuntimeBootstrapConfig.from_env()` may resolve it
+  once at the host boundary; ordinary storage/catalog operations MUST NOT
+  reread ambient application configuration.
+- `pin_visibility()` MUST return an immutable world/run manifest-token
+  snapshot. `scan_visible_world_rows()` MUST apply only physical world/run,
+  manifest-token, and optional maximum-tick filtering; entity liveness,
+  same-tick active/inactive resolution, component ownership, lineage meaning,
+  resumed tick, and next entity ID remain world-family rules.
+- A pinned logical-world read MUST resolve durable fork lineage in the world
+  family, capture the current run and every ancestor segment's manifest-token
+  allowlist (or its capped pre-manifest legacy prefix) at its immutable
+  fork-time tick cap before consumption, and reuse that exact segment
+  visibility without repinning while the read executes.
+- A parented world with no lineage rows MAY be interpreted as child-only only
+  when its own history begins at tick zero, or when the recorded parent is
+  absent from the target storage catalog because the fork intentionally
+  severed storage lineage. A present same-store parent plus a later child
+  origin and no lineage MUST fail closed as corruption.
+- `append_world_rows()` and `read_world_rows()` MUST resolve the durable
+  world/run from the control catalog. Callers cannot supply those envelope
+  columns, and conditional keys MUST be extended with both coordinates.
+- A commit coordinator is construction-bound to one world, run, and writer
+  epoch. Its write methods do not accept caller-supplied world/run identity,
+  and publication MUST reject a context from another writer epoch before any
+  catalog write. Cross-segment `visible_tokens` reads remain explicit.
+- Local SQLite MAY colocate directory and per-world control records. The remote
+  topology MUST NOT imply a global transaction: only the target world's
+  control authority atomically combines manifest publication, command
+  settlement, and durable control-outbox append after data flush; directory
+  discovery and Iceberg commits remain separate authorities.
+- Remote cleanup-only registration MUST use protocol v8 and succeed only when
+  both the Directory and per-world authority confirm active status and the
+  exact cleanup-only writer marker. After issuing the registration `POST`, a
+  non-success response, transport failure, response parse or confirmation
+  failure, or cancellation MUST trigger cancellation-resistant exact
+  retirement before the original outcome propagates.
+- Exact v8 retirement MUST carry the complete cleanup-only `WorldRecord`.
+  Directory retirement MUST atomically create a destroyed tombstone when
+  absent, destroy the exact active row, accept the exact destroyed row
+  idempotently, and leave a conflicting identity unchanged. Destroyed status
+  MUST be monotonic in both remote authorities so a delayed registration cannot
+  resurrect the writer. These rules remain protocol v8 and require neither a
+  version bump nor an additional data migration.
 - The LanceDB path MUST NOT construct a Daft `Session` or Daft `Catalog`.
 - Service shutdown MUST shut down every managed backend exactly once per
   instance.
 
-### WorldFactory
+### Managed world construction
 
-- `WorldFactory` is the seam between app and core.
-- It MUST obtain the backend triplet from `StorageService` and assemble an
-  `AsyncWorld` with a system, querier, and updater.
-
-### WorldService
-
-- `WorldService` owns the in-memory catalog of active worlds.
-- `create_world()` MUST be idempotent by explicit `world_id`.
+- `build_world(...)` is the module-level seam between the world family and
+  core.
+- `WorldLifecycle` MUST obtain the backend triplet through `iStorageService`
+  and assemble an `AsyncWorld` with a system, querier, updater, commit
+  coordinator, and construction-injected command materializer.
+- `WorldRegistry` owns the in-memory catalog of active worlds, exact-world
+  locks, point-in-time exact-binding listing references, storage coordinates,
+  cleanup leases, and required-projection receipt retention. Rebinding even
+  the same Python world object creates a replacement authority outside an
+  earlier listing snapshot.
+- `WorldLifecycle.create_world()` MUST be idempotent by explicit `world_id`.
 - Name lookup is a convenience index; names are unique, but they are not the
   idempotency key.
 - Duplicate-name validation MUST happen before a new world is inserted into the
@@ -491,15 +632,30 @@ iRuntimeApplication` for actor-free application execution.
 - If durable catalog registration or writer-fence acquisition fails after
   construction, `create_world()` MUST remove the new live world before
   propagating the failure.
-- Broker injection into world resources is an app-layer responsibility.
+- `create_closing_world()` MUST require a pre-reserved activation owner. It
+  MUST synchronously bind the exact catalog and cleanup-only `WorldRecord` to
+  that owner before registration, then synchronously promote the same owner to
+  the canonical sticky cleanup lease immediately after registry insertion.
+  Activation failure MUST finish the currently bound cleanup
+  cancellation-resistantly; failed cleanup remains owned and retryable.
+- Live resource injection is an application-layer responsibility.
 - `destroy_world()` SHOULD be safe to call on a missing world.
 - `fork_world()` MUST create a new `world_id`, clone the source world's visible
   state, and let source and fork diverge independently.
+- Before selecting a live fork snapshot, managed execution MUST retry retained
+  projection and reconcile any prepared source publication under its exact
+  identity. An unresolved outcome fails without registering a child.
 - Forking MUST transfer pending spawn/despawn caches so spawn-then-fork before
   the next tick materializes in both worlds.
 
 ### Command ledger, scheduler, and dispatcher
 
+- Every governed operation has one exact `OperationRegistry` entry containing
+  its model/discriminator, handler, permission, quota scope, availability,
+  bounded summary, and optional durable decoder/materializer.
+- Only `Spawn`, `SpawnReserved`, `Despawn`, `Update`, `AddComponents`, and
+  `RemoveComponents` have durable registrations. Direct-only, trusted-only,
+  and unregistered models MUST fail before scheduler persistence.
 - Deferred admission is durable before the caller receives `command_id`.
 - Commands are partitioned by world and ordered by a durable
   `(scheduled_tick, priority, sequence)` key.
@@ -516,57 +672,98 @@ iRuntimeApplication` for actor-free application execution.
 - A command becomes `APPLIED` only when the tick manifest that makes its effect
   visible is published. Manifest and outcome settlement are one control-plane
   transaction.
-- RBAC and quota admission happen only at `iCommandGateway`; trusted local
+- Actor-aware RBAC and quota admission happen in the commands-owned
+  `CommandDispatcher` and instance-owned `Policy`. Trusted dispatcher entry
+  MUST NOT fabricate an actor or authorization evidence; trusted durable
   admission records an explicit local origin.
 
-### Command gateway
+### Dispatcher ingress
 
-- `iCommandGateway` is the policy enforcement point for untrusted operations.
-- Direct methods authorize, delegate to `iRuntimeApplication`, access-audit,
-  and return a result immediately.
-- `submit()` and `submit_batch()` are tick-deferred APIs. They return command IDs
-  and durably admit work for later application.
-- Generic deferred submission MUST accept only commands with a tick-boundary
-  dispatcher, plus the intentional `MESSAGE`, `CUSTOM`, and `QUERY_WORLD`
-  application envelopes. All other command types MUST be rejected before quota
-  debit, audit emission, or durable admission.
-- `submit_spawn()` is the special case that reserves a world-local entity ID
-  before enqueue so `spawn()` can honestly return `entity_id`.
-- Reservation MUST be serialized per world.
-- `submit()`, `submit_batch()`, and `submit_spawn()` MUST reject submissions to
-  an unknown `world_id` by raising `archetype.app.errors.WorldNotFoundError`
-  before any quota debit, durable admission, or audit emit.
-- Command-family dispatch is the application boundary at tick time; the
-  gateway has no drain method.
-- World lifecycle operations use direct gated methods such as `create_world`,
-  `fork_world`, and `destroy_world`.
+- Trusted runtime adapters construct exact family models and call
+  `CommandDispatcher.apply`, `defer`, or their batch/spawn variants.
+- Untrusted adapters authenticate `ActorCtx`, construct the same exact models,
+  and call `apply_as`, `defer_as`, or their actor-aware batch/spawn variants.
+- `CommandDispatcher` and `Policy` are the policy enforcement point. Transport
+  MUST NOT own role tables, quota counters, scheduler state, or audit storage.
+- The HTTP `SubmitCommandRequest` shape is a finite transport compatibility
+  input. The route translates only the five portable mutation names to exact
+  world operation models plus `DurableOptions`; no generic application command
+  envelope crosses into production code.
+- Deferred submission MUST accept only exact portable tick operations.
+  Unknown names and every direct-only operation MUST be rejected before quota
+  debit, audit emission, or scheduler persistence.
+- Deferred spawn is the special case that reserves a world-local entity ID
+  through `CommandScheduler`, transforms `Spawn` into the internal exact
+  `SpawnReserved`, and returns the reserved identity honestly.
+- Reservation MUST be single-flight for one command identity; an identical
+  retry reuses the reservation and conflicting content fails.
+- Pure role denial MUST happen before world resolution, quota debit, durable
+  admission, family effects, or evidence. After authorization, unknown or
+  closing worlds MUST fail through the exact registry/catalog admission
+  boundary rather than create a command row.
+- `CommandScheduler.materialize(actual_world, tick)` is the durable boundary at
+  tick time; the dispatcher does not reacquire that world.
+- World lifecycle operations are exact direct models such as `CreateWorld`,
+  `ForkWorld`, and `DestroyWorld`.
 
 Leasing is non-destructive. Applied outcomes settle with tick visibility;
 retryable failures remain recoverable and exhausted failures become terminal.
 
-### SimulationService
+### Managed world execution
 
-- `step()` is the authoritative world execution boundary.
-- `step()` MUST apply due commands before world execution.
-- `step()` MUST receive an explicit `RunConfig` from the caller; the service
+- `archetype.world.simulation.step()` is the authoritative managed-world
+  execution boundary.
+- Managed `step()` MUST rely on the world's construction-injected scheduler
+  materializer, which applies due commands before `PreTick` and active-signature
+  discovery while the exact world operation lock is already held.
+- Managed `step()` MUST receive an explicit `RunConfig` from the caller; it
   MUST NOT mint a fresh `RunConfig` per call. The world's active `run_id`, not
   reuse of a particular config object, provides continuity across calls.
+- Private physical-evidence worlds MUST remain `status="active"` while they
+  materialize ticks and MUST carry immutable `writer_mode="cleanup_only"` from
+  first durable registration. Mutable resume MUST require both active status
+  and `writer_mode="resumable"` and refuse cleanup-only or unknown future modes
+  before opening storage or acquiring a writer fence.
 - `run()` MUST thread the caller's `RunConfig` into every `step()` call while
   preserving and reporting the world's active `run_id`.
+- After publication, a configured required projector MUST consume and
+  acknowledge the stable `CommittedTickReceipt`. Failure is post-commit: the
+  receipt remains retained and retryable, and the tick MUST NOT be replayed.
+- After durable rows are flushed, an uncertain manifest response MUST retain
+  the exact prepared context and frames. Exact-token visibility permits only
+  local staging acknowledgment and receipt completion, even after fence
+  handoff; it does not authorize a second catalog write or later work from the
+  stale writer. An explicit missing tick from the fenced authority permits a
+  fresh attempt. An unreadable result, a legacy `None`, or a different token
+  fails closed. Until resolved, entity, processor, hook, and resource mutation
+  MUST reject without changing live state.
+- The core records the committed receipt before advisory `PostTick`. Managed
+  cancellation after publication MUST retain that receipt and retry required
+  projection before any later tick.
+- A live boundary that branches, counts new work, reports a tick, or persists
+  tick attribution MUST reconcile retained projection and prepared publication
+  before selecting that boundary. This includes fork, run/episode start,
+  live world-info snapshots, and artifact occurrence context. Multi-world
+  reporting MUST NOT hold sibling world locks while recovery fires advisory
+  hooks or a required projector.
 - Episodes and rollouts follow [Execution Hierarchy](execution-hierarchy.md).
 
-### QueryService
+### Durable world reads
 
-- `QueryService` is the internal read facade below the gate.
-- Trusted runtime reads go through `iRuntimeApplication`; untrusted reads go
-  through `iCommandGateway` and then the same application operation.
+- `archetype.world.query` is the internal durable ECS read surface below the
+  supported adapters.
+- Trusted runtime and untrusted API adapters construct the same exact
+  registered query model and enter the appropriate actor-free or actor-aware
+  dispatcher method.
 - Archetype and component reads MUST resolve storage per call and query durable
   rows by `world_id` and `run_id`; they do not require the world to be live in
   the process registry.
 - Coordinated reads MUST restrict results to catalog-published commit tokens.
 - Fork-aware reads MUST compose persisted lineage segments with the fork's own
   rows without requiring a live source world.
-- `get_lineage()` reads persisted ancestry. `list_signatures()` combines the
+- `get_lineage()` reads persisted ancestry through open-never-create physical
+  reads of both current and legacy lineage table identities; an absent optional
+  lineage projection MUST NOT create a table. `list_signatures()` combines the
   selected store's process-local registry with its durable control-catalog
   records, resolving imported component classes by schema fingerprint and
   exact durable table identity. Unresolvable historical records emit a warning
@@ -574,21 +771,41 @@ retryable failures remain recoverable and exhausted failures become terminal.
   discovery. Exact process-local class identities take precedence over catalog
   reconstruction. Catalog outages degrade discovery to the process-local
   subset; mutable resume and commit-visibility checks remain strict.
-- Audit history is served by the audit projection through the application or
-  authorized gateway boundary. `QueryService` has no audit dependency.
+- Analytical audit history is served by commands-owned `AuditLog` through the
+  registered direct-only `GetAuditHistory` operation. Durable command records
+  remain available through `CommandScheduler.records`/`history`; durable world
+  query has no audit dependency.
 
-### ServiceContainer and runtime lifetime
+### RuntimeResources and process lifetime
 
-- `ServiceContainer` is the internal process-scoped wiring root and the only
-  app module that imports concrete implementations across families.
-- It exposes actor-free `application` and authorized `gateway` ports, owns the
-  command/control and audit infrastructure, and owns a `StorageService` it
-  creates while borrowing one supplied by a caller.
-- Container shutdown MUST be explicit and distinct from per-world removal.
-- Shutdown stops admission, drains admitted operations, stops command leasing,
-  reconciles audit projection, closes worlds, and then releases owned storage.
-  It attempts every phase and aggregates failures. Injected storage remains
-  caller-owned.
+- `archetype.wiring` is the internal process-scoped composition root and the
+  only module that imports concrete implementations across families.
+- It composes one `OperationRegistry`, `Policy`, `CommandScheduler`,
+  `AuditLog`, `CommandDispatcher`, world graph, and application service graph,
+  then returns one `RuntimeResources`.
+- Process shutdown MUST be explicit and distinct from per-world removal.
+- Physical-provider admission MUST validate each supplied role with Daft's
+  exact serializer before ownership transfer, world creation, or provider
+  effects. Accepted providers are serializable non-owning handles; independently
+  owned closeable worker resources require a separate executor-teardown
+  contract.
+- Physical workflow composition MUST reserve process-owned cleanup before
+  private-world creation. The reservation MUST immediately own a deferred
+  cleanup resource. Before registration, lifecycle MUST bind the exact catalog
+  and complete cleanup-only `WorldRecord` to that resource. Immediately after
+  registry insertion it MUST promote the same owner, without awaiting, to the
+  canonical exact `WorldCleanup` lease. Activation cleanup before promotion
+  uses exact registration retirement; cleanup after promotion MUST revalidate
+  and execute through registered canonical `WorldCleanup`. Handlers MUST NOT
+  bypass either path with direct lifecycle destruction. A failed attempt
+  remains owned for shutdown retry and provider close joins it. Every failure
+  MUST remain visible; caller cancellation and cleanup-originated cancellation
+  MUST NOT be conflated.
+- Shutdown stops and drains dispatcher admission, joins supervised work, then
+  closes workflow handles, world handles, audit, and owned storage in that
+  order. It attempts every owner in a phase, aggregates labelled original
+  causes, and retains only failed ownership plus dependencies for retry.
+  Injected storage remains caller-owned.
 
 ## Multi-World Contracts
 
@@ -610,7 +827,7 @@ retryable failures remain recoverable and exhausted failures become terminal.
 ### Purpose
 
 This section defines the minimum contracts for any top-level runtime API that
-wraps Archetype's service layer. These requirements exist to prevent a
+wraps Archetype's dispatcher and process resources. These requirements exist to prevent a
 convenience API from weakening the engine's concurrency guarantees, world
 lifecycle isolation, or gate-based command semantics.
 
@@ -624,7 +841,7 @@ These requirements apply to:
 
 - Any proposed top-level `World`, `Processor`, `Archetype`, `Runtime`, or
   `run_sync` runtime API
-- Any wrapper over the internal application gateway and service graph
+- Any wrapper over the internal dispatcher and resource graph
 - Any re-export change that alters the default public API surface
 
 These requirements do not authorize changes to `src/archetype/core/`, which
@@ -632,9 +849,9 @@ remains read-only unless separately approved.
 
 ### Core Principle
 
-Runtime wraps the service layer. Runtime does not bypass the service layer, weaken
-its guarantees, or silently change the semantics of commands, world identity,
-or execution.
+Runtime wraps exact dispatcher operations. Runtime does not bypass governed
+entry, weaken its guarantees, or silently change the semantics of commands,
+world identity, or execution.
 
 ### Concurrency Contract
 
@@ -649,6 +866,8 @@ Required behavior:
 - No implicit world creation during object construction
 - No mutation of process-global runtime state during object construction
 - No background task startup during object construction
+- A process-local owner reservation for the inert handle is allowed and
+  required for deterministic teardown.
 
 #### C2. Single-flight activation
 
@@ -693,9 +912,9 @@ Required behavior:
 - Calls queued behind an in-flight operation MAY fail with the runtime's closed
   error once shutdown has started; they have not yet been admitted.
 
-#### C5. Honest command return values
+#### C5. Honest operation return values
 
-Sugar methods must not claim stronger return semantics than the service layer
+Sugar methods must not claim stronger return semantics than the exact operation
 can provide.
 
 Required behavior:
@@ -744,13 +963,13 @@ Contract tests: `tests/core/test_same_tick_mutation_composition.py`.
 
 #### L1. Separate runtime lifetime from world lifetime
 
-The runtime/container lifetime and individual world lifetimes must be modeled as
+The runtime-resource lifetime and individual world lifetimes must be modeled as
 different scopes.
 
 Required behavior:
 
 - A process-scoped runtime must not be implicitly treated as world-scoped
-- A world wrapper must not own the entire container by default
+- A world wrapper must not own the entire process graph by default
 - Destroying or shutting down a world must not automatically tear down the
   runtime that may serve sibling worlds
 
@@ -832,8 +1051,8 @@ runtime level, not implicitly at each world wrapper.
 
 Required behavior:
 
-- Entering a runtime context may create or attach the container
-- Exiting a runtime context may shut down the container
+- Entering a runtime context may create or attach `RuntimeResources`
+- Exiting a runtime context may close `RuntimeResources`
 - Exiting a world context must not tear down process-shared infrastructure
   unless the world context is explicitly defined as owning a dedicated runtime
 
@@ -867,10 +1086,11 @@ Script ergonomics must not come from removing safety mechanisms.
 Required behavior:
 
 - Trusted runtime calls are actor-free and do not claim RBAC enforcement;
-  untrusted API calls must flow through `iCommandGateway`
+  untrusted API calls must authenticate and use actor-aware dispatcher entry
 - Access audit and domain outcome evidence must be attributed to their actual
   owning boundaries
-- Direct resource mutation must not be described as governed by the gateway or scheduler
+- Direct resource mutation must not be described as governed by transport or
+  the scheduler
 
 #### S6. Recommended runtime APIs should be mutation-complete
 
@@ -886,7 +1106,7 @@ Required behavior:
 - The recommended runtime world handle SHOULD expose actor-free processor
   mutation verbs for `add_processor` and `remove_processor`
 - Runtime audit access such as audit history SHOULD remain available without
-  requiring direct container access
+  requiring direct process-wiring access
 
 #### S7. Declarative scaffolding must remain explicit
 
@@ -897,9 +1117,9 @@ Required behavior:
 
 - World-handle construction is an immediate trusted runtime operation.
 - Activation, hook registration, resource attachment, mutation, simulation,
-  read, fork, and destroy operations flow through `iRuntimeApplication`.
-- Untrusted ingress performs the corresponding operation through
-  `iCommandGateway` first.
+  read, fork, and destroy operations flow through exact dispatcher operations.
+- Untrusted ingress authenticates, then performs the corresponding operation
+  through actor-aware dispatcher entry.
 
 ### Runtime Acceptance Criteria
 
@@ -931,8 +1151,8 @@ the constraints that any acceptable design must satisfy.
 | Operation | Expected contract |
 |---|---|
 | `StorageService.get_or_create_store(key)` | Idempotent per `(uri, namespace, backend, Daft IOConfig fingerprint, cache config)` within one service instance |
-| `WorldService.create_world(world_id=X)` | Idempotent by explicit `world_id` |
-| `WorldService.destroy_world(missing)` | Safe no-op |
+| `WorldLifecycle.create_world(world_id=X)` | Idempotent by explicit `world_id` |
+| `WorldLifecycle.destroy_world(missing)` | Safe no-op |
 | `AsyncCachedStore.shutdown()` | Idempotent |
 | Command admission with the same `command_id` and content | Idempotent; returns the existing durable record |
 | Command admission with the same `command_id` and changed content | Conflicts |
@@ -952,18 +1172,15 @@ the constraints that any acceptable design must satisfy.
 | Store `append()` replay | Not idempotent; repeating an append persists duplicate rows |
 | Updater `update()` replay | Not idempotent; repeating an update appends another row version |
 | Store `get_archetype_df()` replay | Idempotent for the same persisted data |
-| `QueryService` fixed-state reads | Idempotent for fixed rows, history, and signature catalog |
+| Durable world fixed-state reads | Idempotent for fixed rows, lineage, and signature catalog |
 | Catalog re-registration | Same identity and content is an idempotent no-op; different content conflicts loudly |
 | Coordinated tick retry after failed publish | Unpublished attempts stay invisible; retry produces exactly one visible attempt |
 | Cold discovery and reads | Repeated cold discovery and reads return stable durable state |
 | Fenced mutable resume | Resume continues from the last visible tick and stale-writer retries stay invisible |
-| Artifact publication replay | Identical producer identity and payload converges on one visible artifact/link; changed payload conflicts |
-| Artifact publication crash recovery | Lease takeover completes an appended orphan without creating a second visible publication |
-| `evaluate()` replay | Same evaluation identity, subject, and contract returns one receipt without re-grading |
+| Artifact ingestion replay | Not idempotent; every submission records a new UUIDv7 occurrence while identical bytes reuse one content-addressed object |
+| `evaluate()` replay | Same evaluation identity, subject, and contract returns the persisted result without re-grading |
 | Hard process crash and cold resume | Unpublished physical rows do not advance a fresh process beyond the last visible tick |
 | Independent writer-process race | Exactly one fenced writer publishes the contested tick |
-| Independent process `publish()` replay | Concurrent processes converge on one visible external artifact |
-| Independent process `evaluate()` replay | Concurrent processes grade once, and changed subjects conflict before grading |
 
 The durable rows above summarize the normative amendments in
 [Durable Discovery](durable-discovery.md),
@@ -976,19 +1193,17 @@ executes the behavioral scenarios.
 The behavioral suite is an independent oracle: it does not call or import the
 feature tests under `tests/app/`. Each task builds fresh storage and asserts
 primarily on service-facing outcomes and durable query results. Deterministic
-fault injection targets only the documented manifest-publish and
-claim-completion boundaries; selected internal counters provide secondary
-failure diagnostics. Coverage is deliberately symmetric: repeated no-ops must
-collapse, non-idempotent simulation calls must remain distinct, concurrent
-durable submissions must converge, interrupted commits must recover, and
-identity reuse with changed content must fail loudly. A new matrix row
+fault injection targets the documented manifest-publish boundary; selected
+internal counters provide secondary failure diagnostics. Coverage is
+deliberately symmetric: repeated no-ops must collapse, explicitly
+occurrence-based submissions must remain distinct, interrupted tick commits
+must recover, and identity reuse with changed content must fail loudly. A new matrix row
 therefore requires a registered behavioral task, and a new task must trace
 back to at least one matrix row.
 
-Four tasks cross real OS-process boundaries over shared LanceDB and SQLite
-files: hard process death followed by cold resume, a two-writer fence race,
-eight-process artifact replay, and eight-process evaluation replay with an
-external grader-call ledger. The `infrastructure-idempotency` GitHub Actions
+Two tasks cross real OS-process boundaries over shared LanceDB and SQLite
+files: hard process death followed by cold resume and a two-writer fence race.
+The `infrastructure-idempotency` GitHub Actions
 job creates a disposable Iceberg table under a unique Cloudflare R2 object
 storage prefix and runs the integration under `tests/infrastructure/`; local
 development does not require Docker. The catalog metadata is isolated in a
@@ -1004,11 +1219,11 @@ behavior and an executable oracle.
 | Item | Status | Contract or remaining work | Oracle or tracking |
 |---|---|---|---|
 | 1 | Resolved | Async and sync updater/store failures raise instead of returning a stamped-but-uncommitted frame. | `tests/core/test_async_store_updater_failures.py`; `tests/sync/test_sync_stack_contracts.py` |
-| 2 | Resolved | Tick-deferred submission is allowlisted to dispatched commands and intentional application envelopes; all direct operations fail before quota, audit, or admission. | `tests/integration/test_command_flow.py::test_direct_only_commands_cannot_enter_tick_deferred_scheduler`; Issues #368, #415, #418 |
-| 3 | Resolved | `CommandGateway.submit*` reject an unknown world with `WorldNotFoundError` before quota, enqueue, or audit side effects. | `tests/integration/test_command_flow.py::test_submit_to_unknown_world_rejected` |
+| 2 | Resolved | Compatibility tick-deferred submission translates exactly six portable mutation envelopes. Direct-only operations and legacy `MESSAGE`, `CUSTOM`, and `QUERY_WORLD` envelopes fail before quota debit, evidence, or durable admission. | `tests/integration/test_command_flow.py::test_direct_only_commands_cannot_enter_tick_deferred_scheduler`; Issues #368, #415, #418 |
+| 3 | Resolved | Actor-aware `CommandDispatcher.defer*` rejects an unknown world with `WorldNotFoundError` without creating a durable command row. Pure role denial precedes world resolution and all effects; an authorized later failure may consume its instance-owned quota coordinate and emit bounded failed evidence. | `tests/integration/test_command_flow.py::test_submit_to_unknown_world_rejected`; `tests/commands/test_dispatch_policy_contracts.py` |
 | 4 | Resolved | Duplicate-name and catalog-registration failures leave no hidden live world. | `tests/core/test_orchestrator_errors_and_instrumentation.py`; `tests/app/test_durable_discovery.py::test_failed_catalog_registration_leaves_no_live_world` |
 | 5 | Resolved | Spawn, despawn, and component migration hooks fire from their public mutation paths with the documented queue-time semantics. | `tests/core/test_resources_hooks_messaging.py`; `tests/core/test_batch_spawn_contract.py`; `tests/sync/test_sync_world.py` |
-| 6 | Resolved | `QueryService` performs durable archetype, component, lineage, signature, and audit-backed history reads. | `tests/app/test_atomic_visibility.py`; `tests/app/test_runtime_fork_storage.py`; `tests/app/test_audit_contracts.py` |
+| 6 | Resolved | `archetype.world.query` performs durable archetype, component, lineage, and signature reads; command history comes from the commands-owned audit projection. | `tests/world/test_query_contracts.py`; `tests/world/test_atomic_visibility.py`; `tests/commands/test_audit_projection_contracts.py` |
 | 7 | Resolved | Gated destroy cancels only the target world's unsettled command state and preserves shared runtime and durable history. | `tests/integration/test_fork_destroy_contracts.py` |
 | 8 | Resolved | Same-entity, same-tick mutations compose in durable scheduler order. | `tests/core/test_same_tick_mutation_composition.py`; `evals/suites/idempotency/tasks.py::task_duplicate_same_tick_mutations_collapse`; Issue #193 |
 
@@ -1022,7 +1237,7 @@ undocumented gap.
 | Subsystem | Contract |
 |---|---|
 | Command ledger | **Durable**: admission, order, leases, retries, terminal outcomes, and dead letters survive process loss. Applied outcomes settle atomically with tick publication. |
-| Audit journal | **Durable journal, eventually consistent projection**: authoritative transitions append transactional outbox events. Iceberg is a deduplicated analytical projection with an observable watermark. |
+| Audit journal | **Durable journal, eventually consistent projection**: authoritative transitions append transactional outbox events. Iceberg is a deduplicated analytical projection; scheduler/control-catalog outbox progress exposes the projection watermark. |
 | Mutation idempotency | **Commands are replay-safe by command identity** while direct simulation mutations remain distinct events. Replaying a staged command cannot materialize its effect twice. |
 | API auth | **Trust-boundary contract**: production ingress authenticates a stable principal and fails closed. Any anonymous-admin development mode is explicit and uses a stable process principal. The trusted runtime is actor-free. |
 | RBAC quota state | **Process-local and advisory** in v0.3 (daily token budgets reset on restart). Durable quota accounting is a control-catalog follow-up; deployments needing hard budgets enforce them at the identity layer above. |
@@ -1066,15 +1281,15 @@ prevents the user-facing API from collapsing three separate concerns:
    lifecycle boundaries
 
 The safe top-level abstraction is `ArchetypeRuntime`, not a world-scoped
-context manager. A world handle can be lazy, but the shared runtime/container
-needs an explicit boundary.
+context manager. A world handle can be lazy, but the shared runtime-resource
+graph needs an explicit boundary.
 
 ### Runtime Contracts
 
 - `spawn()` must reserve and return a real `entity_id` all the way through the
   chain. Returning a command ID is a contract violation.
-- World-handle construction must be pure: no I/O, no registration, no backend
-  allocation.
+- World-handle construction must perform no I/O or backend allocation.
+  Synchronous registration of its inert process-lifetime owner is required.
 - First activation must be single-flight. Concurrent first calls must produce
   exactly one backing world.
 - A world must never expose partially initialized state.
@@ -1119,9 +1334,10 @@ boundary.
 
 The recommended public API now lives at the runtime layer, so beginner docs
 and quickstarts must teach `ArchetypeRuntime`, not the lower-level service
-container. Maintainer docs can still explain `ServiceContainer`,
-`CommandGateway`, durable scheduler semantics, audit semantics, and raw ECS flows,
-but they MUST label concrete services and the container as internal.
+wiring. Maintainer docs can still explain `RuntimeResources`, concrete
+application services, durable scheduler semantics, audit semantics, and raw
+ECS flows, but they MUST label process wiring and concrete services as
+internal.
 
 Examples also need to be executed in CI. An example that "looks right" but is
 never run is not documentation; it is an unverified claim.

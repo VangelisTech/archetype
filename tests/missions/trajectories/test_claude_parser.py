@@ -51,7 +51,7 @@ def _parse(lines: list[str], source: ClaudeTranscriptSource | None = None):
     return parse_claude_transcript("\n".join(lines), source or _source())
 
 
-def test_session_parses_to_in_memory_trajectory_and_turns() -> None:
+def test_session_parses_to_in_memory_episode_evidence_turns() -> None:
     loaded = _parse(
         [
             json.dumps({"type": "queue-operation", "operation": "enqueue"}),
@@ -100,10 +100,8 @@ def test_session_parses_to_in_memory_trajectory_and_turns() -> None:
 
     assert loaded is not None
     assert loaded.source_uri == "claude-session://proj-a/abc123"
-    assert loaded.trajectory.trajectory_id == loaded.source_uri
-    assert loaded.trajectory.source == "claude-code"
-    assert loaded.trajectory.model == "claude-fable-5"
-    assert loaded.trajectory.task_id == "proj-a"
+    assert loaded.episode_id == loaded.source_uri
+    assert loaded.model == "claude-fable-5"
     assert loaded.project == "proj-a"
     assert loaded.session_id == "abc123"
     assert loaded.git_branch == "main"
@@ -124,8 +122,8 @@ def test_session_parses_to_in_memory_trajectory_and_turns() -> None:
     assert loaded.turns[3].error == ""
     assert loaded.turns[4].error == "tool_error"
     assert loaded.turns[1].duration_ms == 5000.0
-    assert loaded.trajectory.total_turns == 5
-    assert loaded.trajectory.total_tokens == 42
+    assert loaded.total_turns == 5
+    assert loaded.total_tokens == 42
 
 
 def test_parser_cannot_materialize_new_component_rows() -> None:
@@ -134,11 +132,12 @@ def test_parser_cannot_materialize_new_component_rows() -> None:
     assert loaded is not None
     assert not hasattr(loaded, "components")
 
-    # Historical TrajectoryTurn rows remain a readable authoring contract;
-    # transcript ingestion simply stops writing new ones.
-    historical = loaded.turns[0].to_component(loaded.trajectory.trajectory_id, 0)
-    assert isinstance(historical, TrajectoryTurn)
-    assert historical.content == "hello"
+    # TrajectoryTurn rows remain a deliberate authoring contract;
+    # transcript ingestion does not write them.
+    authored = loaded.turns[0].to_component(loaded.episode_id, 0)
+    assert isinstance(authored, TrajectoryTurn)
+    assert authored.episode_id == loaded.episode_id
+    assert authored.content == "hello"
 
 
 def test_sidechain_and_meta_lines_are_skipped() -> None:
@@ -187,7 +186,7 @@ def test_noise_only_input_returns_none_without_touching_the_source_path() -> Non
 def test_source_identity_is_canonical_and_validated() -> None:
     source = _source(project="repo/name", session_id="session one")
     assert source.source_uri == "claude-session://repo%2Fname/session%20one"
-    assert source.trajectory_id == source.source_uri
+    assert source.episode_id == source.source_uri
 
     with pytest.raises(ValueError, match=".jsonl suffix"):
         ClaudeTranscriptSource(path=Path("proj/session.txt"))

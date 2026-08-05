@@ -25,7 +25,7 @@ The episode contract mirrors Stage 1's physics contract:
 - ``env.reset()`` produces the initial observation, which the driver spawns
   as raw component values — reset obs land on the ledger at tick 0
   untouched (x_0 is given).
-- Each tick, ``EnvStepProcessor`` sends the current action to the env and
+- Each tick, the internal environment-step processor sends the current action to the env and
   records the returned observation: row at tick t+1 is exactly
   ``env.step(action_t)``.
 - ``done`` or inactive rows are frozen: the env is not stepped again and the
@@ -38,19 +38,19 @@ physics substeps.
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from typing import Any, Protocol
+from typing import Any
 
 import daft
 from daft import DataType, Series, col
 
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
-from archetype.physical_ai.boundary import (
+from archetype.physical_ai._dataframe import (
     external_call_indices,
     series_to_rows,
     unpack_struct,
 )
+from archetype.physical_ai.interfaces import EnvClient
 
 ACTION_DIM = 7  # 6-DoF delta pose + gripper, the LIBERO/OSC convention
 
@@ -107,54 +107,11 @@ class ManipFrameRef(Component):
     - Tick-0 refs are the refs returned by ``env.reset(…, with_frames=True)``
       — they land raw on the spawn row.
     - Tick t refs are the refs returned by ``env.step(…)`` — written by
-      ``FramedEnvStepProcessor`` immediately after the env call.
+      the framed environment-step processor immediately after the env call.
     """
 
     agentview_ref: str = ""
     wrist_ref: str = ""
-
-
-class EnvClient(Protocol):
-    """Boundary to an external manipulation simulator.
-
-    Implementations own env instances keyed by ``env_id`` (the entity id).
-    ``reset`` is called by the episode driver *before* spawning, so the
-    returned observation becomes the entity's raw tick-0 row. ``step``
-    advances each env one control step.
-    """
-
-    def reset(self, env_id: int, seed: int) -> dict[str, Any]:
-        """Create/reset the env and return the initial observation dict with
-        keys: eef_pos, eef_quat, gripper."""
-        ...
-
-    def step(self, env_ids: list[int], actions: list[list[float]]) -> list[dict[str, Any]]:
-        """Step each env with its action. Returns one dict per env with keys:
-        eef_pos, eef_quat, gripper, reward, done, success."""
-        ...
-
-
-class EnvClientSpec(ABC):
-    """Picklable, benchmark-supplied recipe for building an ``EnvClient``.
-
-    Registered in a world's ``Resources``; ``EnvStepProcessor`` pulls it and
-    calls ``build()`` to construct the live client — in the driver process or,
-    for ``@daft.cls`` UDFs, once per Daft worker after the spec's scalars cross
-    the pickle boundary (live handles like a Modal stub or a socket do not
-    pickle; the scalars in a concrete spec do).
-
-    The framework defines only this contract. Concrete specs — and the
-    simulators, GPUs, and dependencies they pull in (LIBERO/robosuite/Modal) —
-    live in the benchmark, so nothing under ``src/archetype`` imports a
-    simulator. Register a concrete spec under this base type::
-
-        world.resources.insert_as(MyEnvSpec(suite="..."), EnvClientSpec)
-    """
-
-    @abstractmethod
-    def build(self) -> EnvClient:
-        """Construct the live ``EnvClient`` from this spec's scalar config."""
-        ...
 
 
 _STEP_STRUCT = DataType.struct(
@@ -288,50 +245,23 @@ class _EnvStepper:
         return Series.from_pylist(out)
 
 
-class EnvStepProcessor(AsyncProcessor):
+class _EnvStepProcessor(AsyncProcessor):
     """Step the env and write observations back to the ledger.
 
-    Supports two construction modes:
-
-    1. Constructor injection (existing tests, unchanged)::
-
-           EnvStepProcessor(client=my_env_client)
-
-    2. Resources-spec construction (no live handle at construction time)::
-
-           EnvStepProcessor()  # client=None
-           # Resources must carry an EnvClientSpec at process() time.
-
-    See ``PolicyActionProcessor`` in policy.py for the full
-    driver/worker boundary rationale.
+    The explicit client is registered with the runtime owner before this
+    processor is constructed. Its ``aclose()`` owns every backing resource
+    reached by the serialized Daft handle.
     """
 
     components = (ManipProprio, ManipAction, ManipStatus, ManipTask)
     priority = 10  # after any policy processor writes actions
 
-    def __init__(self, client: EnvClient | None = None):
+    def __init__(self, client: EnvClient):
         # @daft.cls() instances aren't statically typeable (the decorator returns
         # a UDF wrapper, not the class); annotate the slot as Any.
-        self._stepper: Any = None
-        if client is not None:
-            self._stepper = _EnvStepper(client)
-
-    def _ensure_stepper(self, resources: Any) -> None:
-        if self._stepper is not None:
-            return
-        if resources is None:
-            raise RuntimeError(
-                "EnvStepProcessor has no client and no Resources were passed. "
-                "Either pass a client to the constructor or register an EnvClientSpec."
-            )
-        spec: EnvClientSpec = resources.require(EnvClientSpec)
-        # Delegate to spec.build() so subclasses can return a test double
-        # registered via resources.insert_as(fake_spec, EnvClientSpec).
-        client = spec.build()
         self._stepper = _EnvStepper(client)
 
-    async def process(self, df, resources: Any = None, **kwargs):
-        self._ensure_stepper(resources)
+    async def process(self, df, **kwargs):
         nxt = self._stepper.step(
             col("maniptask__env_key"),
             col("manipaction__values"),
@@ -471,44 +401,26 @@ class _FramedEnvStepper:
         return Series.from_pylist(out)
 
 
-class FramedEnvStepProcessor(AsyncProcessor):
-    """Like EnvStepProcessor but also carries ``ManipFrameRef`` on the ledger.
+class _FramedEnvStepProcessor(AsyncProcessor):
+    """Like the environment-step processor but carry frame refs on the ledger.
 
     Use this when the env client returns ``agentview_ref`` and ``wrist_ref``
     alongside proprio (e.g. the ModalEnvClient with ``with_frames=True`` and
     a shared volume mounted at ``/frames``).  The existing
-    ``EnvStepProcessor`` is unchanged — tests that do not use the volume
+    The non-framed processor is unchanged — tests that do not use the volume
     continue to work against it.
 
-    Supports constructor injection and Resources-spec construction
-    (``EnvClientSpec`` in Resources).
+    The client must be an already-constructed, runtime-owned provider.
     """
 
     components = (ManipProprio, ManipAction, ManipStatus, ManipTask, ManipFrameRef)
     priority = 10
 
-    def __init__(self, client: EnvClient | None = None):
+    def __init__(self, client: EnvClient):
         # @daft.cls() instances aren't statically typeable; annotate as Any.
-        self._stepper: Any = None
-        if client is not None:
-            self._stepper = _FramedEnvStepper(client)
-
-    def _ensure_stepper(self, resources: Any) -> None:
-        if self._stepper is not None:
-            return
-        if resources is None:
-            raise RuntimeError(
-                "FramedEnvStepProcessor has no client and no Resources were passed. "
-                "Either pass a client to the constructor or register an EnvClientSpec "
-                "with with_frames=True."
-            )
-        spec: EnvClientSpec = resources.require(EnvClientSpec)
-        # Delegate to spec.build() so subclasses can return a test double.
-        client = spec.build()
         self._stepper = _FramedEnvStepper(client)
 
-    async def process(self, df, resources: Any = None, **kwargs):
-        self._ensure_stepper(resources)
+    async def process(self, df, **kwargs):
         nxt = self._stepper.step(
             col("maniptask__env_key"),
             col("manipaction__values"),
@@ -587,6 +499,9 @@ class ScriptedReachEnv:
                 }
             )
         return results
+
+    async def aclose(self) -> None:
+        """Release this dependency-free provider (a deliberate no-op)."""
 
 
 class ScriptedFramedReachEnv(ScriptedReachEnv):

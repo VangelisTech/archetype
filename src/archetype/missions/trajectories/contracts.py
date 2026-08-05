@@ -1,12 +1,19 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Non-persistent authoring and structural input contracts for trajectories."""
+"""Non-persistent authoring and structural input contracts for episode evidence."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
+
+from archetype.episodes.contracts import (
+    TrajectorySelection as TrajectorySelection,
+)
+from archetype.episodes.contracts import (
+    TranscriptIngestionResult as TranscriptIngestionResult,
+)
 
 if TYPE_CHECKING:
     from archetype.missions.trajectories.components import TrajectoryTurn
@@ -60,12 +67,12 @@ class Turn:
             metadata=dict(data.get("metadata") or {}),
         )
 
-    def to_component(self, trajectory_id: str, seq: int) -> TrajectoryTurn:
-        """Materialize the historical typed turn row without storing metadata."""
+    def to_component(self, episode_id: str, seq: int) -> TrajectoryTurn:
+        """Materialize the typed turn row without storing metadata."""
         from archetype.missions.trajectories.components import TrajectoryTurn
 
         return TrajectoryTurn(
-            trajectory_id=trajectory_id,
+            episode_id=episode_id,
             seq=seq,
             role=self.role,
             content=self.content,
@@ -79,43 +86,10 @@ class Turn:
 
 
 class CommandRecord(Protocol):
-    """Structural command fields required by trajectory transforms."""
+    """Structural command fields required by evidence transforms."""
 
     id: object
     tick: int
     type: object
     priority: int
     version: int
-
-
-class EpisodeRecord(Protocol):
-    """Structural episode fields required by trajectory transforms."""
-
-    episode_id: object
-    terminated: bool
-    duration_steps: int
-
-
-@dataclass(frozen=True)
-class TrajectorySelection:
-    """Typed filters applied to one trajectory component table."""
-
-    trajectory_ids: tuple[str, ...] = ()
-    episode_ids: tuple[str, ...] = ()
-    rollout_ids: tuple[str, ...] = ()
-    task_ids: tuple[str, ...] = ()
-    trial_idxs: tuple[int, ...] = ()
-
-    def requested(self) -> dict[str, tuple[str, ...] | tuple[int, ...]]:
-        """Return only active field filters."""
-        return {
-            name: values
-            for name, values in (
-                ("trajectory_id", self.trajectory_ids),
-                ("episode_id", self.episode_ids),
-                ("rollout_id", self.rollout_ids),
-                ("task_id", self.task_ids),
-                ("trial_idx", self.trial_idxs),
-            )
-            if values
-        }

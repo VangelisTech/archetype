@@ -19,7 +19,7 @@ import pytest
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
-from tests.conftest import make_world_service
+from tests.conftest import make_world_harness
 
 
 class ComposePos(Component):
@@ -32,13 +32,13 @@ class ComposeVel(Component):
 
 async def _make_world(ws, tmp_path):
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-    return await ws.create_world(WorldConfig(name="compose"), storage_config=storage)
+    return await ws.lifecycle.create_world(WorldConfig(name="compose"), storage_config=storage)
 
 
 @pytest.mark.asyncio
 async def test_update_then_add_component_composes(tmp_path):
     """spec C7: ADD_COMPONENT after a same-tick UPDATE keeps the update."""
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         world = await _make_world(ws, tmp_path)
         eid = await world.create_entity([ComposePos(x=1.0)])
@@ -64,13 +64,13 @@ async def test_update_then_add_component_composes(tmp_path):
             "staged row must not also materialize under the old signature"
         )
     finally:
-        await ws.shutdown()
+        await ws.close()
 
 
 @pytest.mark.asyncio
 async def test_two_partial_updates_compose(tmp_path):
     """A second update touching different components keeps the first."""
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         world = await _make_world(ws, tmp_path)
         eid = await world.create_entity([ComposePos(x=1.0), ComposeVel(vx=1.0)])
@@ -86,13 +86,13 @@ async def test_two_partial_updates_compose(tmp_path):
         assert rows[0]["composepos__x"] == 5.0, "first partial update was lost"
         assert rows[0]["composevel__vx"] == 9.0
     finally:
-        await ws.shutdown()
+        await ws.close()
 
 
 @pytest.mark.asyncio
 async def test_spawn_then_add_component_before_first_step(tmp_path):
     """Migrating a spawned-but-unmaterialized entity uses its staged row."""
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         world = await _make_world(ws, tmp_path)
         eid = await world.create_entity([ComposePos(x=3.0)])
@@ -109,12 +109,12 @@ async def test_spawn_then_add_component_before_first_step(tmp_path):
         assert rows[0]["composepos__x"] == 3.0
         assert rows[0]["composevel__vx"] == 4.0
     finally:
-        await ws.shutdown()
+        await ws.close()
 
 
 @pytest.mark.asyncio
 async def test_empty_spawn_then_add_component_before_first_step(tmp_path):
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         world = await _make_world(ws, tmp_path)
         eid = await world.create_entity([])
@@ -129,13 +129,13 @@ async def test_empty_spawn_then_add_component_before_first_step(tmp_path):
         assert rows[0]["entity_id"] == eid
         assert rows[0]["composevel__vx"] == 4.0
     finally:
-        await ws.shutdown()
+        await ws.close()
 
 
 @pytest.mark.asyncio
 async def test_add_components_without_prior_row_is_noop(tmp_path):
     """Issue #367: no staged row + no persisted row -> logged no-op."""
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         world = await _make_world(ws, tmp_path)
         # Poison: the registry claims the entity exists, but no row was ever
@@ -149,13 +149,13 @@ async def test_add_components_without_prior_row_is_noop(tmp_path):
         assert not world.spawn_cache, "no-op must not stage a spawn row"
         assert not world.despawn_cache, "no-op must not stage a despawn"
     finally:
-        await ws.shutdown()
+        await ws.close()
 
 
 @pytest.mark.asyncio
 async def test_remove_components_without_prior_row_is_noop(tmp_path):
     """Issue #367: remove_components mirrors the add_components no-op."""
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         world = await _make_world(ws, tmp_path)
         sig = Archetype.sig_from_components([ComposePos(), ComposeVel()])
@@ -167,4 +167,4 @@ async def test_remove_components_without_prior_row_is_noop(tmp_path):
         assert not world.spawn_cache, "no-op must not stage a spawn row"
         assert not world.despawn_cache, "no-op must not stage a despawn"
     finally:
-        await ws.shutdown()
+        await ws.close()

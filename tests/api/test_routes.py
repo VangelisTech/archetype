@@ -10,13 +10,11 @@ import pytest
 
 from archetype import __version__
 from archetype.api.app import create_app
-from archetype.api.deps import get_actor_ctx, set_container
-from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth import guard
-from archetype.app.gateway.auth.errors import GuardrailError
-from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
-from archetype.app.models import Command, CommandType, EpisodeConfig, RolloutConfig
+from archetype.api.deps import get_actor_ctx
+from archetype.commands.dispatch import CommandDispatcher
+from archetype.commands.policy import Policy
 from archetype.core.config import RunConfig
+from archetype.world.models import EpisodeConfig, ListSignatures, RolloutConfig
 
 pytest.importorskip("httpx", reason="httpx required for API tests")
 
@@ -31,23 +29,12 @@ class QueryRouteMetric104(Component):
     value: float = 0.0
 
 
-@pytest.fixture(autouse=True)
-def _reset_quotas():
-    reset_tick_counters()
-    reset_daily_tokens()
-    yield
-    reset_tick_counters()
-    reset_daily_tokens()
-
-
 @pytest.fixture
-def client():
-    container = ServiceContainer()
-    set_container(container)
+def client(tmp_path, monkeypatch):
+    monkeypatch.setenv("ARCHETYPE_CATALOG_DIR", str(tmp_path / "catalogs"))
     app = create_app()
     with TestClient(app) as c:
         yield c
-    set_container(None)
 
 
 class TestRootRoute:
@@ -205,6 +192,32 @@ class TestCommandRoutes:
         assert resp.status_code == 200
         assert resp.json()["type"] == "spawn"
 
+    def test_submit_command_rejects_caller_reserved_spawn_before_admission(
+        self,
+        client,
+        tmp_path,
+    ):
+        create_resp = client.post(
+            "/worlds",
+            json={"name": "reserved_cmd", "storage_uri": str(tmp_path / "store")},
+        )
+        world_id = create_resp.json()["world_id"]
+
+        resp = client.post(
+            f"/worlds/{world_id}/commands",
+            json={
+                "type": "spawn",
+                "payload": {"entity_id": 41, "components": []},
+            },
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == (
+            "spawn payload cannot supply entity_id; deferred spawn reservations are scheduler-owned"
+        )
+        history = client.get(f"/worlds/{world_id}/commands").json()
+        assert {row.get("type") for row in history}.isdisjoint({"spawn", "spawn_reserved"})
+
     def test_submit_unknown_world_is_not_found(self, client):
         resp = client.post(
             "/worlds/00000000-0000-0000-0000-000000000000/commands",
@@ -224,7 +237,7 @@ class TestCommandRoutes:
             json={"type": "nonexistent_type", "payload": {}},
         )
         assert resp.status_code == 400
-        assert "not a valid CommandType" in resp.json()["detail"]
+        assert "not a registered command operation" in resp.json()["detail"]
 
     def test_submit_batch(self, client, tmp_path):
         create_resp = client.post(
@@ -246,6 +259,37 @@ class TestCommandRoutes:
         ids = resp.json()["command_ids"]
         assert len(ids) == 2
         assert all(isinstance(i, str) for i in ids)
+
+    def test_submit_batch_rejects_caller_reserved_spawn_atomically(
+        self,
+        client,
+        tmp_path,
+    ):
+        create_resp = client.post(
+            "/worlds",
+            json={"name": "reserved_batch", "storage_uri": str(tmp_path / "store")},
+        )
+        world_id = create_resp.json()["world_id"]
+
+        resp = client.post(
+            f"/worlds/{world_id}/commands/batch",
+            json={
+                "commands": [
+                    {"type": "spawn", "payload": {"components": []}},
+                    {
+                        "type": "spawn",
+                        "payload": {"entity_id": "42", "components": []},
+                    },
+                ]
+            },
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == (
+            "spawn payload cannot supply entity_id; deferred spawn reservations are scheduler-owned"
+        )
+        history = client.get(f"/worlds/{world_id}/commands").json()
+        assert {row.get("type") for row in history}.isdisjoint({"spawn", "spawn_reserved"})
 
     def test_submit_batch_invalid_type(self, client, tmp_path):
         create_resp = client.post(
@@ -341,7 +385,9 @@ class TestSimulationRoutes:
         assert resp.status_code == 200
 
         history = client.get(f"/worlds/{world_id}/history").json()
-        assert [row["command_type"] for row in history] == ["create_world", "step"]
+        # Application-scoped creation has no pre-existing world coordinate;
+        # the world-scoped history contains the admitted step exactly once.
+        assert [row["command_type"] for row in history] == ["step"]
 
     def test_step_not_found(self, client):
         resp = client.post(
@@ -562,16 +608,16 @@ class TestQueryRoutes:
         expected_uri,
         expected_namespace,
     ):
-        from archetype.app.gateway.service import CommandGateway
         from archetype.core.config import StorageConfig
 
         captured = {}
 
-        async def list_signatures(_self, _ctx, storage_config):
-            captured["config"] = storage_config
+        async def apply_as(_self, _ctx, operation):
+            assert type(operation) is ListSignatures
+            captured["config"] = operation.storage_config
             return []
 
-        monkeypatch.setattr(CommandGateway, "list_signatures", list_signatures)
+        monkeypatch.setattr(CommandDispatcher, "apply_as", apply_as)
         assert client.get(f"/signatures?{query}").status_code == 200
 
         defaults = StorageConfig()
@@ -690,15 +736,25 @@ def test_route_modules_do_not_import_forbidden_services():
 
 
 @pytest.mark.asyncio
-async def test_development_principal_identity_is_stable_across_requests(monkeypatch):
-    monkeypatch.setattr(guard, "MAX_CMDS_PER_TICK", 1)
+async def test_development_principal_identity_is_stable_across_requests():
     first = await get_actor_ctx("Bearer player")
     second = await get_actor_ctx("Bearer player")
+    policy = Policy(max_commands_per_tick=1)
 
     assert first.id == second.id
-    guard.guardrail_allow(Command(type=CommandType.CUSTOM), first)
-    with pytest.raises(GuardrailError):
-        guard.guardrail_allow(Command(type=CommandType.CUSTOM), second)
+    policy.authorize(
+        first,
+        permission="spawn",
+        world_id="world",
+        target_tick=0,
+    )
+    with pytest.raises(PermissionError, match="per-tick quota"):
+        policy.authorize(
+            second,
+            permission="spawn",
+            world_id="world",
+            target_tick=0,
+        )
 
 
 @pytest.mark.parametrize(

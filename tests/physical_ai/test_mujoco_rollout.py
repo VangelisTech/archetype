@@ -19,7 +19,7 @@ from archetype.physical_ai.mujoco_cartpole import (
     CartpoleStepProcessor,
     raw_rollout,
 )
-from tests.conftest import make_world_service
+from tests.conftest import make_world_harness
 
 # mujoco_cartpole imports mujoco lazily, so the module imports above are safe.
 pytest.importorskip("mujoco")
@@ -45,12 +45,12 @@ def _row_state(row) -> tuple[float, float, float, float]:
 
 @pytest.mark.asyncio
 async def test_ledger_matches_raw_mujoco_rollout_bit_for_bit(tmp_path):
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="mujoco")
         system = AsyncSystem()
         await system.add_processor(CartpoleStepProcessor(substeps=SUBSTEPS))
-        world = await ws.create_world(
+        world = await ws.lifecycle.create_world(
             WorldConfig(name="cartpole"), storage_config=storage, system=system
         )
 
@@ -87,18 +87,18 @@ async def test_ledger_matches_raw_mujoco_rollout_bit_for_bit(tmp_path):
                     f"entity {row['entity_id']} tick {tick}: ledger {got} != raw MuJoCo {want}"
                 )
     finally:
-        await ws.shutdown()
+        await ws.close()
 
 
 @pytest.mark.asyncio
 async def test_spawn_tick_row_is_raw_initial_conditions(tmp_path):
     """Tick 0 is x_0 exactly — the physics processor must not touch it."""
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="mujoco")
         system = AsyncSystem()
         await system.add_processor(CartpoleStepProcessor(substeps=SUBSTEPS))
-        world = await ws.create_world(
+        world = await ws.lifecycle.create_world(
             WorldConfig(name="cartpole-ic"), storage_config=storage, system=system
         )
         await world.create_entity(
@@ -111,4 +111,4 @@ async def test_spawn_tick_row_is_raw_initial_conditions(tmp_path):
         assert len(rows) == 1
         assert _row_state(rows[0]) == (0.5, 0.25, -1.0, 2.0)
     finally:
-        await ws.shutdown()
+        await ws.close()

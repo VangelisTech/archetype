@@ -224,9 +224,12 @@ Everything must be Arrow-serializable for LanceDB storage:
 
 ## File Handling: `daft.File`
 
-Use `daft.from_files` for local or remote globs. It creates lazy `daft.File`
-references; `daft.functions.file_path` preserves the canonical source URI and
-`File.open()` streams content through the configured `IOConfig`.
+Construct exact sources as `daft.File` values and use Daft's glob scan for
+declared local or remote patterns. This distinction keeps query parameters in
+exact signed URLs out of glob syntax. `daft.functions.file_path` preserves the
+canonical source URI and `File.open()` streams content through the configured
+`IOConfig`. Ask `File.mime_type()` for Daft's built-in MIME classification; do
+not reintroduce a Python `mimetypes` fallback.
 
 ```python
 from daft import col
@@ -235,6 +238,26 @@ from daft.functions import file_path
 files = daft.from_files("s3://bucket/inputs/**/*.json", io_config=io_config)
 files = files.with_column("source_uri", file_path(col("file")))
 ```
+
+Archetype's reusable file path is intentionally cohesive:
+
+- `archetype.artifacts.pipeline.FileIngestionPipeline` keeps scan, UUIDv7
+  occurrence identity, MIME classification, content-addressed persistence,
+  durable-object reopening, and every common or media-specific Daft index in
+  one readable graph;
+- `archetype.artifacts.scanners` contains only pure metadata algorithms,
+  streaming where the format permits it;
+- the UUIDv7 supplies both `artifact_id` and `ingested_at`;
+- SHA-256, XXH3-64, and byte size are computed in one streaming pass; and
+- nested metadata structs are unnested directly into each narrow index.
+
+`BUFFER_COPY` controls the size of each sequential read. It is not a total file
+size limit. Local content-addressed persistence stages and hashes the bytes in
+one pass, then atomically publishes the digest path without rereading either
+the source or an existing destination.
+
+Keep resize, resample, transcode, OCR, and embeddings as explicit derivative
+artifact workflows. They must not silently mutate the submitted occurrence.
 
 For weights-as-data patterns:
 
@@ -261,11 +284,24 @@ There are two distinct concepts, unfortunately both historically called "resourc
 | Concept | Module | Purpose |
 |---------|--------|---------|
 | **Resources** | `core/resources.py` | Type-safe DI container for processors |
-| **StorageService** | `app/storage/service.py` | Pools stores and resolves control catalogs |
+| **StorageService** | `storage/service.py` | Admits terminal Daft execution; owns app tables, store pools, and control catalogs |
 
-**StorageService** is internal infrastructure plumbing. `ServiceContainer`
-owns it and `WorldService` uses its store pool. It is never placed in a
-world's resource container.
+**StorageService** is the internal physical authority. The sole
+`archetype.wiring.build_runtime_resources()` transaction selects one for the
+process graph, injects it explicitly into application services, and gives its
+lifetime to `RuntimeResources` when the process owns it. It is the
+materialization point for Archetype-owned Daft plans: app code delegates
+terminal execution through `materialize`, and table producers use
+`read_table`, `append_table`, or `append_missing`. Table registration, typed
+schema comparison, Iceberg writes, and optimistic conflict retry remain beside
+that execution gate. It is never placed in a world's resource container.
+
+`StorageService` also owns the generic durable world/run envelope and extends
+conditional-append keys with that identity. Family workflows provide explicit
+durable coordinates and delegate typed publication directly to that substrate;
+they do not create a second storage authority. File policy belongs to the
+artifact family's free handlers, which configure `FileIngestionPipeline` and
+publish typed indexes before the common visibility root.
 
 **Resources** is the runtime DI container that passes services to processors. Each world has one.
 
@@ -360,7 +396,13 @@ This means:
 
 2. **Use `@daft.func` (row-wise) by default.** If your "batch" UDF is just a for-loop over `Series.to_pylist()`, it should be `@daft.func`. Daft supports async `@daft.func` natively.
 
-3. **Use `@daft.cls()` for non-serializable state.** API clients, model weights, DB connections — anything that can't be pickled goes in `@daft.cls().__init__()`. Methods are row-wise. Daft recreates the class per worker.
+3. **Use `@daft.cls()` for worker-local state derived from serializable
+   configuration.** Daft serializes the decorated class and its constructor
+   arguments before recreating it per worker. Constructor code may build
+   non-I/O scratch from serializable values; passing an unpicklable live client,
+   model, or connection as an argument does not bypass serialization.
+   Independently owned closeable or I/O-backed worker resources also require a
+   deterministic executor-teardown contract.
 
 4. **Only `.collect()` for cross-row context or a narrow reusable execution
    boundary.** Message routing and name lookups require global visibility. A
@@ -368,6 +410,9 @@ This means:
    or mutable source feeds more than one downstream branch. Reassign the
    returned frame (`df = df.collect()`); reusing the original lazy frame runs
    its upstream plan again. Never materialize history or payload rows for this.
+   Within `archetype.app`, build the reduction lazily and ask
+   `StorageService.materialize()` to admit the terminal work instead of calling
+   `.collect()` directly.
 
 5. **Don't import actor patterns.** No `asyncio.gather` over collected rows. No building dicts from pylist loops and feeding them back through batch UDFs. If you find yourself doing this, you're fighting the execution model.
 
@@ -390,30 +435,40 @@ async def think_and_respond(name: str, role: str, inbox: list[str]) -> list[str]
 df = df.with_column("outbox__messages", think_and_respond(col("agent__name"), ...))
 ```
 
-**The serialization constraint:** `@daft.func` closures must be picklable. API clients, mocks, and anything with network state are NOT picklable. Use `@daft.cls()` for these — the client lives in `__init__`, reconstructed per worker, never serialized.
+**The serialization constraint:** `@daft.func` closures and `@daft.cls`
+constructor arguments pass through Daft's serializer. Use serializable
+configuration and construct only lifetime-safe worker-local scratch inside
+`__init__`. A live provider may instead expose a Daft-serializable, non-owning
+reconnect handle to a resource owned and closed at the host boundary. Do not
+construct an independently owned socket, process, or closeable client per
+worker unless the executor contract provides deterministic teardown.
 
 ```python
-# ✅ Production pattern: @daft.cls() for non-serializable clients
+# ✅ Worker-local non-I/O scratch from serializable configuration
 @daft.cls()
-class ClaudeAgent:
-    def __init__(self):
-        import anthropic
-        self.client = anthropic.AsyncAnthropic()
+class Normalizer:
+    def __init__(self, prefix: str):
+        import re
 
-    async def respond(self, name: str, role: str, inbox: list[str]) -> list[str]:
-        response = await self.client.messages.create(model="claude-sonnet-4-6", ...)
-        return [json.dumps({...})]
+        self.prefix = prefix
+        self.whitespace = re.compile(r"\s+")
 
-agent = ClaudeAgent()
-df = df.with_column("outbox__messages", agent.respond(col("agent__name"), ...))
+    def normalize(self, value: str) -> str:
+        return self.prefix + self.whitespace.sub(" ", value).strip()
+
+normalizer = Normalizer(prefix="agent:")
+df = df.with_column("agent__normalized", normalizer.normalize(col("agent__name")))
 ```
 
 ---
 
 ## Lazy-Audit UDF-Boundary Exemption (Jun 2026)
 
-``scripts/check_lazy_audit.py`` gates every ``.collect()`` and
-``.to_pylist()`` call in ``src/`` against ``lazy_audit.toml``.  There is
+``scripts/check_lazy_audit.py`` gates execution-capable DataFrame terminals in
+``src/`` against ``lazy_audit.toml``. This includes conversions, iterators,
+diagnostics, and writes such as ``.collect``, ``.count_rows()``, ``.show()``,
+``.to_arrow()``, ``.to_arrow_iter()``, ``.to_pydict()``, and ``.write_*()``.
+There is
 **one sanctioned exception** that does not require an allowlist entry:
 
 > ``Series.to_pylist()`` called on a *parameter* of a function decorated
@@ -446,8 +501,23 @@ Rules:
 - ``Series.to_pylist()`` on a **batch-UDF parameter** → exempt, no entry.
 - ``DataFrame.to_pylist()`` anywhere → requires entry.
 - ``DataFrame.collect()`` anywhere → requires entry.
+- DataFrame diagnostics, conversions, iterators, and writes → require entries.
 - ``Series.to_pylist()`` **outside** a batch-UDF → requires entry.
 - ``collect()`` inside a batch-UDF on a DataFrame (not a parameter) → requires entry.
+
+Application code has an additional ownership rule: terminal Daft, Iceberg,
+and Catalog-table operations belong to `StorageService`. A bounded app
+`to_pylist()` conversion is legal only after awaiting
+`StorageService.materialize()`, and the conversion still needs its specific
+`lazy_audit.toml` reason.
+
+Entries are keyed by ``(path, symbol, expr, method)``. ``symbol`` is the dotted
+path of the enclosing def/class (``<module>`` at file scope) and ``expr`` is the
+normalized source of the audited attribute access. Adding an unrelated line
+above the call does not invalidate the entry; changing what is materialized
+does. Run ``python scripts/check_lazy_audit.py --list`` to read the current key
+for every site, and paste the emitted ``[[entries]]`` block when the audit
+reports a new one.
 
 See ``lazy_audit.toml`` for the authoritative policy header and
 ``tests/scripts/test_check_lazy_audit.py`` for positive/negative coverage.
@@ -456,20 +526,20 @@ See ``lazy_audit.toml`` for the authoritative policy header and
 
 ## Agent Communication: Queueing vs Delivery (updated Jul 2026)
 
-Archetype provides messaging mechanisms, not a framework delivery policy:
+Archetype provides ECS composition primitives, not a portable framework
+message command or delivery policy:
 
-- `CommandType.MESSAGE` is an RBAC-visible command envelope.
-- `CommandScheduler` durably orders portable deferred envelopes, but it is an
-  application service and is not injected into processor resources.
+- The legacy `CommandType.MESSAGE` compatibility envelope is rejected before
+  quota debit, evidence, or durable admission.
+- `CommandScheduler` durably orders only the six registered portable mutation
+  models and is not injected into processor resources.
 - `Resources`, processors, and hooks are the primitives applications can
   compose into routing and realization behavior.
 
 The framework does not define a message payload schema, recipient validation,
 inbox/outbox components, delivery receipts, channels, or a conversation graph.
-The default dispatcher gives `MESSAGE` an explicit no-op disposition, so
-submitting a message command is not equivalent to delivering it to an entity.
-A host that uses message envelopes must supply the consumer and its
-delivery semantics.
+There is no default `MESSAGE` no-op or durable decoder. A host that needs
+messaging must supply its own state, consumer, and delivery semantics.
 
 [`examples/04_messaging.py`](examples/04_messaging.py) demonstrates one such
 policy entirely in application code:
@@ -486,9 +556,8 @@ MoodProcessor (priority 20)
 Because realization runs before greeting generation, work deposited during
 tick N remains pending until the realization pass in tick N+1. That causal
 delay is a property of this example's priorities and shared `Mailbox`; it is
-not an automatic guarantee of `CommandType.MESSAGE`. The example's `Mailbox`,
-`Inbox`, `Outbox`, and processors are local definitions, not exports from
-`archetype`.
+not a framework command guarantee. The example's `Mailbox`, `Inbox`, `Outbox`,
+and processors are local definitions, not exports from `archetype`.
 
 The mailbox is also mutable world-shared state. The demo keeps all agents in
 one archetype table. A composition that accesses the same mailbox from
@@ -528,8 +597,12 @@ Enable with `run_config.debug = True`:
 ```text
 [archetype] {"event": "tick_start", "world_id": "...", "tick": 0}
 [archetype] processor_start: PhysicsProcessor (priority=10)
-[archetype] processor_end: PhysicsProcessor (rows_out=100)
+[archetype] processor_end: PhysicsProcessor (archetype=a_2c_s...)
 ```
+
+Debug diagnostics describe orchestration and lazy plan shape. They do not
+execute a DataFrame to manufacture row counts or previews; execution remains
+at the owning terminal boundary.
 
 ---
 
@@ -636,45 +709,59 @@ for entry in history:
 7. **JSON-encode** complex types (`list[dict]`, nested objects) for Arrow compatibility
 8. **Resources** for type-safe DI in processors
 9. **Hooks** for observability without processor coupling
-10. **Messaging delivery is application composition** — durable scheduling can
-    order `MESSAGE` envelopes; applications define payloads, routing, and realization
+10. **Messaging delivery is application composition** — the legacy `MESSAGE`
+    envelope is rejected; applications define state, routing, and realization
 11. **Tick-gating** for expensive operations (LLM calls, inner worlds)
 12. **Keep columns in DAG** — avoid intermediate `.collect()` breaking lazy evaluation
+13. **Route app-owned terminal Daft work through `StorageService`** — keep
+    execution admission, Catalog operations, schema checks, and Iceberg retry
+    in one authority
 
 ---
 
 ## Process and Coordination Boundaries (Apr 2026, updated Jul 2026)
 
 One `ArchetypeRuntime` or `archetype serve` process owns its live world objects,
-service container, and event loop. Daft owns data-plane parallelism inside that
-process: it manages worker pools and executes lazy processor plans across rows
-and archetypes. Two server processes do not share an in-memory world registry,
-so a request that needs a particular live world must reach the process hosting
-that world.
+explicit `RuntimeResources` graph, and event loop. Daft owns data-plane
+parallelism inside that process: it manages worker pools and executes lazy
+processor plans across rows and archetypes. Two server processes do not share
+an in-memory world registry, so a request that needs a particular live world
+must reach the process hosting that world.
 
 That live-process boundary is not the durability boundary. Persisted worlds can
 be discovered and queried from a fresh process. Mutable cold resume reconstructs
 a world from visible rows and manifests, then acquires a writer fence. The local
 SQLite control catalog coordinates processes on one host; deployments that need
-cross-host fencing use the remote control catalog. One live writer per world is
-the invariant, not one process for the whole deployment. See
+cross-host fencing use the remote Cloudflare Durable Object control catalog. One
+live writer per world is the invariant, not one process for the whole
+deployment. See
 `docs/guide/durable-discovery.md`, `docs/guide/atomic-visibility.md`, and
 `docs/guide/world-lifecycle.md` for the normative contracts.
 
 **Consequences:**
 
 - **The CLI is a thin HTTP client.** Every command except `serve` is an HTTP
-  call to a running server. The CLI does not instantiate its own
-  `ServiceContainer`, because that would create an unrelated live-world scope.
+  call to a running server. The CLI does not construct its own
+  `RuntimeResources` graph, because that would create an unrelated live-world
+  scope.
 - **Scale simulation work through Daft.** Adding an API process does not split
   one live world's in-memory execution. Multi-process discovery, cold reads,
   and fenced resume are control-plane capabilities, not a replacement for
   Daft's data-plane execution model.
-- **World lifecycle operations are direct gated calls.** `create_world`,
-  `fork_world`, and `destroy_world` flow through `iCommandGateway` for RBAC and
-  access audit, then delegate to `iRuntimeApplication`. `CommandScheduler`
-  durably owns tick-deferred commands; it is not the lifecycle or authorization
-  boundary.
+- **Keep control and data durability separate.** SQLite or the remote Durable
+  Object owns small transactional control state: world records, writer fences,
+  commands, and manifests. Iceberg owns append-only data tables, atomic
+  snapshots, and optimistic multi-writer commits. An in-process Daft execution
+  gate controls local materialization pressure and ordering; it does not
+  replace Iceberg conflict detection or turn the control catalog into a wrapper
+  transaction around the data table.
+- **World lifecycle operations are registered direct calls.** The untrusted
+  API adapter constructs an exact lifecycle model and enters
+  `CommandDispatcher.apply_as`; commands-owned `Policy` performs RBAC and the
+  dispatcher attempts bounded access evidence. Trusted runtime handles
+  construct the same model and enter `CommandDispatcher.apply`.
+  `CommandScheduler` durably owns only portable tick-deferred operations; it
+  is neither the lifecycle nor authorization boundary.
 
 **State across restarts:**
 
@@ -686,21 +773,35 @@ current architecture.
 
 ---
 
-## Daft 0.7.x: `with_column` Not `with_columns` (Apr 2026)
+## Daft 0.7.x: `with_columns` takes a dict, not positional args (Apr 2026, corrected Jul 2026)
 
-`DataFrame.with_columns(expr1, expr2)` raises `TypeError: too many positional arguments` in Daft 0.7.x. The method accepts **one expression at a time**. Chain calls instead:
+`DataFrame.with_columns(expr1, expr2)` raises `TypeError: too many positional
+arguments` in Daft 0.7.x. The fix is the **dict form**, not one call per column:
 
 ```python
-# ❌ WRONG — multiple positional args
+# ❌ WRONG — multiple positional args, raises TypeError
 df = df.with_columns(
     (col("position__x") + col("velocity__vx")).alias("position__x"),
     (col("position__y") + col("velocity__vy")).alias("position__y"),
 )
 
-# ✅ RIGHT — chain single expressions
-df = df.with_column("position__x", col("position__x") + col("velocity__vx"))
-df = df.with_column("position__y", col("position__y") + col("velocity__vy"))
+# ✅ RIGHT — one dict, one projection
+df = df.with_columns({
+    "position__x": col("position__x") + col("velocity__vx"),
+    "position__y": col("position__y") + col("velocity__vy"),
+})
 ```
+
+An earlier revision of this section concluded "the method accepts one
+expression at a time" and prescribed chained `with_column`. That was wrong
+about the signature: the `TypeError` is about *positional* args, and the dict
+form has always been available.
+
+Chained `with_column` remains correct for an intentional dependency on an
+earlier update; prefer the dict form for independent columns. See
+`daft-patterns` Rule 5. The separate read-then-overwrite UDF hazard retains one
+canonical explanation above under "UDF column args resolve to the column's
+FINAL value".
 
 ---
 
@@ -730,8 +831,9 @@ recipe before touching torch pins or arguing about a Modal split. Highlights
   LIBERO @ the pinned SHA fails at *import* on 1.5 — float 1.4.1's transitive
   pins to cp312 wheels instead, and keep `numpy<2`.
 - **Architecture:** one control-plane world + N trial entities batch-stepped via
-  `SimulationService.run_episode` (B1 quota reset + B2 all-done termination),
-  graded from raw `ManipStatus` by the eval service. No `EvalTrialResult` (E1).
+  the registered `RunEpisode` operation exposed by
+  `RuntimeWorld.run_episode` (B1 quota reset + B2 all-done termination), graded
+  from raw `ManipStatus` by the evaluation workflow. No `EvalTrialResult` (E1).
 
 ## GL Rendering Is Thread-Bound — Daft UDF Threads Go Blind (Jul 2026)
 

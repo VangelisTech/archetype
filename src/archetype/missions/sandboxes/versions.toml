@@ -5,7 +5,7 @@
 # V1. The complete sandbox image remains identified separately by
 # AgentMissionConfig.sandbox_environment.
 
-schema_version = 1
+schema_version = 2
 
 [[artifact]]
 id = "codex-cli"
@@ -19,9 +19,18 @@ source = "https://registry.npmjs.org/@openai/codex/-/codex-0.144.6.tgz"
 immutable_ref = "sha512-wk+2CWiBNXiJLBoN2D08N9RceWkSBnlgk5g2K1a4CXrP/C0gdlHyRUG7RFzm9y41DCK/7tvCct233JVxyFmznw=="
 consumers = ["#563", "#565", "#567"]
 
-[artifact.harness_interface]
+[[artifact.harness_interfaces]]
+id = "modal-app-server"
+invoke = ["codex", "app-server"]
+output_flags = ["json-rpc"]
+resume = ["thread/resume"]
+session_event = "turn/completed"
+session_fields = ["threadId", "turn.id"]
+
+[[artifact.harness_interfaces]]
+id = "capability-exec-json"
 invoke = ["codex", "exec"]
-output_flags = ["--json"]
+output_flags = ["json"]
 resume = ["exec", "resume"]
 session_event = "thread.started"
 session_fields = ["thread_id"]
@@ -36,3 +45,36 @@ version = "1.5.2"
 source = "https://files.pythonhosted.org/packages/e3/fe/7e284d889eb3ea2c307e48828eccdd9a984beb2e096bce5577ef796592e9/modal-1.5.2-py3-none-any.whl"
 immutable_ref = "sha256:7508a44f8742c6f26be4d28da71f46092ef3bcc07d0f27cbd0ea8c9d6d9fc873"
 consumers = ["#563", "#566"]
+
+[[artifact]]
+id = "ttyd-x86-64"
+status = "pinned"
+role = "sandbox-runtime"
+kind = "release-binary"
+name = "ttyd.x86_64"
+version = "1.7.7"
+source = "https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64"
+immutable_ref = "sha256:8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55"
+consumers = ["#563"]
+
+[[artifact]]
+id = "ttyd-aarch64"
+status = "pinned"
+role = "sandbox-runtime"
+kind = "release-binary"
+name = "ttyd.aarch64"
+version = "1.7.7"
+source = "https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.aarch64"
+immutable_ref = "sha256:b38acadd89d1d396a0f5649aa52c539edbad07f4bc7348b27b4f4b7219dd4165"
+consumers = ["#563"]
+
+[[artifact]]
+id = "coding-agent-base-image"
+status = "pinned"
+role = "sandbox-runtime"
+kind = "container-image"
+name = "ghcr.io/astral-sh/uv"
+version = "0.9.30"
+source = "https://github.com/astral-sh/uv"
+immutable_ref = "ghcr.io/astral-sh/uv@sha256:e5b65587bce7de595f299855d7385fe7fca39b8a74baa261ba1b7147afa78e58"
+consumers = ["#563"]

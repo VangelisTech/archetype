@@ -57,10 +57,11 @@ from archetype.graph import (
 )
 
 
-async def main():
+async def run_demo(storage_uri: str = "./archetype_data") -> dict[str, object]:
+    """Run the RTS composition and return normalized semantic evidence."""
     registration = register_biome_rts()
     view = registration.view
-    storage = StorageConfig(uri="./archetype_data", namespace="biome_rts")
+    storage = StorageConfig(uri=storage_uri, namespace="biome_rts")
 
     async with ArchetypeRuntime() as runtime:
         world = runtime.world(
@@ -80,7 +81,6 @@ async def main():
             depth=3,
             direction="in",
         ).to_pylist()
-        print(f"1. asset library: {len(catalog) - 1} descendants")
 
         army = await world.spawn(CommandNode(name="first-army", kind="army"), Depth())
         squad = await world.spawn(CommandNode(name="alpha", kind="squad"), Depth())
@@ -155,40 +155,28 @@ async def main():
         unit_history = await world.query(UnitSpec, Position, Health)
         live_map = minimap(unit_history)
         map_series = minimap_overview(units=unit_history).to_pylist()
+        visibility_edges = await edges(world, VisibleTo, at=latest)
         visible = fog_of_war(
             live_map,
-            await edges(world, VisibleTo, at=latest),
+            visibility_edges,
             harvester,
         ).to_pylist()
-        print(
-            "2. live instances:",
-            [(row["role"], row["x"], row["health"]) for row in live_map.to_pylist()],
-        )
-        print(
-            "3. minimap population:",
-            [(row["tick"], row["population"]) for row in map_series],
-        )
-        print("4. harvester fog of war:", [row["entity_id"] for row in visible])
 
+        child_edges = await edges(world, ChildOf, at=latest)
+        assigned_edges = await edges(world, AssignedTo, at=latest)
+        command_edges = await edges(world, CommandedBy, at=latest)
+        supply_edges = await edges(world, SupplyLine, at=latest)
+        target_edges = await edges(world, Targets, at=latest)
         possessed = unit_view(
             [
-                (ChildOf, await edges(world, ChildOf, at=latest)),
-                (AssignedTo, await edges(world, AssignedTo, at=latest)),
-                (SupplyLine, await edges(world, SupplyLine, at=latest)),
-                (Targets, await edges(world, Targets, at=latest)),
-                (VisibleTo, await edges(world, VisibleTo, at=latest)),
+                (ChildOf, child_edges),
+                (AssignedTo, assigned_edges),
+                (SupplyLine, supply_edges),
+                (Targets, target_edges),
+                (VisibleTo, visibility_edges),
             ],
             harvester,
         ).to_pylist()
-        print(
-            "5. possessed unit view:",
-            [(row["relation"], row["direction"], row["entity_id"]) for row in possessed],
-        )
-
-        print(
-            "6. command order:",
-            [(row["commandnode__name"], row["depth__value"]) for row in command_order],
-        )
 
         rates = {
             row["entity_id"]: row["harvester__rate"]
@@ -200,21 +188,97 @@ async def main():
             (row["isa__source"], row["isa__target"])
             for row in (await edges(world, IsA, at=latest)).to_pylist()
         }
-        print(
-            "7. re-instantiated upgrade:",
-            f"old rate={rates[harvester]}, new rate={rates[upgraded]},",
-            f"IsA={((upgraded, assets.harvester) in lineage)}",
-        )
 
         # The live hierarchy owns lifetime. This pass stages the direct
         # generation; another step/pass would collect nested prefab children.
         await world.despawn(squad)
         await world.step()
         direct = await cascade(world, ChildOf, view)
-        print(
-            "8. cascade generation staged:",
-            f"direct children={len(direct.deleted_entities)}",
-        )
+        live_units = [
+            {
+                "role": row["role"],
+                "x": row["x"],
+                "health": row["health"],
+            }
+            for row in sorted(live_map.to_pylist(), key=lambda item: (item["role"], item["x"]))
+        ]
+        population = [
+            {"tick": row["tick"], "population": row["population"]}
+            for row in sorted(map_series, key=lambda item: item["tick"])
+        ]
+        possessed_relations = [
+            {"relation": row["relation"], "direction": row["direction"]}
+            for row in sorted(
+                possessed,
+                key=lambda item: (item["relation"], item["direction"]),
+            )
+        ]
+        order = [
+            {
+                "name": row["commandnode__name"],
+                "depth": row["depth__value"],
+            }
+            for row in sorted(
+                command_order,
+                key=lambda item: (item["depth__value"], item["commandnode__name"]),
+            )
+        ]
+        return {
+            "asset_descendant_count": len(catalog) - 1,
+            "live_units": live_units,
+            "minimap_population": population,
+            "visible_roles": sorted(row["role"] for row in visible),
+            "possessed_relations": possessed_relations,
+            "command_order": order,
+            "edge_counts": {
+                "asset_child_of": (await edges(world, AssetChildOf, at=latest)).count_rows(),
+                "child_of": child_edges.count_rows(),
+                "assigned_to": assigned_edges.count_rows(),
+                "commanded_by": command_edges.count_rows(),
+                "supply_line": supply_edges.count_rows(),
+                "targets": target_edges.count_rows(),
+                "visible_to": visibility_edges.count_rows(),
+                "is_a": len(lineage),
+            },
+            "upgrade": {
+                "old_rate": rates[harvester],
+                "new_rate": rates[upgraded],
+                "lineage_recorded": (upgraded, assets.harvester) in lineage,
+            },
+            "cascade_deleted_count": len(direct.deleted_entities),
+        }
+
+
+async def main() -> None:
+    result = await run_demo()
+    print(f"1. asset library: {result['asset_descendant_count']} descendants")
+    print(
+        "2. live instances:",
+        [(row["role"], row["x"], row["health"]) for row in result["live_units"]],
+    )
+    print(
+        "3. minimap population:",
+        [(row["tick"], row["population"]) for row in result["minimap_population"]],
+    )
+    print("4. harvester fog of war:", result["visible_roles"])
+    print(
+        "5. possessed unit view:",
+        [(row["relation"], row["direction"]) for row in result["possessed_relations"]],
+    )
+    print(
+        "6. command order:",
+        [(row["name"], row["depth"]) for row in result["command_order"]],
+    )
+    print(
+        "7. re-instantiated upgrade:",
+        f"old rate={result['upgrade']['old_rate']}, "
+        f"new rate={result['upgrade']['new_rate']}, "
+        f"IsA={result['upgrade']['lineage_recorded']}",
+    )
+    print(
+        "8. cascade generation staged:",
+        f"direct children={result['cascade_deleted_count']}",
+    )
 
 
 if __name__ == "__main__":

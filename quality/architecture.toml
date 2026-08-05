@@ -3,38 +3,28 @@ source_root = "src"
 
 [concrete_services]
 types = [
-  "ArtifactService",
-  "ArtifactBundleService",
-  "ArtifactTableService",
-  "ClaudeTranscriptIngestionService",
+  "ActivityCoordinator",
   "AuditLog",
-  "AutoResearchService",
-  "CommandGateway",
   "CommandScheduler",
-  "EvaluationService",
-  "MutationService",
   "MissionService",
-  "PhysicalAIService",
-  "QueryService",
   "RedactionService",
-  "RuntimeApplication",
   "SandboxService",
-  "ServiceContainer",
-  "SimulationService",
   "StorageService",
+  "TranscriptIngestionService",
   "TrajectoryService",
-  "WorldService",
+  "WorldLifecycle",
+  "WorldRegistry",
 ]
 composition_roots = [
-  "archetype.app.container",
-  "archetype.api.deps",
-  "archetype.runtime.runtime",
+  "archetype.wiring",
 ]
 
 [top_level_family_policy]
 forbidden_outward = [
   "archetype.app",
   "archetype.runtime",
+  "archetype.runtime_resources",
+  "archetype.wiring",
   "archetype.api",
   "archetype.cli",
 ]
@@ -44,19 +34,21 @@ reserved_infrastructure = [
   "archetype._obs",
   "archetype._storage_uri",
   "archetype.api",
-  "archetype.app",
   "archetype.cli",
   "archetype.core",
   "archetype.runtime",
+  "archetype.runtime_resources",
+  "archetype.wiring",
 ]
+common_family_imports = ["archetype.errors"]
 
 # Every first-party top-level package or module is classified above or
 # registered as a domain family in quality/architecture.d/<family>.toml.
-# Domain families may import core and themselves implicitly. Every reviewed
-# family-to-family edge must name the exact lower family in that family's
-# fragment, and the complete merged graph must remain acyclic. Fragments hold
-# each family's [[top_level_family_rule]] and [[exception]] blocks so two
-# family changes never edit the same file; scalar policy stays here.
+# Domain families may import core, exact common-family modules, and themselves
+# implicitly. Every reviewed family-to-family edge must name the exact lower
+# family in that family's fragment, and the complete merged graph must remain
+# acyclic. Fragments hold each family's rule and exception arrays so two family
+# changes never edit the same file; scalar policy stays here.
 
 [[package_rule]]
 name = "core-does-not-import-outward"
@@ -70,359 +62,5 @@ forbidden = [
   "archetype.cli",
 ]
 
-[[package_rule]]
-name = "app-does-not-import-outward"
-consumer = "archetype.app"
-forbidden = [
-  "archetype.runtime",
-  "archetype.api",
-  "archetype.cli",
-]
-
-# Family rules apply to every module in the package, not only service.py.
-# This is the executable dependency DAG represented by the container wiring.
-
-[[family_rule]]
-name = "storage-family"
-consumer = "archetype.app.storage"
-allowed_app = [
-  "archetype.app.storage",
-  "archetype.app.errors",
-  "archetype.app.limits",
-]
-
-[[family_rule]]
-name = "world-family"
-consumer = "archetype.app.world"
-allowed_app = [
-  "archetype.app.world",
-  "archetype.app.storage",
-  "archetype.app.models",
-]
-
-[[family_rule]]
-name = "audit-family"
-consumer = "archetype.app.audit"
-allowed_app = [
-  "archetype.app.audit",
-  "archetype.app.storage",
-  "archetype.app.models",
-  "archetype.app.errors",
-]
-
-[[family_rule]]
-name = "query-family"
-consumer = "archetype.app.query"
-allowed_app = [
-  "archetype.app.query",
-  "archetype.app.storage",
-  "archetype.app.audit.interfaces",
-  "archetype.app.models",
-]
-
-[[family_rule]]
-name = "artifact-family"
-consumer = "archetype.app.artifacts"
-allowed_app = [
-  "archetype.app.artifacts",
-  "archetype.app.limits",
-  "archetype.app.redaction.interfaces",
-  "archetype.app.redaction.models",
-  "archetype.app.storage",
-  "archetype.app.world.interfaces",
-]
-
-[[family_rule]]
-name = "redaction-family"
-consumer = "archetype.app.redaction"
-allowed_app = [
-  "archetype.app.redaction",
-  "archetype.app.errors",
-]
-
-[[family_rule]]
-name = "evaluation-family"
-consumer = "archetype.app.evaluation"
-allowed_app = [
-  "archetype.app.evaluation",
-  "archetype.app.query.interfaces",
-  "archetype.app.artifacts.interfaces",
-  "archetype.app.models",
-]
-
-[[family_rule]]
-name = "mission-family"
-consumer = "archetype.app.missions"
-allowed_app = [
-  "archetype.app.missions",
-  "archetype.app.evaluation.interfaces",
-  "archetype.app.query.interfaces",
-]
-
-[[family_rule]]
-name = "research-family"
-consumer = "archetype.app.research"
-allowed_app = [
-  "archetype.app.research",
-  "archetype.app.world.interfaces",
-  "archetype.app.models",
-]
-
-[[family_rule]]
-name = "physical-ai-family"
-consumer = "archetype.app.physical_ai"
-allowed_app = [
-  "archetype.app.physical_ai",
-  "archetype.app.evaluation.interfaces",
-  "archetype.app.world.interfaces",
-  "archetype.app.models",
-]
-
-[[family_rule]]
-name = "command-family"
-consumer = "archetype.app.commands"
-allowed_app = [
-  "archetype.app.commands",
-  "archetype.app.world.interfaces",
-  "archetype.app.storage.catalog",
-  "archetype.app.models",
-  "archetype.app.errors",
-]
-
-[[family_rule]]
-name = "application-family"
-consumer = "archetype.app.application"
-allowed_app = [
-  "archetype.app.application",
-  "archetype.app.artifacts.bundle_models",
-  "archetype.app.artifacts.interfaces",
-  "archetype.app.audit.interfaces",
-  "archetype.app.commands.interfaces",
-  "archetype.app.evaluation.interfaces",
-  "archetype.app.missions.interfaces",
-  "archetype.app.physical_ai.interfaces",
-  "archetype.app.query.interfaces",
-  "archetype.app.research.interfaces",
-  "archetype.app.world.interfaces",
-  "archetype.app.models",
-]
-
-[[family_rule]]
-name = "gateway-family"
-consumer = "archetype.app.gateway"
-allowed_app = [
-  "archetype.app.gateway",
-  "archetype.app.application.interfaces",
-  "archetype.app.audit.interfaces",
-  "archetype.app.audit.models",
-  "archetype.app.models",
-  "archetype.app.errors",
-]
-
-[[module_rule]]
-module = "archetype.app.storage.service"
-allowed_interfaces = ["archetype.core.interfaces.iAsyncStore"]
-allowed_app = [
-  "archetype.app.storage.catalog",
-  "archetype.app.storage.remote_catalog",
-  "archetype.app.storage.iceberg",
-  "archetype.app.storage.session",
-]
-
-[[module_rule]]
-module = "archetype.app.world.service"
-allowed_interfaces = [
-  "archetype.app.storage.interfaces.iStorageService",
-  "archetype.core.interfaces.iAsyncStore",
-  "archetype.core.interfaces.iAsyncSystem",
-]
-allowed_app = [
-  "archetype.app.storage.catalog",
-  "archetype.app.storage.commit",
-  "archetype.app.storage.signatures",
-  "archetype.app.models",
-]
-
-[[module_rule]]
-module = "archetype.app.world.mutation"
-allowed_interfaces = ["archetype.app.world.interfaces.iWorldService"]
-allowed_app = []
-
-[[module_rule]]
-module = "archetype.app.world.simulation"
-allowed_interfaces = ["archetype.app.world.interfaces.iWorldService"]
-allowed_app = ["archetype.app.models"]
-
-[[module_rule]]
-module = "archetype.app.query.service"
-allowed_interfaces = [
-  "archetype.app.audit.interfaces.iAuditLog",
-  "archetype.app.storage.interfaces.iStorageService",
-  "archetype.core.interfaces.ArchetypeSignature",
-]
-allowed_app = [
-  "archetype.app.storage.catalog",
-  "archetype.app.storage.signatures",
-  "archetype.app.models",
-]
-
-[[module_rule]]
-module = "archetype.app.artifacts.table_service"
-allowed_interfaces = [
-  "archetype.app.storage.interfaces.iStorageService",
-  "archetype.app.world.interfaces.iWorldService",
-]
-allowed_app = [
-  "archetype.app.storage.iceberg",
-]
-
-[[module_rule]]
-module = "archetype.app.artifacts.service"
-allowed_interfaces = [
-  "archetype.app.storage.interfaces.iStorageService",
-  "archetype.app.world.interfaces.iWorldService",
-]
-allowed_app = [
-  "archetype.app.storage.catalog",
-]
-
-[[module_rule]]
-module = "archetype.app.artifacts.bundle_service"
-allowed_interfaces = [
-  "archetype.app.redaction.interfaces.iRedactionService",
-  "archetype.app.storage.interfaces.iStorageService",
-  "archetype.app.world.interfaces.iWorldService",
-]
-allowed_app = [
-  "archetype.app.artifacts.bundle_models",
-  "archetype.app.limits",
-  "archetype.app.redaction.models",
-  "archetype.app.storage.catalog",
-]
-
-[[module_rule]]
-module = "archetype.app.artifacts.transcript_service"
-allowed_interfaces = [
-  "archetype.app.artifacts.interfaces.iArtifactService",
-  "archetype.app.artifacts.interfaces.iArtifactTableService",
-  "archetype.app.redaction.interfaces.iRedactionService",
-  "archetype.app.world.interfaces.iWorldService",
-]
-allowed_app = [
-  "archetype.app.redaction.models",
-]
-
-[[module_rule]]
-module = "archetype.app.redaction.service"
-allowed_interfaces = []
-allowed_app = [
-  "archetype.app.redaction.models",
-]
-
-[[module_rule]]
-module = "archetype.app.evaluation.service"
-allowed_interfaces = [
-  "archetype.app.artifacts.interfaces.iArtifactService",
-  "archetype.app.evaluation.interfaces.GraderOutput",
-  "archetype.app.evaluation.interfaces.TrajectoryGrader",
-  "archetype.app.query.interfaces.iQueryService",
-]
-allowed_app = [
-  "archetype.app.models",
-]
-
-[[module_rule]]
-module = "archetype.app.missions.service"
-allowed_interfaces = []
-allowed_app = []
-
-[[module_rule]]
-module = "archetype.app.missions.trajectory_service"
-allowed_interfaces = [
-  "archetype.app.evaluation.interfaces.GraderOutput",
-  "archetype.app.evaluation.interfaces.TrajectoryGrader",
-  "archetype.app.evaluation.interfaces.iEvaluationService",
-  "archetype.app.query.interfaces.iQueryService",
-]
-allowed_app = []
-
-[[module_rule]]
-module = "archetype.app.physical_ai.service"
-allowed_interfaces = [
-  "archetype.app.evaluation.interfaces.iEvaluationService",
-  "archetype.app.world.interfaces.iMutationService",
-  "archetype.app.world.interfaces.iSimulationService",
-  "archetype.app.world.interfaces.iWorldService",
-]
-allowed_app = [
-  "archetype.app.models",
-]
-
-[[module_rule]]
-module = "archetype.app.research.service"
-allowed_interfaces = [
-  "archetype.app.world.interfaces.iSimulationService",
-  "archetype.app.world.interfaces.iWorldService",
-]
-allowed_app = [
-  "archetype.app.research.contracts",
-  "archetype.app.models",
-]
-
-[[module_rule]]
-module = "archetype.app.audit.service"
-allowed_interfaces = ["archetype.app.storage.interfaces.iStorageService"]
-allowed_app = [
-  "archetype.app.errors",
-  "archetype.app.models",
-  "archetype.app.storage.catalog",
-  "archetype.app.storage.iceberg",
-]
-
-[[module_rule]]
-module = "archetype.app.commands.service"
-allowed_interfaces = [
-  "archetype.app.world.interfaces.iMutationService",
-  "archetype.app.world.interfaces.iWorldService",
-]
-allowed_app = [
-  "archetype.app.errors",
-  "archetype.app.models",
-  "archetype.app.storage.catalog",
-]
-
-[[module_rule]]
-module = "archetype.app.application.service"
-allowed_interfaces = [
-  "archetype.app.artifacts.interfaces.iArtifactBundleService",
-  "archetype.app.artifacts.interfaces.iArtifactService",
-  "archetype.app.artifacts.interfaces.iArtifactTableService",
-  "archetype.app.artifacts.interfaces.iTranscriptIngestionService",
-  "archetype.app.audit.interfaces.iAuditLog",
-  "archetype.app.commands.interfaces.iCommandScheduler",
-  "archetype.app.evaluation.interfaces.iEvaluationService",
-  "archetype.app.missions.interfaces.iMissionService",
-  "archetype.app.missions.interfaces.iTrajectoryService",
-  "archetype.app.physical_ai.interfaces.iPhysicalAIService",
-  "archetype.app.query.interfaces.iQueryService",
-  "archetype.app.research.interfaces.iResearchService",
-  "archetype.app.world.interfaces.iMutationService",
-  "archetype.app.world.interfaces.iSimulationService",
-  "archetype.app.world.interfaces.iWorldService",
-]
-allowed_app = ["archetype.app.models"]
-
-[[module_rule]]
-module = "archetype.app.gateway.service"
-allowed_interfaces = [
-  "archetype.app.application.interfaces.iRuntimeApplication",
-  "archetype.app.audit.interfaces.iAuditLog",
-]
-allowed_app = [
-  "archetype.app.audit.models",
-  "archetype.app.gateway.auth.guard",
-  "archetype.app.gateway.auth.models",
-  "archetype.app.models",
-]
-# Exact migration edges. These preserve current behavior while the sequenced
-# family relocations move each definition once, without compatibility copies.
+# Family rules apply to every module in the package. This is the executable
+# dependency DAG represented by the concrete composition root.

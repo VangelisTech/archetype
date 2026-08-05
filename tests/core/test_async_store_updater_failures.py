@@ -29,7 +29,7 @@ def _count_pipeline_execution(value: int) -> int:
 
 
 def _build_session_and_config(tmp_path):
-    from archetype.app.storage.session import configure_session
+    from archetype.storage.session import configure_session
 
     cfg = StorageConfig(uri=str(tmp_path / "store_fail"), namespace="ns")
     session = configure_session(cfg)
@@ -69,12 +69,13 @@ async def test_async_store_append_skips_on_empty_df(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_async_store_append_raises_on_collect_failure(tmp_path, caplog):
+async def test_async_store_append_raises_on_write_failure(tmp_path):
     """A frame that cannot materialize must fail the append, not no-op.
 
     Persistence failure is observable to callers (specification.md, updater
-    contracts): a swallowed collect failure would let a tick 'succeed' while
-    persisting nothing.
+    contracts). The write boundary is the only executor of the plan (issue
+    #538 — no collect/count preflight), so the failure surfaces from the
+    write itself.
     """
     session, cfg = _build_session_and_config(tmp_path)
     store = AsyncStore(session, io_config=cfg.io_config)
@@ -83,13 +84,11 @@ async def test_async_store_append_raises_on_collect_failure(tmp_path, caplog):
     class BadDf:
         column_names = ["broken"]
 
-        def collect(self, **_kwargs):
+        def write_iceberg(self, *_args, **_kwargs):
             raise RuntimeError("boom")
 
-    with caplog.at_level("ERROR"):
-        with pytest.raises(RuntimeError, match="boom"):
-            await store.append(sig, BadDf())
-    assert any("Append collect failed" in rec.message for rec in caplog.records)
+    with pytest.raises(RuntimeError, match="boom"):
+        await store.append(sig, BadDf())
 
 
 @pytest.mark.asyncio

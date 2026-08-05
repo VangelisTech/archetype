@@ -2,6 +2,9 @@
 
 ## Purpose and Scope
 
+Use `ArchetypeRuntime` for a Python script. It owns one process resource graph,
+then gives you a lazy handle for each world.
+
 This page gets you from install to a running world. It uses the same core
 primitives as the [Overview](../index.md): components, processors, world,
 query, update, store.

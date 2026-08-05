@@ -4,259 +4,169 @@
 
 ## Purpose and Scope
 
-Physical AI turns a typed evaluation or instruction-sweep request into **one
-durable world** of trial entities. The runtime submits the request; the
-application family creates the world, installs processors, runs a bounded
-episode, and projects a report from persisted `ManipStatus` rows.
+Physical AI is an [application-layer](app-overview.md) family for evaluating
+embodied policies against environments. Archetype supports two deliberately
+different execution shapes:
 
-This is an [application-layer](app-overview.md) workflow on top of the
-[core engine](core-architecture.md). Environment and policy providers stay
-outside ECS transition authority.
+- pure in-process processors, such as the MuJoCo cart-pole example; and
+- one public distributed operation: a complete episode batch executed through
+  a Modal-hosted [Activity](activities.md).
+
+Remote environment and policy clients are not installed in retryable ticks.
+The hosted contract crosses committed World state as immutable episode intent
+and returns only complete, content-addressed episode evidence.
 
 ```mermaid
 graph TB
-    Req["evaluate / sweep request"] --> RT["ArchetypeRuntime"]
-    RT --> App["PhysicalAIService"]
-    App --> World["One control-plane world<br/>(world_id, run_id)"]
-
-    World --> T0["Trial 0<br/>ManipTask + obs + action + status"]
-    World --> T1["Trial 1"]
-    World --> TN["Trial N"]
-
-    App --> Report["Typed report<br/>projection of ManipStatus"]
-    World -.->|"evidence"| Report
+    Req["HostedEpisodeRequest batch"] --> RT["ArchetypeRuntime"]
+    RT --> World["RuntimeWorld"]
+    World --> Act["Modal-hosted Activity"]
+    Act --> Obs["HostedEpisodeObservation<br/>result_ref + digests"]
+    World --> Evidence["Committed world evidence"]
+    Obs -.-> Evidence
 ```
-
-The world is the evidence. A report is a typed projection of terminal status
-rows, not a second summary that can drift from the ledger.
 
 ## Key Capabilities
 
 | Capability | Implementation |
 |---|---|
-| **Batched trials** | Many trial entities in one world / one `(world_id, run_id)` |
-| **Provider boundary** | Env and policy clients are resources; processors own tick transitions |
-| **Episode control** | `SimulationService` runs until status termination or cap |
-| **Ledger-derived reports** | Success rates and scores come from queried component rows |
-| **Instruction sweeps** | Paired seeds across language variants for fair comparison |
+| **In-process evals** | Processors + env/policy resources inside ordinary ticks |
+| **Hosted episodes** | Activity admits intent at tick T; observation commits at tick U |
+| **Stable activity IDs** | Caller-stable within a world; content mismatch fails closed |
+| **Fork-safe identity** | Provider identity includes `world_id`; parent/child stay independent |
+| **Ledger evidence** | Complete payloads referenced by digest, not live attachable clients |
 
-## Run one task evaluation
+## Run a hosted episode
 
-Use `ArchetypeRuntime`; do not assemble world, mutation, simulation, and
-evaluation services in application code.
+Create a world from `ArchetypeRuntime`, supply explicit durable storage, and
+call `RuntimeWorld.run_hosted_episode`:
 
 ```python
-from archetype import ArchetypeRuntime, PhysicalTaskEvalConfig, StorageConfig
-from archetype.physical_ai.manipulation import (
-    ManipStatus,
-    ManipTask,
-    ScriptedReachEnv,
+from archetype import (
+    ArchetypeRuntime,
+    HostedEpisodeRequest,
+    ModalHostedEpisodeConfig,
+    StorageConfig,
 )
-from archetype.physical_ai.policy import ScriptedReachPolicy
 
 storage = StorageConfig(uri="./data", namespace="physical-evals")
-targets = {
-    0: (0.10, 0.0, 0.5),
-    1: (0.20, 0.0, 0.5),
-}
+provider = ModalHostedEpisodeConfig(
+    workspace_name="my-workspace",
+    environment_name="main",
+    app_name="physical-ai",
+    function_name="run-episode",
+    result_dict_name="physical-ai-results",
+    result_volume_name="physical-ai-values",
+)
 
-env = ScriptedReachEnv(targets=targets, tolerance=0.02)
-policy = ScriptedReachPolicy(targets=targets, gain=0.5, max_step=0.05)
-
-async with ArchetypeRuntime() as runtime:
-    report = await runtime.evaluate_physical_task(
-        PhysicalTaskEvalConfig(
-            suite="scripted-reach",
-            task_id=0,
-            trials=2,
-            max_steps=40,
-            storage=storage,
-        ),
-        env_client=env,
-        policy_client=policy,
-    )
-
-    print(report.success_rate, report.mean_length)
-
-    # The report points back to the evidence that produced it.
-    world = runtime.attach(report.world_id, storage=storage)
-    rows = await world.query(ManipStatus, ManipTask)
-```
-
-`env_client.task_language()` supplies the instruction when the provider offers
-it. Otherwise `PhysicalTaskEvalConfig.instruction` is used. Omitting the policy
-client leaves the spawned default `ManipAction` in place, which is useful for
-an environment-only baseline.
-
-The synchronous facade has the same operation without `await`:
-
-```python
-with ArchetypeRuntime.sync() as runtime:
-    report = runtime.evaluate_physical_task(
-        config,
-        env_client=env,
-        policy_client=policy,
-    )
-```
-
-## Compare instructions on paired seeds
-
-An instruction sweep changes only the language supplied to the policy. Every
-variant receives the same seed slots, making the comparison paired instead of
-confounding the instruction with different initial states.
-
-```python
-from archetype import InstructionSweepConfig
-
-config = InstructionSweepConfig(
-    suite="scripted-reach",
-    task_id=0,
-    variants=(
-        "reach",
-        "reach the red block",
-        "reach the red block precisely",
-    ),
-    seeds_per_variant=5,
-    max_steps=40,
-    storage=storage,
+request = HostedEpisodeRequest(
+    trial_id=0,
+    suite="libero",
+    task_id=7,
+    seed=100,
+    instruction="place the red block in the bowl",
+    max_transitions=200,
+    environment_id="libero@v1",
+    policy_id="openvla@v1",
+    config_json="{}",
 )
 
 async with ArchetypeRuntime() as runtime:
-    report = await runtime.sweep_physical_instructions(
-        config,
-        env_client=env,
-        policy_client=policy,
+    world = runtime.world("physical-eval", storage=storage)
+    observation = await world.run_hosted_episode(
+        [request],
+        provider=provider,
+        activity_id="evaluation-7-seed-100",
     )
-
-print(report.scores)
-print(report.best)
+    print(observation.result_ref, observation.success_count)
 ```
 
-For task `T` and seed slot `S`, the seed is `T * 1000 + S`. `env_key` remains
-unique because it routes processor rows to a particular environment instance;
-it does not choose the initial state. Reordering variants therefore cannot
-change the seeds used to grade one instruction. Duplicate instruction strings
-collapse to one condition.
+The sync world handle exposes the same method without `await`.
 
-`max_steps` includes the raw reset-observation tick. A budget of `N` therefore
-permits at most `N - 1` policy-controlled environment steps.
+`activity_id` is caller-stable within a World. Repeating it with the same
+canonical request reconciles the same durable Activity. Reusing it with
+different request content fails closed. A fork may reuse the family-local ID:
+provider operation identity includes `world_id`, so parent and child execution
+remain independent.
 
-## Execution sequence
+## Committed-state sequence
 
-```mermaid
-sequenceDiagram
-    participant Host
-    participant Runtime as ArchetypeRuntime
-    participant App as RuntimeApplication
-    participant Physical as PhysicalAIService
-    participant Providers as Env + Policy Providers
-    participant World as World + Processors
-    participant Simulation as SimulationService
-    participant Evaluation as EvaluationService
-
-    Host->>Runtime: evaluate request + env/policy providers
-    Runtime->>App: evaluate_physical_task(config, providers)
-    App->>Physical: evaluate_task(config, providers)
-    Physical->>World: create one uniquely named world
-    Physical->>World: install policy and environment processors
-    Physical->>Providers: reset each environment by seed
-    Physical->>World: batch-spawn trial entities
-    Physical->>Simulation: run_episode(all ManipStatus.done)
-    loop each committed tick
-        Simulation->>World: process every live trial
-        World-->>World: append component state
-    end
-    Physical->>Evaluation: query ManipStatus + ManipTask by world/run
-    Evaluation-->>Physical: lazy persisted frame
-    Physical-->>App: ledger-derived typed report
-    App-->>Runtime: report
-    Runtime-->>Host: report with world_id + run_id
+```text
+tick T commits HostedEpisodeIntent
+    -> required projection admits the exact receipt
+    -> Modal provider executes or reconciles outside the World lock
+    -> complete request, trajectory, episode-results, and manifest payloads
+    -> generic Activity records their bounded result reference and digest
+    -> HostedEpisodeObservation is staged
+    -> tick U commits the observation
+    -> required projection settles the exact result digest to tick U
 ```
+
+`RuntimeResources` owns the world-scoped hosted binding and worker for the
+process lifetime. Required projection uses deterministic consumer-name order,
+so Mission and Physical-AI Activities can be bound to the same World without
+one replacing the other.
+
+The provider adapter owns Modal recovery meaning:
+
+- a complete first result is recovered and never re-executed;
+- confirmed absence permits a fresh attempt only behind the exact
+  provider-side retry guard; and
+- a permanent start without a complete result remains unknown and fails
+  closed.
+
+The release profile additionally runs one paid seeded episode on a real Modal
+T4 while the World's committed intent and observation rows use a unique
+Cloudflare R2 prefix. A fresh runtime cold-resumes that R2-backed World,
+reconstructs the exact result digest, and reconciles the same Activity without
+a second provider completion. The job deletes its unique Modal Dict, Modal
+Volume, and R2 prefix on both success and failure.
+
+Lease expiry by itself never authorizes provider replay.
+
+## Canonical episode contract
+
+One request row identifies one trial and seed. A batch has one stable provider
+operation ID and unique `trial_id` values. Reset is trajectory row zero and
+does not consume a transition; `max_transitions` counts only applied actions.
+
+Provider completion requires all four canonical Arrow payloads to agree:
+
+- the admitted request;
+- the complete trajectory;
+- one derived result row per episode; and
+- one manifest binding their identities, digests, and completeness counts.
+
+Partial trajectories and provider-local paths are not successful results.
+Credentials, placement, attempt metadata, and timings are excluded from replay
+identity.
 
 ## Ownership
 
 | Location | Responsibility |
-| --- | --- |
-| `archetype.physical_ai.contracts` | Supported request, outcome, and report values |
-| `archetype.physical_ai.manipulation` | ECS Components, environment boundary, and environment-step processors |
-| `archetype.physical_ai.policy` | Policy boundary and action processor |
-| `archetype.physical_ai.optimization` | Pure, callback-driven instruction search |
-| `archetype.app.physical_ai` | Internal world/process/episode/query orchestration |
-| `RuntimeApplication` | Admission and delegation to the owning application service |
-| `ArchetypeRuntime` | Supported trusted Python entry point and sync parity |
-| world/simulation/evaluation families | Lifecycle, tick execution, persisted reads, and evaluation evidence |
+|---|---|
+| `archetype.physical_ai.models` | Public request, Modal configuration, observation, and exact operation model |
+| `archetype.physical_ai.hosted_episode` | Canonical Arrow schemas, codecs, identities, digests, and completeness validation |
+| `archetype.physical_ai.hosted_activity_contracts` | Intent/observation Components, bounded references, and provider reconciliation protocol |
+| `archetype.physical_ai.hosted_activities` | Exact-receipt projector, Activity adapter, fenced worker, redelivery, and settlement |
+| `archetype.physical_ai.hosted_activity_values` | Content-addressed values and local deterministic proof provider |
+| `archetype.physical_ai.hosted_activity_world` | Storage reader, idempotent observation stager, and world binding |
+| `archetype.physical_ai.hosted_workflow` | Intent tick, out-of-lock worker call, and observation tick |
+| `archetype.physical_ai.hosted_modal` | Modal namespace, atomic start, Volume-first publication, and reconciliation |
+| `archetype.world.projectors` | Deterministic multi-family required-projector fan-out |
+| `wiring.py` / `RuntimeResources` | Concrete construction, process ownership, operation registration, and teardown |
 
-The separation is intentional:
+The generic `activities` family knows admissions, attempts, fences, result
+references, and settlement receipts. It does not know whether a Modal episode
+is complete or safe to repeat.
 
-- Components and processors decide per-tick state transitions.
-- `SimulationService` owns episode execution and value-based termination.
-- `PhysicalAIService` owns the multi-service workflow but no component schema.
-- External simulator and model implementations own provider resources, not ECS
-  transition authority.
-- The runtime exposes the capability without exposing a concrete service or
-  live `AsyncWorld`.
+## Pure in-process paths
 
-There is currently no REST operation for physical evaluation. The Python
-runtime is a trusted in-process host; an untrusted host must not reach the
-concrete service directly. A future remote surface must add an explicit
-authorized gateway contract rather than treating the runtime method as an
-authentication boundary.
+`archetype.physical_ai.mujoco_cartpole` remains a local DataFrame processor
+example. Its worker-local MuJoCo model and data are in-memory scratch, not a
+remote provider session. Internal environment/policy processor protocols are
+available for explicit in-process composition, but they are not a public
+distributed runtime operation.
 
-## Instruction optimization
-
-`optimize_instruction` is pure orchestration over an injected evaluator:
-
-```python
-from archetype.physical_ai.optimization import (
-    TemplatePerturbation,
-    optimize_instruction,
-)
-
-async def evaluate(instructions: list[str]) -> dict[str, float]:
-    config = InstructionSweepConfig(
-        suite="scripted-reach",
-        task_id=0,
-        variants=tuple(instructions),
-        seeds_per_variant=5,
-        max_steps=40,
-        storage=storage,
-    )
-    report = await runtime.sweep_physical_instructions(
-        config,
-        env_client=env,
-        policy_client=policy,
-    )
-    return report.scores
-
-result = await optimize_instruction(
-    evaluate=evaluate,
-    base="reach",
-    strategy=TemplatePerturbation(("red", "block", "precisely")),
-    rounds=4,
-    neighbors=3,
-)
-```
-
-The callback is the boundary. It can execute real paired rollouts, or a future
-model-based scorer can evaluate candidates without changing the search
-algorithm. The deterministic template strategy exists to verify the mechanism;
-it is not evidence that language optimization improves a real policy.
-
-## Evidence invariants
-
-The workflow enforces these contracts:
-
-1. One request produces one control-plane world and one active run identity.
-2. Every requested trial must have a terminal ledger row before a report is
-   returned; a reduced denominator fails loudly.
-3. Task evaluation seeds are deterministic by trial index.
-4. Sweep seeds are paired by seed slot and independent of variant position.
-5. Stateful policy clients are reset at each evaluation boundary when they
-   expose `reset()`.
-6. Success and episode length come from the latest persisted `ManipStatus` row.
-7. The workflow never destroys its world after grading, so evidence remains
-   addressable by the returned identifiers.
-
-The credential-free contracts live under `tests/app/physical_ai/`. Real LIBERO,
-VLA, GPU, and Modal adapters remain external provider implementations and paid
-dogfoods; the application workflow does not import them.
+See [Activities](activities.md) for the generic durability contract and
+[Architecture](architecture.md) for the ownership map.

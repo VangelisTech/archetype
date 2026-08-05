@@ -5,4 +5,5 @@
 [[top_level_family_rule]]
 name = "research-domain-family"
 consumer = "archetype.research"
-allowed_families = []
+# Core is reserved infrastructure and is implicitly permitted by the checker.
+allowed_families = ["archetype.storage", "archetype.world"]

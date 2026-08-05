@@ -6,8 +6,8 @@
 Proves the remote substrate end to end with nothing but ``.env``:
 
 1. ``--seed``: create a world on R2 (LanceDB over the S3-compatible
-   endpoint) under the DEPLOYED Durable Objects control catalog — spawn,
-   step twice, ingest one durable artifact.
+   endpoint) under the DEPLOYED Durable Objects control catalog — spawn and
+   step twice.
 2. default: from a completely fresh process, discover that world through
    production Cloudflare, read its visible rows through Archetype, and then
    read the SAME table straight off the R2 bucket with plain Daft — no
@@ -67,41 +67,27 @@ def _storage():
 
 
 async def seed() -> None:
-    from archetype.app.container import ServiceContainer
+    from archetype import ArchetypeRuntime
     from archetype.core.component import Component
-    from archetype.core.config import RunConfig, WorldConfig
 
     class Beacon(Component):
         value: float = 0.0
 
-    container = ServiceContainer()
-    try:
-        world = await container.world_service.create_world(
-            WorldConfig(name="r2-validation"), _storage()
-        )
-        await container.mutation_service.create_entity(world.world_id, [Beacon(value=1.0)])
-        await container.simulation_service.step(world.world_id, RunConfig())
-        await container.simulation_service.step(world.world_id, RunConfig())
-        receipt = await container.artifact_service.publish(
-            str(world.world_id),
-            [Beacon(value=42.0)],
-            external_id="phase1-proof",
-            producer="validate-script",
-        )
+    async with ArchetypeRuntime() as runtime:
+        world = runtime.world("r2-validation", storage=_storage())
+        await world.spawn(Beacon(value=1.0))
+        await world.step()
+        await world.step()
+        info = await world.info()
         STATE_FILE.write_text(
             json.dumps(
                 {
-                    "world_id": str(world.world_id),
-                    "run_id": str(world.run_id),
-                    "artifact_token": receipt.commit_token,
+                    "world_id": str(info.world_id),
+                    "run_id": str(info.run_id),
                 }
             )
         )
-        print(
-            f"seeded world {world.world_id} on {BUCKET_URI} (artifact {receipt.commit_token[:14]})"
-        )
-    finally:
-        await container.shutdown()
+        print(f"seeded world {info.world_id} on {BUCKET_URI}")
 
 
 async def validate() -> None:
@@ -129,11 +115,20 @@ async def validate() -> None:
         assert len(rows) >= 3, f"expected >=3 visible rows, saw {len(rows)}"
         print(f"[2/3] archetype reads {len(rows)} visible rows from R2 (ticks {ticks})")
 
-        # Table ids for the raw-Daft read (implementation detail, so the one
-        # container peek lives here, clearly labeled).
-        catalog = runtime._container.storage_service.get_control_catalog(_storage())
+    # Table ids for the raw-Daft read are a substrate-validation detail. Use a
+    # separately owned storage inspector instead of reaching through runtime.
+    from archetype.storage.config import ControlCatalogConfig
+    from archetype.storage.service import StorageService
+
+    storage = StorageService(
+        control_catalog_config=ControlCatalogConfig.from_env(),
+    )
+    try:
+        catalog = storage.get_control_catalog(_storage())
         signatures = await catalog.list_signatures()
-        table_ids = [s.table_id for s in signatures]
+        table_ids = [signature.table_id for signature in signatures]
+    finally:
+        await storage.shutdown()
 
     # ── 2. Plain Daft, straight off the bucket — no archetype in the path ──
     import daft

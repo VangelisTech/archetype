@@ -3,21 +3,25 @@
 # SPDX-License-Identifier: Apache-2.0
 """Gate-surface coverage audit (deterministic).
 
-Two checks that keep the command gate's claim-vs-effect surface honest:
+Three checks keep the command gate's claim-vs-effect surface honest:
 
-1. **Command disposition manifest** — every ``CommandType`` member is
-   classified below, and ``CommandScheduler._apply``'s match arms equal the
-   tick-deferred set exactly. A new enum member without a classification, or
-   a dispatcher arm drifting from the manifest, fails this audit. This is the
-   static guard for the accepted-then-dropped class (issues #178/#368): a
-   command admitted to durable scheduling must have an explicit disposition;
-   every other command is a direct application operation.
+1. **Exact registry coverage** — the composition root must register every
+   ``WORLD_OPERATION_TYPES`` model and ``GetAuditHistory`` exactly once, with
+   no unreviewed extra model. Durable eligibility must equal
+   ``PORTABLE_TICK_OPERATION_TYPES`` exactly. This is the static guard for the
+   accepted-then-dropped class (issues #178/#368): reachability and durability
+   are properties of one exact model registration, never an enum side table.
 
-2. **API error taxonomy** — every exception class defined in the app layer's
-   error modules must be mapped by ``api.errors.raise_api_error`` to a
-   non-500 branch (issue #180: ``WorldNotFoundError`` extended
-   ``LookupError``, missed the ``KeyError`` branch, and fell through to the
-   500 fallback while tests stayed green).
+2. **Registry-driven scheduler** — the canonical scheduler must contain
+   neither a ``CommandType`` reference nor a ``match`` statement. Durable
+   materialization resolves the registered exact model and invokes its
+   registered materializer.
+
+3. **API error taxonomy** — every exception class defined in the application,
+   canonical storage authority, or a registered operation family must be mapped by
+   ``api.errors.raise_api_error`` to a non-500 branch (issue #180:
+   ``WorldNotFoundError`` extended ``LookupError``, missed the ``KeyError``
+   branch, and fell through to the 500 fallback while tests stayed green).
 
 Run via ``make lint`` (PYTHONPATH=src). Exits non-zero with a specific
 message on any drift.
@@ -26,130 +30,221 @@ message on any drift.
 from __future__ import annotations
 
 import ast
+import asyncio
 import builtins
 import importlib
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parents[1]
-COMMAND_SERVICE = ROOT / "src/archetype/app/commands/service.py"
+COMMAND_SCHEDULER = ROOT / "src/archetype/commands/scheduler.py"
 API_ERRORS = ROOT / "src/archetype/api/errors.py"
 
-# ── Check 1 manifest ─────────────────────────────────────────────────────────
-# Every CommandType member must appear in exactly one bucket. Reclassifying a
-# type is a contract decision: update the manifest in the same PR as the code.
-
-# Tick-deferred commands: durable admission accepts them and _apply MUST have
-# an explicit arm. MESSAGE, CUSTOM, and QUERY_WORLD are data/no-op envelopes,
-# but naming them here makes that behavior deliberate rather than fallthrough.
-DEFERRED_DISPATCHED = {
-    "SPAWN",
-    "DESPAWN",
-    "UPDATE",
-    "ADD_COMPONENT",
-    "REMOVE_COMPONENT",
-    "MESSAGE",
-    "CUSTOM",
-    "QUERY_WORLD",
-}
-
-# Direct-gated operations (CommandGateway exposes an explicit method; the
-# scheduler is not their application path).
-DIRECT_ONLY = {
-    "PUBLISH_ARTIFACT",
-    "EVALUATE",
-    "CREATE_WORLD",
-    "DESTROY_WORLD",
-    "FORK_WORLD",
-    "STEP",
-    "RUN",
-    "RUN_ROLLOUT",
-    "RUN_EPISODE",
-    "AUTORESEARCH",
-    "GET_WORLD_INFO",
-    "GET_AUDIT_HISTORY",
-    "LIST_SIGNATURES",
-    "LIST_WORLDS",
-    "LIST_PROCESSORS",
-    "LIST_HOOKS",
-    "LIST_RESOURCES",
-    "ADD_PROCESSOR",
-    "REMOVE_PROCESSOR",
-    "ADD_RESOURCE",
-    "ADD_HOOK",
-    "REMOVE_HOOK",
-}
+# ── Check 1: exact operation registry ────────────────────────────────────────
 
 
-def _drain_case_arms(path: Path) -> set[str]:
-    """CommandType names matched by ``case`` arms inside ``_apply``."""
-    tree = ast.parse(path.read_text(), filename=str(path))
-    arms: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_apply":
-            for inner in ast.walk(node):
-                if not isinstance(inner, ast.Match):
-                    continue
-                for case in inner.cases:
-                    for pattern in ast.walk(case.pattern):
-                        if not isinstance(pattern, ast.MatchValue) or not isinstance(
-                            pattern.value, ast.Attribute
-                        ):
-                            continue
-                        value = pattern.value
-                        if isinstance(value.value, ast.Name) and value.value.id == "CommandType":
-                            arms.add(value.attr)
-    return arms
+def _composed_registry() -> Any:
+    """Build and close the real explicit process graph, retaining its registry."""
+    from archetype.storage.config import ControlCatalogConfig
+    from archetype.wiring import RuntimeBootstrapConfig, build_runtime_resources
+
+    async def compose(catalog_dir: Path) -> Any:
+        resources = build_runtime_resources(
+            RuntimeBootstrapConfig(
+                control_catalog_config=ControlCatalogConfig(catalog_dir=catalog_dir),
+            )
+        )
+        try:
+            return cast("Any", resources.dispatcher)._registry
+        finally:
+            await resources.aclose()
+
+    with TemporaryDirectory(prefix="archetype-gate-coverage-") as temporary:
+        return asyncio.run(compose(Path(temporary)))
 
 
-def check_command_dispositions() -> list[str]:
-    from archetype.app.models import CommandType
+def _model_label(model: type[Any]) -> str:
+    return f"{model.__module__}.{model.__qualname__}"
+
+
+def check_registry_coverage() -> list[str]:
+    """Require one exact registration and one exact durable disposition."""
+    from archetype.artifacts.models import IngestArtifacts, QueryArtifacts
+    from archetype.commands.models import GetAuditHistory
+    from archetype.episodes.models import (
+        GradeTrajectory,
+        IngestClaudeTranscript,
+        QueryTrajectory,
+        QueryTranscriptRows,
+    )
+    from archetype.evaluation.models import Evaluate, RunGraders
+    from archetype.missions.models import (
+        RestoreMissionSandbox,
+        RunMission,
+        SubmitMission,
+    )
+    from archetype.physical_ai.models import RunHostedEpisode
+    from archetype.research.models import AutoResearch
+    from archetype.world.models import (
+        PORTABLE_TICK_OPERATION_TYPES,
+        WORLD_OPERATION_TYPES,
+    )
 
     problems: list[str] = []
-    members = set(CommandType.__members__)
-    classified = DEFERRED_DISPATCHED | DIRECT_ONLY
+    registry = _composed_registry()
+    specs = registry.specs
+    pull_forward_models = (
+        IngestArtifacts,
+        QueryArtifacts,
+        RunGraders,
+        Evaluate,
+        AutoResearch,
+        RunHostedEpisode,
+        IngestClaudeTranscript,
+        QueryTranscriptRows,
+        QueryTrajectory,
+        GradeTrajectory,
+        SubmitMission,
+        RunMission,
+        RestoreMissionSandbox,
+    )
+    expected_models = (*WORLD_OPERATION_TYPES, GetAuditHistory, *pull_forward_models)
+    actual_models = tuple(spec.model for spec in specs)
+    expected_set = set(expected_models)
+    actual_set = set(actual_models)
 
-    overlap = DEFERRED_DISPATCHED & DIRECT_ONLY
-    if overlap:
-        problems.append(f"manifest buckets overlap: {sorted(overlap)}")
+    if len(actual_models) != len(actual_set):
+        problems.append("operation registry contains a duplicate exact model registration")
 
-    unclassified = members - classified
-    if unclassified:
+    missing = expected_set - actual_set
+    if missing:
         problems.append(
-            "CommandType members with no disposition (classify them in "
-            f"scripts/check_gate_coverage.py): {sorted(unclassified)}"
+            "operation registry is missing exact models: "
+            + ", ".join(sorted(_model_label(model) for model in missing))
         )
-    phantom = classified - members
-    if phantom:
-        problems.append(f"manifest names non-existent CommandType members: {sorted(phantom)}")
-
-    arms = _drain_case_arms(COMMAND_SERVICE)
-    missing_arms = DEFERRED_DISPATCHED - arms
-    if missing_arms:
+    unexpected = actual_set - expected_set
+    if unexpected:
         problems.append(
-            "applied-in-drain commands with NO _apply arm (accepted-then-"
-            f"dropped at drain): {sorted(missing_arms)}"
+            "operation registry contains unreviewed models: "
+            + ", ".join(sorted(_model_label(model) for model in unexpected))
         )
-    surprise_arms = arms - DEFERRED_DISPATCHED
-    if surprise_arms:
+    if actual_set == expected_set and actual_models != expected_models:
         problems.append(
-            "_apply handles commands the manifest does not classify as "
-            f"tick-deferred (update the manifest): {sorted(surprise_arms)}"
+            "operation registry order differs from world + audit + pull-forward inventory"
+        )
+
+    for spec in specs:
+        operation_field = spec.model.model_fields.get("operation")
+        expected_name = operation_field.default if operation_field is not None else None
+        if spec.name != expected_name:
+            problems.append(
+                f"registration {spec.name!r} does not match exact model "
+                f"{_model_label(spec.model)} discriminator {expected_name!r}"
+            )
+
+    expected_durable = set(PORTABLE_TICK_OPERATION_TYPES)
+    actual_durable = {spec.model for spec in specs if spec.durable is not None}
+    missing_durable = expected_durable - actual_durable
+    if missing_durable:
+        problems.append(
+            "portable models missing durable registration: "
+            + ", ".join(sorted(_model_label(model) for model in missing_durable))
+        )
+    unexpected_durable = actual_durable - expected_durable
+    if unexpected_durable:
+        problems.append(
+            "direct-only models have durable registration: "
+            + ", ".join(sorted(_model_label(model) for model in unexpected_durable))
         )
     return problems
 
 
-# ── Check 2: error taxonomy ──────────────────────────────────────────────────
-# The whole archetype.app package is walked for Exception subclasses — a
-# hardcoded module list would fail open the moment errors are defined
-# elsewhere (footgun review on PR #407: app/_catalog.py's four exceptions).
+# ── Check 2: registry-driven scheduler ───────────────────────────────────────
+
+
+def check_scheduler_dispatch_shape() -> list[str]:
+    """Reject reintroduction of enum or structural-match dispatch."""
+    tree = ast.parse(
+        COMMAND_SCHEDULER.read_text(encoding="utf-8"),
+        filename=str(COMMAND_SCHEDULER),
+    )
+    problems: list[str] = []
+    command_type_lines = sorted(
+        {
+            node.lineno
+            for node in ast.walk(tree)
+            if (
+                isinstance(node, ast.Name | ast.Attribute)
+                and (node.id if isinstance(node, ast.Name) else node.attr) == "CommandType"
+            )
+            or (isinstance(node, ast.alias) and node.name.rsplit(".", 1)[-1] == "CommandType")
+        }
+    )
+    if command_type_lines:
+        problems.append(
+            "canonical scheduler references CommandType at lines "
+            + ", ".join(str(line) for line in command_type_lines)
+        )
+
+    match_lines = sorted(node.lineno for node in ast.walk(tree) if isinstance(node, ast.Match))
+    if match_lines:
+        problems.append(
+            "canonical scheduler contains match dispatch at lines "
+            + ", ".join(str(line) for line in match_lines)
+        )
+    return problems
+
+
+# ── Check 3: error taxonomy ──────────────────────────────────────────────────
+# The complete registered-operation family inventory and canonical storage
+# authority are walked for Exception subclasses. A hardcoded
+# error-module list would fail open the moment a family defines an error beside
+# its behavior rather than in a conventional errors.py module.
+ERROR_SURFACE_PACKAGES = (
+    "archetype.artifacts",
+    "archetype.commands",
+    "archetype.episodes",
+    "archetype.evaluation",
+    "archetype.missions",
+    "archetype.physical_ai",
+    "archetype.redaction",
+    "archetype.research",
+    "archetype.storage",
+    "archetype.world",
+)
 
 # Exceptions that deliberately surface as HTTP 500 for now. Every entry needs
 # a rationale and an issue; a stale entry (class gone or now mapped) fails
 # the audit so the manifest cannot rot.
 INTENTIONAL_UNMAPPED = {
-    "archetype.app.storage.catalog.CatalogSchemaMismatchError": (
+    "archetype.storage.catalog.records.CatalogSchemaMismatchError": (
         "integrity violation intentionally surfaces as 500; decision recorded in #413"
+    ),
+}
+
+# Private control-flow exceptions proven not to cross a registered handler
+# boundary. A stale or newly mapped entry fails the audit just like the
+# intentional-500 manifest.
+INTERNAL_ONLY_EXCEPTIONS = {
+    "archetype.missions.coding_agents.app_server.CodexAppServerError": (
+        "caught and normalized into an errored AgentExecutionResult by "
+        "CodingAgentHarness.run before the mission handler returns"
+    ),
+    "archetype.missions.coding_agents.app_server.CodexTurnCompletionBarrierError": (
+        "caught by run_codex_app_server_turn while connector cleanup retries; "
+        "persistent cleanup failure is normalized by CodingAgentHarness before "
+        "the mission handler returns"
+    ),
+    "archetype.missions.critics.harness._UnverifiableReview": (
+        "caught and normalized inside CriticHarness.review before the mission handler returns"
+    ),
+    "archetype.missions.sandboxes._subprocess._CleanupTimeout": (
+        "caught inside run_host and normalized into a bounded timeout ProcessResult"
+    ),
+    "archetype.missions.sandboxes._subprocess._JoinTimeout": (
+        "caught inside the private subprocess cleanup path before run_host returns"
     ),
 }
 
@@ -179,26 +274,27 @@ def _mapped_exception_bases() -> tuple[type[BaseException], ...]:
     return tuple(bases)
 
 
-def _app_exception_classes() -> dict[str, type[Exception]]:
-    """Every Exception subclass defined anywhere in the archetype.app package."""
+def _owned_exception_classes() -> dict[str, type[Exception]]:
+    """Every Exception subclass defined in a governed API-facing package."""
     import pkgutil
 
-    import archetype.app as app_pkg
-
-    # walk_packages yields children only, never the anchor package itself —
-    # include archetype/app/__init__.py explicitly so an exception defined
-    # there cannot escape the scan.
-    module_names = ["archetype.app"]
-    module_names += [
-        module_info.name
-        for module_info in pkgutil.walk_packages(app_pkg.__path__, "archetype.app.")
-    ]
     classes: dict[str, type[Exception]] = {}
-    for name in module_names:
-        module = importlib.import_module(name)
-        for obj in vars(module).values():
-            if isinstance(obj, type) and issubclass(obj, Exception) and obj.__module__ == name:
-                classes[f"{obj.__module__}.{obj.__name__}"] = obj
+    for package_name in ERROR_SURFACE_PACKAGES:
+        package = importlib.import_module(package_name)
+        # walk_packages yields children only, never the anchor package itself.
+        module_names = [package_name]
+        module_names.extend(
+            module_info.name
+            for module_info in pkgutil.walk_packages(
+                package.__path__,
+                package_name + ".",
+            )
+        )
+        for name in module_names:
+            module = importlib.import_module(name)
+            for obj in vars(module).values():
+                if isinstance(obj, type) and issubclass(obj, Exception) and obj.__module__ == name:
+                    classes[f"{obj.__module__}.{obj.__name__}"] = obj
     return classes
 
 
@@ -208,40 +304,54 @@ def check_error_taxonomy() -> list[str]:
     if not bases:
         return ["could not derive any mapped exception bases from raise_api_error"]
 
-    app_exceptions = _app_exception_classes()
-    for qualname, cls in sorted(app_exceptions.items()):
+    owned_exceptions = _owned_exception_classes()
+
+    for qualname, cls in sorted(owned_exceptions.items()):
         mapped = issubclass(cls, bases)
         declared = qualname in INTENTIONAL_UNMAPPED
-        if not mapped and not declared:
+        internal_only = qualname in INTERNAL_ONLY_EXCEPTIONS
+        if not mapped and not declared and not internal_only:
             problems.append(
                 f"{qualname} is not a subclass of any base raise_api_error maps — "
                 "it will surface as HTTP 500. Map it in src/archetype/api/errors.py, "
                 "subclass a mapped base, or declare it in INTENTIONAL_UNMAPPED "
-                "with a rationale and issue."
+                "with a rationale and issue. Use INTERNAL_ONLY_EXCEPTIONS only "
+                "when the exception is caught before every registered boundary."
             )
         elif mapped and declared:
             problems.append(
                 f"{qualname} is declared INTENTIONAL_UNMAPPED but is now mapped — "
                 "remove the stale manifest entry."
             )
+        elif mapped and internal_only:
+            problems.append(
+                f"{qualname} is declared INTERNAL_ONLY_EXCEPTIONS but is now mapped — "
+                "remove the stale internal-only entry."
+            )
 
     for qualname in INTENTIONAL_UNMAPPED:
-        if qualname not in app_exceptions:
+        if qualname not in owned_exceptions:
             problems.append(f"INTENTIONAL_UNMAPPED names a class that no longer exists: {qualname}")
+    for qualname in INTERNAL_ONLY_EXCEPTIONS:
+        if qualname not in owned_exceptions:
+            problems.append(
+                f"INTERNAL_ONLY_EXCEPTIONS names a class that no longer exists: {qualname}"
+            )
     return problems
 
 
 def main() -> int:
     sys.path.insert(0, str(ROOT / "src"))
-    problems = check_command_dispositions() + check_error_taxonomy()
+    problems = check_registry_coverage() + check_scheduler_dispatch_shape() + check_error_taxonomy()
     if problems:
         print("Gate coverage audit FAILED:")
         for problem in problems:
             print(f"  - {problem}")
         print(
-            "\nEvery CommandType needs a disposition (durable dispatcher arm or "
-            "direct application operation), and every app-layer error needs a non-500 HTTP "
-            "mapping. See the manifest in this script."
+            "\nEvery reachable operation needs one exact registration, durable "
+            "eligibility must equal the portable world-model set, scheduler dispatch "
+            "must stay registry-driven, and every API-facing family error needs a non-500 "
+            "HTTP mapping."
         )
         return 1
     print("Gate coverage audit passed")

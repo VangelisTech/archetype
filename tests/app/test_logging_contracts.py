@@ -497,7 +497,6 @@ def test_host_configuration_is_a_semantic_noop_when_setup_fails(monkeypatch) -> 
 
 def test_api_factory_defers_host_configuration_to_each_lifespan(monkeypatch) -> None:
     from archetype.api import app as api_app
-    from archetype.api.deps import set_container
 
     calls: list[dict[str, object]] = []
     monkeypatch.setattr(
@@ -509,13 +508,10 @@ def test_api_factory_defers_host_configuration_to_each_lifespan(monkeypatch) -> 
     first = api_app.create_app()
     second = api_app.create_app()
     assert calls == []
-    try:
-        with TestClient(first):
-            pass
-        with TestClient(second):
-            pass
-    finally:
-        set_container(None)
+    with TestClient(first):
+        pass
+    with TestClient(second):
+        pass
 
     assert calls == [
         {"service_name": "archetype-api"},

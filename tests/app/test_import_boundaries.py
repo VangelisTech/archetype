@@ -3,7 +3,7 @@
 
 """Import-boundary enforcement tests.
 
-Verifies that runtime/ and api/ only reach into the allowed app/ sub-modules,
+Verifies that runtime/ and api/ do not depend on retired app-layer mirrors,
 and that runtime/ never holds a concrete iWorld or AsyncWorld reference outside
 TYPE_CHECKING.
 """
@@ -20,39 +20,11 @@ _ROOT = Path(__file__).resolve().parents[2] / "src" / "archetype"
 _RUNTIME_DIR = _ROOT / "runtime"
 _API_DIR = _ROOT / "api"
 
-# ─── Allowed app imports ─────────────────────────────────────────────────────
+# ─── Retired app-mirror imports ──────────────────────────────────────────────
 
-_RUNTIME_TYPE_ONLY_APP = frozenset(
-    {
-        "archetype.app.research.contracts",
-        "archetype.app.evaluation.interfaces",
-    }
-)
-
-# Modules inside archetype.app that runtime/ may import from.
-_RUNTIME_ALLOWED_APP = _RUNTIME_TYPE_ONLY_APP | frozenset(
-    {
-        "archetype.app.application.interfaces",
-        "archetype.app.container",
-        "archetype.app.models",
-        "archetype.app.gateway.auth.models",
-        "archetype.app.storage.session",
-    }
-)
-
-# Modules inside archetype.app that api/ may import from.
-_API_ALLOWED_APP = frozenset(
-    {
-        "archetype.app.gateway.interfaces",
-        "archetype.app.container",
-        "archetype.app.models",
-        "archetype.app.gateway.auth.models",
-        "archetype.app.gateway.auth.errors",
-        # The gate's typed error contract; mapping it to HTTP status codes
-        # is the adapter's job (issue #180: WorldNotFoundError -> 404).
-        "archetype.app.errors",
-    }
-)
+_RUNTIME_TYPE_ONLY_APP: frozenset[str] = frozenset()
+_RUNTIME_ALLOWED_APP: frozenset[str] = frozenset()
+_API_ALLOWED_APP: frozenset[str] = frozenset()
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -156,7 +128,7 @@ def _extract_name_imports(filepath: Path, names: frozenset[str]) -> list[tuple[s
 
 
 class TestRuntimeAppBoundary:
-    """runtime/ must only import from the allowed app/ modules."""
+    """runtime/ consumes canonical families and process resources directly."""
 
     def test_runtime_imports_only_allowed_app_modules(self):
         violations: list[str] = []
@@ -175,25 +147,25 @@ class TestRuntimeAppBoundary:
     ("source_text", "expected"),
     [
         (
-            "import archetype.app.world.service\n",
-            [("archetype.app.world.service", False)],
+            "from archetype.research.models import AutoResearchConfig\n",
+            [],
         ),
         (
-            "from archetype.app.evaluation.interfaces import TrajectoryGrader\n",
-            [("archetype.app.evaluation.interfaces", False)],
+            "from archetype.app.missions.service import MissionService\n",
+            [("archetype.app.missions.service", False)],
         ),
         ("from archetype.application import Service\n", []),
         (
             "from typing import TYPE_CHECKING\n"
             "if TYPE_CHECKING:\n"
-            "    import archetype.app.evaluation.interfaces\n",
-            [("archetype.app.evaluation.interfaces", True)],
+            "    import archetype.app.missions.service\n",
+            [("archetype.app.missions.service", False)],
         ),
         (
             "from typing import TYPE_CHECKING\n"
             "if TYPE_CHECKING:\n"
-            "    from archetype.app.evaluation.interfaces import TrajectoryGrader\n",
-            [("archetype.app.evaluation.interfaces", True)],
+            "    from archetype.app.missions.service import MissionService\n",
+            [("archetype.app.missions.service", False)],
         ),
     ],
 )
@@ -210,7 +182,7 @@ def test_runtime_app_import_oracle_contract(tmp_path, source_text, expected) -> 
 
 
 class TestApiAppBoundary:
-    """api/ must only import from the allowed app/ modules."""
+    """api/ translates into exact command and family operations."""
 
     def test_api_imports_only_allowed_app_modules(self):
         violations: list[str] = []
@@ -226,10 +198,8 @@ class TestApiAppBoundary:
 @pytest.mark.parametrize(
     ("module", "expected"),
     [
-        ("archetype.app.gateway.interfaces", True),
-        ("archetype.app.errors", True),
-        ("archetype.app.evaluation.service", False),
-        ("archetype.app.research.service", False),
+        ("archetype.app.errors", False),
+        ("archetype.app.missions.service", False),
     ],
 )
 def test_api_app_import_oracle_contract(module: str, expected: bool) -> None:

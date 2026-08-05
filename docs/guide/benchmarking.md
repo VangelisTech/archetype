@@ -14,7 +14,7 @@ Benchmarks are the measurement arm of the
 ```bash
 make bench        # five ECS microbenchmarks, one simulation step
 make bench-full   # the same workloads, three simulation steps
-make bench-query  # four materialized QueryService read shapes
+make bench-query  # four materialized durable-world read shapes
 make bench-daft-attribution  # version-pinned lazy execution characterization
 ```
 

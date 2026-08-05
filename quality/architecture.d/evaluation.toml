@@ -5,4 +5,14 @@
 [[top_level_family_rule]]
 name = "evaluation-domain-family"
 consumer = "archetype.evaluation"
-allowed_families = []
+allowed_families = ["archetype.storage", "archetype.world"]
+
+[[module_rule]]
+module = "archetype.evaluation.handlers"
+allowed_interfaces = ["archetype.storage.interfaces.iStorageService"]
+allowed_app = []
+
+[[module_rule]]
+module = "archetype.evaluation.views"
+allowed_interfaces = ["archetype.storage.interfaces.iStorageService"]
+allowed_app = []

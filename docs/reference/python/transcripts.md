@@ -2,7 +2,7 @@
 
 # Coding-agent transcripts
 
-**Recommended API.** Ingest Claude Code JSONL through a redacted, replay-safe artifact boundary and retain only lightweight trajectory linkage in world history.
+**Recommended API.** Ingest Claude Code JSONL through a redacted artifact boundary and append normalized mission rows linked to the sanitized file occurrence.
 
 ::: archetype.missions.trajectories.ClaudeTranscriptSource
     options:
@@ -17,22 +17,20 @@
 | `max_content_chars` | `int` | `4000` |
 | `include_sidechains` | `bool` | `False` |
 
-::: archetype.artifacts.TranscriptIngestionReceipt
+::: archetype.missions.trajectories.TranscriptIngestionResult
     options:
-      members:
-        - duplicate
+      members: false
 
 | Field | Type | Default |
 | --- | --- | --- |
 | `world_id` | `str` | `required` |
 | `run_id` | `str` | `required` |
-| `trajectory_id` | `str` | `required` |
+| `episode_id` | `str` | `required` |
 | `mission_id` | `str` | `required` |
 | `source_uri` | `str` | `required` |
-| `source_content_hash` | `str` | `required` |
+| `artifact` | `ArtifactRef` | `required` |
+| `rows_written` | `int` | `required` |
 | `redaction_policy_id` | `str` | `required` |
 | `redaction_status` | `str` | `required` |
 | `redaction_count` | `int` | `required` |
 | `redaction_rule_ids` | `tuple[str, ...]` | `required` |
-| `reference` | `ArtifactReceipt` | `required` |
-| `rows` | `ArtifactWriteReceipt` | `required` |

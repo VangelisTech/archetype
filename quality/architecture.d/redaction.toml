@@ -1,0 +1,13 @@
+# Architecture policy fragment: redaction.
+# Merged into quality/architecture.toml by scripts/check_architecture.py;
+# fragments may declare only rule/exception arrays, never scalar policy.
+
+[[top_level_family_rule]]
+name = "redaction-domain-family"
+consumer = "archetype.redaction"
+allowed_families = []
+
+[[module_rule]]
+module = "archetype.redaction.service"
+allowed_interfaces = []
+allowed_app = []

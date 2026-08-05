@@ -19,32 +19,41 @@ Package location states architectural ownership before any symbol is exported:
 | Components, processors, pure DataFrame transforms, transition graphs, and reusable projections | `archetype.<family>` |
 | Supported family value contracts | `archetype.<family>.contracts` or another specifically named family module |
 | Capability-scoped resources and provider adapters implementing a family-owned protocol | A named subpackage of `archetype.<family>` |
-| Durable authority, cross-family orchestration, internal service ports, and concrete application services | `archetype.app.<family>` |
-| Transport, authentication, application facade, and composition | `archetype.api`, `archetype.app.gateway`, `archetype.app.application`, and `archetype.app.container` |
+| Generic Activity identity, claims, attempts, fences, result references, and settlement | `archetype.activities` |
+| Physical storage, control catalogs, commit coordination, and generic durable world/run envelopes | `archetype.storage` |
+| Family-owned workflows and internal lower-family ports | `archetype.<family>` |
+| Transport and authentication | `archetype.api` |
+| Concrete composition and process lifetime | `archetype.wiring` and `archetype.runtime_resources` |
 
 A top-level family may depend on `archetype.core`, itself, third-party
 libraries, and only reviewed lower top-level family contracts declared in
 the root `quality/architecture.toml` policy and per-family fragments under
 `quality/architecture.d/`. It never imports `archetype.app`,
-`archetype.runtime`, `archetype.api`, or `archetype.cli`. The application layer
-may consume top-level family contracts; the reverse edge is forbidden.
+`archetype.runtime`, `archetype.runtime_resources`, `archetype.wiring`,
+`archetype.api`, or `archetype.cli`. Only declared lower-family contracts may
+be consumed.
 Every first-party top-level package or module must be classified as reserved
 infrastructure or registered as a family with one exact dependency
 disposition. The complete family graph is acyclic, and root-facade imports are
 checked against the module that owns the exported name.
 
+`archetype.storage` is the reviewed physical-substrate family. It owns storage
+execution, control-catalog implementations and records, physical visibility,
+commit coordination, and the generic durable world/run envelope. Consuming
+families retain workflow meaning and orchestration while using that
+substrate through the staged `iStorageService` port.
+
 Use semantic module names: `components.py` for persistent ECS schema,
 `processors.py` for processors, `contracts.py` for supported value contracts,
-`transitions.py` for pure typed transition graphs, `interfaces.py` for internal
-application ports, and `service.py` for application authority. A top-level
+`transitions.py` for pure typed transition graphs, `interfaces.py` for genuine
+family ports, and `service.py` for family workflow authority. A top-level
 location does not make every symbol public; supported exports remain explicit
 under [API Stability](api-stability.md).
 
-For example, `archetype.missions` consumes the lower `archetype.graph` family.
-It contains mission/task Components, relations, transition processors,
-authoring values, and capability-scoped sandbox resources. Durable workflow
-composition stays in `archetype.app.missions`; neither location alone adds a
-symbol to the `archetype` root facade. See
+For example, `archetype.missions` consumes its declared lower families. It
+contains mission/task Components, relations, transition processors, authoring
+values, capability-scoped sandbox resources, and the family workflow. Package
+placement alone does not add a symbol to the `archetype` root facade. See
 [Agent Missions V1](agent-missions.md#3-architecture-and-ownership).
 
 ## Source of Truth
@@ -105,6 +114,7 @@ These documents are the current orientation pack for contributors:
 | [Application Architecture](application-architecture.md) | Normative supported boundaries, service ownership, dependency order, and lint inputs |
 | [Observability](observability.md) | Safe signal vocabulary, family dispositions, process-host ownership, and telemetry authority boundaries |
 | [Command Gate](command-gate.md) | Policy enforcement point, roles, and audit emission |
+| [Activities](activities.md) | Resource/Activity distinction, between-tick delivery, provider reconciliation, and settlement |
 | [Service Protocols](service-protocols.md) | Normative app service interfaces |
 | [Runtime](runtime.md) | Script-boundary runtime contract |
 | [Architecture](architecture.md) | High-level ECS and service-layer design |
@@ -115,6 +125,21 @@ Before writing processors or Daft UDFs, `LEARNINGS.md` is also mandatory; it
 records execution-model footguns that are too implementation-specific for the
 normative contracts.
 
+## Advisory AI review
+
+Codex and Cursor Bugbot can provide review suggestions on pull requests.
+Their findings are advisory inputs to maintainer judgment: neither reviewer is
+a required status context, and provider failure cannot block a merge. Convert
+confirmed behavioral findings into deterministic tests, lints, audits, or
+operational scenarios so the same issue class does not require repeated model
+review.
+
+The retired deterministic multi-lens gate and merge-queue orchestration are
+preserved only as historical incident evidence under
+`quality/quarantine/review-gate/`. Do not move those files back into active
+workflow or test paths. Any future review automation requires a new,
+cost-bounded design and explicit approval.
+
 ## Contribution Policy
 
 This repository is opinionated about where changes should land.
@@ -122,8 +147,7 @@ This repository is opinionated about where changes should land.
 | Area | Guidance |
 |---|---|
 | `src/archetype/core/` | Treat as curated and effectively read-only unless the change has been explicitly approved |
-| `src/archetype/<family>/` | Reusable domain state and pure behavior; obey the declared top-level family DAG |
-| `src/archetype/app/` | Internal application authority and orchestration; extend carefully behind the supported runtime or adapter boundary |
+| `src/archetype/<family>/` | Domain state, behavior, resources, and family-owned workflows; obey the declared top-level family DAG |
 | `src/archetype/api/`, `src/archetype/cli/`, `docs/`, `examples/`, `tests/` | Good contribution targets |
 
 If you are proposing a core behavior change, you should document the contract
@@ -173,7 +197,7 @@ reviewable view; edit the registry, never the generated table.
 Some of the most important contracts are enforced directly in tests:
 
 - [`tests/app/test_runtime_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_contracts.py)
-- [`tests/app/test_runtime_fork_storage.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_fork_storage.py)
+- [`tests/storage/test_runtime_fork_storage.py`](https://github.com/VangelisTech/archetype/blob/main/tests/storage/test_runtime_fork_storage.py)
 - [`tests/sync/test_sync_stack_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/sync/test_sync_stack_contracts.py)
 - [`tests/integration/test_command_flow.py`](https://github.com/VangelisTech/archetype/blob/main/tests/integration/test_command_flow.py)
 - [`tests/app/test_services.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_services.py)
@@ -199,17 +223,17 @@ Required validation:
 Documentation affected:
 ```
 
-Keep each field concrete. "Owning layer: app/gateway" is useful; "backend" is
-not. "Invariants at risk: rejected commands must not debit quota or enter the
+Keep each field concrete. "Owning layer: commands dispatcher" is useful;
+"backend" is not. "Invariants at risk: rejected commands must not debit quota or enter the
 durable scheduler" gives a reviewer something to verify. Empty fields are
 useful signals too: if no executable oracle exists, the issue has identified a
 test that needs to be written.
 
 Good examples:
 
-- "Make `SimulationService.run()` preserve one logical `run_id` across the full run and add regression coverage."
+- "Make managed world `run()` preserve one logical `run_id` across the full run and add regression coverage."
 - "Document `RuntimeWorld`'s world-local shutdown contract and add smoke tests."
-- "Fix `QueryService` so it either implements real reads or is clearly documented as provisional."
+- "Fix durable world query so it either implements real reads or is clearly documented as provisional."
 
 Do not force a contract card onto a spelling fix. Use it when implementation
 choices, public behavior, or architectural ownership could reasonably diverge.
@@ -236,10 +260,10 @@ make static           # format, lint, types, lock, contracts, benchmarks
 make eval-conformance # blocking regression + specification evidence
 make eval-reliability # blocking retry/replay/crash/recovery evidence
 make eval-capability  # blocking architectural capability evidence
-make verify-pr        # local equivalent of the required PR profile
+make verify-pr        # static checks + fast tests required on pull requests
 make verify-release   # installed-artifact release profile
 make bench            # record one local ECS microbenchmark report
-make bench-query      # record materialized QueryService latency
+make bench-query      # record materialized durable-world read latency
 make docs
 ```
 
@@ -283,8 +307,8 @@ Keep the work narrow and contract-driven.
 - Add or update a regression test before or alongside the fix.
 - Prefer service-layer changes over core changes when both could solve the same
   problem.
-- Do not bypass `iCommandGateway`, runtime, or world lifecycle semantics just to make
-  a wrapper API feel shorter.
+- Do not bypass actor-aware dispatcher entry, runtime, or world lifecycle
+  semantics just to make a wrapper API feel shorter.
 - Do not introduce `coder` or `maintainer` in new docs or examples; use the four-role model in [Command Gate](command-gate.md).
 - If a proposed ergonomic change weakens a contract, document the tradeoff and
   get agreement before implementing it.

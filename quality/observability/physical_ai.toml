@@ -2,17 +2,96 @@ version = 1
 owner = "physical_ai"
 family = "physical_ai"
 
+[[module_operation_surface]]
+qualified_scope = "archetype.physical_ai.views"
+
 [[disposition]]
 operations = [
-  "interfaces.iPhysicalAIService.evaluate_task",
-  "interfaces.iPhysicalAIService.sweep_instructions",
+  "interfaces.EnvClient.reset",
+  "interfaces.EnvClient.step",
+  "interfaces.EnvClient.aclose",
+  "interfaces.PolicyClient.act",
+  "interfaces.PolicyClient.aclose",
 ]
 signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome"]
-authority = "Persisted ManipStatus and ManipTask rows under the returned world/run identity, plus the typed ledger-derived report, remain authoritative."
+authority = "The explicitly composed in-process client remains authoritative for simulator or policy state and returned values."
 evidence = [
   "docs/guide/physical-ai.md",
-  "tests/app/physical_ai/test_task_evaluation.py",
-  "tests/app/physical_ai/test_instruction_sweep.py",
+  "tests/physical_ai/test_manipulation_harness.py",
+  "tests/physical_ai/test_policy_loop.py",
 ]
-rationale = "Physical evaluation produces queryable ledger evidence; a second workflow signal would duplicate rather than strengthen that authority."
+rationale = "Internal in-process boundaries return transition values; telemetry cannot acknowledge a provider call or committed tick."
+
+[[disposition]]
+operations = ["optimization.PerturbationStrategy.propose"]
+signals = ["none"]
+outcomes = ["propagated_failure", "handled_outcome"]
+authority = "The returned proposal list remains authoritative; any evaluation or durable evidence belongs to the injected evaluator and its owning workflow."
+evidence = [
+  "docs/guide/physical-ai.md",
+]
+rationale = "Instruction perturbation is a pure strategy call and has no independently approved signal."
+
+[[disposition]]
+operations = [
+  "hosted_activity_contracts.HostedEpisodeProvider.execute",
+  "hosted_activity_contracts.HostedEpisodeProvider.provider",
+  "hosted_activity_contracts.HostedEpisodeProvider.reconcile",
+  "hosted_activity_values.HostedEpisodeRunner.run",
+  "hosted_modal.ModalHostedEpisodeRuntime.get",
+  "hosted_modal.ModalHostedEpisodeRuntime.put_if_absent",
+  "hosted_modal.ModalHostedEpisodeRuntime.read_blob",
+  "hosted_modal.ModalHostedEpisodeRuntime.spawn",
+  "hosted_modal.ModalHostedEpisodeRuntime.wait",
+]
+signals = ["none"]
+outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
+authority = "The provider's permanent operation-start evidence and first complete request/trajectory/result/manifest publication remain authoritative; returned typed recovery evidence reports that truth without authorizing replay from lease expiry."
+evidence = [
+  "docs/guide/physical-ai.md",
+  "tests/physical_ai/test_hosted_episode_activities.py",
+  "tests/physical_ai/test_hosted_modal_activity.py",
+]
+rationale = "Provider execution and recovery are effect boundaries whose durable result or explicit unknown state is the authority; a second telemetry signal cannot make an episode complete or safe to repeat."
+
+[[disposition]]
+operations = [
+  "hosted_activities.PhysicalCommittedIntentReader.read",
+  "hosted_activities.PhysicalHostedActivityCatalog.admit_episode",
+  "hosted_activities.PhysicalHostedActivityCatalog.bind_provider_operation",
+  "hosted_activities.PhysicalHostedActivityCatalog.claim_episode",
+  "hosted_activities.PhysicalHostedActivityCatalog.confirm_provider_operation_absent",
+  "hosted_activities.PhysicalHostedActivityCatalog.episode_result",
+  "hosted_activities.PhysicalHostedActivityCatalog.episode_observation_settled",
+  "hosted_activities.PhysicalHostedActivityCatalog.episode_settled",
+  "hosted_activities.PhysicalHostedActivityCatalog.has_unsettled_work",
+  "hosted_activities.PhysicalHostedActivityCatalog.pending_episode_results",
+  "hosted_activities.PhysicalHostedActivityCatalog.record_episode_result",
+  "hosted_activities.PhysicalHostedActivityCatalog.settle_episode_observation",
+  "hosted_activities.PhysicalHostedObservationStager.stage_hosted_episode_observation",
+  "hosted_activities.PhysicalHostedValueStore.get_request",
+  "hosted_activities.PhysicalHostedValueStore.get_result",
+  "hosted_activities.PhysicalHostedValueStore.publish_result",
+  "hosted_activities.PhysicalHostedValueStore.put_request",
+]
+signals = ["none"]
+outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
+authority = "The exact committed receipt, generic Activity catalog facts, content-addressed hosted payloads, and later committed HostedEpisodeObservation remain authoritative."
+evidence = [
+  "docs/guide/activities.md",
+  "docs/guide/physical-ai.md",
+  "tests/physical_ai/test_hosted_episode_activities.py",
+]
+rationale = "Family choreography translates between existing durable authorities; logging cannot acknowledge admission, publication, staging, or exact-receipt settlement."
+
+[[disposition]]
+operations = ["views.latest_rows"]
+signals = ["none"]
+outcomes = ["propagated_failure", "handled_outcome"]
+authority = "The returned lazy persisted-row projection remains authoritative under its world and run coordinates."
+evidence = [
+  "docs/guide/physical-ai.md",
+  "tests/physical_ai/test_frame_ref_carriage.py",
+]
+rationale = "The view is a pure projection of persisted rows and has no independent workflow signal."

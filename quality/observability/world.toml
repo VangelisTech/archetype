@@ -2,12 +2,37 @@ version = 1
 owner = "world"
 family = "world"
 
+[[concrete_operation_surface]]
+qualified_scope = "archetype.world.lifecycle.WorldLifecycle"
+
+[[concrete_operation_surface]]
+qualified_scope = "archetype.world.registry.WorldRegistry"
+
+[[module_operation_surface]]
+qualified_scope = "archetype.world.lifecycle"
+
+[[module_operation_surface]]
+qualified_scope = "archetype.world.mutation"
+
+[[module_operation_surface]]
+qualified_scope = "archetype.world.simulation"
+
+[[module_operation_surface]]
+qualified_scope = "archetype.world.query"
+
+[[module_operation_surface]]
+qualified_scope = "archetype.world.handlers"
+
 [[disposition]]
 operations = [
-  "interfaces.iSimulationService.step",
-  "interfaces.iSimulationService.run",
-  "interfaces.iSimulationService.run_episode",
-  "interfaces.iSimulationService.run_rollout",
+  "handlers.run",
+  "handlers.run_episode",
+  "handlers.run_rollout",
+  "handlers.step",
+  "simulation.run",
+  "simulation.run_episode",
+  "simulation.run_rollout",
+  "simulation.step",
 ]
 signals = ["child"]
 emission_workflows = ["world.compute_archetype", "world.commit_archetype"]
@@ -16,7 +41,7 @@ authority = "The tick manifest, append receipts, world record, and typed simulat
 evidence = [
   "docs/guide/atomic-visibility.md",
   "docs/guide/worlds.md",
-  "tests/app/test_atomic_visibility.py",
+  "tests/world/test_atomic_visibility.py",
 ]
 span_names = [
   "world.query",
@@ -31,39 +56,133 @@ attribute_keys = [
 
 [[disposition]]
 operations = [
-  "interfaces.iWorldService.create_world",
-  "interfaces.iWorldService.get_world",
-  "interfaces.iWorldService.get_world_by_name",
-  "interfaces.iWorldService.has_world",
-  "interfaces.iWorldService.list_worlds",
-  "interfaces.iWorldService.storage_record",
-  "interfaces.iWorldService.catalog_world_ids",
-  "interfaces.iWorldService.control_catalog",
-  "interfaces.iWorldService.fork_world",
-  "interfaces.iWorldService.destroy_world",
-  "interfaces.iWorldService.discover_worlds",
-  "interfaces.iWorldService.open_world_readonly",
-  "interfaces.iWorldService.open_world_mutable",
-  "interfaces.iWorldService.record_step",
-  "interfaces.iWorldService.add_resource",
-  "interfaces.iWorldService.add_hook",
-  "interfaces.iWorldService.remove_hook",
-  "interfaces.iWorldService.list_processors",
-  "interfaces.iWorldService.list_hooks",
-  "interfaces.iWorldService.list_resources",
-  "interfaces.iWorldService.shutdown",
-  "interfaces.iMutationService.create_entity",
-  "interfaces.iMutationService.create_entities",
-  "interfaces.iMutationService.reserve_entity_ids",
-  "interfaces.iMutationService.spawn_with_reserved_id",
-  "interfaces.iMutationService.remove_entity",
-  "interfaces.iMutationService.update_entity",
-  "interfaces.iMutationService.add_components",
-  "interfaces.iMutationService.remove_components",
-  "interfaces.iMutationService.add_processor",
-  "interfaces.iMutationService.remove_processor",
-  "interfaces.iSimulationService.set_command_drain",
-  "interfaces.iSimulationService.set_quota_reset",
+  "handlers.add_components",
+  "handlers.add_hook",
+  "handlers.add_processor",
+  "handlers.add_resource",
+  "handlers.create_entities",
+  "handlers.create_world",
+  "handlers.despawn",
+  "handlers.destroy_world",
+  "handlers.discover_worlds",
+  "handlers.fork_world",
+  "handlers.get_world_info",
+  "handlers.list_hooks",
+  "handlers.list_processors",
+  "handlers.list_resources",
+  "handlers.list_worlds",
+  "handlers.materialize_locked",
+  "handlers.open_world_readonly",
+  "handlers.remove_components",
+  "handlers.remove_hook",
+  "handlers.remove_processor",
+  "handlers.reserve_entity_ids",
+  "handlers.resume_world",
+  "handlers.spawn",
+  "handlers.spawn_reserved",
+  "handlers.update",
+  "interfaces.iWorldLifecycle.create_world",
+  "interfaces.iWorldLifecycle.create_closing_world",
+  "interfaces.iWorldLifecycle.begin_close",
+  "interfaces.iWorldLifecycle.destroy_world",
+  "interfaces.iWorldLifecycle.discover_worlds",
+  "interfaces.iWorldLifecycle.fork_world",
+  "interfaces.iWorldLifecycle.open_world_mutable",
+  "interfaces.iWorldLifecycle.open_world_readonly",
+  "interfaces.iWorldActivationOwner.aclose",
+  "interfaces.iWorldActivationOwner.bind_registration",
+  "interfaces.iWorldActivationOwner.promote",
+  "interfaces.iWorldCleanup.commit",
+  "interfaces.iWorldCleanup.finish",
+  "interfaces.iWorldCleanup.stage_teardown",
+  "interfaces.iWorldCleanup.update_retained",
+  "interfaces.iWorldCleanup.world_id",
+  "interfaces.iWorldRegistry.acknowledge_receipt",
+  "interfaces.iWorldRegistry.activation",
+  "interfaces.iWorldRegistry.abort_close",
+  "interfaces.iWorldRegistry.begin_close",
+  "interfaces.iWorldRegistry.begin_close_attempt",
+  "interfaces.iWorldRegistry.bind_required_projector",
+  "interfaces.iWorldRegistry.catalog_world_ids",
+  "interfaces.iWorldRegistry.cleanup_operation",
+  "interfaces.iWorldRegistry.contains",
+  "interfaces.iWorldRegistry.contains_name",
+  "interfaces.iWorldRegistry.finish_close",
+  "interfaces.iWorldRegistry.insert",
+  "interfaces.iWorldRegistry.is_public_binding",
+  "interfaces.iWorldRegistry.list_worlds",
+  "interfaces.iWorldRegistry.live_world",
+  "interfaces.iWorldRegistry.operation",
+  "interfaces.iWorldRegistry.operations",
+  "interfaces.iWorldRegistry.pending_receipt",
+  "interfaces.iWorldRegistry.remember_storage_identity",
+  "interfaces.iWorldRegistry.required_projector",
+  "interfaces.iWorldRegistry.retain_receipt",
+  "interfaces.iWorldRegistry.snapshot_world_bindings",
+  "interfaces.iWorldRegistry.storage_record",
+  "interfaces.iWorldRegistry.target_tick",
+  "interfaces.iWorldRegistry.validate_cleanup_lease",
+  "interfaces.iWorldRegistry.world_id_for_name",
+  "lifecycle.LifecycleStorage.bind_commit_coordinator",
+  "lifecycle.LifecycleStorage.get_control_catalog",
+  "lifecycle.LifecycleStorage.get_or_create_store",
+  "lifecycle.WorldLifecycle.create_world",
+  "lifecycle.WorldLifecycle.create_closing_world",
+  "lifecycle.WorldLifecycle.begin_close",
+  "lifecycle.WorldLifecycle.destroy_world",
+  "lifecycle.WorldLifecycle.discover_worlds",
+  "lifecycle.WorldLifecycle.fork_world",
+  "lifecycle.WorldLifecycle.open_world_mutable",
+  "lifecycle.WorldLifecycle.open_world_readonly",
+  "lifecycle.build_world",
+  "mutation.add_components",
+  "mutation.add_hook",
+  "mutation.add_processor",
+  "mutation.add_resource",
+  "mutation.create_entities",
+  "mutation.create_entities_atomically",
+  "mutation.create_entity",
+  "mutation.pending_components_locked",
+  "mutation.preview_entity_ids_locked",
+  "mutation.remove_components",
+  "mutation.remove_entity",
+  "mutation.remove_hook",
+  "mutation.remove_processor",
+  "mutation.reserve_entity_ids",
+  "mutation.spawn_with_reserved_id",
+  "mutation.update_entity",
+  "registry.WorldRegistry.acknowledge_receipt",
+  "registry.WorldRegistry.activation",
+  "registry.WorldRegistry.abort_close",
+  "registry.WorldRegistry.begin_close",
+  "registry.WorldRegistry.begin_close_attempt",
+  "registry.WorldRegistry.bind_required_projector",
+  "registry.WorldRegistry.catalog_world_ids",
+  "registry.WorldRegistry.cleanup_operation",
+  "registry.WorldRegistry.contains",
+  "registry.WorldRegistry.contains_name",
+  "registry.WorldRegistry.finish_close",
+  "registry.WorldRegistry.insert",
+  "registry.WorldRegistry.is_public_binding",
+  "registry.WorldRegistry.list_worlds",
+  "registry.WorldRegistry.live_world",
+  "registry.WorldRegistry.operation",
+  "registry.WorldRegistry.operations",
+  "registry.WorldRegistry.pending_receipt",
+  "registry.WorldRegistry.remember_storage_identity",
+  "registry.WorldRegistry.required_projector",
+  "registry.WorldRegistry.retain_receipt",
+  "registry.WorldRegistry.snapshot_world_bindings",
+  "registry.WorldRegistry.storage_record",
+  "registry.WorldRegistry.target_tick",
+  "registry.WorldRegistry.validate_cleanup_lease",
+  "registry.WorldRegistry.world_id_for_name",
+  "resume.ResumeStorage.materialize",
+  "resume.ResumeStorage.pin_visibility",
+  "resume.ResumeStorage.scan_visible_world_rows",
+  "simulation.reconcile_committed_work_locked",
+  "simulation.reconcile_prepared_tick_locked",
+  "simulation.retry_required_projection",
 ]
 signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
@@ -71,10 +190,33 @@ authority = "World registry/catalog state, staged mutations, tick manifests, and
 evidence = [
   "docs/guide/world-lifecycle.md",
   "docs/guide/atomic-visibility.md",
-  "tests/app/test_world_resume.py",
-  "tests/app/test_mutation_service.py",
+  "tests/world/test_mutation_contracts.py",
+  "tests/world/test_resume_contracts.py",
 ]
-rationale = "No direct signal is approved for these lifecycle, mutation, and simulation-configuration operations."
+rationale = "No direct signal is approved for lifecycle, registry, mutation, command materialization, or retryable projection coordination."
+
+[[disposition]]
+operations = [
+  "handlers.list_signatures",
+  "handlers.list_world_signatures",
+  "handlers.query_archetype",
+  "handlers.query_components",
+  "query.get_lineage",
+  "query.list_signatures",
+  "query.pin_query_snapshot",
+  "query.pin_query_snapshot_for_receipt",
+  "query.query_archetype",
+  "query.query_components",
+]
+signals = ["none"]
+outcomes = ["propagated_failure", "handled_outcome", "advisory_suppression"]
+authority = "Pinned manifest visibility, persisted store/catalog state, and the returned lazy frame or signature result remain authoritative."
+evidence = [
+  "docs/guide/atomic-visibility.md",
+  "docs/guide/worlds.md",
+  "tests/world/test_query_contracts.py",
+]
+rationale = "Durable world reads emit no independent signal; bounded signature-discovery degradation remains explicit while physical reads fail closed."
 
 [[workflow]]
 id = "world.compute_archetype"
@@ -85,7 +227,7 @@ authority = "The eventual tick manifest and append receipts, not planning spans,
 evidence = [
   "docs/guide/observability.md",
   "docs/guide/atomic-visibility.md",
-  "tests/app/test_atomic_visibility.py",
+  "tests/app/test_application_atomic_visibility.py",
 ]
 span_names = ["world.query", "world.materialize", "world.execute"]
 attribute_keys = [
@@ -102,7 +244,7 @@ authority = "The append receipt and published tick manifest prove durable visibi
 evidence = [
   "docs/guide/observability.md",
   "docs/guide/atomic-visibility.md",
-  "tests/app/test_atomic_visibility.py",
+  "tests/app/test_application_atomic_visibility.py",
 ]
 span_names = ["world.update"]
 attribute_keys = [
@@ -112,9 +254,19 @@ attribute_keys = [
 
 [[legacy]]
 rule = "raw_exception_logging"
-path = "src/archetype/app/world/service.py"
-qualified_scope = "archetype.app.world.service.WorldService.open_world_mutable"
-target = "log:exception:'resume for world %s acquired fence epoch %d but failed before installing its replacement writer; the previous writer is now stale':exception"
+path = "src/archetype/world/lifecycle.py"
+qualified_scope = "archetype.world.lifecycle.WorldLifecycle._mark_failed_activation"
+target = "log:exception:'failed to mark incompletely activated world %s non-active':exception"
+owner = "world"
+issue = 519
+reason = "Failed-activation reconciliation currently exports a raw exception stack after preserving the original activation failure."
+expiry_condition = "Remove when #519 emits a bounded activation-reconciliation diagnostic tied to durable catalog state."
+
+[[legacy]]
+rule = "raw_exception_logging"
+path = "src/archetype/world/lifecycle.py"
+qualified_scope = "archetype.world.lifecycle.WorldLifecycle.open_world_mutable"
+target = "log:exception:'resume for world %s acquired fence epoch %d but failed before installing its replacement writer':exception"
 owner = "world"
 issue = 519
 reason = "The fenced-resume recovery path currently exports the raw exception stack while preserving retry semantics."
@@ -122,13 +274,13 @@ expiry_condition = "Remove when #519 emits a bounded resume-failure diagnostic w
 
 [[legacy]]
 rule = "raw_exception_logging"
-path = "src/archetype/app/world/service.py"
-qualified_scope = "archetype.app.world.service.WorldService.record_step"
-target = "log:exception:'catalog run update failed for world %s':exception"
+path = "src/archetype/world/query.py"
+qualified_scope = "archetype.world.query._signature_records"
+target = "log:exception:'control catalog unavailable for durable signature discovery':exception"
 owner = "world"
-issue = 519
-reason = "The post-step catalog projection warning currently exports a raw exception stack."
-expiry_condition = "Remove when #519 emits a bounded projection-failure diagnostic distinct from tick durability."
+issue = 520
+reason = "The durable-signature fallback currently logs a raw control-catalog exception."
+expiry_condition = "Remove when #520 introduces bounded query failure diagnostics at the materialization boundary."
 
 [[legacy]]
 rule = "legacy_attribute_key"

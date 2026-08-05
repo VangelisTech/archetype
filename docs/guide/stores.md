@@ -16,12 +16,12 @@ Each archetype signature maps to a single table, named by the archetype's determ
 
 `StorageService` owns the conversion from user-facing `StorageConfig` into
 backend-native core store inputs. The core stores do not interpret
-`StorageConfig` themselves. Archetype supplies one concrete catalog factory:
-a local Iceberg warehouse with SQLite metadata.
+`StorageConfig` themselves. Archetype supplies one concrete data-plane catalog
+factory: a local Iceberg warehouse with SQLite-backed PyIceberg metadata.
 
 ```python
 from archetype.core.config import StorageConfig, StorageBackend
-from archetype.app.storage.service import StorageService
+from archetype.storage import StorageService
 
 storage = StorageConfig(
     uri="./my_data",
@@ -33,7 +33,7 @@ storage_service = StorageService()
 
 On first use, the local path initializes:
 
-1. An **Iceberg SqlCatalog** backed by SQLite for metadata
+1. An **Iceberg SqlCatalog** backed by SQLite for table metadata
 2. A **Daft Session** attached to the catalog
 3. The **namespace** (created if it doesn't exist)
 
@@ -41,23 +41,95 @@ For LanceDB, `StorageService` passes the resolved storage URI and namespace
 directly to `AsyncLancedbStore`. It does not build a Daft session/catalog for
 the LanceDB backend.
 
+### Control plane and data plane
+
+Local SQLite can appear in two deliberately separate roles:
+
+| Plane | Local implementation | Remote implementation | Authority |
+|---|---|---|---|
+| Control | `SqliteControlCatalog` | Durable Object control catalog | World identity, writer fences, visibility manifests, deferred commands, and narrow workflow leases |
+| Data | PyIceberg `SqlCatalog` plus local files | Caller-configured Iceberg catalog plus object storage | Table metadata, atomic snapshots, manifests, and data files |
+
+The control catalog answers whether a writer or workflow action is admitted
+and which committed state is visible. Iceberg answers whether one table update
+committed atomically and which files belong to its snapshot. Iceberg's
+serializable table history does not replace cross-table workflow coordination,
+and the control catalog does not store artifact bytes or analytical rows.
+
+`StorageService` composes both planes for one storage identity. The built-in
+local Iceberg path therefore has a control-catalog SQLite database and a
+separate PyIceberg metadata database. A managed deployment can independently
+replace the first with the Durable Object control catalog and the second with a
+caller-configured catalog attached to Daft.
+
+The local implementation can place world discovery, per-world control state,
+commands, manifests, evaluations, and outbox rows in one SQLite database. That
+layout is not a distributed transaction promise. In the remote topology,
+directory discovery may use a directory Durable Object, each world's manifest,
+command settlement, and control-outbox append share that world's control
+authority, and Iceberg commits data separately. The atomic control transaction
+runs only after the data flush has completed.
+
+### Control-catalog bootstrap
+
+`ControlCatalogConfig` is an immutable configuration snapshot. Ordinary
+storage operations never reread environment variables. The application
+composition root captures `ARCHETYPE_CATALOG_DIR`,
+`ARCHETYPE_CONTROL_CATALOG_URL`, and
+`ARCHETYPE_CONTROL_CATALOG_TOKEN` once when it constructs its owned
+`StorageService`:
+
+```python
+from archetype.storage import ControlCatalogConfig, StorageService
+
+catalog_config = ControlCatalogConfig.from_env()
+storage_service = StorageService(control_catalog_config=catalog_config)
+```
+
+A remote URL without a token fails during bootstrap. Passing an explicit
+`ControlCatalogConfig` is the deterministic choice for tests and embedded
+hosts; later environment changes do not alter the already-constructed service.
+
 ### Managed and remote Iceberg
 
 Archetype does not infer a remote catalog from environment variables and does
 not pair remote object data with hidden local metadata. Configure the catalog,
 namespace, and catalog credentials directly in a Daft `Session`, then inject
-that session at the composition root:
+that session at the composition root. This is internal embedded-host wiring;
+ordinary application scripts use `ArchetypeRuntime`:
 
 ```python
 from daft.session import Session
-from archetype.app.container import ServiceContainer
-from archetype.app.storage.service import StorageService
+from archetype.core.config import StorageBackend, StorageConfig
+from archetype.storage import ControlCatalogConfig, StorageService
+from archetype.wiring import RuntimeBootstrapConfig, build_runtime_resources
 
+storage_config = StorageConfig(
+    uri="s3://your-bucket/archetype/warehouse",
+    namespace="experiment_1",
+    backend=StorageBackend.ICEBERG,
+    io_config=io_config,
+)
 session = Session()
 session.attach_catalog(configured_catalog)
-session.set_namespace("experiment_1")
+session.set_namespace(storage_config.namespace)
 
-services = ServiceContainer(storage_service=StorageService(session=session))
+control = ControlCatalogConfig.from_env()
+storage_service = StorageService(
+    session=session,
+    control_catalog_config=control,
+)
+runtime_resources = build_runtime_resources(
+    RuntimeBootstrapConfig(
+        control_catalog_config=control,
+        storage_service=storage_service,
+        audit_storage_config=storage_config,
+    )
+)
+
+# After the embedded host has stopped:
+await runtime_resources.aclose()
+await storage_service.shutdown()
 ```
 
 `configured_catalog` may wrap a managed PyIceberg catalog or another catalog
@@ -66,9 +138,10 @@ authoritative. `StorageConfig.io_config` remains the single explicit entry
 point for object-data credentials passed to Daft reads and writes; Archetype
 does not translate it into catalog properties.
 
-An injected `StorageService` remains caller-owned. Container shutdown leaves
-it open so another container or host service can continue using it; the caller
-closes it after its final consumer stops.
+An injected `StorageService` remains caller-owned. `RuntimeResources.aclose()`
+leaves it open so another process owner or host service can continue using it;
+the caller invokes `storage_service.shutdown()` after its final consumer
+stops.
 
 An injected session is bound to one configured storage URI and namespace.
 Create a separate `Session` and `StorageService` for another namespace;
@@ -90,7 +163,7 @@ storage = StorageConfig(
     io_config=io_config,
 )
 
-# Pass this storage config through the ServiceContainer backed by the
+# Pass this storage config through the RuntimeBootstrapConfig backed by the
 # preconfigured session above.
 ```
 
@@ -224,9 +297,69 @@ storage = StorageConfig(
 | `AsyncStore` | Daft `Session`, optional Daft `IOConfig` |
 | `AsyncLancedbStore` | resolved `uri`, `namespace` |
 
-Storage context helpers live in `archetype.app.storage.service` as
-compatibility shims for the old `StorageContext` name. New code should use the
-Daft-native session and app-level factories.
+## Application Daft execution authority
+
+`StorageService` is the sole terminal Daft execution authority for application
+families. Its narrow substrate operations include:
+
+| Operation | Contract |
+|---|---|
+| `materialize(frame)` | Admit and execute one Archetype-owned lazy plan, returning the completed frame |
+| `read_table(config, name)` | Resolve an existing registered app table and return a lazy Iceberg read |
+| `append_table(config, name, rows)` | Register or schema-check the table, materialize the producer once, and append all rows |
+| `append_missing(config, name, rows, key_columns=...)` | Register or schema-check the table, anti-join visible keys, and append only missing rows |
+| `pin_visibility(config, world_id, ...)` | Capture an immutable manifest-token allowlist for one world/run segment |
+| `scan_visible_world_rows(config, record, visibility)` | Return raw physical signature-table frames admitted by that pin |
+| `append_world_rows(config, world_id, name, rows, ...)` | Resolve and stamp the catalog-owned world/run envelope before append |
+| `read_world_rows(config, world_id, name)` | Return a lazy application-table read scoped to the durable world/run |
+| `bind_commit_coordinator(config, world_id=..., run_id=..., writer_epoch=...)` | Construct a coordinator bound to one exact durable writer identity |
+
+The physical scan deliberately does not decide entity liveness, resolve
+same-tick active/inactive ties, load component classes, interpret lineage,
+choose a resumed tick, or allocate the next entity ID. Those are world-family
+semantics layered over the raw visible frames.
+
+One `StorageService` serializes terminal Daft submissions within one process
+through a reentrant execution gate for terminal plans and appends made by its
+pooled ECS stores. Reentrancy lets a cached-store append
+flush into its inner store in the same task; a background flush or another
+application job waits its turn. Daft still parallelizes the admitted plan over
+rows and partitions. The gate coordinates local submissions so application
+services do not independently saturate or reorder one process's Daft runtime.
+
+This gate is not an Iceberg lock. Iceberg commits remain optimistic and atomic.
+A plain append freezes its producer result once and can reuse it after a
+metadata refresh. A conditional append refreshes after a conflict and
+recomputes its anti-join against the new snapshot before retrying. That
+distinction prevents a stale retry from publishing a logical key that another
+writer committed first.
+
+The managed ECS Iceberg adapter also freezes one Arrow payload and retries only
+PyIceberg's exact catalog compare-and-swap conflict, for at most 16 attempts
+with full jitter. Every attempt retains the same physical table identity and
+commit token; processor work is never planned or materialized again.
+
+The deliberate v0.5 ambiguity posture is fail-closed rather than
+reconciliation: PyIceberg's exact commit-state-unknown signal becomes
+`AmbiguousCommitError`, whose fields preserve the table, world, run, tick,
+commit token, and writer epoch. Storage does not replay that append because it
+cannot prove absence, and the managed store rejects later non-empty appends to
+that physical table before materialization. This includes a cached batch
+restored after the typed error. The physical rows may already exist, while
+manifest-last visibility keeps them hidden. Exact snapshot readback,
+reconciliation, and restart-persistent freeze state remain future work
+(issue #709).
+
+The v0.5 surface does not expose general schema evolution, physical layout
+tuning, compaction, or snapshot expiry. Visibility pinning retains an explicit
+manifest-token allowlist and therefore grows linearly with committed tick
+count.
+
+Application families may construct lazy DataFrame transforms. They request
+materialization or table persistence from `iStorageService`; they do not call
+Daft collection, Iceberg read/write, or catalog table-creation primitives
+directly. Public query callers still own execution of the lazy DataFrames
+returned across the runtime boundary.
 
 ## Store API
 
@@ -344,6 +477,7 @@ Pass `CacheConfig` through runtime/world creation or `StorageService.get_or_crea
 
 - Store (Iceberg): `src/archetype/core/aio/async_store.py`
 - Store (LanceDB): `src/archetype/core/storage/lancedb.py`
-- Storage service/builders: `src/archetype/app/storage/service.py`
+- Storage service/builders: `src/archetype/storage/service.py`
+- Durable catalog contract and implementations: `src/archetype/storage/catalog/`
+- Storage bootstrap configuration: `src/archetype/storage/config.py`
 - Cached store: `src/archetype/core/aio/async_cached_store.py`
-- Storage service: `src/archetype/app/storage/service.py`

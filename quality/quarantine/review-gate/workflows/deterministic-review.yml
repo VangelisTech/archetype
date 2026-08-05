@@ -1,0 +1,1234 @@
+# Quarantined after the 2026-07-30 SEV-1. This file is not an active workflow.
+name: Deterministic Review Gate
+
+on:
+  # zizmor: ignore[dangerous-triggers] The protected base stays checked out.
+  # Candidate code is fetched only as inert git objects and rendered as a diff.
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  # Review binds to the PR head before queue entry. Merge groups rerun build and
+  # test checks, while these required contexts deliberately skip.
+  merge_group:
+
+permissions: {}
+
+# Keep every reviewer on the same audited CLI instead of letting jobs with an
+# unset version silently install the latest release.
+env:
+  CODEX_VERSION: "0.144.0"
+
+concurrency:
+  group: deterministic-review-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event.action != 'ready_for_review' }}
+
+# Review topology:
+#
+#   review-plan ──> 6 lenses × 2 reviewers ──> exact-anchor aggregation
+#                                              │
+#                                              ├─ corroborated evidence
+#                                              └─ selective adjudication
+#                                                        │
+#                                                        v
+#   footgun-review <── finalized bundle + human design brief
+#          │
+#          v
+#   review-complete ──> threads + compact receipt + design-review comment
+#
+# `footgun-review` and `review-complete` retain their required context names.
+# Prompt prose is in .github/review/prompts; model return schemas and reviewer
+# policy are in scripts/review_contracts.py. The workflow only selects a
+# backend and transports stamped receipts.
+jobs:
+  reaffirm:
+    name: reaffirm
+    if: github.event_name != 'merge_group'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      checks: read
+    outputs:
+      reaffirmed: ${{ steps.reaffirm.outputs.reaffirmed }}
+    steps:
+      - name: Restrict to maintainer PRs
+        if: github.event.pull_request.user.login != 'everettVT'
+        run: |
+          echo "Deterministic review only runs for PRs authored by everettVT."
+          echo "This PR fails closed: no review ran and merge stays blocked."
+          exit 1
+
+      - name: Reaffirm a completed review of this exact head
+        id: reaffirm
+        if: github.event.action == 'ready_for_review'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          passed=$(gh api \
+            "repos/${REPOSITORY}/commits/${HEAD_SHA}/check-runs?check_name=review-complete&per_page=100" \
+            --jq '[.check_runs[] | select(.conclusion == "success")] | length') || passed=0
+          if [ "${passed:-0}" -gt 0 ]; then
+            echo "reaffirmed=true" >> "${GITHUB_OUTPUT}"
+            echo "review-complete already succeeded on ${HEAD_SHA}; reaffirming."
+          else
+            echo "reaffirmed=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+  review-plan:
+    name: review-plan
+    needs: reaffirm
+    if: >-
+      github.event_name != 'merge_group' &&
+      needs.reaffirm.outputs.reaffirmed != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: Checkout trusted base
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - name: Materialize review fan-out from the typed policy
+        id: plan
+        run: |
+          echo "matrix=$(python3 scripts/footgun_review_gate.py review-matrix)" \
+            >> "${GITHUB_OUTPUT}"
+
+  lens-review:
+    name: lens-${{ matrix.lens }}-${{ matrix.reviewer }}
+    needs: [reaffirm, review-plan]
+    if: >-
+      github.event_name != 'merge_group' &&
+      needs.reaffirm.outputs.reaffirmed != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.review-plan.outputs.matrix) }}
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      DIFF_FILE: ${{ github.workspace }}/.footgun-review.diff
+      LENS: ${{ matrix.lens }}
+      OPENCODE_VERSION: "1.18.4"
+      REVIEW_DIR: ${{ github.workspace }}/.footgun-review-output
+      REVIEWER_ID: ${{ matrix.reviewer }}
+      RETRY_FEEDBACK_FILE: ${{ github.workspace }}/.footgun-review-validation.txt
+      SCOPE_FILE: ${{ github.workspace }}/.footgun-review-scope.json
+    steps:
+      - name: Restrict to maintainer PRs
+        if: github.event.pull_request.user.login != 'everettVT'
+        run: |
+          echo "Deterministic review only runs for PRs authored by everettVT."
+          exit 1
+
+      - name: Checkout trusted base
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - name: Materialize exact scope and reviewed prompt
+        id: contract
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" \
+            > "${RUNNER_TEMP}/pr-before.json"
+          git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
+          FETCHED_HEAD="$(git rev-parse FETCH_HEAD)"
+          if [[ "${FETCHED_HEAD}" != "${HEAD_SHA}" ]]; then
+            echo "Fetched PR head does not match the event head."
+            exit 1
+          fi
+          python3 scripts/footgun_review_gate.py scope \
+            --base "${BASE_SHA}" \
+            --head "${HEAD_SHA}" \
+            --scope "${RUNNER_TEMP}/git-scope.json" \
+            --diff "${DIFF_FILE}"
+          gh api --paginate --slurp \
+            "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" \
+            > "${RUNNER_TEMP}/pr-files.json"
+          gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" \
+            > "${RUNNER_TEMP}/pr-after.json"
+          python3 scripts/footgun_review_gate.py github-scope \
+            --repository "${REPOSITORY}" \
+            --pr-number "${PR_NUMBER}" \
+            --base "${BASE_SHA}" \
+            --head "${HEAD_SHA}" \
+            --before "${RUNNER_TEMP}/pr-before.json" \
+            --after "${RUNNER_TEMP}/pr-after.json" \
+            --files "${RUNNER_TEMP}/pr-files.json" \
+            --diff "${DIFF_FILE}" \
+            --scope "${SCOPE_FILE}"
+          if ! cmp --silent "${RUNNER_TEMP}/git-scope.json" "${SCOPE_FILE}"; then
+            echo "Git and GitHub API review scopes do not match."
+            exit 1
+          fi
+          python3 scripts/footgun_review_gate.py prompt \
+            --kind lens-review \
+            --scope "${SCOPE_FILE}" \
+            --pr-number "${PR_NUMBER}" \
+            --head "${HEAD_SHA}" \
+            --lens "${LENS}" \
+            --reviewer "${REVIEWER_ID}" \
+            --output "${RUNNER_TEMP}/lens-prompt.txt"
+          {
+            echo "schema=$(python3 scripts/footgun_review_gate.py schema --kind lens --lens "${LENS}")"
+            echo 'prompt<<__ARCHETYPE_REVIEW_PROMPT__'
+            cat "${RUNNER_TEMP}/lens-prompt.txt"
+            echo '__ARCHETYPE_REVIEW_PROMPT__'
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Compute turn budget from scope
+        id: budget
+        run: |
+          python3 - <<'PY' >> "${GITHUB_OUTPUT}"
+          import json
+          import os
+
+          with open(os.environ["SCOPE_FILE"]) as source:
+              file_count = len(json.load(source)["files"])
+          print(f"turns={min(120, max(40, 24 + 6 * file_count))}")
+          PY
+
+      - name: Run independent lens reviewer (Claude Code)
+        id: detector
+        if: matrix.backend == 'claude-code'
+        continue-on-error: true
+        uses: anthropics/claude-code-action@1298632ce7736903d02a1435002705aa2a594a6c # v1.0.175
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
+          claude_args: |
+            --allowedTools "Read,Grep,Glob"
+            --max-turns ${{ steps.budget.outputs.turns }}
+            --json-schema '${{ steps.contract.outputs.schema }}'
+          prompt: ${{ steps.contract.outputs.prompt }}
+
+      - name: Record Claude reviewer output
+        if: matrix.backend == 'claude-code'
+        env:
+          STRUCTURED_OUTPUT: ${{ steps.detector.outputs.structured_output }}
+        run: |
+          mkdir -p "${REVIEW_DIR}"
+          printf '%s' "${STRUCTURED_OUTPUT}" \
+            > "${REVIEW_DIR}/first-structured-output.json"
+
+      - name: Run independent lens reviewer (OpenCode)
+        id: detector_opencode
+        if: matrix.backend == 'opencode'
+        continue-on-error: true
+        timeout-minutes: 25
+        env:
+          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+          OPENCODE_MODEL: ${{ matrix.model }}
+        run: |
+          cat > "${GITHUB_WORKSPACE}/opencode.json" <<'JSON'
+          {
+            "$schema": "https://opencode.ai/config.json",
+            "permission": {"edit": "deny", "bash": "deny", "webfetch": "deny"},
+            "tools": {
+              "bash": false,
+              "edit": false,
+              "write": false,
+              "patch": false,
+              "webfetch": false,
+              "websearch": false,
+              "task": false,
+              "skill": false,
+              "lsp": false,
+              "todowrite": false,
+              "todoread": false
+            }
+          }
+          JSON
+          npm install -g "opencode-ai@${OPENCODE_VERSION}"
+          mkdir -p "${REVIEW_DIR}"
+          opencode run --model "${OPENCODE_MODEL}" \
+            "$(cat "${RUNNER_TEMP}/lens-prompt.txt")" \
+            > "${RUNNER_TEMP}/opencode-raw.txt"
+          python3 scripts/footgun_review_gate.py extract \
+            --raw "${RUNNER_TEMP}/opencode-raw.txt" \
+            --output "${REVIEW_DIR}/first-structured-output.json"
+
+      - name: Prepare Codex bubblewrap sandbox
+        if: matrix.backend == 'codex'
+        run: |
+          set -euo pipefail
+          npm install -g "@openai/codex@${CODEX_VERSION}"
+          [[ "$(codex --version)" == "codex-cli ${CODEX_VERSION}" ]]
+          # Ubuntu 24.04's AppArmor defaults can deny the user namespace that
+          # Codex bubblewrap needs, failing every tool call at loopback setup.
+          # This is a job-local ephemeral VM; verify the full read-only sandbox
+          # before materializing subscription OAuth in the following step.
+          if [[ -e /proc/sys/kernel/unprivileged_userns_clone ]]; then
+            if [[ "$(< /proc/sys/kernel/unprivileged_userns_clone)" != 1 ]]; then
+              sudo sysctl -q -w kernel.unprivileged_userns_clone=1
+            fi
+            [[ "$(< /proc/sys/kernel/unprivileged_userns_clone)" == 1 ]]
+          fi
+          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+            if [[ "$(< /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" != 0 ]]; then
+              sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0
+            fi
+            [[ "$(< /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" == 0 ]]
+          fi
+          PREFLIGHT_HOME="${RUNNER_TEMP}/codex-preflight-home"
+          install -d -m 700 "${PREFLIGHT_HOME}"
+          CODEX_HOME="${PREFLIGHT_HOME}" codex --disable use_legacy_landlock \
+            -c 'sandbox_mode="read-only"' sandbox -- /usr/bin/true
+          PROBE="${RUNNER_TEMP}/codex-bwrap-write-probe"
+          rm -f "${PROBE}"
+          if CODEX_HOME="${PREFLIGHT_HOME}" codex --disable use_legacy_landlock \
+            -c 'sandbox_mode="read-only"' sandbox -- /usr/bin/touch "${PROBE}"; then
+            echo "Codex read-only sandbox admitted a write." >&2
+            exit 1
+          fi
+          [[ ! -e "${PROBE}" ]]
+
+      - name: Run read-only reviewer (Codex)
+        id: detector_codex
+        if: matrix.backend == 'codex'
+        continue-on-error: true
+        timeout-minutes: 25
+        env:
+          # Subscription OAuth, same trust posture as CLAUDE_CODE_OAUTH_TOKEN;
+          # materialized into a job-scoped CODEX_HOME, never the workspace.
+          # The session persists only in runner temp so the bounded retry can
+          # continue the repository inspection instead of starting over.
+          # Read-only enforcement is the codex sandbox itself (-s read-only);
+          # --output-schema yields schema-conforming JSON natively and still
+          # flows through the same extract/validate pipeline.
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          CODEX_MODEL: ${{ matrix.model }}
+          SCHEMA: ${{ steps.contract.outputs.schema }}
+        run: |
+          export CODEX_HOME="${RUNNER_TEMP}/codex-home"
+          mkdir -p "${CODEX_HOME}"
+          printf '%s' "${CODEX_AUTH_JSON}" > "${CODEX_HOME}/auth.json"
+          chmod 600 "${CODEX_HOME}/auth.json"
+          printf '%s' "${SCHEMA}" > "${RUNNER_TEMP}/lens-schema.json"
+          mkdir -p "${REVIEW_DIR}"
+          codex exec \
+            -m "${CODEX_MODEL}" \
+            -s read-only \
+            --disable use_legacy_landlock \
+            --ignore-user-config \
+            --color never \
+            -C "${GITHUB_WORKSPACE}" \
+            --output-schema "${RUNNER_TEMP}/lens-schema.json" \
+            -o "${RUNNER_TEMP}/codex-last.txt" \
+            "$(cat "${RUNNER_TEMP}/lens-prompt.txt")" \
+            > "${RUNNER_TEMP}/codex-raw.txt" 2>&1
+          python3 scripts/footgun_review_gate.py extract \
+            --raw "${RUNNER_TEMP}/codex-last.txt" \
+            --output "${REVIEW_DIR}/first-structured-output.json"
+
+      - name: Validate first reviewer result
+        id: first_validation
+        run: |
+          mkdir -p "${REVIEW_DIR}"
+          python3 scripts/footgun_review_gate.py attempt \
+            --scope "${SCOPE_FILE}" \
+            --diff "${DIFF_FILE}" \
+            --result "${REVIEW_DIR}/first-structured-output.json" \
+            --prompt "${RUNNER_TEMP}/lens-prompt.txt" \
+            --output "${REVIEW_DIR}/validated/receipt.json" \
+            --feedback "${RETRY_FEEDBACK_FILE}" \
+            --github-output "${GITHUB_OUTPUT}" \
+            --lens "${LENS}" \
+            --reviewer "${REVIEWER_ID}"
+
+      - name: Materialize bounded retry prompt
+        id: retry_contract
+        if: steps.first_validation.outputs.valid != 'true'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          python3 scripts/footgun_review_gate.py prompt \
+            --kind lens-retry \
+            --scope "${SCOPE_FILE}" \
+            --pr-number "${PR_NUMBER}" \
+            --head "${HEAD_SHA}" \
+            --lens "${LENS}" \
+            --reviewer "${REVIEWER_ID}" \
+            --output "${RUNNER_TEMP}/lens-retry-prompt.txt"
+          {
+            echo 'prompt<<__ARCHETYPE_RETRY_PROMPT__'
+            cat "${RUNNER_TEMP}/lens-retry-prompt.txt"
+            echo '__ARCHETYPE_RETRY_PROMPT__'
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Retry reviewer with validator feedback (Claude Code)
+        id: detector_retry
+        if: >-
+          matrix.backend == 'claude-code' &&
+          steps.first_validation.outputs.valid != 'true'
+        continue-on-error: true
+        uses: anthropics/claude-code-action@1298632ce7736903d02a1435002705aa2a594a6c # v1.0.175
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
+          claude_args: |
+            --allowedTools "Read,Grep,Glob"
+            --max-turns ${{ steps.budget.outputs.turns }}
+            --json-schema '${{ steps.contract.outputs.schema }}'
+          prompt: ${{ steps.retry_contract.outputs.prompt }}
+
+      - name: Record Claude retry output
+        if: >-
+          matrix.backend == 'claude-code' &&
+          steps.first_validation.outputs.valid != 'true'
+        env:
+          STRUCTURED_OUTPUT: ${{ steps.detector_retry.outputs.structured_output }}
+        run: |
+          printf '%s' "${STRUCTURED_OUTPUT}" \
+            > "${REVIEW_DIR}/retry-structured-output.json"
+
+      - name: Retry reviewer with validator feedback (OpenCode)
+        id: detector_opencode_retry
+        if: >-
+          matrix.backend == 'opencode' &&
+          steps.first_validation.outputs.valid != 'true'
+        continue-on-error: true
+        timeout-minutes: 25
+        env:
+          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+          OPENCODE_MODEL: ${{ matrix.model }}
+        run: |
+          cat > "${GITHUB_WORKSPACE}/opencode.json" <<'JSON'
+          {
+            "$schema": "https://opencode.ai/config.json",
+            "permission": {"edit": "deny", "bash": "deny", "webfetch": "deny"},
+            "tools": {
+              "bash": false,
+              "edit": false,
+              "write": false,
+              "patch": false,
+              "webfetch": false,
+              "websearch": false,
+              "task": false,
+              "skill": false,
+              "lsp": false,
+              "todowrite": false,
+              "todoread": false
+            }
+          }
+          JSON
+          npm install -g "opencode-ai@${OPENCODE_VERSION}"
+          opencode run --model "${OPENCODE_MODEL}" \
+            "$(cat "${RUNNER_TEMP}/lens-retry-prompt.txt")" \
+            > "${RUNNER_TEMP}/opencode-retry-raw.txt"
+          python3 scripts/footgun_review_gate.py extract \
+            --raw "${RUNNER_TEMP}/opencode-retry-raw.txt" \
+            --output "${REVIEW_DIR}/retry-structured-output.json"
+
+
+      - name: Retry reviewer with validator feedback (Codex)
+        id: detector_codex_retry
+        if: >-
+          matrix.backend == 'codex' &&
+          steps.first_validation.outputs.valid != 'true'
+        continue-on-error: true
+        timeout-minutes: 25
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          CODEX_MODEL: ${{ matrix.model }}
+          SCHEMA: ${{ steps.contract.outputs.schema }}
+        run: |
+          # Auth and schema rewritten: the first attempt may have failed
+          # before writing them. On the pinned CLI, --last resumes the
+          # job-scoped session when present and starts fresh when absent.
+          export CODEX_HOME="${RUNNER_TEMP}/codex-home"
+          mkdir -p "${CODEX_HOME}"
+          printf '%s' "${CODEX_AUTH_JSON}" > "${CODEX_HOME}/auth.json"
+          chmod 600 "${CODEX_HOME}/auth.json"
+          printf '%s' "${SCHEMA}" > "${RUNNER_TEMP}/lens-schema.json"
+          codex exec resume \
+            --last \
+            -m "${CODEX_MODEL}" \
+            -c 'sandbox_mode="read-only"' \
+            --disable use_legacy_landlock \
+            --ignore-user-config \
+            --output-schema "${RUNNER_TEMP}/lens-schema.json" \
+            -o "${RUNNER_TEMP}/codex-retry-last.txt" \
+            - < "${RUNNER_TEMP}/lens-retry-prompt.txt" \
+            > "${RUNNER_TEMP}/codex-retry-raw.txt" 2>&1
+          python3 scripts/footgun_review_gate.py extract \
+            --raw "${RUNNER_TEMP}/codex-retry-last.txt" \
+            --output "${REVIEW_DIR}/retry-structured-output.json"
+
+      - name: Validate bounded retry
+        id: retry_validation
+        if: steps.first_validation.outputs.valid != 'true'
+        continue-on-error: true
+        run: |
+          python3 scripts/footgun_review_gate.py normalize \
+            --scope "${SCOPE_FILE}" \
+            --diff "${DIFF_FILE}" \
+            --result "${REVIEW_DIR}/retry-structured-output.json" \
+            --prompt "${RUNNER_TEMP}/lens-retry-prompt.txt" \
+            --output "${REVIEW_DIR}/validated/receipt.json" \
+            --lens "${LENS}" \
+            --reviewer "${REVIEWER_ID}"
+
+      # A seat that produced no validated result records WHY instead of
+      # failing the whole gate. The 2026-07-26 kimi billing-cycle exhaustion
+      # turned two seats into a repository-wide merge brick because seat
+      # failure and review verdict shared one exit code. Aggregation treats
+      # an infra receipt as a neutral seat: the lens verdict rests on its
+      # surviving reviewer, whose blocking findings become singletons and
+      # route to adjudication — a degraded bench earns more scrutiny. A lens
+      # whose entire bench records infra failure still fails the gate closed
+      # at aggregation. Steps before the detector (checkout, scope) failing
+      # still fail this job. A reviewer that explicitly reports blocked
+      # repository inspection gets one retry, then a neutral runner receipt;
+      # it can never become a clean verdict.
+      - name: Record infra failure when no validated receipt exists
+        if: ${{ !cancelled() && steps.contract.outcome == 'success' }}
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ -f "${REVIEW_DIR}/validated/receipt.json" ]; then
+            exit 0
+          fi
+          failure_class=schema
+          detail="reviewer produced no verdict-valid structured output after the bounded retry"
+          reported_blocked="$(python3 scripts/footgun_review_gate.py reported-blocked \
+            --result "${REVIEW_DIR}/first-structured-output.json" \
+            --result "${REVIEW_DIR}/retry-structured-output.json")"
+          if [[ "$reported_blocked" == "true" ]]; then
+            failure_class=runner
+            detail="reviewer reported blocked required repository inspection after the bounded retry"
+          else
+            for raw in "${RUNNER_TEMP}/opencode-raw.txt" "${RUNNER_TEMP}/opencode-retry-raw.txt" \
+                       "${RUNNER_TEMP}/codex-raw.txt" "${RUNNER_TEMP}/codex-retry-raw.txt" \
+                       "${REVIEW_DIR}/first-structured-output.json" "${REVIEW_DIR}/retry-structured-output.json"; do
+              if [ -f "$raw" ] && grep -qiE "usage limit|spend limit|rate.?limit|\b429\b|quota" "$raw"; then
+                failure_class=quota
+                detail="provider reported a quota or rate limit after the bounded retry"
+                break
+              fi
+            done
+          fi
+          python3 scripts/footgun_review_gate.py infra-receipt \
+            --lens "${LENS}" \
+            --reviewer "${REVIEWER_ID}" \
+            --head "${HEAD_SHA}" \
+            --failure-class "$failure_class" \
+            --detail "$detail" \
+            --output "${REVIEW_DIR}/validated/receipt.json"
+          echo "::warning::lens ${LENS} seat ${REVIEWER_ID} recorded ${failure_class} infra failure; verdict rests on the surviving seat."
+
+      - name: Upload validated reviewer receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          if-no-files-found: error
+          name: review-receipt-${{ matrix.lens }}-${{ matrix.reviewer }}-${{ github.run_id }}
+          path: ${{ github.workspace }}/.footgun-review-output/validated/receipt.json
+          retention-days: 1
+
+  review-aggregate:
+    name: review-aggregate
+    needs: [reaffirm, review-plan, lens-review]
+    if: >-
+      !cancelled() &&
+      github.event_name != 'merge_group' &&
+      needs.reaffirm.outputs.reaffirmed != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    outputs:
+      adjudication_matrix: ${{ steps.targets.outputs.matrix }}
+      adjudication_target_count: ${{ steps.targets.outputs.target_count }}
+    env:
+      DIFF_FILE: ${{ github.workspace }}/.footgun-review.diff
+      REVIEW_DIR: ${{ github.workspace }}/.footgun-review-output
+      SCOPE_FILE: ${{ github.workspace }}/.footgun-review-scope.json
+    steps:
+      - name: Require every independent reviewer
+        if: needs.lens-review.result != 'success'
+        run: |
+          echo "One or more reviewer receipts are missing."
+          exit 1
+
+      - name: Checkout trusted base
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - name: Rebuild exact review scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" > "${RUNNER_TEMP}/pr-before.json"
+          git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
+          FETCHED_HEAD="$(git rev-parse FETCH_HEAD)"
+          if [[ "${FETCHED_HEAD}" != "${HEAD_SHA}" ]]; then exit 1; fi
+          python3 scripts/footgun_review_gate.py scope \
+            --base "${BASE_SHA}" --head "${HEAD_SHA}" \
+            --scope "${RUNNER_TEMP}/git-scope.json" --diff "${DIFF_FILE}"
+          gh api --paginate --slurp \
+            "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" \
+            > "${RUNNER_TEMP}/pr-files.json"
+          gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" > "${RUNNER_TEMP}/pr-after.json"
+          python3 scripts/footgun_review_gate.py github-scope \
+            --repository "${REPOSITORY}" --pr-number "${PR_NUMBER}" \
+            --base "${BASE_SHA}" --head "${HEAD_SHA}" \
+            --before "${RUNNER_TEMP}/pr-before.json" \
+            --after "${RUNNER_TEMP}/pr-after.json" \
+            --files "${RUNNER_TEMP}/pr-files.json" --diff "${DIFF_FILE}" \
+            --scope "${SCOPE_FILE}"
+          cmp --silent "${RUNNER_TEMP}/git-scope.json" "${SCOPE_FILE}"
+
+      - name: Download all reviewer receipts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: review-receipt-*-${{ github.run_id }}
+          path: ${{ runner.temp }}/reviewer-receipts
+
+      - name: Aggregate exact anchors without deleting evidence
+        run: |
+          python3 scripts/footgun_review_gate.py merge \
+            --scope "${SCOPE_FILE}" \
+            --diff "${DIFF_FILE}" \
+            --results-dir "${RUNNER_TEMP}/reviewer-receipts" \
+            --output "${REVIEW_DIR}/validated/preliminary-review-bundle.json"
+
+      - name: Select only disputed blocking claims
+        id: targets
+        run: |
+          python3 scripts/footgun_review_gate.py adjudication-matrix \
+            --scope "${SCOPE_FILE}" \
+            --diff "${DIFF_FILE}" \
+            --bundle "${REVIEW_DIR}/validated/preliminary-review-bundle.json" \
+            --github-output "${GITHUB_OUTPUT}"
+
+      - name: Upload preliminary aggregate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          if-no-files-found: error
+          name: review-preliminary-${{ github.run_id }}
+          path: ${{ github.workspace }}/.footgun-review-output/validated/preliminary-review-bundle.json
+          retention-days: 1
+
+  review-adjudication:
+    name: adjudicate-${{ matrix.cluster_id }}
+    needs: [reaffirm, review-aggregate]
+    if: >-
+      github.event_name != 'merge_group' &&
+      needs.reaffirm.outputs.reaffirmed != 'true' &&
+      needs.review-aggregate.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.review-aggregate.outputs.adjudication_matrix) }}
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    env:
+      DIFF_FILE: ${{ github.workspace }}/.footgun-review.diff
+      REVIEW_DIR: ${{ github.workspace }}/.footgun-review-output
+      SCOPE_FILE: ${{ github.workspace }}/.footgun-review-scope.json
+    steps:
+      - name: Checkout trusted base
+        if: matrix.skip != true
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - name: Download preliminary aggregate
+        if: matrix.skip != true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: review-preliminary-${{ github.run_id }}
+          path: ${{ github.workspace }}/.footgun-review-output/validated
+
+      - name: Rebuild scope and materialize adjudication contract
+        id: contract
+        if: matrix.skip != true
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CLUSTER_ID: ${{ matrix.cluster_id }}
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" > "${RUNNER_TEMP}/pr-before.json"
+          git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
+          FETCHED_HEAD="$(git rev-parse FETCH_HEAD)"
+          if [[ "${FETCHED_HEAD}" != "${HEAD_SHA}" ]]; then exit 1; fi
+          python3 scripts/footgun_review_gate.py scope \
+            --base "${BASE_SHA}" --head "${HEAD_SHA}" \
+            --scope "${RUNNER_TEMP}/git-scope.json" --diff "${DIFF_FILE}"
+          gh api --paginate --slurp \
+            "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" \
+            > "${RUNNER_TEMP}/pr-files.json"
+          gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" > "${RUNNER_TEMP}/pr-after.json"
+          python3 scripts/footgun_review_gate.py github-scope \
+            --repository "${REPOSITORY}" --pr-number "${PR_NUMBER}" \
+            --base "${BASE_SHA}" --head "${HEAD_SHA}" \
+            --before "${RUNNER_TEMP}/pr-before.json" \
+            --after "${RUNNER_TEMP}/pr-after.json" \
+            --files "${RUNNER_TEMP}/pr-files.json" --diff "${DIFF_FILE}" \
+            --scope "${SCOPE_FILE}"
+          cmp --silent "${RUNNER_TEMP}/git-scope.json" "${SCOPE_FILE}"
+          python3 scripts/footgun_review_gate.py prompt \
+            --kind adjudication \
+            --pr-number "${PR_NUMBER}" \
+            --head "${HEAD_SHA}" \
+            --cluster "${CLUSTER_ID}" \
+            --output "${RUNNER_TEMP}/adjudication-prompt.txt"
+          {
+            echo "schema=$(python3 scripts/footgun_review_gate.py schema --kind adjudication)"
+            echo 'prompt<<__ARCHETYPE_ADJUDICATION_PROMPT__'
+            cat "${RUNNER_TEMP}/adjudication-prompt.txt"
+            echo '__ARCHETYPE_ADJUDICATION_PROMPT__'
+          } >> "${GITHUB_OUTPUT}"
+
+      # ADJUDICATOR_REVIEWER seats this on codex: the claude subscription is
+      # spend-capped (2026-07-26) and an adjudicator that cannot run would
+      # leave every singleton-blocking claim pending forever.
+      - name: Prepare Codex bubblewrap sandbox
+        if: matrix.skip != true
+        run: |
+          set -euo pipefail
+          npm install -g "@openai/codex@${CODEX_VERSION}"
+          [[ "$(codex --version)" == "codex-cli ${CODEX_VERSION}" ]]
+          if [[ -e /proc/sys/kernel/unprivileged_userns_clone ]]; then
+            if [[ "$(< /proc/sys/kernel/unprivileged_userns_clone)" != 1 ]]; then
+              sudo sysctl -q -w kernel.unprivileged_userns_clone=1
+            fi
+            [[ "$(< /proc/sys/kernel/unprivileged_userns_clone)" == 1 ]]
+          fi
+          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+            if [[ "$(< /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" != 0 ]]; then
+              sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0
+            fi
+            [[ "$(< /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" == 0 ]]
+          fi
+          PREFLIGHT_HOME="${RUNNER_TEMP}/codex-preflight-home"
+          install -d -m 700 "${PREFLIGHT_HOME}"
+          CODEX_HOME="${PREFLIGHT_HOME}" codex --disable use_legacy_landlock \
+            -c 'sandbox_mode="read-only"' sandbox -- /usr/bin/true
+          PROBE="${RUNNER_TEMP}/codex-bwrap-write-probe"
+          rm -f "${PROBE}"
+          if CODEX_HOME="${PREFLIGHT_HOME}" codex --disable use_legacy_landlock \
+            -c 'sandbox_mode="read-only"' sandbox -- /usr/bin/touch "${PROBE}"; then
+            echo "Codex read-only sandbox admitted a write." >&2
+            exit 1
+          fi
+          [[ ! -e "${PROBE}" ]]
+
+      - name: Falsify disputed claim (Codex)
+        id: adjudicator
+        if: matrix.skip != true
+        continue-on-error: true
+        timeout-minutes: 20
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          SCHEMA: ${{ steps.contract.outputs.schema }}
+        run: |
+          export CODEX_HOME="${RUNNER_TEMP}/codex-home"
+          mkdir -p "${CODEX_HOME}"
+          printf '%s' "${CODEX_AUTH_JSON}" > "${CODEX_HOME}/auth.json"
+          chmod 600 "${CODEX_HOME}/auth.json"
+          printf '%s' "${SCHEMA}" > "${RUNNER_TEMP}/adjudication-schema.json"
+          codex exec \
+            -m gpt-5.6-luna \
+            -s read-only \
+            --disable use_legacy_landlock \
+            --ephemeral \
+            --ignore-user-config \
+            --color never \
+            -C "${GITHUB_WORKSPACE}" \
+            --output-schema "${RUNNER_TEMP}/adjudication-schema.json" \
+            -o "${RUNNER_TEMP}/adjudication-last.txt" \
+            "$(cat "${RUNNER_TEMP}/adjudication-prompt.txt")" \
+            > "${RUNNER_TEMP}/adjudication-raw.txt" 2>&1
+
+      - name: Validate adjudication receipt
+        if: matrix.skip != true
+        env:
+          CLUSTER_ID: ${{ matrix.cluster_id }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          mkdir -p "${REVIEW_DIR}/adjudication"
+          python3 scripts/footgun_review_gate.py extract \
+            --raw "${RUNNER_TEMP}/adjudication-last.txt" \
+            --output "${REVIEW_DIR}/adjudication/result.json"
+          python3 scripts/footgun_review_gate.py normalize-adjudication \
+            --scope "${SCOPE_FILE}" \
+            --head "${HEAD_SHA}" \
+            --cluster "${CLUSTER_ID}" \
+            --reviewer codex \
+            --result "${REVIEW_DIR}/adjudication/result.json" \
+            --prompt "${RUNNER_TEMP}/adjudication-prompt.txt" \
+            --output "${REVIEW_DIR}/adjudication/receipt.json"
+
+      - name: Upload adjudication receipt
+        if: matrix.skip != true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          if-no-files-found: error
+          name: review-adjudication-${{ matrix.cluster_id }}-${{ github.run_id }}
+          path: ${{ github.workspace }}/.footgun-review-output/adjudication/receipt.json
+          retention-days: 1
+
+  footgun-review:
+    name: footgun-review
+    needs: [reaffirm, review-aggregate, review-adjudication]
+    if: ${{ !cancelled() && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    outputs:
+      reaffirmed: ${{ needs.reaffirm.outputs.reaffirmed }}
+    env:
+      DIFF_FILE: ${{ github.workspace }}/.footgun-review.diff
+      REVIEW_DIR: ${{ github.workspace }}/.footgun-review-output
+      SCOPE_FILE: ${{ github.workspace }}/.footgun-review-scope.json
+    steps:
+      - name: Restrict to maintainer PRs
+        if: github.event.pull_request.user.login != 'everettVT'
+        run: |
+          echo "Deterministic review only runs for PRs authored by everettVT."
+          exit 1
+
+      - name: Require aggregate and targeted adjudications
+        if: >-
+          needs.reaffirm.outputs.reaffirmed != 'true' &&
+          (needs.review-aggregate.result != 'success' ||
+           (needs.review-aggregate.outputs.adjudication_target_count != '0' &&
+            needs.review-adjudication.result != 'success'))
+        run: |
+          echo "Review aggregation or a required adjudication did not complete."
+          exit 1
+
+      - name: Checkout trusted base
+        if: needs.reaffirm.outputs.reaffirmed != 'true'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - name: Rebuild exact review scope
+        if: needs.reaffirm.outputs.reaffirmed != 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" > "${RUNNER_TEMP}/pr-before.json"
+          git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
+          FETCHED_HEAD="$(git rev-parse FETCH_HEAD)"
+          if [[ "${FETCHED_HEAD}" != "${HEAD_SHA}" ]]; then exit 1; fi
+          python3 scripts/footgun_review_gate.py scope \
+            --base "${BASE_SHA}" --head "${HEAD_SHA}" \
+            --scope "${RUNNER_TEMP}/git-scope.json" --diff "${DIFF_FILE}"
+          gh api --paginate --slurp \
+            "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" \
+            > "${RUNNER_TEMP}/pr-files.json"
+          gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" > "${RUNNER_TEMP}/pr-after.json"
+          python3 scripts/footgun_review_gate.py github-scope \
+            --repository "${REPOSITORY}" --pr-number "${PR_NUMBER}" \
+            --base "${BASE_SHA}" --head "${HEAD_SHA}" \
+            --before "${RUNNER_TEMP}/pr-before.json" \
+            --after "${RUNNER_TEMP}/pr-after.json" \
+            --files "${RUNNER_TEMP}/pr-files.json" --diff "${DIFF_FILE}" \
+            --scope "${SCOPE_FILE}"
+          cmp --silent "${RUNNER_TEMP}/git-scope.json" "${SCOPE_FILE}"
+
+      - name: Download preliminary aggregate
+        if: needs.reaffirm.outputs.reaffirmed != 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: review-preliminary-${{ github.run_id }}
+          path: ${{ github.workspace }}/.footgun-review-output/validated
+
+      - name: Prepare adjudication directory
+        if: needs.reaffirm.outputs.reaffirmed != 'true'
+        run: mkdir -p "${RUNNER_TEMP}/adjudications"
+
+      - name: Download adjudication receipts
+        if: >-
+          needs.reaffirm.outputs.reaffirmed != 'true' &&
+          needs.review-aggregate.outputs.adjudication_target_count != '0'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: review-adjudication-*-${{ github.run_id }}
+          path: ${{ runner.temp }}/adjudications
+
+      - name: Finalize evidence-conserving aggregate
+        if: needs.reaffirm.outputs.reaffirmed != 'true'
+        run: |
+          python3 scripts/footgun_review_gate.py finalize \
+            --scope "${SCOPE_FILE}" \
+            --diff "${DIFF_FILE}" \
+            --bundle "${REVIEW_DIR}/validated/preliminary-review-bundle.json" \
+            --adjudications-dir "${RUNNER_TEMP}/adjudications" \
+            --output "${REVIEW_DIR}/validated/review-bundle.json"
+
+      - name: Materialize human design-review contract
+        id: brief_contract
+        if: needs.reaffirm.outputs.reaffirmed != 'true'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          python3 scripts/footgun_review_gate.py prompt \
+            --kind design-brief \
+            --scope "${SCOPE_FILE}" \
+            --diff "${DIFF_FILE}" \
+            --bundle "${REVIEW_DIR}/validated/review-bundle.json" \
+            --pr-number "${PR_NUMBER}" \
+            --head "${HEAD_SHA}" \
+            --output "${RUNNER_TEMP}/design-brief-prompt.txt"
+          PROMPT_CHARS="$(wc -m < "${RUNNER_TEMP}/design-brief-prompt.txt" | tr -d '[:space:]')"
+          PROMPT_BYTES="$(wc -c < "${RUNNER_TEMP}/design-brief-prompt.txt" | tr -d '[:space:]')"
+          echo "Design brief prompt size: ${PROMPT_CHARS} characters, ${PROMPT_BYTES} bytes."
+          echo "schema=$(python3 scripts/footgun_review_gate.py schema --kind design-brief)" \
+            >> "${GITHUB_OUTPUT}"
+
+      - name: Generate human design-review brief (Codex)
+        id: brief
+        if: needs.reaffirm.outputs.reaffirmed != 'true'
+        timeout-minutes: 25
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          SCHEMA: ${{ steps.brief_contract.outputs.schema }}
+        run: |
+          export CODEX_HOME="${RUNNER_TEMP}/codex-home"
+          mkdir -p "${CODEX_HOME}"
+          printf '%s' "${CODEX_AUTH_JSON}" > "${CODEX_HOME}/auth.json"
+          chmod 600 "${CODEX_HOME}/auth.json"
+          npm install -g "@openai/codex@${CODEX_VERSION}"
+          printf '%s' "${SCHEMA}" > "${RUNNER_TEMP}/design-brief-schema.json"
+          set +e
+          codex exec \
+            -m gpt-5.6-luna \
+            -s read-only \
+            --disable shell_tool \
+            --disable multi_agent \
+            --ephemeral \
+            --ignore-user-config \
+            --color never \
+            -C "${GITHUB_WORKSPACE}" \
+            --output-schema "${RUNNER_TEMP}/design-brief-schema.json" \
+            -o "${RUNNER_TEMP}/design-brief-last.txt" \
+            - < "${RUNNER_TEMP}/design-brief-prompt.txt" \
+            > "${RUNNER_TEMP}/design-brief-raw.txt" \
+            2> "${RUNNER_TEMP}/design-brief-stderr.txt"
+          CODEX_STATUS=$?
+          set -e
+          if [[ "${CODEX_STATUS}" -ne 0 ]]; then
+            PROMPT_CHARS="$(wc -m < "${RUNNER_TEMP}/design-brief-prompt.txt" | tr -d '[:space:]')"
+            echo "::error::Codex design brief failed with exit ${CODEX_STATUS}; prompt characters=${PROMPT_CHARS}."
+            exit "${CODEX_STATUS}"
+          fi
+
+      - name: Validate initial human design-review brief
+        id: brief_validation
+        if: needs.reaffirm.outputs.reaffirmed != 'true'
+        run: |
+          python3 scripts/footgun_review_gate.py extract \
+            --raw "${RUNNER_TEMP}/design-brief-last.txt" \
+            --output "${REVIEW_DIR}/human-design-brief-result.json"
+          python3 scripts/footgun_review_gate.py attempt-brief \
+            --scope "${SCOPE_FILE}" \
+            --diff "${DIFF_FILE}" \
+            --bundle "${REVIEW_DIR}/validated/review-bundle.json" \
+            --result "${REVIEW_DIR}/human-design-brief-result.json" \
+            --output "${REVIEW_DIR}/validated/human-design-brief.json" \
+            --feedback "${RUNNER_TEMP}/design-brief-validation.txt" \
+            --github-output "${GITHUB_OUTPUT}"
+
+      - name: Materialize bounded design-brief correction
+        if: >-
+          needs.reaffirm.outputs.reaffirmed != 'true' &&
+          steps.brief_validation.outputs.valid != 'true'
+        run: |
+          python3 scripts/footgun_review_gate.py brief-retry-prompt \
+            --prompt "${RUNNER_TEMP}/design-brief-prompt.txt" \
+            --result "${REVIEW_DIR}/human-design-brief-result.json" \
+            --feedback "${RUNNER_TEMP}/design-brief-validation.txt" \
+            --output "${RUNNER_TEMP}/design-brief-retry-prompt.txt"
+          RETRY_CHARS="$(wc -m < "${RUNNER_TEMP}/design-brief-retry-prompt.txt" | tr -d '[:space:]')"
+          echo "Design brief retry prompt size: ${RETRY_CHARS} characters."
+
+      - name: Correct human design-review brief (Codex)
+        if: >-
+          needs.reaffirm.outputs.reaffirmed != 'true' &&
+          steps.brief_validation.outputs.valid != 'true'
+        timeout-minutes: 20
+        run: |
+          export CODEX_HOME="${RUNNER_TEMP}/codex-home"
+          set +e
+          codex exec \
+            -m gpt-5.6-luna \
+            -s read-only \
+            --disable shell_tool \
+            --disable multi_agent \
+            --ephemeral \
+            --ignore-user-config \
+            --color never \
+            -C "${GITHUB_WORKSPACE}" \
+            --output-schema "${RUNNER_TEMP}/design-brief-schema.json" \
+            -o "${RUNNER_TEMP}/design-brief-retry-last.txt" \
+            - < "${RUNNER_TEMP}/design-brief-retry-prompt.txt" \
+            > "${RUNNER_TEMP}/design-brief-retry-raw.txt" \
+            2> "${RUNNER_TEMP}/design-brief-retry-stderr.txt"
+          CODEX_STATUS=$?
+          set -e
+          if [[ "${CODEX_STATUS}" -ne 0 ]]; then
+            RETRY_CHARS="$(wc -m < "${RUNNER_TEMP}/design-brief-retry-prompt.txt" | tr -d '[:space:]')"
+            echo "::error::Codex design-brief correction failed with exit ${CODEX_STATUS}; prompt characters=${RETRY_CHARS}."
+            exit "${CODEX_STATUS}"
+          fi
+
+      - name: Validate corrected human design-review brief
+        if: >-
+          needs.reaffirm.outputs.reaffirmed != 'true' &&
+          steps.brief_validation.outputs.valid != 'true'
+        run: |
+          python3 scripts/footgun_review_gate.py extract \
+            --raw "${RUNNER_TEMP}/design-brief-retry-last.txt" \
+            --output "${REVIEW_DIR}/human-design-brief-result.json"
+          python3 scripts/footgun_review_gate.py normalize-brief \
+            --scope "${SCOPE_FILE}" \
+            --diff "${DIFF_FILE}" \
+            --bundle "${REVIEW_DIR}/validated/review-bundle.json" \
+            --result "${REVIEW_DIR}/human-design-brief-result.json" \
+            --output "${REVIEW_DIR}/validated/human-design-brief.json"
+
+      - name: Upload final review evidence
+        if: needs.reaffirm.outputs.reaffirmed != 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          if-no-files-found: error
+          name: footgun-review-validated-${{ github.run_id }}
+          path: |
+            ${{ github.workspace }}/.footgun-review-output/validated/review-bundle.json
+            ${{ github.workspace }}/.footgun-review-output/validated/human-design-brief.json
+          retention-days: 90
+
+  review-complete:
+    name: review-complete
+    needs: footgun-review
+    if: ${{ !cancelled() && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+      pull-requests: write
+    env:
+      DIFF_FILE: ${{ github.workspace }}/.footgun-review.diff
+      REVIEW_DIR: ${{ github.workspace }}/.footgun-review-output
+      SCOPE_FILE: ${{ github.workspace }}/.footgun-review-scope.json
+    steps:
+      - name: Require successful detector job
+        if: needs.footgun-review.result != 'success'
+        run: |
+          echo "Deterministic review did not complete successfully."
+          exit 1
+
+      - name: Checkout trusted base
+        if: needs.footgun-review.outputs.reaffirmed != 'true'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - name: Materialize exact publication scope
+        if: needs.footgun-review.outputs.reaffirmed != 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" > "${RUNNER_TEMP}/pr-before.json"
+          git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
+          FETCHED_HEAD="$(git rev-parse FETCH_HEAD)"
+          if [[ "${FETCHED_HEAD}" != "${HEAD_SHA}" ]]; then exit 1; fi
+          python3 scripts/footgun_review_gate.py scope \
+            --base "${BASE_SHA}" --head "${HEAD_SHA}" \
+            --scope "${RUNNER_TEMP}/git-scope.json" --diff "${DIFF_FILE}"
+          gh api --paginate --slurp \
+            "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" \
+            > "${RUNNER_TEMP}/pr-files.json"
+          gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" > "${RUNNER_TEMP}/pr-after.json"
+          python3 scripts/footgun_review_gate.py github-scope \
+            --repository "${REPOSITORY}" --pr-number "${PR_NUMBER}" \
+            --base "${BASE_SHA}" --head "${HEAD_SHA}" \
+            --before "${RUNNER_TEMP}/pr-before.json" \
+            --after "${RUNNER_TEMP}/pr-after.json" \
+            --files "${RUNNER_TEMP}/pr-files.json" --diff "${DIFF_FILE}" \
+            --scope "${SCOPE_FILE}"
+          cmp --silent "${RUNNER_TEMP}/git-scope.json" "${SCOPE_FILE}"
+
+      - name: Download finalized review evidence
+        if: needs.footgun-review.outputs.reaffirmed != 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: footgun-review-validated-${{ github.run_id }}
+          path: ${{ runner.temp }}/review-result
+
+      - name: Validate and render publishable evidence
+        id: prepare
+        if: needs.footgun-review.outputs.reaffirmed != 'true'
+        env:
+          ARTIFACT_NAME: footgun-review-validated-${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 scripts/footgun_review_gate.py prepare \
+            --scope "${SCOPE_FILE}" \
+            --diff "${DIFF_FILE}" \
+            --bundle "${RUNNER_TEMP}/review-result/review-bundle.json" \
+            --brief "${RUNNER_TEMP}/review-result/human-design-brief.json" \
+            --output-dir "${REVIEW_DIR}" \
+            --github-output "${GITHUB_OUTPUT}" \
+            --artifact-name "${ARTIFACT_NAME}" \
+            --run-url "${RUN_URL}"
+
+      # "No gating findings": advisory findings ride inside evidence.md and
+      # never publish as threads (the arming-livelock fix), so the comment
+      # path also serves heads whose only findings are advisory.
+      - name: Publish contextual no-findings evidence
+        if: >-
+          needs.footgun-review.outputs.reaffirmed != 'true' &&
+          steps.prepare.outputs.gating_finding_count == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh pr comment "${PR_NUMBER}" --body-file "${REVIEW_DIR}/evidence.md"
+
+      - name: Publish footgun findings as review threads
+        if: >-
+          needs.footgun-review.outputs.reaffirmed != 'true' &&
+          steps.prepare.outputs.gating_finding_count != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          gh api --method POST \
+            "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews" \
+            --input "${REVIEW_DIR}/review.json"
+
+      - name: Publish human design-review brief
+        if: needs.footgun-review.outputs.reaffirmed != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh pr comment "${PR_NUMBER}" --body-file "${REVIEW_DIR}/design-review.md"
+
+      - name: Fetch posted review evidence
+        if: needs.footgun-review.outputs.reaffirmed != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          gh api --paginate --slurp \
+            "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" \
+            > "${RUNNER_TEMP}/issue-comments.json"
+          gh api --paginate --slurp \
+            "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100" \
+            > "${RUNNER_TEMP}/reviews.json"
+          gh api --paginate --slurp \
+            "repos/${REPOSITORY}/pulls/${PR_NUMBER}/comments?per_page=100" \
+            > "${RUNNER_TEMP}/review-comments.json"
+
+      - name: Verify exact review completion evidence
+        if: needs.footgun-review.outputs.reaffirmed != 'true'
+        env:
+          ARTIFACT_DIGEST: ${{ steps.prepare.outputs.artifact_digest }}
+          BRIEF_DIGEST: ${{ steps.prepare.outputs.design_brief_digest }}
+          FINDING_COUNT: ${{ steps.prepare.outputs.finding_count }}
+          GATING_FINDING_COUNT: ${{ steps.prepare.outputs.gating_finding_count }}
+          HEAD_SHA: ${{ steps.prepare.outputs.head_sha }}
+        run: |
+          python3 scripts/footgun_review_gate.py verify \
+            --issue-comments "${RUNNER_TEMP}/issue-comments.json" \
+            --reviews "${RUNNER_TEMP}/reviews.json" \
+            --review-comments "${RUNNER_TEMP}/review-comments.json" \
+            --head "${HEAD_SHA}" \
+            --finding-count "${FINDING_COUNT}" \
+            --gating-count "${GATING_FINDING_COUNT}" \
+            --digest "${ARTIFACT_DIGEST}" \
+            --brief-digest "${BRIEF_DIGEST}"
+
+      - name: Block merge on findings
+        id: finding_gate
+        if: >-
+          needs.footgun-review.outputs.reaffirmed != 'true' &&
+          steps.prepare.outputs.blocking_finding_count != '0'
+        env:
+          BLOCKING_FINDING_COUNT: ${{ steps.prepare.outputs.blocking_finding_count }}
+          FINDING_COUNT: ${{ steps.prepare.outputs.finding_count }}
+        run: |
+          echo "Review reported ${BLOCKING_FINDING_COUNT} blocking finding(s) of ${FINDING_COUNT} total."
+          echo "Fix blocking findings and push. Human-decision threads need the decision recorded; advisory findings are in the receipt comment, not threads."
+          exit 1
+
+      - name: Report incomplete review
+        if: >-
+          failure() && steps.finding_gate.outcome != 'failure' &&
+          github.event.pull_request.user.login == 'everettVT'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "## Deterministic review — incomplete"
+            echo
+            echo "The review for exact head \`${HEAD_SHA}\` did not produce verified completion evidence. Merge remains blocked."
+            echo
+            echo "[Inspect the failed workflow run](${RUN_URL})"
+          } > "${RUNNER_TEMP}/review-failed.md"
+          gh pr comment "${PR_NUMBER}" --repo "${REPOSITORY}" \
+            --body-file "${RUNNER_TEMP}/review-failed.md" || true

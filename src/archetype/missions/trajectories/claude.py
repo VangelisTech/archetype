@@ -3,9 +3,9 @@
 
 """Pure Claude JSONL parsing into in-memory trajectory authoring values.
 
-This module performs no file I/O and writes no Components. Artifact-owned
-application adapters are responsible for source snapshots, redaction,
-quarantine, and durability before calling :func:`parse_claude_transcript`.
+This module performs no file I/O and writes no Components. The mission-owned
+transcript workflow is responsible for source snapshots, redaction, quarantine,
+and artifact durability before calling :func:`parse_claude_transcript`.
 """
 
 from __future__ import annotations
@@ -13,59 +13,19 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
-from archetype.missions.trajectories.components import Trajectory
+from archetype.episodes.contracts import ClaudeTranscriptSource
 from archetype.missions.trajectories.contracts import Turn
 
 _TRUNCATION_MARK = "…[truncated]"
 
 
 @dataclass(frozen=True)
-class ClaudeTranscriptSource:
-    """Local Claude JSONL source and its stable logical linkage."""
-
-    path: Path
-    mission_id: str = ""
-    project: str = ""
-    session_id: str = ""
-    max_content_chars: int = 4000
-    include_sidechains: bool = False
-
-    def __post_init__(self) -> None:
-        path = Path(self.path)
-        object.__setattr__(self, "path", path)
-        if path.suffix.lower() != ".jsonl":
-            raise ValueError("Claude transcript sources must use the .jsonl suffix")
-        if self.max_content_chars < 1:
-            raise ValueError("max_content_chars must be at least 1")
-        project = self.project.strip() or path.parent.name
-        session_id = self.session_id.strip() or path.stem
-        if not project or not session_id:
-            raise ValueError("Claude transcript source needs project and session identity")
-        object.__setattr__(self, "project", project)
-        object.__setattr__(self, "session_id", session_id)
-
-    @property
-    def source_uri(self) -> str:
-        """Canonical source identity without leaking a local filesystem path."""
-
-        return f"claude-session://{quote(self.project, safe='')}/{quote(self.session_id, safe='')}"
-
-    @property
-    def trajectory_id(self) -> str:
-        """Stable trajectory linkage for normalized rows and the lightweight index."""
-
-        return self.source_uri
-
-
-@dataclass(frozen=True)
 class LoadedSession:
     """One parsed session held in memory until an artifact adapter publishes it."""
 
-    trajectory: Trajectory
+    episode_id: str
     turns: tuple[Turn, ...]
     source_uri: str
     mission_id: str = ""
@@ -78,6 +38,22 @@ class LoadedSession:
     started_at: str = ""
     ended_at: str = ""
     sidechain_turns_skipped: int = 0
+
+    @property
+    def model(self) -> str:
+        return self.models[0] if self.models else ""
+
+    @property
+    def total_turns(self) -> int:
+        return len(self.turns)
+
+    @property
+    def total_tokens(self) -> int:
+        return sum(turn.tokens for turn in self.turns)
+
+    @property
+    def duration_seconds(self) -> float:
+        return sum(turn.duration_ms for turn in self.turns) / 1000.0
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -260,16 +236,8 @@ def parse_claude_transcript(
         return None
 
     ordered_models = tuple(sorted(models))
-    trajectory = Trajectory.from_turns(
-        source.trajectory_id,
-        turns,
-        source="claude-code",
-        model=ordered_models[0] if ordered_models else "",
-        task_id=source.project,
-        terminal=True,
-    )
     return LoadedSession(
-        trajectory=trajectory,
+        episode_id=source.episode_id,
         turns=tuple(turns),
         source_uri=source.source_uri,
         mission_id=source.mission_id,

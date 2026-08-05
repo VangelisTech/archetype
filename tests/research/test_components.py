@@ -48,7 +48,7 @@ class TestExperimentComponent:
         assert issubclass(Experiment, Component)
 
     def test_default_construction(self):
-        # Components follow the Trajectory convention: all fields have
+        # Components follow the evidence-schema convention: all fields have
         # defaults so partial rows from storage deserialize cleanly.
         exp = Experiment()
         assert exp.name == ""

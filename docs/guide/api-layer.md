@@ -1,10 +1,12 @@
 # API Layer
 
-Archetype runs as a single `archetype serve` process. The API layer is a FastAPI application over the service layer, and the CLI is a thin HTTP client.
+Archetype runs as a single `archetype serve` process. The API layer is a
+FastAPI application over one process-owned dispatcher, and the CLI is a thin
+HTTP client.
 
-External API operations enter through `iCommandGateway`. The gateway
-authorizes and delegates to the same actor-free `iRuntimeApplication` semantics
-used by the trusted runtime.
+External API operations authenticate an `ActorCtx`, construct exact family
+operation models, and call actor-aware `CommandDispatcher` methods. Trusted
+runtime calls construct the same models and use actor-free dispatcher entry.
 
 ## Application Factory
 
@@ -14,12 +16,12 @@ used by the trusted runtime.
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_host_observability(service_name="archetype-api")
-    container = get_container()
+    resources = build_runtime_resources(RuntimeBootstrapConfig.from_env())
+    app.state.resources = resources
     try:
         yield
     finally:
-        await container.shutdown()
-        set_container(None)
+        await resources.aclose()
 ```
 
 Imports and `create_app()` perform no logging or telemetry setup. Each worker
@@ -32,37 +34,48 @@ All worlds live in the server event loop. CLI invocations and remote clients tal
 
 ## Dependency Injection
 
-`deps.py` owns a module-level `ServiceContainer` and exposes service getters for FastAPI `Depends()`.
+The FastAPI lifespan owns one `RuntimeResources`. `deps.py` exposes only its
+dispatcher through `get_dispatcher(request)`.
 
 Routes that expose user-visible operations should inject:
 
-- `iCommandGateway` for reads, writes, lifecycle, and simulation control.
+- `CommandDispatcher` for reads, writes, lifecycle, and simulation control.
 - `ActorCtx` from auth middleware.
 
-Lower-level services may still be injected for internal/admin diagnostics, but they are not the normal public boundary.
+Routes do not receive concrete application services or the process wiring graph.
 
 ```python
 @router.post("/worlds/{world_id}/run")
 async def run_world(
     world_id: str,
-    gateway: iCommandGateway = Depends(get_command_gateway),
+    dispatcher: CommandDispatcher = Depends(get_dispatcher),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
-    return await gateway.run(ctx, UUID(world_id), RunConfig(num_steps=10))
+    return await dispatcher.apply_as(
+        ctx,
+        Run(world_id=world_id, run_config=RunConfig(num_steps=10)),
+    )
 ```
 
 ## Authentication context
 
-Production ingress authenticates a stable principal and fails closed when
-credentials are absent or invalid. A development-only anonymous-admin mode, if
-enabled explicitly, uses one stable process principal so quotas and audit
-identity do not reset on every request. The trusted runtime has no actor
-context. See [Command Gate](command-gate.md).
+The served API is a single-tenant development surface, and this is the
+deliberate v0.5 posture. There is no authentication system: every caller is
+the tenant. A request with no `Authorization` header receives the admin role;
+`Bearer <role>` self-asserts one of admin/operator/player/viewer. Roles
+therefore scope cooperating agents — a client instructed to send
+`Bearer viewer` is genuinely viewer-scoped by the command gate — but they are
+not a security boundary against an adversarial caller, and binding the server
+beyond loopback exposes an unauthenticated admin API. The credentials that
+matter are the storage credentials in Daft's `IOConfig`. Real
+authentication/authorization against an external identity provider is a
+post-0.5 slice. The trusted runtime has no actor context. See
+[Command Gate](command-gate.md).
 
 ## Route Structure
 
 Routes are thin translators: validate payloads, authenticate, call
-`iCommandGateway`, and return response models.
+actor-aware dispatcher entry, and return response models.
 
 ### Worlds
 
@@ -108,8 +121,14 @@ See [Execution Hierarchy](execution-hierarchy.md).
 | `/worlds/{id}/components` | GET | Lazily filter, limit, or count component projections |
 | `/worlds/{id}/history` | GET | Audit history through `get_audit_history` |
 
-Reads are authorized at `iCommandGateway`; `iQueryService` remains the internal
-read implementation behind RuntimeApplication.
+API routes authorize reads through `CommandDispatcher.apply_as`; trusted
+runtime reads use `apply`. Both construct registered query models. The
+dispatcher invokes handlers backed by `archetype.world.query` for
+durable ECS reads and commands-owned `AuditLog` for `GetAuditHistory`. Neither
+path requires a live world.
+Routes may import frozen supported values from `archetype.world.models`; they
+must not import world registry, lifecycle, mutation, simulation, query, or
+handler behavior directly.
 The component route accepts one inert comparison through `where`, then applies either the
 `show` row limit or the `count` terminal. Filtering happens before either terminal and before
 row serialization. All three options require at least one component type; `show` and `count` are
@@ -124,22 +143,21 @@ See the [REST API Reference](../reference/rest-api.md) for generated schemas.
 Example `create_world` route:
 
 ```python
-@router.post("", response_model=WorldResponse)
+@router.post("", response_model=WorldInfo)
 async def create_world(
     req: CreateWorldRequest,
-    gateway: iCommandGateway = Depends(get_command_gateway),
+    dispatcher: CommandDispatcher = Depends(get_dispatcher),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
-    info = await gateway.create_world(
+    info = await dispatcher.apply_as(
         ctx,
-        WorldConfig(name=req.name),
-        StorageConfig(uri=req.storage_uri) if req.storage_uri else None,
+        CreateWorld(
+            config=req.world_config(),
+            storage_config=req.storage(),
+            cache_config=req.cache_config,
+        ),
     )
-    return WorldResponse(
-        world_id=str(info.world_id),
-        name=info.name,
-        tick=info.tick,
-    )
+    return info
 ```
 
 The route does not construct a lifecycle command or bypass the gate.

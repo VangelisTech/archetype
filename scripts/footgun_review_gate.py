@@ -12,18 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Deterministic validation and publication helpers for footgun review CI.
+"""Deterministic orchestration, validation, and publication for review CI.
 
-The model supplies analysis. This module owns the merge-critical mechanics:
-binding that analysis to an exact commit and diff, validating review coverage,
-rendering GitHub review payloads, and verifying the posted evidence.
+Prompt policy and model return types live in :mod:`review_contracts`.
+Evidence-conserving fan-out aggregation lives in :mod:`review_aggregation`.
+This module owns exact PR scope, the command-line workflow, and GitHub-facing
+rendering and verification.
 """
 
 from __future__ import annotations
 
 import argparse
 import ast
-import hashlib
 import json
 import re
 import subprocess
@@ -31,49 +31,58 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
-BOT_LOGIN = "github-actions[bot]"
-REQUIRED_CATEGORIES = (
-    "row-dropping",
-    "unguarded-llm-calls",
-    "api-signature-mismatch",
-    "missing-type-key",
-    "private-api-coupling",
-    "monotonic-state",
-    "shared-mutable-state-across-forks",
-    "store-vs-live-reads",
-    "governance-bypass",
-    "dead-code-contracts",
-    "substring-matching-on-structured-data",
-    "fail-open-failure-paths",
-    "identity-keying-disagreement",
-    "error-path-unwind",
-    "off-lifecycle-states",
-    "wrong-return-values",
-    "dag-breaking-collects",
-    "non-serializable-closures",
-    "with-column-vs-with-columns",
-    "deprecated-daft-apis",
-    "arrow-serialization-violations",
-    "tick-boundary-violations",
-    "observability-boundary-and-authority",
-    "telemetry-safety-and-cardinality",
+from review_aggregation import (
+    INFRA_FAILURE_CLASSES,
+    assemble_preliminary_bundle,
+    blocking_finding_count,
+    design_bundle_findings,
+    finalize_review_bundle,
+    human_decision_count,
+    make_adjudication_receipt,
+    make_infra_failure_receipt,
+    make_reviewer_receipt,
+    review_bundle_findings,
 )
+from review_aggregation import (
+    validate_review_bundle as validate_aggregate_bundle,
+)
+from review_contracts import (
+    DESIGN_BRIEF_VERSION,
+    DESIGN_CATEGORIES,
+    REQUIRED_CATEGORIES,
+    REVIEW_BUNDLE_KIND,
+    REVIEW_BUNDLE_VERSION,
+    ReviewError,
+    adjudication_result_schema,
+    artifact_digest,
+    human_design_brief_schema,
+    lens_categories,
+    lens_result_schema,
+    load_design_brief_guidance,
+    normalize_adjudication_result,
+    normalize_human_design_brief,
+    normalize_lens_result,
+    render_adjudication_prompt,
+    render_design_brief_prompt,
+    render_design_brief_retry_prompt,
+    render_lens_retry_prompt,
+    render_lens_review_prompt,
+    review_matrix,
+)
+
+SCHEMA_VERSION = 2
+BOT_LOGIN = "github-actions[bot]"
+FINAL_ARTIFACT_RETENTION_DAYS = 90
+GateError = ReviewError
 
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$")
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-
-
-class GateError(ValueError):
-    """Raised when review evidence cannot safely satisfy the merge gate."""
+_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+_PUBLISHED_BODY_LIMIT = 60000
 
 
 def _run_git(*args: str) -> bytes:
-    completed = subprocess.run(
-        ("git", *args),
-        check=True,
-        capture_output=True,
-    )
+    completed = subprocess.run(("git", *args), check=True, capture_output=True)
     return completed.stdout
 
 
@@ -93,12 +102,13 @@ def _scope_payload(base_sha: str, head_sha: str, files: Sequence[str]) -> dict[s
         "base_sha": base_sha,
         "head_sha": head_sha,
         "files": sorted(files),
-        "categories": list(REQUIRED_CATEGORIES),
+        "footgun_categories": list(REQUIRED_CATEGORIES),
+        "design_categories": list(DESIGN_CATEGORIES),
     }
 
 
 def build_scope(base_sha: str, head_sha: str) -> tuple[dict[str, Any], str]:
-    """Return the exact file/category manifest and rename-aware unified diff."""
+    """Return the exact file manifest and rename-aware unified diff."""
     _validate_shas(base_sha, head_sha)
     comparison = f"{base_sha}...{head_sha}"
     names = _run_git(
@@ -135,7 +145,7 @@ def build_github_scope(
     file_pages: Any,
     diff: str,
 ) -> dict[str, Any]:
-    """Validate an API-fetched PR snapshot and return its deterministic scope."""
+    """Validate an API-fetched PR snapshot against the event identity."""
 
     def validate_metadata(metadata: Mapping[str, Any], label: str) -> int:
         base = _expect_mapping(metadata.get("base"), f"{label}.base")
@@ -189,7 +199,7 @@ def _diff_path(value: str) -> str | None:
 
 
 def changed_line_anchors(diff: str) -> set[tuple[str, str, int]]:
-    """Return commentable changed lines as ``(path, side, line)`` tuples."""
+    """Return GitHub-commentable changed lines as ``(path, side, line)``."""
     anchors: set[tuple[str, str, int]] = set()
     old_path: str | None = None
     new_path: str | None = None
@@ -204,7 +214,6 @@ def changed_line_anchors(diff: str) -> set[tuple[str, str, int]]:
         if not in_hunk and raw_line.startswith("+++ "):
             new_path = _diff_path(raw_line[4:])
             continue
-
         match = _HUNK_RE.match(raw_line)
         if match:
             old_line = int(match.group(1))
@@ -213,7 +222,6 @@ def changed_line_anchors(diff: str) -> set[tuple[str, str, int]]:
             new_remaining = int(match.group(4) or "1")
             in_hunk = old_remaining > 0 or new_remaining > 0
             continue
-
         if not in_hunk or raw_line.startswith("\\ No newline at end of file"):
             continue
 
@@ -236,11 +244,9 @@ def changed_line_anchors(diff: str) -> set[tuple[str, str, int]]:
             new_remaining -= 1
         else:
             raise GateError(f"unexpected unified diff line inside hunk: {raw_line!r}")
-
         if old_remaining < 0 or new_remaining < 0:
             raise GateError("unified diff hunk exceeded its declared line count")
         in_hunk = old_remaining > 0 or new_remaining > 0
-
     return anchors
 
 
@@ -256,215 +262,118 @@ def _expect_list(value: Any, label: str) -> list[Any]:
     return value
 
 
-def _text(value: Any, label: str, *, minimum: int) -> str:
-    if not isinstance(value, str) or len(value.strip()) < minimum:
-        raise GateError(f"{label} must contain at least {minimum} non-whitespace characters")
-    return value.strip()
-
-
-def _exact_unique_strings(value: Any, expected: Sequence[str], label: str) -> list[str]:
-    items = _expect_list(value, label)
-    if any(not isinstance(item, str) for item in items):
-        raise GateError(f"{label} must contain only strings")
-    if len(items) != len(set(items)):
-        raise GateError(f"{label} must not contain duplicates")
-    if set(items) != set(expected):
-        missing = sorted(set(expected) - set(items))
-        extra = sorted(set(items) - set(expected))
-        raise GateError(f"{label} does not match scope; missing={missing}, extra={extra}")
-    return sorted(items)
+def _scope_values(scope: Mapping[str, Any]) -> tuple[str, list[str]]:
+    if scope.get("schema_version") != SCHEMA_VERSION:
+        raise GateError(f"scope.schema_version must be {SCHEMA_VERSION}")
+    head_sha = scope.get("head_sha")
+    if not isinstance(head_sha, str) or not _SHA_RE.fullmatch(head_sha):
+        raise GateError("scope.head_sha must be a full lowercase Git SHA")
+    files = _expect_list(scope.get("files"), "scope.files")
+    if not files or any(not isinstance(item, str) for item in files):
+        raise GateError("scope.files must contain changed paths")
+    if len(files) != len(set(files)):
+        raise GateError("scope.files must not contain duplicates")
+    if files != sorted(files):
+        raise GateError("scope.files must be in canonical sorted order")
+    if scope.get("footgun_categories") != list(REQUIRED_CATEGORIES):
+        raise GateError("scope footgun categories do not match trusted policy")
+    if scope.get("design_categories") != list(DESIGN_CATEGORIES):
+        raise GateError("scope design categories do not match trusted policy")
+    return head_sha, files
 
 
 def validate_result(
-    raw_result: Mapping[str, Any], scope: Mapping[str, Any], diff: str
+    raw_result: Mapping[str, Any],
+    scope: Mapping[str, Any],
+    diff: str,
+    *,
+    lens: str,
 ) -> dict[str, Any]:
-    """Validate and normalize model output against the exact reviewed diff."""
-    head_sha = scope.get("head_sha")
-    if raw_result.get("head_sha") != head_sha:
-        raise GateError("review head_sha does not match the pull request head")
-
-    scoped_files = _expect_list(scope.get("files"), "scope.files")
-    if any(not isinstance(item, str) for item in scoped_files):
-        raise GateError("scope.files must contain only strings")
-    files = _exact_unique_strings(raw_result.get("reviewed_files"), scoped_files, "reviewed_files")
-    categories = _exact_unique_strings(
-        raw_result.get("reviewed_categories"),
-        REQUIRED_CATEGORIES,
-        "reviewed_categories",
+    """Validate one model-authored lens result against trusted scope."""
+    head_sha, files = _scope_values(scope)
+    return dict(
+        normalize_lens_result(
+            raw_result,
+            lens=lens,
+            head_sha=head_sha,
+            scoped_files=files,
+            anchors=changed_line_anchors(diff),
+        )
     )
-    summary = _text(raw_result.get("summary"), "summary", minimum=80)
 
-    context_entries = _expect_list(raw_result.get("review_context"), "review_context")
-    if not context_entries:
-        raise GateError("review_context must describe at least one changed area")
-    contextualized_files: list[str] = []
-    normalized_context: list[dict[str, Any]] = []
-    for index, raw_entry in enumerate(context_entries):
-        entry = _expect_mapping(raw_entry, f"review_context[{index}]")
-        entry_files = _expect_list(entry.get("files"), f"review_context[{index}].files")
-        if not entry_files or any(not isinstance(item, str) for item in entry_files):
-            raise GateError(f"review_context[{index}].files must contain file paths")
-        unknown = sorted(set(entry_files) - set(scoped_files))
-        if unknown:
-            raise GateError(f"review_context[{index}] references files outside the diff: {unknown}")
-        contextualized_files.extend(entry_files)
-        normalized_context.append(
-            {
-                "area": _text(entry.get("area"), f"review_context[{index}].area", minimum=3),
-                "files": sorted(set(entry_files)),
-                "assessment": _text(
-                    entry.get("assessment"),
-                    f"review_context[{index}].assessment",
-                    minimum=30,
-                ),
-            }
+
+def validate_review_bundle(
+    raw_bundle: Mapping[str, Any],
+    scope: Mapping[str, Any],
+    diff: str,
+    *,
+    expected_phase: str | None = None,
+) -> dict[str, Any]:
+    head_sha, files = _scope_values(scope)
+    return dict(
+        validate_aggregate_bundle(
+            raw_bundle,
+            head_sha=head_sha,
+            scoped_files=files,
+            anchors=changed_line_anchors(diff),
+            expected_phase=expected_phase,
         )
-    # Coverage — not partition — is the invariant: a file may appear in more
-    # than one area when it genuinely spans concerns.
-    if set(contextualized_files) != set(scoped_files):
-        missing = sorted(set(scoped_files) - set(contextualized_files))
-        raise GateError(f"review_context does not cover every changed file: {missing}")
+    )
 
-    anchors = changed_line_anchors(diff)
-    findings = _expect_list(raw_result.get("findings"), "findings")
-    normalized_findings: list[dict[str, Any]] = []
-    for index, raw_finding in enumerate(findings):
-        finding = _expect_mapping(raw_finding, f"findings[{index}]")
-        category = finding.get("category")
-        if category not in REQUIRED_CATEGORIES:
-            raise GateError(f"findings[{index}].category is not a reviewed category")
-        path = finding.get("path")
-        if path not in scoped_files:
-            raise GateError(f"findings[{index}].path is outside the reviewed diff")
-        side = finding.get("side")
-        if side not in {"LEFT", "RIGHT"}:
-            raise GateError(f"findings[{index}].side must be LEFT or RIGHT")
-        line = finding.get("line")
-        if not isinstance(line, int) or isinstance(line, bool) or line < 1:
-            raise GateError(f"findings[{index}].line must be a positive integer")
-        if (path, side, line) not in anchors:
-            raise GateError(
-                f"findings[{index}] is not anchored to a changed diff line: {path}:{line} {side}"
-            )
-        normalized_findings.append(
-            {
-                "category": category,
-                "title": _text(finding.get("title"), f"findings[{index}].title", minimum=5),
-                "path": path,
-                "side": side,
-                "line": line,
-                "what_it_does": _text(
-                    finding.get("what_it_does"),
-                    f"findings[{index}].what_it_does",
-                    minimum=20,
-                ),
-                "what_goes_wrong": _text(
-                    finding.get("what_goes_wrong"),
-                    f"findings[{index}].what_goes_wrong",
-                    minimum=20,
-                ),
-                "fix": _text(finding.get("fix"), f"findings[{index}].fix", minimum=20),
-            }
-        )
 
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "head_sha": head_sha,
-        "summary": summary,
-        "reviewed_files": files,
-        "reviewed_categories": categories,
-        "review_context": normalized_context,
-        "findings": normalized_findings,
-    }
+def result_schema(lens: str) -> dict[str, Any]:
+    return lens_result_schema(lens)
+
+
+def extract_structured_json(raw: str) -> dict[str, Any] | None:
+    """Extract the last standalone JSON object, preferring one bound to a head."""
+    decoder = json.JSONDecoder()
+    last_object: dict[str, Any] | None = None
+    last_bound: dict[str, Any] | None = None
+    index = 0
+    while True:
+        start = raw.find("{", index)
+        if start == -1:
+            break
+        try:
+            value, end = decoder.raw_decode(raw, start)
+        except ValueError:
+            index = start + 1
+            continue
+        index = end
+        if isinstance(value, dict):
+            last_object = value
+            if "head_sha" in value:
+                last_bound = value
+    return last_bound or last_object
 
 
 def retry_feedback(error: GateError) -> str:
-    """Turn one validation failure into bounded correction guidance."""
     return (
-        "The first detector response did not pass Archetype's exact-scope validator:\n\n"
+        "The first review response did not pass Archetype's exact-scope validator:\n\n"
         f"{error}\n\n"
         "Return one corrected, complete structured result for the same exact head. "
-        "`reviewed_files` and every `review_context.files` array contain changed paths only. "
-        "Mention protected-base implementation or evidence paths in assessment prose, not in "
-        "those arrays. Use the authoritative scope values; do not return schema examples or "
-        "placeholder values. Preserve substantive analysis from the first response when it is "
-        "still valid.\n"
+        "Use only the model-authored fields in the supplied schema. Cover every "
+        "changed path in review_context, anchor findings to changed lines, and "
+        "preserve substantive analysis that remains valid. Set review_status to "
+        "complete only if repository inspection actually completes; otherwise "
+        "keep it blocked rather than fabricating a verdict.\n"
     )
-
-
-def artifact_digest(result: Mapping[str, Any]) -> str:
-    canonical = json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-def result_schema() -> dict[str, Any]:
-    """Return the constrained-output schema used by Claude Code."""
-    text = {"type": "string", "minLength": 1}
-    return {
-        "type": "object",
-        "properties": {
-            "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-            "summary": {"type": "string", "minLength": 80},
-            "reviewed_files": {"type": "array", "items": text, "minItems": 1},
-            "reviewed_categories": {"type": "array", "items": text, "minItems": 1},
-            "review_context": {
-                "type": "array",
-                "minItems": 1,
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "area": {"type": "string", "minLength": 3},
-                        "files": {"type": "array", "items": text, "minItems": 1},
-                        "assessment": {"type": "string", "minLength": 30},
-                    },
-                    "required": ["area", "files", "assessment"],
-                    "additionalProperties": False,
-                },
-            },
-            "findings": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "category": {"type": "string", "enum": list(REQUIRED_CATEGORIES)},
-                        "title": {"type": "string", "minLength": 5},
-                        "path": text,
-                        "side": {"type": "string", "enum": ["LEFT", "RIGHT"]},
-                        "line": {"type": "integer", "minimum": 1},
-                        "what_it_does": {"type": "string", "minLength": 20},
-                        "what_goes_wrong": {"type": "string", "minLength": 20},
-                        "fix": {"type": "string", "minLength": 20},
-                    },
-                    "required": [
-                        "category",
-                        "title",
-                        "path",
-                        "side",
-                        "line",
-                        "what_it_does",
-                        "what_goes_wrong",
-                        "fix",
-                    ],
-                    "additionalProperties": False,
-                },
-            },
-        },
-        "required": [
-            "head_sha",
-            "summary",
-            "reviewed_files",
-            "reviewed_categories",
-            "review_context",
-            "findings",
-        ],
-        "additionalProperties": False,
-    }
 
 
 def evidence_marker(head_sha: str, finding_count: int, digest: str) -> str:
     return (
         "<!-- archetype-footgun-review "
-        f"schema={SCHEMA_VERSION} head={head_sha} findings={finding_count} digest={digest} -->"
+        f"schema={REVIEW_BUNDLE_VERSION} head={head_sha} "
+        f"findings={finding_count} digest={digest} -->"
+    )
+
+
+def design_review_marker(head_sha: str, bundle_digest: str, brief_digest: str) -> str:
+    return (
+        "<!-- archetype-human-design-review "
+        f"schema={DESIGN_BRIEF_VERSION} head={head_sha} "
+        f"bundle={bundle_digest} brief={brief_digest} -->"
     )
 
 
@@ -472,151 +381,208 @@ def _markdown_code(value: str) -> str:
     return value.replace("`", "\\`")
 
 
-_PUBLISHED_BODY_LIMIT = 60000
-
-
-def _artifact_section(
-    result: Mapping[str, Any],
-    run_url: str | None,
-    artifact_name: str | None,
-    *,
-    inline: bool,
-) -> list[str]:
-    lines = [
-        "<details>",
-        "<summary>Validated review artifact</summary>",
-        "",
-    ]
-    if inline:
-        payload = json.dumps(result, indent=2, ensure_ascii=False)
-        # Findings may quote code fences; the outer fence must be longer than
-        # any backtick run inside the payload.
-        longest_run = max((len(match.group(0)) for match in re.finditer(r"`+", payload)), default=0)
-        fence = "`" * max(3, longest_run + 1)
-        lines.extend([f"{fence}json", payload, fence, ""])
-    else:
-        if not run_url or not artifact_name:
-            raise GateError("oversized review evidence requires a named validated artifact")
-        lines.extend(
-            [
-                "The validated structured output exceeds the inline comment budget; "
-                "download the named validated artifact instead.",
-                "",
-            ]
+def _artifact_reference(run_url: str | None, artifact_name: str | None) -> str:
+    linkable = (
+        isinstance(run_url, str)
+        and run_url.startswith("https://")
+        and len(run_url) <= 2048
+        and not any(character.isspace() for character in run_url)
+        and isinstance(artifact_name, str)
+        and 0 < len(artifact_name) <= 256
+        and "\n" not in artifact_name
+        and "\r" not in artifact_name
+    )
+    if linkable:
+        return (
+            f"**Review bundle:** [workflow artifact]({run_url}#artifacts) "
+            f"(`{_markdown_code(artifact_name)}`; "
+            f"{FINAL_ARTIFACT_RETENTION_DAYS}-day operational retention)."
         )
-    if run_url and artifact_name:
-        lines.extend(
-            [
-                f"Validated artifact: [{artifact_name}]({run_url}#artifacts) (1-day retention).",
-                "",
-            ]
-        )
-    lines.append("</details>")
-    return lines
+    return (
+        "**Review bundle:** artifact link unavailable in this rendering; "
+        "the receipt remains bound to the bundle digest."
+    )
 
 
 def render_evidence(
-    result: Mapping[str, Any],
+    bundle: Mapping[str, Any],
     digest: str,
     run_url: str | None = None,
     artifact_name: str | None = None,
 ) -> str:
-    findings = _expect_list(result.get("findings"), "findings")
-    files = _expect_list(result.get("reviewed_files"), "reviewed_files")
-    categories = _expect_list(result.get("reviewed_categories"), "reviewed_categories")
-    context = _expect_list(result.get("review_context"), "review_context")
-    head_sha = str(result["head_sha"])
-    finding_count = len(findings)
-    outcome = "no findings" if finding_count == 0 else f"{finding_count} finding(s)"
-    lines = [
-        f"## Footgun review — {outcome}",
-        "",
-        f"**Exact head:** `{head_sha}`  ",
-        f"**Validated scope:** {len(files)} changed file(s), {len(categories)} detector categories",
-        "",
-        str(result["summary"]),
-        "",
-        "<details>",
-        "<summary>Context reviewed</summary>",
-        "",
-    ]
-    for raw_entry in context:
-        entry = _expect_mapping(raw_entry, "review_context entry")
-        entry_files = ", ".join(
-            f"`{_markdown_code(str(path))}`" for path in _expect_list(entry["files"], "files")
+    """Render a compact aggregate receipt; complete evidence stays in the bundle."""
+    if bundle.get("kind") != REVIEW_BUNDLE_KIND or bundle.get("phase") != "final":
+        raise GateError("published evidence requires a finalized review bundle")
+    if not _DIGEST_RE.fullmatch(digest) or artifact_digest(bundle) != digest:
+        raise GateError("published review digest does not match the review bundle")
+
+    findings = review_bundle_findings(bundle)
+    blocking = blocking_finding_count(bundle)
+    human_decisions = human_decision_count(bundle)
+    advisory = len(findings) - blocking - human_decisions
+    design_notes = len(design_bundle_findings(bundle))
+    head_sha = str(bundle["head_sha"])
+    outcome = (
+        "no footgun findings"
+        if not findings
+        else (
+            f"{len(findings)} footgun finding(s) — {blocking} blocking, "
+            f"{advisory} advisory, {human_decisions} human decision"
         )
-        lines.extend(
+    )
+
+    lens_rows: list[str] = []
+    for raw_group in _expect_list(bundle.get("lenses"), "review bundle lenses"):
+        group = _expect_mapping(raw_group, "review bundle lens")
+        reviewers = _expect_list(group.get("reviewers"), "review bundle reviewers")
+        names: list[str] = []
+        live = 0
+        member_count = 0
+        for item in reviewers:
+            receipt = _expect_mapping(item, "reviewer")
+            if receipt.get("status") == "infra_failed":
+                # A neutral seat is provenance, not a verdict: name the seat
+                # and why it sat out, count nothing from it.
+                names.append(
+                    f"`{receipt.get('reviewer_id')}` (neutral: {receipt.get('failure_class')})"
+                )
+                continue
+            names.append(f"`{receipt.get('reviewer_id')}`")
+            live += 1
+            member_count += len(
+                _expect_list(
+                    receipt.get("result", {}).get("findings"),
+                    "reviewer findings",
+                )
+            )
+        lens_rows.append(
+            f"| `{group['lens']}` | {', '.join(names)} | {live}/{len(reviewers)} | {member_count} |"
+        )
+
+    # Advisory findings publish HERE, in the non-gating receipt, not as
+    # review threads. Advisory threads were the documented arming livelock:
+    # queue-ready counts every unresolved thread, so a gate rerun on a green
+    # head republished its own advisory findings and un-queued the PR it had
+    # just passed. Visibility without gating breaks the loop; anyone may
+    # still open a thread by hand if an advisory note deserves one.
+    advisory_lines: list[str] = []
+    advisory_findings = [
+        finding for finding in findings if finding.get("gate_disposition") == "advisory"
+    ]
+    if advisory_findings:
+        advisory_lines.extend(["", "### Advisory findings (non-gating)", ""])
+        for finding in advisory_findings:
+            advisory_lines.append(
+                f"- **{finding['category']}** — {finding['title']} "
+                f"(`{finding['path']}:{finding['line']}`, {finding['corroboration']}): "
+                f"{finding['what_goes_wrong']}"
+            )
+        advisory_lines.extend(
             [
-                f"- **{entry['area']}** ({entry_files}): {entry['assessment']}",
                 "",
+                "Advisory findings do not block the queue and are not published "
+                "as threads. Fix them, or record a written disposition in the "
+                "PR conversation.",
             ]
         )
-    lines.extend(
+
+    marker = evidence_marker(head_sha, len(findings), digest)
+    rendered = "\n".join(
         [
-            "</details>",
+            f"## Footgun review — {outcome}",
             "",
-            "<details>",
-            "<summary>Detector categories completed</summary>",
+            f"**Exact head:** `{head_sha}`  ",
+            f"**Fan-out:** {len(bundle['lenses'])} lenses × 2 independent reviewers  ",
+            f"**Design-coherence notes:** {design_notes} (advisory-only)  ",
+            f"**Bundle digest:** `sha256:{digest}`",
             "",
-            *[f"- `{category}`" for category in categories],
+            "| Lens | Reviewers | Complete | Original findings |",
+            "|---|---|---:|---:|",
+            *lens_rows,
+            *advisory_lines,
             "",
-            "</details>",
+            "Every original result, prompt digest, finding, cluster member, and adjudication "
+            "is retained in the digest-bound bundle.",
             "",
+            _artifact_reference(run_url, artifact_name),
+            "",
+            marker,
         ]
     )
-    marker = evidence_marker(head_sha, finding_count, digest)
-
-    def body_with_artifact(*, inline: bool) -> str:
-        return "\n".join(
-            [
-                *lines,
-                *_artifact_section(result, run_url, artifact_name, inline=inline),
-                "",
-                marker,
-            ]
-        )
-
-    rendered = body_with_artifact(inline=True)
     if len(rendered.encode("utf-8")) <= _PUBLISHED_BODY_LIMIT:
         return rendered
-
-    rendered = body_with_artifact(inline=False)
-    if len(rendered.encode("utf-8")) > _PUBLISHED_BODY_LIMIT:
-        raise GateError("rendered review evidence exceeds the published body limit")
-    return rendered
+    return "\n".join(
+        [
+            f"## Footgun review — {outcome}",
+            "",
+            f"**Exact head:** `{head_sha}`  ",
+            f"**Bundle digest:** `sha256:{digest}`",
+            "",
+            "The detailed receipt exceeded the publication budget; complete evidence "
+            "remains in the digest-bound workflow artifact.",
+            "",
+            marker,
+        ]
+    )
 
 
 def render_finding(finding: Mapping[str, Any], head_sha: str) -> str:
+    disposition = str(finding["gate_disposition"])
+    actions = {
+        "blocking": "fix before merge",
+        "advisory": "fix, or resolve this thread with a written disposition",
+        "human-decision": "resolve with the human decision and its rationale",
+    }
     return "\n".join(
         [
             f"### {finding['category']}: {finding['title']}",
+            "",
+            f"**Gate disposition:** {disposition} — {actions[disposition]}",
+            f"**Corroboration:** {finding['corroboration']} ({', '.join(finding['reviewer_ids'])})",
+            f"**Adjudication:** {finding['adjudication_status']}",
             "",
             f"**What it does:** {finding['what_it_does']}",
             "",
             f"**What goes wrong:** {finding['what_goes_wrong']}",
             "",
+            f"**Failing input or sequence:** {finding['failing_input_or_sequence']}",
+            "",
             "**Fix:**",
             str(finding["fix"]),
             "",
-            f"<!-- archetype-footgun-finding head={head_sha} -->",
+            f"<!-- archetype-footgun-finding head={head_sha} cluster={finding['cluster_id']} -->",
         ]
     )
 
 
+def gating_findings(bundle: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Findings that publish as threads: blocking and human-decision only.
+
+    Advisory findings render inside the receipt comment instead. A thread
+    gates arming (queue-ready counts every unresolved thread), so a thread
+    must exist only for findings whose disposition actually demands one.
+    """
+    return [
+        finding
+        for finding in review_bundle_findings(bundle)
+        if finding.get("gate_disposition") in ("blocking", "human-decision")
+    ]
+
+
 def review_payload(
-    result: Mapping[str, Any],
+    bundle: Mapping[str, Any],
     digest: str,
     run_url: str | None = None,
     artifact_name: str | None = None,
 ) -> dict[str, Any]:
-    head_sha = str(result["head_sha"])
-    findings = _expect_list(result.get("findings"), "findings")
+    findings = gating_findings(bundle)
     if not findings:
-        raise GateError("a review payload requires at least one finding")
+        raise GateError("a review payload requires at least one gating footgun finding")
+    head_sha = str(bundle["head_sha"])
     return {
         "commit_id": head_sha,
         "event": "COMMENT",
-        "body": render_evidence(result, digest, run_url, artifact_name),
+        "body": render_evidence(bundle, digest, run_url, artifact_name),
         "comments": [
             {
                 "path": finding["path"],
@@ -627,6 +593,146 @@ def review_payload(
             for finding in findings
         ],
     }
+
+
+def _render_design_note(finding: Mapping[str, Any]) -> list[str]:
+    evidence = "; ".join(
+        f"`{item['path']}::{item['symbol']}` — {item['explanation']}"
+        for item in finding["repository_evidence"]
+    )
+    return [
+        f"### {finding['category']}: {finding['title']}",
+        "",
+        f"Changed anchor: `{finding['path']}:{finding['line']}`  ",
+        f"Confidence: {finding['corroboration']} ({', '.join(finding['reviewer_ids'])})",
+        "",
+        f"- Introduced shape: {finding['introduced_shape']}",
+        f"- Concrete cost: {finding['concrete_cost']}",
+        f"- Behavior-preserving alternative: {finding['simpler_alternative']}",
+        f"- Repository evidence: {evidence}",
+        "",
+    ]
+
+
+def render_human_design_brief(
+    brief: Mapping[str, Any],
+    bundle: Mapping[str, Any],
+    *,
+    bundle_digest: str,
+    brief_digest: str,
+    run_url: str | None = None,
+    artifact_name: str | None = None,
+) -> str:
+    """Render the model-organized brief plus deterministic review evidence."""
+    head_sha = str(bundle["head_sha"])
+    if brief.get("head_sha") != head_sha or brief.get("bundle_digest") != bundle_digest:
+        raise GateError("human design brief is not bound to the finalized review bundle")
+    if artifact_digest(brief) != brief_digest:
+        raise GateError("human design brief digest does not match its content")
+
+    lines = [
+        "## Human design review — ready for human review",
+        "",
+        f"**Exact head:** `{head_sha}`  ",
+        f"**Decision requested:** {brief['decision_requested']}  ",
+        f"**Review bundle:** `sha256:{bundle_digest}`  ",
+        f"**Brief:** `sha256:{brief_digest}`",
+        "",
+        "### Intent and behavioral delta",
+        "",
+        str(brief["intent_and_behavioral_delta"]),
+        "",
+        "### Suggested reading order",
+        "",
+    ]
+    for cohort in brief["change_cohorts"]:
+        files = ", ".join(f"`{path}`" for path in cohort["files"])
+        lines.append(
+            f"{cohort['reading_order']}. **{cohort['name']}** — {cohort['summary']} ({files})"
+        )
+
+    lines.extend(["", "### Design choices", ""])
+    if not brief["design_choices"]:
+        lines.append("No distinct design choice was asserted by the generator.")
+    for choice in brief["design_choices"]:
+        alternatives = "; ".join(choice["alternatives"]) or "none recorded"
+        tradeoffs = "; ".join(choice["tradeoffs"]) or "none recorded"
+        lines.extend(
+            [
+                f"- **{choice['choice']}** — {choice['rationale']}",
+                f"  - Alternatives: {alternatives}",
+                f"  - Tradeoffs: {tradeoffs}",
+            ]
+        )
+
+    lines.extend(["", "### Affected invariants", ""])
+    if not brief["affected_invariants"]:
+        lines.append("No affected invariant was identified.")
+    for invariant in brief["affected_invariants"]:
+        lines.append(
+            f"- **{invariant['invariant']}** — {invariant['impact']} "
+            f"(evidence: {invariant['evidence']})"
+        )
+
+    lines.extend(["", "### Design-coherence notes (advisory-only)", ""])
+    notes = design_bundle_findings(bundle)
+    if not notes:
+        lines.append("No design-coherence note survived exact-anchor aggregation.")
+    for finding in notes:
+        lines.extend(_render_design_note(finding))
+
+    lines.extend(["", "### Human decision queue", ""])
+    if not brief["human_decision_queue"]:
+        lines.append("No explicit human decision is queued.")
+    for decision in brief["human_decision_queue"]:
+        clusters = ", ".join(f"`{item}`" for item in decision["related_cluster_ids"])
+        options = "; ".join(decision["options"])
+        lines.extend(
+            [
+                f"- **{decision['question']}**",
+                f"  - Why now: {decision['why_now']}",
+                f"  - Options: {options}",
+                f"  - Review clusters: {clusters or 'none'}",
+            ]
+        )
+
+    lines.extend(["", "### Validation", ""])
+    for item in brief["validation"]:
+        lines.append(f"- **{item['status']}** — {item['check']}: {item['evidence']}")
+
+    lines.extend(["", "### Open questions", ""])
+    if not brief["open_questions"]:
+        lines.append("No additional open question was recorded.")
+    else:
+        lines.extend(f"- {question}" for question in brief["open_questions"])
+    lines.extend(
+        [
+            "",
+            _artifact_reference(run_url, artifact_name),
+            "",
+            design_review_marker(head_sha, bundle_digest, brief_digest),
+        ]
+    )
+    rendered = "\n".join(lines)
+    if len(rendered.encode("utf-8")) <= _PUBLISHED_BODY_LIMIT:
+        return rendered
+    return "\n".join(
+        [
+            "## Human design review — ready for human review",
+            "",
+            f"**Exact head:** `{head_sha}`  ",
+            f"**Decision requested:** {brief['decision_requested']}  ",
+            f"**Review bundle:** `sha256:{bundle_digest}`  ",
+            f"**Brief:** `sha256:{brief_digest}`",
+            "",
+            "The full brief exceeded the comment budget and remains in the "
+            "digest-bound workflow artifact.",
+            "",
+            _artifact_reference(run_url, artifact_name),
+            "",
+            design_review_marker(head_sha, bundle_digest, brief_digest),
+        ]
+    )
 
 
 def _flatten_pages(value: Any, label: str) -> list[Mapping[str, Any]]:
@@ -652,23 +758,38 @@ def verify_posted_evidence(
     review_comments: Any,
     head_sha: str,
     finding_count: int,
+    gating_count: int,
     digest: str,
+    brief_digest: str,
 ) -> None:
-    """Verify that this exact run posted the expected bot-authored artifact."""
-    marker = evidence_marker(head_sha, finding_count, digest)
+    """Verify both exact footgun evidence and the human design-review surface.
+
+    The marker carries the TOTAL finding count (receipt integrity), but the
+    publication surface is chosen by the GATING count: advisory findings live
+    inside the evidence comment and never become threads, so a head whose
+    findings are all advisory publishes on the comment path exactly like a
+    clean head.
+    """
+    if gating_count > finding_count:
+        raise GateError("gating findings cannot exceed total findings")
+    footgun_marker = evidence_marker(head_sha, finding_count, digest)
+    design_marker = design_review_marker(head_sha, digest, brief_digest)
     issues = _flatten_pages(issue_comments, "issue_comments")
     pull_reviews = _flatten_pages(reviews, "reviews")
     inline_comments = _flatten_pages(review_comments, "review_comments")
 
-    if finding_count == 0:
-        matches = [
-            item
+    if not any(
+        _is_bot_authored(item) and design_marker in str(item.get("body") or "") for item in issues
+    ):
+        raise GateError("the exact human design-review brief was not posted by GitHub Actions")
+
+    if gating_count == 0:
+        if not any(
+            _is_bot_authored(item) and footgun_marker in str(item.get("body") or "")
             for item in issues
-            if _is_bot_authored(item) and marker in str(item.get("body") or "")
-        ]
-        if not matches:
+        ):
             raise GateError(
-                "the exact no-findings evidence comment was not posted by GitHub Actions"
+                "the exact no-gating-findings footgun evidence was not posted by GitHub Actions"
             )
         return
 
@@ -677,7 +798,7 @@ def verify_posted_evidence(
         for item in pull_reviews
         if _is_bot_authored(item)
         and item.get("commit_id") == head_sha
-        and marker in str(item.get("body") or "")
+        and footgun_marker in str(item.get("body") or "")
     ]
     for review in matching_reviews:
         review_id = review.get("id")
@@ -688,7 +809,7 @@ def verify_posted_evidence(
             and _is_bot_authored(comment)
             and f"head={head_sha}" in str(comment.get("body") or "")
         ]
-        if len(matching_inline) == finding_count:
+        if len(matching_inline) == gating_count:
             return
     raise GateError(
         "the exact findings review and its inline review threads were not posted by GitHub Actions"
@@ -703,6 +824,7 @@ def _load_json(path: Path) -> Any:
 
 
 def _write_json(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
@@ -710,6 +832,20 @@ def _append_github_outputs(path: Path, values: Mapping[str, str | int]) -> None:
     with path.open("a", encoding="utf-8") as output:
         for key, value in values.items():
             output.write(f"{key}={value}\n")
+
+
+def reviewer_reported_blocked(result_paths: Sequence[Path]) -> bool:
+    """Return whether the latest classifiable attempt reports blocked inspection."""
+    for path in reversed(result_paths):
+        try:
+            value = _load_json(path)
+        except GateError:
+            continue
+        if isinstance(value, Mapping):
+            status = value.get("review_status")
+            if status in {"complete", "blocked"}:
+                return status == "blocked"
+    return False
 
 
 def _scope_command(args: argparse.Namespace) -> None:
@@ -732,59 +868,255 @@ def _github_scope_command(args: argparse.Namespace) -> None:
     _write_json(args.scope, scope)
 
 
-def _validated_result(args: argparse.Namespace) -> dict[str, Any]:
+def _normalized_lens_result(args: argparse.Namespace) -> dict[str, Any]:
     scope = _expect_mapping(_load_json(args.scope), "scope")
     raw_result = _expect_mapping(_load_json(args.result), "result")
-    diff = args.diff.read_text(encoding="utf-8")
-    return validate_result(raw_result, scope, diff)
+    return validate_result(
+        raw_result,
+        scope,
+        args.diff.read_text(encoding="utf-8"),
+        lens=args.lens,
+    )
+
+
+def _reviewer_receipt(args: argparse.Namespace) -> dict[str, Any]:
+    result = _normalized_lens_result(args)
+    prompt = args.prompt.read_text(encoding="utf-8")
+    return dict(
+        make_reviewer_receipt(
+            result,
+            lens=args.lens,
+            reviewer_id=args.reviewer,
+            prompt=prompt,
+        )
+    )
 
 
 def _normalize_command(args: argparse.Namespace) -> None:
-    result = _validated_result(args)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    _write_json(args.output, result)
+    _write_json(args.output, _reviewer_receipt(args))
 
 
 def _attempt_command(args: argparse.Namespace) -> None:
-    """Validate one detector response and emit whether one retry is required."""
     try:
-        result = _validated_result(args)
+        receipt = _reviewer_receipt(args)
     except GateError as error:
         args.output.unlink(missing_ok=True)
         args.feedback.parent.mkdir(parents=True, exist_ok=True)
         args.feedback.write_text(retry_feedback(error), encoding="utf-8")
         _append_github_outputs(args.github_output, {"valid": "false"})
         return
+    _write_json(args.output, receipt)
+    args.feedback.unlink(missing_ok=True)
+    _append_github_outputs(args.github_output, {"valid": "true"})
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    _write_json(args.output, result)
+
+def _receipt_files(directory: Path, kind: str) -> list[Mapping[str, Any]]:
+    if not directory.is_dir():
+        return []
+    receipts: list[Mapping[str, Any]] = []
+    for path in sorted(directory.rglob("*.json")):
+        value = _expect_mapping(_load_json(path), f"receipt {path}")
+        if value.get("kind") == kind:
+            receipts.append(value)
+    return receipts
+
+
+def _required_decision_clusters(bundle: Mapping[str, Any]) -> set[str]:
+    required: set[str] = set()
+    for raw_cluster in _expect_list(bundle.get("clusters"), "review bundle clusters"):
+        cluster = _expect_mapping(raw_cluster, "review bundle cluster")
+        if cluster.get("gate_disposition") == "human-decision":
+            cluster_id = cluster.get("cluster_id")
+            if not isinstance(cluster_id, str):
+                raise GateError("human-decision cluster_id must be a string")
+            required.add(cluster_id)
+    return required
+
+
+def _merge_command(args: argparse.Namespace) -> None:
+    scope = _expect_mapping(_load_json(args.scope), "scope")
+    head_sha, files = _scope_values(scope)
+    receipts = _receipt_files(args.results_dir, "archetype-reviewer-receipt")
+    bundle = assemble_preliminary_bundle(
+        receipts,
+        head_sha=head_sha,
+        scoped_files=files,
+        anchors=changed_line_anchors(args.diff.read_text(encoding="utf-8")),
+    )
+    _write_json(args.output, bundle)
+
+
+def _adjudication_matrix_command(args: argparse.Namespace) -> None:
+    scope = _expect_mapping(_load_json(args.scope), "scope")
+    bundle = validate_review_bundle(
+        _expect_mapping(_load_json(args.bundle), "review bundle"),
+        scope,
+        args.diff.read_text(encoding="utf-8"),
+        expected_phase="preliminary",
+    )
+    targets = bundle["adjudication_targets"]
+    include = (
+        [{"cluster_id": cluster_id, "skip": False} for cluster_id in targets]
+        if targets
+        else [{"cluster_id": "none", "skip": True}]
+    )
+    _append_github_outputs(
+        args.github_output,
+        {
+            "matrix": json.dumps({"include": include}, separators=(",", ":")),
+            "target_count": len(targets),
+        },
+    )
+
+
+def _normalize_adjudication_command(args: argparse.Namespace) -> None:
+    raw = _expect_mapping(_load_json(args.result), "adjudication result")
+    scope = _load_json(args.scope)
+    _, files = _scope_values(scope)
+    normalized = normalize_adjudication_result(
+        raw,
+        head_sha=args.head,
+        cluster_id=args.cluster,
+        scoped_files=files,
+    )
+    receipt = make_adjudication_receipt(
+        normalized,
+        reviewer_id=args.reviewer,
+        prompt=args.prompt.read_text(encoding="utf-8"),
+    )
+    _write_json(args.output, receipt)
+
+
+def _finalize_command(args: argparse.Namespace) -> None:
+    scope = _expect_mapping(_load_json(args.scope), "scope")
+    head_sha, files = _scope_values(scope)
+    preliminary = _expect_mapping(_load_json(args.bundle), "preliminary review bundle")
+    adjudications = _receipt_files(
+        args.adjudications_dir,
+        "archetype-review-adjudication-receipt",
+    )
+    final = finalize_review_bundle(
+        preliminary,
+        adjudications,
+        head_sha=head_sha,
+        scoped_files=files,
+        anchors=changed_line_anchors(args.diff.read_text(encoding="utf-8")),
+    )
+    _write_json(args.output, final)
+
+
+def _brief_normalization_inputs(
+    args: argparse.Namespace,
+) -> tuple[Mapping[str, Any], dict[str, Any]]:
+    scope = _expect_mapping(_load_json(args.scope), "scope")
+    _, files = _scope_values(scope)
+    bundle = validate_review_bundle(
+        _expect_mapping(_load_json(args.bundle), "review bundle"),
+        scope,
+        args.diff.read_text(encoding="utf-8"),
+        expected_phase="final",
+    )
+    digest = artifact_digest(bundle)
+    clusters = {
+        str(item["cluster_id"])
+        for item in _expect_list(bundle.get("clusters"), "review bundle clusters")
+    }
+    brief = _expect_mapping(_load_json(args.result), "human design brief")
+    return brief, {
+        "head_sha": str(bundle["head_sha"]),
+        "bundle_digest": digest,
+        "scoped_files": files,
+        "cluster_ids": clusters,
+        "required_decision_cluster_ids": _required_decision_clusters(bundle),
+    }
+
+
+def _normalize_brief_command(args: argparse.Namespace) -> None:
+    brief, contract = _brief_normalization_inputs(args)
+    normalized = normalize_human_design_brief(brief, **contract)
+    _write_json(args.output, normalized)
+
+
+def _attempt_brief_command(args: argparse.Namespace) -> None:
+    # Loading and validating the trusted scope, diff, and finalized bundle is
+    # intentionally outside the correction catch. Only an extracted JSON
+    # object that violates the model-authored brief contract may be retried.
+    brief, contract = _brief_normalization_inputs(args)
+    try:
+        normalized = normalize_human_design_brief(brief, **contract)
+    except GateError as error:
+        args.output.unlink(missing_ok=True)
+        args.feedback.parent.mkdir(parents=True, exist_ok=True)
+        args.feedback.write_text(str(error).strip() + "\n", encoding="utf-8")
+        _append_github_outputs(args.github_output, {"valid": "false"})
+        return
+    _write_json(args.output, normalized)
     args.feedback.unlink(missing_ok=True)
     _append_github_outputs(args.github_output, {"valid": "true"})
 
 
 def _prepare_command(args: argparse.Namespace) -> None:
-    result = _validated_result(args)
-    digest = artifact_digest(result)
-    finding_count = len(result["findings"])
+    scope = _expect_mapping(_load_json(args.scope), "scope")
+    bundle = validate_review_bundle(
+        _expect_mapping(_load_json(args.bundle), "review bundle"),
+        scope,
+        args.diff.read_text(encoding="utf-8"),
+        expected_phase="final",
+    )
+    bundle_digest = artifact_digest(bundle)
+    brief = _expect_mapping(_load_json(args.brief), "human design brief")
+    _, files = _scope_values(scope)
+    cluster_ids = {str(item["cluster_id"]) for item in bundle["clusters"]}
+    normalized_brief = normalize_human_design_brief(
+        {key: value for key, value in brief.items() if key not in {"schema_version", "kind"}},
+        head_sha=str(bundle["head_sha"]),
+        bundle_digest=bundle_digest,
+        scoped_files=files,
+        cluster_ids=cluster_ids,
+        required_decision_cluster_ids=_required_decision_clusters(bundle),
+    )
+    if normalized_brief != brief:
+        raise GateError("human design brief is not canonically normalized")
+    brief_digest = artifact_digest(normalized_brief)
+    findings = review_bundle_findings(bundle)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    _write_json(args.output_dir / "normalized.json", result)
+    _write_json(args.output_dir / "review-bundle.json", bundle)
+    _write_json(args.output_dir / "human-design-brief.json", normalized_brief)
     (args.output_dir / "evidence.md").write_text(
-        render_evidence(result, digest, args.run_url, args.artifact_name) + "\n",
+        render_evidence(bundle, bundle_digest, args.run_url, args.artifact_name) + "\n",
         encoding="utf-8",
     )
-    if finding_count:
+    (args.output_dir / "design-review.md").write_text(
+        render_human_design_brief(
+            normalized_brief,
+            bundle,
+            bundle_digest=bundle_digest,
+            brief_digest=brief_digest,
+            run_url=args.run_url,
+            artifact_name=args.artifact_name,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    # Threads exist only for gating findings; advisory findings ride inside
+    # evidence.md (see render_evidence) so they never hold queue-readiness.
+    gating = gating_findings(bundle)
+    if gating:
         _write_json(
             args.output_dir / "review.json",
-            review_payload(result, digest, args.run_url, args.artifact_name),
+            review_payload(bundle, bundle_digest, args.run_url, args.artifact_name),
         )
-
     _append_github_outputs(
         args.github_output,
         {
-            "head_sha": str(result["head_sha"]),
-            "finding_count": finding_count,
-            "artifact_digest": digest,
+            "head_sha": str(bundle["head_sha"]),
+            "finding_count": len(findings),
+            "gating_finding_count": len(gating),
+            "blocking_finding_count": blocking_finding_count(bundle),
+            "human_decision_count": human_decision_count(bundle),
+            "artifact_digest": bundle_digest,
+            "design_brief_digest": brief_digest,
         },
     )
 
@@ -796,22 +1128,134 @@ def _verify_command(args: argparse.Namespace) -> None:
         review_comments=_load_json(args.review_comments),
         head_sha=args.head,
         finding_count=args.finding_count,
+        gating_count=args.gating_count,
         digest=args.digest,
+        brief_digest=args.brief_digest,
     )
 
 
-def _schema_command(_args: argparse.Namespace) -> None:
-    print(json.dumps(result_schema(), separators=(",", ":")))
+def _infra_receipt_command(args: argparse.Namespace) -> None:
+    _write_json(
+        args.output,
+        make_infra_failure_receipt(
+            lens=args.lens,
+            reviewer_id=args.reviewer,
+            head_sha=args.head,
+            failure_class=args.failure_class,
+            detail=args.detail,
+        ),
+    )
+
+
+def _reported_blocked_command(args: argparse.Namespace) -> None:
+    print("true" if reviewer_reported_blocked(args.results) else "false")
+
+
+def _extract_command(args: argparse.Namespace) -> None:
+    raw = args.raw.read_text(encoding="utf-8")
+    extracted = extract_structured_json(raw)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    if extracted is None:
+        args.output.write_text(raw, encoding="utf-8")
+    else:
+        _write_json(args.output, extracted)
+
+
+def _prompt_command(args: argparse.Namespace) -> None:
+    lens_scope: list[str] = []
+    if args.kind in ("lens-review", "lens-retry"):
+        if args.scope is None:
+            raise GateError("lens prompts require --scope for the file manifest")
+        _, lens_scope = _scope_values(_load_json(args.scope))
+    if args.kind == "lens-review":
+        prompt = render_lens_review_prompt(
+            pr_number=args.pr_number,
+            head_sha=args.head,
+            lens=args.lens,
+            reviewer_id=args.reviewer,
+            scoped_files=lens_scope,
+        )
+    elif args.kind == "lens-retry":
+        prompt = render_lens_retry_prompt(
+            pr_number=args.pr_number,
+            head_sha=args.head,
+            lens=args.lens,
+            reviewer_id=args.reviewer,
+            scoped_files=lens_scope,
+        )
+    elif args.kind == "adjudication":
+        prompt = render_adjudication_prompt(
+            pr_number=args.pr_number,
+            head_sha=args.head,
+            cluster_id=args.cluster,
+        )
+    else:
+        if args.bundle is None or args.diff is None or args.scope is None:
+            raise GateError("design brief prompts require --bundle, --diff, and --scope")
+        scope = _expect_mapping(_load_json(args.scope), "scope")
+        diff = args.diff.read_text(encoding="utf-8")
+        bundle = validate_review_bundle(
+            _expect_mapping(_load_json(args.bundle), "review bundle"),
+            scope,
+            diff,
+            expected_phase="final",
+        )
+        if bundle["head_sha"] != args.head:
+            raise GateError("design brief prompt head does not match the reviewed bundle")
+        prompt = render_design_brief_prompt(
+            pr_number=args.pr_number,
+            review_bundle=bundle,
+            review_scope=scope,
+            diff=diff,
+            protected_base_guidance=load_design_brief_guidance(),
+        )
+    if args.output is None:
+        print(prompt, end="")
+    else:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(prompt, encoding="utf-8")
+
+
+def _brief_retry_prompt_command(args: argparse.Namespace) -> None:
+    prompt = render_design_brief_retry_prompt(
+        original_prompt=args.prompt.read_text(encoding="utf-8"),
+        rejected_result=_expect_mapping(
+            _load_json(args.result),
+            "rejected human design brief",
+        ),
+        validation_feedback=args.feedback.read_text(encoding="utf-8"),
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(prompt, encoding="utf-8")
+
+
+def _schema_command(args: argparse.Namespace) -> None:
+    if args.kind == "lens":
+        schema = lens_result_schema(args.lens)
+    elif args.kind == "adjudication":
+        schema = adjudication_result_schema()
+    else:
+        schema = human_design_brief_schema()
+    print(json.dumps(schema, separators=(",", ":")))
+
+
+def _review_matrix_command(_args: argparse.Namespace) -> None:
+    print(json.dumps({"include": review_matrix()}, separators=(",", ":")))
+
+
+def _digest_command(args: argparse.Namespace) -> None:
+    print(artifact_digest(_expect_mapping(_load_json(args.input), "digest input")))
+
+
+def _lens_categories_command(args: argparse.Namespace) -> None:
+    print(", ".join(lens_categories(args.lens)))
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    schema = subparsers.add_parser("schema", help="print the constrained-output JSON schema")
-    schema.set_defaults(handler=_schema_command)
-
-    scope = subparsers.add_parser("scope", help="materialize the exact PR review scope")
+    scope = subparsers.add_parser("scope", help="materialize exact PR scope")
     scope.add_argument("--base", required=True)
     scope.add_argument("--head", required=True)
     scope.add_argument("--scope", type=Path, required=True)
@@ -819,7 +1263,8 @@ def _parser() -> argparse.ArgumentParser:
     scope.set_defaults(handler=_scope_command)
 
     github_scope = subparsers.add_parser(
-        "github-scope", help="validate an API-fetched PR review scope"
+        "github-scope",
+        help="validate API-fetched PR scope",
     )
     github_scope.add_argument("--repository", required=True)
     github_scope.add_argument("--pr-number", type=int, required=True)
@@ -832,35 +1277,152 @@ def _parser() -> argparse.ArgumentParser:
     github_scope.add_argument("--scope", type=Path, required=True)
     github_scope.set_defaults(handler=_github_scope_command)
 
-    normalize = subparsers.add_parser(
-        "normalize", help="validate structured output without rendering unpublished evidence"
-    )
-    normalize.add_argument("--scope", type=Path, required=True)
-    normalize.add_argument("--diff", type=Path, required=True)
-    normalize.add_argument("--result", type=Path, required=True)
-    normalize.add_argument("--output", type=Path, required=True)
-    normalize.set_defaults(handler=_normalize_command)
+    matrix = subparsers.add_parser("review-matrix", help="print the configured 6×2 fan-out")
+    matrix.set_defaults(handler=_review_matrix_command)
 
-    attempt = subparsers.add_parser(
-        "attempt",
-        help="validate one detector response and emit bounded-retry metadata",
-    )
-    attempt.add_argument("--scope", type=Path, required=True)
-    attempt.add_argument("--diff", type=Path, required=True)
-    attempt.add_argument("--result", type=Path, required=True)
-    attempt.add_argument("--output", type=Path, required=True)
-    attempt.add_argument("--feedback", type=Path, required=True)
-    attempt.add_argument("--github-output", type=Path, required=True)
-    attempt.set_defaults(handler=_attempt_command)
+    digest = subparsers.add_parser("digest", help="digest one canonical JSON object")
+    digest.add_argument("--input", type=Path, required=True)
+    digest.set_defaults(handler=_digest_command)
 
-    prepare = subparsers.add_parser("prepare", help="validate and render structured output")
+    categories = subparsers.add_parser(
+        "lens-categories",
+        help="print one lens category set",
+    )
+    categories.add_argument("--lens", required=True)
+    categories.set_defaults(handler=_lens_categories_command)
+
+    schema = subparsers.add_parser("schema", help="print a model return JSON schema")
+    schema.add_argument(
+        "--kind",
+        choices=("lens", "adjudication", "design-brief"),
+        default="lens",
+    )
+    schema.add_argument("--lens")
+    schema.set_defaults(handler=_schema_command)
+
+    prompt = subparsers.add_parser("prompt", help="render one reviewed prompt template")
+    prompt.add_argument(
+        "--kind",
+        choices=("lens-review", "lens-retry", "adjudication", "design-brief"),
+        required=True,
+    )
+    prompt.add_argument("--pr-number", type=int, required=True)
+    prompt.add_argument("--head", required=True)
+    prompt.add_argument("--scope", type=Path)
+    prompt.add_argument("--lens")
+    prompt.add_argument("--reviewer")
+    prompt.add_argument("--cluster")
+    prompt.add_argument("--bundle", type=Path)
+    prompt.add_argument("--diff", type=Path)
+    prompt.add_argument("--output", type=Path)
+    prompt.set_defaults(handler=_prompt_command)
+
+    brief_retry_prompt = subparsers.add_parser(
+        "brief-retry-prompt",
+        help="render one bounded human design-brief correction prompt",
+    )
+    brief_retry_prompt.add_argument("--prompt", type=Path, required=True)
+    brief_retry_prompt.add_argument("--result", type=Path, required=True)
+    brief_retry_prompt.add_argument("--feedback", type=Path, required=True)
+    brief_retry_prompt.add_argument("--output", type=Path, required=True)
+    brief_retry_prompt.set_defaults(handler=_brief_retry_prompt_command)
+
+    extract = subparsers.add_parser("extract", help="extract JSON from raw model output")
+    extract.add_argument("--raw", type=Path, required=True)
+    extract.add_argument("--output", type=Path, required=True)
+    extract.set_defaults(handler=_extract_command)
+
+    for name, handler, help_text in (
+        ("normalize", _normalize_command, "validate one lens result into a receipt"),
+        ("attempt", _attempt_command, "attempt lens validation with retry feedback"),
+    ):
+        command = subparsers.add_parser(name, help=help_text)
+        command.add_argument("--scope", type=Path, required=True)
+        command.add_argument("--diff", type=Path, required=True)
+        command.add_argument("--result", type=Path, required=True)
+        command.add_argument("--prompt", type=Path, required=True)
+        command.add_argument("--output", type=Path, required=True)
+        command.add_argument("--lens", required=True)
+        command.add_argument("--reviewer", required=True)
+        if name == "attempt":
+            command.add_argument("--feedback", type=Path, required=True)
+            command.add_argument("--github-output", type=Path, required=True)
+        command.set_defaults(handler=handler)
+
+    merge = subparsers.add_parser("merge", help="build the preliminary aggregate")
+    merge.add_argument("--scope", type=Path, required=True)
+    merge.add_argument("--diff", type=Path, required=True)
+    merge.add_argument("--results-dir", type=Path, required=True)
+    merge.add_argument("--output", type=Path, required=True)
+    merge.set_defaults(handler=_merge_command)
+
+    adjudication_matrix = subparsers.add_parser(
+        "adjudication-matrix",
+        help="emit selective adjudication targets",
+    )
+    adjudication_matrix.add_argument("--scope", type=Path, required=True)
+    adjudication_matrix.add_argument("--diff", type=Path, required=True)
+    adjudication_matrix.add_argument("--bundle", type=Path, required=True)
+    adjudication_matrix.add_argument("--github-output", type=Path, required=True)
+    adjudication_matrix.set_defaults(handler=_adjudication_matrix_command)
+
+    normalize_adjudication = subparsers.add_parser(
+        "normalize-adjudication",
+        help="validate one adjudication into a receipt",
+    )
+    normalize_adjudication.add_argument("--scope", type=Path, required=True)
+    normalize_adjudication.add_argument("--head", required=True)
+    normalize_adjudication.add_argument("--cluster", required=True)
+    normalize_adjudication.add_argument("--reviewer", required=True)
+    normalize_adjudication.add_argument("--result", type=Path, required=True)
+    normalize_adjudication.add_argument("--prompt", type=Path, required=True)
+    normalize_adjudication.add_argument("--output", type=Path, required=True)
+    normalize_adjudication.set_defaults(handler=_normalize_adjudication_command)
+
+    finalize = subparsers.add_parser("finalize", help="apply adjudications")
+    finalize.add_argument("--scope", type=Path, required=True)
+    finalize.add_argument("--diff", type=Path, required=True)
+    finalize.add_argument("--bundle", type=Path, required=True)
+    finalize.add_argument("--adjudications-dir", type=Path, required=True)
+    finalize.add_argument("--output", type=Path, required=True)
+    finalize.set_defaults(handler=_finalize_command)
+
+    normalize_brief = subparsers.add_parser(
+        "normalize-brief",
+        help="validate the human design brief",
+    )
+    normalize_brief.add_argument("--scope", type=Path, required=True)
+    normalize_brief.add_argument("--diff", type=Path, required=True)
+    normalize_brief.add_argument("--bundle", type=Path, required=True)
+    normalize_brief.add_argument("--result", type=Path, required=True)
+    normalize_brief.add_argument("--output", type=Path, required=True)
+    normalize_brief.set_defaults(handler=_normalize_brief_command)
+
+    attempt_brief = subparsers.add_parser(
+        "attempt-brief",
+        help="validate one human design brief with bounded correction feedback",
+    )
+    attempt_brief.add_argument("--scope", type=Path, required=True)
+    attempt_brief.add_argument("--diff", type=Path, required=True)
+    attempt_brief.add_argument("--bundle", type=Path, required=True)
+    attempt_brief.add_argument("--result", type=Path, required=True)
+    attempt_brief.add_argument("--output", type=Path, required=True)
+    attempt_brief.add_argument("--feedback", type=Path, required=True)
+    attempt_brief.add_argument("--github-output", type=Path, required=True)
+    attempt_brief.set_defaults(handler=_attempt_brief_command)
+
+    prepare = subparsers.add_parser(
+        "prepare",
+        help="render final review and design evidence",
+    )
     prepare.add_argument("--scope", type=Path, required=True)
     prepare.add_argument("--diff", type=Path, required=True)
-    prepare.add_argument("--result", type=Path, required=True)
+    prepare.add_argument("--bundle", type=Path, required=True)
+    prepare.add_argument("--brief", type=Path, required=True)
     prepare.add_argument("--output-dir", type=Path, required=True)
     prepare.add_argument("--github-output", type=Path, required=True)
-    prepare.add_argument("--artifact-name", default=None)
-    prepare.add_argument("--run-url", default=None)
+    prepare.add_argument("--artifact-name")
+    prepare.add_argument("--run-url")
     prepare.set_defaults(handler=_prepare_command)
 
     verify = subparsers.add_parser("verify", help="verify exact GitHub evidence")
@@ -869,9 +1431,35 @@ def _parser() -> argparse.ArgumentParser:
     verify.add_argument("--review-comments", type=Path, required=True)
     verify.add_argument("--head", required=True)
     verify.add_argument("--finding-count", type=int, required=True)
+    verify.add_argument("--gating-count", type=int, required=True)
     verify.add_argument("--digest", required=True)
+    verify.add_argument("--brief-digest", required=True)
     verify.set_defaults(handler=_verify_command)
 
+    infra = subparsers.add_parser(
+        "infra-receipt",
+        help="record a seat's infrastructure failure instead of a verdict",
+    )
+    infra.add_argument("--lens", required=True)
+    infra.add_argument("--reviewer", required=True)
+    infra.add_argument("--head", required=True)
+    infra.add_argument("--failure-class", required=True, choices=INFRA_FAILURE_CLASSES)
+    infra.add_argument("--detail", required=True)
+    infra.add_argument("--output", type=Path, required=True)
+    infra.set_defaults(handler=_infra_receipt_command)
+
+    reported_blocked = subparsers.add_parser(
+        "reported-blocked",
+        help="classify whether structured reviewer output reported blocked inspection",
+    )
+    reported_blocked.add_argument(
+        "--result",
+        dest="results",
+        type=Path,
+        action="append",
+        required=True,
+    )
+    reported_blocked.set_defaults(handler=_reported_blocked_command)
     return parser
 
 
@@ -880,7 +1468,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     try:
         args.handler(args)
     except GateError as error:
-        raise SystemExit(f"footgun review gate failed: {error}") from error
+        raise SystemExit(f"review gate failed: {error}") from error
     return 0
 
 

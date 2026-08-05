@@ -185,18 +185,16 @@ Deeper pages: [Processors](processors.md) · [System execution](system-execution
 graph TB
     subgraph "Application layer"
         RT["ArchetypeRuntime"]
-        RA["RuntimeApplication"]
-        GW["CommandGateway"]
-        Families["World · Mutation · Simulation · Query<br/>Commands · Audit · Missions · Physical AI · …"]
+        Disp["CommandDispatcher"]
+        Families["world · commands · activities · domain families"]
     end
 
     subgraph "Core"
         Engine["World · System · Query · Update · Store"]
     end
 
-    RT --> RA
-    GW --> RA
-    RA --> Families
+    RT --> Disp
+    Disp --> Families
     Families --> Engine
 ```
 

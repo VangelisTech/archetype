@@ -5,13 +5,16 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from archetype.missions.coding_agents.contracts import CodingAgentDriver
-    from archetype.missions.sandboxes import SandboxBackend
+    from archetype.missions.critics.contracts import CriticDriver
+    from archetype.missions.sandboxes import SandboxBackend, SandboxEventObserver
 
 
 @dataclass(frozen=True)
@@ -38,6 +41,82 @@ class RepositoryPublicationPolicy(StrEnum):
     COMMIT_AND_PUSH = "commit_and_push"
 
 
+def mission_episode_id(world_id: object, mission_id: int) -> str:
+    """Derive the persistent episode identity for one submitted Mission."""
+
+    world = str(world_id).strip()
+    if not world:
+        raise ValueError("Mission episode identity requires a non-empty world_id")
+    if mission_id < 1:
+        raise ValueError("Mission episode identity requires a positive mission_id")
+    material = json.dumps(
+        {
+            "kind": "archetype.missions.episode",
+            "mission_id": mission_id,
+            "schema_version": 1,
+            "world_id": world,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return f"mission-episode-{hashlib.sha256(material).hexdigest()}"
+
+
+@dataclass(frozen=True)
+class CriticPolicy:
+    """Stable, digestible policy for one independent exact-head review."""
+
+    policy_id: str = "archetype.exact-head"
+    version: str = "1"
+    perspective: str = "repository-correctness"
+    information_view: str = "task-diff-validators"
+    driver: str = "codex"
+    model: str = ""
+    sampling: str = "provider-default"
+    max_reviews: int = 2
+    timeout_seconds: int = 45 * 60
+    output_schema_version: int = 1
+    max_output_chars: int = 16_000
+    max_subject_bytes: int = 4 << 20
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "policy_id",
+            "version",
+            "perspective",
+            "information_view",
+            "driver",
+            "sampling",
+        ):
+            if not str(getattr(self, field_name)).strip():
+                raise ValueError(f"critic {field_name} must not be empty")
+        if self.max_reviews < 1:
+            raise ValueError("critic max_reviews must be positive")
+        if self.timeout_seconds < 1:
+            raise ValueError("critic timeout_seconds must be positive")
+        if self.output_schema_version < 1:
+            raise ValueError("critic output_schema_version must be positive")
+        if self.max_output_chars < 1:
+            raise ValueError("critic max_output_chars must be positive")
+        if self.max_subject_bytes < 1:
+            raise ValueError("critic max_subject_bytes must be positive")
+        if self.information_view != "task-diff-validators":
+            raise ValueError("unsupported critic information_view")
+        if self.sampling != "provider-default":
+            raise ValueError("unsupported critic sampling policy")
+
+    @property
+    def digest(self) -> str:
+        """Return the canonical identity of this atomic policy unit."""
+
+        payload = {
+            field_name: getattr(self, field_name) for field_name in self.__dataclass_fields__
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+
 @dataclass(frozen=True)
 class AgentMissionConfig:
     """Process configuration bound once to a mission runtime handle."""
@@ -45,15 +124,21 @@ class AgentMissionConfig:
     sandbox_backend: SandboxBackend
     sandbox_environment: str
     driver: CodingAgentDriver | None = None
+    critic_driver: CriticDriver | None = None
     workspace: str = "/workspace/repo"
+    critic_workspace: str = "/workspace/review"
     model: str = ""
     max_ticks: int = 100
+    checkpoint_after_dispatch: bool = True
+    on_sandbox_event: SandboxEventObserver | None = None
 
     def __post_init__(self) -> None:
         if not self.sandbox_environment.strip():
             raise ValueError("sandbox_environment must be a pinned identity")
         if not self.workspace.startswith("/") or self.workspace == "/":
             raise ValueError("workspace must be a non-root absolute path")
+        if not self.critic_workspace.startswith("/") or self.critic_workspace == "/":
+            raise ValueError("critic_workspace must be a non-root absolute path")
         if self.max_ticks < 1:
             raise ValueError("AgentMissionConfig.max_ticks must be positive")
 
@@ -68,6 +153,7 @@ class AgentTask:
     depends_on: tuple[str, ...] = ()
     max_dispatches: int = 3
     publication_policy: RepositoryPublicationPolicy = RepositoryPublicationPolicy.COMMIT_AND_PUSH
+    critic_policy: CriticPolicy = CriticPolicy()
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -150,6 +236,15 @@ class SubmittedMission:
 
     mission_id: int
     task_ids: tuple[tuple[str, int], ...]
+    episode_id: str
+    repository: str = ""
+    branch: str = ""
+    base_ref: str = "main"
+    world_id: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.episode_id.strip():
+            raise ValueError("submitted mission episode_id must not be empty")
 
     def task_id(self, name: str) -> int:
         try:
@@ -175,6 +270,7 @@ class MissionResult:
     """Terminal mission projection."""
 
     mission_id: int
+    episode_id: str
     status: str
     repository: str
     branch: str

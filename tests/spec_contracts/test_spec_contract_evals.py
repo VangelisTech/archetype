@@ -23,7 +23,7 @@ def _runtime_import_result(tmp_path, monkeypatch, source_text):
 
     return next(
         result
-        for result in spec_contracts.task_runtime_gate_only_boundary()
+        for result in spec_contracts.task_runtime_dispatcher_boundary()
         if result.grader_name == "runtime_app_imports"
     )
 
@@ -85,14 +85,14 @@ def test_runtime_gate_uses_a_dotted_app_boundary(tmp_path, monkeypatch, source_t
 @pytest.mark.parametrize(
     "source_text",
     [
-        "import archetype.app.evaluation.service\n",
-        "from archetype.app.evaluation.service import EvaluationResult\n",
+        "import archetype.app.missions.service\n",
+        "from archetype.app.missions.service import MissionService\n",
         "from typing import TYPE_CHECKING\n"
         "if TYPE_CHECKING:\n"
-        "    import archetype.app.evaluation.service\n",
+        "    import archetype.app.missions.service\n",
         "from typing import TYPE_CHECKING\n"
         "if TYPE_CHECKING:\n"
-        "    from archetype.app.evaluation.service import EvaluationResult\n",
+        "    from archetype.app.missions.service import MissionService\n",
     ],
 )
 def test_runtime_gate_rejects_concrete_service_imports_even_when_type_only(
@@ -101,7 +101,7 @@ def test_runtime_gate_rejects_concrete_service_imports_even_when_type_only(
     result = _runtime_import_result(tmp_path, monkeypatch, source_text)
 
     assert result.passed is False
-    assert "archetype.app.evaluation.service" in result.details
+    assert "archetype.app.missions.service" in result.details
 
 
 @pytest.mark.parametrize(
@@ -109,13 +109,10 @@ def test_runtime_gate_rejects_concrete_service_imports_even_when_type_only(
     [
         "from typing import TYPE_CHECKING\n"
         "if TYPE_CHECKING:\n"
-        "    import archetype.app.evaluation.interfaces\n",
-        "from typing import TYPE_CHECKING\n"
-        "if TYPE_CHECKING:\n"
-        "    from archetype.app.research.contracts import AutoResearchConfig\n",
+        "    from archetype.research.models import AutoResearchConfig\n",
     ],
 )
-def test_runtime_gate_allows_declared_contract_imports_under_type_checking(
+def test_runtime_gate_allows_canonical_family_imports_under_type_checking(
     tmp_path, monkeypatch, source_text
 ) -> None:
     result = _runtime_import_result(tmp_path, monkeypatch, source_text)

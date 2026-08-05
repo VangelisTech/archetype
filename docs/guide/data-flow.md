@@ -1,15 +1,16 @@
 # Data Flow
 
 World state has separate read and write facades in core, while the application
-layer adds actor-free product semantics and an optional authorization boundary
-for untrusted access.
+layer adds product workflow semantics and the API authenticates untrusted
+access.
 
 The important boundary is:
 
-- App families and `iRuntimeApplication` do not know about `ActorCtx`.
-- `iCommandGateway` authorizes untrusted calls, delegates to
-  `iRuntimeApplication`, records access evidence, and returns safe results.
-- Trusted runtime calls `iRuntimeApplication` directly.
+- App families and registered handlers do not know about `ActorCtx`.
+- API routes authenticate an actor, construct exact operation models, and
+  enter actor-aware dispatcher methods.
+- Trusted runtime handles construct the same models and enter actor-free
+  dispatcher methods.
 
 ## Core Read/Write Split
 
@@ -31,7 +32,11 @@ The important boundary is:
 Trusted runtime:
 
 ```text
-RuntimeWorld -> iRuntimeApplication -> owning family -> safe result
+RuntimeWorld
+    -> construct exact family operation
+    -> CommandDispatcher.apply(exact operation)
+    -> OperationRegistry handler
+    -> safe result
 ```
 
 Untrusted adapter:
@@ -39,26 +44,30 @@ Untrusted adapter:
 ```text
 API / untrusted caller
     |
-iCommandGateway.<method>(ctx, ...)
+authenticate ActorCtx
     |
-guardrail_allow(command, ctx)
+construct exact family operation
     |
-delegate to iRuntimeApplication
+CommandDispatcher.apply_as(ctx, operation)
     |
-iAuditJournal.record_access(event)
+OperationRegistry -> Policy preauthorization/quotas -> registered handler
     |
-return result
+commands.AuditLog.record_access(bounded evidence)
+    |
+return safe result
 ```
 
 Examples:
 
-- `create_world` delegates to `iWorldService` and returns `WorldInfo`.
-- `create_entity` delegates to `iMutationService` and returns `entity_id`.
-- `run` delegates to `iSimulationService` and returns `RunResult`.
-- `query_archetype` delegates to `iQueryService` and returns a DataFrame.
+- `create_world` delegates to `iWorldLifecycle` and returns `WorldInfo`.
+- `create_entity` calls `archetype.world.mutation` through `iWorldRegistry`
+  and returns `entity_id`.
+- `run` calls `archetype.world.simulation` and returns `RunResult`.
+- `query_archetype` calls `archetype.world.query` and returns a DataFrame.
 
-Untrusted reads are gated. Trusted runtime and internal workflows use the same
-actor-free application/query semantics directly.
+Untrusted reads are gated. Trusted runtime and untrusted adapters resolve the
+same exact registration and handler; only actor-aware entry runs policy and
+access evidence.
 
 ## Tick-Deferred Path
 
@@ -66,24 +75,29 @@ When a caller wants work applied at a tick boundary, the commands family durably
 admits it. An untrusted caller is authorized before admission:
 
 ```text
-RuntimeApplication or iCommandGateway after authorization
+Runtime or authenticated API adapter
     |
-iCommandScheduler.admit(world_id, cmd, origin/principal)
+CommandDispatcher.defer / defer_as(exact operation, DurableOptions)
     |
-iCommandLedger (durable PENDING)
+OperationRegistry exact durable eligibility; Policy for actor-aware entry
     |
-SimulationService.step()
+CommandScheduler.admit(operation, options, origin/principal snapshot)
     |
-iCommandDispatcher.lease_and_stage_due(world_id, tick)
+control catalog (durable PENDING)
     |
-MutationService / WorldService
+AsyncWorld.step() construction-injected materializer
+    |
+CommandScheduler.materialize(actual_world, tick)
+    |
+registered DurableOperation -> archetype.world.handlers.materialize_locked
     |
 AsyncWorld internal mutation -> manifest publication + command settlement
 ```
 
-No commands-family operation accepts `ActorCtx`. The gateway converts a
-principal into an immutable admission snapshot. Commands are ordered by a
-durable per-world `(scheduled_tick, priority, sequence)` key.
+Only the actor-aware `CommandDispatcher` entry points accept `ActorCtx`; the
+scheduler receives an immutable principal/origin snapshot, never the live
+actor object. Commands are ordered by a durable per-world
+`(scheduled_tick, priority, sequence)` key.
 
 ## Internal Writes
 
@@ -107,28 +121,35 @@ World lifecycle operations are direct gated methods:
 
 - `create_world`: admin only; returns `WorldInfo`.
 - `fork_world`: operator/admin; returns `WorldInfo`.
-- `destroy_world`: operator/admin; removes the live world only.
+- `destroy_world`: operator/admin; begins exact-world close, reconciles committed
+  work, cancels that world's unsettled commands, and publishes durable
+  destroyed state before releasing the live identity.
 
 Destroy does not delete storage or audit rows. See [World Lifecycle](world-lifecycle.md).
 
 ## Audit flow
 
-Gateway calls emit access events. Product transitions append outbox events in
-the transaction that establishes their authority. The audit projector exports
-deduplicated events to Iceberg and exposes a watermark. Command-ledger history
-is operational truth; audit history is the analytical projection.
+Actor-aware dispatcher calls attempt bounded access events through
+commands-owned `AuditLog`. Product transitions append outbox events in the
+transaction that establishes their authority. `AuditLog` exports deduplicated
+events to Iceberg; scheduler/control-catalog outbox progress exposes the
+projection watermark. Command-ledger history is operational truth; audit
+history is the analytical projection.
 
-`RuntimeWorld.history(...)` reads through RuntimeApplication. API history reads
-authorize through the gateway before invoking the same application operation.
+`RuntimeWorld.history(...)` uses trusted dispatcher entry. API history reads
+authorize through actor-aware entry. Both adapters construct the registered
+`GetAuditHistory` operation and reach the same commands-owned projection.
 
 See [Audit Log](audit-log.md).
 
 ## Source Reference
 
-- Gateway: `src/archetype/app/gateway/service.py`
-- Durable command scheduler: `src/archetype/app/commands/service.py`
-- Simulation service: `src/archetype/app/world/simulation.py`
-- Query service: `src/archetype/app/query/service.py`
-- RBAC guard: `src/archetype/app/gateway/auth/guard.py`
+- Runtime adapter: `src/archetype/runtime/`
+- Actor-aware transport: `src/archetype/api/`
+- Governed dispatcher and durable scheduler: `src/archetype/commands/`
+- Managed simulation: `src/archetype/world/simulation.py`
+- Durable world reads: `src/archetype/world/query.py`
+- World mutation adapters: `src/archetype/world/mutation.py`
+- Instance-owned RBAC and quotas: `src/archetype/commands/policy.py`
 - Querier: `src/archetype/core/aio/async_querier.py`
 - Updater: `src/archetype/core/aio/async_updater.py`

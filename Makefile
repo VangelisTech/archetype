@@ -24,9 +24,12 @@ help:
 	@echo "  make static         All version-independent blocking validation"
 	@echo "  make contract-audit Validate normative sources and executable oracles"
 	@echo "  make benchmark-audit Validate benchmark ownership and policies"
+	@echo "  make operational-audit Validate operational scenario ownership and policies"
 	@echo "  make architecture-audit  Enforce dependency and encapsulation policy"
 	@echo "  make observability-audit Enforce signal safety and family dispositions"
+	@echo "  make lockfile-audit  Scan the locked dependency graph for known vulnerabilities"
 	@echo "  make version-inventory-audit  Validate pinned execution-environment inventory"
+	@echo "  make python-api-audit  Validate committed generated Python reference"
 	@echo "  make lint-fix       Lint and auto-fix"
 	@echo "  make check          Format + lint"
 	@echo "  make complexity     Cyclomatic complexity / maintainability report (radon)"
@@ -57,6 +60,13 @@ help:
 	@echo "  make eval-conformance  Blocking public-boundary conformance profile"
 	@echo "  make eval-reliability  Blocking retry/crash/recovery profile"
 	@echo "  make eval-capability  Blocking architectural capability profile"
+	@echo "  make examples-local  Run Tier-1 semantic examples in isolated storage"
+	@echo "  make operational-runtime  Run the shipped runtime/API/CLI loopback scenario"
+	@echo "  make operational-wheel  Run representative scenarios against the built wheel"
+	@echo "  make operational-mission  Run the credential-free exact-head mission scenario"
+	@echo "  make operational-external  Require selected Tier-5/6 provider evidence"
+	@echo "  make operational-release  Run credential-free release evidence against one wheel"
+	@echo "  make operational-release-modal  Run the paid live Modal/Codex wheel evidence"
 	@echo "  make test-infra     Run external-infrastructure tests (requires configured service)"
 	@echo ""
 	@echo "Build & Release:"
@@ -64,7 +74,7 @@ help:
 	@echo "  make package-smoke  Install and probe the built wheel outside the checkout"
 	@echo "  make verify-pr      Complete pull-request profile"
 	@echo "  make verify-full    Main-branch profile"
-	@echo "  make verify-release Installed-artifact release profile"
+	@echo "  make verify-release Source profile plus exact installed-artifact release evidence"
 	@echo "  make release-check  Full pre-release validation"
 	@echo "  make publish-test   Publish to TestPyPI"
 	@echo "  make publish        Publish to PyPI"
@@ -100,7 +110,7 @@ format:
 	@uv run ruff format $(RUFF_PATHS)
 
 .PHONY: lint
-lint: lazy-audit architecture-audit observability-audit version-inventory-audit api-boundary-audit idempotency-audit gate-coverage-audit redaction-audit
+lint: lazy-audit architecture-audit observability-audit lockfile-audit version-inventory-audit python-api-audit api-boundary-audit idempotency-audit gate-coverage-audit operational-audit
 	@uv run ruff check $(RUFF_PATHS)
 
 .PHONY: lint-fix
@@ -127,9 +137,17 @@ contract-audit:
 benchmark-audit:
 	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/validate_benchmarks.py
 
+.PHONY: operational-audit
+operational-audit:
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/validate_operational_scenarios.py
+
 .PHONY: static
 static: format-check lint typecheck lock-check contract-audit benchmark-audit
 	@echo "Static validation passed"
+
+.PHONY: lockfile-audit
+lockfile-audit:
+	@uv run python scripts/audit_lockfile.py
 
 # Lazy-evaluation audit: gate .collect()/.to_pylist() call sites against
 # lazy_audit.toml. Every premature materialization is a contract exception
@@ -141,6 +159,10 @@ lazy-audit:
 .PHONY: api-boundary-audit
 api-boundary-audit:
 	@uv run python scripts/check_api_import_boundaries.py
+
+.PHONY: python-api-audit
+python-api-audit:
+	@PYTHONPATH=$(PYTHONPATH) uv run python scripts/generate_python_api_docs.py --check
 
 .PHONY: architecture-audit
 architecture-audit:
@@ -167,10 +189,6 @@ idempotency-audit:
 .PHONY: gate-coverage-audit
 gate-coverage-audit:
 	@PYTHONPATH=$(PYTHONPATH) uv run python scripts/check_gate_coverage.py
-
-.PHONY: redaction-audit
-redaction-audit:
-	@uv run python scripts/check_pre_durability_redaction.py
 
 # Cyclomatic complexity + maintainability report.
 # Uses uvx so radon stays out of the project lock file.
@@ -354,28 +372,147 @@ build: clean
 package-smoke: build
 	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/package_smoke.py dist
 
+.PHONY: examples-local
+examples-local:
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
+		--mode source --cadence pr --kind example --max-tier 1 \
+		--out operational-source-results.json
+
 .PHONY: examples-smoke
-examples-smoke:
-	@set -e; for f in examples/[0-9][0-9]_*.py; do \
-		echo "Running $$f"; \
-		if [ "$$f" = "examples/11_coding_agent_mission.py" ]; then \
-			PYTHONPATH=$(PYTHONPATH) uv run python "$$f" --dry-run; \
-		else \
-			PYTHONPATH=$(PYTHONPATH) uv run python "$$f"; \
+examples-smoke: examples-local
+	@echo "Semantic example scenarios passed"
+
+OPERATIONAL_BUILD_COMMAND ?= $(MAKE) --no-print-directory build
+OPERATIONAL_DIST_DIR ?= dist
+OPERATIONAL_WHEEL_RESULTS ?= operational-results.json
+OPERATIONAL_COMMANDS_RESULTS ?= operational-commands-source-results.json
+OPERATIONAL_RUNTIME_RESULTS ?= operational-runtime-source-results.json
+OPERATIONAL_RELEASE_RESULTS ?= operational-release-results.json
+RELEASE_ARTIFACT_MANIFEST ?= release-artifact.json
+
+.PHONY: operational-runtime
+operational-runtime:
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
+		--mode source --cadence pr --max-tier 1 --require-run \
+		--scenario dogfood.runtime.loopback \
+		--out "$(OPERATIONAL_RUNTIME_RESULTS)"
+
+.PHONY: operational-commands
+operational-commands:
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
+		--mode source --cadence pr --max-tier 1 --require-run \
+		--scenario dogfood.commands.local \
+		--out "$(OPERATIONAL_COMMANDS_RESULTS)"
+
+.PHONY: operational-wheel
+operational-wheel:
+	@build_status=0; \
+		$(OPERATIONAL_BUILD_COMMAND) || build_status=$$?; \
+		wheel=""; \
+		if [ "$$build_status" -eq 0 ]; then \
+			wheel=$$(find "$(OPERATIONAL_DIST_DIR)" -maxdepth 1 -name '*.whl' -print -quit 2>/dev/null); \
 		fi; \
-	done
+		if [ -z "$$wheel" ]; then \
+			wheel="$(OPERATIONAL_DIST_DIR)/.missing-operational-wheel.whl"; \
+		fi; \
+		runner_status=0; \
+		PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
+			--mode wheel --cadence pr --max-tier 1 --require-run \
+			--scenario example.00_quickstart \
+			--scenario example.01_world_mutations \
+			--scenario example.02_fork_counterfactual \
+			--scenario example.03_time_travel \
+			--scenario example.06_trajectory_analysis \
+			--scenario example.10_autoresearch \
+			--scenario dogfood.runtime.loopback \
+			--scenario dogfood.commands.local \
+			--scenario dogfood.evaluation.durable_receipt \
+			--scenario dogfood.artifacts.local \
+			--wheel "$$wheel" --out "$(OPERATIONAL_WHEEL_RESULTS)" || runner_status=$$?; \
+		if [ "$$build_status" -ne 0 ]; then \
+			exit "$$build_status"; \
+		fi; \
+		exit "$$runner_status"
+
+.PHONY: operational-mission
+operational-mission:
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
+		--mode source --cadence pr --max-tier 1 --require-run \
+		--scenario dogfood.agent_mission.modal_activity_contracts \
+		--out operational-mission-results.json
+
+.PHONY: operational-external
+operational-external:
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
+		--mode source --cadence release --min-tier 5 --max-tier 6 --require-run \
+		--out operational-external-results.json
+
+# The release workflow builds once after the source profile, package-smokes
+# those exact bytes, records both digests, and never rebuilds before upload.
+.PHONY: release-artifact
+release-artifact:
+	@$(MAKE) --no-print-directory build
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/package_smoke.py "$(OPERATIONAL_DIST_DIR)"
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/release_artifact.py record \
+		--dist "$(OPERATIONAL_DIST_DIR)" --manifest "$(RELEASE_ARTIFACT_MANIFEST)"
+
+.PHONY: verify-release-artifact
+verify-release-artifact:
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/release_artifact.py verify \
+		--dist "$(OPERATIONAL_DIST_DIR)" --manifest "$(RELEASE_ARTIFACT_MANIFEST)"
+
+define RUN_RELEASE_SCENARIOS
+	@wheel=$$(find "$(OPERATIONAL_DIST_DIR)" -maxdepth 1 -name '*.whl' -print -quit 2>/dev/null); \
+		if [ -z "$$wheel" ]; then \
+			echo "release evidence requires one wheel in $(OPERATIONAL_DIST_DIR)"; \
+			exit 1; \
+		fi; \
+		$(2) PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
+			--mode wheel --cadence release --require-run --require-clean \
+			--wheel "$$wheel" $(1)
+endef
+
+.PHONY: operational-release
+operational-release: release-artifact
+	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 4 --out "$(OPERATIONAL_RELEASE_RESULTS)")
+
+.PHONY: operational-release-openai
+operational-release-openai: verify-release-artifact
+	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario example.05_llm_agents --out operational-release-openai-results.json)
+
+.PHONY: operational-release-docker
+operational-release-docker: verify-release-artifact
+	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario dogfood.sandbox.docker --out operational-release-docker-results.json)
+
+.PHONY: operational-release-r2
+operational-release-r2: verify-release-artifact
+	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario dogfood.storage.r2 --out operational-release-r2-results.json)
+
+.PHONY: operational-release-apple
+operational-release-apple: verify-release-artifact
+	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario dogfood.sandbox.apple_container --out operational-release-apple-results.json)
+
+.PHONY: operational-release-modal
+operational-release-modal: verify-release-artifact
+	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario dogfood.agent_mission.modal_live --out operational-release-modal-results.json,ARCHETYPE_MODAL_AGENT_MISSION_LIVE=1)
+
+.PHONY: operational-release-physical-modal-r2
+operational-release-physical-modal-r2: verify-release-artifact
+	$(call RUN_RELEASE_SCENARIOS,--min-tier 0 --max-tier 6 --scenario dogfood.physical_ai.modal_r2_live --out operational-release-physical-modal-r2-results.json,ARCHETYPE_MODAL_PHYSICAL_R2_LIVE=1)
 
 .PHONY: verify-pr
-verify-pr: static test-cov eval-conformance eval-capability package-smoke examples-smoke docs
+verify-pr: static test
 	@echo "PR verification profile passed"
 
 .PHONY: verify-full
-verify-full: verify-pr test-process eval-reliability
+verify-full: static test-cov eval-conformance eval-capability package-smoke examples-smoke operational-runtime operational-commands operational-wheel docs test-process eval-reliability
 	@echo "Full verification profile passed"
 
 .PHONY: verify-release
-verify-release: verify-full
+verify-release: verify-full operational-release
 	@echo "Release verification profile passed"
+
+.NOTPARALLEL: verify-release
 
 .PHONY: release-check
 release-check: sync-dev verify-release

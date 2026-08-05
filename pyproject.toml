@@ -1,6 +1,6 @@
 [project]
 name = "archetype-ecs"
-version = "0.4.1"
+version = "0.5.0"
 description = "Dataframe-first, append-only ECS runtime for simulations and AI agents. Built on Daft with LanceDB time-travel storage."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -18,15 +18,26 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "daft[openai,lance,iceberg]>=0.7.19",
+    # Daft 0.7.19's openai/video extras pin vulnerable Pillow 12.2.0.
+    # Declare those extras' dependencies directly until Daft admits 12.3.0.
+    "daft[lance,iceberg,audio]>=0.7.19",
+    "openai<2.39.0",
+    "numpy<2.4.0",
+    "av>=15.0.0,<17.1.0",
+    "pillow>=12.3.0",
+    "msgpack>=1.2.1",
     "lancedb>=0.22.0",
     "pyiceberg[daft,sql-sqlite]",
     "uuid-utils>=0.11.0",
+    "xxhash>=3.5",
+    "pypdf>=6.14.2",
     "psutil>=5.9",
     "pydantic>=2.0",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
     "typer>=0.9",
+    # Keep Typer's runtime Click resolution past PYSEC-2026-2132.
+    "click>=8.3.3",
     "httpx>=0.27",
     # Observability is vendor-neutral: archetype emits through the OTel API
     # only (archetype._obs). The SDK ships so ARCHETYPE_LOG=debug works out
@@ -43,7 +54,7 @@ benchmark  = ["esper>=2.45"]
 sim        = ["mujoco>=3.2"]
 otlp       = ["opentelemetry-exporter-otlp-proto-http>=1.20"]
 logfire    = ["logfire[fastapi]>=4.32.0"]
-coding-agent = ["modal>=1.5,<2"]
+coding-agent = ["modal==1.5.2"]
 dev        = [
     "pytest>=8.3", "pytest-asyncio>=0.26", "pytest-cov>=5.0",
     "ruff>=0.15,<0.16",  # pinned: 0.15 introduced I001/B007 rule changes; keep local == CI
@@ -58,11 +69,11 @@ docs       = [
     "mkdocs-material>=9.6,<10",
     "mkdocs-mermaid2-plugin",
     "mkdocstrings[python]>=0.27",
-    "pymdown-extensions",
+    "pymdown-extensions>=11.0",
 ]
 
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=83.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
@@ -133,6 +144,9 @@ dev = [
     # explicit host adapter; the published base package remains vendor-neutral.
     "logfire[fastapi]>=4.32.0",
     "python-dotenv>=1.2.2",
+    "setuptools>=83.0.0",
+    # Blocking quality gate for the complete uv lock projection.
+    "pip-audit==2.10.1",
 ]
 
 # Mutation testing. Scoped narrowly: mutmut runs each mutation as a full
@@ -151,7 +165,7 @@ tests_dir = [
 # pytest's [tool.pytest.ini_options].pythonpath puts mutants/src first on
 # sys.path, so the rest of the archetype package has to be staged into
 # mutants/ as well — otherwise tests/conftest.py fails to import
-# archetype.app. mutmut writes the mutated component.py *after*
+# other packages. mutmut writes the mutated component.py *after*
 # also_copy runs, so the unmutated copy here is harmlessly overwritten.
 also_copy = [
     "src/archetype",
@@ -172,9 +186,22 @@ exclude-newer = "2026-06-12T00:00:00Z"
 # admitted explicitly (Everett, 2026-07-14) for the 0.2.0 release.
 [tool.uv.exclude-newer-package]
 daft = "2026-07-11T00:00:00Z"
+# Modal 1.5.2 adds port-scoped Sandbox Connect Tokens required for separately
+# authenticated spectate and takeover viewports.
+modal = "2026-07-11T00:00:00Z"
+synchronicity = "2026-07-11T00:00:00Z"
 # starlette 1.3.1 released 2026-06-12, 9h past the freeze; admitted for the
 # CVE-2026-54283 fix — dependabot alert #95 (security bumps, 2026-07-16).
 starlette = "2026-06-13T00:00:00Z"
+# Security releases admitted past the quarantine ceiling for the next release:
+# Dependabot alerts #116-117 (pypdf), #112 (msgpack), and #98-110 (Pillow).
+pypdf = "2026-06-24T00:00:00Z"
+msgpack = "2026-06-19T00:00:00Z"
+# Security releases admitted for the blocking lockfile audit:
+# GHSA-9xwg-3r6f-jcx2 and PYSEC-2026-3447.
+pymdown-extensions = "2026-06-24T00:00:00Z"
+setuptools = "2026-07-05T00:00:00Z"
+pillow = "2026-07-02T00:00:00Z"
 
 [tool.ruff]
 target-version = "py312"

@@ -21,11 +21,11 @@ Usage:
 import asyncio
 import time
 from dataclasses import dataclass
+from typing import cast
 
 from daft import DataFrame, col
 
-from archetype import ArchetypeRuntime, Component, StorageConfig
-from archetype.core.aio.async_processor import AsyncProcessor
+from archetype import ArchetypeRuntime, AsyncProcessor, Component, StorageConfig
 from archetype.core.hooks import (
     OnComponentAdded,
     OnComponentRemoved,
@@ -78,28 +78,31 @@ class RoverProcessor(AsyncProcessor):
         )
 
 
-async def main() -> None:
-    storage = StorageConfig(uri="./archetype_data", namespace="hooks_demo")
+async def run_demo(storage_uri: str, *, verbose: bool = False) -> dict[str, object]:
+    """Exercise hook ordering, isolation, removal, and final world state."""
+    storage = StorageConfig(uri=storage_uri, namespace="hooks_demo")
     audit_log: list[str] = []
     metrics: list[TickMetric] = []
     tick_started_at: dict[int, float] = {}
+    debug_ticks: list[int] = []
+    advisory_failure_attempts = 0
 
     # ── Hook handlers (all async) ────────────────────────────────────────
 
     async def audit_spawn(event: OnSpawn) -> None:
         components = ", ".join(type(component).__name__ for component in event.components)
-        audit_log.append(f"spawn entity={event.entity_id} components=[{components}]")
+        audit_log.append(f"spawn:[{components}]")
 
     async def audit_despawn(event: OnDespawn) -> None:
-        audit_log.append(f"despawn entity={event.entity_id}")
+        audit_log.append("despawn")
 
     async def audit_component_added(event: OnComponentAdded) -> None:
         components = ", ".join(type(component).__name__ for component in event.components)
-        audit_log.append(f"add_components entity={event.entity_id} components=[{components}]")
+        audit_log.append(f"add_components:[{components}]")
 
     async def audit_component_removed(event: OnComponentRemoved) -> None:
         names = ", ".join(component_type.__name__ for component_type in event.component_types)
-        audit_log.append(f"remove_components entity={event.entity_id} components=[{names}]")
+        audit_log.append(f"remove_components:[{names}]")
 
     async def start_timer(event: PreTick) -> None:
         tick_started_at[event.tick] = time.perf_counter()
@@ -112,7 +115,7 @@ async def main() -> None:
         for signature, df in event.results.items():
             if Battery not in signature:
                 continue
-            rows = df.select("battery__percent").collect().to_pylist()
+            rows = df.where(col("is_active")).select("battery__percent").collect().to_pylist()
             battery_levels.extend(row["battery__percent"] for row in rows)
 
         metrics.append(
@@ -125,7 +128,14 @@ async def main() -> None:
         )
 
     async def temporary_debug_trace(event: PreTick) -> None:
-        print(f"debug hook: tick {event.tick} is starting")
+        debug_ticks.append(event.tick)
+        if verbose:
+            print(f"debug hook: tick {event.tick} is starting")
+
+    async def advisory_failure(_event: PreTick) -> None:
+        nonlocal advisory_failure_attempts
+        advisory_failure_attempts += 1
+        raise RuntimeError("demonstration observer failure")
 
     # ── World setup with hooks at construction ───────────────────────────
 
@@ -155,12 +165,16 @@ async def main() -> None:
             Battery(percent=55.0),
         )
 
-        # Add a temporary debug hook post-activation to get a removable handle
+        # Advisory hooks are isolated: this failure cannot suppress the tick.
+        failure_handle = await world.add_hook(PreTick, advisory_failure)
+
+        # Add a temporary debug hook post-activation to get a removable handle.
         debug_handle = await world.add_hook(PreTick, temporary_debug_trace)
 
         await world.step()
 
-        # Remove the temporary debug hook — subsequent ticks won't print the trace
+        # Removed hooks do not fire on subsequent ticks.
+        await world.remove_hook(failure_handle)
         await world.remove_hook(debug_handle)
 
         await world.add_components(rover_a, Payload(label="soil sample"))
@@ -170,33 +184,57 @@ async def main() -> None:
         await world.despawn(rover_b)
         await world.step()
 
+        info = await world.info()
         rows = (
             (await world.query(Position, Velocity, Battery))
+            .where(col("tick") == info.tick - 1)
             .select("entity_id", "position__x", "position__y", "battery__percent")
             .collect()
             .to_pylist()
         )
 
+    return {
+        "lifecycle_order": audit_log,
+        "tick_metrics": [
+            {
+                "tick": metric.completed_tick,
+                "active": metric.active_rovers,
+                "low_battery": metric.low_battery_rovers,
+            }
+            for metric in metrics
+        ],
+        "durations_recorded": len(metrics),
+        "advisory_failure_attempts": advisory_failure_attempts,
+        "temporary_hook_ticks": debug_ticks,
+        "final_rovers": [
+            {
+                "position": [row["position__x"], row["position__y"]],
+                "battery": row["battery__percent"],
+            }
+            for row in rows
+        ],
+    }
+
+
+async def main() -> None:
+    result = await run_demo("./archetype_data", verbose=True)
     print("Lifecycle audit")
-    for entry in audit_log:
+    for entry in cast(list[str], result["lifecycle_order"]):
         print(f"  - {entry}")
 
     print("\nTick metrics")
-    for metric in metrics:
+    for metric in cast(list[dict[str, int]], result["tick_metrics"]):
         print(
-            f"  tick={metric.completed_tick}: "
-            f"{metric.duration_ms:.2f} ms, "
-            f"active={metric.active_rovers}, "
-            f"low_battery={metric.low_battery_rovers}"
+            f"  tick={metric['tick']}: "
+            f"active={metric['active']}, "
+            f"low_battery={metric['low_battery']}"
         )
 
     print("\nFinal active rovers")
-    for row in rows:
-        print(
-            f"  entity={row['entity_id']}: "
-            f"position=({row['position__x']:.1f}, {row['position__y']:.1f}), "
-            f"battery={row['battery__percent']:.1f}%"
-        )
+    for rover in cast(list[dict[str, object]], result["final_rovers"]):
+        position = cast(list[float], rover["position"])
+        battery = cast(float, rover["battery"])
+        print(f"  position=({position[0]:.1f}, {position[1]:.1f}), battery={battery:.1f}%")
 
 
 if __name__ == "__main__":

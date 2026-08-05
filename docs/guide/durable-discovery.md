@@ -29,6 +29,7 @@ lifts the single-host limit. The catalog is
 |---|---|
 | World identity (`world_id`, `name`, `run_id`, `parent_world_id`) | Authoritative. Registration failure fails `create_world`/`fork_world`. |
 | World status (`active`, `destroyed`) | Authoritative for catalog state; destroyed worlds stay discoverable (their rows are still queryable; append-only). |
+| Immutable writer mode (`resumable`, `cleanup_only`) | Authoritative for mutable reconstruction. Legacy rows default to `resumable`; cleanup-only and unknown future modes remain discoverable and queryable but fail closed before mutable resume opens storage or fences a writer. |
 | Tick head | Advisory until A2 manifests land. Post-step updates log loudly on failure but never fail a tick whose data-plane writes succeeded. |
 | Archetype signatures (component names, schema descriptor, fingerprint) | Authoritative descriptor for cold reads; guarded by fingerprint check (section 5). |
 
@@ -52,31 +53,74 @@ other.
 The catalog opens with WAL journaling, `synchronous=FULL`, a busy timeout,
 and `BEGIN IMMEDIATE` transactions. Concurrent processes racing to register
 the same world converge on exactly one row: identical re-registration is a
-no-op; a differing record for the same `world_id` raises
+no-op; a differing immutable identity, including writer mode, for the same
+`world_id` raises
 `CatalogConflictError`.
 
-## 3. Gated discovery API
+Remote cleanup-only registration is a versioned deployment handshake, not an
+ordinary Directory write. The public v8 Worker route is rewritten to a
+Directory-internal host and route that no older outer Worker or older resident
+Directory recognizes, so either direction of rollout skew rejects before the
+Directory mutates SQL. After the Directory write, the outer Worker MUST mirror
+the status into the per-world control authority before returning separate
+catalog-v8 and gateway-v8 confirmations. A client accepts the record only when
+the Directory and per-world authority both confirm `status="active"`, both
+protocol confirmations are present, and the exact
+`writer_mode="cleanup_only"` marker is present.
 
-Two read-gated operations on `iCommandGateway`:
+Once the registration `POST` is issued, every uncertain outcome is treated as
+possibly committed. This includes a non-success response, transport failure,
+unparsable or incomplete response, and caller cancellation. The client MUST
+finish cancellation-resistant reconciliation and exact retirement before
+propagating the original outcome. Retirement uses the v8 exact-world route and
+carries the complete `WorldRecord`: the immutable identity above, requested
+`status="destroyed"`, and the exact tick head.
+
+The Directory applies retirement as one identity-checked transaction:
+
+- an absent row becomes a destroyed tombstone for the supplied identity;
+- the exact active row becomes destroyed;
+- the exact destroyed row is an idempotent success; and
+- a different immutable identity conflicts without mutation.
+
+The destroyed state is monotonic in both the Directory and per-world authority.
+The Worker mirrors the Directory result and returns success only when both
+authorities confirm destroyed. Therefore an absent reconciliation read cannot
+open a race with a delayed registration write: the tombstone prevents that
+write from resurrecting the cleanup-only writer. This exact retirement
+contract is part of protocol v8 and introduces no later protocol version or
+additional data migration.
+
+## 3. Governed discovery operations
+
+Two exact read operations share trusted and actor-aware dispatcher entry:
 
 ```python
-async def discover_worlds(
-    ctx: ActorCtx, storage_config: StorageConfig
-) -> list[WorldInfo]: ...
+worlds = await dispatcher.apply_as(
+    ctx,
+    DiscoverWorlds(storage_config=storage_config),
+)
 
-async def open_world_readonly(
-    ctx: ActorCtx, storage_config: StorageConfig, world_id: str | UUID
-) -> WorldInfo: ...
+info = await dispatcher.apply_as(
+    ctx,
+    OpenWorldReadonly(
+        storage_config=storage_config,
+        world_id=world_id,
+    ),
+)
 ```
 
-- `discover_worlds` is gated as `LIST_WORLDS`. Unlike `list_worlds` (live
+- `discover_worlds` requires the registered `discover_worlds` permission.
+  Unlike `list_worlds` (live
   process registry), it answers from the catalog: a fresh process sees every
   world ever registered against that storage identity, including destroyed
   ones.
-- `open_world_readonly` is gated as `GET_WORLD_INFO`. It returns the world's
+- `open_world_readonly` requires the registered `open_world_readonly`
+  permission. It returns the world's
   durable descriptor as the existing `WorldInfo` boundary type and raises
   `KeyError` for unrecorded worlds. It never constructs a live mutable
-  world — that is `resume_world` (gated as `CREATE_WORLD`; see
+  world — that is `ResumeWorld` (registered with the `resume_world`
+  permission; see
   [World Lifecycle](world-lifecycle.md) § Resume).
 - Both discovery operations retain the resolved world-to-storage coordinates
   for dependent read services. In particular, audit projection can discover
@@ -103,13 +147,12 @@ for every component the writing process defined.
 
 ```python
 # Process B, sharing nothing with the writer but the storage config:
-infos = await container.command_gateway.discover_worlds(ctx, storage_config)
-info = infos[0]
-assert info.run_id is not None
-df = await container.command_gateway.query_components(
-    ctx, [Score], world_id=str(info.world_id), run_id=str(info.run_id),
-    storage_config=storage_config,
-)
+async with ArchetypeRuntime() as runtime:
+    infos = await runtime.discover(storage_config)
+    info = infos[0]
+    assert info.run_id is not None
+    cold = runtime.attach(info.world_id, storage=storage_config)
+    df = await cold.query(Score)
 ```
 
 `list_signatures` uses the same authority split: it unions the store's
@@ -124,6 +167,14 @@ entity signatures. When both sources know a table, the exact process-local
 class identity takes precedence over an ambiguous catalog reconstruction. If
 the catalog itself is unavailable, discovery returns the process-local subset
 and logs the degradation; commit-visibility checks remain fail-closed.
+
+The frozen operation inventory keeps the two authority scopes explicit.
+`ListSignatures` is application-scoped discovery for an explicit or default
+storage identity. `ListWorldSignatures` is durable-world-scoped discovery: its
+`world_id` selects the retained world-to-storage coordinates before running
+the same storage-wide union. The API all-state read uses the world-scoped
+operation, so authorization and storage selection share one exact world key;
+neither operation changes the returned signature set for the selected store.
 
 ## 5. Fail-closed schema check
 

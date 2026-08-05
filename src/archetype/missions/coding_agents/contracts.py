@@ -8,7 +8,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-from archetype.missions.contracts import CommandValidator, RepositoryPublicationPolicy
+from archetype.missions.contracts import (
+    CommandValidator,
+    CriticPolicy,
+    RepositoryPublicationPolicy,
+)
 from archetype.missions.sandboxes import SandboxIdentity, SandboxSession
 from archetype.missions.transitions import AgentExecutionStatus
 
@@ -73,6 +77,20 @@ class FrictionObservation:
 
 
 @dataclass(frozen=True)
+class CriticRepairFinding:
+    """Durable blocking review input supplied to the next author dispatch."""
+
+    candidate_id: str
+    finding_id: str
+    severity: str
+    category: str
+    title: str
+    detail: str
+    evidence_location: str = ""
+    reproduction: str = ""
+
+
+@dataclass(frozen=True)
 class AgentProcessObservation:
     """Raw process facts returned by a coding-agent driver."""
 
@@ -80,6 +98,7 @@ class AgentProcessObservation:
     stdout: str = ""
     stderr: str = ""
     session_id: str = ""
+    trace_uri: str = ""
 
 
 @dataclass(frozen=True)
@@ -97,9 +116,13 @@ class TaskDispatchRequest:
     prompt: str
     validators: tuple[DispatchedValidator, ...]
     publication_policy: RepositoryPublicationPolicy
+    critic_policy: CriticPolicy = CriticPolicy()
+    prior_candidate_entity_id: int = 0
     task_base_revision: str = ""
+    checkout_revision: str = ""
     previous_agent_session_id: str = ""
     previous_validation: tuple[ValidationObservation, ...] = ()
+    previous_critic_findings: tuple[CriticRepairFinding, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.dispatch_id.strip() or self.dispatch_sequence < 1:
@@ -109,6 +132,8 @@ class TaskDispatchRequest:
         validator_ids = [validator.validator_id for validator in self.validators]
         if len(validator_ids) != len(set(validator_ids)):
             raise ValueError("task dispatch validator identities must be unique")
+        if self.prior_candidate_entity_id < 0:
+            raise ValueError("task dispatch prior candidate identity cannot be negative")
         try:
             policy = RepositoryPublicationPolicy(self.publication_policy)
         except ValueError as exc:
@@ -131,6 +156,11 @@ class AgentExecutionResult:
     agent_returncode: int
     starting_revision: str
     final_revision: str
+    diff_digest: str = ""
+    validator_bundle_digest: str = ""
+    agent_stdout: str = ""
+    agent_stderr: str = ""
+    trace_uri: str = ""
     validation: tuple[ValidationObservation, ...] = ()
     commits: tuple[CommitObservation, ...] = ()
     friction: tuple[FrictionObservation, ...] = ()
@@ -159,6 +189,7 @@ __all__ = [
     "AgentProcessObservation",
     "CodingAgentDriver",
     "CommitObservation",
+    "CriticRepairFinding",
     "DispatchedValidator",
     "FrictionObservation",
     "TaskDispatchRequest",

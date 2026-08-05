@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from functools import partial
+
 from archetype import (
     ArchetypeRuntime,
     ArtifactStoreConfig,
@@ -13,18 +15,19 @@ from archetype import (
     public_api,
 )
 from archetype._api import is_public_api
+from archetype.artifacts import handlers as artifact_handlers
 
 
 def test_top_level_excludes_internal_service_wiring():
     import archetype
 
     internal = {
-        "ServiceContainer",
-        "CommandGateway",
-        "WorldService",
-        "SimulationService",
-        "QueryService",
-        "ArtifactTableService",
+        "RuntimeResources",
+        "CommandDispatcher",
+        "OperationRegistry",
+        "WorldLifecycle",
+        "WorldRegistry",
+        "MissionService",
         "StorageService",
     }
     assert internal.isdisjoint(archetype.__all__)
@@ -57,11 +60,16 @@ def test_entrypoint_injects_async_runtime():
     assert seen == {"runtime_type": "ArchetypeRuntime", "open": True}
 
 
-def test_sync_runtime_forwards_artifact_bundle_configuration(tmp_path):
+def test_sync_runtime_forwards_artifact_store_configuration(tmp_path):
     config = ArtifactStoreConfig.local(tmp_path / "artifacts")
 
     with ArchetypeRuntime.sync(artifact_store=config) as runtime:
-        assert runtime._runtime._container.artifact_bundle_service.enabled
+        dispatcher = runtime._runtime._resources.dispatcher
+        handler = dispatcher._registry.resolve_name("ingest_artifacts").handler
+        assert isinstance(handler, partial)
+        assert handler.func is artifact_handlers.ingest_artifacts
+        assert handler.args == (runtime._runtime._resources._storage,)
+        assert handler.keywords == {"store_config": config}
 
 
 def test_public_api_marker_registers():

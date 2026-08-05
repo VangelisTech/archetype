@@ -25,9 +25,10 @@ from opentelemetry.trace import SpanKind, Status, StatusCode
 from uuid_utils import uuid7
 
 from archetype import _obs
-from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.models import ActorCtx
+from archetype.commands.models import ActorCtx
 from archetype.core.config import WorldConfig
+from archetype.world.models import CreateWorld, GetWorldInfo
+from tests._runtime import build_test_runtime
 
 pytestmark = pytest.mark.contract("observability.signals.safe")
 
@@ -557,24 +558,31 @@ def test_outcome_helper_is_bounded_and_advisory(monkeypatch):
     }
 
 
-def test_gate_operations_emit_otel_spans(monkeypatch):
-    """The gate's @instrument decorators ride any OTel provider — no vendor."""
+def test_actor_aware_dispatch_does_not_recreate_retired_gateway_spans(
+    monkeypatch,
+    tmp_path,
+):
     exporter = _capture(monkeypatch)
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
 
     async def drive() -> None:
-        c = ServiceContainer()
+        resources = build_test_runtime(tmp_path)
         try:
-            info = await c.command_gateway.create_world(ctx, WorldConfig(name="obs"), None, None)
-            await c.command_gateway.get_world_info(ctx, info.world_id)
+            info = await resources.dispatcher.apply_as(
+                ctx,
+                CreateWorld(config=WorldConfig(name="obs")),
+            )
+            await resources.dispatcher.apply_as(
+                ctx,
+                GetWorldInfo(world_id=info.world_id),
+            )
         finally:
-            await c.shutdown()
+            await resources.aclose()
 
     asyncio.run(drive())
 
     names = {s.name for s in exporter.get_finished_spans()}
-    assert "gateway.create_world" in names
-    assert "gateway.get_world_info" in names
+    assert {"gateway.create_world", "gateway.get_world_info"}.isdisjoint(names)
 
 
 def test_console_processor_prints_one_line_per_span(monkeypatch, capsys):

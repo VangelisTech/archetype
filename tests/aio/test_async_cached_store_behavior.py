@@ -4,12 +4,12 @@ import daft
 import pytest
 import pytest_asyncio
 
-from archetype.app.storage.session import configure_session
 from archetype.core.aio.async_cached_store import AsyncCachedStore
 from archetype.core.aio.async_store import AsyncStore
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.interfaces import AppendReceipt
+from archetype.storage.session import configure_session
 
 pytestmark = [
     pytest.mark.contract("storage.cache.concurrent_no_loss"),
@@ -63,6 +63,65 @@ def test_default_global_cache_budget_is_one_gibibyte():
     from archetype.core.config import CacheConfig
 
     assert CacheConfig().global_mb == 1024
+
+
+@pytest.mark.asyncio
+async def test_cached_store_delegates_open_never_create_discovery():
+    from archetype.core.config import CacheConfig
+
+    schema = object()
+    frame = object()
+
+    class _DiscoveryInnerStore:
+        def __init__(self) -> None:
+            self.schema_calls = []
+            self.frame_calls = []
+
+        async def get_existing_table_schema(self, table_id):
+            self.schema_calls.append(table_id)
+            return schema
+
+        async def get_existing_table_df(
+            self,
+            table_id,
+            world_id,
+            run_id,
+            *,
+            ticks=None,
+            entity_ids=None,
+            active_only=False,
+        ):
+            self.frame_calls.append((table_id, world_id, run_id, ticks, entity_ids, active_only))
+            return frame
+
+        async def flush(self):
+            return None
+
+        async def shutdown(self):
+            return None
+
+    inner = _DiscoveryInnerStore()
+    cached = AsyncCachedStore(
+        async_store=inner,  # type: ignore[arg-type]
+        cache_config=CacheConfig(idle_sec=3600),
+    )
+    try:
+        assert await cached.get_existing_table_schema("table") is schema
+        assert (
+            await cached.get_existing_table_df(
+                "table",
+                "world",
+                "run",
+                ticks=[1, 2],
+                entity_ids=[3],
+                active_only=True,
+            )
+            is frame
+        )
+        assert inner.schema_calls == ["table"]
+        assert inner.frame_calls == [("table", "world", "run", [1, 2], [3], True)]
+    finally:
+        await cached.shutdown()
 
 
 @pytest.mark.asyncio

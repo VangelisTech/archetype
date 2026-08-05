@@ -64,14 +64,17 @@ across worlds: the full version coordinate is `(world, run, tick)`. This is a sc
 must land before adoption spreads (#543's lesson: schema evolution against
 persisted tables bites).
 
-### R3 — The manifest is an artifact bundle
+### R3 — The manifest is an artifact plus a typed registry row
 
-A registry entry is a published artifact (the existing bundle machinery, per
-`docs/guide/artifacts.md`): name, source `(world_id, entity_id, tick)`, required
-behavior-module identities, the component set with **prefixed schema hashes**,
-the subtree inventory, the eval-suite reference, and evidence receipts from
-grading runs. Publishing a prefab version is publishing a manifest; the
-registry index is the artifact index. No new storage system.
+A registry entry stores its immutable manifest through the registered
+artifacts-family handler and lets the owning registry workflow publish its
+typed fields through `StorageService` (per `docs/guide/artifacts.md`): name,
+source `(world_id, run_id, entity_id, tick)`, required behavior-module
+identities, the component set with **prefixed schema hashes**, the subtree
+inventory, the eval-suite reference, and evaluation-result identities.
+Publishing a prefab version creates one file occurrence plus one typed
+prefab-manifest row keyed to its `artifact_id`. No new storage system, generic
+ingestion facade, or artifact publication protocol is required.
 
 ### R4 — Schema identity is the compatibility contract
 
@@ -170,7 +173,8 @@ deliberately generalized under `archetype.prefabs`.
 3. Manifest models + schema-hash and required-library capture in the family
    (R3, R4, R6).
 4. Namespace directory in the control catalog + binding service under `app`
-   (§5.1); publish/lookup rides the artifact bundle service (R3).
+   (§5.1); publish/lookup composes the registered artifacts handler and
+   `StorageService` (R3).
 5. #604 MutationOutbox seam in core (rulings on the issue), then
    processor-native instantiate.
 6. Eval-binding conventions + library-world validations (R5).
@@ -231,7 +235,8 @@ Biome's declarative script layer is deferred (§4).
 required to interpret its component schemas, but it never embeds a callable or
 causes a module named by an untrusted string to execute. The host composition
 root resolves declared library identities through an allowlist and installs
-them explicitly. The artifact index is not a plugin loader.
+them explicitly. Neither the common artifact index nor the typed prefab index
+is a plugin loader.
 
 **Lifecycle rule:** registrations are process-local and world-local. The same
 approved library bundle must install atomically for a new world and again

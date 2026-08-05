@@ -1,106 +1,411 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Per-tick RBAC quota reset contract (bug B1).
+"""Dispatcher policy-coordinate and guard-first migration contracts.
 
-The gate debits a per-actor, per-tick command counter (``_tick_counters``)
-at submit time and rejects an actor once it exceeds ``MAX_CMDS_PER_TICK``
-*in a single tick*. Nothing reset that counter between ticks, so it
-accumulated across the whole process: a long-running driver eventually hit
-the per-tick ceiling even though no single tick was anywhere near it. The
-LIBERO eval driver papered over this by calling ``reset_tick_counters()``
-by hand before every step (eval_driver.py:179/237). That hand-roll is the
-symptom; the contract belongs in the framework.
-
-Contract: advancing a world by one tick (``SimulationService.step``) resets
-the per-tick command quota, so the budget is *per tick*, not *per process*.
-
-Given / When / Then:
-- GIVEN an actor that has issued commands on previous ticks
-- WHEN the world is stepped (a new tick begins)
-- THEN the actor's per-tick budget is fresh again.
+The historical filename is retained for test-selection compatibility. Quota
+generations now belong to one injected :class:`Policy`; no tick-reset callback
+or module-global counter exists.
 """
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
+from typing import Any, ClassVar, Literal, cast
+from unittest.mock import AsyncMock, Mock
+
 import pytest
-from uuid_utils import UUID, uuid7
+from pydantic import BaseModel, ConfigDict
+from uuid_utils import uuid7
 
-import archetype.app.gateway.auth.guard as guard
-from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
-from archetype.app.gateway.auth.models import ActorCtx
-from archetype.core.component import Component
-from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.commands.dispatch import CommandDispatcher
+from archetype.commands.models import (
+    AccessSummary,
+    ActorCtx,
+    DeferredItem,
+    DurableOptions,
+)
+from archetype.commands.policy import Policy
+from archetype.commands.registry import DurableOperation, OperationRegistry, OperationSpec
 
-
-class Marker(Component):
-    tag: str = ""
-
-
-@pytest.fixture(autouse=True)
-def _reset_quotas():
-    # ``_tick_counters`` / ``_daily_tokens`` are module globals; isolate tests.
-    reset_tick_counters()
-    reset_daily_tokens()
-    yield
-    reset_tick_counters()
-    reset_daily_tokens()
+pytestmark = pytest.mark.asyncio
 
 
-@pytest.mark.asyncio
-async def test_step_clears_per_actor_tick_counter(tmp_path):
-    """TDD (mechanism): a step empties the per-tick counter.
+class _LiveOperation(BaseModel):
+    direct_only: ClassVar[bool] = True
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
-    Pre-seed the counter to the ceiling for one actor, step the world, and
-    assert the counter is cleared — proving the tick boundary resets quota.
-    """
-    container = ServiceContainer()
-    actor = uuid7()
-    try:
-        world = await container.world_service.create_world(
-            WorldConfig(name="quota"), StorageConfig(uri=str(tmp_path / "store"))
+    operation: Literal["synthetic_live"] = "synthetic_live"
+    world_id: str
+
+
+class _DurableOperation(BaseModel):
+    direct_only: ClassVar[bool] = False
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    operation: Literal["synthetic_durable"] = "synthetic_durable"
+    world_id: str
+
+
+class _OperatorDurableOperation(BaseModel):
+    direct_only: ClassVar[bool] = False
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    operation: Literal["synthetic_operator_durable"] = "synthetic_operator_durable"
+    world_id: str
+
+
+class _ApplicationOperation(BaseModel):
+    direct_only: ClassVar[bool] = True
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    operation: Literal["synthetic_application"] = "synthetic_application"
+
+
+@dataclass(slots=True)
+class _Harness:
+    dispatcher: CommandDispatcher
+    effects: list[str]
+    evidence: list[AccessSummary]
+    target_reads: list[str]
+    scheduler: Any
+
+
+def _world_key(operation: BaseModel) -> object:
+    return cast("Any", operation).world_id
+
+
+def _summary(operation: BaseModel) -> Mapping[str, Any]:
+    return {"world_id": cast("Any", operation).world_id}
+
+
+def _empty_summary(_operation: BaseModel) -> Mapping[str, Any]:
+    return {}
+
+
+async def _never_materialize(_world: Any, _operation: BaseModel) -> None:
+    raise AssertionError("dispatcher admission must not materialize an operation")
+
+
+def _durable_metadata(
+    model: type[BaseModel],
+) -> DurableOperation:
+    return DurableOperation(
+        decode=model.model_validate_json,
+        materialize=_never_materialize,
+    )
+
+
+def _register(
+    registry: OperationRegistry,
+    *,
+    name: str,
+    model: type[BaseModel],
+    handler: Callable[[BaseModel], Awaitable[Any]],
+    permission: str,
+    quota_scope: Literal["application", "live_world", "durable_world"],
+    durable: DurableOperation | None = None,
+    token_cost: int = 0,
+    world_key: Callable[[BaseModel], object] | None = _world_key,
+) -> None:
+    registry.register(
+        OperationSpec(
+            name=name,
+            model=model,
+            handler=handler,
+            permission=permission,
+            summarize=(_empty_summary if quota_scope == "application" else _summary),
+            quota_scope=quota_scope,
+            world_key=world_key,
+            durable=durable,
+            token_cost=token_cost,
+        )
+    )
+
+
+def _harness(
+    *,
+    policy: Policy,
+    ticks: dict[str, int] | None = None,
+) -> _Harness:
+    registry = OperationRegistry()
+    effects: list[str] = []
+    evidence: list[AccessSummary] = []
+    target_reads: list[str] = []
+    scheduler = AsyncMock()
+
+    async def handle(operation: BaseModel) -> str:
+        world_id = str(_world_key(operation))
+        effects.append(world_id)
+        return world_id
+
+    async def record_access(row: AccessSummary) -> None:
+        evidence.append(row)
+
+    resolved_ticks = ticks if ticks is not None else {}
+
+    def target_tick_for_world(world_id: object) -> int:
+        normalized = str(world_id)
+        target_reads.append(normalized)
+        return resolved_ticks[normalized]
+
+    _register(
+        registry,
+        name="synthetic_live",
+        model=_LiveOperation,
+        handler=handle,
+        permission="spawn",
+        quota_scope="live_world",
+        token_cost=1,
+    )
+    return _Harness(
+        dispatcher=CommandDispatcher(
+            registry=registry,
+            policy=policy,
+            scheduler=scheduler,
+            record_access=record_access,
+            target_tick_for_world=target_tick_for_world,
+        ),
+        effects=effects,
+        evidence=evidence,
+        target_reads=target_reads,
+        scheduler=scheduler,
+    )
+
+
+async def test_live_dispatch_uses_actor_world_and_current_tick_generations() -> None:
+    ticks = {"world-a": 7, "world-b": 7}
+    harness = _harness(
+        policy=Policy(max_commands_per_tick=1, max_tokens_per_day=100),
+        ticks=ticks,
+    )
+    actor = ActorCtx(id=uuid7(), roles={"player"})
+
+    await harness.dispatcher.apply_as(actor, _LiveOperation(world_id="world-a"))
+    await harness.dispatcher.apply_as(actor, _LiveOperation(world_id="world-b"))
+
+    with pytest.raises(PermissionError, match="per-tick quota"):
+        await harness.dispatcher.apply_as(actor, _LiveOperation(world_id="world-a"))
+
+    ticks["world-a"] = 8
+    await harness.dispatcher.apply_as(actor, _LiveOperation(world_id="world-a"))
+
+    assert harness.effects == ["world-a", "world-b", "world-a"]
+    assert harness.target_reads == ["world-a", "world-b", "world-a", "world-a"]
+
+
+async def test_live_dispatch_isolates_actors_at_the_same_world_tick() -> None:
+    harness = _harness(
+        policy=Policy(max_commands_per_tick=1, max_tokens_per_day=100),
+        ticks={"world-a": 7},
+    )
+    actor_a = ActorCtx(id=uuid7(), roles={"player"})
+    actor_b = ActorCtx(id=uuid7(), roles={"player"})
+
+    await harness.dispatcher.apply_as(actor_a, _LiveOperation(world_id="world-a"))
+    await harness.dispatcher.apply_as(actor_b, _LiveOperation(world_id="world-a"))
+
+    assert harness.effects == ["world-a", "world-a"]
+
+
+async def test_dispatchers_with_distinct_policy_instances_do_not_share_debits() -> None:
+    actor = ActorCtx(id=uuid7(), roles={"player"})
+    first = _harness(
+        policy=Policy(max_commands_per_tick=1),
+        ticks={"world-a": 7},
+    )
+    second = _harness(
+        policy=Policy(max_commands_per_tick=1),
+        ticks={"world-a": 7},
+    )
+
+    await first.dispatcher.apply_as(actor, _LiveOperation(world_id="world-a"))
+    with pytest.raises(PermissionError, match="per-tick quota"):
+        await first.dispatcher.apply_as(actor, _LiveOperation(world_id="world-a"))
+
+    await second.dispatcher.apply_as(actor, _LiveOperation(world_id="world-a"))
+    assert second.effects == ["world-a"]
+
+
+async def test_role_denial_precedes_target_resolution_handler_and_evidence() -> None:
+    harness = _harness(
+        policy=Policy(max_commands_per_tick=1),
+        ticks={},
+    )
+    viewer = ActorCtx(id=uuid7(), roles={"viewer"})
+
+    with pytest.raises(PermissionError, match="cannot execute permission 'spawn'"):
+        await harness.dispatcher.apply_as(
+            viewer,
+            _LiveOperation(world_id="secret-world"),
         )
 
-        # Simulate an actor that has already saturated this tick's budget.
-        guard._tick_counters[UUID(str(actor))] = guard.MAX_CMDS_PER_TICK
-        assert guard._tick_counters[UUID(str(actor))] == guard.MAX_CMDS_PER_TICK
-
-        await container.simulation_service.step(world.world_id, RunConfig())
-
-        # The per-tick counter is cleared at the tick boundary.
-        assert guard._tick_counters.get(UUID(str(actor)), 0) == 0
-    finally:
-        await container.shutdown()
+    assert harness.target_reads == []
+    assert harness.effects == []
+    assert harness.evidence == []
 
 
-@pytest.mark.asyncio
-async def test_actor_not_blocked_across_many_ticks(tmp_path, monkeypatch):
-    """BDD (regression): the per-tick quota does not accumulate across ticks.
+async def test_full_quota_denial_precedes_handler_and_records_bounded_evidence() -> None:
+    harness = _harness(
+        policy=Policy(max_commands_per_tick=1, max_tokens_per_day=100),
+        ticks={"world-a": 3},
+    )
+    actor = ActorCtx(id=uuid7(), roles={"player"})
 
-    Lower the ceiling so a handful of ticks would blow a *process-wide*
-    counter, then drive (spawn + step) through the gate for more ticks than
-    the ceiling allows. Without the reset the actor is rejected partway
-    through; with it, every tick starts fresh and all ticks succeed.
-    """
-    from archetype.app.gateway.auth.errors import GuardrailError
+    await harness.dispatcher.apply_as(actor, _LiveOperation(world_id="world-a"))
+    with pytest.raises(PermissionError, match="per-tick quota"):
+        await harness.dispatcher.apply_as(actor, _LiveOperation(world_id="world-a"))
 
-    monkeypatch.setattr(guard, "MAX_CMDS_PER_TICK", 4)
+    assert harness.effects == ["world-a"]
+    assert [(row.decision, row.outcome) for row in harness.evidence] == [
+        ("allowed", "succeeded"),
+        ("denied", "denied"),
+    ]
+    assert all(row.metadata.keys() <= {"world_id"} for row in harness.evidence)
 
-    container = ServiceContainer()
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
-    try:
-        info = await container.command_gateway.create_world(
-            ctx, WorldConfig(name="long-run"), StorageConfig(uri=str(tmp_path / "store"))
+
+async def test_application_scope_never_resolves_a_tick_or_consumes_tick_quota() -> None:
+    registry = OperationRegistry()
+    effects: list[str] = []
+    record_access = AsyncMock()
+    target_tick_for_world = Mock(
+        side_effect=AssertionError("application scope has no tick coordinate")
+    )
+
+    async def handle(_operation: BaseModel) -> str:
+        effects.append("application")
+        return "application"
+
+    _register(
+        registry,
+        name="synthetic_application",
+        model=_ApplicationOperation,
+        handler=handle,
+        permission="create_world",
+        quota_scope="application",
+        world_key=None,
+    )
+    dispatcher = CommandDispatcher(
+        registry=registry,
+        policy=Policy(max_commands_per_tick=1),
+        scheduler=AsyncMock(),
+        record_access=record_access,
+        target_tick_for_world=target_tick_for_world,
+    )
+    admin = ActorCtx(id=uuid7(), roles={"admin"})
+
+    await dispatcher.apply_as(admin, _ApplicationOperation())
+    await dispatcher.apply_as(admin, _ApplicationOperation())
+
+    assert effects == ["application", "application"]
+    target_tick_for_world.assert_not_called()
+
+
+async def test_deferred_dispatch_uses_options_tick_without_live_tick_resolution() -> None:
+    registry = OperationRegistry()
+    scheduler = AsyncMock()
+    scheduler.admit.return_value = "queued"
+    evidence: list[AccessSummary] = []
+    target_tick_for_world = Mock(
+        side_effect=AssertionError("deferred scope must use DurableOptions.target_tick")
+    )
+
+    async def handle(_operation: BaseModel) -> None:
+        raise AssertionError("deferred admission must not invoke the direct handler")
+
+    async def record_access(row: AccessSummary) -> None:
+        evidence.append(row)
+
+    _register(
+        registry,
+        name="synthetic_durable",
+        model=_DurableOperation,
+        handler=handle,
+        permission="spawn",
+        quota_scope="live_world",
+        durable=_durable_metadata(_DurableOperation),
+    )
+    dispatcher = CommandDispatcher(
+        registry=registry,
+        policy=Policy(max_commands_per_tick=1),
+        scheduler=scheduler,
+        record_access=record_access,
+        target_tick_for_world=target_tick_for_world,
+    )
+    actor = ActorCtx(id=uuid7(), roles={"player"})
+    operation = _DurableOperation(world_id="world-a")
+
+    await dispatcher.defer_as(actor, operation, DurableOptions(target_tick=7))
+    await dispatcher.defer_as(actor, operation, DurableOptions(target_tick=8))
+    with pytest.raises(PermissionError, match="per-tick quota"):
+        await dispatcher.defer_as(actor, operation, DurableOptions(target_tick=7))
+
+    assert scheduler.admit.await_count == 2
+    target_tick_for_world.assert_not_called()
+    assert [row.outcome for row in evidence] == ["queued", "queued", "denied"]
+
+
+async def test_later_batch_role_denial_precedes_all_coordinates_and_admission() -> None:
+    registry = OperationRegistry()
+    scheduler = AsyncMock()
+    coordinate_reads: list[str] = []
+    evidence: list[AccessSummary] = []
+
+    async def handle(_operation: BaseModel) -> None:
+        raise AssertionError("deferred admission must not invoke the direct handler")
+
+    async def record_access(row: AccessSummary) -> None:
+        evidence.append(row)
+
+    def forbidden_world_key(operation: BaseModel) -> object:
+        coordinate_reads.append(type(operation).__name__)
+        raise AssertionError("batch coordinates must follow all role checks")
+
+    for name, model, permission in (
+        ("synthetic_durable", _DurableOperation, "spawn"),
+        (
+            "synthetic_operator_durable",
+            _OperatorDurableOperation,
+            "add_components",
+        ),
+    ):
+        _register(
+            registry,
+            name=name,
+            model=model,
+            handler=handle,
+            permission=permission,
+            quota_scope="live_world",
+            durable=_durable_metadata(model),
+            world_key=forbidden_world_key,
         )
 
-        # 8 ticks × (1 spawn + 1 step) = 16 gated commands, four-fold over the
-        # ceiling of 4. Each individual tick issues only 2 commands (< 4), so a
-        # correct per-tick quota never trips.
-        for _ in range(8):
-            await container.command_gateway.create_entity(ctx, info.world_id, [Marker(tag="x")])
-            await container.command_gateway.step(ctx, info.world_id, RunConfig())
-    except GuardrailError as exc:  # pragma: no cover - the bug path
-        pytest.fail(f"per-tick quota accumulated across ticks: {exc}")
-    finally:
-        await container.shutdown()
+    dispatcher = CommandDispatcher(
+        registry=registry,
+        policy=Policy(max_commands_per_tick=1),
+        scheduler=scheduler,
+        record_access=record_access,
+        target_tick_for_world=cast(
+            "Callable[[object], int]",
+            lambda _world_id: pytest.fail("batch must not resolve a live tick"),
+        ),
+    )
+    player = ActorCtx(id=uuid7(), roles={"player"})
+    items = (
+        DeferredItem(
+            operation=_DurableOperation(world_id="secret-world"),
+            options=DurableOptions(target_tick=4),
+        ),
+        DeferredItem(
+            operation=_OperatorDurableOperation(world_id="secret-world"),
+            options=DurableOptions(target_tick=4),
+        ),
+    )
+
+    with pytest.raises(PermissionError, match="cannot execute permission 'add_components'"):
+        await dispatcher.defer_batch_as(player, items)
+
+    assert coordinate_reads == []
+    scheduler.admit_batch.assert_not_awaited()
+    assert evidence == []

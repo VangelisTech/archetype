@@ -9,7 +9,7 @@ Define state with components, transform populations with processors, and keep
 each tick as queryable history. Use a fork to continue from an earlier state
 without overwriting the original run.
 
-It is built on [Daft](https://www.daft.ai/) and LanceDB. The default Python
+It is built on [Daft](https://www.daft.ai/) and Iceberg/LanceDB. The default Python
 entry point is `ArchetypeRuntime`; HTTP services and the CLI use the same
 command layer when you need a multi-user host.
 
@@ -162,7 +162,7 @@ make sync-dev  # install development dependencies
 make test      # run the fast test suite
 make check     # format and lint
 make docs      # generate references and build the docs site
-make ci        # run the merge gate
+make ci        # run required static checks and fast tests
 ```
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing the engine. The

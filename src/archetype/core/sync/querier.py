@@ -48,20 +48,13 @@ class QueryManager(iQueryManager):
         Queries all active entities for the provided archetype signature, world_id, run_id.
         Filters for ticks, entities, and components are provided.
 
-        ``run_id`` takes precedence over ``run_config.run_id`` when both are provided,
-        so callers that pin a stable run_id at the world layer can pass it through
-        without rebuilding a frozen RunConfig.
+        ``run_id`` is required durable world construction state. ``run_config``
+        controls diagnostics only and cannot select storage identity.
         """
-        if run_id is not None:
-            effective_run_id = run_id
-        elif run_config is not None:
-            # RunConfig.run_id may be a UUID; storage stamps run_id as str.
-            effective_run_id = str(run_config.run_id)
-        else:
+        if run_id is None:
             # Reads MUST be scoped by world_id and run_id (spec §137).
-            raise ValueError(
-                "query_archetype requires either run_id or run_config to scope the read"
-            )
+            raise ValueError("query_archetype requires run_id to scope the read")
+        effective_run_id = str(run_id)
         df = self.get_archetype(sig, world_id, effective_run_id)
         df = df.where(df["is_active"])
 
@@ -76,9 +69,8 @@ class QueryManager(iQueryManager):
             df = df.select(*Archetype.projection_columns(components))
 
         if run_config and run_config.debug:
-            logger.info(f"Querying {Archetype.get_name(sig)} with {df.count_rows()} rows")
+            logger.info("Querying %s", Archetype.get_name(sig))
             df.explain()
-            df.show()
 
         return df
 

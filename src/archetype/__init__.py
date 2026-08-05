@@ -15,7 +15,8 @@
 """Dataframe-first simulations and agent workflows.
 
 `ArchetypeRuntime` is the recommended entry point for applications. Concrete
-services and the service container are internal and are not re-exported here.
+services, `RuntimeResources`, and process wiring are internal and are not
+re-exported here.
 
 Examples:
     >>> from archetype import ArchetypeRuntime
@@ -38,7 +39,7 @@ from typing import Any
 # `setdefault` honors an explicit `DO_NOT_TRACK=0` if a user wants telemetry on.
 os.environ.setdefault("DO_NOT_TRACK", "1")
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"
 
 __all__ = [
     # Core types
@@ -47,6 +48,7 @@ __all__ = [
     "ArchetypeSignature",
     "Resources",
     # Step failure contract
+    "AmbiguousTickCommitError",
     "TickExecutionError",
     "TickFailure",
     # Processor (with alias)
@@ -96,34 +98,22 @@ __all__ = [
     "EpisodeResult",
     "RolloutConfig",
     "RolloutResult",
-    "ArtifactReceipt",
-    "ArtifactWriteReceipt",
-    "ArtifactProcessor",
-    "ArtifactBundleRequest",
-    "ArtifactCandidate",
-    "ArtifactIndexRecord",
-    "ArtifactPublishReceipt",
-    "ArtifactReconcileResult",
-    "ArtifactSourceResolver",
-    "BoundedArtifactSourceResolver",
+    "ArtifactRef",
+    "ArtifactContext",
+    "ArtifactSource",
     "ArtifactStoreConfig",
-    "MaterializedArtifact",
-    # Physical-AI workflow values
-    "PhysicalTaskEvalConfig",
-    "PhysicalTaskEvalReport",
-    "InstructionSweepConfig",
-    "InstructionSweepReport",
-    "TrialOutcome",
-    "VariantOutcome",
-    # Models
-    "Command",
-    "CommandType",
+    # Hosted Physical-AI workflow values
+    "HostedEpisodeRequest",
+    "HostedEpisodeObservation",
+    "ModalHostedEpisodeConfig",
     # AutoResearch
     "AutoResearchConfig",
     "AutoResearchResult",
     "CandidateContext",
     "EvaluationResult",
+    "ResearchCandidateContext",
     # Durable evaluation types
+    "FrameGrader",
     "Outcome",
     "GraderContract",
     "EvalReceipt",
@@ -136,6 +126,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "ArchetypeSignature": ("archetype.core", "ArchetypeSignature"),
     "Resources": ("archetype.core", "Resources"),
     # Step failure contract (issue #444)
+    "AmbiguousTickCommitError": ("archetype.core", "AmbiguousTickCommitError"),
     "TickExecutionError": ("archetype.core", "TickExecutionError"),
     "TickFailure": ("archetype.core", "TickFailure"),
     # Processors (and aliases)
@@ -178,55 +169,40 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "run_sync": ("archetype.runtime", "run_sync"),
     "configure_session": ("archetype.runtime", "configure_session"),
     # Runtime configuration and result types
-    "WorldInfo": ("archetype.app.models", "WorldInfo"),
-    "RunResult": ("archetype.app.models", "RunResult"),
-    "EpisodeConfig": ("archetype.app.models", "EpisodeConfig"),
-    "EpisodeResult": ("archetype.app.models", "EpisodeResult"),
-    "RolloutConfig": ("archetype.app.models", "RolloutConfig"),
-    "RolloutResult": ("archetype.app.models", "RolloutResult"),
-    "ArtifactReceipt": ("archetype.artifacts.contracts", "ArtifactReceipt"),
-    "ArtifactWriteReceipt": ("archetype.artifacts.contracts", "ArtifactWriteReceipt"),
-    "ArtifactProcessor": ("archetype.artifacts.contracts", "ArtifactProcessor"),
-    "ArtifactBundleRequest": ("archetype.artifacts.bundles", "ArtifactBundleRequest"),
-    "ArtifactCandidate": ("archetype.artifacts.bundles", "ArtifactCandidate"),
-    "ArtifactIndexRecord": ("archetype.artifacts.bundles", "ArtifactIndexRecord"),
-    "ArtifactPublishReceipt": ("archetype.artifacts.bundles", "ArtifactPublishReceipt"),
-    "ArtifactReconcileResult": ("archetype.artifacts.bundles", "ArtifactReconcileResult"),
-    "ArtifactSourceResolver": ("archetype.artifacts.bundles", "ArtifactSourceResolver"),
-    "BoundedArtifactSourceResolver": (
-        "archetype.artifacts.bundles",
-        "BoundedArtifactSourceResolver",
+    "WorldInfo": ("archetype.world.models", "WorldInfo"),
+    "RunResult": ("archetype.world.models", "RunResult"),
+    "EpisodeConfig": ("archetype.world.models", "EpisodeConfig"),
+    "EpisodeResult": ("archetype.world.models", "EpisodeResult"),
+    "RolloutConfig": ("archetype.world.models", "RolloutConfig"),
+    "RolloutResult": ("archetype.world.models", "RolloutResult"),
+    "ArtifactRef": ("archetype.artifacts.models", "ArtifactRef"),
+    "ArtifactContext": ("archetype.artifacts.models", "ArtifactContext"),
+    "ArtifactSource": ("archetype.artifacts.models", "ArtifactSource"),
+    "ArtifactStoreConfig": ("archetype.artifacts.models", "ArtifactStoreConfig"),
+    # Hosted Physical-AI workflow values
+    "HostedEpisodeRequest": (
+        "archetype.physical_ai.models",
+        "HostedEpisodeRequest",
     ),
-    "ArtifactStoreConfig": ("archetype.artifacts.bundles", "ArtifactStoreConfig"),
-    "MaterializedArtifact": ("archetype.artifacts.bundles", "MaterializedArtifact"),
-    # Physical-AI workflow values
-    "PhysicalTaskEvalConfig": (
-        "archetype.physical_ai.contracts",
-        "PhysicalTaskEvalConfig",
+    "HostedEpisodeObservation": (
+        "archetype.physical_ai.models",
+        "HostedEpisodeObservation",
     ),
-    "PhysicalTaskEvalReport": (
-        "archetype.physical_ai.contracts",
-        "PhysicalTaskEvalReport",
+    "ModalHostedEpisodeConfig": (
+        "archetype.physical_ai.models",
+        "ModalHostedEpisodeConfig",
     ),
-    "InstructionSweepConfig": (
-        "archetype.physical_ai.contracts",
-        "InstructionSweepConfig",
-    ),
-    "InstructionSweepReport": (
-        "archetype.physical_ai.contracts",
-        "InstructionSweepReport",
-    ),
-    "TrialOutcome": ("archetype.physical_ai.contracts", "TrialOutcome"),
-    "VariantOutcome": ("archetype.physical_ai.contracts", "VariantOutcome"),
-    # Command models used by supported host adapters
-    "Command": ("archetype.app.models", "Command"),
-    "CommandType": ("archetype.app.models", "CommandType"),
     # AutoResearch
-    "AutoResearchConfig": ("archetype.app.research.contracts", "AutoResearchConfig"),
-    "AutoResearchResult": ("archetype.app.research.contracts", "AutoResearchResult"),
-    "CandidateContext": ("archetype.app.research.contracts", "CandidateContext"),
-    "EvaluationResult": ("archetype.app.research.contracts", "EvaluationResult"),
+    "AutoResearchConfig": ("archetype.research.models", "AutoResearchConfig"),
+    "AutoResearchResult": ("archetype.research.models", "AutoResearchResult"),
+    "CandidateContext": ("archetype.research.models", "CandidateContext"),
+    "EvaluationResult": ("archetype.research.models", "EvaluationResult"),
+    "ResearchCandidateContext": (
+        "archetype.research.models",
+        "ResearchCandidateContext",
+    ),
     # Durable evaluation types
+    "FrameGrader": ("archetype.evaluation.models", "FrameGrader"),
     "Outcome": ("archetype.evaluation.contracts", "Outcome"),
     "GraderContract": ("archetype.evaluation.contracts", "GraderContract"),
     "EvalReceipt": ("archetype.evaluation.components", "EvalReceipt"),

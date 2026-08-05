@@ -43,7 +43,7 @@ from daft import DataType, Series, col
 
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
-from archetype.physical_ai.boundary import series_to_rows, unpack_struct
+from archetype.physical_ai._dataframe import series_to_rows, unpack_struct
 
 CARTPOLE_XML = """
 <mujoco model="cartpole">

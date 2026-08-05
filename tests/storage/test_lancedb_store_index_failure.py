@@ -1,9 +1,9 @@
 import pytest
 
-from archetype.app.storage.service import AsyncLancedbStore, _resolve_uri
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
+from archetype.storage.service import AsyncLancedbStore, _resolve_uri
 
 
 class Demo(Component):

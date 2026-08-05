@@ -17,33 +17,101 @@
 from __future__ import annotations
 
 import asyncio
+from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from weakref import WeakSet
 
-from uuid_utils import UUID
+from uuid_utils import UUID, uuid7
 
 from archetype._logging import configure_host_observability
-from archetype.app.application.interfaces import iRuntimeApplication
-from archetype.app.container import ServiceContainer
-from archetype.app.models import WorldInfo
-from archetype.artifacts.bundles import ArtifactSourceResolver, ArtifactStoreConfig
+from archetype.artifacts.models import ArtifactStoreConfig
 from archetype.core.config import CacheConfig, StorageConfig
 from archetype.core.hooks import HookEvent
 from archetype.runtime._config import coerce_cache, coerce_storage
-from archetype.runtime.world import RuntimeWorld, SyncRuntimeWorld, _RuntimeWorldState
+from archetype.runtime.world import (
+    RuntimeWorld,
+    SyncRuntimeWorld,
+    _RuntimeWorldState,
+)
+from archetype.runtime_resources import RuntimeCloseState
+from archetype.world.models import DiscoverWorlds, ResumeWorld, WorldInfo
 
 if TYPE_CHECKING:
     from archetype.missions.contracts import AgentMissionConfig
-    from archetype.physical_ai.contracts import (
-        InstructionSweepConfig,
-        InstructionSweepReport,
-        PhysicalTaskEvalConfig,
-        PhysicalTaskEvalReport,
-    )
-    from archetype.physical_ai.manipulation import EnvClient
-    from archetype.physical_ai.policy import PolicyClient
     from archetype.runtime.missions import RuntimeMissions
+
+
+def _bootstrap_config(*, artifact_store: ArtifactStoreConfig | None) -> Any:
+    """Resolve the optional wiring module only when a runtime is constructed."""
+
+    wiring = import_module("archetype.wiring")
+    return wiring.RuntimeBootstrapConfig.from_env(
+        artifact_store_config=artifact_store,
+    )
+
+
+def build_runtime_resources(config: Any) -> Any:
+    """Late-bound construction seam shared with tests and downstream hosts."""
+
+    return import_module("archetype.wiring").build_runtime_resources(config)
+
+
+def _bind_world_state(resources: Any, state: _RuntimeWorldState) -> RuntimeWorld:
+    """Strongly register one inert world handle with the process owner."""
+
+    reservation = resources.reserve_owner(
+        f"world:{uuid7()}",
+        phase="world-handles",
+    )
+    handle = RuntimeWorld(state=state, reservation=reservation)
+    reservation.bind(handle, close=handle._close_owned)
+    return handle
+
+
+class _RuntimeResourceHost:
+    """Minimal host used by wiring-created workflows that need a world handle."""
+
+    def __init__(self, resources: Any) -> None:
+        self._resources = resources
+
+    def _ensure_open(self) -> None:
+        if (
+            self._resources.close_state is not RuntimeCloseState.OPEN
+            and not self._resources.operation_admitted()
+        ):
+            raise RuntimeError("Runtime resources are closed")
+
+    def _bind_world_state(self, state: _RuntimeWorldState) -> RuntimeWorld:
+        return _bind_world_state(self._resources, state)
+
+
+def _runtime_world_for_resources(
+    runtime_resources: Any,
+    name: str = "world",
+    *,
+    storage: str | Path | StorageConfig | None = None,
+    cache: CacheConfig | None = None,
+    processors: list | None = None,
+    resources: list | None = None,
+    hooks: list[tuple[type[HookEvent], Any]] | None = None,
+    world_id: str | UUID | None = None,
+    install_initializers: bool = False,
+) -> RuntimeWorld:
+    """Construct the narrow world surface used by wiring-owned workflows."""
+
+    host = _RuntimeResourceHost(runtime_resources)
+    state = _RuntimeWorldState(
+        runtime=host,
+        name=name,
+        storage_config=coerce_storage(storage),
+        cache_config=coerce_cache(cache),
+        init_processors=list(processors or []),
+        init_resources=list(resources or []),
+        init_hooks=list(hooks or []),
+        world_id=world_id,
+        install_initializers=install_initializers,
+    )
+    return host._bind_world_state(state)
 
 
 class ArchetypeRuntime:
@@ -65,7 +133,6 @@ class ArchetypeRuntime:
         *,
         log: str | None = None,
         artifact_store: ArtifactStoreConfig | None = None,
-        artifact_source_resolver: ArtifactSourceResolver | None = None,
     ) -> None:
         """Initialize the runtime.
 
@@ -73,10 +140,7 @@ class ArchetypeRuntime:
             log: Package log level: `debug`, `info`, `warning`, or `error`.
                 When omitted, `ARCHETYPE_LOG` is used and logging stays quiet
                 if that variable is unset.
-            artifact_store: Optional object-store and artifact-index
-                configuration for portable attempt bundles.
-            artifact_source_resolver: Optional provider resolver used to copy
-                immutable sandbox references into portable bundle objects.
+            artifact_store: Optional content-addressed object-store bounds.
         """
         # This constructor is an explicit trusted-script process host. Quiet
         # remains the default; stdlib logging and vendor-neutral tracing are
@@ -86,17 +150,16 @@ class ArchetypeRuntime:
             log=log,
         )
 
-        self._container = ServiceContainer(
-            artifact_store_config=artifact_store,
-            artifact_source_resolver=artifact_source_resolver,
+        self._resources = build_runtime_resources(
+            _bootstrap_config(artifact_store=artifact_store),
         )
-        self._application: iRuntimeApplication = self._container.application
-        self._handles: WeakSet[RuntimeWorld] = WeakSet()
-        self._mission_handles: WeakSet[RuntimeMissions] = WeakSet()
+        self._dispatcher = self._resources.dispatcher
+        self._shutdown_lock = asyncio.Lock()
+        self._shutdown_started = False
         self._closed = False
 
     async def __aenter__(self) -> ArchetypeRuntime:
-        if self._closed:
+        if self._shutdown_started or self._closed:
             raise RuntimeError("ArchetypeRuntime cannot be reused after close")
         return self
 
@@ -104,38 +167,17 @@ class ArchetypeRuntime:
         await self.shutdown()
 
     async def shutdown(self) -> None:
-        """Drain admitted world operations, then release process resources.
+        """Delegate retryable process teardown to the sole resource owner."""
 
-        New operations are rejected as soon as shutdown starts. Each shared
-        world state waits for its current lock-protected operation to finish
-        before closing, so storage stays available to an admitted call.
-        Repeated calls have no effect.
-        """
-        if self._closed:
-            return
-        self._closed = True
-
-        errors: list[BaseException] = []
-        for handle in list(self._mission_handles):
-            try:
-                await handle._shutdown_internal(from_runtime=True)
-            except BaseException as e:
-                errors.append(e)
-        for handle in list(self._handles):
-            try:
-                await handle._shutdown_internal(from_runtime=True)
-            except Exception as e:
-                errors.append(e)
-
-        try:
-            await self._container.shutdown()
-        except (Exception, BaseExceptionGroup) as e:
-            errors.append(e)
-
-        if errors:
-            raise RuntimeError(
-                f"ArchetypeRuntime shutdown encountered {len(errors)} error(s): {errors[0]!r}"
-            ) from errors[0]
+        if self._resources.operation_admitted():
+            raise RuntimeError("ArchetypeRuntime cannot close from an admitted operation")
+        self._resources.ensure_close_allowed()
+        async with self._shutdown_lock:
+            if self._closed:
+                return
+            self._shutdown_started = True
+            await self._resources.aclose()
+            self._closed = True
 
     def world(
         self,
@@ -160,8 +202,7 @@ class ArchetypeRuntime:
         Returns:
             A handle that activates the world on its first operation.
         """
-        if self._closed:
-            raise RuntimeError("ArchetypeRuntime is closed")
+        self._ensure_open()
 
         state = _RuntimeWorldState(
             runtime=self,
@@ -172,10 +213,7 @@ class ArchetypeRuntime:
             init_resources=list(resources or []),
             init_hooks=list(hooks or []),
         )
-        handle = RuntimeWorld(state=state)
-        state.aliases.add(handle)
-        self._handles.add(handle)
-        return handle
+        return self._bind_world_state(state)
 
     def missions(
         self,
@@ -186,50 +224,25 @@ class ArchetypeRuntime:
     ) -> RuntimeMissions:
         """Create a lazy, batteries-included Agent Missions handle."""
 
-        if self._closed:
-            raise RuntimeError("ArchetypeRuntime is closed")
+        self._ensure_open()
         from archetype.runtime.missions import RuntimeMissions
 
-        handle = RuntimeMissions(self, name, config=config, storage=storage)
-        self._mission_handles.add(handle)
+        owner_id = f"mission:{uuid7()}"
+        reservation = self._resources.reserve_owner(
+            owner_id,
+            phase="workflow-handles",
+            closed_message="Agent Missions handle is closed",
+        )
+        handle = RuntimeMissions(
+            self,
+            name,
+            config=config,
+            storage=storage,
+            owner_id=owner_id,
+            reservation=reservation,
+        )
+        reservation.retain_anchor(handle)
         return handle
-
-    def _agent_mission_service(self, **kwargs):
-        """Reach the mission workflow only through the actor-free application facade."""
-
-        return self._application.agent_mission_service(**kwargs)
-
-    async def evaluate_physical_task(
-        self,
-        config: PhysicalTaskEvalConfig,
-        *,
-        env_client: EnvClient,
-        policy_client: PolicyClient | None = None,
-    ) -> PhysicalTaskEvalReport:
-        """Run and grade one batched physical task evaluation."""
-
-        self._ensure_open()
-        return await self._application.evaluate_physical_task(
-            config,
-            env_client=env_client,
-            policy_client=policy_client,
-        )
-
-    async def sweep_physical_instructions(
-        self,
-        config: InstructionSweepConfig,
-        *,
-        env_client: EnvClient,
-        policy_client: PolicyClient,
-    ) -> InstructionSweepReport:
-        """Compare instruction variants on paired seeds in one world."""
-
-        self._ensure_open()
-        return await self._application.sweep_physical_instructions(
-            config,
-            env_client=env_client,
-            policy_client=policy_client,
-        )
 
     async def resume(
         self,
@@ -251,12 +264,16 @@ class ArchetypeRuntime:
             storage: Storage containing the world.
             name: Local name for the returned handle.
         """
-        if self._closed:
-            raise RuntimeError("ArchetypeRuntime is closed")
-        info = await self._container.application.resume_world(
-            coerce_storage(storage) or StorageConfig(), world_id
-        )
-        return self.attach(info.world_id, name=name)
+        async with self._resources.admit_operation():
+            self._ensure_open()
+            effective_storage = coerce_storage(storage) or StorageConfig()
+            info = await self._dispatcher.apply(
+                ResumeWorld(
+                    storage_config=effective_storage,
+                    world_id=world_id,
+                )
+            )
+            return self.attach(info.world_id, name=name, storage=effective_storage)
 
     async def discover(self, storage: str | Path | StorageConfig | None = None) -> list[WorldInfo]:
         """List every world recorded for a storage identity.
@@ -270,11 +287,13 @@ class ArchetypeRuntime:
         Returns:
             Durable descriptors for every world recorded in that storage.
         """
-        if self._closed:
-            raise RuntimeError("ArchetypeRuntime is closed")
-        return await self._container.application.discover_worlds(
-            coerce_storage(storage) or StorageConfig()
-        )
+        async with self._resources.admit_operation():
+            self._ensure_open()
+            return await self._dispatcher.apply(
+                DiscoverWorlds(
+                    storage_config=coerce_storage(storage) or StorageConfig(),
+                )
+            )
 
     def attach(
         self,
@@ -293,10 +312,11 @@ class ArchetypeRuntime:
         Args:
             world_id: Durable identity of the world to attach.
             name: Local name for the returned handle.
-            storage: Storage containing a cold world. Omit it for a live world.
+            storage: Storage containing the world. It may be omitted for
+                live-world capabilities; storage-addressed capabilities
+                require explicit coordinates.
         """
-        if self._closed:
-            raise RuntimeError("ArchetypeRuntime is closed")
+        self._ensure_open()
 
         state = _RuntimeWorldState(
             runtime=self,
@@ -311,10 +331,7 @@ class ArchetypeRuntime:
             world_id=world_id,
             owns_world=False,
         )
-        handle = RuntimeWorld(state=state)
-        state.aliases.add(handle)
-        self._handles.add(handle)
-        return handle
+        return self._bind_world_state(state)
 
     @classmethod
     def sync(
@@ -322,26 +339,20 @@ class ArchetypeRuntime:
         *,
         log: str | None = None,
         artifact_store: ArtifactStoreConfig | None = None,
-        artifact_source_resolver: ArtifactSourceResolver | None = None,
     ) -> SyncArchetypeRuntime:
         """Create the synchronous runtime facade."""
         return SyncArchetypeRuntime(
             log=log,
             artifact_store=artifact_store,
-            artifact_source_resolver=artifact_source_resolver,
         )
 
-    def _register_handle(self, handle: RuntimeWorld) -> None:
-        self._handles.add(handle)
+    def _bind_world_state(self, state: _RuntimeWorldState) -> RuntimeWorld:
+        """Strongly register one inert world handle before returning it."""
 
-    def _unregister_handle(self, handle: RuntimeWorld) -> None:
-        self._handles.discard(handle)
-
-    def _unregister_mission_handle(self, handle: RuntimeMissions) -> None:
-        self._mission_handles.discard(handle)
+        return _bind_world_state(self._resources, state)
 
     def _ensure_open(self) -> None:
-        if self._closed:
+        if (self._shutdown_started or self._closed) and not self._resources.operation_admitted():
             raise RuntimeError("ArchetypeRuntime is closed")
 
 
@@ -357,12 +368,10 @@ class SyncArchetypeRuntime:
         *,
         log: str | None = None,
         artifact_store: ArtifactStoreConfig | None = None,
-        artifact_source_resolver: ArtifactSourceResolver | None = None,
     ) -> None:
         self._runtime = ArchetypeRuntime(
             log=log,
             artifact_store=artifact_store,
-            artifact_source_resolver=artifact_source_resolver,
         )
         self._runner: asyncio.Runner | None = None
 
@@ -372,12 +381,20 @@ class SyncArchetypeRuntime:
         return self
 
     def __exit__(self, *exc_info: object) -> None:
-        assert self._runner is not None
-        try:
-            self._runner.run(self._runtime.__aexit__(*exc_info))
-        finally:
-            self._runner.close()
-            self._runner = None
+        del exc_info
+        self.shutdown()
+
+    def shutdown(self) -> None:
+        """Retry process teardown and release the runner only after success."""
+
+        runner = self._runner
+        if runner is None:
+            if self._runtime._closed:
+                return
+            raise RuntimeError("SyncArchetypeRuntime is not active")
+        self._dispatch(self._runtime.shutdown())
+        runner.close()
+        self._runner = None
 
     def _require_runner(self) -> asyncio.Runner:
         if self._runner is None:
@@ -427,40 +444,6 @@ class SyncArchetypeRuntime:
             hooks=hooks,
         )
         return SyncRuntimeWorld(rw, self)
-
-    def evaluate_physical_task(
-        self,
-        config: PhysicalTaskEvalConfig,
-        *,
-        env_client: EnvClient,
-        policy_client: PolicyClient | None = None,
-    ) -> PhysicalTaskEvalReport:
-        """Synchronous physical task evaluation."""
-
-        return self._dispatch(
-            self._runtime.evaluate_physical_task(
-                config,
-                env_client=env_client,
-                policy_client=policy_client,
-            )
-        )
-
-    def sweep_physical_instructions(
-        self,
-        config: InstructionSweepConfig,
-        *,
-        env_client: EnvClient,
-        policy_client: PolicyClient,
-    ) -> InstructionSweepReport:
-        """Synchronous paired-seed instruction sweep."""
-
-        return self._dispatch(
-            self._runtime.sweep_physical_instructions(
-                config,
-                env_client=env_client,
-                policy_client=policy_client,
-            )
-        )
 
     def discover(self, storage=None) -> list[WorldInfo]:
         """List durable worlds through the synchronous facade."""

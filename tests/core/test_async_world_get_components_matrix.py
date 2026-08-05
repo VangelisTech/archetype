@@ -2,7 +2,7 @@ import pytest
 
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
-from tests.conftest import make_world_service
+from tests.conftest import make_world_harness
 
 
 class C1(Component):
@@ -47,10 +47,10 @@ async def test_get_components_matrix_union_and_projection(tmp_path):
 
     Validates union and projection semantics of get_components across signatures, including nested and list/bytes types.
     """
-    ws = make_world_service()
+    ws = make_world_harness()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await ws.create_world(WorldConfig(name="w"), storage_config=storage)
+        world = await ws.lifecycle.create_world(WorldConfig(name="w"), storage_config=storage)
 
         a1_ids = []
         a2_ids = []
@@ -138,4 +138,4 @@ async def test_get_components_matrix_union_and_projection(tmp_path):
         assert set(vals).issubset({0, 1000})
 
     finally:
-        await ws.shutdown()
+        await ws.close()

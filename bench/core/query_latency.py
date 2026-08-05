@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Materialized QueryService latency benchmarks.
+"""Materialized command-dispatch query latency benchmarks.
 
 The workload measures four distinct read shapes against one durable world:
 latest-tick exact-signature, historical-tick exact-signature, component union
@@ -21,10 +21,18 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from archetype.app.container import ServiceContainer
-from archetype.app.query.service import QueryService
+from archetype.commands.dispatch import CommandDispatcher
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
+from archetype.wiring import RuntimeBootstrapConfig, build_runtime_resources
+from archetype.world.models import (
+    ComponentTypeRef,
+    CreateEntities,
+    CreateWorld,
+    QueryArchetype,
+    QueryComponents,
+    Run,
+)
 from bench.core.report import build_report, capture_environment, write_report
 
 _ARCHETYPE_COUNT = 3
@@ -112,13 +120,15 @@ def _query_cases(fixture: QueryFixture) -> tuple[QueryCase, ...]:
 
 
 async def _setup_fixture(
-    container: ServiceContainer,
+    dispatcher: CommandDispatcher,
     storage: StorageConfig,
     config: QueryBenchmarkConfig,
 ) -> QueryFixture:
-    info = await container.world_service.create_world(
-        WorldConfig(name="query-latency-benchmark"),
-        storage,
+    info = await dispatcher.apply(
+        CreateWorld(
+            config=WorldConfig(name="query-latency-benchmark"),
+            storage_config=storage,
+        )
     )
     count = config.entities_per_archetype
     groups: list[list[list[Component]]] = [
@@ -133,14 +143,22 @@ async def _setup_fixture(
         ],
     ]
     entity_ids = [
-        await container.mutation_service.create_entities(info.world_id, group) for group in groups
+        await dispatcher.apply(
+            CreateEntities.from_entities(
+                world_id=info.world_id,
+                entities=group,
+            )
+        )
+        for group in groups
     ]
     if any(len(ids) != count for ids in entity_ids):
         raise RuntimeError("query benchmark setup did not create its fixtures")
 
-    run = await container.simulation_service.run(
-        info.world_id,
-        RunConfig.benchmark(steps=config.history_ticks),
+    run = await dispatcher.apply(
+        Run(
+            world_id=info.world_id,
+            run_config=RunConfig.benchmark(steps=config.history_ticks),
+        )
     )
     if run.final_tick < 1:
         raise RuntimeError("query benchmark setup did not persist a tick")
@@ -154,49 +172,54 @@ async def _setup_fixture(
 
 
 async def _execute_case(
-    queries: QueryService,
+    dispatcher: CommandDispatcher,
     storage: StorageConfig,
     fixture: QueryFixture,
     case: QueryCase,
 ) -> int:
-    ticks = [case.tick]
-    entity_ids = list(case.entity_ids) or None
+    ticks = (case.tick,)
+    entity_ids = case.entity_ids or None
+    position_ref = ComponentTypeRef.from_type(QueryPosition)
     if case.path == "archetype":
-        frame = await queries.query_archetype(
-            (QueryPosition,),
-            fixture.world_id,
-            fixture.run_id,
-            storage,
-            ticks=ticks,
-            entity_ids=entity_ids,
+        frame = await dispatcher.apply(
+            QueryArchetype(
+                signature=(position_ref,),
+                world_id=fixture.world_id,
+                run_id=fixture.run_id,
+                storage_config=storage,
+                ticks=ticks,
+                entity_ids=entity_ids,
+            )
         )
     else:
-        frame = await queries.query_components(
-            [QueryPosition],
-            fixture.world_id,
-            fixture.run_id,
-            storage,
-            ticks=ticks,
-            entity_ids=entity_ids,
+        frame = await dispatcher.apply(
+            QueryComponents(
+                components=(position_ref,),
+                world_id=fixture.world_id,
+                run_id=fixture.run_id,
+                storage_config=storage,
+                ticks=ticks,
+                entity_ids=entity_ids,
+            )
         )
     return frame.collect().count_rows()
 
 
 async def _measure_case(
-    queries: QueryService,
+    dispatcher: CommandDispatcher,
     storage: StorageConfig,
     fixture: QueryFixture,
     case: QueryCase,
     config: QueryBenchmarkConfig,
 ) -> dict[str, Any]:
     for _ in range(config.warmups):
-        observed = await _execute_case(queries, storage, fixture, case)
+        observed = await _execute_case(dispatcher, storage, fixture, case)
         _assert_row_count(case, observed)
 
     observed_rows: list[int] = []
     started = time.perf_counter()
     for _ in range(config.repetitions):
-        observed_rows.append(await _execute_case(queries, storage, fixture, case))
+        observed_rows.append(await _execute_case(dispatcher, storage, fixture, case))
     elapsed = time.perf_counter() - started
 
     for observed in observed_rows:
@@ -223,7 +246,7 @@ def _assert_row_count(case: QueryCase, observed: int) -> None:
 
 
 def _audit_storage_for(storage: StorageConfig) -> StorageConfig:
-    """Derive the CommandGateway audit store without changing the measured backend."""
+    """Derive the dispatcher audit store without changing the measured backend."""
     return storage.model_copy(
         update={
             "namespace": f"{storage.namespace}__audit",
@@ -238,15 +261,20 @@ async def run_query_benchmarks(
 ) -> list[dict[str, Any]]:
     """Build one durable fixture and measure every required query shape."""
     config.validate()
-    container = ServiceContainer(audit_storage_config=_audit_storage_for(storage))
+    resources = build_runtime_resources(
+        RuntimeBootstrapConfig.from_env(
+            audit_storage_config=_audit_storage_for(storage),
+        )
+    )
+    dispatcher = resources.dispatcher
     try:
-        fixture = await _setup_fixture(container, storage, config)
+        fixture = await _setup_fixture(dispatcher, storage, config)
         return [
-            await _measure_case(container.query_service, storage, fixture, case, config)
+            await _measure_case(dispatcher, storage, fixture, case, config)
             for case in _query_cases(fixture)
         ]
     finally:
-        await container.shutdown()
+        await resources.aclose()
 
 
 def build_query_report(
@@ -265,7 +293,7 @@ def build_query_report(
             "workload": "query-latency-v1",
             "archetype_count": _ARCHETYPE_COUNT,
             "storage_backend": storage.backend.value,
-            "query_path": "QueryService",
+            "query_path": "CommandDispatcher",
             "materialization": "collect-count-rows",
         },
         environment=capture_environment(runner_id=runner_id),
@@ -283,7 +311,9 @@ def _int_at_least(minimum: int) -> Callable[[str], int]:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run materialized QueryService benchmarks")
+    parser = argparse.ArgumentParser(
+        description="Run materialized command-dispatch query benchmarks"
+    )
     parser.add_argument("--entities-per-archetype", type=_int_at_least(1), default=100)
     parser.add_argument("--history-ticks", type=_int_at_least(2), default=3)
     parser.add_argument("--repetitions", type=_int_at_least(1), default=5)

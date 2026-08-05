@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import argparse
 import types
 from dataclasses import MISSING, dataclass, fields, is_dataclass
 from enum import Enum
@@ -48,7 +49,7 @@ PAGES: tuple[ReferencePage, ...] = (
         "runtime-models",
         "Runtime models",
         "Recommended API",
-        "Configuration, result, receipt, and introspection records returned by world operations.",
+        "Configuration, result, and introspection records returned by world operations.",
         (
             "ProcessorInfo",
             "HookInfo",
@@ -59,39 +60,32 @@ PAGES: tuple[ReferencePage, ...] = (
             "EpisodeResult",
             "RolloutConfig",
             "RolloutResult",
-            "ArtifactReceipt",
-            "ArtifactWriteReceipt",
         ),
     ),
     ReferencePage(
-        "artifact-bundles",
-        "Durable artifact bundles",
+        "artifacts",
+        "File artifacts",
         "Recommended API",
-        "These top-level `archetype` exports are supported runtime contracts. "
-        "Use them to configure durable sandbox-checkpoint evidence, publish portable "
-        "artifacts, and query or reconcile their content-addressed index; the rendered "
-        "implementation-module paths are internal.",
+        "Declare files, configure content-addressed storage, retain portable "
+        "references to indexed artifact occurrences, and anchor interpretation to a task.",
         (
-            "ArtifactBundleRequest",
-            "ArtifactCandidate",
-            "ArtifactIndexRecord",
-            "ArtifactPublishReceipt",
-            "ArtifactReconcileResult",
-            "ArtifactSourceResolver",
-            "BoundedArtifactSourceResolver",
+            "ArtifactContext",
+            "ArtifactSource",
+            "ArtifactRef",
             "ArtifactStoreConfig",
-            "MaterializedArtifact",
+            "analyze_artifacts",
+            "synthesize_artifact_context",
         ),
     ),
     ReferencePage(
         "transcripts",
         "Coding-agent transcripts",
         "Recommended API",
-        "Ingest Claude Code JSONL through a redacted, replay-safe artifact boundary and "
-        "retain only lightweight trajectory linkage in world history.",
+        "Ingest Claude Code JSONL through a redacted artifact boundary and append "
+        "normalized mission rows linked to the sanitized file occurrence.",
         (
             "ClaudeTranscriptSource",
-            "TranscriptIngestionReceipt",
+            "TranscriptIngestionResult",
         ),
     ),
     ReferencePage(
@@ -99,7 +93,7 @@ PAGES: tuple[ReferencePage, ...] = (
         "Building blocks",
         "Extension API",
         "Use these types to define component data, processors, and processor resources.",
-        ("Component", "AsyncProcessor", "ArtifactProcessor", "Resources"),
+        ("Component", "AsyncProcessor", "Resources"),
     ),
     ReferencePage(
         "hooks",
@@ -135,9 +129,10 @@ PAGES: tuple[ReferencePage, ...] = (
         (
             "AutoResearchConfig",
             "AutoResearchResult",
-            "CandidateContext",
+            "ResearchCandidateContext",
             "EvaluationResult",
             "IterationResult",
+            "FrameGrader",
             "Outcome",
             "GraderContract",
             "EvalReceipt",
@@ -147,15 +142,11 @@ PAGES: tuple[ReferencePage, ...] = (
         "physical-ai",
         "Physical AI",
         "Recommended API",
-        "Run batched physical-policy evaluations and paired instruction sweeps through "
-        "the runtime, while retaining queryable world/run evidence.",
+        "Run or recover complete Modal-hosted episode batches through a World.",
         (
-            "PhysicalTaskEvalConfig",
-            "PhysicalTaskEvalReport",
-            "InstructionSweepConfig",
-            "InstructionSweepReport",
-            "TrialOutcome",
-            "VariantOutcome",
+            "HostedEpisodeRequest",
+            "HostedEpisodeObservation",
+            "ModalHostedEpisodeConfig",
             "EnvClient",
             "PolicyClient",
             "PerturbationStrategy",
@@ -163,17 +154,6 @@ PAGES: tuple[ReferencePage, ...] = (
             "RoundRecord",
             "OptimizationResult",
             "optimize_instruction",
-        ),
-    ),
-    ReferencePage(
-        "commands",
-        "Command models",
-        "Integration API",
-        "Typed command envelopes for supported host adapters. Scheduling, authorization, "
-        "and concrete application services remain internal.",
-        (
-            "Command",
-            "CommandType",
         ),
     ),
     ReferencePage(
@@ -188,6 +168,7 @@ PAGES: tuple[ReferencePage, ...] = (
             "AsyncSystem",
             "AsyncQueryManager",
             "AsyncUpdateManager",
+            "AmbiguousTickCommitError",
             "TickExecutionError",
             "TickFailure",
         ),
@@ -220,6 +201,7 @@ PAGES: tuple[ReferencePage, ...] = (
 )
 
 ALIASES: dict[str, str] = {
+    "CandidateContext": "ResearchCandidateContext",
     "Processor": "SyncProcessor",
     "World": "SyncWorld",
     "System": "SyncSystem",
@@ -231,26 +213,31 @@ ALIASES: dict[str, str] = {
 # These types are part of the public signature closure but are intentionally
 # namespaced rather than promoted to the top-level import surface.
 SUPPLEMENTAL: dict[str, tuple[str, str]] = {
-    "ActorCtx": ("archetype.app.gateway.auth", "ActorCtx"),
+    "analyze_artifacts": ("archetype.artifacts.context", "analyze_artifacts"),
+    "synthesize_artifact_context": (
+        "archetype.artifacts.context",
+        "synthesize_artifact_context",
+    ),
+    "ActorCtx": ("archetype.commands.models", "ActorCtx"),
     "HookEvent": ("archetype.core.hooks", "HookEvent"),
     "HookHandle": ("archetype.core.hooks", "HookHandle"),
-    "HookInfo": ("archetype.app.models", "HookInfo"),
+    "HookInfo": ("archetype.world.models", "HookInfo"),
     "ClaudeTranscriptSource": (
         "archetype.missions.trajectories",
         "ClaudeTranscriptSource",
     ),
-    "TranscriptIngestionReceipt": (
-        "archetype.artifacts",
-        "TranscriptIngestionReceipt",
+    "TranscriptIngestionResult": (
+        "archetype.missions.trajectories",
+        "TranscriptIngestionResult",
     ),
-    "IterationResult": ("archetype.app.research.contracts", "IterationResult"),
-    "EnvClient": ("archetype.physical_ai.manipulation", "EnvClient"),
+    "IterationResult": ("archetype.research.models", "IterationResult"),
+    "EnvClient": ("archetype.physical_ai.interfaces", "EnvClient"),
     "OptimizationResult": ("archetype.physical_ai.optimization", "OptimizationResult"),
     "PerturbationStrategy": (
         "archetype.physical_ai.optimization",
         "PerturbationStrategy",
     ),
-    "PolicyClient": ("archetype.physical_ai.policy", "PolicyClient"),
+    "PolicyClient": ("archetype.physical_ai.interfaces", "PolicyClient"),
     "RoundRecord": ("archetype.physical_ai.optimization", "RoundRecord"),
     "TemplatePerturbation": (
         "archetype.physical_ai.optimization",
@@ -260,8 +247,8 @@ SUPPLEMENTAL: dict[str, tuple[str, str]] = {
         "archetype.physical_ai.optimization",
         "optimize_instruction",
     ),
-    "ProcessorInfo": ("archetype.app.models", "ProcessorInfo"),
-    "ResourceInfo": ("archetype.app.models", "ResourceInfo"),
+    "ProcessorInfo": ("archetype.world.models", "ProcessorInfo"),
+    "ResourceInfo": ("archetype.world.models", "ResourceInfo"),
     "StorageBackend": ("archetype.core.config", "StorageBackend"),
     "PreTick": ("archetype.core.hooks", "PreTick"),
     "PostTick": ("archetype.core.hooks", "PostTick"),
@@ -287,17 +274,12 @@ RECORDS = frozenset(
         "EpisodeResult",
         "RolloutConfig",
         "RolloutResult",
-        "ArtifactReceipt",
-        "ArtifactWriteReceipt",
-        "ClaudeTranscriptSource",
-        "TranscriptIngestionReceipt",
-        "ArtifactBundleRequest",
-        "ArtifactCandidate",
-        "ArtifactIndexRecord",
-        "ArtifactPublishReceipt",
-        "ArtifactReconcileResult",
+        "ArtifactContext",
+        "ArtifactSource",
+        "ArtifactRef",
         "ArtifactStoreConfig",
-        "MaterializedArtifact",
+        "ClaudeTranscriptSource",
+        "TranscriptIngestionResult",
         "ProcessorInfo",
         "HookInfo",
         "ResourceInfo",
@@ -312,18 +294,16 @@ RECORDS = frozenset(
         "OnDestroy",
         "AutoResearchConfig",
         "AutoResearchResult",
-        "CandidateContext",
+        "ResearchCandidateContext",
         "EvaluationResult",
         "IterationResult",
+        "FrameGrader",
         "Outcome",
         "GraderContract",
         "EvalReceipt",
-        "PhysicalTaskEvalConfig",
-        "PhysicalTaskEvalReport",
-        "InstructionSweepConfig",
-        "InstructionSweepReport",
-        "TrialOutcome",
-        "VariantOutcome",
+        "HostedEpisodeRequest",
+        "HostedEpisodeObservation",
+        "ModalHostedEpisodeConfig",
         "OptimizationResult",
         "RoundRecord",
     }
@@ -332,13 +312,8 @@ RECORDS = frozenset(
 EXPLICIT_MEMBERS: dict[str, tuple[str, ...]] = {
     "RunConfig": ("dev", "benchmark"),
     "AutoResearchResult": ("improved",),
-    "ArtifactWriteReceipt": ("duplicate",),
-    "TranscriptIngestionReceipt": ("duplicate",),
-    "ArtifactBundleRequest": ("canonical_json", "digest"),
-    "ArtifactStoreConfig": ("local", "retention_seconds"),
+    "ArtifactStoreConfig": ("local",),
     "GraderContract": ("digest",),
-    "PhysicalTaskEvalReport": ("success_rate", "mean_length"),
-    "InstructionSweepReport": ("scores", "best"),
 }
 
 COMPATIBILITY_CLASSES = frozenset(
@@ -388,6 +363,8 @@ def _type_name(annotation: object) -> str:
     """Render a compact Python type name for a generated field table."""
     if annotation is Any:
         return "Any"
+    if annotation is Ellipsis:
+        return "..."
     if annotation is None or annotation is type(None):
         return "None"
 
@@ -559,20 +536,52 @@ def _render_index() -> str:
     return "\n".join(lines)
 
 
-def main() -> None:
-    locations = _validate_coverage()
-    PAGES_DIR.mkdir(parents=True, exist_ok=True)
-    OUTPUT.write_text(_render_index(), encoding="utf-8", newline="\n")
-    expected = set()
+def _expected_outputs(locations: dict[str, tuple[str, str]]) -> dict[Path, str]:
+    outputs = {OUTPUT: _render_index()}
     for page in PAGES:
-        destination = PAGES_DIR / f"{page.slug}.md"
-        destination.write_text(_render_page(page, locations), encoding="utf-8", newline="\n")
-        expected.add(destination)
+        outputs[PAGES_DIR / f"{page.slug}.md"] = _render_page(page, locations)
+    return outputs
+
+
+def _check_outputs(outputs: dict[Path, str]) -> list[Path]:
+    drifted = [
+        destination
+        for destination, expected in outputs.items()
+        if not destination.is_file() or destination.read_text(encoding="utf-8") != expected
+    ]
+    drifted.extend(stale for stale in PAGES_DIR.glob("*.md") if stale not in outputs)
+    return sorted(drifted)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="fail when the committed Python reference differs from generated output",
+    )
+    args = parser.parse_args(argv)
+
+    locations = _validate_coverage()
+    outputs = _expected_outputs(locations)
+    if args.check:
+        drifted = _check_outputs(outputs)
+        if drifted:
+            rendered = ", ".join(str(path.relative_to(DOCS_DIR.parent)) for path in drifted)
+            print(f"Python API reference is stale: {rendered}")
+            return 1
+        print(f"Python API reference is current ({len(PAGES)} pages)")
+        return 0
+
+    PAGES_DIR.mkdir(parents=True, exist_ok=True)
+    for destination, rendered in outputs.items():
+        destination.write_text(rendered, encoding="utf-8", newline="\n")
     for stale in PAGES_DIR.glob("*.md"):
-        if stale not in expected:
+        if stale not in outputs:
             stale.unlink()
     print(f"Generated {OUTPUT} and {len(PAGES)} Python API pages")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

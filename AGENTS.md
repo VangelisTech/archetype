@@ -8,17 +8,21 @@ Choose the owning package before adding a type or behavior:
 
 | Kind | Canonical location |
 |---|---|
-| Components, processors, pure DataFrame transforms, transition graphs, and reusable projections | `archetype.<family>` |
+| Components, processors, pure DataFrame transforms, transition graphs, reusable projections, and family-owned free handlers/workflows over declared lower-family ports | `archetype.<family>` |
 | Supported family value contracts | `archetype.<family>.contracts` or another specifically named family module |
 | Capability-scoped resources and provider adapters implementing a family-owned protocol | A named subpackage of `archetype.<family>` |
-| Durable authority, cross-family orchestration, internal service ports, and concrete application services | `archetype.app.<family>` |
-| Transport, authentication, application facade, and composition | `archetype.api`, `archetype.app.gateway`, `archetype.app.application`, and `archetype.app.container` |
+| Generic Activity identity, claims, attempts, fences, result references, and settlement | `archetype.activities` |
+| Physical storage, control catalogs, commit coordination, and generic durable world/run envelopes | `archetype.storage` |
+| Legacy application modules awaiting the accepted family rehome | `archetype.app.<family>` (migration only; add no new authority) |
+| Transport and authentication | `archetype.api` |
+| Concrete composition and process lifetime | `archetype.wiring` and `archetype.runtime_resources` |
 
 Top-level families may import `archetype.core`, themselves, third-party
 libraries, and only lower top-level family contracts declared in
 `quality/architecture.toml` and the family fragments under
-`quality/architecture.d/`. They never import `app`, `runtime`, `api`, or `cli`;
-application families may consume their contracts in the other direction. Use
+`quality/architecture.d/`. They never import `app`, `runtime`,
+`runtime_resources`, `wiring`, `api`, or `cli`; application families may
+consume their contracts in the other direction. Use
 `components.py`, `processors.py`, `contracts.py`,
 `transitions.py`, `interfaces.py`, and `service.py` according to those semantic
 roles. Every first-party top-level package or module must be classified as
@@ -26,10 +30,37 @@ reserved infrastructure or a registered family, and the family graph must
 remain acyclic. Root-facade imports receive the disposition of their owning module.
 Package placement never makes a symbol public by itself.
 
-A reviewed family may own a capability-scoped resource adapter without gaining
-application authority. Agent Missions is the concrete example: coding-agent
-state, processors, relations, and sandbox resources live under
-`archetype.missions`; `archetype.app.missions` composes them into a workflow.
+`archetype.storage` is the reviewed physical-substrate family: it owns storage
+execution, control-catalog implementations and records, physical visibility,
+commit coordination, and the generic durable world/run envelope. Workflow
+families consume that substrate through the narrow `iStorageService` port and
+retain the meaning and orchestration of their workflows.
+
+`archetype.research` is the concrete free-workflow example: it owns
+AutoResearch values, ledger state, views, experiment-scoped admission, and the
+directly awaited handler over the declared storage and world-family ports. It
+does not require an application facade or service protocol.
+
+A reviewed family may own a capability-scoped resource adapter and workflows
+over declared lower-family ports without gaining concrete composition
+authority. Agent Missions is the concrete migration example: coding-agent
+state, processors, relations, sandbox resources, and Activity choreography
+belong under `archetype.missions`; the current `archetype.app.missions`
+workflow is rehomed and removed in A8.
+
+The accepted Activity migration distinguishes tick-time capability from
+between-tick durable work. A Resource is available while executing a tick;
+correctness must not depend on its process-local lifetime. An Activity is
+durably coordinated work admitted from one committed tick and observed by a
+later committed tick. `archetype.activities` owns generic delivery mechanics
+only and consumes the lower `archetype.storage.activity_catalog`; recovery
+meaning stays with the owning family/provider adapter. Application choreography
+belongs to the owning top-level family over declared lower-family ports.
+Hosted-episode choreography is born under `archetype.physical_ai`; no
+`archetype.app.physical_ai` mirror is recreated. The current
+`archetype.app.missions` implementation is an interim migration source removed
+in A8. The `AsyncResources`/WorldHost spike is frozen and must not be merged
+into this path. See `docs/guide/activities.md`.
 
 ## Layout
 
@@ -37,22 +68,22 @@ state, processors, relations, and sandbox resources live under
 archetype/
 ├── src/archetype/
 │   ├── core/           # ECS engine (Daft + Arrow + LanceDB)
-│   ├── <family>/       # Reusable ECS/domain state and pure behavior
+│   ├── storage/        # Physical rows, Catalogs, commits + control authority
+│   ├── world/          # Managed lifecycle, state behavior, reads + operation models
+│   ├── commands/       # Registry, policy, dispatch, scheduling + audit projection
+│   ├── evaluation/     # Grading, snapshot views, leases + durable receipts
+│   ├── artifacts/      # File ingestion, content objects + typed/common indexes
+│   ├── research/       # AutoResearch values, ledger views + free workflow handler
+│   ├── physical_ai/    # Physical state, models, views + free workflow handlers
+│   ├── <family>/       # Reusable domain state, behavior + declared workflows
 │   ├── app/            # Internal application families
-│   │   ├── application/ #   Actor-free RuntimeApplication facade
-│   │   ├── gateway/     #   CommandGateway + RBAC/auth
-│   │   ├── commands/    #   Durable scheduler/dispatcher
-│   │   ├── world/       #   Lifecycle, mutation, simulation
-│   │   ├── storage/     #   Store pool + control authority
-│   │   ├── query/       #   Persisted read path
-│   │   ├── artifacts/   #   Publication + typed ingestion
-│   │   ├── evaluation/  #   Grading + receipts
-│   │   ├── research/    #   Autoresearch workflows
-│   │   ├── audit/       #   Append-only projection
-│   │   └── container.py #   Sole concrete composition root
+│   │   └── missions/    #   Coding-agent workflow authority
+│   ├── redaction/      # Canonical pre-durability redaction family
 │   ├── api/            # FastAPI REST layer
 │   ├── cli/            # Typer CLI (thin HTTP client)
-│   └── runtime/        # Top-level runtime over the service layer
+│   ├── runtime/        # Supported trusted scripting handles
+│   ├── runtime_resources.py # Explicit process-lifetime owner
+│   └── wiring.py       # Sole concrete cross-family composition root
 ├── examples/
 ├── tests/
 └── LEARNINGS.md        # Daft patterns and architectural notes
@@ -63,14 +94,17 @@ archetype/
 | Layer | Access |
 |-------|--------|
 | `core/` | Modify only after discussion. It holds the hard invariants; breakage there cascades everywhere. |
-| `<family>/` | Reusable domain contracts and pure behavior. Follow the declared top-level family DAG. |
+| `<family>/` | Reusable domain contracts, behavior, and family-owned workflows. Follow the declared top-level family DAG. |
 | `app/` | Extend carefully. Internal authority, orchestration, service ports, and concrete implementations. |
 | `runtime/` | Recommended top-level API (`ArchetypeRuntime`). Contract changes require focused specs/tests. |
 | `api/`, `cli/` | Write freely, subject to the contracts they wrap. |
 
 ## Top-level runtime (recommended)
 
-`ArchetypeRuntime` is the recommended entry point for scripts and beginner docs. Process lifetime and world lifetime are separate concerns: the runtime owns the shared container; `world()` handles are lazy and world-local. See `docs/guide/runtime.md` for the full runtime contract.
+`ArchetypeRuntime` is the recommended entry point for scripts and beginner
+docs. Process lifetime and world lifetime are separate concerns: the runtime
+owns one `RuntimeResources`; `world()` handles are lazy and world-local. See
+`docs/guide/runtime.md` for the full runtime contract.
 
 ```python
 import asyncio
@@ -88,48 +122,35 @@ asyncio.run(main())
 
 Sync scripts use `with ArchetypeRuntime.sync() as runtime:` instead.
 
-## Inspecting the service layer (internal)
+## Inspecting process wiring (maintainers only)
 
-`ServiceContainer` and concrete services are internal implementation
-machinery, not supported application APIs. Focused implementation tests and
-repository wiring code may use them. Application code and examples use
-`ArchetypeRuntime`; untrusted hosts use the REST/API gateway boundary.
+Concrete services and `archetype.wiring` are internal implementation
+machinery, not supported application APIs. Application code and examples use
+`ArchetypeRuntime`; untrusted hosts use REST/API authentication followed by
+the same `CommandDispatcher`.
 
-The container exposes actor-free `application` and authorized
-`command_gateway` ports. The runtime consumes only `application`; FastAPI
-consumes only `iCommandGateway`. `ActorCtx` is an ingress/gateway concept and
-never belongs on a runtime handle.
+`build_runtime_resources()` is the single concrete composition transaction.
+It returns the process owner; it does not expose parallel trusted or
+actor-aware adapters. Maintainer diagnostics may inspect that owner narrowly:
 
 ```python
 import asyncio
-from archetype.app.container import ServiceContainer
-from archetype.app.models import Command, CommandType
-from archetype.app.gateway.auth.models import ActorCtx
-from archetype.core.config import WorldConfig, StorageConfig, RunConfig
-from uuid_utils import uuid7
+from archetype.wiring import RuntimeBootstrapConfig, build_runtime_resources
 
 async def main():
-    container = ServiceContainer()
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
-    info = await container.command_gateway.create_world(
-        ctx,
-        WorldConfig(name="experiment"),
-        StorageConfig(),
-    )
-
-    cmd = Command(type=CommandType.SPAWN, payload={"components": []})
-    await container.command_gateway.submit(ctx, info.world_id, cmd)
-
-    result = await container.command_gateway.run(
-        ctx,
-        info.world_id,
-        RunConfig(num_steps=10),
-    )
-    print(f"Completed {result.ticks_completed} ticks")
-    await container.shutdown()
+    resources = build_runtime_resources(RuntimeBootstrapConfig.from_env())
+    try:
+        dispatcher = resources.dispatcher
+        print(type(dispatcher).__name__)
+    finally:
+        await resources.aclose()
 
 asyncio.run(main())
 ```
+
+Trusted runtime handles call `dispatcher.apply()` or `defer()`. FastAPI
+authenticates an `ActorCtx` from `archetype.commands.models`, then calls
+`apply_as()` or `defer_as()`. Family handlers never receive the actor.
 
 ## LLM-powered processors
 
@@ -179,29 +200,38 @@ The CLI (except `serve`) is an HTTP client against the running server. See `READ
 ## Tests and CI
 
 ```bash
-make ci          # complete PR verification profile
-make verify-full # PR profile + process/reliability evidence
-make verify-release # installed-artifact release profile
+make ci          # required PR profile: static checks + fast tests
+make verify-full # coverage, eval, package, example, operational + docs evidence
+make verify-release # exact-wheel release profile
 make test        # fast tests, no coverage
 make static      # format/lint/type/lock/registry checks
 make test-cov    # coverage report
 ```
 
-PR flow: open the PR and stop — never run `gh pr merge --auto`. The
-automerge workflow arms after the review gate passes your current head
-(premature arms are auto-reverted; arming early only skips the review, it
-never merges sooner). Reply to footgun review threads with what you
-changed before resolving them.
+PR flow: open the PR, wait for required `Static` and `Tests (3.12)`, address
+concrete Codex and Cursor Bugbot findings, then squash merge manually. The
+AI review gate, automatic merge workflow, and merge queue are disabled.
+Heavy coverage, eval, external infrastructure, example, package, and
+compatibility evidence runs at release cadence instead of blocking every PR.
+
+### Rerun policy
+
+- A required-check failure gets **one** authorized rerun, and only after a
+  concrete classification (read the log or receipt first — never
+  rerun-and-hope). A second failure of the same kind is a harness defect:
+  stop, file it, do not keep rerunning.
+- Treat Codex and Cursor Bugbot review as advisory evidence. Fix concrete
+  findings; do not invent a second merge gate around them.
 
 ## Application flow
 
 ```text
-Trusted script → ArchetypeRuntime → RuntimeApplication
+Trusted script → ArchetypeRuntime / RuntimeWorld
+                 → CommandDispatcher.apply / defer
 
-CLI → API authentication → CommandGateway authorization
-                             → RuntimeApplication
+CLI → API authentication → CommandDispatcher.apply_as / defer_as
 
-RuntimeApplication → family workflow ports → AsyncWorld / durable storage
+CommandDispatcher → exact OperationRegistry handler or CommandScheduler
 
 Deferred admission → CommandScheduler → durable control catalog
 Simulation tick    → CommandScheduler drain → tick commit + command settlement
@@ -209,32 +239,49 @@ Simulation tick    → CommandScheduler drain → tick commit + command settleme
 CLI → API over HTTP (except server startup)
 ```
 
-Roles (flat, not hierarchical):
+Role labels are flat inputs. Their built-in grant sets explicitly include the
+preceding row; no unknown permission is inferred from a role name.
 
 | Role | Permissions |
 |------|-------------|
-| `viewer` | Read-only |
-| `player` | spawn, despawn, update, message, custom |
-| `operator` | schema, processors, hooks, resources, simulation, fork, destroy |
-| `admin` | All commands |
+| `viewer` | Registered read-only operations |
+| `player` | Viewer grants plus spawn, batch create, despawn, and update |
+| `operator` | Player grants plus schema, processors, hooks, resources, simulation, fork, and destroy |
+| `admin` | Operator grants plus world creation and mutable resume |
 
 ## Change-safety quick reference
 
-- Keep dependencies pointing downward: runtime → actor-free app application
-  port; API → gateway port; gateway → application port; app → core. CLI is an
-  HTTP client of API. Do not leak `AsyncWorld`, the container, backend clients,
-  or concrete services across either boundary.
+- Keep dependencies pointing downward: runtime/API → commands and exact family
+  operation models; commands → world/storage; world → storage. `wiring.py` is
+  the only concrete cross-family composition root. CLI is an HTTP client of
+  API. Do not leak `AsyncWorld`, `RuntimeResources`, backend clients, or
+  concrete services across either supported boundary.
 - Treat `src/archetype/core/` as invariant-owned. Prefer an app or runtime
   extension when it can meet the requirement; discuss any core behavior change
   before implementing it.
 - Preserve the lazy Daft DAG. Prefer expressions and DataFrame transforms;
   `.collect()` or `.to_pylist()` in `src/` needs a documented
-  `lazy_audit.toml` exception at a real execution boundary.
+  `lazy_audit.toml` exception at a real execution boundary. Application-owned
+  terminal Daft work flows through `StorageService`; keep Catalog table
+  registration/read/write, schema comparison, and Iceberg retry there.
+- Keep storage planes distinct. SQLite or the remote Durable Object is the
+  transactional control authority for world records, fences, commands, and
+  manifests. Iceberg is the data authority for atomic table snapshots and
+  optimistic multi-writer commits. `StorageService` resolves and stamps the
+  durable world/run envelope and selects plain versus key-conditional append.
+  Artifact handlers require explicit durable coordinates and delegate typed
+  publication directly to that substrate.
 - A tick is a commit boundary: compute all archetypes before persistence, and
   do not consume staged mutations or advance the tick until durable visibility
   is published. Failed ticks must remain retryable.
+- Required projectors persist deterministic intent only. Provider work derived
+  from committed world intent runs as an Activity outside the world lock and
+  returns bounded factual evidence to a later tick. Lease expiry or confirmed
+  absence alone never authorizes replay without a provider-side retry guard,
+  and settlement requires family completeness evidence bound to the exact
+  recorded result digest.
 - Keep runtime and world lifetimes distinct. Handles are lazy and actor-free;
-  world shutdown is local, while runtime teardown owns shared services.
+  world shutdown is local, while `RuntimeResources` owns phased shared teardown.
 - When changing behavior, update the focused contract test (and the
   specification if the contract itself changes), not only a happy-path test.
 
@@ -269,7 +316,7 @@ change, and report the exact validation that ran. See
 - Use the `tmp_path` fixture for storage isolation.
 - Prefer contract tests over happy-path coverage: concurrent first-use activation, shutdown/fork races, multi-world lifetime isolation, spawn materialization timing, and example-script smoke execution. If a test feels "too specific," it is usually testing the real semantic boundary.
 - A reported bug gets one deterministic pytest regression first. Add a repository scenario only when a matrix of backends, entry points, lifecycle states, or concurrency schedules proves a broader invariant that the focused test cannot own alone.
-- The self-harness is repository-level: `tests/`, `evals/`, `bench/`, static audits, and mutation probes consume the shipped library. Do not move them into `src/archetype/core/` or import them from production code. Product-facing evaluation remains under `src/archetype/` (`EvalService`, dataset identity, graders, and receipts).
+- The self-harness is repository-level: `tests/`, `evals/`, `bench/`, static audits, and mutation probes consume the shipped library. Do not move them into `src/archetype/core/` or import them from production code. Product-facing evaluation remains under `src/archetype/evaluation/` (free handlers, dataset identity, graders, and receipts).
 - Examples are part of the contract. Run them in CI; gate LLM-backed ones on credentials or degrade gracefully.
 - Mutation testing via `mutmut` (`make mutmut`) is on-demand, not in `make ci`. Scope is narrow by design — see `docs/guide/mutation-testing.md`.
 
@@ -287,11 +334,15 @@ change, and report the exact validation that ran. See
 | `docs/guide/runtime.md` | Runtime contract |
 | `docs/guide/service-protocols.md` | App service contracts |
 | `docs/guide/command-gate.md` | Roles, permissions, and audit gate |
+| `docs/guide/activities.md` | Resource/Activity boundary and crash-recovery contract |
 | `LEARNINGS.md` | Daft patterns, UDF rules, data-centric principle |
 | `src/archetype/runtime/` | `ArchetypeRuntime` — recommended top-level API |
-| `src/archetype/app/container.py` | Service wiring |
-| `src/archetype/app/gateway/service.py` | Authorized ingress gateway |
-| `src/archetype/app/commands/service.py` | Durable scheduler and dispatcher |
+| `src/archetype/wiring.py` | Sole concrete composition transaction |
+| `src/archetype/runtime_resources.py` | Process lifetime, admission drain, and phased cleanup |
+| `src/archetype/commands/dispatch.py` | Governed direct and deferred command entry |
+| `src/archetype/commands/scheduler.py` | Durable scheduler and materializer |
+| `src/archetype/storage/service.py` | Daft execution and durable storage authority |
+| `src/archetype/artifacts/pipeline.py` | Cohesive reusable file-ingestion graph |
 | `src/archetype/core/aio/async_world.py` | World runtime |
 | `tests/app/test_runtime_contracts.py` | Executable runtime contracts |
 | `tests/sync/test_sync_stack_contracts.py` | Executable sync engine contracts |

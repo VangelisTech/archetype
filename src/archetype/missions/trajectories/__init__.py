@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Mission trajectory schemas, authoring contracts, and pure transforms."""
+"""Episode-evidence schemas, authoring contracts, and derived trajectory views."""
 
 from archetype.missions.trajectories.claude import (
     ClaudeTranscriptSource,
@@ -10,7 +10,6 @@ from archetype.missions.trajectories.claude import (
 )
 from archetype.missions.trajectories.components import (
     CLAUDE_TRANSCRIPT_TABLE,
-    Trajectory,
     TrajectoryAction,
     TrajectoryCommandEvent,
     TrajectoryObservation,
@@ -18,7 +17,11 @@ from archetype.missions.trajectories.components import (
     TrajectoryTurn,
     TranscriptArtifactRef,
 )
-from archetype.missions.trajectories.contracts import TrajectorySelection, Turn
+from archetype.missions.trajectories.contracts import (
+    TrajectorySelection,
+    TranscriptIngestionResult,
+    Turn,
+)
 from archetype.missions.trajectories.transforms import (
     actions_from_observations,
     audit_row_to_event,
@@ -28,12 +31,11 @@ from archetype.missions.trajectories.transforms import (
     filter_trajectory_rows,
     observations_from_post_tick_events,
     reward_row,
-    trajectory_from_episode_result,
+    trajectory,
     turns_to_components,
 )
 
 __all__ = [
-    "Trajectory",
     "TrajectoryAction",
     "TrajectoryCommandEvent",
     "TrajectoryObservation",
@@ -41,6 +43,7 @@ __all__ = [
     "TrajectorySelection",
     "TrajectoryTurn",
     "TranscriptArtifactRef",
+    "TranscriptIngestionResult",
     "Turn",
     "CLAUDE_TRANSCRIPT_TABLE",
     "ClaudeTranscriptSource",
@@ -53,7 +56,7 @@ __all__ = [
     "filter_trajectory_rows",
     "observations_from_post_tick_events",
     "reward_row",
-    "trajectory_from_episode_result",
+    "trajectory",
     "turns_to_components",
     "parse_claude_transcript",
 ]

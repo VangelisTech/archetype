@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,21 +23,30 @@ os.environ.setdefault("LOGFIRE_IGNORE_NO_CONFIG", "1")
 
 from uuid_utils import uuid7
 
-from archetype.app.application.service import RuntimeApplication
-from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
-from archetype.app.gateway.auth.models import ActorCtx
-from archetype.app.gateway.auth.permissions import COMMANDS_BY_ROLE
-from archetype.app.gateway.service import CommandGateway
-from archetype.app.models import (
-    CommandType,
+from archetype.commands.models import ActorCtx
+from archetype.commands.policy import PERMISSIONS_BY_ROLE
+from archetype.core.config import StorageConfig, WorldConfig
+from archetype.core.hooks import PreTick
+from archetype.world.models import (
+    PORTABLE_TICK_OPERATION_TYPES,
+    AddHook,
+    AddProcessor,
+    AddResource,
+    CreateWorld,
+    ForkWorld,
+    GetWorldInfo,
     HookInfo,
+    ListHooks,
+    ListProcessors,
+    ListResources,
+    ListWorlds,
     ProcessorInfo,
     ResourceInfo,
     WorldInfo,
 )
-from archetype.core.config import WorldConfig
 from evals.graders import exact_match, state_check
 from evals.harness import EvalHarness
+from evals.infra.runtime import isolated_eval_process
 from evals.types import GraderResult
 
 SUITE = "spec"
@@ -60,43 +70,51 @@ SPEC_CASES: tuple[SpecCase, ...] = (
     SpecCase(
         spec_id="runtime.R1",
         source="runtime.md",
-        anchors=("R1", "`app.application` port", "internal container"),
-        task_id="spec.runtime_gate_only_boundary",
+        anchors=(
+            "R1",
+            "Exact-operation dispatcher execution",
+            "`RuntimeResources` lifetime state",
+        ),
+        task_id="spec.runtime_dispatcher_boundary",
     ),
     SpecCase(
         spec_id="runtime.R2",
         source="runtime.md",
-        anchors=("R2", "`world_id` after activation", "concrete app service"),
-        task_id="spec.runtime_gate_only_boundary",
+        anchors=("R2", "never live capabilities", "`world_id` after activation"),
+        task_id="spec.runtime_dispatcher_boundary",
     ),
     SpecCase(
         spec_id="command-gate.3",
         source="command-gate.md",
-        anchors=("The permissions matrix", "`list_worlds`"),
+        anchors=("Four roles and permissions", "`list_worlds`"),
         task_id="spec.role_permission_matrix",
     ),
     SpecCase(
         spec_id="command-gate.1",
         source="command-gate.md",
-        anchors=("guardrail_allow", "delegate", "audit.record"),
-        task_id="spec.command_gateway_gate_map",
+        anchors=(
+            "policy and admission",
+            "Pure role denial happens before",
+            "access evidence",
+        ),
+        task_id="spec.dispatcher_gate_map",
     ),
     SpecCase(
-        spec_id="world-lifecycle.6",
+        spec_id="world-lifecycle.7",
         source="world-lifecycle.md",
-        anchors=("info-class downgrade", "Live objects"),
+        anchors=("Boundary-safe information", "downgrade it to frozen values"),
         task_id="spec.info_class_downgrades",
     ),
     SpecCase(
-        spec_id="durable-artifacts.7",
-        source="artifacts.md",
-        anchors=("evidence, never authority", "no authority"),
+        spec_id="dataset-eval-ontology.4",
+        source="dataset-eval-ontology.md",
+        anchors=("evidence, never authority", "evaluation owns those decisions"),
         task_id="spec.receipt_authority_firewall",
     ),
     SpecCase(
         spec_id="audit-log.2",
         source="audit-log.md",
-        anchors=("Append-only invariant", "no `drop_*` or `delete_*` methods"),
+        anchors=("Append-only invariant", "`AuditLog` has no delete or drop operation"),
         task_id="spec.append_only_protocols",
     ),
     SpecCase(
@@ -117,143 +135,202 @@ SPEC_CASES: tuple[SpecCase, ...] = (
     SpecCase(
         spec_id="dataset-eval-ontology.3",
         source="dataset-eval-ontology.md",
-        anchors=("ArtifactTableService envelope is storage ownership", "does not replace dataset"),
+        anchors=(
+            "StorageService envelope is durable ownership",
+            "does not prove where an imported episode",
+        ),
         task_id="spec.dataset_eval_ontology",
     ),
 )
 
 _EXPECTED_TASK_IDS = frozenset(case.task_id for case in SPEC_CASES)
 
-_RUNTIME_TYPE_ONLY_APP_IMPORTS = frozenset(
-    {
-        "archetype.app.evaluation.interfaces",
-        "archetype.app.research.contracts",
-    }
-)
-_RUNTIME_ALLOWED_APP_IMPORTS = _RUNTIME_TYPE_ONLY_APP_IMPORTS | frozenset(
-    {
-        "archetype.app.application.interfaces",
-        "archetype.app.container",
-        "archetype.app.models",
-        "archetype.app.storage.session",
-    }
-)
+_RUNTIME_TYPE_ONLY_APP_IMPORTS: frozenset[str] = frozenset()
+_RUNTIME_ALLOWED_APP_IMPORTS = _RUNTIME_TYPE_ONLY_APP_IMPORTS
 
-_EXPECTED_ROLE_MATRIX: dict[str, frozenset[CommandType]] = {
+_EXPECTED_ROLE_MATRIX: dict[str, frozenset[str]] = {
     "viewer": frozenset(
         {
-            CommandType.QUERY_WORLD,
-            CommandType.GET_WORLD_INFO,
-            CommandType.GET_AUDIT_HISTORY,
-            CommandType.LIST_SIGNATURES,
-            CommandType.LIST_WORLDS,
-            CommandType.LIST_PROCESSORS,
-            CommandType.LIST_HOOKS,
-            CommandType.LIST_RESOURCES,
+            "discover_worlds",
+            "get_audit_history",
+            "get_world_info",
+            "list_hooks",
+            "list_processors",
+            "list_resources",
+            "list_signatures",
+            "list_worlds",
+            "open_world_readonly",
+            "query_archetype",
+            "query_artifacts",
+            "query_components",
         }
     ),
     "player": frozenset(
         {
-            CommandType.QUERY_WORLD,
-            CommandType.GET_WORLD_INFO,
-            CommandType.GET_AUDIT_HISTORY,
-            CommandType.LIST_SIGNATURES,
-            CommandType.LIST_WORLDS,
-            CommandType.LIST_PROCESSORS,
-            CommandType.LIST_HOOKS,
-            CommandType.LIST_RESOURCES,
-            CommandType.SPAWN,
-            CommandType.DESPAWN,
-            CommandType.UPDATE,
-            CommandType.MESSAGE,
-            CommandType.CUSTOM,
+            "create_entities",
+            "despawn",
+            "discover_worlds",
+            "get_audit_history",
+            "get_world_info",
+            "list_hooks",
+            "list_processors",
+            "list_resources",
+            "list_signatures",
+            "list_worlds",
+            "open_world_readonly",
+            "query_archetype",
+            "query_artifacts",
+            "query_components",
+            "spawn",
+            "update",
         }
     ),
     "operator": frozenset(
         {
-            CommandType.QUERY_WORLD,
-            CommandType.GET_WORLD_INFO,
-            CommandType.GET_AUDIT_HISTORY,
-            CommandType.LIST_SIGNATURES,
-            CommandType.LIST_WORLDS,
-            CommandType.LIST_PROCESSORS,
-            CommandType.LIST_HOOKS,
-            CommandType.LIST_RESOURCES,
-            CommandType.SPAWN,
-            CommandType.DESPAWN,
-            CommandType.UPDATE,
-            CommandType.MESSAGE,
-            CommandType.CUSTOM,
-            CommandType.ADD_COMPONENT,
-            CommandType.REMOVE_COMPONENT,
-            CommandType.ADD_PROCESSOR,
-            CommandType.REMOVE_PROCESSOR,
-            CommandType.ADD_HOOK,
-            CommandType.REMOVE_HOOK,
-            CommandType.ADD_RESOURCE,
-            CommandType.STEP,
-            CommandType.RUN,
-            CommandType.RUN_EPISODE,
-            CommandType.RUN_ROLLOUT,
-            CommandType.AUTORESEARCH,
-            CommandType.FORK_WORLD,
-            CommandType.DESTROY_WORLD,
-            CommandType.PUBLISH_ARTIFACT,
-            CommandType.EVALUATE,
+            "add_components",
+            "add_hook",
+            "add_processor",
+            "add_resource",
+            "autoresearch",
+            "create_entities",
+            "despawn",
+            "destroy_world",
+            "discover_worlds",
+            "evaluate",
+            "fork_world",
+            "get_audit_history",
+            "get_world_info",
+            "ingest_artifacts",
+            "list_hooks",
+            "list_processors",
+            "list_resources",
+            "list_signatures",
+            "list_worlds",
+            "open_world_readonly",
+            "query_archetype",
+            "query_artifacts",
+            "query_components",
+            "remove_components",
+            "remove_hook",
+            "remove_processor",
+            "run",
+            "run_episode",
+            "run_rollout",
+            "spawn",
+            "step",
+            "update",
         }
     ),
-    "admin": frozenset(CommandType),
+    "admin": frozenset(
+        {
+            "add_components",
+            "add_hook",
+            "add_processor",
+            "add_resource",
+            "autoresearch",
+            "create_entities",
+            "create_world",
+            "despawn",
+            "destroy_world",
+            "discover_worlds",
+            "evaluate",
+            "fork_world",
+            "get_audit_history",
+            "get_world_info",
+            "ingest_artifacts",
+            "list_hooks",
+            "list_processors",
+            "list_resources",
+            "list_signatures",
+            "list_worlds",
+            "open_world_readonly",
+            "query_archetype",
+            "query_artifacts",
+            "query_components",
+            "remove_components",
+            "remove_hook",
+            "remove_processor",
+            "resume_world",
+            "run",
+            "run_episode",
+            "run_rollout",
+            "spawn",
+            "step",
+            "update",
+        }
+    ),
 }
 
-_COMMAND_GATE_MAP: dict[str, CommandType] = {
-    "create_entity": CommandType.SPAWN,
-    "create_entities": CommandType.SPAWN,
-    "reserve_entity_ids": CommandType.SPAWN,
-    "spawn_with_reserved_id": CommandType.SPAWN,
-    "remove_entity": CommandType.DESPAWN,
-    "update_entity": CommandType.UPDATE,
-    "add_components": CommandType.ADD_COMPONENT,
-    "remove_components": CommandType.REMOVE_COMPONENT,
-    "add_processor": CommandType.ADD_PROCESSOR,
-    "remove_processor": CommandType.REMOVE_PROCESSOR,
-    "create_world": CommandType.CREATE_WORLD,
-    "fork_world": CommandType.FORK_WORLD,
-    "destroy_world": CommandType.DESTROY_WORLD,
-    "get_world_info": CommandType.GET_WORLD_INFO,
-    "list_worlds": CommandType.LIST_WORLDS,
-    "discover_worlds": CommandType.LIST_WORLDS,
-    "open_world_readonly": CommandType.GET_WORLD_INFO,
-    "resume_world": CommandType.CREATE_WORLD,
-    "ingest_artifact": CommandType.PUBLISH_ARTIFACT,
-    "ingest_files": CommandType.PUBLISH_ARTIFACT,
-    "write_artifacts": CommandType.PUBLISH_ARTIFACT,
-    "query_artifacts": CommandType.QUERY_WORLD,
-    "evaluate": CommandType.EVALUATE,
-    "step": CommandType.STEP,
-    "run": CommandType.RUN,
-    "run_episode": CommandType.RUN_EPISODE,
-    "run_rollout": CommandType.RUN_ROLLOUT,
-    "autoresearch": CommandType.AUTORESEARCH,
-    "query_components": CommandType.QUERY_WORLD,
-    "query_archetype": CommandType.QUERY_WORLD,
-    "list_signatures": CommandType.LIST_SIGNATURES,
-    "add_resource": CommandType.ADD_RESOURCE,
-    "add_hook": CommandType.ADD_HOOK,
-    "remove_hook": CommandType.REMOVE_HOOK,
-    "list_processors": CommandType.LIST_PROCESSORS,
-    "list_hooks": CommandType.LIST_HOOKS,
-    "list_resources": CommandType.LIST_RESOURCES,
-    "get_audit_history": CommandType.GET_AUDIT_HISTORY,
-    "submit_spawn": CommandType.SPAWN,
+_COMMAND_GATE_MAP: dict[str, tuple[tuple[str, str], ...]] = {
+    "create_entity": (("Spawn", "spawn"),),
+    "create_entities": (("CreateEntities", "create_entities"),),
+    "reserve_entity_ids": (("ReserveEntityIds", "spawn"),),
+    "spawn_with_reserved_id": (("SpawnReserved", "spawn"),),
+    "remove_entity": (("Despawn", "despawn"),),
+    "update_entity": (("Update", "update"),),
+    "add_components": (("AddComponents", "add_components"),),
+    "remove_components": (("RemoveComponents", "remove_components"),),
+    "add_processor": (("AddProcessor", "add_processor"),),
+    "remove_processor": (("RemoveProcessor", "remove_processor"),),
+    "create_world": (("CreateWorld", "create_world"),),
+    "fork_world": (("ForkWorld", "fork_world"),),
+    "destroy_world": (("DestroyWorld", "destroy_world"),),
+    "get_world_info": (("GetWorldInfo", "get_world_info"),),
+    "list_worlds": (("ListWorlds", "list_worlds"),),
+    "discover_worlds": (("DiscoverWorlds", "discover_worlds"),),
+    "open_world_readonly": (("OpenWorldReadonly", "open_world_readonly"),),
+    "resume_world": (("ResumeWorld", "resume_world"),),
+    "step": (("Step", "step"),),
+    "run": (("Run", "run"),),
+    "run_episode": (("RunEpisode", "run_episode"),),
+    "run_rollout": (("RunRollout", "run_rollout"),),
+    "query_components": (("QueryComponents", "query_components"),),
+    "query_archetype": (("QueryArchetype", "query_archetype"),),
+    "list_signatures": (
+        ("ListSignatures", "list_signatures"),
+        ("ListWorldSignatures", "list_signatures"),
+    ),
+    "get_audit_history": (("GetAuditHistory", "get_audit_history"),),
+    "add_resource": (("AddResource", "add_resource"),),
+    "add_hook": (("AddHook", "add_hook"),),
+    "remove_hook": (("RemoveHook", "remove_hook"),),
+    "list_processors": (("ListProcessors", "list_processors"),),
+    "list_hooks": (("ListHooks", "list_hooks"),),
+    "list_resources": (("ListResources", "list_resources"),),
 }
 
-_DYNAMIC_GATE_METHODS = {
-    "submit": "_gate",
-    "submit_batch": "_gate_batch",
-}
+_ACTOR_AWARE_PULL_FORWARD = frozenset(
+    {
+        "AutoResearch",
+        "Evaluate",
+        "IngestArtifacts",
+        "QueryArtifacts",
+    }
+)
+_PULL_FORWARD_MODELS = frozenset(
+    {
+        "AutoResearch",
+        "Evaluate",
+        "EvaluatePhysicalTask",
+        "GradeTrajectory",
+        "IngestArtifacts",
+        "IngestClaudeTranscript",
+        "QueryArtifacts",
+        "QueryTrajectory",
+        "QueryTranscriptRows",
+        "RestoreMissionSandbox",
+        "RunGraders",
+        "RunMission",
+        "SubmitMission",
+        "SweepPhysicalInstructions",
+    }
+)
 
-_OUTBOX_AUDITED_METHODS = {"submit", "submit_batch", "submit_spawn"}
-_SYNCHRONOUS_GATE_METHODS = {"reserve_entity_ids"}
+_DEFERRED_DISPATCHER_ENTRIES = (
+    "defer_as",
+    "defer_batch_as",
+    "defer_spawn_as",
+)
 
 
 def _python_files(path: Path) -> list[Path]:
@@ -299,63 +376,6 @@ def _runtime_app_import_is_allowed(
     )
 
 
-def _called_attr_name(call: ast.Call) -> str | None:
-    if isinstance(call.func, ast.Attribute):
-        return call.func.attr
-    if isinstance(call.func, ast.Name):
-        return call.func.id
-    return None
-
-
-def _command_type_from_gate_call(call: ast.Call) -> str | None:
-    """Extract ``CommandType.NAME`` from ``self._gate(Command(type=...))``."""
-    if _called_attr_name(call) != "_gate" or not call.args:
-        return None
-    command_call = call.args[0]
-    if not isinstance(command_call, ast.Call):
-        return None
-    return _command_type_from_command_call(command_call)
-
-
-def _command_type_from_command_call(command_call: ast.Call) -> str | None:
-    for keyword in command_call.keywords:
-        if keyword.arg != "type":
-            continue
-        value = keyword.value
-        if (
-            isinstance(value, ast.Attribute)
-            and isinstance(value.value, ast.Name)
-            and value.value.id == "CommandType"
-        ):
-            return value.attr
-    return None
-
-
-def _assigned_command_type_names(
-    node: ast.AsyncFunctionDef | ast.FunctionDef,
-) -> dict[str, str]:
-    names: dict[str, str] = {}
-    for child in ast.walk(node):
-        if isinstance(child, ast.Assign):
-            value = child.value
-            if not isinstance(value, ast.Call):
-                continue
-            command_type = _command_type_from_command_call(value)
-            if command_type is None:
-                continue
-            for target in child.targets:
-                if isinstance(target, ast.Name):
-                    names[target.id] = command_type
-        elif isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
-            value = child.value
-            if not isinstance(value, ast.Call):
-                continue
-            command_type = _command_type_from_command_call(value)
-            if command_type is not None:
-                names[child.target.id] = command_type
-    return names
-
-
 def task_spec_manifest_traceability() -> list[GraderResult]:
     """Every spec eval cites a normative source and anchor text."""
     checks: dict[str, bool] = {}
@@ -378,26 +398,24 @@ def task_spec_manifest_traceability() -> list[GraderResult]:
 
 def task_role_permission_matrix() -> list[GraderResult]:
     """The code permission matrix exactly matches command-gate.md."""
-    actual = {role: frozenset(commands) for role, commands in COMMANDS_BY_ROLE.items()}
-    explicit_non_admin_review = all(
-        command in actual["admin"]
-        and (
-            command in actual["viewer"]
-            or command in actual["player"]
-            or command in actual["operator"]
-            or command == CommandType.CREATE_WORLD
-        )
-        for command in CommandType
+    actual = {role: frozenset(permissions) for role, permissions in PERMISSIONS_BY_ROLE.items()}
+    all_permissions = frozenset().union(*actual.values())
+    explicit_review = all(
+        permission in _EXPECTED_ROLE_MATRIX["admin"] for permission in all_permissions
     )
     return [
         exact_match(actual, _EXPECTED_ROLE_MATRIX, name="exact_role_matrix"),
-        exact_match(actual["admin"], frozenset(CommandType), name="admin_auto_includes_all"),
-        exact_match(explicit_non_admin_review, True, name="non_admin_commands_reviewed"),
+        exact_match(
+            actual["admin"],
+            _EXPECTED_ROLE_MATRIX["admin"],
+            name="admin_exact_finite_permissions",
+        ),
+        exact_match(explicit_review, True, name="all_permissions_explicitly_reviewed"),
     ]
 
 
-def task_runtime_gate_only_boundary() -> list[GraderResult]:
-    """Runtime depends on the application port and stores no live world refs."""
+def task_runtime_dispatcher_boundary() -> list[GraderResult]:
+    """Runtime uses exact dispatcher/resources seams and stores no live world refs."""
     runtime_dir = SRC / "runtime"
     import_checks: dict[str, bool] = {}
     world_ref_checks: dict[str, bool] = {}
@@ -441,59 +459,57 @@ def task_runtime_gate_only_boundary() -> list[GraderResult]:
     ]
 
 
-def task_command_gateway_gate_map() -> list[GraderResult]:
-    """Every public gate method has the expected command type and audit emit."""
-    path = SRC / "app" / "gateway" / "service.py"
-    tree = ast.parse(path.read_text(), filename=str(path))
-    functions = {
-        node.name: node
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+def task_dispatcher_gate_map() -> list[GraderResult]:
+    """Exact registrations keep policy, actor entry, and durability aligned."""
+    expected_permissions = {
+        model_name: permission
+        for expected_models in _COMMAND_GATE_MAP.values()
+        for model_name, permission in expected_models
     }
 
-    checks: dict[str, bool] = {}
-    for method, command_type in _COMMAND_GATE_MAP.items():
-        node = functions.get(method)
-        checks[f"{method}:exists"] = node is not None
-        if node is None:
-            continue
+    with tempfile.TemporaryDirectory() as tmp:
+        process = isolated_eval_process(tmp)
+        try:
+            specs = {spec.model.__name__: spec for spec in process.registry.specs}
+            durable_models = {
+                spec.model for spec in process.registry.specs if spec.durable is not None
+            }
+            checks: dict[str, bool] = {
+                "portable_models_are_exact_durable_set": durable_models
+                == set(PORTABLE_TICK_OPERATION_TYPES),
+                "actor_aware_pull_forwards_are_exact": {
+                    model_name
+                    for model_name in _PULL_FORWARD_MODELS
+                    if model_name in specs and specs[model_name].untrusted
+                }
+                == _ACTOR_AWARE_PULL_FORWARD,
+                "internal_reservation_ops_are_not_untrusted": all(
+                    not specs[name].untrusted for name in ("ReserveEntityIds", "SpawnReserved")
+                ),
+                "trusted_dispatch_entry_exists": callable(
+                    getattr(process.dispatcher, "apply", None)
+                ),
+                "actor_dispatch_entry_exists": callable(
+                    getattr(process.dispatcher, "apply_as", None)
+                ),
+            }
+            for entry in _DEFERRED_DISPATCHER_ENTRIES:
+                checks[f"dispatcher:{entry}"] = callable(getattr(process.dispatcher, entry, None))
+            for model_name, permission in expected_permissions.items():
+                spec = specs.get(model_name)
+                checks[f"{model_name}:registered"] = spec is not None
+                checks[f"{model_name}:permission"] = (
+                    spec is not None and spec.permission == permission
+                )
+        finally:
+            asyncio.run(process.aclose())
 
-        calls = [call for call in ast.walk(node) if isinstance(call, ast.Call)]
-        gate_calls = [call for call in calls if _called_attr_name(call) == "_gate"]
-        emit_calls = [call for call in calls if _called_attr_name(call) == "_emit"]
-        assigned_types = _assigned_command_type_names(node)
-        gate_type_names: list[str] = []
-        for call in gate_calls:
-            if name := _command_type_from_gate_call(call):
-                gate_type_names.append(name)
-            elif call.args and isinstance(call.args[0], ast.Name):
-                if name := assigned_types.get(call.args[0].id):
-                    gate_type_names.append(name)
-        checks[f"{method}:gate_type"] = command_type.name in gate_type_names
-        if method not in _OUTBOX_AUDITED_METHODS | _SYNCHRONOUS_GATE_METHODS:
-            checks[f"{method}:emits_audit"] = bool(emit_calls)
-        if gate_calls and emit_calls:
-            checks[f"{method}:gate_before_emit"] = min(c.lineno for c in gate_calls) < min(
-                c.lineno for c in emit_calls
-            )
-
-    for method, gate_method in _DYNAMIC_GATE_METHODS.items():
-        node = functions.get(method)
-        checks[f"{method}:exists"] = node is not None
-        if node is None:
-            continue
-        calls = [call for call in ast.walk(node) if isinstance(call, ast.Call)]
-        checks[f"{method}:has_dynamic_gate"] = any(
-            _called_attr_name(call) == gate_method for call in calls
-        )
-        checks[f"{method}:ledger_is_audit_authority"] = method in _OUTBOX_AUDITED_METHODS
-
-    return [state_check(checks, name="command_gateway_gate_shape")]
+    return [state_check(checks, name="canonical_dispatch_shape")]
 
 
 def task_append_only_protocols() -> list[GraderResult]:
-    """Storage and audit protocols expose no destructive methods."""
-    from archetype.app.audit.interfaces import iAuditLog
+    """Storage protocol and commands-owned audit expose no destructive methods."""
+    from archetype.commands.audit import AuditLog
     from archetype.core.interfaces import iAsyncStore
 
     destructive = ("delete", "drop", "truncate")
@@ -508,7 +524,7 @@ def task_append_only_protocols() -> list[GraderResult]:
 
     return [
         exact_match(_protocol_ok(iAsyncStore), True, name="iAsyncStore_append_only"),
-        exact_match(_protocol_ok(iAuditLog), True, name="iAuditLog_append_only"),
+        exact_match(_protocol_ok(AuditLog), True, name="AuditLog_append_only"),
     ]
 
 
@@ -518,30 +534,71 @@ def task_info_class_downgrades() -> list[GraderResult]:
 
 
 async def _task_info_class_downgrades() -> list[GraderResult]:
-    reset_tick_counters()
-    reset_daily_tokens()
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
-    application = RuntimeApplication(
-        mutations=_UnusedService(),
-        worlds=_FakeWorldService(),
-        simulation=_UnusedService(),
-        queries=_UnusedService(),
-        commands=_UnusedService(),
-        audit=None,
-    )
-    service = CommandGateway(application, audit=None)
-
-    try:
-        created = await service.create_world(ctx, WorldConfig(name="spec-info"))
-        forked = await service.fork_world(ctx, created.world_id, "spec-fork")
-        fetched = await service.get_world_info(ctx, created.world_id)
-        worlds = await service.list_worlds(ctx)
-        processors = await service.list_processors(ctx, created.world_id)
-        hooks = await service.list_hooks(ctx, created.world_id)
-        resources = await service.list_resources(ctx, created.world_id)
-    finally:
-        reset_tick_counters()
-        reset_daily_tokens()
+    with tempfile.TemporaryDirectory() as tmp:
+        process = isolated_eval_process(tmp)
+        try:
+            created = await process.dispatcher.apply_as(
+                ctx,
+                CreateWorld(
+                    config=WorldConfig(name="spec-info"),
+                    storage_config=StorageConfig(
+                        uri=f"{tmp}/store",
+                        namespace="spec_info",
+                    ),
+                ),
+            )
+            await process.dispatcher.apply_as(
+                ctx,
+                AddProcessor(
+                    world_id=created.world_id,
+                    processor=_FakeProcessor(),
+                ),
+            )
+            await process.dispatcher.apply_as(
+                ctx,
+                AddResource(
+                    world_id=created.world_id,
+                    resource=_FakeResource(),
+                ),
+            )
+            await process.dispatcher.apply_as(
+                ctx,
+                AddHook(
+                    world_id=created.world_id,
+                    event_type=PreTick,
+                    handler=_fake_handler,
+                ),
+            )
+            forked = await process.dispatcher.apply_as(
+                ctx,
+                ForkWorld(
+                    source_world_id=created.world_id,
+                    name="spec-fork",
+                ),
+            )
+            fetched = await process.dispatcher.apply_as(
+                ctx,
+                GetWorldInfo(world_id=created.world_id),
+            )
+            worlds = await process.dispatcher.apply_as(
+                ctx,
+                ListWorlds(),
+            )
+            processors = await process.dispatcher.apply_as(
+                ctx,
+                ListProcessors(world_id=created.world_id),
+            )
+            hooks = await process.dispatcher.apply_as(
+                ctx,
+                ListHooks(world_id=created.world_id),
+            )
+            resources = await process.dispatcher.apply_as(
+                ctx,
+                ListResources(world_id=created.world_id),
+            )
+        finally:
+            await process.aclose()
 
     info_values = [created, forked, fetched, *worlds, *processors, *hooks, *resources]
     type_checks = {
@@ -552,7 +609,7 @@ async def _task_info_class_downgrades() -> list[GraderResult]:
         "list_processors_downgrades": all(isinstance(item, ProcessorInfo) for item in processors),
         "list_hooks_downgrades": all(isinstance(item, HookInfo) for item in hooks),
         "list_resources_downgrades": all(isinstance(item, ResourceInfo) for item in resources),
-        "no_live_world_escape": all(not isinstance(item, _FakeWorld) for item in info_values),
+        "nonempty_introspection": bool(processors and hooks and resources),
         "models_are_frozen": all(_is_frozen_model(item) for item in info_values),
     }
     return [state_check(type_checks, name="info_downgrade_types")]
@@ -570,14 +627,6 @@ def _is_frozen_model(value: Any) -> bool:
     return False
 
 
-class _FakeWorld:
-    def __init__(self, name: str = "world") -> None:
-        self.world_id = uuid7()
-        self.name = name
-        self.tick = 7
-        self.run_id = uuid7()
-
-
 class _FakeProcessor:
     priority = 11
     components = ()
@@ -587,61 +636,8 @@ class _FakeResource:
     pass
 
 
-class _FakeEvent:
+async def _fake_handler(_event: PreTick) -> None:
     pass
-
-
-class _FakeHookHandle:
-    _event_type = _FakeEvent
-    _id = 101
-
-    # Public accessors mirroring core HookHandle's contract.
-    @property
-    def id(self):
-        return self._id
-
-    @property
-    def event_type(self):
-        return self._event_type
-
-
-def _fake_handler() -> None:
-    pass
-
-
-class _FakeWorldService:
-    def __init__(self) -> None:
-        self.created = _FakeWorld("spec-info")
-        self.forked = _FakeWorld("spec-fork")
-
-    async def create_world(self, config, storage_config=None, cache_config=None):
-        self.created.name = config.name
-        return self.created
-
-    async def fork_world(self, source_world_id, name=None, storage_config=None, cache_config=None):
-        self.forked.name = name
-        return self.forked
-
-    def get_world(self, world_id):
-        return self.created
-
-    def list_worlds(self):
-        return [self.created, self.forked]
-
-    def list_processors(self, world_id):
-        return [_FakeProcessor()]
-
-    def list_hooks(self, world_id):
-        # Hook-bus items() rows: (event_type, handle, fn, mode)
-        return [(_FakeEvent, _FakeHookHandle(), _fake_handler, "blocking")]
-
-    def list_resources(self, world_id):
-        return [(_FakeResource, _FakeResource())]
-
-
-class _UnusedService:
-    def __getattr__(self, name: str):
-        raise AssertionError(f"unexpected call to unused fake service: {name}")
 
 
 def _registered_task_ids() -> list[str]:
@@ -651,13 +647,13 @@ def _registered_task_ids() -> list[str]:
 
 
 def task_receipt_authority_firewall() -> list[GraderResult]:
-    """Receipt and artifact components carry evidence, never authority.
+    """Evaluation results and artifact references carry no authority.
 
     The non-negotiable boundary (issue #275): no field on a persisted
-    receipt/artifact component may name an authority decision. A PASS means one
+    result/reference may name an authority decision. A PASS means one
     grader passed under one pinned contract — the layer above owns meaning.
     """
-    from archetype.artifacts.components import ArtifactMeta, AssetRef
+    from archetype.artifacts import ArtifactRef
     from archetype.evaluation.components import EvalReceipt
 
     forbidden = {
@@ -673,9 +669,9 @@ def task_receipt_authority_firewall() -> list[GraderResult]:
         "permitted",
     }
     checks = {}
-    for component in (EvalReceipt, ArtifactMeta, AssetRef):
-        fields = {name.lower() for name in component.model_fields}
-        checks[f"{component.__name__}_carries_no_authority"] = not (fields & forbidden)
+    for model in (EvalReceipt, ArtifactRef):
+        fields = {name.lower() for name in model.model_fields}
+        checks[f"{model.__name__}_carries_no_authority"] = not (fields & forbidden)
     return [state_check(checks, name="receipt_authority_firewall")]
 
 
@@ -748,16 +744,16 @@ def register(harness: EvalHarness) -> None:
         desc="Role permissions match command-gate.md exactly.",
     )
     harness.add(
-        "spec.runtime_gate_only_boundary",
+        "spec.runtime_dispatcher_boundary",
         suite=SUITE,
-        fn=task_runtime_gate_only_boundary,
-        desc="Runtime depends on RuntimeApplication-facing ports and stores no live world refs.",
+        fn=task_runtime_dispatcher_boundary,
+        desc="Runtime uses exact dispatcher/resources seams and stores no live world refs.",
     )
     harness.add(
-        "spec.command_gateway_gate_map",
+        "spec.dispatcher_gate_map",
         suite=SUITE,
-        fn=task_command_gateway_gate_map,
-        desc="CommandGateway public methods use the documented gate and audit shape.",
+        fn=task_dispatcher_gate_map,
+        desc="Dispatcher actor-aware methods use the documented policy and audit shape.",
     )
     harness.add(
         "spec.append_only_protocols",
@@ -769,7 +765,7 @@ def register(harness: EvalHarness) -> None:
         "spec.receipt_authority_firewall",
         suite=SUITE,
         fn=task_receipt_authority_firewall,
-        desc="Receipt/artifact components carry no authority fields (evidence only).",
+        desc="Evaluation evidence and artifact references carry no authority fields.",
     )
     harness.add(
         "spec.dataset_eval_ontology",

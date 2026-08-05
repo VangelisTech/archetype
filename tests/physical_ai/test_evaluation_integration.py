@@ -17,32 +17,42 @@ ledger). If eval reproduces the accounting, ``EvalTrialResult`` is legacy
 (roadmap E1).
 
 It also exercises the two core fixes end-to-end:
-- B1: ``run_episode`` drives ``SimulationService.step``, which now resets the
-  per-tick RBAC quota (no manual ``reset_tick_counters`` like the driver).
+- B1: ``run_episode`` drives target-tick-aware application steps without a
+  process-wide quota reset callback.
 - B2: termination is the value-based "all entities done" contract on
   ``ManipStatus.done`` — no hand-rolled per-tick done-check.
 """
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 from daft import DataFrame
 
-from archetype.app.container import ServiceContainer
-from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
-from archetype.app.models import EpisodeConfig
 from archetype.core.config import StorageConfig, WorldConfig
+from archetype.evaluation.models import RunGraders
 from archetype.physical_ai.manipulation import (
     ACTION_DIM,
-    EnvStepProcessor,
     ManipAction,
     ManipProprio,
     ManipStatus,
     ManipTask,
     ScriptedReachEnv,
+    _EnvStepProcessor,
+)
+from archetype.world.models import (
+    AddProcessor,
+    ComponentTypeRef,
+    CreateWorld,
+    EpisodeConfig,
+    QueryComponents,
+    RunEpisode,
+    Spawn,
 )
 from evals.graders import exact_match, state_check
 from evals.types import GraderResult
+from tests._runtime import build_test_runtime
 
 # Scripted env: point eef integrates the first three action components; success
 # when within tolerance of the per-env target. seed 0 → start (0, 0, 0.5).
@@ -50,16 +60,6 @@ SEED = 0
 TOL = 0.04
 ACTION = [0.05, 0.0, 0.0] + [0.0] * (ACTION_DIM - 3)
 START = (0.001 * SEED, -0.001 * SEED, 0.5)
-
-
-@pytest.fixture(autouse=True)
-def _reset_quotas():
-    # run_episode → step resets the global tick counters (B1); isolate tests.
-    reset_tick_counters()
-    reset_daily_tokens()
-    yield
-    reset_tick_counters()
-    reset_daily_tokens()
 
 
 def _replay(target: tuple[float, float, float], max_env_steps: int) -> tuple[bool, int]:
@@ -78,21 +78,24 @@ def _replay(target: tuple[float, float, float], max_env_steps: int) -> tuple[boo
     return False, max_env_steps
 
 
-async def _spawn_trial(world, client, env_key: int) -> int:
+async def _spawn_trial(dispatcher, world_id, client, env_key: int) -> int:
     """Reset-then-spawn: the env's reset obs becomes the raw tick-0 row."""
     obs = client.reset(env_key, SEED)
-    return await world.create_entity(
-        [
-            ManipProprio(
-                eef_pos=obs["eef_pos"],
-                eef_quat=obs["eef_quat"],
-                gripper=obs["gripper"],
-                gripper_qpos=obs["gripper_qpos"],
-            ),
-            ManipAction(values=ACTION),
-            ManipStatus(),
-            ManipTask(suite="scripted", task_id=env_key, instruction="reach", env_key=env_key),
-        ]
+    return await dispatcher.apply(
+        Spawn.from_components(
+            world_id=world_id,
+            components=[
+                ManipProprio(
+                    eef_pos=obs["eef_pos"],
+                    eef_quat=obs["eef_quat"],
+                    gripper=obs["gripper"],
+                    gripper_qpos=obs["gripper_qpos"],
+                ),
+                ManipAction(values=ACTION),
+                ManipStatus(),
+                ManipTask(suite="scripted", task_id=env_key, instruction="reach", env_key=env_key),
+            ],
+        )
     )
 
 
@@ -113,20 +116,27 @@ async def test_eval_reproduces_success_and_length_from_raw_manipstatus(tmp_path)
     targets = {0: (0.10, 0.0, 0.5), 1: (0.20, 0.0, 0.5), 2: (0.30, 0.0, 0.5)}
     client = ScriptedReachEnv(targets=targets, tolerance=TOL)
 
-    container = ServiceContainer()
+    resources = build_test_runtime(tmp_path)
+    dispatcher = resources.dispatcher
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="dogfood")
     try:
-        world = await container.world_service.create_world(WorldConfig(name="dogfood"), storage)
-        await world.add_processor(EnvStepProcessor(client))
-        eids = {k: await _spawn_trial(world, client, k) for k in targets}
+        world = await dispatcher.apply(
+            CreateWorld(config=WorldConfig(name="dogfood"), storage_config=storage)
+        )
+        await dispatcher.apply(
+            AddProcessor(world_id=world.world_id, processor=_EnvStepProcessor(client))
+        )
+        eids = {key: await _spawn_trial(dispatcher, world.world_id, client, key) for key in targets}
 
-        episode = await container.simulation_service.run_episode(
-            world.world_id,
-            EpisodeConfig(
-                max_steps=50,
-                terminal_component=ManipStatus,
-                terminal_field="done",
-                terminal_all=True,
+        episode = await dispatcher.apply(
+            RunEpisode(
+                world_id=world.world_id,
+                config=EpisodeConfig(
+                    max_steps=50,
+                    terminal_component=ManipStatus,
+                    terminal_field="done",
+                    terminal_all=True,
+                ),
             ),
         )
         # B2: stopped on the data (all done), not the 50-step cap.
@@ -140,8 +150,13 @@ async def test_eval_reproduces_success_and_length_from_raw_manipstatus(tmp_path)
         expected_rate = sum(s for s, _ in replay.values()) / len(replay)
 
         # The eval service reads the raw rows it persisted.
-        df = await container.evaluation_service.query_episode(
-            episode, components=[ManipStatus], storage_config=storage
+        df = await dispatcher.apply(
+            QueryComponents(
+                components=(ComponentTypeRef.from_type(ManipStatus),),
+                world_id=episode.world_id,
+                run_id=episode.run_id,
+                storage_config=storage,
+            )
         )
         final = _final_per_entity(df)
 
@@ -165,11 +180,14 @@ async def test_eval_reproduces_success_and_length_from_raw_manipstatus(tmp_path)
             }
             return state_check(checks, name="episode_lengths")
 
-        results = await container.evaluation_service.run_graders(df, [grade_rate, grade_lengths])
+        results = cast(
+            list[GraderResult],
+            await dispatcher.apply(RunGraders(df=df, graders=(grade_rate, grade_lengths))),
+        )
         assert [r.passed for r in results] == [True, True]
         assert results[0].score == 1.0  # 3/3 success
     finally:
-        await container.shutdown()
+        await resources.aclose()
 
 
 @pytest.mark.asyncio
@@ -179,23 +197,31 @@ async def test_eval_grades_a_failed_trial_and_fractional_success_rate(tmp_path):
     targets = {0: (0.10, 0.0, 0.5), 1: (0.20, 0.0, 0.5), 2: (5.00, 0.0, 0.5)}
     client = ScriptedReachEnv(targets=targets, tolerance=TOL)
 
-    container = ServiceContainer()
+    resources = build_test_runtime(tmp_path)
+    dispatcher = resources.dispatcher
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="dogfood_fail")
     try:
-        world = await container.world_service.create_world(
-            WorldConfig(name="dogfood-fail"), storage
+        world = await dispatcher.apply(
+            CreateWorld(
+                config=WorldConfig(name="dogfood-fail"),
+                storage_config=storage,
+            )
         )
-        await world.add_processor(EnvStepProcessor(client))
-        eids = {k: await _spawn_trial(world, client, k) for k in targets}
+        await dispatcher.apply(
+            AddProcessor(world_id=world.world_id, processor=_EnvStepProcessor(client))
+        )
+        eids = {key: await _spawn_trial(dispatcher, world.world_id, client, key) for key in targets}
 
         # terminal_all with one never-done trial → runs to max_steps.
-        episode = await container.simulation_service.run_episode(
-            world.world_id,
-            EpisodeConfig(
-                max_steps=10,
-                terminal_component=ManipStatus,
-                terminal_field="done",
-                terminal_all=True,
+        episode = await dispatcher.apply(
+            RunEpisode(
+                world_id=world.world_id,
+                config=EpisodeConfig(
+                    max_steps=10,
+                    terminal_component=ManipStatus,
+                    terminal_field="done",
+                    terminal_all=True,
+                ),
             ),
         )
 
@@ -203,8 +229,13 @@ async def test_eval_grades_a_failed_trial_and_fractional_success_rate(tmp_path):
         expected_success = {eids[k]: replay[k][0] for k in targets}
         expected_rate = sum(s for s, _ in replay.values()) / len(replay)
 
-        df = await container.evaluation_service.query_episode(
-            episode, components=[ManipStatus], storage_config=storage
+        df = await dispatcher.apply(
+            QueryComponents(
+                components=(ComponentTypeRef.from_type(ManipStatus),),
+                world_id=episode.world_id,
+                run_id=episode.run_id,
+                storage_config=storage,
+            )
         )
         final = _final_per_entity(df)
 
@@ -229,9 +260,10 @@ async def test_eval_grades_a_failed_trial_and_fractional_success_rate(tmp_path):
             }
             return state_check(checks, name="success_lengths")
 
-        results = await container.evaluation_service.run_graders(
-            df, [grade_rate, grade_success_lengths]
+        results = cast(
+            list[GraderResult],
+            await dispatcher.apply(RunGraders(df=df, graders=(grade_rate, grade_success_lengths))),
         )
         assert [r.passed for r in results] == [True, True]
     finally:
-        await container.shutdown()
+        await resources.aclose()

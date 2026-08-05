@@ -12,86 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Persistent trajectory schemas for mission and rollout evidence.
+"""Persistent episode-evidence schemas for mission and rollout evidence.
 
-Trajectory data is stored as normalized, Arrow-friendly component rows. The
-header row identifies the trajectory; turns, commands, observations, actions,
-and rewards are separate typed rows keyed by ``trajectory_id`` and ``seq``.
+Evidence is stored as normalized, Arrow-friendly component rows keyed by
+``episode_id`` and ``seq``. ``episode_id`` is the one persistent identity of a
+bounded execution; a trajectory is a derived DataFrame view over these rows
+(see :func:`archetype.missions.trajectories.transforms.trajectory`), never a
+second persistent identity.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from archetype.core.component import Component
-
-if TYPE_CHECKING:
-    from archetype.missions.trajectories.contracts import Turn
 
 CLAUDE_TRANSCRIPT_TABLE = "coding_agent_transcript_rows"
 
 
-class Trajectory(Component):
-    """One durable trajectory header row."""
-
-    trajectory_id: str = ""
-    run_id: str = ""
-    episode_id: str = ""
-    rollout_id: str = ""
-    task_id: str = ""
-    trial_idx: int = 0
-
-    source: str = ""
-    model: str = ""
-    policy_version: str = ""
-
-    terminal: bool = False
-    total_steps: int = 0
-    total_turns: int = 0
-    total_tokens: int = 0
-    duration_seconds: float = 0.0
-    outcome: str = ""
-
-    @classmethod
-    def from_turns(
-        cls,
-        trajectory_id: str,
-        turns: list[Turn],
-        *,
-        run_id: str = "",
-        episode_id: str = "",
-        rollout_id: str = "",
-        task_id: str = "",
-        trial_idx: int = 0,
-        source: str = "",
-        model: str = "",
-        policy_version: str = "",
-        terminal: bool = False,
-        outcome: str = "",
-    ) -> Trajectory:
-        return cls(
-            trajectory_id=trajectory_id,
-            run_id=run_id,
-            episode_id=episode_id,
-            rollout_id=rollout_id,
-            task_id=task_id,
-            trial_idx=trial_idx,
-            source=source,
-            model=model,
-            policy_version=policy_version,
-            terminal=terminal,
-            total_steps=0,
-            total_turns=len(turns),
-            total_tokens=sum(turn.tokens for turn in turns),
-            duration_seconds=sum(turn.duration_ms for turn in turns) / 1000.0,
-            outcome=outcome,
-        )
-
-
 class TrajectoryTurn(Component):
-    """One typed turn row belonging to a trajectory."""
+    """One typed conversational or tool-use turn row of episode evidence."""
 
-    trajectory_id: str = ""
+    episode_id: str = ""
     seq: int = 0
     role: str = ""
     content: str = ""
@@ -104,14 +44,13 @@ class TrajectoryTurn(Component):
 
 
 class TranscriptArtifactRef(Component):
-    """Lightweight link from a trajectory to redacted transcript artifacts.
+    """Lightweight link from episode evidence to redacted transcript artifacts.
 
-    Narrative content never belongs in this Component. Historical
-    ``TrajectoryTurn`` rows remain readable, while new transcript ingestion
+    Narrative content never belongs in this Component. Transcript ingestion
     writes normalized narrative rows only through the artifact table boundary.
     """
 
-    trajectory_id: str = ""
+    episode_id: str = ""
     mission_id: str = ""
     source_uri: str = ""
     source_content_hash: str = ""
@@ -123,9 +62,9 @@ class TranscriptArtifactRef(Component):
 
 
 class TrajectoryCommandEvent(Component):
-    """One typed command/audit event row belonging to a trajectory."""
+    """One typed command/audit event row of episode evidence."""
 
-    trajectory_id: str = ""
+    episode_id: str = ""
     seq: int = 0
     audit_id: str = ""
     command_id: str = ""
@@ -141,9 +80,9 @@ class TrajectoryCommandEvent(Component):
 
 
 class TrajectoryObservation(Component):
-    """One typed observation/event row belonging to a trajectory."""
+    """One typed observation/event row of episode evidence."""
 
-    trajectory_id: str = ""
+    episode_id: str = ""
     seq: int = 0
     world_id: str = ""
     tick: int = 0
@@ -153,17 +92,17 @@ class TrajectoryObservation(Component):
 
 
 class TrajectoryAction(Component):
-    """One typed action row belonging to a trajectory."""
+    """One typed action row of episode evidence."""
 
-    trajectory_id: str = ""
+    episode_id: str = ""
     seq: int = 0
     tick: int = 0
     action_type: str = ""
 
 
 class TrajectoryReward(Component):
-    """One typed reward row belonging to a trajectory."""
+    """One typed reward row of episode evidence."""
 
-    trajectory_id: str = ""
+    episode_id: str = ""
     seq: int = 0
     reward: float = 0.0

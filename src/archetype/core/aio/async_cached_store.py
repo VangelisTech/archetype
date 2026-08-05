@@ -54,9 +54,11 @@ class MemTable:
         self.last_mut = time.time()
 
     def extend(self, other: "MemTable") -> None:
-        """Append another memtable without rebuilding its Arrow batches."""
-        if not other.rows:
-            return
+        """Append another memtable without rebuilding its Arrow batches.
+
+        An empty ``other`` is a natural no-op of the extend itself — no
+        row-count admission guard (issue #538).
+        """
         self.batches.extend(other.batches)
         self.rows += other.rows
         self.bytes += other.bytes
@@ -262,6 +264,30 @@ class AsyncCachedStore(iAsyncStore):
         inner = set(await self._inner.list_committed_signatures())
         return list(inner | self._committed_sigs)
 
+    async def get_existing_table_schema(self, table_id: str) -> pa.Schema:
+        """Delegate open-never-create physical discovery to durable storage."""
+        return await self._inner.get_existing_table_schema(table_id)
+
+    async def get_existing_table_df(
+        self,
+        table_id: str,
+        world_id: str,
+        run_id: str,
+        *,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+        active_only: bool = False,
+    ) -> DataFrame:
+        """Delegate physical reads; staged cache rows have no durable table identity."""
+        return await self._inner.get_existing_table_df(
+            table_id,
+            world_id,
+            run_id,
+            ticks=ticks,
+            entity_ids=entity_ids,
+            active_only=active_only,
+        )
+
     async def append(self, sig: ArchetypeSignature, df: DataFrame) -> AppendReceipt:
         """
         Cache driven append with built in flush logic to underlying storage (super) a table with a new dataframe.
@@ -271,13 +297,12 @@ class AsyncCachedStore(iAsyncStore):
         commit coordinator must call flush() before publishing a manifest
         head — a head must never claim RAM-only rows are durable.
         """
-        # 1) convert the tiny incoming Daft DataFrame slice → RecordBatch
+        # 1) convert the tiny incoming Daft DataFrame slice → RecordBatch.
+        # No row-count admission guard (issue #538): an empty slice buffers
+        # nothing and the staging path below is its natural no-op.
         pending = MemTable()
         for batch in df.to_arrow_iter():
             pending.append(batch)
-
-        if pending.rows == 0:
-            return AppendReceipt(table_id=Archetype.get_name(sig), rows=0, durable=True)
 
         async with self._state_lock:
             if not self._accepting_appends:

@@ -26,6 +26,7 @@ import json
 import os
 import sys
 
+import daft
 from daft import DataFrame, col
 from daft.functions import prompt
 
@@ -40,10 +41,22 @@ from archetype.core.config import StorageConfig
 class Agent(Component):
     name: str = ""
     role: str = ""
-    journal: str = "[]"  # JSON list of thoughts
+    journal_json: str = "[]"
+    thought_count: int = 0
 
 
 # ── Processors ──
+
+
+@daft.func(return_dtype=daft.DataType.string())
+def append_thought(journal_json: str, thought: str) -> str:
+    """Append model text without letting quotes or escapes corrupt the journal."""
+
+    journal = json.loads(journal_json)
+    if not isinstance(journal, list):
+        raise ValueError("agent journal must be a JSON list")
+    journal.append(thought)
+    return json.dumps(journal, ensure_ascii=False)
 
 
 class ThinkProcessor(AsyncProcessor):
@@ -66,7 +79,7 @@ class ThinkProcessor(AsyncProcessor):
             + ".\nTick: "
             + str(tick)
             + "\nYour journal so far: "
-            + col("agent__journal")
+            + col("agent__journal_json")
             + "\n\nWhat do you think or do next? One sentence."
         )
 
@@ -82,20 +95,57 @@ class ThinkProcessor(AsyncProcessor):
             max_output_tokens=60,
         )
 
-        # Append the new thought to the journal
-        # We rebuild the journal JSON by appending the new thought string
-        new_journal = col("agent__journal").str.rstrip("]") + ', "' + thought + '"]'
-        # Fix the leading comma for empty journals
-        new_journal = new_journal.str.replace('[, "', '["')
-
         return df.with_columns(
             {
-                "agent__journal": new_journal,
+                "agent__journal_json": append_thought(col("agent__journal_json"), thought),
+                "agent__thought_count": col("agent__thought_count") + 1,
             }
         )
 
 
 # ── Main ──
+
+
+async def _run_agents(storage_uri: str):
+    agents = [
+        ("Ada", "You are a curious scientist who loves discovering patterns."),
+        ("Rex", "You are a bold explorer who takes risks and seeks adventure."),
+        ("Iris", "You are a thoughtful philosopher who questions everything."),
+    ]
+    storage = StorageConfig(uri=storage_uri, namespace="llm_agents")
+
+    async with ArchetypeRuntime() as runtime:
+        world = runtime.world("llm-agents", storage=storage, processors=[ThinkProcessor()])
+
+        for name, role in agents:
+            await world.spawn(Agent(name=name, role=role))
+
+        await world.step()  # Persist initial agents before model processing.
+        result = await world.run(steps=5)
+        history = await world.query(Agent)
+        rows = sorted(
+            history.where(col("tick") == result.final_tick - 1).collect().to_pylist(),
+            key=lambda row: row.get("agent__name", ""),
+        )
+    return result, rows
+
+
+async def run_demo(storage_uri: str) -> dict[str, object]:
+    """Run once and return redaction-safe model-call coverage evidence."""
+
+    result, rows = await _run_agents(storage_uri)
+    return {
+        "schema": "examples.llm-agent-thought-coverage/v1",
+        "ticks_completed": result.ticks_completed,
+        "agents": [
+            {
+                "name": row.get("agent__name", ""),
+                "thought_count": row.get("agent__thought_count", 0),
+                "journal_entries": len(json.loads(row.get("agent__journal_json", "[]"))),
+            }
+            for row in rows
+        ],
+    }
 
 
 async def main():
@@ -104,38 +154,21 @@ async def main():
         print("Set the key to run: export OPENAI_API_KEY=sk-...")
         sys.exit(0)
 
-    agents = [
-        ("Ada", "You are a curious scientist who loves discovering patterns."),
-        ("Rex", "You are a bold explorer who takes risks and seeks adventure."),
-        ("Iris", "You are a thoughtful philosopher who questions everything."),
-    ]
-    storage = StorageConfig(uri="./archetype_data", namespace="llm_agents")
+    print("Running 5 ticks with 3 LLM-powered agents...\n")
+    result, rows = await _run_agents("./archetype_data")
+    print(f"Completed {result.ticks_completed} ticks\n")
 
-    async with ArchetypeRuntime() as runtime:
-        world = runtime.world("llm-agents", storage=storage, processors=[ThinkProcessor()])
-
-        for name, role in agents:
-            await world.spawn(Agent(name=name, role=role))
-
-        print(f"Running 5 ticks with {len(agents)} LLM-powered agents...\n")
-        result = await world.run(steps=5)
-        print(f"Completed {result.ticks_completed} ticks\n")
-
-        rows = sorted(
-            (await world.query(Agent)).collect().to_pylist(),
-            key=lambda row: row.get("agent__name", ""),
-        )
-        for row in rows:
-            name = row.get("agent__name", "?")
-            journal_str = row.get("agent__journal", "[]")
-            try:
-                thoughts = json.loads(journal_str)
-            except json.JSONDecodeError:
-                thoughts = [journal_str]
-            print(f"=== {name} ===")
-            for i, thought in enumerate(thoughts):
-                print(f"  tick {i}: {thought}")
-            print()
+    for row in rows:
+        name = row.get("agent__name", "?")
+        journal_str = row.get("agent__journal_json", "[]")
+        try:
+            thoughts = json.loads(journal_str)
+        except json.JSONDecodeError:
+            thoughts = [journal_str]
+        print(f"=== {name} ===")
+        for i, thought in enumerate(thoughts):
+            print(f"  tick {i}: {thought}")
+        print()
 
 
 if __name__ == "__main__":

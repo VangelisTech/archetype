@@ -166,32 +166,38 @@ runtime EpisodeResult
 This is what “datasets are frozen trials” means. It does not require one
 runtime world, run, or `EpisodeResult` per trial.
 
-## 5. Persistence in typed artifact tables
+## 5. Persistence in typed ingestion tables
 
-Dataset readers and exporters write domain rows through the typed Iceberg
-artifact-table path in [Artifacts](artifacts.md). The division of
+Dataset readers and exporters write domain rows through an owning-family
+workflow over the storage-owned typed Iceberg path. The division of
 responsibility is strict:
 
 | Owner | Columns / concern |
 |---|---|
-| `ArtifactTableService` | `artifact_id`, owning `world_id` / `run_id`, `source_uri`, `content_hash`, strict append and dedup behavior |
-| Dataset adapter | `benchmark`, `suite`, `task_key`, `episode_id`, stream/timing fields, domain payload |
+| `StorageService` | Owning `world_id` / `run_id` envelope; plain/keyed append; Daft execution admission; Catalog table registration and reads; typed schema checks; Iceberg append, conflict refresh and retry |
+| Dataset adapter / owning workflow | Explicit durable storage coordinates; stable table name and optional logical key; `benchmark`, `suite`, `task_key`, `episode_id`, stream/timing fields, domain payload |
 | Live-trial exporter | Optional source `RuntimeSlice` provenance in addition to dataset coordinates |
 
-**The ArtifactTableService envelope is storage ownership and write identity.** Its
-`world_id` and `run_id` scope the artifact view; `source_uri` and `content_hash`
-form part of the logical write key. That envelope **does not replace dataset
-coordinates** and does not prove where an imported episode originally ran.
+**The StorageService envelope is durable ownership, not dataset identity.**
+Its `world_id` and `run_id` scope the table view. The dataset adapter still
+passes its natural logical key as `key_columns` when duplicate suppression is
+required; an empty key requests a plain append. That envelope **does not
+replace dataset coordinates** and does not prove where an imported episode
+originally ran.
 
 For example, importing an external dataset creates an Archetype world/run for
 the ingestion operation. Those envelope values name the owner of the typed
 table rows, not a fictional original simulation. Conversely, exporting a live
 trial MAY persist its source `RuntimeSlice` as typed payload provenance.
 
-Typed tables fail on schema drift. Adapters MUST normalize native vocabulary
-before the `ArtifactTableService` boundary and MUST NOT depend on silent widening.
-Large media remains content-addressed data referenced from typed rows rather
-than an opaque path masquerading as identity.
+Typed tables fail on schema drift at the storage boundary. Adapters MUST
+normalize native vocabulary before the storage boundary and MUST NOT depend on
+silent widening. Large media is ingested through the artifacts family's
+configured `FileIngestionPipeline`; its free handler publishes specialized and
+common file indexes through `StorageService` from explicit durable
+coordinates.
+Domain rows reference that evidence by `ArtifactRef` or `artifact_id` rather
+than by an opaque filesystem path.
 
 ## 6. Grading symmetry and receipts
 
@@ -244,7 +250,7 @@ Current implementation truth:
   shared reader conformance suite do not exist yet;
 - the durable submit/poll trial lifecycle remains issue #322;
 - allocation of zero-based dataset episode ids belongs to the future
-  reader/exporter boundary, not `SimulationService`.
+  reader/exporter boundary, not the world simulation family.
 
 These are **CURRENT GAP** items, not behavior the documentation pretends is
 already implemented. A first reader or exporter must add one shared

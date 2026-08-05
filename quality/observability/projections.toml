@@ -1,0 +1,19 @@
+version = 1
+owner = "projections"
+family = "projections"
+
+[[disposition]]
+operations = [
+  "possession.QueriesLike.query",
+  "sync.SyncQueriesLike.query",
+  "worlds.QueriesLike.query",
+]
+signals = ["none"]
+outcomes = ["propagated_failure", "handled_outcome"]
+authority = "Persisted world snapshots and the returned lazy projection frames remain authoritative."
+evidence = [
+  "docs/design/graph-system.md",
+  "tests/projections/test_overview_contract.py",
+  "tests/projections/test_possession_contract.py",
+]
+rationale = "Projection helpers consume structural query operations and return lazy read models; a second signal would duplicate their source evidence."

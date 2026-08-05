@@ -21,11 +21,12 @@ exporter, and handler installation through the private `archetype._logging`
 adapter. Both modules remain internal and do not expand the supported Python
 or REST surface.
 
-The signal boundary cannot import `app.redaction`: core imports `_obs`, so that
-edge would invert the application dependency direction. Instead, `_obs` is
+The signal boundary cannot import `archetype.redaction`: core imports `_obs`,
+so that edge would invert the family dependency direction. Instead, `_obs` is
 safe by construction through a closed schema. An outer adapter handling a
-content-bearing event or export record still consumes `iRedactionService`
-before its own durable or external write. These protections are complementary.
+content-bearing event or export record still consumes the canonical
+`RedactionService` before its own durable or external write. These protections
+are complementary.
 
 ## 2. Vocabulary and validation
 
@@ -65,7 +66,7 @@ disposition, and error categories. World, run, actor, command, artifact,
 attempt, idempotency, mission, task, evaluation, and entity identifiers are
 never metric labels.
 
-The current canonical span vocabulary is:
+The retained canonical span vocabulary is:
 
 - `gateway.create_entity`, `gateway.create_world`, and
   `gateway.get_world_info`;
@@ -75,10 +76,11 @@ The current canonical span vocabulary is:
 - the legacy `world.materialize` and `world.execute` phases listed in section 7
   pending measured attribution.
 
-Gateway source uses only the canonical `gateway.*` names. The former
-`gate.create_world` and `gate.get_world_info` spellings are neither accepted
-legacy names nor aliases. `SPAN_NAME_ALIASES` remains part of the versioned
-vocabulary and is currently empty.
+The `gateway.*` names remain a versioned compatibility vocabulary after the
+gateway adapter's removal; no current API or dispatcher source emits them. The
+former `gate.create_world` and `gate.get_world_info` spellings are neither
+accepted legacy names nor aliases. `SPAN_NAME_ALIASES` remains part of the
+versioned vocabulary and is currently empty.
 
 ## 3. Failure and outcome semantics
 
@@ -191,28 +193,47 @@ signal boundary.
 | Family or layer | Current signal disposition | Authoritative outcome |
 |---|---|---|
 | Runtime host | Explicit construction-time provider and owned-handler setup; no family workflow span | Runtime lifecycle and returned/raised result |
-| CLI and API | `serve` and worker lifespan configure the host; imports and `create_app()` remain inert | HTTP result and gateway/domain result |
-| Gateway | Child spans for the three currently decorated operations; #515 owns a coherent ingress-root design | RBAC decision, typed application result, and access-audit evidence |
-| RuntimeApplication | No direct signal yet; lower owning family remains visible | Typed family result/exception |
-| Commands | No direct signal yet | Durable command ledger and settlement |
-| World lifecycle, mutation, simulation | Existing query/update scopes without execution-attribution claims; materialize/execute names are legacy pending #518/#519 | Tick manifest, world record, and typed result/exception |
-| Storage and query | No direct signal yet | Store/catalog state and returned frame |
+| CLI and API | `serve` and worker lifespan configure the host; imports and `create_app()` remain inert; no API operation span is currently approved | HTTP result and dispatcher/domain result |
+| Runtime handles | No direct signal yet; lower owning family remains visible | Typed family result/exception |
+| Commands | No direct signal yet | Commands-owned policy decision, typed result or exception, durable command ledger and outbox, and manifest-coupled settlement |
+| World registry, lifecycle, mutation, simulation, and durable reads | Existing query/update scopes without execution-attribution claims; materialize/execute names are legacy pending #518/#519 | Tick manifest, world record, retained committed receipt, and typed result/exception |
+| Storage | No direct signal yet | Store/catalog state and returned frame |
 | Redaction | No direct signal; safe rule IDs may be carried by approved callers | Redaction receipt or quarantine exception |
 | Artifacts | Child spans for publish, upload, and index | Publication row, object/index state, and publish receipt |
-| Evaluation and research | No direct signal yet | Snapshot-pinned evaluation/research receipts |
-| Audit | Logging only; no direct signal yet | Journal/outbox and projection watermark |
+| Evaluation | No direct signal yet | Snapshot-pinned evaluation receipts |
+| Research | No direct signal yet | Persisted experiment, run, result, and branch-head rows plus the typed workflow result |
+| Audit | Logging only; no direct signal yet | Durable control-catalog outbox event; access evidence is advisory and Iceberg rows and their watermark are analytical projection state |
 | Missions and sandboxes | No direct signal yet | Typed transition rows, attempt state, checkpoints, and artifacts |
+| Physical-AI workflow, providers, and pure search | No direct signal yet | Persisted evaluation rows and report for the workflow; provider state and returned values at provider boundaries; returned proposals for pure search |
+
+For actor-aware operations, the commands-owned policy decision and the typed
+operation result or exception remain authoritative. Any later
+`AccessSummary`/`AuditRow` is bounded, advisory evidence, including after it is
+appended to Iceberg. For durable command transitions, the transactional
+control-catalog outbox event remains the source of truth. The audit Iceberg
+rows and projection watermark describe analytical delivery, which may lag or
+replay; neither can authorize, settle, or change the typed operation outcome.
 
 The machine authority is one independently owned manifest per family under
-`quality/observability/<family>.toml`. The required universe is every callable
-member — method, async method, or property — of every `Protocol` declared
-anywhere under `src/archetype/app/<family>/`, not only protocols co-located in
-`interfaces.py`. Every such member has exactly one disposition row in its
-owning family manifest. Rows use exact qualified names; wildcards, method
-ranges, and inherited blanket dispositions are forbidden. A family may add an
-exact workflow row for an instrumented internal operation that is not a
-protocol member; there is no reverse requirement that every safe internal
-emitter have a workflow row.
+`quality/observability/<family>.toml`. The required universe begins with every
+callable member — method, async method, or property — of every `Protocol`
+declared under a registered `src/archetype/<family>/` package, not only
+protocols co-located in `interfaces.py`.
+
+A family manifest may also register an exact `concrete_operation_surface` for
+a reviewed state owner or a `module_operation_surface` for family-owned public
+functions. Registration discovers the complete public callable surface from
+source; missing, phantom, overlapping, cross-owner, unknown, or empty surfaces
+fail closed.
+
+During migration, two definitions may not collapse to the same family-relative
+operation name; compatibility modules re-export the owning definition instead.
+Every discovered operation has exactly one disposition row in its owning
+family manifest. Rows use exact qualified names; wildcards, method ranges, and
+inherited blanket dispositions are forbidden. A family may add an exact
+workflow row for an instrumented internal operation that is not a discovered
+operation; there is no reverse requirement that every safe internal emitter
+have a workflow row.
 
 Each row declares plural signals and outcomes, its authoritative durable or
 typed evidence when one exists, and only the fixed names, fields, and bounded
@@ -245,13 +266,12 @@ configuration remains in `_logging`, and runtime/API/CLI hosts may only invoke
 those private adapters.
 
 `root` describes Archetype's logical ingress ownership; it does not discard an
-upstream distributed parent. Runtime and gateway ingress workflows may own
-roots, while `RuntimeApplication` and lower families own children. The
-repository audit enforces the vocabulary, declared ownership, and
-root/child/none exclusivity. It also binds fixed workflow fields to exact
-lexical source emissions, but it does not prove runtime topology. This change
-leaves the three existing gateway decorators as child dispositions; Issue #515
-owns the coherent root model and any corresponding instrumentation.
+upstream distributed parent. Runtime and API ingress workflows may own roots
+when explicitly approved, while registered family handlers own their declared
+children. The repository audit enforces the vocabulary, declared ownership,
+and root/child/none exclusivity. It also binds fixed workflow fields to exact
+lexical source emissions, but it does not prove runtime topology. Issue #515
+owns any coherent ingress-root model and corresponding instrumentation.
 
 `scripts/check_observability.py` provides deterministic syntax and disposition
 enforcement from source and these manifests. It does not parse exported

@@ -5,9 +5,56 @@
 [[top_level_family_rule]]
 name = "missions-domain-family"
 consumer = "archetype.missions"
-allowed_families = ["archetype.graph"]
+allowed_families = [
+  "archetype.activities",
+  "archetype.artifacts",
+  "archetype.episodes",
+  "archetype.evaluation",
+  "archetype.graph",
+  "archetype.projections",
+  "archetype.redaction",
+  "archetype.storage",
+  "archetype.world",
+]
 
 [[module_rule]]
 module = "archetype.missions.sandboxes.service"
 allowed_interfaces = []
+allowed_app = []
+
+[[module_rule]]
+module = "archetype.missions.activity_world"
+allowed_interfaces = [
+  "archetype.core.interfaces.ArchetypeSignature",
+  "archetype.core.interfaces.CommittedTickReceipt",
+  "archetype.storage.interfaces.iStorageService",
+  "archetype.world.interfaces.iWorldRegistry",
+]
+allowed_app = []
+
+[[module_rule]]
+module = "archetype.missions.service"
+allowed_interfaces = []
+allowed_app = []
+
+[[module_rule]]
+module = "archetype.missions.critic_activity_world"
+allowed_interfaces = [
+  "archetype.storage.interfaces.iStorageService",
+  "archetype.world.interfaces.iWorldRegistry",
+]
+allowed_app = []
+
+[[module_rule]]
+module = "archetype.missions.trajectory_service"
+allowed_interfaces = [
+  "archetype.storage.interfaces.iStorageService",
+]
+allowed_app = []
+
+[[module_rule]]
+module = "archetype.missions.transcript_service"
+allowed_interfaces = [
+  "archetype.storage.interfaces.iStorageService",
+]
 allowed_app = []
