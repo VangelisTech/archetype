@@ -10,11 +10,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
+import daft
 from daft import DataFrame, Expression, col
 
 from archetype.core.component import Component
 from archetype.core.hooks import PostTick
-from archetype.graph import GraphView, Relation
+from archetype.graph import GraphView
 from archetype.missions.activities import (
     AuthorActivityEntityFact,
     CompleteAuthorActivityFactBundle,
@@ -30,7 +31,6 @@ from archetype.missions.components import (
     AgentExecution,
     AuthorActivityObservation,
     Candidate,
-    Checkpoint,
     Commit,
     CompleteAuthorActivityObservation,
     CompleteCriticActivityObservation,
@@ -40,7 +40,6 @@ from archetype.missions.components import (
     FrictionLog,
     Mission,
     MissionState,
-    Sandbox,
     Task,
     TaskCriticPolicy,
     TaskCriticSubjectPolicy,
@@ -68,18 +67,55 @@ from archetype.missions.critics.contracts import (
     CriticValidationEvidence,
     validator_bundle_digest,
 )
+from archetype.missions.projection_bundles import (
+    COMPLETE_AUTHOR_ACTIVITY_FACT_TYPES,
+    COMPLETE_CRITIC_ACTIVITY_FACT_TYPES,
+    reconstruct_complete_author_activity_fact_bundle,
+    reconstruct_complete_critic_activity_fact_bundle,
+)
 from archetype.missions.relations import (
-    AuthoredBy,
-    CandidateFor,
-    Executes,
     Guards,
     PartOfMission,
-    ProducedBy,
-    Reviews,
-    RunsIn,
-    Supersedes,
 )
 from archetype.missions.transitions import MissionStatus, TaskStatus
+
+
+def _latest_prior_sequence(
+    task_keys: DataFrame,
+    history: DataFrame,
+    *,
+    task_column: str,
+    sequence_column: str,
+    alias: str,
+) -> DataFrame:
+    """Per dispatched task, the greatest history sequence strictly before it.
+
+    Tasks with no earlier history are absent from the result; callers decide
+    whether that means "no previous dispatch" or the sequence-zero default.
+    """
+
+    return (
+        task_keys.join(history, left_on="_task_id", right_on=task_column)
+        .where(cast(Expression, col(sequence_column) < col("_task_sequence")))
+        .groupby("_task_id")
+        .agg(col(sequence_column).max().alias(alias))
+    )
+
+
+def _sequence_with_zero_default(
+    task_keys: DataFrame,
+    prior: DataFrame,
+    *,
+    alias: str,
+) -> DataFrame:
+    """Give every dispatched task a previous sequence, defaulting to zero."""
+
+    return (
+        task_keys.select("_task_id")
+        .distinct()
+        .join(prior, on="_task_id", how="left")
+        .with_column(alias, col(alias).fill_null(0))
+    )
 
 
 def _live_frame(event: PostTick, *components: type[Component]) -> DataFrame | None:
@@ -110,38 +146,13 @@ def _critic_subject_bounds(event: PostTick) -> dict[int, int]:
     if frame is None:
         return {}
     subject = TaskCriticSubjectPolicy.get_prefix()
+    bounds = _daft_latest(frame, label="critic subject policy").select(
+        "entity_id",
+        f"{subject}max_subject_bytes",
+    )
     return {
-        entity_id: int(row[f"{subject}max_subject_bytes"])
-        for entity_id, row in _latest_entity_rows(
-            frame.to_pylist(),
-            label="critic subject policy",
-        ).items()
+        int(row["entity_id"]): int(row[f"{subject}max_subject_bytes"]) for row in bounds.to_pylist()
     }
-
-
-def _latest_entity_rows(
-    rows: Sequence[dict[str, Any]],
-    *,
-    label: str,
-    allow_updates: bool = False,
-) -> dict[int, dict[str, Any]]:
-    """Index the latest committed row and reject ambiguity at one tick."""
-
-    indexed: dict[int, dict[str, Any]] = {}
-    for row in rows:
-        entity_id = int(row["entity_id"])
-        prior = indexed.get(entity_id)
-        if prior is not None and not allow_updates:
-            prior_value = {key: value for key, value in prior.items() if key != "tick"}
-            row_value = {key: value for key, value in row.items() if key != "tick"}
-            if prior_value != row_value:
-                raise ValueError(f"{label} has conflicting committed rows")
-        if prior is None or int(row["tick"]) > int(prior["tick"]):
-            indexed[entity_id] = row
-            continue
-        if int(row["tick"]) == int(prior["tick"]) and prior != row:
-            raise ValueError(f"{label} has conflicting committed rows")
-    return indexed
 
 
 class _TaskDispatchProjection:
@@ -158,6 +169,126 @@ class _TaskDispatchProjection:
 
     def __init__(self) -> None:
         self.requests: list[TaskDispatchRequest] = []
+
+    @staticmethod
+    def _previous_executions(
+        task_keys: DataFrame,
+        observations: DataFrame | None,
+    ) -> dict[int, dict[str, Any]]:
+        """Index the execution each task dispatched most recently before now."""
+
+        if observations is None:
+            return {}
+        prior = _latest_prior_sequence(
+            task_keys,
+            observations.select("_prior_task_id", "_prior_sequence").distinct(),
+            task_column="_prior_task_id",
+            sequence_column="_prior_sequence",
+            alias="_previous_sequence",
+        )
+        winners = (
+            observations.join(
+                prior,
+                left_on=["_prior_task_id", "_prior_sequence"],
+                right_on=["_task_id", "_previous_sequence"],
+            )
+            .select(
+                "_prior_task_id",
+                "_prior_starting_revision",
+                "_prior_agent_session_id",
+            )
+            .distinct()
+        )
+        indexed: dict[int, dict[str, Any]] = {}
+        for row in winners.to_pylist():
+            indexed.setdefault(int(row["_prior_task_id"]), row)
+        return indexed
+
+    @staticmethod
+    def _previous_validations(
+        task_keys: DataFrame,
+        observations: DataFrame | None,
+        *,
+        has_validations: bool,
+    ) -> dict[int, list[dict[str, Any]]]:
+        """Index the validations observed at each task's previous sequence.
+
+        A task with no earlier dispatch falls back to sequence zero, which is
+        what the per-task scan this replaces did with its `default=None`.
+        """
+
+        if observations is None or not has_validations:
+            return {}
+        prior = _latest_prior_sequence(
+            task_keys,
+            observations.select("_prior_task_id", "_prior_sequence").distinct(),
+            task_column="_prior_task_id",
+            sequence_column="_prior_sequence",
+            alias="_previous_sequence",
+        )
+        settled = observations.join(
+            _sequence_with_zero_default(task_keys, prior, alias="_previous_sequence"),
+            left_on=["_prior_task_id", "_prior_sequence"],
+            right_on=["_task_id", "_previous_sequence"],
+        ).where(col("_validation_validator_id").not_null())
+        indexed: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for row in settled.to_pylist():
+            indexed[int(row["_prior_task_id"])].append(row)
+        return indexed
+
+    @staticmethod
+    def _prior_candidates(
+        task_keys: DataFrame,
+        candidate_history: DataFrame | None,
+        finding_history: DataFrame | None,
+        *,
+        candidate_prefix: str,
+        finding_prefix: str,
+    ) -> tuple[dict[int, dict[str, Any]], dict[int, list[dict[str, Any]]]]:
+        """Index each task's latest earlier candidate and that candidate's findings."""
+
+        if candidate_history is None:
+            return {}, {}
+        candidate_keys = candidate_history.select(
+            col("entity_id").alias("_prior_candidate_entity_id"),
+            col(f"{candidate_prefix}task_id").alias("_prior_candidate_task_id"),
+            col(f"{candidate_prefix}dispatch_sequence").alias("_prior_candidate_sequence"),
+            col(f"{candidate_prefix}candidate_id").alias("_prior_candidate_id"),
+        )
+        prior = _latest_prior_sequence(
+            task_keys,
+            candidate_keys.select(
+                "_prior_candidate_task_id",
+                "_prior_candidate_sequence",
+            ).distinct(),
+            task_column="_prior_candidate_task_id",
+            sequence_column="_prior_candidate_sequence",
+            alias="_previous_candidate_sequence",
+        )
+        winners = candidate_keys.join(
+            prior,
+            left_on=["_prior_candidate_task_id", "_prior_candidate_sequence"],
+            right_on=["_task_id", "_previous_candidate_sequence"],
+        )
+        by_task: dict[int, dict[str, Any]] = {}
+        for row in winners.to_pylist():
+            by_task.setdefault(int(row["_prior_candidate_task_id"]), row)
+        if finding_history is None or not by_task:
+            return by_task, {}
+        # Only findings the winning candidates own cross into Python.
+        named = winners.select(
+            col("_prior_candidate_entity_id").alias("_named_candidate")
+        ).distinct()
+        kept = finding_history.join(
+            named,
+            left_on=f"{finding_prefix}candidate_entity_id",
+            right_on="_named_candidate",
+            how="semi",
+        )
+        findings: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for row in kept.to_pylist():
+            findings[int(row[f"{finding_prefix}candidate_entity_id"])].append(row)
+        return by_task, findings
 
     async def on_post_tick(self, event: PostTick) -> None:
         task_frame = _live_frame(event, *self._TASK_COMPONENTS)
@@ -226,13 +357,17 @@ class _TaskDispatchProjection:
             validators_by_id[validator_id] = spec
             validators_by_task[task_id].append(DispatchedValidator(validator_id, spec))
 
+        task_keys = dispatched.select(
+            col("entity_id").alias("_task_id"),
+            col(f"{dispatch}sequence").alias("_task_sequence"),
+        )
+
         executions = _live_frame(event, AgentExecution)
         validation_results = _live_frame(event, ValidationResult)
         execution = AgentExecution.get_prefix()
         validation = ValidationResult.get_prefix()
-        if executions is None:
-            observation_rows: list[dict[str, Any]] = []
-        else:
+        observations: DataFrame | None = None
+        if executions is not None:
             observations = executions.select(
                 col("entity_id").alias("_prior_execution_id"),
                 col(f"{execution}task_id").alias("_prior_task_id"),
@@ -255,33 +390,34 @@ class _TaskDispatchProjection:
                     right_on="_validation_execution_id",
                     how="left",
                 )
-            observation_rows = observations.to_pylist()
         record = Task.get_prefix()
         workspace = TaskWorkspace.get_prefix()
         policy = TaskPolicy.get_prefix()
         critic_policy = TaskCriticPolicy.get_prefix()
         candidate_history = _live_frame(event, Candidate)
         finding_history = _live_frame(event, CriticFinding)
-        candidate_rows = candidate_history.to_pylist() if candidate_history is not None else []
-        finding_rows = finding_history.to_pylist() if finding_history is not None else []
         candidate_record = Candidate.get_prefix()
         finding_record = CriticFinding.get_prefix()
+
+        previous_execution_by_task = self._previous_executions(task_keys, observations)
+        previous_validations_by_task = self._previous_validations(
+            task_keys,
+            observations,
+            has_validations=validation_results is not None,
+        )
+        prior_candidate_by_task, findings_by_candidate = self._prior_candidates(
+            task_keys,
+            candidate_history,
+            finding_history,
+            candidate_prefix=candidate_record,
+            finding_prefix=finding_record,
+        )
+
         for row in task_rows:
             dispatch_id = str(row[f"{dispatch}dispatch_id"])
             task_id = int(row["entity_id"])
             sequence = int(row[f"{dispatch}sequence"])
-            prior = [
-                candidate
-                for candidate in observation_rows
-                if int(candidate["_prior_task_id"]) == task_id
-                and int(candidate["_prior_sequence"]) < sequence
-            ]
-            previous = max(
-                prior,
-                key=lambda candidate: int(candidate["_prior_sequence"]),
-                default=None,
-            )
-            previous_sequence = int(previous["_prior_sequence"]) if previous is not None else 0
+            previous = previous_execution_by_task.get(task_id)
             previous_validation = tuple(
                 ValidationObservation(
                     validator_id=int(candidate["_validation_validator_id"]),
@@ -293,29 +429,16 @@ class _TaskDispatchProjection:
                     stdout=str(candidate["_validation_stdout"]),
                     stderr=str(candidate["_validation_stderr"]),
                 )
-                for candidate in observation_rows
-                if int(candidate["_prior_task_id"]) == task_id
-                and int(candidate["_prior_sequence"]) == previous_sequence
-                and candidate.get("_validation_validator_id") is not None
+                for candidate in previous_validations_by_task.get(task_id, ())
             )
             validators = tuple(
                 sorted(validators_by_task[task_id], key=lambda item: item.validator_id)
             )
-            prior_candidates = [
-                item
-                for item in candidate_rows
-                if int(item[f"{candidate_record}task_id"]) == task_id
-                and int(item[f"{candidate_record}dispatch_sequence"]) < sequence
-            ]
-            prior_candidate = max(
-                prior_candidates,
-                key=lambda item: int(item[f"{candidate_record}dispatch_sequence"]),
-                default=None,
-            )
+            prior_candidate = prior_candidate_by_task.get(task_id)
             previous_critic_findings = (
                 tuple(
                     CriticRepairFinding(
-                        candidate_id=str(prior_candidate[f"{candidate_record}candidate_id"]),
+                        candidate_id=str(prior_candidate["_prior_candidate_id"]),
                         finding_id=str(item[f"{finding_record}finding_id"]),
                         severity=str(item[f"{finding_record}severity"]),
                         category=str(item[f"{finding_record}category"]),
@@ -324,9 +447,9 @@ class _TaskDispatchProjection:
                         evidence_location=str(item[f"{finding_record}evidence_location"]),
                         reproduction=str(item[f"{finding_record}reproduction"]),
                     )
-                    for item in finding_rows
-                    if int(item[f"{finding_record}candidate_entity_id"])
-                    == int(prior_candidate["entity_id"])
+                    for item in findings_by_candidate.get(
+                        int(prior_candidate["_prior_candidate_entity_id"]), ()
+                    )
                 )
                 if prior_candidate is not None
                 else ()
@@ -364,7 +487,9 @@ class _TaskDispatchProjection:
                         ),
                     ),
                     prior_candidate_entity_id=(
-                        int(prior_candidate["entity_id"]) if prior_candidate is not None else 0
+                        int(prior_candidate["_prior_candidate_entity_id"])
+                        if prior_candidate is not None
+                        else 0
                     ),
                     task_base_revision=(
                         str(previous["_prior_starting_revision"]) if previous is not None else ""
@@ -386,6 +511,66 @@ async def project_task_dispatch_requests(event: PostTick) -> tuple[TaskDispatchR
     return tuple(projection.requests)
 
 
+def _count_by_keys(
+    frame: DataFrame | None,
+    *,
+    keys: tuple[str, ...],
+    count_alias: str,
+) -> DataFrame:
+    """Aggregate row counts by join keys; empty input yields an empty count frame."""
+
+    if frame is None:
+        return daft.from_pydict({**{key: [] for key in keys}, count_alias: []})
+    return frame.groupby(*keys).agg(col(keys[0]).count().alias(count_alias))
+
+
+def _outputs_by_activity(
+    frame: DataFrame | None,
+    markers: DataFrame,
+    *,
+    prefix: str,
+    marker_prefix: str,
+    exact_sequence: bool,
+) -> dict[tuple[Any, ...], list[dict[str, Any]]]:
+    """Index only the output rows a surviving marker names, by that activity.
+
+    The semi-join keeps unnamed history out of Python; the remaining rows still
+    have to become typed Components for the bundle digest.
+    """
+
+    if frame is None:
+        return {}
+    fact_keys = [f"{prefix}execution_id", f"{prefix}task_id", f"{prefix}dispatch_id"]
+    marker_keys = [
+        f"{marker_prefix}execution_id",
+        f"{marker_prefix}task_id",
+        f"{marker_prefix}activity_id",
+    ]
+    if exact_sequence:
+        fact_keys.append(f"{prefix}dispatch_sequence")
+        marker_keys.append(f"{marker_prefix}dispatch_sequence")
+    named = markers.select(
+        *[col(name).alias(f"_named_{index}") for index, name in enumerate(marker_keys)]
+    ).distinct()
+    kept = frame.join(
+        named,
+        left_on=fact_keys,
+        right_on=[f"_named_{index}" for index in range(len(marker_keys))],
+        how="semi",
+    )
+    indexed: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
+    for row in kept.to_pylist():
+        key = (
+            int(row[f"{prefix}execution_id"]),
+            int(row[f"{prefix}task_id"]),
+            str(row[f"{prefix}dispatch_id"]),
+        )
+        if exact_sequence:
+            key = (*key, int(row[f"{prefix}dispatch_sequence"]))
+        indexed[key].append(row)
+    return indexed
+
+
 def project_complete_author_activity_observations(
     event: PostTick,
 ) -> tuple[AuthorActivityObservation, ...]:
@@ -403,61 +588,155 @@ def project_complete_author_activity_observations(
     validation = ValidationResult.get_prefix()
     commit = Commit.get_prefix()
     friction_record = FrictionLog.get_prefix()
-    execution_rows = executions.to_pylist()
-    validation_rows = validations.to_pylist() if validations is not None else []
-    commit_rows = commits.to_pylist() if commits is not None else []
-    friction_rows = friction.to_pylist() if friction is not None else []
+
+    execution_keys = executions.select(
+        col("entity_id").alias("_execution_entity_id"),
+        *[
+            col(f"{execution}{field}").alias(f"_execution_{field}")
+            for field in AgentExecution.model_fields
+        ],
+    ).distinct()
+    # One execution identity must name one committed value. Dropping the
+    # ambiguous identities keeps the join from fanning a marker into several
+    # observations, which is what the per-marker exact-count gate did before.
+    execution_keys = execution_keys.join(
+        _count_by_keys(
+            execution_keys,
+            keys=("_execution_entity_id",),
+            count_alias="_execution_versions",
+        ).where(cast(Expression, col("_execution_versions") > 1)),
+        on="_execution_entity_id",
+        how="anti",
+    )
+    candidates = markers.join(
+        execution_keys,
+        left_on=[
+            f"{marker}execution_id",
+            f"{marker}task_id",
+            f"{marker}activity_id",
+            f"{marker}dispatch_sequence",
+        ],
+        right_on=[
+            "_execution_entity_id",
+            "_execution_task_id",
+            "_execution_dispatch_id",
+            "_execution_dispatch_sequence",
+        ],
+    ).where(
+        cast(
+            Expression,
+            col("_execution_redaction_policy_id") == col(f"{marker}redaction_policy_id"),
+        )
+    )
+
+    validation_counts = _count_by_keys(
+        None
+        if validations is None
+        else validations.select(
+            col(f"{validation}execution_id").alias("_v_execution_id"),
+            col(f"{validation}task_id").alias("_v_task_id"),
+            col(f"{validation}dispatch_id").alias("_v_dispatch_id"),
+            col(f"{validation}dispatch_sequence").alias("_v_dispatch_sequence"),
+        ),
+        keys=("_v_execution_id", "_v_task_id", "_v_dispatch_id", "_v_dispatch_sequence"),
+        count_alias="_validation_seen",
+    )
+    commit_counts = _count_by_keys(
+        None
+        if commits is None
+        else commits.select(
+            col(f"{commit}execution_id").alias("_c_execution_id"),
+            col(f"{commit}task_id").alias("_c_task_id"),
+            col(f"{commit}dispatch_id").alias("_c_dispatch_id"),
+        ),
+        keys=("_c_execution_id", "_c_task_id", "_c_dispatch_id"),
+        count_alias="_commit_seen",
+    )
+    friction_counts = _count_by_keys(
+        None
+        if friction is None
+        else friction.select(
+            col(f"{friction_record}execution_id").alias("_f_execution_id"),
+            col(f"{friction_record}task_id").alias("_f_task_id"),
+            col(f"{friction_record}dispatch_id").alias("_f_dispatch_id"),
+        ),
+        keys=("_f_execution_id", "_f_task_id", "_f_dispatch_id"),
+        count_alias="_friction_seen",
+    )
+
+    complete_markers = (
+        candidates.join(
+            validation_counts,
+            left_on=[
+                f"{marker}execution_id",
+                f"{marker}task_id",
+                f"{marker}activity_id",
+                f"{marker}dispatch_sequence",
+            ],
+            right_on=[
+                "_v_execution_id",
+                "_v_task_id",
+                "_v_dispatch_id",
+                "_v_dispatch_sequence",
+            ],
+            how="left",
+        )
+        .with_column("_validation_seen", col("_validation_seen").fill_null(0))
+        .join(
+            commit_counts,
+            left_on=[f"{marker}execution_id", f"{marker}task_id", f"{marker}activity_id"],
+            right_on=["_c_execution_id", "_c_task_id", "_c_dispatch_id"],
+            how="left",
+        )
+        .with_column("_commit_seen", col("_commit_seen").fill_null(0))
+        .join(
+            friction_counts,
+            left_on=[f"{marker}execution_id", f"{marker}task_id", f"{marker}activity_id"],
+            right_on=["_f_execution_id", "_f_task_id", "_f_dispatch_id"],
+            how="left",
+        )
+        .with_column("_friction_seen", col("_friction_seen").fill_null(0))
+        .where(
+            (col("_validation_seen") == col(f"{marker}validation_count"))
+            & (col("_commit_seen") == col(f"{marker}commit_count"))
+            & (col("_friction_seen") == col(f"{marker}friction_count"))
+        )
+    )
+
+    # Only facts a surviving marker names cross into Python, where digest
+    # verification needs typed Component values.
+    validation_by_activity = _outputs_by_activity(
+        validations,
+        complete_markers,
+        prefix=validation,
+        marker_prefix=marker,
+        exact_sequence=True,
+    )
+    commit_by_activity = _outputs_by_activity(
+        commits,
+        complete_markers,
+        prefix=commit,
+        marker_prefix=marker,
+        exact_sequence=False,
+    )
+    friction_by_activity = _outputs_by_activity(
+        friction,
+        complete_markers,
+        prefix=friction_record,
+        marker_prefix=marker,
+        exact_sequence=False,
+    )
     complete: list[AuthorActivityObservation] = []
-    for row in markers.to_pylist():
+    for row in complete_markers.to_pylist():
         activity_id = str(row[f"{marker}activity_id"])
         task_id = int(row[f"{marker}task_id"])
         execution_id = int(row[f"{marker}execution_id"])
         sequence = int(row[f"{marker}dispatch_sequence"])
-        matching_execution = [
-            candidate
-            for candidate in execution_rows
-            if int(candidate["entity_id"]) == execution_id
-            and int(candidate[f"{execution}task_id"]) == task_id
-            and str(candidate[f"{execution}dispatch_id"]) == activity_id
-            and int(candidate[f"{execution}dispatch_sequence"]) == sequence
-        ]
-        matching_validations = [
-            candidate
-            for candidate in validation_rows
-            if int(candidate[f"{validation}execution_id"]) == execution_id
-            and int(candidate[f"{validation}task_id"]) == task_id
-            and str(candidate[f"{validation}dispatch_id"]) == activity_id
-            and int(candidate[f"{validation}dispatch_sequence"]) == sequence
-        ]
-        matching_commits = [
-            candidate
-            for candidate in commit_rows
-            if int(candidate[f"{commit}execution_id"]) == execution_id
-            and int(candidate[f"{commit}task_id"]) == task_id
-            and str(candidate[f"{commit}dispatch_id"]) == activity_id
-        ]
-        matching_friction = [
-            candidate
-            for candidate in friction_rows
-            if int(candidate[f"{friction_record}execution_id"]) == execution_id
-            and int(candidate[f"{friction_record}task_id"]) == task_id
-            and str(candidate[f"{friction_record}dispatch_id"]) == activity_id
-        ]
-        if (
-            len(matching_execution) != 1
-            or len(matching_validations) != int(row[f"{marker}validation_count"])
-            or len(matching_commits) != int(row[f"{marker}commit_count"])
-            or len(matching_friction) != int(row[f"{marker}friction_count"])
-            or str(matching_execution[0][f"{execution}redaction_policy_id"])
-            != str(row[f"{marker}redaction_policy_id"])
-        ):
-            continue
         execution_fact = AgentExecution(
-            **{
-                field: matching_execution[0][f"{execution}{field}"]
-                for field in AgentExecution.model_fields
-            }
+            **{field: row[f"_execution_{field}"] for field in AgentExecution.model_fields}
         )
+        exact_key = (execution_id, task_id, activity_id, sequence)
+        activity_key = (execution_id, task_id, activity_id)
         validation_facts = tuple(
             ValidationResult(
                 **{
@@ -465,11 +744,11 @@ def project_complete_author_activity_observations(
                     for field in ValidationResult.model_fields
                 }
             )
-            for candidate in matching_validations
+            for candidate in validation_by_activity.get(exact_key, ())
         )
         commit_facts = tuple(
             Commit(**{field: candidate[f"{commit}{field}"] for field in Commit.model_fields})
-            for candidate in matching_commits
+            for candidate in commit_by_activity.get(activity_key, ())
         )
         friction_facts = tuple(
             FrictionLog(
@@ -478,7 +757,7 @@ def project_complete_author_activity_observations(
                     for field in FrictionLog.model_fields
                 }
             )
-            for candidate in matching_friction
+            for candidate in friction_by_activity.get(activity_key, ())
         )
         bundle_digest = author_activity_fact_bundle_digest(
             execution_id=execution_id,
@@ -532,168 +811,6 @@ def _component_facts(
         )
         for row in frame.to_pylist()
     )
-
-
-COMPLETE_AUTHOR_ACTIVITY_FACT_TYPES: tuple[type[Component], ...] = (
-    Sandbox,
-    AgentExecution,
-    ValidationResult,
-    Commit,
-    Checkpoint,
-    FrictionLog,
-    Candidate,
-    PartOfMission,
-    Executes,
-    RunsIn,
-    ProducedBy,
-    CandidateFor,
-    AuthoredBy,
-    Supersedes,
-)
-
-
-def reconstruct_complete_author_activity_fact_bundle(
-    marker: CompleteAuthorActivityObservation,
-    facts_by_type: Mapping[
-        type[Component],
-        Sequence[AuthorActivityEntityFact],
-    ],
-) -> CompleteAuthorActivityFactBundle | None:
-    """Select the exact v2 fact bundle named by one completion marker."""
-
-    facts = {
-        component_type: tuple(facts_by_type.get(component_type, ()))
-        for component_type in COMPLETE_AUTHOR_ACTIVITY_FACT_TYPES
-    }
-    by_type_and_id = {
-        component_type: {fact.entity_id: fact for fact in component_facts}
-        for component_type, component_facts in facts.items()
-    }
-
-    sandbox = by_type_and_id[Sandbox].get(marker.sandbox_entity_id)
-    execution = by_type_and_id[AgentExecution].get(marker.execution_id)
-    if sandbox is None or execution is None:
-        return None
-    selected: list[AuthorActivityEntityFact] = [sandbox, execution]
-
-    membership = tuple(
-        fact
-        for fact in facts[PartOfMission]
-        if isinstance(fact.component, PartOfMission)
-        and fact.component.source == marker.sandbox_entity_id
-    )
-    if len(membership) != int(marker.sandbox_bound):
-        return None
-    selected.extend(membership)
-
-    executes = tuple(
-        fact
-        for fact in facts[Executes]
-        if isinstance(fact.component, Executes) and fact.component.source == marker.execution_id
-    )
-    runs_in = tuple(
-        fact
-        for fact in facts[RunsIn]
-        if isinstance(fact.component, RunsIn) and fact.component.source == marker.execution_id
-    )
-    if len(executes) != 1 or len(runs_in) != 1:
-        return None
-    selected.extend((*executes, *runs_in))
-
-    output_groups: tuple[tuple[type[Component], int], ...] = (
-        (ValidationResult, marker.validation_count),
-        (Commit, marker.commit_count),
-        (FrictionLog, marker.friction_count),
-        (Checkpoint, marker.checkpoint_count),
-    )
-    output_facts: list[AuthorActivityEntityFact] = []
-    for component_type, expected_count in output_groups:
-        matching = tuple(
-            fact
-            for fact in facts[component_type]
-            if getattr(fact.component, "execution_id", None) == marker.execution_id
-            and getattr(fact.component, "task_id", None) == marker.task_id
-            and getattr(fact.component, "dispatch_id", None) == marker.activity_id
-            and (
-                component_type is not ValidationResult
-                or getattr(fact.component, "dispatch_sequence", None) == marker.dispatch_sequence
-            )
-        )
-        if len(matching) != expected_count:
-            return None
-        output_facts.extend(matching)
-
-    produced: list[AuthorActivityEntityFact] = []
-    for output in output_facts:
-        matching_edges = tuple(
-            fact
-            for fact in facts[ProducedBy]
-            if isinstance(fact.component, ProducedBy)
-            and fact.component.source == output.entity_id
-            and fact.component.target == marker.execution_id
-        )
-        if len(matching_edges) != 1:
-            return None
-        produced.extend(matching_edges)
-    selected.extend((*output_facts, *produced))
-
-    matching_candidates = tuple(
-        fact
-        for fact in facts[Candidate]
-        if isinstance(fact.component, Candidate)
-        and fact.component.task_id == marker.task_id
-        and fact.component.dispatch_id == marker.activity_id
-        and fact.component.dispatch_sequence == marker.dispatch_sequence
-    )
-    if marker.candidate_count:
-        if (
-            len(matching_candidates) != 1
-            or matching_candidates[0].entity_id != marker.candidate_entity_id
-        ):
-            return None
-        candidate_id = marker.candidate_entity_id
-        candidate_for = tuple(
-            fact
-            for fact in facts[CandidateFor]
-            if isinstance(fact.component, CandidateFor) and fact.component.source == candidate_id
-        )
-        authored_by = tuple(
-            fact
-            for fact in facts[AuthoredBy]
-            if isinstance(fact.component, AuthoredBy) and fact.component.source == candidate_id
-        )
-        supersedes = tuple(
-            fact
-            for fact in facts[Supersedes]
-            if isinstance(fact.component, Supersedes) and fact.component.source == candidate_id
-        )
-        if len(candidate_for) != 1 or len(authored_by) != 1 or len(supersedes) > 1:
-            return None
-        selected.extend(
-            (
-                matching_candidates[0],
-                *candidate_for,
-                *authored_by,
-                *supersedes,
-            )
-        )
-    elif matching_candidates:
-        return None
-
-    relation_count = sum(isinstance(fact.component, Relation) for fact in selected)
-    if relation_count != marker.relation_count:
-        return None
-    try:
-        bundle = CompleteAuthorActivityFactBundle(
-            facts=tuple(selected),
-            execution_id=marker.execution_id,
-            sandbox_entity_id=marker.sandbox_entity_id,
-            candidate_entity_id=marker.candidate_entity_id,
-            checkpoint_entity_id=marker.checkpoint_entity_id,
-        )
-    except ValueError:
-        return None
-    return bundle if bundle.digest == marker.fact_bundle_digest else None
 
 
 def project_complete_author_activity_fact_bundles(
@@ -761,135 +878,6 @@ def _critic_component_facts(
     )
 
 
-COMPLETE_CRITIC_ACTIVITY_FACT_TYPES: tuple[type[Component], ...] = (
-    Sandbox,
-    CriticExecution,
-    CriticFinding,
-    CriticReceipt,
-    Reviews,
-    RunsIn,
-    ProducedBy,
-)
-
-
-def reconstruct_complete_critic_activity_fact_bundle(
-    marker: CompleteCriticActivityObservation,
-    facts_by_type: Mapping[
-        type[Component],
-        Sequence[CriticActivityEntityFact],
-    ],
-) -> CompleteCriticActivityFactBundle | None:
-    """Select the exact critic fact bundle named by one completion marker."""
-
-    facts = {
-        component_type: tuple(facts_by_type.get(component_type, ()))
-        for component_type in COMPLETE_CRITIC_ACTIVITY_FACT_TYPES
-    }
-    by_type_and_id = {
-        component_type: {fact.entity_id: fact for fact in component_facts}
-        for component_type, component_facts in facts.items()
-    }
-    sandbox = by_type_and_id[Sandbox].get(marker.sandbox_entity_id)
-    execution = by_type_and_id[CriticExecution].get(marker.execution_id)
-    if sandbox is None or execution is None:
-        return None
-    sandbox_value = sandbox.component
-    execution_value = execution.component
-    assert isinstance(sandbox_value, Sandbox)
-    assert isinstance(execution_value, CriticExecution)
-    if (
-        sandbox_value.sandbox_id != marker.critic_sandbox_id
-        or execution_value.candidate_entity_id != marker.candidate_entity_id
-        or execution_value.review_id != marker.activity_id
-        or execution_value.attempt != marker.domain_review_attempt
-        or execution_value.sandbox_id != marker.critic_sandbox_id
-        or execution_value.redaction_policy_id != marker.redaction_policy_id
-    ):
-        return None
-    selected: list[CriticActivityEntityFact] = [sandbox, execution]
-
-    reviews = tuple(
-        fact
-        for fact in facts[Reviews]
-        if isinstance(fact.component, Reviews) and fact.component.source == marker.execution_id
-    )
-    runs_in = tuple(
-        fact
-        for fact in facts[RunsIn]
-        if isinstance(fact.component, RunsIn) and fact.component.source == marker.execution_id
-    )
-    review_edge = reviews[0].component if len(reviews) == 1 else None
-    runs_in_edge = runs_in[0].component if len(runs_in) == 1 else None
-    if (
-        not isinstance(review_edge, Reviews)
-        or review_edge.target != marker.candidate_entity_id
-        or not isinstance(runs_in_edge, RunsIn)
-        or runs_in_edge.target != marker.sandbox_entity_id
-    ):
-        return None
-    selected.extend((*reviews, *runs_in))
-
-    findings = tuple(
-        fact
-        for fact in facts[CriticFinding]
-        if isinstance(fact.component, CriticFinding)
-        and fact.component.critic_execution_id == marker.execution_id
-        and fact.component.candidate_entity_id == marker.candidate_entity_id
-    )
-    if len(findings) != marker.finding_count:
-        return None
-    finding_edges: list[CriticActivityEntityFact] = []
-    for finding in findings:
-        produced = tuple(
-            fact
-            for fact in facts[ProducedBy]
-            if isinstance(fact.component, ProducedBy) and fact.component.source == finding.entity_id
-        )
-        produced_edge = produced[0].component if len(produced) == 1 else None
-        if not isinstance(produced_edge, ProducedBy) or produced_edge.target != marker.execution_id:
-            return None
-        finding_edges.extend(produced)
-    selected.extend((*findings, *finding_edges))
-
-    receipts = tuple(
-        fact
-        for fact in facts[CriticReceipt]
-        if isinstance(fact.component, CriticReceipt)
-        and fact.component.critic_execution_id == marker.execution_id
-        and fact.component.candidate_entity_id == marker.candidate_entity_id
-        and fact.component.review_id == marker.activity_id
-    )
-    if len(receipts) != marker.receipt_count:
-        return None
-    if marker.receipt_count:
-        if receipts[0].entity_id != marker.receipt_entity_id:
-            return None
-        produced = tuple(
-            fact
-            for fact in facts[ProducedBy]
-            if isinstance(fact.component, ProducedBy)
-            and fact.component.source == marker.receipt_entity_id
-        )
-        produced_edge = produced[0].component if len(produced) == 1 else None
-        if not isinstance(produced_edge, ProducedBy) or produced_edge.target != marker.execution_id:
-            return None
-        selected.extend((receipts[0], produced[0]))
-
-    relation_count = sum(isinstance(fact.component, Relation) for fact in selected)
-    if relation_count != marker.relation_count:
-        return None
-    try:
-        bundle = CompleteCriticActivityFactBundle(
-            facts=tuple(selected),
-            execution_id=marker.execution_id,
-            sandbox_entity_id=marker.sandbox_entity_id,
-            receipt_entity_id=marker.receipt_entity_id,
-        )
-    except ValueError:
-        return None
-    return bundle if bundle.digest == marker.fact_bundle_digest else None
-
-
 def project_complete_critic_activity_fact_bundles(
     event: PostTick,
 ) -> tuple[ProjectedCriticActivityFactBundle, ...]:
@@ -946,6 +934,290 @@ class CriticActivityIntentProjection:
     exhausted: tuple[CriticReviewBudgetExhausted, ...]
 
 
+def _reject_ambiguous_history(frame: DataFrame, *, label: str, allow_updates: bool) -> None:
+    """Fail closed when one entity committed more than one value.
+
+    An immutable component may hold exactly one value across its whole history;
+    a mutable one may hold exactly one value per tick. Either way the distinct
+    committed values must equal the number of keys they are indexed by.
+    """
+
+    if allow_updates:
+        keys = ["entity_id", "tick"]
+        columns = list(frame.column_names)
+    else:
+        keys = ["entity_id"]
+        columns = [name for name in frame.column_names if name != "tick"]
+    values = frame.select(*columns).distinct()
+    if values.count_rows() != values.select(*keys).distinct().count_rows():
+        raise ValueError(f"{label} has conflicting committed rows")
+
+
+def _daft_latest(frame: DataFrame, *, label: str, allow_updates: bool = False) -> DataFrame:
+    """Keep the max-tick row per entity_id, rejecting ambiguous history first."""
+
+    _reject_ambiguous_history(frame, label=label, allow_updates=allow_updates)
+    heads = frame.groupby("entity_id").agg(col("tick").max().alias("_latest_tick"))
+    latest = frame.join(
+        heads,
+        left_on=["entity_id", "tick"],
+        right_on=["entity_id", "_latest_tick"],
+    )
+    keep = [name for name in latest.column_names if name != "_latest_tick"]
+    return latest.select(*keep)
+
+
+def _current_candidate_frame(
+    *,
+    tasks: DataFrame,
+    candidates: DataFrame,
+    state_prefix: str,
+    candidate_prefix: str,
+) -> DataFrame:
+    """Join CANDIDATE tasks to candidates and keep the current dispatch sequence."""
+
+    candidate_tasks = _daft_latest(
+        tasks.where(cast(Expression, col(f"{state_prefix}status") == TaskStatus.CANDIDATE.value)),
+        label="candidate task",
+        allow_updates=True,
+    ).with_column("_task_entity_id", col("entity_id"))
+    candidate_tasks = candidate_tasks.select(
+        *[name for name in candidate_tasks.column_names if name not in {"entity_id", "tick"}]
+    )
+
+    candidate_latest = _daft_latest(candidates, label="candidate").with_column(
+        "_candidate_entity_id",
+        col("entity_id"),
+    )
+    joined = candidate_latest.join(
+        candidate_tasks,
+        left_on=f"{candidate_prefix}task_id",
+        right_on="_task_entity_id",
+    )
+    max_seq = joined.groupby("_task_entity_id").agg(
+        col(f"{candidate_prefix}dispatch_sequence").max().alias("_max_seq")
+    )
+    current = joined.join(max_seq, on="_task_entity_id").where(
+        col(f"{candidate_prefix}dispatch_sequence") == col("_max_seq")
+    )
+    distinct_ids = current.select("_task_entity_id", "_candidate_entity_id").distinct()
+    id_counts = distinct_ids.groupby("_task_entity_id").agg(
+        col("_candidate_entity_id").count().alias("_n_current_ids")
+    )
+    if id_counts.where(cast(Expression, col("_n_current_ids") > 1)).count_rows() > 0:
+        raise ValueError("task has multiple current candidates at one dispatch sequence")
+    return current
+
+
+def _admit_critic_request_from_current_row(
+    row: Mapping[str, Any],
+    *,
+    attempt: int,
+    subject_bounds: Mapping[int, int],
+    author_rows: Mapping[int, Mapping[str, Any]],
+    validator_rows: Mapping[int, Mapping[str, Any]],
+    validation_rows: Sequence[Mapping[str, Any]],
+    prefixes: Mapping[str, str],
+) -> CandidateReviewRequest:
+    """Build one exact-candidate request from an already-selected current row."""
+
+    task = prefixes["task"]
+    policy = prefixes["policy"]
+    candidate = prefixes["candidate"]
+    author = prefixes["author"]
+    validator = prefixes["validator"]
+    validation = prefixes["validation"]
+
+    task_id = int(row["_task_entity_id"])
+    candidate_entity_id = int(row["_candidate_entity_id"])
+    candidate_id = str(row[f"{candidate}candidate_id"])
+    max_reviews = int(row[f"{policy}max_reviews"])
+    critic_policy = CriticPolicy(
+        policy_id=str(row[f"{policy}policy_id"]),
+        version=str(row[f"{policy}version"]),
+        perspective=str(row[f"{policy}perspective"]),
+        information_view=str(row[f"{policy}information_view"]),
+        driver=str(row[f"{policy}driver"]),
+        model=str(row[f"{policy}model"]),
+        sampling=str(row[f"{policy}sampling"]),
+        max_reviews=max_reviews,
+        timeout_seconds=int(row[f"{policy}timeout_seconds"]),
+        output_schema_version=int(row[f"{policy}output_schema_version"]),
+        max_output_chars=int(row[f"{policy}max_output_chars"]),
+        max_subject_bytes=subject_bounds.get(
+            task_id,
+            CriticPolicy().max_subject_bytes,
+        ),
+    )
+    persisted_policy_digests = {
+        str(row[f"{policy}digest"]),
+        str(row[f"{candidate}policy_digest"]),
+    }
+    if persisted_policy_digests != {critic_policy.digest}:
+        raise ValueError("critic policy digest does not match the committed task and candidate")
+    author_execution_id = int(row[f"{candidate}author_execution_id"])
+    try:
+        author_row = author_rows[author_execution_id]
+    except KeyError:
+        raise ValueError("candidate author execution is not committed") from None
+    candidate_author_sandbox_id = str(row[f"{candidate}author_sandbox_id"])
+    expected_author_identity = (
+        task_id,
+        str(row[f"{candidate}dispatch_id"]),
+        int(row[f"{candidate}dispatch_sequence"]),
+        candidate_author_sandbox_id,
+        str(row[f"{candidate}base_revision"]),
+        str(row[f"{candidate}head_revision"]),
+    )
+    observed_author_identity = (
+        int(author_row[f"{author}task_id"]),
+        str(author_row[f"{author}dispatch_id"]),
+        int(author_row[f"{author}dispatch_sequence"]),
+        str(author_row[f"{author}sandbox_id"]),
+        str(author_row[f"{author}starting_revision"]),
+        str(author_row[f"{author}final_revision"]),
+    )
+    if observed_author_identity != expected_author_identity:
+        raise ValueError("candidate identity does not match its committed author execution")
+
+    exact_validation_by_id: dict[int, CriticValidationEvidence] = {}
+    for item in validation_rows:
+        if int(item[f"{validation}execution_id"]) != author_execution_id:
+            continue
+        validator_id = int(item[f"{validation}validator_id"])
+        if validator_id in exact_validation_by_id:
+            raise ValueError("candidate has duplicate validator observations for one execution")
+        try:
+            validator_row = validator_rows[validator_id]
+        except KeyError:
+            raise ValueError("candidate validation refers to an unknown validator") from None
+        if int(item[f"{validation}expected_returncode"]) != int(
+            validator_row[f"{validator}expected_returncode"]
+        ):
+            raise ValueError(
+                "candidate validation expectation does not match its validator definition"
+            )
+        validation_identity = (
+            int(item[f"{validation}task_id"]),
+            str(item[f"{validation}dispatch_id"]),
+            int(item[f"{validation}dispatch_sequence"]),
+            str(item[f"{validation}revision"]),
+        )
+        expected_validation_identity = (
+            task_id,
+            str(row[f"{candidate}dispatch_id"]),
+            int(row[f"{candidate}dispatch_sequence"]),
+            str(row[f"{candidate}head_revision"]),
+        )
+        if validation_identity != expected_validation_identity:
+            raise ValueError("candidate validation does not match its committed author execution")
+        exact_validation_by_id[validator_id] = CriticValidationEvidence(
+            validator_id=int(item[f"{validation}validator_id"]),
+            name=str(validator_row[f"{validator}name"]),
+            command=tuple(str(argument) for argument in validator_row[f"{validator}command"]),
+            expected_returncode=int(item[f"{validation}expected_returncode"]),
+            actual_returncode=int(item[f"{validation}actual_returncode"]),
+            revision=str(item[f"{validation}revision"]),
+            stdout=str(item[f"{validation}stdout"]),
+            stderr=str(item[f"{validation}stderr"]),
+        )
+    exact_validation = tuple(
+        exact_validation_by_id[validator_id] for validator_id in sorted(exact_validation_by_id)
+    )
+    observed_validator_bundle_digest = validator_bundle_digest(
+        tuple(
+            (
+                validator_id,
+                str(validator_rows[validator_id][f"{validator}name"]),
+                tuple(
+                    str(argument)
+                    for argument in validator_rows[validator_id][f"{validator}command"]
+                ),
+                int(validator_rows[validator_id][f"{validator}expected_returncode"]),
+                int(validator_rows[validator_id][f"{validator}timeout_seconds"]),
+            )
+            for validator_id in sorted(exact_validation_by_id)
+        )
+    )
+    if observed_validator_bundle_digest != str(row[f"{candidate}validator_bundle_digest"]):
+        raise ValueError(
+            "candidate validator bundle does not match its committed validation evidence"
+        )
+    request = CandidateReviewRequest(
+        candidate_entity_id=candidate_entity_id,
+        candidate_id=candidate_id,
+        mission_id=int(row[f"{candidate}mission_id"]),
+        task_id=int(row[f"{candidate}task_id"]),
+        task_name=str(row[f"{task}name"]),
+        task_prompt=str(row[f"{task}prompt"]),
+        dispatch_id=str(row[f"{candidate}dispatch_id"]),
+        dispatch_sequence=int(row[f"{candidate}dispatch_sequence"]),
+        author_execution_id=author_execution_id,
+        author_sandbox_id=candidate_author_sandbox_id,
+        repository=str(row[f"{candidate}repository"]),
+        branch=str(row[f"{candidate}branch"]),
+        base_ref=str(row[f"{candidate}base_ref"]),
+        base_revision=str(row[f"{candidate}base_revision"]),
+        head_revision=str(row[f"{candidate}head_revision"]),
+        diff_digest=str(row[f"{candidate}diff_digest"]),
+        validator_bundle_digest=str(row[f"{candidate}validator_bundle_digest"]),
+        policy=critic_policy,
+        validation=exact_validation,
+        candidate_published_at_ms=int(row[f"{candidate}created_at_ms"]),
+        attempt=attempt,
+    )
+    if request.candidate_digest != str(row[f"{candidate}candidate_digest"]):
+        raise ValueError("candidate digest does not match its committed subject")
+    return request
+
+
+def _settled_candidate_ids(
+    current: DataFrame,
+    receipts: DataFrame,
+    *,
+    candidate_prefix: str,
+    receipt_prefix: str,
+) -> set[int]:
+    """Return the current candidates an independent critic already settled.
+
+    The exact-subject match is a join on the candidate identity and every
+    reviewed digest; a receipt written from the author's own sandbox does not
+    settle anything, so it is filtered out rather than joined away.
+    """
+
+    settled = current.join(
+        receipts,
+        left_on=[
+            "_candidate_entity_id",
+            f"{candidate_prefix}candidate_digest",
+            f"{candidate_prefix}policy_digest",
+            f"{candidate_prefix}base_revision",
+            f"{candidate_prefix}head_revision",
+            f"{candidate_prefix}diff_digest",
+            f"{candidate_prefix}validator_bundle_digest",
+        ],
+        right_on=[
+            f"{receipt_prefix}candidate_entity_id",
+            f"{receipt_prefix}candidate_digest",
+            f"{receipt_prefix}policy_digest",
+            f"{receipt_prefix}reviewed_base_revision",
+            f"{receipt_prefix}reviewed_head_revision",
+            f"{receipt_prefix}reviewed_diff_digest",
+            f"{receipt_prefix}validator_bundle_digest",
+        ],
+    ).where(
+        cast(
+            Expression,
+            col(f"{receipt_prefix}critic_sandbox_id")
+            != col(f"{candidate_prefix}author_sandbox_id"),
+        )
+    )
+    return {
+        int(row["_candidate_entity_id"])
+        for row in settled.select("_candidate_entity_id").distinct().to_pylist()
+    }
+
+
 async def project_critic_activity_intents(
     event: PostTick,
 ) -> CriticActivityIntentProjection:
@@ -980,272 +1252,98 @@ async def project_critic_activity_intents(
     author = AgentExecution.get_prefix()
     validator = TaskValidator.get_prefix()
     validation = ValidationResult.get_prefix()
+    prefixes = {
+        "task": task,
+        "policy": policy,
+        "candidate": candidate,
+        "author": author,
+        "validator": validator,
+        "validation": validation,
+    }
 
-    candidate_tasks = tasks.where(
-        cast(Expression, col(f"{state}status") == TaskStatus.CANDIDATE.value)
+    current = _current_candidate_frame(
+        tasks=tasks,
+        candidates=candidates,
+        state_prefix=state,
+        candidate_prefix=candidate,
     )
-    candidate_task_rows = _latest_entity_rows(
-        candidate_tasks.to_pylist(),
-        label="candidate task",
-        allow_updates=True,
-    )
-    candidate_rows = _latest_entity_rows(
-        candidates.to_pylist(),
-        label="candidate",
-    )
-    rows: list[dict[str, Any]] = []
-    for candidate_entity_id, candidate_row in candidate_rows.items():
-        task_id = int(candidate_row[f"{candidate}task_id"])
-        task_row = candidate_task_rows.get(task_id)
-        if task_row is None:
-            continue
-        joined = dict(task_row)
-        joined.update(
-            {key: value for key, value in candidate_row.items() if key not in {"entity_id", "tick"}}
-        )
-        joined["_candidate_entity_id"] = candidate_entity_id
-        rows.append(joined)
-    if not rows:
+    current_rows = current.to_pylist()
+    if not current_rows:
         return CriticActivityIntentProjection((), ())
-    subject_bounds = _critic_subject_bounds(event)
-
-    candidates_by_task: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    for row in rows:
-        candidates_by_task[int(row["entity_id"])].append(row)
 
     current_by_task: dict[int, dict[str, Any]] = {}
-    for task_id, task_candidates in candidates_by_task.items():
-        current_sequence = max(int(row[f"{candidate}dispatch_sequence"]) for row in task_candidates)
-        current = tuple(
-            row
-            for row in task_candidates
-            if int(row[f"{candidate}dispatch_sequence"]) == current_sequence
-        )
-        current_ids = {int(row["_candidate_entity_id"]) for row in current}
-        if len(current_ids) != 1:
-            raise ValueError("task has multiple current candidates at one dispatch sequence")
-        first = current[0]
-        if any(row != first for row in current[1:]):
+    for row in current_rows:
+        task_id = int(row["_task_entity_id"])
+        prior = current_by_task.get(task_id)
+        if prior is not None and prior != row:
             raise ValueError("task current candidate has conflicting committed rows")
-        current_by_task[task_id] = first
+        current_by_task[task_id] = row
 
-    author_rows = _latest_entity_rows(
-        author_executions.to_pylist(),
-        label="author execution",
-    )
-    validator_rows = _latest_entity_rows(
-        validators.to_pylist(),
-        label="task validator",
-    )
-    validation_rows = tuple(
-        _latest_entity_rows(
-            validation_results.to_pylist(),
-            label="validation result",
-        ).values()
-    )
+    subject_bounds = _critic_subject_bounds(event)
+
+    author_latest = _daft_latest(author_executions, label="author execution")
+    validator_latest = _daft_latest(validators, label="task validator")
+    validation_latest = _daft_latest(validation_results, label="validation result")
+    author_rows = {int(row["entity_id"]): row for row in author_latest.to_pylist()}
+    validator_rows = {int(row["entity_id"]): row for row in validator_latest.to_pylist()}
+    validation_rows = tuple(validation_latest.to_pylist())
+
     critic_executions = _live_frame(event, CriticExecution)
     critic_receipts = _live_frame(event, CriticReceipt)
-    critic_execution_rows = (
-        tuple(
-            _latest_entity_rows(
-                critic_executions.to_pylist(),
-                label="critic execution",
-            ).values()
-        )
-        if critic_executions is not None
-        else ()
-    )
-    receipt_rows = (
-        tuple(
-            _latest_entity_rows(
-                critic_receipts.to_pylist(),
-                label="critic receipt",
-            ).values()
-        )
-        if critic_receipts is not None
-        else ()
-    )
     critic_execution = CriticExecution.get_prefix()
     receipt = CriticReceipt.get_prefix()
+
+    attempt_counts: dict[int, int] = {}
+    if critic_executions is not None:
+        attempts_frame = (
+            _daft_latest(critic_executions, label="critic execution")
+            .groupby(f"{critic_execution}candidate_entity_id")
+            .agg(col("entity_id").count_distinct().alias("_attempts"))
+        )
+        attempt_counts = {
+            int(row[f"{critic_execution}candidate_entity_id"]): int(row["_attempts"])
+            for row in attempts_frame.to_pylist()
+        }
+
+    settled_candidate_ids: set[int] = set()
+    if critic_receipts is not None:
+        settled_candidate_ids = _settled_candidate_ids(
+            current,
+            _daft_latest(critic_receipts, label="critic receipt"),
+            candidate_prefix=candidate,
+            receipt_prefix=receipt,
+        )
 
     requests: list[CandidateReviewRequest] = []
     exhausted: list[CriticReviewBudgetExhausted] = []
     for row in current_by_task.values():
-        task_id = int(row["entity_id"])
         candidate_entity_id = int(row["_candidate_entity_id"])
-        candidate_id = str(row[f"{candidate}candidate_id"])
-        if any(
-            int(item[f"{receipt}candidate_entity_id"]) == candidate_entity_id
-            and str(item[f"{receipt}critic_sandbox_id"])
-            != str(row[f"{candidate}author_sandbox_id"])
-            and str(item[f"{receipt}candidate_digest"]) == str(row[f"{candidate}candidate_digest"])
-            and str(item[f"{receipt}policy_digest"]) == str(row[f"{candidate}policy_digest"])
-            and str(item[f"{receipt}reviewed_base_revision"])
-            == str(row[f"{candidate}base_revision"])
-            and str(item[f"{receipt}reviewed_head_revision"])
-            == str(row[f"{candidate}head_revision"])
-            and str(item[f"{receipt}reviewed_diff_digest"]) == str(row[f"{candidate}diff_digest"])
-            and str(item[f"{receipt}validator_bundle_digest"])
-            == str(row[f"{candidate}validator_bundle_digest"])
-            for item in receipt_rows
-        ):
+        if candidate_entity_id in settled_candidate_ids:
             continue
-        attempts = sum(
-            int(item[f"{critic_execution}candidate_entity_id"]) == candidate_entity_id
-            for item in critic_execution_rows
-        )
+        attempts = attempt_counts.get(candidate_entity_id, 0)
         max_reviews = int(row[f"{policy}max_reviews"])
         if attempts >= max_reviews:
             exhausted.append(
                 CriticReviewBudgetExhausted(
                     mission_id=int(row[f"{candidate}mission_id"]),
                     task_id=int(row[f"{candidate}task_id"]),
-                    candidate_id=candidate_id,
+                    candidate_id=str(row[f"{candidate}candidate_id"]),
                     attempts=attempts,
                     max_reviews=max_reviews,
                 )
             )
             continue
-        attempt = attempts + 1
-        critic_policy = CriticPolicy(
-            policy_id=str(row[f"{policy}policy_id"]),
-            version=str(row[f"{policy}version"]),
-            perspective=str(row[f"{policy}perspective"]),
-            information_view=str(row[f"{policy}information_view"]),
-            driver=str(row[f"{policy}driver"]),
-            model=str(row[f"{policy}model"]),
-            sampling=str(row[f"{policy}sampling"]),
-            max_reviews=max_reviews,
-            timeout_seconds=int(row[f"{policy}timeout_seconds"]),
-            output_schema_version=int(row[f"{policy}output_schema_version"]),
-            max_output_chars=int(row[f"{policy}max_output_chars"]),
-            max_subject_bytes=subject_bounds.get(
-                task_id,
-                CriticPolicy().max_subject_bytes,
-            ),
-        )
-        persisted_policy_digests = {
-            str(row[f"{policy}digest"]),
-            str(row[f"{candidate}policy_digest"]),
-        }
-        if persisted_policy_digests != {critic_policy.digest}:
-            raise ValueError("critic policy digest does not match the committed task and candidate")
-        author_execution_id = int(row[f"{candidate}author_execution_id"])
-        try:
-            author_row = author_rows[author_execution_id]
-        except KeyError:
-            raise ValueError("candidate author execution is not committed") from None
-        candidate_author_sandbox_id = str(row[f"{candidate}author_sandbox_id"])
-        expected_author_identity = (
-            task_id,
-            str(row[f"{candidate}dispatch_id"]),
-            int(row[f"{candidate}dispatch_sequence"]),
-            candidate_author_sandbox_id,
-            str(row[f"{candidate}base_revision"]),
-            str(row[f"{candidate}head_revision"]),
-        )
-        observed_author_identity = (
-            int(author_row[f"{author}task_id"]),
-            str(author_row[f"{author}dispatch_id"]),
-            int(author_row[f"{author}dispatch_sequence"]),
-            str(author_row[f"{author}sandbox_id"]),
-            str(author_row[f"{author}starting_revision"]),
-            str(author_row[f"{author}final_revision"]),
-        )
-        if observed_author_identity != expected_author_identity:
-            raise ValueError("candidate identity does not match its committed author execution")
-
-        exact_validation_by_id: dict[int, CriticValidationEvidence] = {}
-        for item in validation_rows:
-            if int(item[f"{validation}execution_id"]) != author_execution_id:
-                continue
-            validator_id = int(item[f"{validation}validator_id"])
-            if validator_id in exact_validation_by_id:
-                raise ValueError("candidate has duplicate validator observations for one execution")
-            try:
-                validator_row = validator_rows[validator_id]
-            except KeyError:
-                raise ValueError("candidate validation refers to an unknown validator") from None
-            if int(item[f"{validation}expected_returncode"]) != int(
-                validator_row[f"{validator}expected_returncode"]
-            ):
-                raise ValueError(
-                    "candidate validation expectation does not match its validator definition"
-                )
-            validation_identity = (
-                int(item[f"{validation}task_id"]),
-                str(item[f"{validation}dispatch_id"]),
-                int(item[f"{validation}dispatch_sequence"]),
-                str(item[f"{validation}revision"]),
-            )
-            expected_validation_identity = (
-                task_id,
-                str(row[f"{candidate}dispatch_id"]),
-                int(row[f"{candidate}dispatch_sequence"]),
-                str(row[f"{candidate}head_revision"]),
-            )
-            if validation_identity != expected_validation_identity:
-                raise ValueError(
-                    "candidate validation does not match its committed author execution"
-                )
-            exact_validation_by_id[validator_id] = CriticValidationEvidence(
-                validator_id=int(item[f"{validation}validator_id"]),
-                name=str(validator_row[f"{validator}name"]),
-                command=tuple(str(argument) for argument in validator_row[f"{validator}command"]),
-                expected_returncode=int(item[f"{validation}expected_returncode"]),
-                actual_returncode=int(item[f"{validation}actual_returncode"]),
-                revision=str(item[f"{validation}revision"]),
-                stdout=str(item[f"{validation}stdout"]),
-                stderr=str(item[f"{validation}stderr"]),
-            )
-        exact_validation = tuple(
-            exact_validation_by_id[validator_id] for validator_id in sorted(exact_validation_by_id)
-        )
-        observed_validator_bundle_digest = validator_bundle_digest(
-            tuple(
-                (
-                    validator_id,
-                    str(validator_rows[validator_id][f"{validator}name"]),
-                    tuple(
-                        str(argument)
-                        for argument in validator_rows[validator_id][f"{validator}command"]
-                    ),
-                    int(validator_rows[validator_id][f"{validator}expected_returncode"]),
-                    int(validator_rows[validator_id][f"{validator}timeout_seconds"]),
-                )
-                for validator_id in sorted(exact_validation_by_id)
+        requests.append(
+            _admit_critic_request_from_current_row(
+                row,
+                attempt=attempts + 1,
+                subject_bounds=subject_bounds,
+                author_rows=author_rows,
+                validator_rows=validator_rows,
+                validation_rows=validation_rows,
+                prefixes=prefixes,
             )
         )
-        if observed_validator_bundle_digest != str(row[f"{candidate}validator_bundle_digest"]):
-            raise ValueError(
-                "candidate validator bundle does not match its committed validation evidence"
-            )
-        request = CandidateReviewRequest(
-            candidate_entity_id=candidate_entity_id,
-            candidate_id=candidate_id,
-            mission_id=int(row[f"{candidate}mission_id"]),
-            task_id=int(row[f"{candidate}task_id"]),
-            task_name=str(row[f"{task}name"]),
-            task_prompt=str(row[f"{task}prompt"]),
-            dispatch_id=str(row[f"{candidate}dispatch_id"]),
-            dispatch_sequence=int(row[f"{candidate}dispatch_sequence"]),
-            author_execution_id=author_execution_id,
-            author_sandbox_id=candidate_author_sandbox_id,
-            repository=str(row[f"{candidate}repository"]),
-            branch=str(row[f"{candidate}branch"]),
-            base_ref=str(row[f"{candidate}base_ref"]),
-            base_revision=str(row[f"{candidate}base_revision"]),
-            head_revision=str(row[f"{candidate}head_revision"]),
-            diff_digest=str(row[f"{candidate}diff_digest"]),
-            validator_bundle_digest=str(row[f"{candidate}validator_bundle_digest"]),
-            policy=critic_policy,
-            validation=exact_validation,
-            candidate_published_at_ms=int(row[f"{candidate}created_at_ms"]),
-            attempt=attempt,
-        )
-        if request.candidate_digest != str(row[f"{candidate}candidate_digest"]):
-            raise ValueError("candidate digest does not match its committed subject")
-        requests.append(request)
 
     return CriticActivityIntentProjection(
         requests=tuple(sorted(requests, key=lambda request: request.review_id)),

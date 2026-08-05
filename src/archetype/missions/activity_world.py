@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import time
 from collections.abc import Awaitable, Callable, Mapping
+from typing import cast
 
-from daft import DataFrame
+from daft import DataFrame, Expression, col
 
 from archetype.core.aio import AsyncWorld
 from archetype.core.component import Component
@@ -373,13 +374,19 @@ class WorldMissionAuthorObservationStager:
         marker_frame = results.get((CompleteAuthorActivityObservation,))
         if marker_frame is None:
             raise RuntimeError("recorded author activity marker table was not read")
-        materialized_markers = await self._storage.materialize(marker_frame)
+        marker_prefix = CompleteAuthorActivityObservation.get_prefix()
+        named_markers = marker_frame.where(
+            cast(
+                Expression,
+                col(f"{marker_prefix}activity_id") == request.dispatch_id,
+            )
+        )
+        materialized_markers = await self._storage.materialize(named_markers)
         matches: list[CompleteAuthorActivityObservation] = []
         for row in materialized_markers.to_pylist():
             marker = _component_from_row(CompleteAuthorActivityObservation, row)
             assert isinstance(marker, CompleteAuthorActivityObservation)
-            if marker.activity_id == request.dispatch_id:
-                matches.append(marker)
+            matches.append(marker)
         if not matches:
             return False
         if len(matches) != 1:
