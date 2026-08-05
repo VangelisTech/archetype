@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import ipaddress
+import re
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -24,10 +26,21 @@ TERRAIN_POSITION = "flecs.engine.terrain.TerrainPosition"
 POWER_CONSUMER = "biome.power.PowerConsumer"
 MINER = "biome.miner.Miner"
 STORAGE = "biome.resources.Storage"
+NATIVE_PLACE_BUILDING = "/call/archetype/biome/placeBuilding"
+
+_QUALIFIED_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$")
 
 
 class FlecsRemoteError(RuntimeError):
     """A live Flecs endpoint rejected or could not satisfy an operation."""
+
+
+@dataclass(frozen=True)
+class NativePlacement:
+    """Stable identity returned by Biome's native placement bridge."""
+
+    entity_id: int
+    entity_path: str
 
 
 def _entity_path(payload: dict[str, Any]) -> str:
@@ -181,6 +194,61 @@ class BiomeClient:
             f"/script/{action.script_name}",
             content=script,
             headers={"Content-Type": "text/plain"},
+        )
+
+    def place_building(
+        self,
+        prefab: str,
+        terrain: str,
+        cell: TerrainCell,
+        *,
+        name: str,
+    ) -> NativePlacement:
+        """Purchase and place one building through Biome's native factory path.
+
+        The reflected C function derives the footprint from the selected prefab,
+        charges Biome's real resource storages, invokes ``biomePlaceBuilding``,
+        and refunds the purchase if native placement rejects the action.
+        """
+
+        for value, field in ((prefab, "prefab"), (terrain, "terrain")):
+            if not _QUALIFIED_IDENTIFIER.fullmatch(value):
+                raise ValueError(f"{field} must be a qualified Flecs identifier, got {value!r}")
+        if not name.isascii() or not name.isidentifier():
+            raise ValueError(f"name must be a Flecs identifier, got {name!r}")
+
+        try:
+            response = self._client.get(
+                NATIVE_PLACE_BUILDING,
+                params={
+                    "prefab": prefab,
+                    "terrain": terrain,
+                    "x": cell.x,
+                    "y": cell.y,
+                    "name": name,
+                },
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise FlecsRemoteError(f"GET {NATIVE_PLACE_BUILDING} failed: {exc}") from exc
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise FlecsRemoteError(f"GET {NATIVE_PLACE_BUILDING} returned non-JSON data") from exc
+        if isinstance(payload, dict) and payload.get("error"):
+            raise FlecsRemoteError(str(payload["error"]))
+        if isinstance(payload, str):
+            if not payload.isascii() or not payload.isdecimal():
+                raise FlecsRemoteError("native placement returned a non-integer entity id")
+            payload = int(payload)
+        if isinstance(payload, bool) or not isinstance(payload, int):
+            raise FlecsRemoteError("native placement returned a non-integer entity id")
+        if payload <= 0:
+            raise FlecsRemoteError(f"Biome rejected placement of {prefab} at ({cell.x}, {cell.y})")
+        return NativePlacement(
+            entity_id=payload,
+            entity_path=f"scene.buildings.{name}",
         )
 
     @staticmethod

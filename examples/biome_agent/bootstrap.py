@@ -21,6 +21,12 @@ FLECS_REF = "script_await"
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CHECKOUT_ROOT = _REPOSITORY_ROOT / ".context" / "upstream"
 MISSION_SCENE = Path(__file__).with_name("archetype_agent.flecs")
+NATIVE_MODULE = Path(__file__).with_name("native") / "archetype_biome.c"
+
+_MAIN_DECLARATION_ANCHOR = '#include "biome.h"\n'
+_MAIN_DECLARATION = "void archetypeBiomeImport(ecs_world_t *world);\n"
+_MAIN_IMPORT_ANCHOR = "    ECS_IMPORT(world, biomeUi);\n"
+_MAIN_IMPORT = "    ECS_IMPORT(world, archetypeBiome);\n"
 
 
 @dataclass(frozen=True)
@@ -65,6 +71,40 @@ def _ensure_checkout(
         raise RuntimeError(f"expected {revision} in {path}, found {actual}")
 
 
+def _patch_main(source: str) -> str:
+    """Register the example-local native module in upstream Biome's main."""
+
+    if _MAIN_DECLARATION in source and _MAIN_IMPORT in source:
+        return source
+    if source.count(_MAIN_DECLARATION_ANCHOR) != 1:
+        raise RuntimeError("pinned Biome main.c declaration anchor changed")
+    if source.count(_MAIN_IMPORT_ANCHOR) != 1:
+        raise RuntimeError("pinned Biome main.c import anchor changed")
+    source = source.replace(
+        _MAIN_DECLARATION_ANCHOR,
+        f"{_MAIN_DECLARATION_ANCHOR}\n{_MAIN_DECLARATION}",
+        1,
+    )
+    return source.replace(
+        _MAIN_IMPORT_ANCHOR,
+        f"{_MAIN_IMPORT_ANCHOR}{_MAIN_IMPORT}",
+        1,
+    )
+
+
+def _stage_native_bridge(biome: Path) -> None:
+    """Patch only the managed checkout with the Archetype-owned C bridge."""
+
+    main = biome / "src" / "main.c"
+    pristine = subprocess.check_output(
+        ["git", "show", f"{BIOME_REVISION}:src/main.c"],
+        cwd=biome,
+        text=True,
+    )
+    main.write_text(_patch_main(pristine))
+    shutil.copyfile(NATIVE_MODULE, biome / "src" / "modules" / NATIVE_MODULE.name)
+
+
 def prepare(
     checkout_root: Path = DEFAULT_CHECKOUT_ROOT, *, jobs: int | None = None
 ) -> BiomeCheckout:
@@ -81,6 +121,7 @@ def prepare(
 
     _ensure_checkout(biome, BIOME_REPOSITORY, BIOME_REF, BIOME_REVISION)
     _ensure_checkout(flecs, FLECS_REPOSITORY, FLECS_REF, FLECS_REVISION)
+    _stage_native_bridge(biome)
     shutil.copyfile(MISSION_SCENE, scene)
 
     _run(
