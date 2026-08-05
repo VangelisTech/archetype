@@ -202,6 +202,8 @@ msgpack = "2026-06-19T00:00:00Z"
 pymdown-extensions = "2026-06-24T00:00:00Z"
 setuptools = "2026-07-05T00:00:00Z"
 pillow = "2026-07-02T00:00:00Z"
+# PYSEC-2026-3545, PYSEC-2026-3546, and PYSEC-2026-3547.
+aiohttp = "2026-07-24T00:00:00Z"
 
 [tool.ruff]
 target-version = "py312"
