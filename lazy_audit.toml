@@ -204,17 +204,31 @@ reason = "Exact post-commit critic-Activity fact boundary: each already componen
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
-symbol = "project_critic_activity_intents"
+symbol = "_current_candidate_rows"
 expr = "candidate_tasks.to_pylist"
 method = "to_pylist"
-reason = "Durable critic-Activity admission boundary: the frame is already restricted to committed CANDIDATE task rows, whose bounded histories must be reduced independently before matching immutable candidates; a Daft join of the two snapshot histories crashes the native runtime during the real closed-loop mission."
+reason = "Durable critic-Activity admission boundary (shared by intent projection and run-boundary exhaustion): the frame is already restricted to committed CANDIDATE task rows, whose bounded histories must be reduced independently before matching immutable candidates; a Daft join of the two snapshot histories crashes the native runtime during the real closed-loop mission."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
-symbol = "project_critic_activity_intents"
+symbol = "_current_candidate_rows"
 expr = "candidates.to_pylist"
 method = "to_pylist"
-reason = "Durable critic-Activity admission boundary: bounded committed candidate histories must retain their entity identities while they are reduced and matched to current task rows; provider execution occurs only after the resulting exact request is admitted."
+reason = "Durable critic-Activity admission boundary (shared by intent projection and run-boundary exhaustion): bounded committed candidate histories must retain their entity identities while they are reduced and matched to current task rows; provider execution occurs only after the resulting exact request is admitted."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "project_pending_review_exhaustion"
+expr = "critic_executions.to_pylist"
+method = "to_pylist"
+reason = "Committed domain-budget boundary at the run boundary: finite CriticExecution facts are counted against max_reviews so an exhausted, receipt-less candidate is reported as still pending review instead of waiting out the caller's tick budget."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "project_pending_review_exhaustion"
+expr = "critic_receipts.to_pylist"
+method = "to_pylist"
+reason = "Durable review-evidence boundary at the run boundary: bounded committed CriticReceipt identities are compared with the exact candidate so a matched receipt is never misreported as reviewer-budget exhaustion."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
@@ -250,6 +264,20 @@ symbol = "_TaskDispatchProjection.on_post_tick"
 expr = "candidate_history.to_pylist"
 method = "to_pylist"
 reason = "Repair-dispatch external-I/O boundary: persisted candidate identities are materialized after the committed DISPATCHED-task projection so the application can select the immediately superseded candidate whose durable critic findings belong in the next coding-agent request."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "_TaskDispatchProjection.on_post_tick"
+expr = "task_frame.to_pylist"
+method = "to_pylist"
+reason = "Post-commit branch-lineage boundary: the already component-scoped finite task snapshot becomes an identity-indexed map so a fresh external author sandbox can bind its checkout to the latest accepted head on its serialized mission branch rather than silently restarting from the original base."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "_TaskDispatchProjection.on_post_tick"
+expr = "mission_edges.to_pylist"
+method = "to_pylist"
+reason = "Post-commit external-author boundary: finite persisted mission-membership edges become a bounded mission-to-task identity index so each dispatched process hydrates the latest accepted head from its own serialized mission branch without crossing mission authority."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
@@ -334,6 +362,48 @@ symbol = "_AdmittedAsyncStore.append"
 expr = "df.to_arrow"
 method = "to_arrow"
 reason = "Managed-write boundary: the admitted world append materializes its plan exactly once so bounded Iceberg CAS retries resubmit the same physical Arrow payload via daft.from_arrow instead of re-executing the upstream DAG."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "_frame_fingerprint"
+expr = "frame.to_arrow"
+method = "to_arrow"
+reason = "Replay-detection boundary: the frame is the already-collected append_table payload, so this is an in-memory Arrow conversion hashed to recognize an identical batch resubmitted after a cancellation-landed commit; no plan re-executes."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "_AdmittedAsyncStore._payload_identities"
+expr = "unique['world_id'].to_pylist"
+method = "to_pylist"
+reason = "Durability bookkeeping on the already-materialized Arrow payload: the distinct managed identity keys (bounded by ticks per batch, normally one) enter Python so cancellation-landed commits are never replayed and merged cached retries never acknowledge unwritten rows."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "_AdmittedAsyncStore._payload_identities"
+expr = "unique['run_id'].to_pylist"
+method = "to_pylist"
+reason = "Durability bookkeeping on the already-materialized Arrow payload: the distinct managed identity keys (bounded by ticks per batch, normally one) enter Python so cancellation-landed commits are never replayed and merged cached retries never acknowledge unwritten rows."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "_AdmittedAsyncStore._payload_identities"
+expr = "unique['tick'].to_pylist"
+method = "to_pylist"
+reason = "Durability bookkeeping on the already-materialized Arrow payload: the distinct managed identity keys (bounded by ticks per batch, normally one) enter Python so cancellation-landed commits are never replayed and merged cached retries never acknowledge unwritten rows."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "_AdmittedAsyncStore._payload_identities"
+expr = "unique['commit_token'].to_pylist"
+method = "to_pylist"
+reason = "Durability bookkeeping on the already-materialized Arrow payload: the distinct managed identity keys (bounded by ticks per batch, normally one) enter Python so cancellation-landed commits are never replayed and merged cached retries never acknowledge unwritten rows."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "_AdmittedAsyncStore._payload_identities"
+expr = "unique['writer_epoch'].to_pylist"
+method = "to_pylist"
+reason = "Durability bookkeeping on the already-materialized Arrow payload: the distinct managed identity keys (bounded by ticks per batch, normally one) enter Python so cancellation-landed commits are never replayed and merged cached retries never acknowledge unwritten rows."
 
 [[entries]]
 path = "src/archetype/storage/service.py"

@@ -34,17 +34,18 @@ from archetype.missions.components import (
 from archetype.missions.contracts import (
     AgentMissionConfig,
     AgentTask,
+    CriticPolicy,
     MissionResult,
     MissionSubmission,
     SubmittedMission,
-)
-from archetype.missions.critics import (
-    CodexCriticDriver,
+    mission_episode_id,
 )
 from archetype.missions.processors import mission_processors
 from archetype.missions.projections import (
+    CriticReviewBudgetExhaustedError,
     current_mission_status,
     project_mission_result,
+    project_pending_review_exhaustion,
 )
 from archetype.missions.relations import (
     DependsOn,
@@ -61,7 +62,6 @@ from archetype.missions.sandboxes import (
     SandboxSession,
     SandboxSpec,
     SandboxStatus,
-    SandboxTeardownError,
 )
 from archetype.missions.transitions import MissionStatus
 from archetype.redaction import RedactedText, RedactionReceipt
@@ -192,10 +192,11 @@ class MissionService:
         self._sandbox_provider = config.sandbox_backend.name
         self._sandbox_environment = config.sandbox_environment
         self._workspace = config.workspace
-        critic_driver = config.critic_driver or CodexCriticDriver(
-            workspace=config.critic_workspace,
+        critic_driver_id = (
+            str(getattr(config.critic_driver, "driver_id", "")).strip()
+            if config.critic_driver is not None
+            else CriticPolicy().driver
         )
-        critic_driver_id = str(getattr(critic_driver, "driver_id", "")).strip()
         if not critic_driver_id:
             raise ValueError("configured critic driver must declare a non-empty driver_id")
         self._critic_driver_id = critic_driver_id
@@ -238,6 +239,7 @@ class MissionService:
         identities = await self._world.reserve_ids(len(submission.tasks) + 1)
         await self._ensure_activity()
         mission_id, *task_entity_ids = identities
+        episode_id = mission_episode_id(self._world.world_id, mission_id)
         task_ids = {
             task.name: entity_id
             for task, entity_id in zip(submission.tasks, task_entity_ids, strict=True)
@@ -247,6 +249,7 @@ class MissionService:
             mission_id,
             Mission(
                 name=submission.name,
+                episode_id=episode_id,
                 repository=submission.repository,
                 branch=submission.branch,
                 base_ref=submission.base_ref,
@@ -305,6 +308,8 @@ class MissionService:
         return SubmittedMission(
             mission_id=mission_id,
             task_ids=tuple((task.name, task_ids[task.name]) for task in submission.tasks),
+            episode_id=episode_id,
+            world_id=str(self._world.world_id),
             repository=submission.repository,
             branch=submission.branch,
             base_ref=submission.base_ref,
@@ -315,52 +320,13 @@ class MissionService:
         mission: SubmittedMission,
         checkpoint: CheckpointRef,
     ) -> SandboxIdentity:
-        """Restore one explicit checkpoint without automatically submitting work."""
+        """Reject restore until Activity admission can bind its checkpoint."""
 
-        if not mission.branch:
-            raise ValueError("restoring a submitted mission requires its branch identity")
-        key = SandboxKey(f"mission:{mission.mission_id}")
-        spec = self._sandbox_spec(mission.mission_id, mission.branch)
-        previous_sandbox_id = self._mission_sandboxes.get(mission.mission_id)
-        try:
-            session = await self._sandboxes.restore(key, spec, checkpoint)
-        except SandboxTeardownError as exc:
-            await self._mark_sandbox_errored(exc.identity.sandbox_id, exc)
-            await self._world.spawn(
-                FrictionLog(
-                    kind="sandbox_restore",
-                    message=self._redact_and_tail(
-                        f"{type(exc).__name__}: {exc}",
-                        limit=4_000,
-                        scope=f"mission:{mission.mission_id}:sandbox-restore",
-                    ),
-                )
-            )
-            await self._world.step()
-            raise
-        except Exception:
-            retained = self._sandboxes.session(key)
-            replaced_is_gone = retained is None or (
-                previous_sandbox_id is not None
-                and retained.identity.sandbox_id != previous_sandbox_id
-            )
-            if previous_sandbox_id is not None and replaced_is_gone:
-                await self._mark_sandbox_closed(previous_sandbox_id)
-                self._mission_sandboxes.pop(mission.mission_id, None)
-                await self._world.step()
-            raise
-        identity = session.identity
-        if previous_sandbox_id is not None and previous_sandbox_id != identity.sandbox_id:
-            await self._mark_sandbox_closed(previous_sandbox_id)
-        self._mission_sandboxes[mission.mission_id] = identity.sandbox_id
-        await self._ensure_sandbox_entity(
-            mission.mission_id,
-            identity,
-            status=SandboxStatus.READY,
+        del mission, checkpoint
+        raise NotImplementedError(
+            "Mission checkpoint restore is unavailable on the v0.5 Modal Activity path; "
+            "run() would otherwise ignore the restored filesystem"
         )
-        self._emit_sandbox_event(SandboxEventType.READY, identity)
-        await self._world.step()
-        return identity
 
     async def run(
         self,
@@ -373,6 +339,11 @@ class MissionService:
         limit = max_ticks if max_ticks is not None else self._max_ticks
         if limit < 1:
             raise ValueError("max_ticks must be positive")
+        # A replacement process has a lazy RuntimeWorld with no active identity
+        # until its durable catalog entry is resolved.  Resolve it before the
+        # exact-world Activity binding so run(SubmittedMission) can recover
+        # without an artificial second submit().
+        await self._world.info()
         await self._ensure_activity()
 
         for _ in range(limit):
@@ -390,6 +361,15 @@ class MissionService:
                     mission,
                     ticks_completed=int(info.tick),
                 )
+            # Reviewer infrastructure failure never decides a task: once a
+            # current candidate's whole committed review budget is consumed
+            # with no matching independent receipt, no further review can be
+            # admitted, so report the still-pending candidate now instead of
+            # waiting out the remaining tick budget (docs/guide/
+            # agent-missions.md, runtime.md).
+            pending = project_pending_review_exhaustion(self._view, mission.mission_id)
+            if pending:
+                raise CriticReviewBudgetExhaustedError(mission.mission_id, pending)
 
         status = current_mission_status(self._view, mission.mission_id)
         raise RuntimeError(
@@ -444,6 +424,11 @@ class MissionService:
         if self._activity is not None:
             await self._activity.aclose()
         self._closed = True
+
+    async def bind_activity(self) -> None:
+        """Bind exact-world recovery before a cold writer is reconstructed."""
+
+        await self._ensure_activity()
 
     async def query(self, *components: type[Component]) -> DataFrame:
         """Query persisted mission state through the mission-world read path."""

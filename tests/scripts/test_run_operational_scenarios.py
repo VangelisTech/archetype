@@ -27,6 +27,7 @@ from scripts.run_example_receipt import (
 )
 from scripts.run_operational_scenarios import (
     RESULT_SCHEMA,
+    _adapt_command,
     _adapt_example_command,
     _base_environment,
     _package_probe,
@@ -387,10 +388,10 @@ def test_explicit_scenario_must_match_every_selection_filter() -> None:
             load_scenarios(),
             mode="wheel",
             cadence="pr",
-            scenario_ids={"example.04_messaging"},
+            scenario_ids={"example.05_llm_agents"},
             kind="example",
-            min_tier=1,
-            max_tier=1,
+            min_tier=6,
+            max_tier=6,
         )
 
 
@@ -425,6 +426,65 @@ def test_pytest_oracle_disables_repository_pythonpath_in_both_modes(
 
     assert command[:4] == ["/isolated/python", "-m", "pytest", "-q"]
     assert command[4:6] == ["-o", "pythonpath="]
+
+
+def test_adapted_multifile_pytest_cannot_import_checkout_source(tmp_path: Path) -> None:
+    checkout_package = tmp_path / "src" / "operational_isolation_probe.py"
+    checkout_package.parent.mkdir()
+    checkout_package.write_text("ORIGIN = 'checkout'\n", encoding="utf-8")
+    wheel_site = tmp_path / "wheel-site"
+    wheel_site.mkdir()
+    (wheel_site / "operational_isolation_probe.py").write_text(
+        "ORIGIN = 'wheel'\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\npythonpath = ['src', '.']\n",
+        encoding="utf-8",
+    )
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    for name in ("test_first.py", "test_second.py"):
+        (tests / name).write_text(
+            "from operational_isolation_probe import ORIGIN\n\n"
+            "def test_import_origin():\n"
+            "    assert ORIGIN == 'wheel'\n",
+            encoding="utf-8",
+        )
+    declared = ["pytest", "-q", "tests/test_first.py", "tests/test_second.py"]
+    adapted = _adapt_command(declared, python=Path(sys.executable), root=tmp_path)
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(wheel_site)
+    environment["PYTHONNOUSERSITE"] = "1"
+    environment.pop("PYTHONHOME", None)
+
+    leaking = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", *adapted[-2:]],
+        cwd=tmp_path,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    isolated = subprocess.run(
+        adapted,
+        cwd=tmp_path,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert leaking.returncode == 1
+    assert adapted[:6] == [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-o",
+        "pythonpath=",
+        "-q",
+    ]
+    assert isolated.returncode == 0, isolated.stdout + isolated.stderr
 
 
 def test_distinct_source_environment_and_probe_bind_to_tested_checkout(
@@ -508,9 +568,17 @@ def test_external_service_prerequisites_enable_dedicated_test_lanes() -> None:
         {},
         {"prerequisites": ["service:apple-container"]},
     )
+    modal = _scenario_environment(
+        {},
+        {
+            "id": "dogfood.agent_mission.modal_live",
+            "prerequisites": ["credential:MODAL_TOKEN_ID"],
+        },
+    )
 
     assert docker["ARCHETYPE_DOCKER_SANDBOX_PARITY"] == "1"
     assert apple["ARCHETYPE_APPLE_CONTAINER_SANDBOX_PARITY"] == "1"
+    assert modal["ARCHETYPE_MODAL_AGENT_MISSION_LIVE"] == "1"
 
 
 def test_skipped_only_pytest_evidence_cannot_pass(tmp_path: Path) -> None:

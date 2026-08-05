@@ -202,6 +202,7 @@ async def test_trusted_runtime_reaches_all_thirteen_models_and_reserved_spawn(
         submitted = SubmittedMission(
             mission_id=17,
             task_ids=(("implementation", 18),),
+            episode_id="mission-episode-loopback",
             repository="repo",
             branch="branch",
         )

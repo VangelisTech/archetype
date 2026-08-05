@@ -1,28 +1,27 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Contracts for required quality contexts and review-gated auto-merge."""
+"""Contracts for the deliberately small pull-request verification profile."""
 
 from __future__ import annotations
 
 import ast
 import json
-import os
 import re
-import shutil
 import subprocess
 import tomllib
 from pathlib import Path
 
 import pytest
 
-from scripts.run_operational_scenarios import run_scenarios
+from scripts.run_operational_scenarios import _select_scenarios, run_scenarios
+from scripts.validate_operational_scenarios import load_scenarios
 
 ROOT = Path(__file__).resolve().parents[2]
 QUALITY_WORKFLOW = ROOT / ".github" / "workflows" / "python-tests.yml"
-AUTOMERGE_WORKFLOW = ROOT / ".github" / "workflows" / "automerge.yml"
-QUEUE_READY_HELPER = ROOT / "scripts" / "gh_pr_queue_ready.sh"
+RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 MAKEFILE = ROOT / "Makefile"
+QUARANTINE = ROOT / "quality" / "quarantine" / "review-gate"
 OPERATIONAL_SCENARIOS = ROOT / "quality" / "operational_scenarios.toml"
 
 
@@ -36,197 +35,90 @@ def _job(workflow: str, job_id: str) -> str:
     return match.group("body")
 
 
-def _job_ids(workflow: str) -> list[str]:
-    """Every job in the workflow, so new jobs inherit the checks by default."""
+def test_pull_request_workflow_has_only_two_jobs() -> None:
+    workflow = QUALITY_WORKFLOW.read_text(encoding="utf-8")
     _, _, jobs = workflow.partition("\njobs:\n")
-    assert jobs, "workflow lost its jobs: block"
-    ids = re.findall(r"^  ([a-z][a-z0-9-]*):$", jobs, re.MULTILINE)
-    assert ids, "workflow declares no jobs"
-    return ids
 
-
-def _code_only(text: str) -> str:
-    """Drop whole-line comments.
-
-    Assertions must bind to what runs, not to prose about what runs. A comment
-    that quotes the very expression it explains — as the ones in this workflow
-    do — otherwise satisfies the assertion after the code has been deleted.
-    """
-    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
-
-
-_HELPER_PATH = QUEUE_READY_HELPER.relative_to(ROOT).as_posix()
-
-
-def _helper_call(head_sha: str = r"\w+") -> re.Pattern[str]:
-    """Match a real three-argument invocation, not a bare mention of the path."""
-    return re.compile(
-        rf'{re.escape(_HELPER_PATH)} "\$\{{GITHUB_REPOSITORY\}}" "\$\{{\w+\}}" "\$\{{{head_sha}\}}"'
-    )
-
-
-def test_quality_workflow_preserves_active_required_context_names() -> None:
-    workflow = QUALITY_WORKFLOW.read_text(encoding="utf-8")
-
-    assert "  merge_group:\n" in workflow
-    ci = _job(workflow, "ci")
-    assert ci.startswith("    runs-on:")
-    assert 'python-version: ["3.12", "3.13"]' in ci
-    for job_id in ("evals", "format", "typecheck", "examples"):
-        assert _job(workflow, job_id).startswith(("    if:", "    runs-on:"))
-
-
-def test_quality_workflow_keeps_fail_loud_coverage_and_infrastructure() -> None:
-    workflow = QUALITY_WORKFLOW.read_text(encoding="utf-8")
-    ci = _job(workflow, "ci")
-    evals = _job(workflow, "evals")
-
-    assert "uses: codecov/codecov-action@v5" in ci
-    assert "fail_ci_if_error: true" in ci
-    assert "github.event_name != 'merge_group'" in ci
-    assert "if: always()" in evals
-    assert "needs: infrastructure-idempotency" in evals
-    assert 'case "$INFRASTRUCTURE" in success|skipped) ;; *) exit 1 ;; esac' in evals
-    assert "make eval-conformance" in evals
-    assert "make eval-reliability" in evals
-    assert "make eval-capability" in evals
-    assert "make package-smoke" in evals
-    assert "make operational-wheel" in evals
-    assert "operational-results.json" in evals
-    assert re.search(r"- run: make operational-wheel\n\s+if: always\(\)", evals)
-    assert evals.index("make operational-wheel") < evals.index(
-        "Require applicable infrastructure evidence"
-    )
-    assert re.search(
-        r"- name: Require applicable infrastructure evidence\n\s+if: always\(\)",
-        evals,
-    )
-
-
-def test_codecov_statuses_restate_the_repository_coverage_floor() -> None:
-    """Codecov judges diffs against the 70% floor, not the moving project average.
-
-    The default `target: auto` pinned `codecov/patch` to whole-project coverage
-    (88.7%), so ordinary refactors failed a non-required check and cost triage
-    (#646, #647, #649). Both statuses now restate `fail_under`, and this test
-    keeps the two numbers from drifting apart.
-    """
-
-    config = (ROOT / ".github" / "codecov.yml").read_text(encoding="utf-8")
-    with (ROOT / "pyproject.toml").open("rb") as stream:
-        floor = tomllib.load(stream)["tool"]["coverage"]["report"]["fail_under"]
-
-    assert re.search(r"^    project:\n      default:\n        target: ", config, re.MULTILINE)
-    assert re.search(r"^    patch:\n      default:\n        target: ", config, re.MULTILINE)
-    assert config.count(f"target: {floor}%") == 2
-    assert config.count("threshold: 0%") == 2
-    assert config.count("informational: false") == 2
-
-
-def test_r2_job_runs_each_oracle_once_and_retains_the_redacted_receipt() -> None:
-    workflow = QUALITY_WORKFLOW.read_text(encoding="utf-8")
-    infrastructure = _job(workflow, "infrastructure-idempotency")
-    with OPERATIONAL_SCENARIOS.open("rb") as stream:
-        scenarios = tomllib.load(stream)["scenario"]
-    scenario = next(row for row in scenarios if row["id"] == "dogfood.storage.r2")
-
-    assert scenario["source_command"] == [
-        "pytest",
-        "-q",
-        "tests/infrastructure/test_r2_artifact_context.py",
+    assert re.findall(r"^  ([a-z][a-z0-9-]*):$", jobs, re.MULTILINE) == [
+        "static",
+        "tests",
     ]
-    assert scenario["semantic_oracle"] == {
-        "kind": "pytest",
-        "ref": "tests/infrastructure/test_r2_artifact_context.py",
-    }
-    assert scenario["required_cadence"] == ["pr", "main", "release"]
-    assert scenario["artifact_policy"] == "redacted_receipt"
-    assert scenario["contracts"] == [
-        "runtime.trust.actor_free",
-        "world.fork.lineage",
-        "world.run_identity.cold_resume",
-        "ingestion.catalog.cold_roundtrip",
-        "artifacts.ingestion.occurrence_identity",
-        "artifacts.ingestion.common_visibility",
-    ]
-
-    assert "make test-infra" not in infrastructure
-    assert infrastructure.count("tests/infrastructure/test_r2_idempotency.py") == 1
-    assert infrastructure.count("--scenario dogfood.storage.r2") == 1
-    assert "--cadence pr" in infrastructure
-    assert "--require-run" in infrastructure
-    assert '--expected-revision "$GITHUB_SHA"' in infrastructure
-    assert "--require-clean" in infrastructure
-    assert re.search(
-        r"- name: Run public-runtime R2 scenario\n\s+if: always\(\)",
-        infrastructure,
-    )
-    assert re.search(
-        r"- name: Require R2 operational receipt\n"
-        r"\s+if: always\(\)\n"
-        r"\s+run: test -f r2-operational-results\.json",
-        infrastructure,
-    )
-    assert re.search(
-        r"name: r2-operational-evidence\n"
-        r"\s+path: \|\n"
-        r"\s+r2-operational-results\.json\n"
-        r"\s+r2-operational-results\.d/\n"
-        r"\s+r2-operational-results\.attempt1\.json\n"
-        r"\s+r2-operational-results\.attempt1\.d/\n"
-        r"\s+if-no-files-found: error",
-        infrastructure,
-    )
-
-    # One sanctioned in-job retry: the scenario command is defined once
-    # (count above), invoked through a function, and a failed first attempt
-    # keeps its receipt as the classification record before the single
-    # retry. Nothing may retry more than once, and the retry must not
-    # discard attempt 1's evidence.
-    code = _code_only(infrastructure)
-    assert code.count("run_r2_scenario()") == 1, "scenario command must be defined exactly once"
-    assert code.count("run_r2_scenario\n") + code.count("run_r2_scenario;") == 2, (
-        "the scenario must be invoked exactly twice: first attempt and one retry"
-    )
-    assert "r2-operational-results.attempt1.json" in code
-    # Attempt 1's receipt must reference its OWN logs after the rename: the
-    # retry recreates r2-operational-results.d, so without the path rewrite
-    # the retained receipt resolves to attempt 2's logs.
-    assert re.search(
-        r"jq .+gsub\(\"r2-operational-results\\\\\.d\"; "
-        r"\"r2-operational-results\.attempt1\.d\"\)",
-        code,
-    ), "the retained attempt-1 receipt must have its log paths rewritten"
-    assert "::warning::" in infrastructure, "a silent retry hides the flake it absorbed"
-
-    # The job budget must cover BOTH attempts at the scenario's full
-    # timeout plus setup overhead, or the retry is unreachable exactly when
-    # the first attempt is the stall it exists to absorb.
-    timeout_match = re.search(r"timeout-minutes: (\d+)", infrastructure)
-    assert timeout_match is not None, "the R2 job lost its timeout"
-    scenario_seconds = scenario["timeout_seconds"]
-    assert int(timeout_match.group(1)) * 60 >= 2 * scenario_seconds + 240, (
-        "job timeout must cover two scenario attempts plus ~4 min overhead"
-    )
+    assert "merge_group:" not in workflow
+    assert "make static" in _job(workflow, "static")
+    assert "make test" in _job(workflow, "tests")
+    assert "make test-cov" not in workflow
+    assert "R2_" not in workflow
+    assert "codecov" not in workflow.lower()
 
 
-def test_observability_audit_uses_the_existing_required_format_context() -> None:
-    workflow = QUALITY_WORKFLOW.read_text(encoding="utf-8")
+def test_local_pr_profile_matches_the_two_ci_jobs() -> None:
     makefile = MAKEFILE.read_text(encoding="utf-8")
-    format_job = _job(workflow, "format")
+    verify_pr = re.search(r"^verify-pr:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE)
+    verify_full = re.search(r"^verify-full:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE)
 
-    assert "- run: make lint" in format_job
-    lint_target = re.search(r"^lint:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE)
-    assert lint_target is not None
-    assert "observability-audit" in lint_target.group("dependencies").split()
-    assert re.search(
-        r"^observability-audit:\n\t@uv run python scripts/check_observability\.py$",
-        makefile,
-        re.MULTILINE,
+    assert verify_pr is not None
+    assert verify_pr.group("dependencies").split() == ["static", "test"]
+    assert verify_full is not None
+    full = verify_full.group("dependencies").split()
+    for target in (
+        "test-cov",
+        "eval-conformance",
+        "eval-reliability",
+        "eval-capability",
+        "package-smoke",
+        "examples-smoke",
+        "operational-runtime",
+        "operational-commands",
+        "operational-wheel",
+        "docs",
+        "test-process",
+    ):
+        assert target in full
+
+
+def test_review_gate_and_merge_queue_are_not_executable_workflows() -> None:
+    active = ROOT / ".github" / "workflows"
+    for name in (
+        "deterministic-review.yml",
+        "automerge.yml",
+        "queue-reevaluator.yml",
+        "merge-group-recheck.yml",
+    ):
+        assert not (active / name).exists()
+        assert (QUARANTINE / "workflows" / name).is_file()
+
+
+def test_release_publish_requires_credentialed_r2_evidence() -> None:
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    external = _job(workflow, "external-evidence")
+    gate = _job(workflow, "release-evidence-gate")
+    publish = _job(workflow, "publish")
+
+    for variable in (
+        "R2_ACCESS_KEY_ID",
+        "R2_SECRET_ACCESS_KEY",
+        "R2_API_ENDPOINT",
+        "R2_BUCKET",
+    ):
+        assert variable in external
+    assert "target: operational-release-r2" in external
+    assert "tests/infrastructure/test_r2_idempotency.py" in external
+    assert "operational-release-r2-results.json" in gate
+    assert "needs: [release-evidence-gate, python-compatibility]" in publish
+
+    selected = _select_scenarios(
+        load_scenarios(),
+        mode="wheel",
+        cadence="release",
+        scenario_ids={"dogfood.storage.r2"},
+        kind=None,
+        min_tier=0,
+        max_tier=6,
     )
+    assert [row["id"] for row in selected] == ["dogfood.storage.r2"]
 
 
-def test_example_smoke_keeps_the_coding_agent_authoring_check_credential_free() -> None:
+def test_example_smoke_keeps_mission_authoring_credential_free() -> None:
     makefile = MAKEFILE.read_text(encoding="utf-8")
     assert re.search(r"^examples-smoke: examples-local$", makefile, re.MULTILINE)
     assert "--mode source --cadence pr --kind example --max-tier 1" in makefile
@@ -237,98 +129,46 @@ def test_example_smoke_keeps_the_coding_agent_authoring_check_credential_free() 
         row for row in scenarios if row["id"] == "example.11_coding_agent_mission.dry_run"
     )
 
-    assert mission["source_command"][-3:] == ["--dry-run", "--backend", "docker"]
+    assert mission["source_command"][-3:] == ["--dry-run", "--backend", "modal"]
     assert mission["prerequisites"] == []
     assert mission["missing_prerequisite"] == "fail"
     assert mission["tier"] == 1
     assert "pr" in mission["required_cadence"]
 
 
-def test_commands_operational_receipt_is_required_from_source_and_wheel() -> None:
+def test_operational_receipts_cover_commands_and_runtime_from_source_and_wheel() -> None:
     makefile = MAKEFILE.read_text(encoding="utf-8")
     with OPERATIONAL_SCENARIOS.open("rb") as stream:
         scenarios = tomllib.load(stream)["scenario"]
     commands = next(row for row in scenarios if row["id"] == "dogfood.commands.local")
 
     assert commands["owner"] == "commands"
-    assert commands["source_command"] == [
-        "pytest",
-        "-q",
-        "tests/integration/test_commands_operational.py",
-    ]
-    assert commands["semantic_oracle"] == {
-        "kind": "pytest",
-        "ref": "tests/integration/test_commands_operational.py",
-    }
-    assert commands["tier"] == 1
     assert commands["applicability"] == ["source", "wheel"]
     assert commands["prerequisites"] == []
     assert commands["missing_prerequisite"] == "fail"
-    assert commands["contracts"] == [
-        "gateway.authorization.rbac",
-        "commands.identity.idempotent",
-        "commands.settlement.atomic",
-        "commands.failure.preserves_progress",
-    ]
 
-    source = re.search(
-        r"^operational-commands:\n(?P<body>(?:\t.*\n)+)",
-        makefile,
-        re.MULTILINE,
+    source_commands = re.search(
+        r"^operational-commands:\n(?P<body>(?:\t.*\n)+)", makefile, re.MULTILINE
     )
-    wheel = re.search(
-        r"^operational-wheel:\n(?P<body>(?:\t.*\n)+)",
-        makefile,
-        re.MULTILINE,
+    source_runtime = re.search(
+        r"^operational-runtime:\n(?P<body>(?:\t.*\n)+)", makefile, re.MULTILINE
     )
-    verify_pr = re.search(r"^verify-pr:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE)
-    assert source is not None
+    wheel = re.search(r"^operational-wheel:\n(?P<body>(?:\t.*\n)+)", makefile, re.MULTILINE)
+    verify_full = re.search(r"^verify-full:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE)
+    assert source_commands is not None
+    assert source_runtime is not None
     assert wheel is not None
-    assert verify_pr is not None
-    assert source.group("body").count("--scenario dogfood.commands.local") == 1
+    assert verify_full is not None
+    assert source_commands.group("body").count("--scenario dogfood.commands.local") == 1
     assert wheel.group("body").count("--scenario dogfood.commands.local") == 1
-    assert "operational-commands" in verify_pr.group("dependencies").split()
+    assert source_runtime.group("body").count("--scenario dogfood.runtime.loopback") == 1
+    assert wheel.group("body").count("--scenario dogfood.runtime.loopback") == 1
+    dependencies = verify_full.group("dependencies").split()
+    assert "operational-commands" in dependencies
+    assert "operational-runtime" in dependencies
 
 
-def test_runtime_loopback_is_explicitly_required_from_source_and_wheel() -> None:
-    makefile = MAKEFILE.read_text(encoding="utf-8")
-    source = re.search(
-        r"^operational-runtime:\n(?P<body>(?:\t.*\n)+)",
-        makefile,
-        re.MULTILINE,
-    )
-    wheel = re.search(
-        r"^operational-wheel:\n(?P<body>(?:\t.*\n)+)",
-        makefile,
-        re.MULTILINE,
-    )
-    verify_pr = re.search(r"^verify-pr:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE)
-
-    assert source is not None
-    assert wheel is not None
-    assert verify_pr is not None
-    source_body = source.group("body")
-    wheel_body = wheel.group("body")
-    assert "--require-run" in source_body
-    assert "--require-run" in wheel_body
-    assert source_body.count("--scenario dogfood.runtime.loopback") == 1
-    assert wheel_body.count("--scenario dogfood.runtime.loopback") == 1
-    assert "operational-runtime" in verify_pr.group("dependencies").split()
-
-    packet_scenarios = (
-        "example.00_quickstart",
-        "example.01_world_mutations",
-        "example.02_fork_counterfactual",
-        "example.03_time_travel",
-        "example.10_autoresearch",
-        "dogfood.evaluation.durable_receipt",
-        "dogfood.artifacts.local",
-    )
-    for scenario_id in packet_scenarios:
-        assert wheel_body.count(f"--scenario {scenario_id}") == 1
-
-
-def test_required_operational_execution_cannot_accept_not_run(
+def test_required_release_execution_cannot_accept_not_run(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -352,12 +192,184 @@ def test_required_operational_execution_cannot_accept_not_run(
 
     assert passed is False
     assert envelope["outcome"] == "failed"
-    assert envelope["status_counts"] == {"passed": 0, "failed": 0, "not_run": 1}
+    assert envelope["status_counts"] == {"passed": 0, "failed": 1, "not_run": 0}
+    (result,) = envelope["results"]
+    assert result["status"] == "failed"
+    assert "release cadence requires execution" in result["reason"]
+
+
+def test_release_profile_builds_and_tests_one_exact_artifact() -> None:
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    verify_release = re.search(r"^verify-release:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE)
+    release_artifact = re.search(
+        r"^release-artifact:\n(?P<body>(?:\t.*\n)+)", makefile, re.MULTILINE
+    )
+    operational_release = re.search(
+        r"^operational-release:(?P<dependencies>[^\n]*)\n(?P<body>(?:\t.*\n)+)",
+        makefile,
+        re.MULTILINE,
+    )
+    assert verify_release is not None
+    assert verify_release.group("dependencies").split() == [
+        "verify-full",
+        "operational-release",
+    ]
+    assert release_artifact is not None
+    assert operational_release is not None
+    artifact_body = release_artifact.group("body")
+    assert artifact_body.count("scripts/package_smoke.py") == 1
+    assert artifact_body.count("scripts/release_artifact.py record") == 1
+    assert operational_release.group("dependencies").split() == ["release-artifact"]
+    assert "--min-tier 0 --max-tier 4" in operational_release.group("body")
+
+
+def test_every_release_scenario_is_installed_wheel_applicable() -> None:
+    with OPERATIONAL_SCENARIOS.open("rb") as stream:
+        scenarios = tomllib.load(stream)["scenario"]
+    required = [row for row in scenarios if "release" in row["required_cadence"]]
+    assert required
+    assert all("wheel" in row["applicability"] for row in required)
+    ids = {row["id"] for row in required}
+    assert {
+        "dogfood.runtime.shutdown",
+        "dogfood.agent_mission.modal_activity_contracts",
+        "dogfood.physical_ai.hosted_episode",
+        "dogfood.storage.r2",
+    } <= ids
+    core_ids = {row["id"] for row in required if int(row["tier"]) <= 4}
+    assert ids - core_ids == {
+        "example.05_llm_agents",
+        "dogfood.agent_mission.modal_live",
+        "dogfood.physical_ai.modal_r2_live",
+        "dogfood.sandbox.docker",
+        "dogfood.storage.r2",
+        "dogfood.sandbox.apple_container",
+    }
+
+
+def test_live_modal_release_scenario_is_credentialed_and_opted_in() -> None:
+    with OPERATIONAL_SCENARIOS.open("rb") as stream:
+        scenarios = tomllib.load(stream)["scenario"]
+    modal = next(row for row in scenarios if row["id"] == "dogfood.agent_mission.modal_live")
+
+    assert modal["source_path"] == "tests/infrastructure/test_modal_agent_mission_live.py"
+    assert modal["semantic_oracle"]["ref"] in modal["source_command"]
+    assert modal["tier"] == 6
+    assert modal["applicability"] == ["source", "wheel"]
+    assert modal["required_extras"] == ["coding-agent"]
+    assert modal["cleanup_policy"] == "provider"
+    assert modal["artifact_policy"] == "redacted_receipt"
+    assert set(modal["prerequisites"]) == {
+        "credential:MODAL_TOKEN_ID",
+        "credential:MODAL_TOKEN_SECRET",
+        "infrastructure:CODING_AGENT_MODAL_WORKSPACE",
+        "infrastructure:CODING_AGENT_MODAL_ENVIRONMENT",
+        "infrastructure:CODEX_AUTH_VOLUME",
+        "infrastructure:CODING_AGENT_GITHUB_SECRET",
+    }
+    assert "ARCHETYPE_MODAL_AGENT_MISSION_LIVE=1" in MAKEFILE.read_text(encoding="utf-8")
+
+
+def test_live_physical_ai_release_scenario_binds_modal_compute_to_r2() -> None:
+    with OPERATIONAL_SCENARIOS.open("rb") as stream:
+        scenarios = tomllib.load(stream)["scenario"]
+    physical = next(row for row in scenarios if row["id"] == "dogfood.physical_ai.modal_r2_live")
+
+    assert physical["source_path"] == "tests/infrastructure/test_modal_physical_r2_live.py"
+    assert physical["semantic_oracle"]["ref"] in physical["source_command"]
+    assert physical["tier"] == 6
+    assert physical["applicability"] == ["source", "wheel"]
+    assert physical["required_extras"] == ["coding-agent"]
+    assert physical["cleanup_policy"] == "provider"
+    assert physical["artifact_policy"] == "redacted_receipt"
+    assert set(physical["prerequisites"]) == {
+        "credential:MODAL_TOKEN_ID",
+        "credential:MODAL_TOKEN_SECRET",
+        "credential:R2_ACCESS_KEY_ID",
+        "credential:R2_SECRET_ACCESS_KEY",
+        "infrastructure:CODING_AGENT_MODAL_WORKSPACE",
+        "infrastructure:CODING_AGENT_MODAL_ENVIRONMENT",
+        "infrastructure:R2_API_ENDPOINT",
+        "infrastructure:R2_BUCKET",
+    }
+    assert "ARCHETYPE_MODAL_PHYSICAL_R2_LIVE=1" in MAKEFILE.read_text(encoding="utf-8")
+
+
+def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    profile = _job(workflow, "release-profile")
+    external = _job(workflow, "external-evidence")
+    apple = _job(workflow, "apple-evidence")
+    compatibility = _job(workflow, "python-compatibility")
+    gate = _job(workflow, "release-evidence-gate")
+    publish = _job(workflow, "publish")
+
+    assert "make verify-release" in profile
+    assert "release-artifact.json" in profile
+    assert "operational-release-results.json" in profile
+    for target in (
+        "operational-release-openai",
+        "operational-release-docker",
+        "operational-release-r2",
+        "operational-release-modal",
+        "operational-release-physical-modal-r2",
+    ):
+        assert f"target: {target}" in external
+        make_target = re.search(
+            rf"^{target}:[^\n]*\n(?P<body>(?:\t.*\n)+)",
+            MAKEFILE.read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+        assert make_target is not None
+        assert "--min-tier 0 --max-tier 6" in make_target.group("body")
+    assert "tests/infrastructure/test_r2_idempotency.py" in external
+    assert "scripts/verify_release_evidence.py" in gate
+    assert "operational-release-apple-results.json" in gate
+    assert "operational-release-modal-results.json" in gate
+    assert "operational-release-physical-modal-r2-results.json" in gate
+    assert "group: archetype-release" in workflow
+    assert "cancel-in-progress: false" in workflow
+    assert "runs-on: ${{ fromJSON(matrix.runner) }}" in external
+    assert "operational-release-apple" not in external
+    assert "group: archetype-release-macos" in apple
+    assert "archetype-apple-container-macos-26" in apple
+    assert "environment: release-apple-macos" in apple
+    assert "- uses: actions/setup-python@" not in apple
+    assert 'UV_PYTHON: "3.12"' in apple
+    assert 'uv sync --python "3.12" --group dev --extra coding-agent' in apple
+    assert "sys.version_info[:2] == (3, 12)" in apple
+    assert 'test "$(uname -m)" = "arm64"' in apple
+    assert "container system status" in apple
+    assert "make operational-release-apple" in apple
+    assert "needs: [release-profile, external-evidence, apple-evidence]" in gate
+    assert 'UV_PYTHON: "3.13"' in compatibility
+    assert 'uv sync --python "3.13" --group dev' in compatibility
+    assert "sys.version_info[:2] == (3, 13)" in compatibility
+    assert "needs: [release-evidence-gate, python-compatibility]" in publish
+
+
+def test_release_workflow_is_operator_dispatched_from_an_immutable_tag() -> None:
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    authorize = _job(workflow, "authorize-release")
+    profile = _job(workflow, "release-profile")
+    compatibility = _job(workflow, "python-compatibility")
+    github_release = _job(workflow, "github-release")
+
+    assert "workflow_dispatch:" in workflow
+    assert "push:\n    tags:" not in workflow
+    assert "RELEASE_ACTOR: ${{ github.actor }}" in authorize
+    assert "RELEASE_TRIGGERING_ACTOR: ${{ github.triggering_actor }}" in authorize
+    assert 'test "$RELEASE_ACTOR" = "everettVT"' in authorize
+    assert 'test "$RELEASE_TRIGGERING_ACTOR" = "everettVT"' in authorize
+    assert 'test "$RELEASE_REF_TYPE" = "tag"' in authorize
+    assert 'test "$RELEASE_INPUT_TAG" = "$RELEASE_REF_NAME"' in authorize
+    assert "needs: authorize-release" in profile
+    assert "needs: authorize-release" in compatibility
+    assert 'git merge-base --is-ancestor "${GITHUB_REF_NAME}^{commit}" origin/main' in profile
+    assert "tag_name: ${{ github.ref_name }}" in github_release
 
 
 def test_commands_operational_oracle_does_not_import_pytest_modules() -> None:
-    """The standalone oracle must not collect a second copy of another test module."""
-
     path = ROOT / "tests" / "integration" / "test_commands_operational.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     imported_modules = [
@@ -371,7 +383,6 @@ def test_commands_operational_oracle_does_not_import_pytest_modules() -> None:
             else []
         )
     ]
-
     assert not [
         module
         for module in imported_modules
@@ -379,51 +390,10 @@ def test_commands_operational_oracle_does_not_import_pytest_modules() -> None:
     ]
 
 
-def test_operational_receipts_are_uploaded_even_when_a_scenario_fails() -> None:
-    workflow = QUALITY_WORKFLOW.read_text(encoding="utf-8")
-    evals = _job(workflow, "evals")
-    examples = _job(workflow, "examples")
-
-    assert re.search(
-        r"- name: Require installed-wheel operational receipt\n"
-        r"\s+if: always\(\)\n"
-        r"\s+run: test -f operational-results\.json",
-        evals,
-    )
-    assert re.search(
-        r"name: installed-wheel-operational-evidence\n"
-        r"\s+path: \|\n"
-        r"\s+operational-results\.json\n"
-        r"\s+operational-results\.d/\n"
-        r"\s+if-no-files-found: error",
-        evals,
-    )
-    pull_request_evidence = evals.split("name: pull-request-evidence", 1)[1]
-    assert "operational-results.json" not in pull_request_evidence
-
-    assert re.search(
-        r"- name: Require source operational receipt\n"
-        r"\s+if: always\(\)\n"
-        r"\s+run: test -f operational-source-results\.json",
-        examples,
-    )
-    assert re.search(
-        r"name: semantic-example-evidence\n"
-        r"\s+path: \|\n"
-        r"\s+operational-source-results\.json\n"
-        r"\s+operational-source-results\.d/\n"
-        r"\s+if-no-files-found: error",
-        examples,
-    )
-
-
-def test_operational_wheel_target_routes_build_and_wheel_setup_failures_through_runner(
-    tmp_path: Path,
-) -> None:
+def test_operational_wheel_failures_still_emit_a_receipt(tmp_path: Path) -> None:
     makefile = MAKEFILE.read_text(encoding="utf-8")
     target = re.search(
-        r"^operational-wheel:(?P<dependencies>[^\n]*)\n"
-        r"(?P<body>(?:\t.*\n)+)",
+        r"^operational-wheel:(?P<dependencies>[^\n]*)\n(?P<body>(?:\t.*\n)+)",
         makefile,
         re.MULTILINE,
     )
@@ -432,7 +402,6 @@ def test_operational_wheel_target_routes_build_and_wheel_setup_failures_through_
     body = target.group("body")
     assert "$(OPERATIONAL_BUILD_COMMAND) || build_status=$$?" in body
     assert 'wheel="$(OPERATIONAL_DIST_DIR)/.missing-operational-wheel.whl"' in body
-    assert "scripts/run_operational_scenarios.py" in body
 
     for label, build_command in (("build-failed", "false"), ("wheel-missing", "true")):
         output = tmp_path / f"{label}.json"
@@ -450,335 +419,8 @@ def test_operational_wheel_target_routes_build_and_wheel_setup_failures_through_
             capture_output=True,
             text=True,
         )
-
         assert completed.returncode != 0
         receipt = json.loads(output.read_text(encoding="utf-8"))
         assert receipt["schema"] == "archetype.operational-results/v1"
         assert receipt["outcome"] == "failed"
         assert "--wheel must name one built wheel" in receipt["error"]
-
-
-def test_quality_gate_aggregates_every_applicable_job() -> None:
-    gate = _job(QUALITY_WORKFLOW.read_text(encoding="utf-8"), "quality-gate")
-
-    assert "if: always()" in gate
-    for job_id in (
-        "ci",
-        "format",
-        "typecheck",
-        "infrastructure-idempotency",
-        "evals",
-        "examples",
-        "process-reliability",
-    ):
-        assert f"      - {job_id}\n" in gate
-
-
-# The four tests below protect ONE invariant, split by the file that owns each
-# half: auto-merge may only ever be armed for a head whose latest review verdict
-# passed cleanly, and the arm must not survive that verdict changing.
-#
-#   * `scripts/gh_pr_queue_ready.sh` owns the *decision* — latest-run-wins on the
-#     exact head, plus zero open non-outdated threads, failing closed on doubt.
-#   * `.github/workflows/automerge.yml` owns the *plumbing* — which events
-#     re-evaluate arming, that every arm/guard/dequeue path delegates the
-#     decision to that one script, and that the sha it arms is the sha it
-#     checked.
-#
-# If the decision logic moves again, re-anchor these assertions to the file that
-# owns it afterwards — do NOT copy the string literals across. Mirroring
-# literals is how this test broke in the first place: it pinned workflow text
-# that had since moved into the helper, so the test failed while the behaviour
-# it guards was intact. Assert the property, in its home, against a value
-# derived from the file — never a copy of a line that lives somewhere else.
-
-
-def test_queue_ready_helper_owns_latest_run_wins_and_fails_closed() -> None:
-    helper = QUEUE_READY_HELPER.read_text(encoding="utf-8")
-
-    # Latest run wins. review-complete can be re-run on an unchanged head, so
-    # ordering the check runs and taking the newest is what stops a stale
-    # success outvoting a fresh failure.
-    assert "sort_by(.started_at) | last" in helper
-
-    # The verdict is read for the sha the caller passed, never for whatever
-    # GitHub currently calls the PR head.
-    sha_arg = re.search(r'^(\w+)="\$3"$', helper, re.MULTILINE)
-    assert sha_arg is not None, "helper no longer takes the head sha as its third argument"
-    assert re.search(rf"commits/\$\{{{sha_arg.group(1)}\}}/check-runs", helper)
-    assert "check_name=review-complete" in helper
-
-    # Fail closed. Only an explicit success is ready; a missing conclusion, an
-    # API error, and an unparsable thread count all land on the not-ready path.
-    assert re.search(r'!=\s*"success"', helper)
-    assert "refusing to treat as queue-ready" in helper
-    assert "isResolved == false and .isOutdated == false" in helper
-
-    # Exit-code contract: exactly one success exit, and it is the last word of
-    # the script — every guard above it exits non-zero.
-    assert re.findall(r"^exit 0$", helper, re.MULTILINE) == ["exit 0"]
-    assert helper.rstrip().endswith("exit 0")
-
-
-# The tests below run the helper for real against a stubbed `gh`, so they
-# assert the decision it reaches rather than the text of its queries. The stub
-# evaluates the helper's own `--jq` filters with real jq, which is what makes
-# "did it even ask for hasNextPage?" observable without pinning the query.
-_STUB_HEAD_SHA = "0" * 40
-_STUB_REPO = "VangelisTech/archetype"
-_STUB_PR = "654"
-
-# `gh api [graphql] ... --jq FILTER` reduced to: pick the canned payload for
-# whichever endpoint was called, then apply the filter the helper passed.
-#
-# GraphQL returns only the fields the query selected, so the stub prunes
-# pageInfo when the query did not ask for it. Without that, a helper that
-# reads `.pageInfo.hasNextPage` while querying only `nodes` would still be
-# handed a value here and would look correct against a server that would
-# never have sent one.
-_GH_STUB = """#!/bin/sh
-filter='.'
-query=''
-prev=''
-for arg in "$@"; do
-  if [ "$prev" = "--jq" ]; then filter="$arg"; fi
-  case "$arg" in query=*) query="$arg" ;; esac
-  prev="$arg"
-done
-
-payload="$QUEUE_READY_STUB_DIR/check_runs.json"
-case " $* " in
-  *" graphql "*)
-    payload="$QUEUE_READY_STUB_DIR/graphql.json"
-    # Inspect the QUERY, not the whole argv: the --jq filter names the same
-    # fields, so matching on argv would report every field as selected.
-    case "$query" in
-      *pageInfo*) ;;
-      *) jq 'del(.data.repository.pullRequest.reviewThreads.pageInfo)' "$payload" \
-           > "$QUEUE_READY_STUB_DIR/pruned.json"
-         payload="$QUEUE_READY_STUB_DIR/pruned.json" ;;
-    esac
-    ;;
-esac
-exec jq -r "$filter" "$payload"
-"""
-
-
-def _thread(*, resolved: bool, outdated: bool = False) -> dict[str, bool]:
-    return {"isResolved": resolved, "isOutdated": outdated}
-
-
-def _run_queue_ready(
-    tmp_path: Path,
-    *,
-    threads: list[dict[str, bool]],
-    has_next_page: bool,
-    review_conclusion: str = "success",
-) -> subprocess.CompletedProcess[str]:
-    """Run the real helper with `gh` stubbed to serve the given API responses."""
-    if shutil.which("jq") is None:
-        pytest.skip("jq is required to evaluate the helper's own --jq filters")
-
-    stub_dir = tmp_path / "stubs"
-    bin_dir = tmp_path / "bin"
-    stub_dir.mkdir()
-    bin_dir.mkdir()
-
-    (stub_dir / "check_runs.json").write_text(
-        json.dumps(
-            {
-                "check_runs": [
-                    {"started_at": "2026-07-24T10:00:00Z", "conclusion": review_conclusion}
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    (stub_dir / "graphql.json").write_text(
-        json.dumps(
-            {
-                "data": {
-                    "repository": {
-                        "pullRequest": {
-                            "reviewThreads": {
-                                "pageInfo": {"hasNextPage": has_next_page},
-                                "nodes": threads,
-                            }
-                        }
-                    }
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    gh = bin_dir / "gh"
-    gh.write_text(_GH_STUB, encoding="utf-8")
-    gh.chmod(0o755)
-
-    env = os.environ.copy()
-    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
-    env["QUEUE_READY_STUB_DIR"] = str(stub_dir)
-    return subprocess.run(
-        [str(QUEUE_READY_HELPER), _STUB_REPO, _STUB_PR, _STUB_HEAD_SHA],
-        capture_output=True,
-        text=True,
-        env=env,
-        check=False,
-    )
-
-
-def test_queue_ready_refuses_a_truncated_review_thread_page(tmp_path: Path) -> None:
-    """Truncation is a clean response, so no other guard can catch it."""
-    # 100 returned threads, all resolved, and more beyond the page. Every
-    # unresolved thread could be sitting past node 100 — the count is a valid
-    # integer over an incomplete set, so nothing "fails" and the helper would
-    # otherwise call this queue-ready and arm a blocked PR.
-    result = _run_queue_ready(
-        tmp_path,
-        threads=[_thread(resolved=True) for _ in range(100)],
-        has_next_page=True,
-    )
-
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert "queue-ready" != result.stdout.strip()
-    assert "refusing to treat as queue-ready" in result.stdout
-
-
-def test_queue_ready_accepts_a_complete_page_with_every_thread_resolved(tmp_path: Path) -> None:
-    """Control: the truncation refusal must not swallow the ready path."""
-    result = _run_queue_ready(
-        tmp_path,
-        threads=[_thread(resolved=True), _thread(resolved=False, outdated=True)],
-        has_next_page=False,
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert result.stdout.strip() == "queue-ready"
-
-
-def test_queue_ready_still_counts_unresolved_threads_on_a_complete_page(tmp_path: Path) -> None:
-    result = _run_queue_ready(
-        tmp_path,
-        threads=[_thread(resolved=False), _thread(resolved=False), _thread(resolved=True)],
-        has_next_page=False,
-    )
-
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert "2 unresolved review thread(s) remain" in result.stdout
-
-
-def test_queue_ready_refuses_a_head_whose_review_did_not_pass(tmp_path: Path) -> None:
-    result = _run_queue_ready(
-        tmp_path,
-        threads=[],
-        has_next_page=False,
-        review_conclusion="failure",
-    )
-
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert "no authoritative passing review-complete" in result.stdout
-
-
-def test_automerge_remains_bound_to_latest_reviewed_head() -> None:
-    workflow = AUTOMERGE_WORKFLOW.read_text(encoding="utf-8")
-
-    # Every new head and every review signal re-evaluates arming.
-    assert (
-        "types: [opened, synchronize, reopened, ready_for_review, auto_merge_enabled]" in workflow
-    )
-    assert 'workflows: ["Deterministic Review Gate"]' in workflow
-    assert "github.event.workflow_run.conclusion == 'success'" in workflow
-    assert "github.event.workflow_run.head_repository.full_name == github.repository" in workflow
-
-    # Every job that decides whether an arm may stand runs the one helper and
-    # branches on its exit status, instead of re-deriving readiness inline...
-    for job_id in ("guard", "arm", "dequeue"):
-        body = _code_only(_job(workflow, job_id))
-        assert _helper_call().search(body), (
-            f"the {job_id!r} job stopped invoking {_HELPER_PATH} for its decision"
-        )
-        assert "status=$?" in body, f"the {job_id!r} job ignores the queue-ready verdict"
-    # ...and the decision has not leaked back into the workflow.
-    assert "check_name=review-complete" not in workflow
-    assert "reviewThreads" not in workflow
-
-    arm = _code_only(_job(workflow, "arm"))
-    head_match = re.search(r'\.headRefOid == \\"\$\{?(\w+)\}?\\"', arm)
-    assert head_match is not None, "the arm job no longer resolves the PR by matching its head sha"
-    # The sha the PR was matched on is the sha readiness is checked for: an arm
-    # is never granted on one head's verdict and applied to another.
-    assert _helper_call(head_sha=head_match.group(1)).search(arm), (
-        "the arm job checks readiness for a different sha than the one it matched the PR on"
-    )
-
-    # Both PR-resolution paths (workflow_run and review) filter, so a new path
-    # cannot quietly arm a draft or a non-maintainer PR.
-    pr_filters = re.findall(r"select\((.+?)\)\s*\|", arm, re.DOTALL)
-    assert pr_filters, "the arm job no longer filters the PRs it resolves"
-    for pr_filter in pr_filters:
-        assert ".isDraft | not" in pr_filter
-        assert "author.login" in pr_filter
-        # Conjunction, never disjunction: an `or` would make either predicate
-        # optional and arm exactly what the other one exists to exclude.
-        assert " or " not in pr_filter
-
-    # ...and both agree on state, by whichever mechanism each path has. gh pr
-    # view serves closed and merged PRs, and neither is ever isDraft, so
-    # without an explicit state check the review path would try to arm a PR
-    # that can no longer be merged.
-    assert "--state open" in arm, "the gh pr list path stopped restricting to open PRs"
-    assert '.state == "OPEN"' in arm, "the review path stopped restricting to open PRs"
-
-    assert 'gh pr merge --auto --squash --repo "${GITHUB_REPOSITORY}" "$pr"' in arm
-
-
-def test_automerge_runs_repo_scripts_from_the_trusted_default_branch() -> None:
-    """A PR must not be able to edit the script that judges it."""
-    workflow = AUTOMERGE_WORKFLOW.read_text(encoding="utf-8")
-
-    checked = 0
-    for job_id in _job_ids(workflow):
-        body = _code_only(_job(workflow, job_id))
-        if "scripts/" not in body:
-            continue
-        checked += 1
-        # `actions/checkout` without `ref:` follows GITHUB_SHA, which is the PR
-        # merge ref on pull_request and pull_request_review* events.
-        assert "ref: ${{ github.event.repository.default_branch }}" in body, (
-            f"the {job_id!r} job executes a repo script from an untrusted checkout"
-        )
-    assert checked, "no job executes a repo script; re-anchor this test"
-
-
-def test_automerge_triggers_are_real_github_actions_events() -> None:
-    """A webhook name Actions does not support invalidates the whole file."""
-    workflow = AUTOMERGE_WORKFLOW.read_text(encoding="utf-8")
-
-    # `pull_request_review_thread` is an Apps-only webhook. Naming it in `on:`
-    # makes GitHub reject the file outright: no job runs, every push gets a
-    # bare "Invalid workflow file" run, and the arming gate silently does
-    # nothing at all. Actions has no trigger for thread resolution — do not
-    # reintroduce one. See the workflow header.
-    assert "pull_request_review_thread:" not in workflow
-
-
-def test_automerge_disarms_when_new_findings_land_on_an_armed_pr() -> None:
-    workflow = AUTOMERGE_WORKFLOW.read_text(encoding="utf-8")
-
-    # The #646 -> #647 race: findings arrived after review-complete passed,
-    # while the PR was already armed and queue-locked. A submitted review is
-    # the signal Actions actually delivers for that.
-    assert "  pull_request_review:\n    types: [submitted, edited, dismissed]\n" in workflow
-
-    dequeue = _code_only(_job(workflow, "dequeue"))
-    assert "github.event_name == 'pull_request_review'" in dequeue
-    # Judged on what would actually merge, not on the event's cached head.
-    assert "--json headRefOid" in dequeue
-    # Disarm is verified by reading autoMergeRequest back, not by exit code:
-    # `--disable-auto` exits nonzero on the benign already-unarmed no-op.
-    assert dequeue.count("--json autoMergeRequest --jq '.autoMergeRequest // empty'") >= 2
-    assert "gh pr merge --disable-auto" in dequeue
-    # Both outcomes are distinguishable in the log (the #645 shepherd failure).
-    assert "nothing to disarm" in dequeue
-    assert "auto-merge disarmed on new findings" in dequeue

@@ -119,6 +119,7 @@ class TaskDispatchRequest:
     critic_policy: CriticPolicy = CriticPolicy()
     prior_candidate_entity_id: int = 0
     task_base_revision: str = ""
+    checkout_revision: str = ""
     previous_agent_session_id: str = ""
     previous_validation: tuple[ValidationObservation, ...] = ()
     previous_critic_findings: tuple[CriticRepairFinding, ...] = ()

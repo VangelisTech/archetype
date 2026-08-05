@@ -1,3 +1,4 @@
+# Quarantined after the 2026-07-30 SEV-1. This file is not an active workflow.
 name: Deterministic Review Gate
 
 on:
@@ -264,6 +265,40 @@ jobs:
             --raw "${RUNNER_TEMP}/opencode-raw.txt" \
             --output "${REVIEW_DIR}/first-structured-output.json"
 
+      - name: Prepare Codex bubblewrap sandbox
+        if: matrix.backend == 'codex'
+        run: |
+          set -euo pipefail
+          npm install -g "@openai/codex@${CODEX_VERSION}"
+          [[ "$(codex --version)" == "codex-cli ${CODEX_VERSION}" ]]
+          # Ubuntu 24.04's AppArmor defaults can deny the user namespace that
+          # Codex bubblewrap needs, failing every tool call at loopback setup.
+          # This is a job-local ephemeral VM; verify the full read-only sandbox
+          # before materializing subscription OAuth in the following step.
+          if [[ -e /proc/sys/kernel/unprivileged_userns_clone ]]; then
+            if [[ "$(< /proc/sys/kernel/unprivileged_userns_clone)" != 1 ]]; then
+              sudo sysctl -q -w kernel.unprivileged_userns_clone=1
+            fi
+            [[ "$(< /proc/sys/kernel/unprivileged_userns_clone)" == 1 ]]
+          fi
+          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+            if [[ "$(< /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" != 0 ]]; then
+              sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0
+            fi
+            [[ "$(< /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" == 0 ]]
+          fi
+          PREFLIGHT_HOME="${RUNNER_TEMP}/codex-preflight-home"
+          install -d -m 700 "${PREFLIGHT_HOME}"
+          CODEX_HOME="${PREFLIGHT_HOME}" codex --disable use_legacy_landlock \
+            -c 'sandbox_mode="read-only"' sandbox -- /usr/bin/true
+          PROBE="${RUNNER_TEMP}/codex-bwrap-write-probe"
+          rm -f "${PROBE}"
+          if CODEX_HOME="${PREFLIGHT_HOME}" codex --disable use_legacy_landlock \
+            -c 'sandbox_mode="read-only"' sandbox -- /usr/bin/touch "${PROBE}"; then
+            echo "Codex read-only sandbox admitted a write." >&2
+            exit 1
+          fi
+          [[ ! -e "${PROBE}" ]]
 
       - name: Run read-only reviewer (Codex)
         id: detector_codex
@@ -272,7 +307,9 @@ jobs:
         timeout-minutes: 25
         env:
           # Subscription OAuth, same trust posture as CLAUDE_CODE_OAUTH_TOKEN;
-          # materialized into an ephemeral CODEX_HOME, never the workspace.
+          # materialized into a job-scoped CODEX_HOME, never the workspace.
+          # The session persists only in runner temp so the bounded retry can
+          # continue the repository inspection instead of starting over.
           # Read-only enforcement is the codex sandbox itself (-s read-only);
           # --output-schema yields schema-conforming JSON natively and still
           # flows through the same extract/validate pipeline.
@@ -284,13 +321,12 @@ jobs:
           mkdir -p "${CODEX_HOME}"
           printf '%s' "${CODEX_AUTH_JSON}" > "${CODEX_HOME}/auth.json"
           chmod 600 "${CODEX_HOME}/auth.json"
-          npm install -g "@openai/codex@${CODEX_VERSION}"
           printf '%s' "${SCHEMA}" > "${RUNNER_TEMP}/lens-schema.json"
           mkdir -p "${REVIEW_DIR}"
           codex exec \
             -m "${CODEX_MODEL}" \
             -s read-only \
-            --ephemeral \
+            --disable use_legacy_landlock \
             --ignore-user-config \
             --color never \
             -C "${GITHUB_WORKSPACE}" \
@@ -417,23 +453,22 @@ jobs:
           SCHEMA: ${{ steps.contract.outputs.schema }}
         run: |
           # Auth and schema rewritten: the first attempt may have failed
-          # before writing them.
+          # before writing them. On the pinned CLI, --last resumes the
+          # job-scoped session when present and starts fresh when absent.
           export CODEX_HOME="${RUNNER_TEMP}/codex-home"
           mkdir -p "${CODEX_HOME}"
           printf '%s' "${CODEX_AUTH_JSON}" > "${CODEX_HOME}/auth.json"
           chmod 600 "${CODEX_HOME}/auth.json"
-          npm install -g "@openai/codex@${CODEX_VERSION}"
           printf '%s' "${SCHEMA}" > "${RUNNER_TEMP}/lens-schema.json"
-          codex exec \
+          codex exec resume \
+            --last \
             -m "${CODEX_MODEL}" \
-            -s read-only \
-            --ephemeral \
+            -c 'sandbox_mode="read-only"' \
+            --disable use_legacy_landlock \
             --ignore-user-config \
-            --color never \
-            -C "${GITHUB_WORKSPACE}" \
             --output-schema "${RUNNER_TEMP}/lens-schema.json" \
             -o "${RUNNER_TEMP}/codex-retry-last.txt" \
-            "$(cat "${RUNNER_TEMP}/lens-retry-prompt.txt")" \
+            - < "${RUNNER_TEMP}/lens-retry-prompt.txt" \
             > "${RUNNER_TEMP}/codex-retry-raw.txt" 2>&1
           python3 scripts/footgun_review_gate.py extract \
             --raw "${RUNNER_TEMP}/codex-retry-last.txt" \
@@ -684,6 +719,37 @@ jobs:
       # ADJUDICATOR_REVIEWER seats this on codex: the claude subscription is
       # spend-capped (2026-07-26) and an adjudicator that cannot run would
       # leave every singleton-blocking claim pending forever.
+      - name: Prepare Codex bubblewrap sandbox
+        if: matrix.skip != true
+        run: |
+          set -euo pipefail
+          npm install -g "@openai/codex@${CODEX_VERSION}"
+          [[ "$(codex --version)" == "codex-cli ${CODEX_VERSION}" ]]
+          if [[ -e /proc/sys/kernel/unprivileged_userns_clone ]]; then
+            if [[ "$(< /proc/sys/kernel/unprivileged_userns_clone)" != 1 ]]; then
+              sudo sysctl -q -w kernel.unprivileged_userns_clone=1
+            fi
+            [[ "$(< /proc/sys/kernel/unprivileged_userns_clone)" == 1 ]]
+          fi
+          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+            if [[ "$(< /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" != 0 ]]; then
+              sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0
+            fi
+            [[ "$(< /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" == 0 ]]
+          fi
+          PREFLIGHT_HOME="${RUNNER_TEMP}/codex-preflight-home"
+          install -d -m 700 "${PREFLIGHT_HOME}"
+          CODEX_HOME="${PREFLIGHT_HOME}" codex --disable use_legacy_landlock \
+            -c 'sandbox_mode="read-only"' sandbox -- /usr/bin/true
+          PROBE="${RUNNER_TEMP}/codex-bwrap-write-probe"
+          rm -f "${PROBE}"
+          if CODEX_HOME="${PREFLIGHT_HOME}" codex --disable use_legacy_landlock \
+            -c 'sandbox_mode="read-only"' sandbox -- /usr/bin/touch "${PROBE}"; then
+            echo "Codex read-only sandbox admitted a write." >&2
+            exit 1
+          fi
+          [[ ! -e "${PROBE}" ]]
+
       - name: Falsify disputed claim (Codex)
         id: adjudicator
         if: matrix.skip != true
@@ -697,11 +763,11 @@ jobs:
           mkdir -p "${CODEX_HOME}"
           printf '%s' "${CODEX_AUTH_JSON}" > "${CODEX_HOME}/auth.json"
           chmod 600 "${CODEX_HOME}/auth.json"
-          npm install -g "@openai/codex@${CODEX_VERSION}"
           printf '%s' "${SCHEMA}" > "${RUNNER_TEMP}/adjudication-schema.json"
           codex exec \
             -m gpt-5.6-luna \
             -s read-only \
+            --disable use_legacy_landlock \
             --ephemeral \
             --ignore-user-config \
             --color never \
@@ -1154,6 +1220,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           {
@@ -1163,4 +1230,5 @@ jobs:
             echo
             echo "[Inspect the failed workflow run](${RUN_URL})"
           } > "${RUNNER_TEMP}/review-failed.md"
-          gh pr comment "${PR_NUMBER}" --body-file "${RUNNER_TEMP}/review-failed.md" || true
+          gh pr comment "${PR_NUMBER}" --repo "${REPOSITORY}" \
+            --body-file "${RUNNER_TEMP}/review-failed.md" || true

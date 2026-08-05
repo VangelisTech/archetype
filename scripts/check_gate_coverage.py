@@ -228,8 +228,23 @@ INTENTIONAL_UNMAPPED = {
 # boundary. A stale or newly mapped entry fails the audit just like the
 # intentional-500 manifest.
 INTERNAL_ONLY_EXCEPTIONS = {
+    "archetype.missions.coding_agents.app_server.CodexAppServerError": (
+        "caught and normalized into an errored AgentExecutionResult by "
+        "CodingAgentHarness.run before the mission handler returns"
+    ),
+    "archetype.missions.coding_agents.app_server.CodexTurnCompletionBarrierError": (
+        "caught by run_codex_app_server_turn while connector cleanup retries; "
+        "persistent cleanup failure is normalized by CodingAgentHarness before "
+        "the mission handler returns"
+    ),
     "archetype.missions.critics.harness._UnverifiableReview": (
         "caught and normalized inside CriticHarness.review before the mission handler returns"
+    ),
+    "archetype.missions.sandboxes._subprocess._CleanupTimeout": (
+        "caught inside run_host and normalized into a bounded timeout ProcessResult"
+    ),
+    "archetype.missions.sandboxes._subprocess._JoinTimeout": (
+        "caught inside the private subprocess cleanup path before run_host returns"
     ),
 }
 

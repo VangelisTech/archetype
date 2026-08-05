@@ -16,6 +16,7 @@ from archetype.missions import (
     TaskDispatch,
     TaskState,
 )
+from archetype.missions.contracts import mission_episode_id
 from archetype.missions.projections import project_mission_result
 
 
@@ -31,6 +32,7 @@ def test_terminal_result_deduplicates_a_commit_observed_across_retries() -> None
         (Mission, MissionState): daft.from_pydict(
             {
                 "entity_id": [1],
+                f"{mission}episode_id": ["mission-episode-test"],
                 f"{mission}repository": ["VangelisTech/archetype"],
                 f"{mission}branch": ["agent/retry"],
                 f"{mission_state}status": ["succeeded"],
@@ -60,8 +62,22 @@ def test_terminal_result_deduplicates_a_commit_observed_across_retries() -> None
 
     result = project_mission_result(
         View(),  # type: ignore[arg-type]
-        SubmittedMission(mission_id=1, task_ids=(("implementation", 2),)),
+        SubmittedMission(
+            mission_id=1,
+            task_ids=(("implementation", 2),),
+            episode_id="mission-episode-test",
+        ),
         ticks_completed=11,
     )
 
     assert result.tasks[0].commit_shas == ("fix-sha", "repair-sha")
+    assert result.episode_id == "mission-episode-test"
+
+
+def test_mission_episode_identity_is_stable_and_world_scoped() -> None:
+    first = mission_episode_id("world-a", 17)
+
+    assert first == mission_episode_id("world-a", 17)
+    assert first != mission_episode_id("world-b", 17)
+    assert first != mission_episode_id("world-a", 18)
+    assert first.startswith("mission-episode-")

@@ -43,9 +43,12 @@ class SubmitMission(_MissionOperation):
 
 
 class RunMission(_MissionOperation):
-    """Run one previously submitted mission through its reserved owner."""
+    """Run or cold-resume one previously submitted Mission world."""
 
     operation: Literal["run_mission"] = "run_mission"
+    name: str
+    config: AgentMissionConfig
+    storage: str | Path | StorageConfig | None = None
     mission: SubmittedMission
     max_ticks: int | None = Field(default=None, ge=1)
 
@@ -66,9 +69,9 @@ def summarize_mission_operation(operation: _MissionOperation) -> Mapping[str, An
 
 # ``AgentMissionConfig`` intentionally keeps provider protocols out of its
 # import-time module graph. Pydantic still needs those names when it expands the
-# nested dataclass for ``SubmitMission``; rebuild only the operation model after
-# the contracts module has completed, avoiding a contracts↔driver import cycle.
-def _complete_submit_model() -> None:
+# nested dataclass for both configuration-bearing operations; rebuild those
+# models after the contracts module completes, avoiding a contracts↔driver cycle.
+def _complete_mission_models() -> None:
     from archetype.missions.coding_agents.contracts import CodingAgentDriver
     from archetype.missions.critics.contracts import CriticDriver
     from archetype.missions.sandboxes.contracts import (
@@ -76,18 +79,17 @@ def _complete_submit_model() -> None:
         SandboxEventObserver,
     )
 
-    SubmitMission.model_rebuild(
-        force=True,
-        _types_namespace={
-            "CodingAgentDriver": CodingAgentDriver,
-            "CriticDriver": CriticDriver,
-            "SandboxBackend": SandboxBackend,
-            "SandboxEventObserver": SandboxEventObserver,
-        },
-    )
+    namespace = {
+        "CodingAgentDriver": CodingAgentDriver,
+        "CriticDriver": CriticDriver,
+        "SandboxBackend": SandboxBackend,
+        "SandboxEventObserver": SandboxEventObserver,
+    }
+    SubmitMission.model_rebuild(force=True, _types_namespace=namespace)
+    RunMission.model_rebuild(force=True, _types_namespace=namespace)
 
 
-_complete_submit_model()
+_complete_mission_models()
 
 
 __all__ = [

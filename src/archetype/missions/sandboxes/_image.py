@@ -17,7 +17,8 @@ AGENT_HOME = "/home/agent"
 CODEX_HOME = f"{AGENT_HOME}/.codex"
 WORKSPACE_ROOT = "/workspace"
 BASE_IMAGE_REF = load_version_inventory().resolve("coding-agent-base-image").immutable_ref
-_APT_PACKAGES = "ca-certificates curl git make nodejs npm openssh-client"
+_APT_PACKAGES = "ca-certificates curl git make nodejs npm openssh-client tmux"
+_TTYD_ARTIFACT_IDS = ("ttyd-x86-64", "ttyd-aarch64")
 
 
 def codex_package() -> str:
@@ -31,6 +32,16 @@ def coding_agent_environment() -> str:
     """Return the content identity attested by the shared runtime image."""
 
     pin = load_version_inventory().harness_pin("codex")
+    ttyd_material = tuple(
+        value
+        for artifact_id in _TTYD_ARTIFACT_IDS
+        for value in (
+            load_version_inventory().resolve(artifact_id).name,
+            load_version_inventory().resolve(artifact_id).version,
+            load_version_inventory().resolve(artifact_id).source,
+            load_version_inventory().resolve(artifact_id).immutable_ref,
+        )
+    )
     material = "\n".join(
         (
             BASE_IMAGE_REF,
@@ -39,6 +50,7 @@ def coding_agent_environment() -> str:
             pin.version,
             pin.source,
             pin.immutable_ref,
+            *ttyd_material,
             f"user={AGENT_USER}",
             f"home={AGENT_HOME}",
             f"workdir={WORKSPACE_ROOT}",
@@ -68,6 +80,32 @@ def codex_install_command() -> str:
     )
 
 
+def ttyd_install_command() -> str:
+    """Return a shell command that selects and verifies the pinned ttyd binary."""
+
+    x86 = load_version_inventory().resolve("ttyd-x86-64")
+    arm = load_version_inventory().resolve("ttyd-aarch64")
+    if x86.version != arm.version:
+        raise ValueError("ttyd architecture pins must use one exact version")
+    x86_digest = x86.immutable_ref.removeprefix("sha256:")
+    arm_digest = arm.immutable_ref.removeprefix("sha256:")
+    if len(x86_digest) != 64 or len(arm_digest) != 64:
+        raise ValueError("ttyd inventory integrity must use sha256")
+    return (
+        'architecture="$(uname -m)" '
+        '&& case "$architecture" in '
+        f"x86_64|amd64) url={x86.source}; digest={x86_digest} ;; "
+        f"aarch64|arm64) url={arm.source}; digest={arm_digest} ;; "
+        "*) printf 'unsupported ttyd architecture: %s\\n' \"$architecture\" >&2; exit 1 ;; "
+        "esac "
+        '&& curl --fail --location --output /tmp/ttyd "$url" '
+        "&& printf '%s  %s\\n' \"$digest\" /tmp/ttyd "
+        "| sha256sum --check --strict "
+        "&& install -m 0755 /tmp/ttyd /usr/local/bin/ttyd "
+        "&& rm -f /tmp/ttyd"
+    )
+
+
 def coding_agent_containerfile() -> str:
     """Build one provider-neutral Linux userspace for Codex missions."""
 
@@ -79,6 +117,8 @@ RUN apt-get update \\
     && rm -rf /var/lib/apt/lists/*
 # {codex_package()}
 RUN {codex_install_command()}
+# ttyd {load_version_inventory().resolve("ttyd-x86-64").version}
+RUN {ttyd_install_command()}
 RUN useradd --create-home --uid 1000 {AGENT_USER} \\
     && mkdir -p {WORKSPACE_ROOT} \\
     && chown {AGENT_USER}:{AGENT_USER} {WORKSPACE_ROOT}
@@ -122,6 +162,8 @@ async def verify_coding_agent_environment(
             timeout_seconds=60,
         ),
         "codex": ProcessRequest(("codex", "--version"), timeout_seconds=60),
+        "tmux": ProcessRequest(("tmux", "-V"), timeout_seconds=60),
+        "ttyd": ProcessRequest(("ttyd", "--version"), timeout_seconds=60),
     }
     if verify_environment:
         requests["environment"] = ProcessRequest(
@@ -149,6 +191,17 @@ async def verify_coding_agent_environment(
             f"sandbox Codex version mismatch: expected {expected_codex!r}, "
             f"observed {observed['codex']!r}"
         )
+    expected_ttyd = load_version_inventory().resolve("ttyd-x86-64").version
+    if not any(
+        token == expected_ttyd or token.startswith(f"{expected_ttyd}-")
+        for token in observed["ttyd"].split()
+    ):
+        raise RuntimeError(
+            f"sandbox ttyd version mismatch: expected {expected_ttyd!r}, "
+            f"observed {observed['ttyd']!r}"
+        )
+    if not observed["tmux"].startswith("tmux "):
+        raise RuntimeError(f"sandbox tmux probe returned an invalid version: {observed['tmux']!r}")
 
 
 __all__ = [
@@ -162,5 +215,6 @@ __all__ = [
     "codex_install_command",
     "codex_package",
     "local_image_name",
+    "ttyd_install_command",
     "verify_coding_agent_environment",
 ]

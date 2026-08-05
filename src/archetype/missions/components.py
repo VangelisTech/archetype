@@ -23,6 +23,7 @@ class Mission(Component):
     """Immutable repository identity for one submitted mission."""
 
     name: str = "agent-mission"
+    episode_id: str = ""
     repository: str = ""
     branch: str = ""
     base_ref: str = "main"

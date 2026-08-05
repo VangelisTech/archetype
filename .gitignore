@@ -40,6 +40,7 @@ node_modules/
 # Local agent/session state: plans, ledgers, evidence archives, transcripts.
 # Was excluded only by .git/info/exclude, which no fresh clone gets.
 .context/
+.DS_Store
 # Local lakehouse data, sibling of archetype_data/ above. Never commit either.
 archetype_db/
 data/
@@ -85,6 +86,8 @@ eval-results.json
 /eval-*-results.json
 /operational*-results.json
 /operational*-results.d/
+/release-artifact.json
+/release-evidence-summary.json
 
 # mutmut: working tree of generated mutants and its on-disk cache
 mutants/

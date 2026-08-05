@@ -14,9 +14,10 @@ assigned categories:
 
 $categories
 
-The scope manifest is exactly these changed files, and your `reviewed_files`
-array must equal exactly this list — never the rulebook, the diff file, or
-anything else you merely opened:
+The scope manifest is exactly these changed files. Collectively, your
+`review_context[*].files` arrays must cover every path in this list and contain
+no path outside it — never the rulebook, the diff file, or anything else you
+merely opened:
 
 $scoped_files
 
@@ -31,8 +32,9 @@ actually completed. If inspection is still unavailable, do not fabricate a
 verdict: set `review_status` to `blocked`, explain the blocker in `summary` and
 `review_context`, and return no findings.
 
-Use only read, grep, glob, and list capabilities. Do not execute code, edit
-files, fetch URLs, post comments, or push commits.
+$inspection_capabilities Do not run candidate or repository code or tests;
+edit or write files; access the network or fetch URLs; post comments; or push
+commits.
 
 Return exactly one corrected JSON object matching this schema:
 

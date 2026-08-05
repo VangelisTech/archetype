@@ -43,6 +43,7 @@ from archetype.missions.critics import (
     CriticPrewarmRequest,
     CriticReceiptValue,
     CriticRecovered,
+    CriticRecoveryUnknown,
     CriticSubjectPolicy,
     CriticSubjectTransport,
     bind_critic_subject,
@@ -52,10 +53,12 @@ from archetype.missions.local_activity_values import LocalMissionAuthorValueStor
 from archetype.missions.local_critic_activity_values import LocalMissionCriticValueStore
 from archetype.missions.modal_author import (
     ModalAuthorExecutionUnknown,
+    ModalAuthorRecoveryRequired,
     ModalMissionAuthorExecutor,
     ModalMissionAuthorExecutorConfig,
 )
 from archetype.missions.modal_critic import (
+    ModalCriticRecoveryRequired,
     ModalMissionCriticExecutor,
     ModalMissionCriticExecutorConfig,
 )
@@ -63,6 +66,7 @@ from archetype.missions.sandboxes import (
     MODAL_ACTIVITY_PROTOCOL_EPOCH,
     CheckpointRef,
     ModalProviderStartBarrier,
+    ModalSandboxOperationCleanup,
     ModalSandboxOperationIdentity,
     SandboxEvent,
     SandboxEventType,
@@ -252,9 +256,33 @@ class _ModalRegistry:
         )
         self._next_object += 1
 
-    def result_values(self, executor: ModalMissionAuthorExecutor) -> tuple[str, ...]:
+    def result_values(
+        self,
+        executor: ModalMissionAuthorExecutor | ModalMissionCriticExecutor,
+    ) -> tuple[str, ...]:
         data = self.dicts[(self.environment_name, executor.result_dict_name)]
         return tuple(str(value) for value in data.values.values())
+
+
+def _downgrade_provider_result_to_schema_v1(
+    registry: _ModalRegistry,
+    *,
+    result_dict_name: str,
+) -> str:
+    data = registry.dicts[(registry.environment_name, result_dict_name)]
+    ((key, value),) = data.values.items()
+    envelope = json.loads(str(value))
+    assert envelope["schema_version"] == 2
+    envelope.pop("cleanup")
+    envelope["schema_version"] = 1
+    legacy = json.dumps(
+        envelope,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    data.values[key] = legacy
+    return legacy
 
 
 class _Session:
@@ -264,6 +292,7 @@ class _Session:
         sequence: int,
         *,
         checkpoints: bool = False,
+        close_failures: int = 0,
     ) -> None:
         self.operation_identity = identity
         self.identity = SandboxIdentity(
@@ -272,6 +301,10 @@ class _Session:
             "modal-agent://sha256:test",
         )
         self.closed = 0
+        self.is_closed = False
+        self.close_failures = close_failures
+        self.cohort_id = f"cohort-v1:{sequence:032x}"
+        self.auth_sandbox_id = f"sb-auth-{sequence}"
         self.capabilities = SimpleNamespace(checkpoints=checkpoints)
         self.checkpoint_calls = 0
 
@@ -280,6 +313,19 @@ class _Session:
 
     async def close(self) -> None:
         self.closed += 1
+        if self.close_failures:
+            self.close_failures -= 1
+            raise RuntimeError("simulated Modal close failure")
+        self.is_closed = True
+
+    @property
+    def operation_cleanup(self) -> ModalSandboxOperationCleanup:
+        return ModalSandboxOperationCleanup(
+            identity=self.operation_identity,
+            mission_sandbox_id=self.identity.sandbox_id,
+            auth_sandbox_id=self.auth_sandbox_id,
+            cohort_id=self.cohort_id,
+        )
 
     async def checkpoint(self) -> CheckpointRef:
         self.checkpoint_calls += 1
@@ -294,11 +340,21 @@ class _Session:
 
 
 class _Capability:
-    def __init__(self, registry: _ModalRegistry, *, checkpoints: bool = False) -> None:
+    def __init__(
+        self,
+        registry: _ModalRegistry,
+        *,
+        checkpoints: bool = False,
+        close_failures: int = 0,
+        cleanup_failures: int = 0,
+    ) -> None:
         self.registry = registry
         self.starts = 0
         self.sessions: list[_Session] = []
         self.checkpoints = checkpoints
+        self.close_failures = close_failures
+        self.cleanup_calls = 0
+        self.cleanup_failures = cleanup_failures
 
     def identity(self, operation_id: str) -> ModalSandboxOperationIdentity:
         return ModalSandboxOperationIdentity(
@@ -321,9 +377,30 @@ class _Capability:
     ) -> _Session:
         self._validate_spec(spec)
         self.starts += 1
-        session = _Session(identity, self.starts, checkpoints=self.checkpoints)
+        session = _Session(
+            identity,
+            self.starts,
+            checkpoints=self.checkpoints,
+            close_failures=self.close_failures,
+        )
         self.sessions.append(session)
         return session
+
+    async def cleanup_completed(
+        self,
+        *,
+        cleanup: ModalSandboxOperationCleanup,
+        spec: Any,
+    ) -> None:
+        self._validate_spec(spec)
+        self.cleanup_calls += 1
+        if self.cleanup_failures:
+            self.cleanup_failures -= 1
+            raise RuntimeError("simulated Modal cleanup failure")
+        for session in self.sessions:
+            if session.operation_cleanup == cleanup and not session.is_closed:
+                await session.close()
+                return
 
 
 class _Harness:
@@ -566,8 +643,10 @@ def _critic_request() -> CriticActivityRequest:
 
 def _critic_executor(
     registry: _ModalRegistry,
+    *,
+    capability: _Capability | None = None,
 ) -> tuple[ModalMissionCriticExecutor, _Capability, _CriticHarness]:
-    capability = _Capability(registry)
+    selected_capability = capability or _Capability(registry)
     harness = _CriticHarness()
     barrier = ModalProviderStartBarrier(
         workspace_name=registry.workspace_name,
@@ -576,7 +655,7 @@ def _critic_executor(
         protocol_epoch=MODAL_ACTIVITY_PROTOCOL_EPOCH,
     )
     executor = ModalMissionCriticExecutor(
-        capability=capability,  # type: ignore[arg-type]
+        capability=selected_capability,  # type: ignore[arg-type]
         barrier=barrier,
         harness=harness,  # type: ignore[arg-type]
         redactor=RedactionService(),
@@ -584,7 +663,7 @@ def _critic_executor(
             sandbox_environment="modal-agent://sha256:test",
         ),
     )
-    return executor, capability, harness
+    return executor, selected_capability, harness
 
 
 @pytest.fixture
@@ -704,6 +783,90 @@ async def test_cold_restart_recovers_exact_provider_result_without_start(
 
 
 @pytest.mark.asyncio
+async def test_author_replay_cleanup_failure_preserves_typed_recovery(
+    fake_modal: _ModalRegistry,
+) -> None:
+    first, _first_capability, _first_harness = _executor(fake_modal)
+    request = _request("dispatch-cleanup-recovery")
+    operation_id = "missions.author:world-a:dispatch-cleanup-recovery"
+    original = await first.execute(
+        operation_id=operation_id,
+        request=request,
+        attempt=1,
+        fence=1,
+        retry_guard=None,
+    )
+    provider_result = fake_modal.result_values(first)
+    capability = _Capability(fake_modal, cleanup_failures=2)
+    restarted, _selected, harness = _executor(fake_modal, capability=capability)
+
+    with pytest.raises(ModalAuthorRecoveryRequired) as failure:
+        await restarted.execute(
+            operation_id=operation_id,
+            request=request,
+            attempt=2,
+            fence=2,
+            retry_guard=None,
+        )
+    recovery = await restarted.reconcile(
+        operation_id=operation_id,
+        request=request,
+    )
+
+    assert failure.value.recovery == AuthorRecoveryUnknown(
+        "exact provider cleanup failed (RuntimeError)"
+    )
+    assert recovery == failure.value.recovery
+    assert fake_modal.result_values(restarted) == provider_result
+    assert capability.starts == harness.calls == 0
+    recovered = await restarted.reconcile(
+        operation_id=operation_id,
+        request=request,
+    )
+    assert isinstance(recovered, AuthorRecovered)
+    assert recovered.observation == original
+
+
+@pytest.mark.asyncio
+async def test_schema_v1_author_result_recovers_and_delivers_without_replay(
+    fake_modal: _ModalRegistry,
+) -> None:
+    first, _first_capability, _first_harness = _executor(fake_modal)
+    request = _request("dispatch-schema-v1")
+    operation_id = "missions.author:world-a:dispatch-schema-v1"
+    original = await first.execute(
+        operation_id=operation_id,
+        request=request,
+        attempt=1,
+        fence=1,
+        retry_guard=None,
+    )
+    legacy = _downgrade_provider_result_to_schema_v1(
+        fake_modal,
+        result_dict_name=first.result_dict_name,
+    )
+    restarted, capability, harness = _executor(fake_modal)
+
+    recovered = await restarted.reconcile(
+        operation_id=operation_id,
+        request=request,
+    )
+    delivered = await restarted.execute(
+        operation_id=operation_id,
+        request=request,
+        attempt=2,
+        fence=2,
+        retry_guard=None,
+    )
+
+    assert isinstance(recovered, AuthorRecovered)
+    assert recovered.observation == original
+    assert delivered == original
+    assert capability.starts == harness.calls == capability.cleanup_calls == 0
+    assert fake_modal.result_values(restarted) == (legacy,)
+
+
+@pytest.mark.asyncio
 async def test_modal_critic_cold_restart_recovers_exact_receipt_with_one_start(
     fake_modal: _ModalRegistry,
     tmp_path: Path,
@@ -751,6 +914,154 @@ async def test_modal_critic_cold_restart_recovers_exact_receipt_with_one_start(
     durable = await values.get_result(result_ref)
     assert durable.receipt is not None
     assert durable.receipt.reviewed_diff_digest == request.diff_digest
+
+
+@pytest.mark.asyncio
+async def test_critic_replay_cleanup_failure_preserves_typed_recovery(
+    fake_modal: _ModalRegistry,
+) -> None:
+    first, _first_capability, _first_harness = _critic_executor(fake_modal)
+    request = _critic_request()
+    operation_id = "missions.critic:world-a:review-cleanup-recovery"
+    original = await first.execute(
+        operation_id=operation_id,
+        request=request,
+        attempt=1,
+        fence=1,
+        retry_guard=None,
+    )
+    provider_result = fake_modal.result_values(first)
+    capability = _Capability(fake_modal, cleanup_failures=2)
+    restarted, _selected, harness = _critic_executor(fake_modal, capability=capability)
+
+    with pytest.raises(ModalCriticRecoveryRequired) as failure:
+        await restarted.execute(
+            operation_id=operation_id,
+            request=request,
+            attempt=2,
+            fence=2,
+            retry_guard=None,
+        )
+    recovery = await restarted.reconcile(
+        operation_id=operation_id,
+        request=request,
+    )
+
+    assert failure.value.recovery == CriticRecoveryUnknown(
+        "exact provider cleanup failed (RuntimeError)"
+    )
+    assert recovery == failure.value.recovery
+    assert fake_modal.result_values(restarted) == provider_result
+    assert capability.starts == harness.prewarm_calls == harness.calls == 0
+    recovered = await restarted.reconcile(
+        operation_id=operation_id,
+        request=request,
+    )
+    assert isinstance(recovered, CriticRecovered)
+    assert recovered.result == original
+
+
+@pytest.mark.asyncio
+async def test_schema_v1_critic_result_recovers_and_delivers_without_replay(
+    fake_modal: _ModalRegistry,
+) -> None:
+    first, _first_capability, _first_harness = _critic_executor(fake_modal)
+    request = _critic_request()
+    operation_id = "missions.critic:world-a:review-schema-v1"
+    original = await first.execute(
+        operation_id=operation_id,
+        request=request,
+        attempt=1,
+        fence=1,
+        retry_guard=None,
+    )
+    legacy = _downgrade_provider_result_to_schema_v1(
+        fake_modal,
+        result_dict_name=first.result_dict_name,
+    )
+    restarted, capability, harness = _critic_executor(fake_modal)
+
+    recovered = await restarted.reconcile(
+        operation_id=operation_id,
+        request=request,
+    )
+    delivered = await restarted.execute(
+        operation_id=operation_id,
+        request=request,
+        attempt=2,
+        fence=2,
+        retry_guard=None,
+    )
+
+    assert isinstance(recovered, CriticRecovered)
+    assert recovered.result == original
+    assert delivered == original
+    assert capability.starts == harness.prewarm_calls == harness.calls == 0
+    assert capability.cleanup_calls == 0
+    assert fake_modal.result_values(restarted) == (legacy,)
+
+
+@pytest.mark.asyncio
+async def test_author_result_cannot_reconcile_until_exact_failed_cleanup_retries(
+    fake_modal: _ModalRegistry,
+) -> None:
+    capability = _Capability(fake_modal, close_failures=1)
+    executor, _, harness = _executor(fake_modal, capability=capability)
+    request = _request("dispatch-cleanup-retry")
+    operation_id = "missions.author:world-a:dispatch-cleanup-retry"
+
+    with pytest.raises(RuntimeError, match="close failure"):
+        await executor.execute(
+            operation_id=operation_id,
+            request=request,
+            attempt=1,
+            fence=1,
+            retry_guard=None,
+        )
+
+    recovered = await executor.reconcile(
+        operation_id=operation_id,
+        request=request,
+    )
+
+    assert isinstance(recovered, AuthorRecovered)
+    assert recovered.observation.result.dispatch_id == request.dispatch_id
+    assert capability.starts == harness.calls == 1
+    assert capability.cleanup_calls == 1
+    assert capability.sessions[0].closed == 2
+    assert capability.sessions[0].is_closed
+
+
+@pytest.mark.asyncio
+async def test_critic_result_cannot_reconcile_until_exact_failed_cleanup_retries(
+    fake_modal: _ModalRegistry,
+) -> None:
+    capability = _Capability(fake_modal, close_failures=1)
+    executor, _, harness = _critic_executor(fake_modal, capability=capability)
+    request = _critic_request()
+    operation_id = "missions.critic:world-a:review-cleanup-retry"
+
+    with pytest.raises(RuntimeError, match="close failure"):
+        await executor.execute(
+            operation_id=operation_id,
+            request=request,
+            attempt=1,
+            fence=1,
+            retry_guard=None,
+        )
+
+    recovered = await executor.reconcile(
+        operation_id=operation_id,
+        request=request,
+    )
+
+    assert isinstance(recovered, CriticRecovered)
+    assert recovered.result.request.review_id == request.review_id
+    assert capability.starts == 1
+    assert harness.prewarm_calls == harness.calls == 1
+    assert capability.cleanup_calls == 1
+    assert capability.sessions[0].closed == 2
+    assert capability.sessions[0].is_closed
 
 
 @pytest.mark.asyncio
