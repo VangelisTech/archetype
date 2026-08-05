@@ -1,10 +1,60 @@
 # Overview
 
-Archetype is a data-centric Entity-Component-System simulation engine. World state is stored as columnar DataFrames, and each tick appends new rows instead of overwriting previous state. That storage model supports time-travel queries, forking, replay, and audit.
+Archetype is a data-centric Entity-Component-System simulation engine. World
+state is stored as columnar DataFrames, and each tick appends new rows instead
+of overwriting previous state. That storage model supports time-travel queries,
+forking, replay, and audit.
 
-This page is an explanatory overview. The written rules and dependency tables
-in [Application Architecture](application-architecture.md) are normative;
-visual layout is not.
+The [docs home](../index.md) is the visual map of the **core primitives**.
+This page explains how the **application layer** sits on that core. The written
+rules and dependency tables in
+[Application Architecture](application-architecture.md) are normative; visual
+layout is not.
+
+## Core engine (the mental model)
+
+Before the runtime, gateway, and families, a tick still moves through these
+boxes:
+
+```mermaid
+graph TB
+    World["World"]
+    System["System"]
+    QM["QueryManager"]
+    UM["UpdateManager"]
+    Store["Store"]
+
+    World --> System
+    World --> QM
+    World --> UM
+    System --> QM
+    QM --> Store
+    UM --> Store
+```
+
+```mermaid
+sequenceDiagram
+    participant World as World
+    participant System as System
+    participant QM as QueryManager
+    participant UM as UpdateManager
+    participant Store as Store
+
+    World->>System: execute per active archetype
+    loop Eligible processors
+        System->>QM: query components
+        QM->>Store: load DataFrame(s)
+        System->>System: process(df)
+    end
+    System-->>World: transformed data
+    World->>UM: update
+    UM->>Store: append tick rows
+```
+
+`QueryManager` reads. `UpdateManager` appends. `World` orchestrates.
+`System` runs processors whose declared components are a subset of the
+archetype signature. Product features (forks, missions, HTTP) compose around
+this path; they do not replace it.
 
 ## Layers
 

@@ -4,13 +4,36 @@
 
 **Status:** Implemented.
 
-Agent Missions is Archetype's first software factory. An author submits a
-repository, a branch, and a graph of coding tasks guarded by the repository's
-own validators. Archetype records the graph, commits every decision as world
+## Purpose and Scope
+
+Agent Missions is Archetype's software factory. An author submits a repository,
+a branch, and a graph of coding tasks guarded by the repository's own
+validators. Archetype records the graph, commits every decision as world
 state, and advances work only when current evidence permits the transition.
+
+It sits **above** the [core engine](core-architecture.md): the mission world is
+still components, processors, and append-only ticks. The family adds graph
+materialization, committed-intent dispatch, sandbox I/O, and projections.
 
 Archetype does not own how an agent writes code. It owns **when work may
 start, which observations may advance it, and why every transition occurred**.
+
+```mermaid
+graph TB
+    Author["Mission author"] --> RT["RuntimeMissions"]
+    RT --> App["MissionService"]
+    App --> World["Mission world<br/>core ECS + relations"]
+
+    subgraph "Observations"
+        Agent["Coding-agent harness"]
+        Sandbox["Sandbox service"]
+    end
+
+    App -->|"post-commit only"| Agent
+    Agent --> Sandbox
+    Sandbox -->|"facts staged back"| App
+    App --> World
+```
 
 > **The V1 contract**
 >
@@ -18,6 +41,16 @@ start, which observations may advance it, and why every transition occurred**.
 > are the transition authority. A dispatch is committed intent. Agent and
 > sandbox activity are observations. Only validator results bound to the
 > current dispatch and repository revision can accept a task.
+
+## Key Capabilities
+
+| Capability | Implementation |
+|---|---|
+| **Task graph as data** | Tasks, validators, and dependencies are entities and relations |
+| **Processor authority** | Readiness, dispatch, retry, failure, acceptance, mission rollup |
+| **Committed intent** | `TaskDispatch` is permission recorded on the ledger, not a live job object |
+| **Post-commit I/O** | Sandboxes see work only after the tick that dispatched it commits |
+| **Harness vs acceptance** | Agent/sandbox observations never accept a task; validators do |
 
 ## 1. The contract in one view
 

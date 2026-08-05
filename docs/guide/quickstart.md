@@ -1,10 +1,14 @@
 # Quickstart
 
-Use `ArchetypeRuntime` for a Python script. It creates the service container,
-then gives you a lazy handle for each world.
+## Purpose and Scope
 
-For a copy-and-run version of this page, see
+This page gets you from install to a running world. It uses the same core
+primitives as the [Overview](../index.md): components, processors, world,
+query, update, store.
+
+For a copy-and-run script, see
 [`examples/00_quickstart.py`](https://github.com/VangelisTech/archetype/blob/main/examples/00_quickstart.py).
+For the fuller workflow, see [Building simulations](building-simulations.md).
 
 ## Install
 
@@ -14,10 +18,68 @@ pip install archetype-ecs
 
 From a checkout, run `make sync-dev` instead.
 
-## Define state and behavior
+## Core concepts
 
-Components hold typed state. A processor receives a Daft DataFrame for every
-archetype that has its required components, then returns the next DataFrame.
+Before the code: what you are about to wire.
+
+```mermaid
+graph TB
+    subgraph "Your code"
+        Comp["Components<br/>Position, Velocity"]
+        Proc["Processors<br/>Move"]
+        App["ArchetypeRuntime"]
+    end
+
+    subgraph "Core"
+        World["World"]
+        System["System"]
+        Store["Store"]
+    end
+
+    Comp --> World
+    Proc --> System
+    App --> World
+    World --> System
+    World --> Store
+    System --> Store
+```
+
+| You define | The engine does |
+|---|---|
+| `Component` classes | Packs matching entities into archetype tables |
+| `AsyncProcessor` classes | Runs them each tick as DataFrame transforms |
+| `runtime.world(...)` | Owns ticks, history, and the query/update path |
+
+## Entity-Component-System pattern
+
+```mermaid
+graph LR
+    subgraph "Components"
+        Position["Position<br/>x: float"]
+        Velocity["Velocity<br/>dx: float"]
+    end
+
+    subgraph "Entities"
+        E1["Entity<br/>Position + Velocity"]
+    end
+
+    subgraph "Processor"
+        Move["Move<br/>components = (Position, Velocity)"]
+    end
+
+    subgraph "Tick"
+        DF["Archetype DataFrame"]
+        Out["position__x += velocity__dx"]
+    end
+
+    Position --> E1
+    Velocity --> E1
+    E1 --> DF
+    Move --> Out
+    DF --> Out
+```
+
+## Define state and behavior
 
 ```python
 import asyncio
@@ -63,10 +125,35 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+What that call sequence does:
+
+```mermaid
+sequenceDiagram
+    participant App as Your script
+    participant RT as ArchetypeRuntime
+    participant World as World
+    participant Sys as System / Move
+    participant Store as Store
+
+    App->>RT: runtime.world("demo", processors=[Move()])
+    RT-->>App: world handle
+    App->>World: spawn(Position, Velocity)
+    App->>World: step()
+    Note over World,Store: Persist initial rows
+    App->>World: run(steps=3)
+    loop Each tick
+        World->>Sys: execute matching archetypes
+        Sys->>Sys: process(df)
+        World->>Store: append tick rows
+    end
+    App->>World: query(Position)
+    World-->>App: history DataFrame
+```
+
 `spawn()` reserves a real entity ID immediately. The first `step()` persists
 the initial component values; processors apply on the three subsequent ticks.
-`query()` returns a lazy Daft DataFrame containing the full append-only history
-for the requested components.
+`query()` returns a lazy Daft DataFrame of the full append-only history for the
+requested components.
 
 ## Read the current tick
 
@@ -90,6 +177,13 @@ await branch.update(entity_id, Velocity(dx=10))
 await branch.run(steps=3)
 ```
 
+```mermaid
+graph LR
+    Base["world<br/>history through tick T"]
+    Fork["fork<br/>same past, new future"]
+    Base -->|"fork()"| Fork
+```
+
 See [History and forks](history-and-forks.md) for the details.
 
 ## Synchronous scripts
@@ -106,10 +200,8 @@ with ArchetypeRuntime.sync() as runtime:
 
 ## Next steps
 
+- [Core architecture](core-architecture.md) — map of the engine boxes
 - [Build a simulation](building-simulations.md)
-- [Define components](components.md)
-- [Write processors](processors.md)
-- [Work with worlds](working-with-worlds.md)
-- [Choose a runnable example](examples.md)
-- [Run a coding-agent mission](agent-missions.md)
-- [Host a service](app-overview.md)
+- [Components](components.md) · [Processors](processors.md) · [Worlds](working-with-worlds.md)
+- [Application layer](app-overview.md) — runtime, gateway, families above the core
+- [Agent Missions](agent-missions.md) · [Examples](examples.md)

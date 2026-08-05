@@ -1,150 +1,277 @@
-# App Overview
+# Application Layer
 
-The app layer wraps the core ECS engine with service boundaries for storage, world lifecycle, mutation, simulation, reads, command queuing, and audit history. The API layer exposes those boundaries over HTTP.
+## Purpose and Scope
 
-For normative ownership and dependency rules, see
-[Application Architecture](application-architecture.md). For active internal
-ports, see [Service Protocols](service-protocols.md). Concrete services and
+The application layer wraps the [core engine](core-architecture.md) with
+product workflows: world lifecycle, mutations, simulation control, authorized
+ingress, audit, and higher-level families (missions, physical AI,
+autoresearch, artifacts, evaluation).
+
+This page is the **map of that layer**. Normative ownership and dependency
+rules live in [Application Architecture](application-architecture.md). Active
+ports live in [Service Protocols](service-protocols.md). Concrete services and
 `ServiceContainer` are internal.
 
-## Layers
+```mermaid
+graph TB
+    subgraph "Supported entry"
+        Script["ArchetypeRuntime"]
+        HTTP["REST / CLI"]
+    end
 
-```text
-application -> runtime -> RuntimeApplication
-CLI         -> API -> CommandGateway -> RuntimeApplication
-RuntimeApplication -> internal app-family capabilities -> core
+    subgraph "Application layer"
+        GW["CommandGateway"]
+        RA["RuntimeApplication"]
+        Families["App families"]
+    end
+
+    subgraph "Core"
+        Engine["World · System · Query · Update · Store"]
+    end
+
+    Script --> RA
+    HTTP --> GW
+    GW --> RA
+    RA --> Families
+    Families --> Engine
 ```
 
-Dependencies point downward. Core does not import app. The CLI does not import app except for `serve`; it talks to the server over HTTP.
+Core does not know about actors, roles, HTTP, or multi-tenant policy. Those
+concerns start here.
 
-## What Core Does Not Do
+## Key Capabilities
 
-The core layer defines and implements ECS mechanics:
+| Capability | What the layer adds |
+|---|---|
+| **Runtime facade** | `ArchetypeRuntime` / world handles over actor-free `RuntimeApplication` |
+| **Authorized ingress** | `CommandGateway` + roles for untrusted callers |
+| **World lifecycle** | Create, fork, destroy, attach — identity and live registry |
+| **Tick-deferred commands** | Durable admit → lease → stage → settle across ticks |
+| **Audit** | Access evidence, outbox, analytical projection |
+| **Product families** | Missions, physical AI, autoresearch, artifacts, evaluation, … |
 
-- `AsyncWorld`
-- `AsyncProcessor`
-- storage/query/update facades
-- system execution
-- lifecycle hooks
-- resources
+## System architecture
 
-It does not know about:
+**Families around the runtime**
 
-- actors or roles
-- command authorization
-- audit rows
-- REST routes
-- multi-world API hosting
+```mermaid
+graph TB
+    RA["RuntimeApplication"]
 
-The app layer adds those concerns.
+    subgraph "Engine-facing families"
+        WorldSvc["World"]
+        Mut["Mutation"]
+        Sim["Simulation"]
+        Query["Query"]
+        Cmd["Commands"]
+        Audit["Audit"]
+    end
 
-## WorldFactory Boundary
+    subgraph "Product families"
+        Missions["Missions"]
+        Physical["Physical AI"]
+        Research["AutoResearch"]
+        Artifacts["Artifacts"]
+        Eval["Evaluation"]
+    end
 
-`WorldFactory` is where the store resolved by `WorldService` is composed into
-core. It gives that same store to `AsyncQueryManager` and
-`AsyncUpdateManager`, constructs the system, resources, and hooks, and returns
-an `AsyncWorld`.
+    RA --> WorldSvc
+    RA --> Mut
+    RA --> Sim
+    RA --> Query
+    RA --> Cmd
+    RA --> Audit
+    RA --> Missions
+    RA --> Physical
+    RA --> Research
+    RA --> Artifacts
+    RA --> Eval
+
+    WorldSvc --> Core["archetype.core"]
+    Mut --> Core
+    Sim --> Core
+    Query --> Core
+```
+
+`RuntimeApplication` owns no storage backend and no transport. Each workflow
+delegates to the family that owns it. Families talk to core through world /
+storage ports — they do not reimplement ECS.
+
+## Trust boundary
+
+```mermaid
+flowchart LR
+    subgraph "Trusted"
+        AppCode["Script / ArchetypeRuntime"]
+        RA["RuntimeApplication"]
+    end
+
+    subgraph "Untrusted ingress"
+        Client["CLI · HTTP · MCP · agents"]
+        API["API adapter"]
+        GW["CommandGateway"]
+    end
+
+    AppCode --> RA
+    Client --> API --> GW --> RA
+    GW -->|"guardrail_allow + ActorCtx"| RA
+    GW --> Audit["Audit journal"]
+```
+
+| Path | Authorization | Entry |
+|---|---|---|
+| Local script | Trusted — no `ActorCtx` | `ArchetypeRuntime` → `RuntimeApplication` |
+| Server | Roles on the gateway | API → `CommandGateway` → `RuntimeApplication` |
+
+The gateway authorizes and records access. It does not implement domain
+workflows. See [Command Gate](command-gate.md).
+
+## Code entity mapping
+
+```mermaid
+graph LR
+    subgraph "Supported"
+        RT["ArchetypeRuntime"]
+        RW["RuntimeWorld handle"]
+    end
+
+    subgraph "Internal app"
+        RA["RuntimeApplication"]
+        GW["CommandGateway"]
+        SC["ServiceContainer"]
+        Fam["Family services"]
+    end
+
+    subgraph "Core"
+        AW["AsyncWorld"]
+        Store["Store"]
+    end
+
+    RT --> RW
+    RT --> RA
+    GW --> RA
+    SC --> RA
+    SC --> GW
+    SC --> Fam
+    RA --> Fam
+    Fam --> AW
+    AW --> Store
+```
+
+Applications do not construct `ServiceContainer` or call concrete services.
+Repository tests and composition modules may, because those are internal seams.
+
+## Request and tick paths
+
+**Direct operation**
+
+```mermaid
+sequenceDiagram
+    participant Host as Runtime or Gateway
+    participant RA as RuntimeApplication
+    participant Fam as Owning family
+    participant Core as Core world / store
+
+    Host->>RA: create_world / spawn / run / …
+    RA->>Fam: delegate
+    Fam->>Core: compose or execute
+    Core-->>Fam: result
+    Fam-->>RA: safe result
+    RA-->>Host: WorldInfo / RunResult / …
+```
+
+**Tick-deferred command**
+
+```mermaid
+sequenceDiagram
+    participant Host as Runtime or Gateway
+    participant Sched as CommandScheduler
+    participant Ledger as CommandLedger
+    participant Sim as SimulationService
+    participant World as AsyncWorld
+
+    Host->>Sched: admit(command)
+    Sched->>Ledger: durable PENDING
+    Host->>Sim: step(world_id)
+    Sim->>Ledger: lease due commands
+    Sim->>World: stage + AsyncWorld.step
+    World-->>Sim: tick committed
+    Sim->>Ledger: settle outcomes
+```
+
+Details: [Data flow](data-flow.md) · [Durable commands](durable-commands.md).
+
+## WorldFactory boundary
+
+`WorldFactory` is where a store resolved by `WorldService` becomes a core
+world: the same store is given to `AsyncQueryManager` and
+`AsyncUpdateManager`, then system, resources, and hooks are attached.
+
+```mermaid
+flowchart TD
+    WS["WorldService"] --> Store["StorageService.get_or_create_store"]
+    Store --> WF["WorldFactory"]
+    WF --> QM["AsyncQueryManager"]
+    WF --> UM["AsyncUpdateManager"]
+    WF --> Sys["AsyncSystem"]
+    WF --> World["AsyncWorld"]
+    QM --> Store
+    UM --> Store
+```
 
 The factory constructs. The core executes.
 
-## Services
+## Family posters
 
-**WorldService** manages live world identity, lookup, fork, destroy, hooks, resources, and processor listings. Internal callers receive live `iWorld` objects; the gate downgrades user-visible returns to info classes.
+Higher-level modules deserve the same diagram-first treatment as the core.
+Start here:
 
-**MutationService** applies entity, component, and processor mutations after authorization has happened at the gate.
+| Family | Poster |
+|---|---|
+| Agent Missions | [Agent Missions](agent-missions.md) |
+| Physical AI | [Physical AI](physical-ai.md) |
+| AutoResearch | [AutoResearch](autoresearch.md) |
+| Trajectories | [Trajectories](trajectories.md) |
+| Prefab libraries | [Prefab Libraries](prefab-libraries.md) |
+| Access control | [Command Gate](command-gate.md) |
+| HTTP hosting | [API Layer](api-layer.md) |
 
-**SimulationService** owns step, run, episode, and rollout. Rollout-internal forks are implementation details; the gated rollout call is the audit unit.
+## Roles
 
-**QueryService** is the internal storage-backed read path. It has no `ActorCtx`;
-trusted reads enter through RuntimeApplication and untrusted reads first pass
-CommandGateway.
+Roles are flat:
 
-**CommandLedger/Dispatcher** durably admits, orders, leases, applies, retries,
-and settles tick-deferred commands. It does not own RBAC.
+| Role | Intent |
+|---|---|
+| `viewer` | Read-only operations |
+| `player` | Entity participation: spawn, despawn, update, message, custom |
+| `operator` | Schema, processors, hooks, resources, simulation control, fork, destroy |
+| `admin` | All commands, including world creation |
 
-**Audit** owns journals, transactional outboxes, and the analytical projection.
+Combine roles explicitly. `operator` is not implicitly `viewer`.
 
-**MissionService** composes the mission family's task entities,
-relationships, processors, committed-intent outbox, and sandbox resource. The
-processors own transitions; the service owns graph materialization and the
-tick-to-external-I/O loop. `ServiceContainer` injects its factory into
-`RuntimeApplication`; `RuntimeMissions` consumes the resulting
-`iMissionService` port without importing the concrete service.
-
-**PhysicalAIService** turns typed task-evaluation and instruction-sweep
-requests into one batched world, drives a bounded episode, and projects
-terminal results from persisted `ManipStatus` rows. Environment and policy
-providers remain family-owned resources; callers reach this workflow through
-`ArchetypeRuntime`, never through raw service parameters.
-
-**RuntimeApplication** is the actor-free application facade consumed by the
-runtime and gateway. **CommandGateway** is the only ActorCtx-aware application
-boundary and is consumed by API/untrusted adapters only.
-
-## Trusted and authorized flow
-
-Direct operation:
+## Creating a world
 
 ```text
-Runtime
-  -> RuntimeApplication.<method>(...)
-  -> owning family workflow
-
-API
-  -> CommandGateway.<method>(ctx, ...)
-  -> guardrail_allow
-  -> RuntimeApplication.<method>(...)
-  -> AuditJournal.record_access
+Runtime handle or authorized API
+  -> RuntimeApplication.create_world(...)
+  -> WorldService / WorldFactory
+  -> StorageService + AsyncWorld
+  -> WorldInfo
 ```
 
-Tick-deferred operation:
+Runtime activation then stages processors, resources, and hooks through their
+application operations.
 
-```text
-RuntimeApplication or authorized gateway
-  -> CommandScheduler.admit
-  -> CommandLedger
-  -> SimulationService.step
-  -> CommandDispatcher
-  -> MutationService + tick settlement
-```
+## Source reference
 
-See [Data Flow](data-flow.md) for details.
-
-## Creating a World
-
-`create_world` is an actor-free application operation; untrusted calls are
-authorized before delegation:
-
-```text
-1. Runtime handle or authorized API route
-   -> RuntimeApplication.create_world(WorldConfig(...), storage, cache)
-
-2. RuntimeApplication -> WorldService.create_world(...)
-
-3. WorldService / WorldFactory
-   -> StorageService.get_or_create_store(...)
-   -> AsyncWorld(...)
-   -> register world by id/name
-
-4. RuntimeApplication -> return WorldInfo
-```
-
-Runtime activation then adds staged processors, resources, and hooks through
-their application operations.
-
-## API and CLI
-
-The API layer injects the command-gateway port and `ActorCtx` into route
-handlers. The current implementation type is `CommandGateway`. Routes
-translate HTTP payloads into gateway calls and return response models.
-
-The CLI is an HTTP client against that server.
-
-See [API Layer](api-layer.md).
-
-## Source Reference
-
-- Factory: `src/archetype/app/world/service.py`
 - Container: `src/archetype/app/container.py`
-- Service protocols: `src/archetype/app/<family>/interfaces.py`
+- Wiring note: `src/archetype/app/wiring.md`
+- Family protocols: `src/archetype/app/<family>/interfaces.py`
 - Core interfaces: `src/archetype/core/interfaces.py`
+
+## Next steps
+
+- [Core architecture](core-architecture.md) — engine boxes under this layer
+- [Architecture Overview](architecture.md) — tick lifecycle and contracts
+- [Application Architecture](application-architecture.md) — normative rules
+- [Agent Missions](agent-missions.md) — software-factory family poster

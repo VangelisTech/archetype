@@ -2,25 +2,43 @@
 
 **Document type:** Contract and user guide.
 
-Archetype treats a physical-policy evaluation as one durable world containing
-many trial entities. The runtime submits a typed request; the physical-AI
-application service creates the world, installs the standard processors, runs
-the episode, and derives a report from persisted state.
+## Purpose and Scope
 
-```text
-one evaluation request
-        │
-        ▼
-one control-plane world ── one durable (world_id, run_id)
-        │
-        ├── trial entity 0 ── ManipTask + observation + action + status
-        ├── trial entity 1 ── ManipTask + observation + action + status
-        └── trial entity N ── ManipTask + observation + action + status
+Physical AI turns a typed evaluation or instruction-sweep request into **one
+durable world** of trial entities. The runtime submits the request; the
+application family creates the world, installs processors, runs a bounded
+episode, and projects a report from persisted `ManipStatus` rows.
+
+This is an [application-layer](app-overview.md) workflow on top of the
+[core engine](core-architecture.md). Environment and policy providers stay
+outside ECS transition authority.
+
+```mermaid
+graph TB
+    Req["evaluate / sweep request"] --> RT["ArchetypeRuntime"]
+    RT --> App["PhysicalAIService"]
+    App --> World["One control-plane world<br/>(world_id, run_id)"]
+
+    World --> T0["Trial 0<br/>ManipTask + obs + action + status"]
+    World --> T1["Trial 1"]
+    World --> TN["Trial N"]
+
+    App --> Report["Typed report<br/>projection of ManipStatus"]
+    World -.->|"evidence"| Report
 ```
 
-The world is the evidence. A report is a typed projection of its terminal
-`ManipStatus` rows, not a second summary component that can drift away from
-the ledger.
+The world is the evidence. A report is a typed projection of terminal status
+rows, not a second summary that can drift from the ledger.
+
+## Key Capabilities
+
+| Capability | Implementation |
+|---|---|
+| **Batched trials** | Many trial entities in one world / one `(world_id, run_id)` |
+| **Provider boundary** | Env and policy clients are resources; processors own tick transitions |
+| **Episode control** | `SimulationService` runs until status termination or cap |
+| **Ledger-derived reports** | Success rates and scores come from queried component rows |
+| **Instruction sweeps** | Paired seeds across language variants for fair comparison |
 
 ## Run one task evaluation
 
