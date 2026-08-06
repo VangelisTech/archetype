@@ -29,6 +29,7 @@ from examples.problem_definition_mission.mission import (
     run_demo,
 )
 
+
 @pytest.mark.asyncio
 async def test_problem_definition_example_improves_ratifies_and_orders_ledger(
     tmp_path,

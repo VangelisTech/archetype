@@ -35,6 +35,7 @@ from examples.problem_definition_mission import (
     select_prompt_head,
 )
 
+
 def _snapshot(*evidence_ids: str, revision: int = 1) -> EvidenceSnapshot:
     return EvidenceSnapshot(
         revision=revision,
