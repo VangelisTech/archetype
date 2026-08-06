@@ -130,7 +130,12 @@ fail_under = 70
 output = "coverage.xml"
 
 [dependency-groups]
+problem-definition = [
+    # Experimental example-only prompt optimizer; not shipped as a runtime dependency.
+    "gepa==0.1.1",
+]
 dev = [
+    { include-group = "problem-definition" },
     "pytest>=8.3.5",
     "pytest-asyncio>=0.26",
     "pytest-cov>=5.0",
