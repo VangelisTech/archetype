@@ -72,3 +72,19 @@ mission {
         }
     }
 }
+
+// The benchmark environment—not the agent—owns its starting inventory.
+// Biome's real Base prefab provides 500 Iron and 500 Copper. The native
+// placement bridge charges the Drill (100 Iron) and Solar (50 Iron/Copper)
+// recipes from this storage before construction.
+scene.buildings {
+    mission_base : buildings.Base {
+        TerrainPosition: {
+            terrain: terrain.Terrain
+            x: 24
+            y: 30
+            span_x: 1
+            span_y: 1
+        }
+    }
+}

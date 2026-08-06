@@ -24,6 +24,7 @@ uv run python examples/<filename>.py
 | 12 | [`12_prefabs.py`](12_prefabs.py) | PreFabs: author a template with a subtree, instantiate copies with overrides and IsA lineage, upgrade by re-instantiation | None |
 | 13 | [`13_biome_rts.py`](13_biome_rts.py) | Biome-inspired prefab asset library composed into an RTS command hierarchy, minimap, fog of war, and possessed-unit view | None |
 | 14 | [`14_biome_agent.py`](14_biome_agent.py) | Agent observes and controls Sander Mertens' actual Biome game, then records native Drill evidence in Archetype | Running Biome/Flecs REST, or `--launch` with git, CMake, and a C toolchain |
+| 15 | [`15_mission_factory_assets.py`](15_mission_factory_assets.py) | ECS-authored software factory: instantiate a `BugFixLine`, compile its durable rules into real Agent Missions values, and export nine AI-ready 3D briefs | None |
 
 ## Supplementary
 

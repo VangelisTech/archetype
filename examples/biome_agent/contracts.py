@@ -83,24 +83,22 @@ class PlaceExtractorAction:
     terrain: str
     drill_cell: TerrainCell
     power_cell: TerrainCell
-    namespace: str = "mission"
     drill_name: str = "agent_drill"
     power_name: str = "agent_solar"
-    script_name: str = "archetype_agent_action"
 
     def __post_init__(self) -> None:
-        for field in ("namespace", "drill_name", "power_name", "script_name"):
+        for field in ("drill_name", "power_name"):
             _require_identifier(getattr(self, field), field)
         for field in ("target_path", "resource", "terrain"):
             _require_qualified_identifier(getattr(self, field), field)
 
     @property
     def drill_path(self) -> str:
-        return f"{self.namespace}.{self.drill_name}"
+        return f"scene.buildings.{self.drill_name}"
 
     @property
     def power_path(self) -> str:
-        return f"{self.namespace}.{self.power_name}"
+        return f"scene.buildings.{self.power_name}"
 
 
 @dataclass(frozen=True)

@@ -185,15 +185,25 @@ class BiomeClient:
         )
 
     def deploy(self, action: PlaceExtractorAction) -> None:
-        """Install a managed action script that composes real Biome prefabs."""
+        """Purchase and place a powered extractor through native Biome code.
 
-        self._request("PUT", f"/entity/{action.script_name}")
-        script = self._render_action_script(action)
-        self._request(
-            "PUT",
-            f"/script/{action.script_name}",
-            content=script,
-            headers={"Content-Type": "text/plain"},
+        Power is placed first: the selected deposit cell is known to be in
+        bounds, so a rejected adjacent cell cannot leave a purchased Drill
+        behind. The pinned scene's upstream ``Base`` supplies the finite
+        starting inventory charged by ``biome_factory_purchase``.
+        """
+
+        self.place_building(
+            "buildings.Solar",
+            action.terrain,
+            action.power_cell,
+            name=action.power_name,
+        )
+        self.place_building(
+            "buildings.Drill",
+            action.terrain,
+            action.drill_cell,
+            name=action.drill_name,
         )
 
     def place_building(
@@ -265,31 +275,3 @@ class BiomeClient:
             terrain=str(position["terrain"]),
             cell=TerrainCell(x=int(position["x"]), y=int(position["y"])),
         )
-
-    @staticmethod
-    def _render_action_script(action: PlaceExtractorAction) -> str:
-        return f"""using flecs.engine.*
-using biome.*
-
-{action.namespace} {{
-    {action.drill_name} : buildings.Drill {{
-        TerrainPosition: {{
-            terrain: {action.terrain}
-            x: {action.drill_cell.x}
-            y: {action.drill_cell.y}
-            span_x: 1
-            span_y: 1
-        }}
-    }}
-
-    {action.power_name} : buildings.Solar {{
-        TerrainPosition: {{
-            terrain: {action.terrain}
-            x: {action.power_cell.x}
-            y: {action.power_cell.y}
-            span_x: 1
-            span_y: 1
-        }}
-    }}
-}}
-"""

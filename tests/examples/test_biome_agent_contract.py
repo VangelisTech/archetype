@@ -132,15 +132,15 @@ def test_policy_selects_goal_resource_and_a_free_power_cell() -> None:
     assert action.target_path == "mission.copper"
     assert action.drill_cell == TerrainCell(20, 20)
     assert action.power_cell == TerrainCell(20, 21)
-    assert action.drill_path == "mission.agent_drill"
+    assert action.drill_path == "scene.buildings.agent_drill"
 
 
-def test_deploy_composes_upstream_prefabs_instead_of_writing_native_state() -> None:
+def test_deploy_purchases_upstream_prefabs_through_native_placement() -> None:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        return httpx.Response(200, json={})
+        return httpx.Response(200, json=1000 + len(requests))
 
     http = httpx.Client(
         base_url="http://biome.test",
@@ -158,16 +158,17 @@ def test_deploy_composes_upstream_prefabs_instead_of_writing_native_state() -> N
     client.deploy(action)
 
     assert [(request.method, request.url.path) for request in requests] == [
-        ("PUT", "/entity/archetype_agent_action"),
-        ("PUT", "/script/archetype_agent_action"),
+        ("GET", "/call/archetype/biome/placeBuilding"),
+        ("GET", "/call/archetype/biome/placeBuilding"),
     ]
-    code = requests[1].content.decode()
-    assert "agent_drill : buildings.Drill" in code
-    assert "agent_solar : buildings.Solar" in code
-    assert "TerrainPosition" in code
-    assert "PowerConsumer" not in code
-    assert "biome.miner.Miner" not in code
-    assert "biome.resources.Storage" not in code
+    assert [request.url.params["prefab"] for request in requests] == [
+        "buildings.Solar",
+        "buildings.Drill",
+    ]
+    assert [request.url.params["name"] for request in requests] == [
+        "agent_solar",
+        "agent_drill",
+    ]
 
 
 def test_monitor_requires_native_power_targeting_and_deposit_delta() -> None:
@@ -191,18 +192,17 @@ def test_monitor_requires_native_power_targeting_and_deposit_delta() -> None:
 
         def get_deposit(self, _path: str) -> DepositObservation:
             self.sample += 1
-            amount = (100, 96)[self.sample]
+            amount = (96, 96)[self.sample]
             return _deposit("mission.copper_site", "Copper", amount, 30, 24)
 
         def get_drill(self, _path: str, resource: str) -> DrillObservation:
-            powered = self.sample == 1
             return DrillObservation(
                 entity_id=7,
-                entity_path="mission.agent_drill",
-                powered=powered,
+                entity_path="scene.buildings.agent_drill",
+                powered=True,
                 deposit_path="mission.copper_site",
                 stored_resource=resource,
-                stored_amount=4 if powered else 0,
+                stored_amount=4 if self.sample == 1 else 0,
             )
 
     clock_values = iter((0.0, 0.0, 0.1))
@@ -231,20 +231,21 @@ def test_bootstrap_pins_the_compatible_public_flecs_branch_without_vendoring() -
     scene = MISSION_SCENE.read_text()
     assert "include config/buildings" in scene
     assert "environment.CopperOre" in scene
-    assert "buildings.Drill" not in scene
+    assert "mission_base : buildings.Base" in scene
+    assert "agent_drill : buildings.Drill" not in scene
 
 
 def test_goal_and_action_reject_ambiguous_or_injected_values() -> None:
     with pytest.raises(ValueError, match="amount"):
         ExtractionGoal("Copper", 0)
-    with pytest.raises(ValueError, match="script_name"):
+    with pytest.raises(ValueError, match="drill_name"):
         PlaceExtractorAction(
             target_path="mission.copper",
             resource="resources.Copper",
             terrain="biome.terrain.Terrain",
             drill_cell=TerrainCell(1, 1),
             power_cell=TerrainCell(2, 1),
-            script_name="bad/name",
+            drill_name="bad/name",
         )
     with pytest.raises(ValueError, match="terrain"):
         PlaceExtractorAction(

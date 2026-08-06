@@ -67,7 +67,8 @@ def monitor_mission(
                 )
             )
             bound_to_target = drill.deposit_path == plan.action.target_path
-            if extracted >= plan.goal.amount and drill.powered and bound_to_target:
+            stored = drill.stored_amount >= plan.goal.amount
+            if extracted >= plan.goal.amount and drill.powered and bound_to_target and stored:
                 return MissionTrace(
                     plan=plan,
                     samples=tuple(samples),
@@ -79,7 +80,7 @@ def monitor_mission(
                 )
             last_reason = (
                 f"extracted={extracted}/{plan.goal.amount}, powered={drill.powered}, "
-                f"target={drill.deposit_path}"
+                f"target={drill.deposit_path}, stored={drill.stored_amount}/{plan.goal.amount}"
             )
         except FlecsRemoteError as exc:
             last_reason = str(exc)

@@ -286,7 +286,7 @@ live Biome world ── reflected observation ──> policy
        │                                      │
        │                           place Drill + Solar
        │                                      │
-       <──────────── managed Flecs script ─────┘
+       <──────── native purchase + placement ──┘
        │
        ├── native placement selects the deposit
        ├── native power energizes the Drill
@@ -306,10 +306,14 @@ This yields two ECS worlds with different authority:
 The adapter reads `biome.miner.Deposit`,
 `flecs.engine.terrain.TerrainPosition`, `biome.power.PowerConsumer`,
 `biome.miner.Miner`, and `biome.resources.Storage` through the Flecs Remote
-API. Its one high-level action installs a managed Flecs script containing
-instances of the upstream `buildings.Drill` and `buildings.Solar` prefabs. A
-run succeeds only after the Drill is powered, targets the selected deposit,
-and the deposit's native amount decreases by the requested quantity.
+API. Its one high-level action calls an example-local reflected C bridge that
+charges Biome's real upstream recipes and invokes `biomePlaceBuilding` for the
+upstream `buildings.Solar` and `buildings.Drill` prefabs. The benchmark scene
+owns one upstream `buildings.Base` with its finite 500-Iron/500-Copper starting
+inventory; the agent does not mint resources. A run succeeds only after the
+Drill is powered, targets the selected deposit, and the deposit's native
+amount decreases by the requested quantity while its native storage receives
+at least that quantity.
 
 That action boundary also demonstrates the relation-copy rule. Archetype's
 generic `instantiate()` neither copies arbitrary relations nor returns an
@@ -353,18 +357,36 @@ upstream HUD because this compatibility revision eagerly evaluates its
 zero-capacity resource gauge and aborts the remainder of the default scene;
 all environment and Drill systems remain upstream-native.
 
-!!! warning "Flecs REST is a trusted local control boundary"
+### Flecs REST is a trusted local control boundary
 
-    The upstream executable starts an unauthenticated, mutating REST server
-    whose default bind address is `0.0.0.0:27750`. Run this dogfood only on a
-    trusted local network or behind an appropriate host firewall; do not
-    expose the port to an untrusted network. `BiomeClient` refuses
-    non-loopback target URLs by default, and validates every identifier it
-    interpolates into a managed script, but that does not change the server's
-    bind address or add server-side authorization.
+The upstream executable starts an unauthenticated, mutating REST server whose
+default bind address is `0.0.0.0:27750`. Run this dogfood only on a trusted
+local network or behind an appropriate host firewall; do not expose the port
+to an untrusted network. `BiomeClient` refuses non-loopback target URLs by
+default and validates every identifier it passes to the native bridge, but
+that does not change the server's bind address or add server-side
+authorization.
 
 At the pinned Biome revision the upstream repository does not declare a
 license. Archetype therefore does not vendor, modify, package, or redistribute
 Biome source or assets. The bootstrap creates a local checkout for the user.
 Obtain permission or a declared upstream license before distributing a
 derived Biome build.
+
+## First concrete Agent Missions library
+
+The [Mission Factory Asset Bible](mission-factory-assets.md) applies this
+pattern to a real software-production line. Its example-local library stores
+nine AI-ready visual prefab graphs plus a reusable `BugFixLine`. Instantiation
+copies the line's `ChildOf` subtree; a trusted compiler reads stable slot keys
+and explicitly interprets allowlisted `DependsOn` and `Guards` rule entities
+into the public Agent Missions authoring contract.
+
+This is the intended bridge from asset library to executable workflow. The
+factory models are projections of committed mission facts, not transition
+owners, and the line recipe is not a second mission engine. Run the example
+credential-free or export its full model briefs with:
+
+```bash
+uv run python examples/15_mission_factory_assets.py --briefs-json
+```
