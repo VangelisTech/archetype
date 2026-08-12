@@ -2,8 +2,6 @@ name: Nightly runner benchmark
 
 on:
   workflow_dispatch:
-  push:
-    branches: [everettVT/modal-ci-benchmark]
 
 permissions:
   contents: read
