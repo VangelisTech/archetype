@@ -140,7 +140,8 @@ def test_cli_writes_one_bounded_json_report(tmp_path: Path) -> None:
 def test_workflow_runs_only_for_a_new_main_revision_or_manual_dispatch() -> None:
     workflow = Path(".github/workflows/nightly-runner-benchmark.yml").read_text()
     assert "workflow_dispatch:" in workflow
-    assert "job-${{ github.run_id }}-${{ github.job }}" in workflow
+    assert "job-${{ github.run_id }}-modal-static" in workflow
+    assert "job-${{ github.run_id }}-modal-tests" in workflow
     assert "runner-benchmark-${{ github.sha }}" in workflow
     trigger = Path(".github/workflows/nightly-runner-benchmark-trigger.yml").read_text()
     assert "schedule:" in trigger

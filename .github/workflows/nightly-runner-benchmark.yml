@@ -58,7 +58,7 @@ jobs:
       - self-hosted
       - modal
       - archetype-nightly
-      - job-${{ github.run_id }}-${{ github.job }}
+      - job-${{ github.run_id }}-modal-static
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -79,7 +79,7 @@ jobs:
       - self-hosted
       - modal
       - archetype-nightly
-      - job-${{ github.run_id }}-${{ github.job }}
+      - job-${{ github.run_id }}-modal-tests
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
