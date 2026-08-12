@@ -1,0 +1,50 @@
+name: Nightly runner benchmark trigger
+
+on:
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: nightly-runner-benchmark-trigger
+  cancel-in-progress: true
+
+jobs:
+  dispatch:
+    name: Dispatch after main moves
+    runs-on: ubuntu-latest
+    env:
+      RUNNER_ENABLED: ${{ vars.ARCHETYPE_MODAL_RUNNER_ENABLED }}
+    steps:
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const enabled = process.env.RUNNER_ENABLED === "true";
+            const { data } = await github.rest.actions.listWorkflowRuns({
+              ...context.repo,
+              workflow_id: "nightly-runner-benchmark.yml",
+              branch: "main",
+              status: "success",
+              per_page: 1,
+            });
+            const previous = data.workflow_runs[0];
+            const moved = !previous || previous.head_sha !== context.sha;
+            const shouldRun = enabled && moved;
+            if (shouldRun) {
+              await github.rest.actions.createWorkflowDispatch({
+                ...context.repo,
+                workflow_id: "nightly-runner-benchmark.yml",
+                ref: "main",
+              });
+            }
+            await core.summary
+              .addHeading("Nightly runner benchmark trigger")
+              .addRaw(`Runner enabled: ${enabled}\n`)
+              .addRaw(`Current main head: ${context.sha}\n`)
+              .addRaw(`Last successful benchmark: ${previous?.head_sha ?? "none"}\n`)
+              .addRaw(`Benchmark dispatched: ${shouldRun}\n`)
+              .write();

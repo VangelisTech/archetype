@@ -84,9 +84,10 @@ does not make the Subscriber API a production dependency.
 
 ## Trend tracking is an operational decision
 
-The repository does not currently archive benchmark history or label timing
-changes as regressions. A useful automated trend gate first needs all of the
-following:
+The repository does not retain long-term product benchmark history or label
+timing changes as regressions. The CI-runner comparison below keeps paired
+reports for 30 days as evaluation evidence, not as a stable performance
+baseline. A useful automated trend gate first needs all of the following:
 
 - a stable dedicated runner;
 - durable artifact retention;
@@ -99,6 +100,32 @@ the context needed to revisit comparison once those prerequisites exist.
 
 Remaining workload coverage and the runner/retention decision stay tracked in
 [issue #141](https://github.com/VangelisTech/archetype/issues/141).
+
+## Nightly CI runner comparison
+
+The advisory `repository.ci_runner.turnaround` benchmark compares the existing
+GitHub-hosted PR commands with an ephemeral Modal runner on one exact `main`
+revision. A small hosted trigger checks nightly and dispatches the benchmark
+only when `main` differs from the latest successful paired run. Manual
+dispatch of the trigger performs the same movement check. The trigger remains
+inert until the repository variable `ARCHETYPE_MODAL_RUNNER_ENABLED` is exactly
+`true`, so merging the harness before deploying the runner cannot strand jobs.
+
+Successful paired runs retain
+`archetype.ci-runner-benchmark/v1` JSON for 30 days. The report records the
+revision, runner identities and labels, requested Modal resources, queue time,
+execution time, total time, and each substrate's two-job critical path. The
+reporter rejects missing, failed, duplicate, or non-monotonic job observations
+before writing timing evidence. A separate hosted watchdog cancels a benchmark
+that remains queued or in progress for more than 45 minutes. The comparison is
+not a PR check or a performance regression gate.
+
+The Modal control plane is deployed from
+[`VangelisTech/runner-modal@ead484b`](https://github.com/VangelisTech/runner-modal/commit/ead484bd5dcb05f8093cff918ffa26fa8b5644c7).
+Its job entrypoint removes the repository-administration token before starting
+Docker, another child process, or the Actions runner; benchmark steps receive
+only the ordinary job-scoped Actions token. The exact fork revision and
+requested Modal resources are bound into every retained report.
 
 ## Add a workload
 

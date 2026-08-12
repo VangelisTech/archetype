@@ -1,0 +1,137 @@
+name: Nightly runner benchmark
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: nightly-runner-benchmark
+  cancel-in-progress: true
+
+env:
+  DO_NOT_TRACK: "1"
+  RUNNER_MODAL_REVISION: "ead484bd5dcb05f8093cff918ffa26fa8b5644c7"
+
+jobs:
+  hosted_static:
+    name: Hosted Static
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          version: "0.11.28"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --group dev
+      - run: make static
+
+  hosted_tests:
+    name: Hosted Tests (3.12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          version: "0.11.28"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --group dev
+      - run: make test
+
+  modal_static:
+    name: Modal Static
+    runs-on:
+      - self-hosted
+      - modal
+      - archetype-nightly
+      - job-${{ github.run_id }}-${{ github.job }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          version: "0.11.28"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --group dev
+      - run: make static
+
+  modal_tests:
+    name: Modal Tests (3.12)
+    runs-on:
+      - self-hosted
+      - modal
+      - archetype-nightly
+      - job-${{ github.run_id }}-${{ github.job }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          version: "0.11.28"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --group dev
+      - run: make test
+
+  report:
+    name: Publish paired runner report
+    needs: [hosted_static, hosted_tests, modal_static, modal_tests]
+    if: >-
+      needs.hosted_static.result == 'success' &&
+      needs.hosted_tests.result == 'success' &&
+      needs.modal_static.result == 'success' &&
+      needs.modal_tests.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Read this workflow run's job metadata
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const fs = require("fs");
+            const jobs = await github.paginate(
+              github.rest.actions.listJobsForWorkflowRun,
+              { ...context.repo, run_id: context.runId, per_page: 100 },
+            );
+            fs.writeFileSync("runner-jobs.json", JSON.stringify({ jobs }));
+      - name: Build the revision-bound report
+        run: >-
+          python scripts/report_runner_benchmark.py
+          --jobs-json runner-jobs.json
+          --out runner-benchmark.json
+          --summary "$GITHUB_STEP_SUMMARY"
+          --repository "$GITHUB_REPOSITORY"
+          --revision "$GITHUB_SHA"
+          --run-id "$GITHUB_RUN_ID"
+          --modal-cpu 4
+          --modal-memory-mib 16384
+          --runner-modal-revision "$RUNNER_MODAL_REVISION"
+      - name: Retain the paired report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: runner-benchmark-${{ github.sha }}
+          path: runner-benchmark.json
+          if-no-files-found: error
+          retention-days: 30
