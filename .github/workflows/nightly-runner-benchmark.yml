@@ -15,7 +15,7 @@ concurrency:
 
 env:
   DO_NOT_TRACK: "1"
-  RUNNER_MODAL_REVISION: "faf075bb466e7a32f950e06a0aa5ed0e71fee4f6"
+  RUNNER_MODAL_REVISION: "639befc05b88000c3b6770d41e9df42081270cec"
 
 jobs:
   hosted_static:

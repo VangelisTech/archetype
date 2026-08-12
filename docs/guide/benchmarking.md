@@ -121,7 +121,7 @@ that remains queued or in progress for more than 45 minutes. The comparison is
 not a PR check or a performance regression gate.
 
 The Modal control plane is deployed from
-[`VangelisTech/runner-modal@faf075b`](https://github.com/VangelisTech/runner-modal/commit/faf075bb466e7a32f950e06a0aa5ed0e71fee4f6).
+[`VangelisTech/runner-modal@639befc`](https://github.com/VangelisTech/runner-modal/commit/639befc05b88000c3b6770d41e9df42081270cec).
 Its job entrypoint removes the repository-administration token before starting
 Docker, another child process, or the Actions runner; benchmark steps receive
 only the ordinary job-scoped Actions token. The exact fork revision and
