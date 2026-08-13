@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+from email.parser import Parser
 from pathlib import Path
 from typing import Any
 
@@ -72,7 +73,12 @@ def _artifacts(dist_dir: Path) -> tuple[dict[str, Path], dict[str, Path]]:
     return wheels, sdists
 
 
-def _validate_wheel_contents(distribution: str, wheel: Path) -> None:
+def _validate_wheel_contents(
+    distribution: str,
+    wheel: Path,
+    *,
+    expected_version: str | None = None,
+) -> str:
     with zipfile.ZipFile(wheel) as archive:
         names = set(archive.namelist())
         metadata_files = sorted(name for name in names if name.endswith(".dist-info/METADATA"))
@@ -81,6 +87,20 @@ def _validate_wheel_contents(distribution: str, wheel: Path) -> None:
                 f"{distribution} wheel has invalid metadata inventory: {metadata_files}"
             )
         metadata = archive.read(metadata_files[0]).decode("utf-8")
+    parsed_metadata = Parser().parsestr(metadata)
+    metadata_name = parsed_metadata.get("Name")
+    metadata_version = parsed_metadata.get("Version")
+    if metadata_name != distribution:
+        raise RuntimeError(
+            f"{distribution} wheel declares unexpected project name {metadata_name!r}"
+        )
+    if not metadata_version:
+        raise RuntimeError(f"{distribution} wheel does not declare a version")
+    if expected_version is not None and metadata_version != expected_version:
+        raise RuntimeError(
+            f"{distribution} rebuilt wheel version {metadata_version!r} does not match "
+            f"the attested wheel version {expected_version!r}"
+        )
     license_files = sorted(name for name in names if ".dist-info/licenses/LICENSE" in name)
     if len(license_files) != 1:
         raise RuntimeError(
@@ -116,7 +136,7 @@ def _validate_wheel_contents(distribution: str, wheel: Path) -> None:
                     "framework all extra does not converge on every first-party "
                     f"world library: missing {requirement}"
                 )
-        return
+        return metadata_version
 
     if root_init in names:
         raise RuntimeError(f"{distribution} must not replace the framework root facade")
@@ -132,6 +152,65 @@ def _validate_wheel_contents(distribution: str, wheel: Path) -> None:
         "archetype/missions/sandboxes/versions.toml" not in names
     ):
         raise RuntimeError("Missions wheel is missing its pinned version inventory")
+    return metadata_version
+
+
+def _clean_subprocess_environment() -> dict[str, str]:
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if name not in {"PYTHONHOME", "PYTHONPATH"}
+        and not name.startswith("PIP_")
+        and not name.startswith("UV_")
+    }
+
+
+def _rebuild_sdists(
+    *,
+    sdists: dict[str, Path],
+    uv: str,
+    root: Path,
+) -> dict[str, Path]:
+    """Build every exact sdist through isolated PEP 517 in a clean wheelhouse."""
+
+    wheelhouse = root / "rebuilt-sdist-wheels"
+    wheelhouse.mkdir()
+    environment = _clean_subprocess_environment()
+    rebuilt: dict[str, Path] = {}
+    for distribution in _DISTRIBUTIONS:
+        sdist = sdists[distribution].resolve()
+        command = [
+            uv,
+            "build",
+            "--wheel",
+            "--force-pep517",
+            "--no-config",
+            "--no-cache",
+            "--no-create-gitignore",
+            "--out-dir",
+            str(wheelhouse),
+            str(sdist),
+        ]
+        process = subprocess.run(
+            command,
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        if process.returncode:
+            raise RuntimeError(
+                f"isolated PEP 517 rebuild failed for {distribution} from {sdist.name}\n"
+                f"command: {' '.join(command)}\n"
+                f"stdout:\n{process.stdout}\nstderr:\n{process.stderr}"
+            )
+        prefix = _PACKAGE_PREFIXES[distribution]
+        rebuilt[distribution] = _one(
+            sorted(wheelhouse.glob(f"{prefix}-*.whl")),
+            f"rebuilt {distribution} wheel",
+        )
+    return rebuilt
 
 
 def _run_matrix(
@@ -162,30 +241,36 @@ def _run_matrix(
         "all": ["missions", "physical-ai", "research"],
     }[matrix]
 
+    clean_env = _clean_subprocess_environment()
     environment = root / f"venv-{matrix}"
     subprocess.run(
-        [uv, "venv", "--python", sys.executable, str(environment)],
+        [uv, "--no-config", "venv", "--python", sys.executable, str(environment)],
         cwd=root,
         check=True,
         capture_output=True,
         text=True,
+        env=clean_env,
     )
     python = environment / "bin" / "python"
     subprocess.run(
         [
             uv,
+            "--no-config",
             "pip",
             "install",
             "--python",
             str(python),
             "--find-links",
             str(dist_dir.resolve()),
+            "--no-cache",
+            "--only-binary=:all:",
             *selected,
         ],
         cwd=root,
         check=True,
         capture_output=True,
         text=True,
+        env=clean_env,
     )
     probe = f"""
 import asyncio
@@ -228,9 +313,6 @@ mission_paths = sorted(
 assert len(mission_paths) == (3 if "missions" in expected else 0), mission_paths
 print(json.dumps({{"matrix": {matrix!r}, "libraries": expected, "operations": operation_count, "module": str(package_root)}}))
 """
-    clean_env = os.environ.copy()
-    clean_env.pop("PYTHONPATH", None)
-    clean_env.pop("PYTHONHOME", None)
     process = subprocess.run(
         [str(python), "-c", probe],
         cwd=root,
@@ -248,15 +330,19 @@ print(json.dumps({{"matrix": {matrix!r}, "libraries": expected, "operations": op
 
 
 def smoke(dist_dir: Path) -> list[dict[str, Any]]:
-    wheels, _sdists = _artifacts(dist_dir)
-    for distribution, wheel in wheels.items():
-        _validate_wheel_contents(distribution, wheel)
+    wheels, sdists = _artifacts(dist_dir)
+    versions = {
+        distribution: _validate_wheel_contents(distribution, wheel)
+        for distribution, wheel in wheels.items()
+    }
+    if len(set(versions.values())) != 1:
+        raise RuntimeError(f"distribution wheel versions do not converge: {versions}")
     uv = shutil.which("uv")
     if uv is None:
         raise RuntimeError("package smoke requires uv")
     with tempfile.TemporaryDirectory(prefix="archetype-package-smoke-") as temporary:
         root = Path(temporary)
-        return [
+        results = [
             _run_matrix(
                 matrix=matrix,
                 dist_dir=dist_dir,
@@ -266,6 +352,25 @@ def smoke(dist_dir: Path) -> list[dict[str, Any]]:
             )
             for matrix in _OPERATION_COUNTS
         ]
+        rebuilt_wheels = _rebuild_sdists(sdists=sdists, uv=uv, root=root)
+        for distribution, rebuilt_wheel in rebuilt_wheels.items():
+            _validate_wheel_contents(
+                distribution,
+                rebuilt_wheel,
+                expected_version=versions[distribution],
+            )
+        sdist_probe_root = root / "sdist-probe"
+        sdist_probe_root.mkdir()
+        rebuilt_result = _run_matrix(
+            matrix="all",
+            dist_dir=next(iter(rebuilt_wheels.values())).parent,
+            wheels=rebuilt_wheels,
+            uv=uv,
+            root=sdist_probe_root,
+        )
+        rebuilt_result["matrix"] = "sdist-all"
+        results.append(rebuilt_result)
+        return results
 
 
 def main(argv: list[str] | None = None) -> int:
