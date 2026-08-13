@@ -199,7 +199,10 @@ publisher matrix. Configure or verify these identities for each of
 | TestPyPI | `VangelisTech/archetype` | `release.yml` | `release-testpypi` |
 | PyPI | `VangelisTech/archetype` | `release.yml` | `release-pypi` |
 
-Use pending Trusted Publishers to reserve project names that do not yet exist.
+Register pending Trusted Publishers to preconfigure the OIDC identities for
+project names that do not yet exist. This registration does not reserve or
+claim a name: each new name remains claimable until the first successful OIDC
+publication creates the project on that registry.
 Configure both GitHub environments to permit only `v*` tags, require approval
 from `everettVT`, and disable administrator bypass. The publisher action emits
 PEP 740 attestations. Index

@@ -197,12 +197,14 @@ only when the registry Integrity API binds its publish attestation to this repos
 workflow, environment, filename, and digest, and the pinned `pypi-attestations`
 verifier validates the Sigstore proof for the served file.
 
-Before the first four-project release, reserve the three new project names on both
-PyPI and TestPyPI with pending Trusted Publishers. All four projects on each registry
-must trust repository `VangelisTech/archetype`, workflow `release.yml`, and the exact
-environment for that registry: `release-pypi` or `release-testpypi`. Protect both
-GitHub environments to allow only `v*` tags, require the release operator's review,
-and disable administrator bypass.
+Before the first four-project release, register pending Trusted Publishers for the
+three new project names on both PyPI and TestPyPI. This preconfigures their OIDC
+identities; it does not reserve or claim the names. Each new name remains claimable
+until the first successful OIDC publication creates the project on that registry.
+All four projects on each registry must trust repository `VangelisTech/archetype`,
+workflow `release.yml`, and the exact environment for that registry: `release-pypi`
+or `release-testpypi`. Protect both GitHub environments to allow only `v*` tags,
+require the release operator's review, and disable administrator bypass.
 
 The hosted OIDC chain is the sole publishing authority. The read-only
 `make verify-test-index` and `make verify-published` targets are available for operator
