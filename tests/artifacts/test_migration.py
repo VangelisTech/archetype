@@ -169,6 +169,45 @@ def test_destination_object_must_be_a_regular_file_under_destination_authority(
         )
 
 
+@pytest.mark.parametrize("symlink_parent", ["objects", "sha256", "digest-prefix"])
+def test_destination_content_address_rejects_symlinked_parent_directories(
+    tmp_path: Path,
+    symlink_parent: str,
+) -> None:
+    payload = b"content must stay under the declared authority"
+    source = tmp_path / "source.bin"
+    source.write_bytes(payload)
+    table = _artifact_table((source,), payload)
+    inventory = capture_artifact_inventory(table)
+    destination_root = tmp_path / "destination"
+    digest = hashlib.sha256(payload).hexdigest()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    objects = destination_root / "objects"
+    sha256 = objects / "sha256"
+    prefix = sha256 / digest[:2]
+    if symlink_parent == "objects":
+        destination_root.mkdir()
+        objects.symlink_to(outside, target_is_directory=True)
+    elif symlink_parent == "sha256":
+        objects.mkdir(parents=True)
+        sha256.symlink_to(outside, target_is_directory=True)
+    else:
+        sha256.mkdir(parents=True)
+        prefix.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ArtifactObjectConflictError, match="parent"):
+        relocate_artifact_objects(
+            table,
+            inventory,
+            destination_root,
+            source_evidence=table_evidence("artifact_files", 10, table),
+        )
+
+    assert not (outside / digest).exists()
+
+
 def test_source_drift_fails_before_destination_write_and_redacts_uri(
     tmp_path: Path,
 ) -> None:

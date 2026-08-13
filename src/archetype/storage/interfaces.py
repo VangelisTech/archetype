@@ -30,6 +30,11 @@ class iStorageService(Protocol):
 
     def require_iceberg_identity(self, storage_config: StorageConfig) -> None: ...
 
+    def require_local_sqlite_iceberg_identity(
+        self,
+        storage_config: StorageConfig,
+    ) -> None: ...
+
     def get_control_catalog(self, storage_config: StorageConfig) -> ControlCatalog: ...
 
     def bind_commit_coordinator(

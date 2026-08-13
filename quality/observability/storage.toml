@@ -58,6 +58,7 @@ operations = [
   "catalog.interface.ControlCatalog.close",
   "service.StorageService.has_injected_session",
   "service.StorageService.require_iceberg_identity",
+  "service.StorageService.require_local_sqlite_iceberg_identity",
   "service.StorageService.get_control_catalog",
   "service.StorageService.bind_commit_coordinator",
   "service.StorageService.pin_visibility",
