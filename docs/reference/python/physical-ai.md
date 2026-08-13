@@ -61,6 +61,8 @@
 | `call_timeout_seconds` | `int` | `900` |
 | `create_if_missing` | `bool` | `False` |
 
+::: archetype.physical_ai.PhysicalAIExtensionConfig
+
 ::: archetype.physical_ai.interfaces.EnvClient
 
 ::: archetype.physical_ai.interfaces.PolicyClient

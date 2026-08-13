@@ -150,6 +150,10 @@ class ArchetypeRuntime:
                 When omitted, `ARCHETYPE_LOG` is used and logging stays quiet
                 if that variable is unset.
             artifact_store: Optional content-addressed object-store bounds.
+            world_libraries: Explicit trusted manifests, primarily for tests or
+                embedded hosts. Installed entry points are discovered when omitted.
+            world_library_configs: Family-name to typed extension-configuration
+                values consumed while trusted libraries are installed.
         """
         # This constructor is an explicit trusted-script process host. Quiet
         # remains the default; stdlib logging and vendor-neutral tracing are

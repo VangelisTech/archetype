@@ -150,6 +150,8 @@ PAGES: tuple[ReferencePage, ...] = (
             "AutoResearchResult",
             "ResearchCandidateContext",
             "EvaluationResult",
+            "Evaluator",
+            "CandidatePreparer",
             "IterationResult",
             "FrameGrader",
             "Outcome",
@@ -167,6 +169,7 @@ PAGES: tuple[ReferencePage, ...] = (
             "HostedEpisodeRequest",
             "HostedEpisodeObservation",
             "ModalHostedEpisodeConfig",
+            "PhysicalAIExtensionConfig",
             "EnvClient",
             "PolicyClient",
             "PerturbationStrategy",
@@ -270,6 +273,8 @@ SUPPLEMENTAL: dict[str, tuple[str, str]] = {
         "ResearchCandidateContext",
     ),
     "EvaluationResult": ("archetype.research", "EvaluationResult"),
+    "Evaluator": ("archetype.research", "Evaluator"),
+    "CandidatePreparer": ("archetype.research", "CandidatePreparer"),
     "IterationResult": ("archetype.research", "IterationResult"),
     "PhysicalAI": ("archetype.physical_ai", "PhysicalAI"),
     "HostedEpisodeRequest": (
@@ -283,6 +288,10 @@ SUPPLEMENTAL: dict[str, tuple[str, str]] = {
     "ModalHostedEpisodeConfig": (
         "archetype.physical_ai",
         "ModalHostedEpisodeConfig",
+    ),
+    "PhysicalAIExtensionConfig": (
+        "archetype.physical_ai",
+        "PhysicalAIExtensionConfig",
     ),
     "EnvClient": ("archetype.physical_ai.interfaces", "EnvClient"),
     "OptimizationResult": ("archetype.physical_ai.optimization", "OptimizationResult"),

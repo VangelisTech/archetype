@@ -78,3 +78,12 @@ def test_missions_reference_renders_the_primary_workflow_methods() -> None:
         assert "Persist one coding mission and return its durable identity." in page
         assert "Run a submitted mission to a terminal result." in page
         assert "Release this mission workflow handle and its world reservation." in page
+
+
+def test_world_library_signature_contracts_are_in_the_reference_inventory() -> None:
+    research = (ROOT / "docs/reference/python/autoresearch.md").read_text(encoding="utf-8")
+    physical = (ROOT / "docs/reference/python/physical-ai.md").read_text(encoding="utf-8")
+
+    assert "::: archetype.research.Evaluator" in research
+    assert "::: archetype.research.CandidatePreparer" in research
+    assert "::: archetype.physical_ai.PhysicalAIExtensionConfig" in physical

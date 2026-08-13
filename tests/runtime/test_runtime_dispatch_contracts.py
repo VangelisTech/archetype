@@ -108,6 +108,12 @@ class _AdmissionResources:
             "research": SimpleNamespace(runtime_adapter=None, world_adapter=Research),
         }
         self._operations = OperationAdmission(closed_message="runtime is closed")
+        self.reservations: list[_MissionReservationProbe] = []
+
+    def reserve_owner(self, *_args: object, **_kwargs: object) -> _MissionReservationProbe:
+        reservation = _MissionReservationProbe()
+        self.reservations.append(reservation)
+        return reservation
 
     def world_library(self, name: str) -> object:
         return self._world_libraries[name]
@@ -134,6 +140,9 @@ class _MissionReservationProbe:
 
     def operation_admitted(self) -> bool:
         return self.operation_admission.admitted_by_current_task()
+
+    def retain_anchor(self, _anchor: object) -> None:
+        return None
 
 
 class _RuntimeProbe:
@@ -263,7 +272,6 @@ def test_generic_library_lookup_constructs_installed_typed_adapters() -> None:
         runtime.library(
             "missions",
             config=config,
-            reservation=_MissionReservationProbe(),
         ),
         Missions,
     )
