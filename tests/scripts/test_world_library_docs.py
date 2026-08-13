@@ -83,7 +83,14 @@ def test_missions_reference_renders_the_primary_workflow_methods() -> None:
 def test_world_library_signature_contracts_are_in_the_reference_inventory() -> None:
     research = (ROOT / "docs/reference/python/autoresearch.md").read_text(encoding="utf-8")
     physical = (ROOT / "docs/reference/python/physical-ai.md").read_text(encoding="utf-8")
+    optimization = (ROOT / "docs/reference/python/physical-ai-optimization.md").read_text(
+        encoding="utf-8"
+    )
+    host = (ROOT / "docs/reference/python/physical-ai-host.md").read_text(encoding="utf-8")
 
     assert "::: archetype.research.Evaluator" in research
     assert "::: archetype.research.CandidatePreparer" in research
-    assert "::: archetype.physical_ai.PhysicalAIExtensionConfig" in physical
+    assert "::: archetype.physical_ai.PhysicalAIExtensionConfig" in host
+    assert "::: archetype.physical_ai.optimization.PerturbationStrategy" in optimization
+    assert "::: archetype.physical_ai.interfaces.EnvClient" not in physical
+    assert "::: archetype.physical_ai.interfaces.PolicyClient" not in physical

@@ -17,6 +17,8 @@ Archetype's Python reference inventories and classifies the supported framework 
 | [Configuration](python/configuration.md) | Runtime configuration is user-facing. `WorldConfig` is primarily for custom hosts and lower-level engine construction. |
 | [AutoResearch and evaluation](python/autoresearch.md) | Configure optimization loops and persist evaluation evidence with explicit identities. |
 | [Physical AI](python/physical-ai.md) | Run or recover complete Modal-hosted episode batches through a World. |
+| [Physical AI optimization](python/physical-ai-optimization.md) | Build pure instruction-search workflows over an injected evaluator and strategy. |
+| [Physical AI host configuration](python/physical-ai-host.md) | Configure trusted hosted-episode providers at process composition time. |
 | [Core engine](python/core.md) | Supported engine primitives for custom execution and world lifecycle extensions. |
 | [Storage backends](python/storage.md) | Supported asynchronous storage implementations for custom engine wiring. |
 | [Compatibility API](python/compatibility.md) | The synchronous educational engine and legacy aliases remain available for compatibility. New application code should use `ArchetypeRuntime`. |
@@ -42,7 +44,9 @@ Every name in a world-library facade is assigned exactly one tier. The docs buil
 
 ### `archetype.physical_ai`
 
-- **Recommended:** `PhysicalAI`, `HostedEpisodeRequest`, `HostedEpisodeObservation`, `ModalHostedEpisodeConfig`, `PhysicalAIExtensionConfig`, `PerturbationStrategy`, `TemplatePerturbation`, `RoundRecord`, `OptimizationResult`, `optimize_instruction`
+- **Recommended:** `PhysicalAI`, `HostedEpisodeRequest`, `HostedEpisodeObservation`, `ModalHostedEpisodeConfig`
+- **Extension:** `PerturbationStrategy`, `TemplatePerturbation`, `RoundRecord`, `OptimizationResult`, `optimize_instruction`
+- **Integration:** `PhysicalAIExtensionConfig`
 
 ### `archetype.research`
 

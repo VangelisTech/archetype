@@ -92,6 +92,8 @@ nav:
           - Configuration: reference/python/configuration.md
           - AutoResearch and Evaluation: reference/python/autoresearch.md
           - Physical AI: reference/python/physical-ai.md
+          - Physical AI Optimization: reference/python/physical-ai-optimization.md
+          - Physical AI Host Configuration: reference/python/physical-ai-host.md
           - Core Engine: reference/python/core.md
           - Storage Backends: reference/python/storage.md
           - Compatibility: reference/python/compatibility.md

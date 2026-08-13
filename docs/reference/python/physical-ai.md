@@ -60,36 +60,3 @@
 | `protocol_epoch` | `int` | `1` |
 | `call_timeout_seconds` | `int` | `900` |
 | `create_if_missing` | `bool` | `False` |
-
-::: archetype.physical_ai.PhysicalAIExtensionConfig
-
-::: archetype.physical_ai.interfaces.EnvClient
-
-::: archetype.physical_ai.interfaces.PolicyClient
-
-::: archetype.physical_ai.optimization.PerturbationStrategy
-
-::: archetype.physical_ai.optimization.TemplatePerturbation
-
-::: archetype.physical_ai.optimization.RoundRecord
-    options:
-      members: false
-
-| Field | Type | Default |
-| --- | --- | --- |
-| `round` | `int` | `required` |
-| `best_instruction` | `str` | `required` |
-| `best_success_rate` | `float` | `required` |
-| `evaluated` | `int` | `required` |
-
-::: archetype.physical_ai.optimization.OptimizationResult
-    options:
-      members: false
-
-| Field | Type | Default |
-| --- | --- | --- |
-| `best_instruction` | `str` | `required` |
-| `best_success_rate` | `float` | `required` |
-| `trace` | `tuple[RoundRecord, ...]` | `()` |
-
-::: archetype.physical_ai.optimization.optimize_instruction

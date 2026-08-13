@@ -169,15 +169,27 @@ PAGES: tuple[ReferencePage, ...] = (
             "HostedEpisodeRequest",
             "HostedEpisodeObservation",
             "ModalHostedEpisodeConfig",
-            "PhysicalAIExtensionConfig",
-            "EnvClient",
-            "PolicyClient",
+        ),
+    ),
+    ReferencePage(
+        "physical-ai-optimization",
+        "Physical AI optimization",
+        "Extension API",
+        "Build pure instruction-search workflows over an injected evaluator and strategy.",
+        (
             "PerturbationStrategy",
             "TemplatePerturbation",
             "RoundRecord",
             "OptimizationResult",
             "optimize_instruction",
         ),
+    ),
+    ReferencePage(
+        "physical-ai-host",
+        "Physical AI host configuration",
+        "Integration API",
+        "Configure trusted hosted-episode providers at process composition time.",
+        ("PhysicalAIExtensionConfig",),
     ),
     ReferencePage(
         "core",
@@ -300,13 +312,15 @@ WORLD_LIBRARY_FACADE_TIERS: dict[str, dict[str, tuple[str, ...]]] = {
             "HostedEpisodeRequest",
             "HostedEpisodeObservation",
             "ModalHostedEpisodeConfig",
-            "PhysicalAIExtensionConfig",
+        ),
+        "Extension": (
             "PerturbationStrategy",
             "TemplatePerturbation",
             "RoundRecord",
             "OptimizationResult",
             "optimize_instruction",
         ),
+        "Integration": ("PhysicalAIExtensionConfig",),
     },
     "archetype.research": {
         "Extension": (
@@ -398,13 +412,11 @@ SUPPLEMENTAL: dict[str, tuple[str, str]] = {
         "archetype.physical_ai",
         "PhysicalAIExtensionConfig",
     ),
-    "EnvClient": ("archetype.physical_ai.interfaces", "EnvClient"),
     "OptimizationResult": ("archetype.physical_ai.optimization", "OptimizationResult"),
     "PerturbationStrategy": (
         "archetype.physical_ai.optimization",
         "PerturbationStrategy",
     ),
-    "PolicyClient": ("archetype.physical_ai.interfaces", "PolicyClient"),
     "RoundRecord": ("archetype.physical_ai.optimization", "RoundRecord"),
     "TemplatePerturbation": (
         "archetype.physical_ai.optimization",
