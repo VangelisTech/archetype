@@ -438,6 +438,10 @@ operational-wheel:
 		fi; \
 		exit "$$runner_status"
 
+.PHONY: operational-wheel-existing
+operational-wheel-existing:
+	@$(MAKE) --no-print-directory operational-wheel OPERATIONAL_BUILD_COMMAND=true
+
 .PHONY: operational-mission
 operational-mission:
 	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/run_operational_scenarios.py \
@@ -509,15 +513,19 @@ operational-release-physical-modal-r2: verify-release-artifact
 verify-pr: static test package-smoke
 	@echo "PR verification profile passed"
 
+.PHONY: verify-full-source
+verify-full-source: static test-cov eval-conformance eval-capability examples-smoke operational-runtime operational-commands docs test-process eval-reliability
+	@echo "Full source verification profile passed"
+
 .PHONY: verify-full
-verify-full: static test-cov eval-conformance eval-capability package-smoke examples-smoke operational-runtime operational-commands operational-wheel docs test-process eval-reliability
+verify-full: verify-full-source package-smoke operational-wheel-existing
 	@echo "Full verification profile passed"
 
 .PHONY: verify-release
-verify-release: verify-full operational-release
+verify-release: verify-full-source operational-release
 	@echo "Release verification profile passed"
 
-.NOTPARALLEL: verify-release
+.NOTPARALLEL: verify-full verify-release
 
 .PHONY: release-check
 release-check: sync-dev verify-release

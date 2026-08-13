@@ -58,26 +58,33 @@ def test_pull_request_workflow_has_only_two_jobs() -> None:
 def test_local_pr_profile_matches_the_two_ci_jobs() -> None:
     makefile = MAKEFILE.read_text(encoding="utf-8")
     verify_pr = re.search(r"^verify-pr:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE)
+    verify_full_source = re.search(
+        r"^verify-full-source:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE
+    )
     verify_full = re.search(r"^verify-full:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE)
 
     assert verify_pr is not None
     assert verify_pr.group("dependencies").split() == ["static", "test", "package-smoke"]
+    assert verify_full_source is not None
     assert verify_full is not None
-    full = verify_full.group("dependencies").split()
+    source = verify_full_source.group("dependencies").split()
     for target in (
         "test-cov",
         "eval-conformance",
         "eval-reliability",
         "eval-capability",
-        "package-smoke",
         "examples-smoke",
         "operational-runtime",
         "operational-commands",
-        "operational-wheel",
         "docs",
         "test-process",
     ):
-        assert target in full
+        assert target in source
+    assert verify_full.group("dependencies").split() == [
+        "verify-full-source",
+        "package-smoke",
+        "operational-wheel-existing",
+    ]
 
 
 def test_review_gate_and_merge_queue_are_not_executable_workflows() -> None:
@@ -161,17 +168,19 @@ def test_operational_receipts_cover_commands_and_runtime_from_source_and_wheel()
         r"^operational-runtime:\n(?P<body>(?:\t.*\n)+)", makefile, re.MULTILINE
     )
     wheel = re.search(r"^operational-wheel:\n(?P<body>(?:\t.*\n)+)", makefile, re.MULTILINE)
-    verify_full = re.search(r"^verify-full:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE)
+    verify_full_source = re.search(
+        r"^verify-full-source:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE
+    )
     assert source_commands is not None
     assert source_runtime is not None
     assert wheel is not None
-    assert verify_full is not None
+    assert verify_full_source is not None
     assert source_commands.group("body").count("--scenario dogfood.commands.local") == 1
     assert wheel.group("body").count("--scenario dogfood.commands.local") == 1
     assert source_runtime.group("body").count("--scenario dogfood.runtime.loopback") == 1
     assert wheel.group("body").count("--scenario dogfood.runtime.loopback") == 1
     assert '--wheel-dir "$(OPERATIONAL_DIST_DIR)"' in wheel.group("body")
-    dependencies = verify_full.group("dependencies").split()
+    dependencies = verify_full_source.group("dependencies").split()
     assert "operational-commands" in dependencies
     assert "operational-runtime" in dependencies
 
@@ -219,7 +228,7 @@ def test_release_profile_builds_and_tests_one_exact_artifact_matrix() -> None:
     )
     assert verify_release is not None
     assert verify_release.group("dependencies").split() == [
-        "verify-full",
+        "verify-full-source",
         "operational-release",
     ]
     assert release_artifact is not None
@@ -232,6 +241,12 @@ def test_release_profile_builds_and_tests_one_exact_artifact_matrix() -> None:
     assert artifact_body.count("scripts/release_artifact.py record") == 1
     assert operational_release.group("dependencies").split() == ["release-artifact"]
     assert "--min-tier 0 --max-tier 4" in operational_release.group("body")
+    assert makefile.count("$(MAKE) --no-print-directory build") == 2
+    assert (
+        "operational-wheel-existing:\n"
+        "\t@$(MAKE) --no-print-directory operational-wheel OPERATIONAL_BUILD_COMMAND=true"
+    ) in makefile
+    assert ".NOTPARALLEL: verify-full verify-release" in makefile
     release_runner = re.search(
         r"^define RUN_RELEASE_SCENARIOS\n(?P<body>.*?)^endef$",
         makefile,
