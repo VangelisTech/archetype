@@ -1,3 +1,4 @@
+# Quarantined after the 2026-07-30 SEV-1. This file is not an active workflow.
 name: Deterministic Review Gate
 
 on:
@@ -10,6 +11,11 @@ on:
   merge_group:
 
 permissions: {}
+
+# Keep every reviewer on the same audited CLI instead of letting jobs with an
+# unset version silently install the latest release.
+env:
+  CODEX_VERSION: "0.144.0"
 
 concurrency:
   group: deterministic-review-${{ github.event.pull_request.number || github.ref }}
@@ -111,7 +117,6 @@ jobs:
     env:
       DIFF_FILE: ${{ github.workspace }}/.footgun-review.diff
       LENS: ${{ matrix.lens }}
-      CODEX_VERSION: "0.144.0"
       OPENCODE_VERSION: "1.18.4"
       REVIEW_DIR: ${{ github.workspace }}/.footgun-review-output
       REVIEWER_ID: ${{ matrix.reviewer }}
@@ -260,6 +265,40 @@ jobs:
             --raw "${RUNNER_TEMP}/opencode-raw.txt" \
             --output "${REVIEW_DIR}/first-structured-output.json"
 
+      - name: Prepare Codex bubblewrap sandbox
+        if: matrix.backend == 'codex'
+        run: |
+          set -euo pipefail
+          npm install -g "@openai/codex@${CODEX_VERSION}"
+          [[ "$(codex --version)" == "codex-cli ${CODEX_VERSION}" ]]
+          # Ubuntu 24.04's AppArmor defaults can deny the user namespace that
+          # Codex bubblewrap needs, failing every tool call at loopback setup.
+          # This is a job-local ephemeral VM; verify the full read-only sandbox
+          # before materializing subscription OAuth in the following step.
+          if [[ -e /proc/sys/kernel/unprivileged_userns_clone ]]; then
+            if [[ "$(< /proc/sys/kernel/unprivileged_userns_clone)" != 1 ]]; then
+              sudo sysctl -q -w kernel.unprivileged_userns_clone=1
+            fi
+            [[ "$(< /proc/sys/kernel/unprivileged_userns_clone)" == 1 ]]
+          fi
+          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+            if [[ "$(< /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" != 0 ]]; then
+              sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0
+            fi
+            [[ "$(< /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" == 0 ]]
+          fi
+          PREFLIGHT_HOME="${RUNNER_TEMP}/codex-preflight-home"
+          install -d -m 700 "${PREFLIGHT_HOME}"
+          CODEX_HOME="${PREFLIGHT_HOME}" codex --disable use_legacy_landlock \
+            -c 'sandbox_mode="read-only"' sandbox -- /usr/bin/true
+          PROBE="${RUNNER_TEMP}/codex-bwrap-write-probe"
+          rm -f "${PROBE}"
+          if CODEX_HOME="${PREFLIGHT_HOME}" codex --disable use_legacy_landlock \
+            -c 'sandbox_mode="read-only"' sandbox -- /usr/bin/touch "${PROBE}"; then
+            echo "Codex read-only sandbox admitted a write." >&2
+            exit 1
+          fi
+          [[ ! -e "${PROBE}" ]]
 
       - name: Run read-only reviewer (Codex)
         id: detector_codex
@@ -268,7 +307,9 @@ jobs:
         timeout-minutes: 25
         env:
           # Subscription OAuth, same trust posture as CLAUDE_CODE_OAUTH_TOKEN;
-          # materialized into an ephemeral CODEX_HOME, never the workspace.
+          # materialized into a job-scoped CODEX_HOME, never the workspace.
+          # The session persists only in runner temp so the bounded retry can
+          # continue the repository inspection instead of starting over.
           # Read-only enforcement is the codex sandbox itself (-s read-only);
           # --output-schema yields schema-conforming JSON natively and still
           # flows through the same extract/validate pipeline.
@@ -280,13 +321,12 @@ jobs:
           mkdir -p "${CODEX_HOME}"
           printf '%s' "${CODEX_AUTH_JSON}" > "${CODEX_HOME}/auth.json"
           chmod 600 "${CODEX_HOME}/auth.json"
-          npm install -g "@openai/codex@${CODEX_VERSION}"
           printf '%s' "${SCHEMA}" > "${RUNNER_TEMP}/lens-schema.json"
           mkdir -p "${REVIEW_DIR}"
           codex exec \
             -m "${CODEX_MODEL}" \
             -s read-only \
-            --ephemeral \
+            --disable use_legacy_landlock \
             --ignore-user-config \
             --color never \
             -C "${GITHUB_WORKSPACE}" \
@@ -413,23 +453,22 @@ jobs:
           SCHEMA: ${{ steps.contract.outputs.schema }}
         run: |
           # Auth and schema rewritten: the first attempt may have failed
-          # before writing them.
+          # before writing them. On the pinned CLI, --last resumes the
+          # job-scoped session when present and starts fresh when absent.
           export CODEX_HOME="${RUNNER_TEMP}/codex-home"
           mkdir -p "${CODEX_HOME}"
           printf '%s' "${CODEX_AUTH_JSON}" > "${CODEX_HOME}/auth.json"
           chmod 600 "${CODEX_HOME}/auth.json"
-          npm install -g "@openai/codex@${CODEX_VERSION}"
           printf '%s' "${SCHEMA}" > "${RUNNER_TEMP}/lens-schema.json"
-          codex exec \
+          codex exec resume \
+            --last \
             -m "${CODEX_MODEL}" \
-            -s read-only \
-            --ephemeral \
+            -c 'sandbox_mode="read-only"' \
+            --disable use_legacy_landlock \
             --ignore-user-config \
-            --color never \
-            -C "${GITHUB_WORKSPACE}" \
             --output-schema "${RUNNER_TEMP}/lens-schema.json" \
             -o "${RUNNER_TEMP}/codex-retry-last.txt" \
-            "$(cat "${RUNNER_TEMP}/lens-retry-prompt.txt")" \
+            - < "${RUNNER_TEMP}/lens-retry-prompt.txt" \
             > "${RUNNER_TEMP}/codex-retry-raw.txt" 2>&1
           python3 scripts/footgun_review_gate.py extract \
             --raw "${RUNNER_TEMP}/codex-retry-last.txt" \
@@ -458,8 +497,9 @@ jobs:
       # route to adjudication — a degraded bench earns more scrutiny. A lens
       # whose entire bench records infra failure still fails the gate closed
       # at aggregation. Steps before the detector (checkout, scope) failing
-      # still fail this job: an infra receipt is only honest when the seat
-      # actually saw the diff.
+      # still fail this job. A reviewer that explicitly reports blocked
+      # repository inspection gets one retry, then a neutral runner receipt;
+      # it can never become a clean verdict.
       - name: Record infra failure when no validated receipt exists
         if: ${{ !cancelled() && steps.contract.outcome == 'success' }}
         env:
@@ -469,16 +509,24 @@ jobs:
             exit 0
           fi
           failure_class=schema
-          detail="reviewer produced no schema-valid structured output after the bounded retry"
-          for raw in "${RUNNER_TEMP}/opencode-raw.txt" "${RUNNER_TEMP}/opencode-retry-raw.txt" \
-                     "${RUNNER_TEMP}/codex-raw.txt" "${RUNNER_TEMP}/codex-retry-raw.txt" \
-                     "${REVIEW_DIR}/first-structured-output.json" "${REVIEW_DIR}/retry-structured-output.json"; do
-            if [ -f "$raw" ] && grep -qiE "usage limit|spend limit|rate.?limit|\b429\b|quota" "$raw"; then
-              failure_class=quota
-              detail="provider quota/rate limit: $(grep -ioE '[^\n]{0,160}(usage limit|spend limit|rate.?limit|quota)[^\n]{0,160}' "$raw" | head -1)"
-              break
-            fi
-          done
+          detail="reviewer produced no verdict-valid structured output after the bounded retry"
+          reported_blocked="$(python3 scripts/footgun_review_gate.py reported-blocked \
+            --result "${REVIEW_DIR}/first-structured-output.json" \
+            --result "${REVIEW_DIR}/retry-structured-output.json")"
+          if [[ "$reported_blocked" == "true" ]]; then
+            failure_class=runner
+            detail="reviewer reported blocked required repository inspection after the bounded retry"
+          else
+            for raw in "${RUNNER_TEMP}/opencode-raw.txt" "${RUNNER_TEMP}/opencode-retry-raw.txt" \
+                       "${RUNNER_TEMP}/codex-raw.txt" "${RUNNER_TEMP}/codex-retry-raw.txt" \
+                       "${REVIEW_DIR}/first-structured-output.json" "${REVIEW_DIR}/retry-structured-output.json"; do
+              if [ -f "$raw" ] && grep -qiE "usage limit|spend limit|rate.?limit|\b429\b|quota" "$raw"; then
+                failure_class=quota
+                detail="provider reported a quota or rate limit after the bounded retry"
+                break
+              fi
+            done
+          fi
           python3 scripts/footgun_review_gate.py infra-receipt \
             --lens "${LENS}" \
             --reviewer "${REVIEWER_ID}" \
@@ -671,6 +719,37 @@ jobs:
       # ADJUDICATOR_REVIEWER seats this on codex: the claude subscription is
       # spend-capped (2026-07-26) and an adjudicator that cannot run would
       # leave every singleton-blocking claim pending forever.
+      - name: Prepare Codex bubblewrap sandbox
+        if: matrix.skip != true
+        run: |
+          set -euo pipefail
+          npm install -g "@openai/codex@${CODEX_VERSION}"
+          [[ "$(codex --version)" == "codex-cli ${CODEX_VERSION}" ]]
+          if [[ -e /proc/sys/kernel/unprivileged_userns_clone ]]; then
+            if [[ "$(< /proc/sys/kernel/unprivileged_userns_clone)" != 1 ]]; then
+              sudo sysctl -q -w kernel.unprivileged_userns_clone=1
+            fi
+            [[ "$(< /proc/sys/kernel/unprivileged_userns_clone)" == 1 ]]
+          fi
+          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+            if [[ "$(< /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" != 0 ]]; then
+              sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0
+            fi
+            [[ "$(< /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" == 0 ]]
+          fi
+          PREFLIGHT_HOME="${RUNNER_TEMP}/codex-preflight-home"
+          install -d -m 700 "${PREFLIGHT_HOME}"
+          CODEX_HOME="${PREFLIGHT_HOME}" codex --disable use_legacy_landlock \
+            -c 'sandbox_mode="read-only"' sandbox -- /usr/bin/true
+          PROBE="${RUNNER_TEMP}/codex-bwrap-write-probe"
+          rm -f "${PROBE}"
+          if CODEX_HOME="${PREFLIGHT_HOME}" codex --disable use_legacy_landlock \
+            -c 'sandbox_mode="read-only"' sandbox -- /usr/bin/touch "${PROBE}"; then
+            echo "Codex read-only sandbox admitted a write." >&2
+            exit 1
+          fi
+          [[ ! -e "${PROBE}" ]]
+
       - name: Falsify disputed claim (Codex)
         id: adjudicator
         if: matrix.skip != true
@@ -684,11 +763,11 @@ jobs:
           mkdir -p "${CODEX_HOME}"
           printf '%s' "${CODEX_AUTH_JSON}" > "${CODEX_HOME}/auth.json"
           chmod 600 "${CODEX_HOME}/auth.json"
-          npm install -g "@openai/codex@${CODEX_VERSION}"
           printf '%s' "${SCHEMA}" > "${RUNNER_TEMP}/adjudication-schema.json"
           codex exec \
             -m gpt-5.6-luna \
             -s read-only \
+            --disable use_legacy_landlock \
             --ephemeral \
             --ignore-user-config \
             --color never \
@@ -731,7 +810,7 @@ jobs:
     needs: [reaffirm, review-aggregate, review-adjudication]
     if: ${{ !cancelled() && github.event_name != 'merge_group' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       actions: read
       contents: read
@@ -833,21 +912,19 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          BUNDLE_DIGEST="$(python3 scripts/footgun_review_gate.py digest \
-            --input "${REVIEW_DIR}/validated/review-bundle.json")"
           python3 scripts/footgun_review_gate.py prompt \
             --kind design-brief \
             --scope "${SCOPE_FILE}" \
+            --diff "${DIFF_FILE}" \
+            --bundle "${REVIEW_DIR}/validated/review-bundle.json" \
             --pr-number "${PR_NUMBER}" \
             --head "${HEAD_SHA}" \
-            --bundle-digest "${BUNDLE_DIGEST}" \
             --output "${RUNNER_TEMP}/design-brief-prompt.txt"
-          {
-            echo "schema=$(python3 scripts/footgun_review_gate.py schema --kind design-brief)"
-            echo 'prompt<<__ARCHETYPE_DESIGN_BRIEF_PROMPT__'
-            cat "${RUNNER_TEMP}/design-brief-prompt.txt"
-            echo '__ARCHETYPE_DESIGN_BRIEF_PROMPT__'
-          } >> "${GITHUB_OUTPUT}"
+          PROMPT_CHARS="$(wc -m < "${RUNNER_TEMP}/design-brief-prompt.txt" | tr -d '[:space:]')"
+          PROMPT_BYTES="$(wc -c < "${RUNNER_TEMP}/design-brief-prompt.txt" | tr -d '[:space:]')"
+          echo "Design brief prompt size: ${PROMPT_CHARS} characters, ${PROMPT_BYTES} bytes."
+          echo "schema=$(python3 scripts/footgun_review_gate.py schema --kind design-brief)" \
+            >> "${GITHUB_OUTPUT}"
 
       - name: Generate human design-review brief (Codex)
         id: brief
@@ -863,23 +940,95 @@ jobs:
           chmod 600 "${CODEX_HOME}/auth.json"
           npm install -g "@openai/codex@${CODEX_VERSION}"
           printf '%s' "${SCHEMA}" > "${RUNNER_TEMP}/design-brief-schema.json"
+          set +e
           codex exec \
             -m gpt-5.6-luna \
             -s read-only \
+            --disable shell_tool \
+            --disable multi_agent \
             --ephemeral \
             --ignore-user-config \
             --color never \
             -C "${GITHUB_WORKSPACE}" \
             --output-schema "${RUNNER_TEMP}/design-brief-schema.json" \
             -o "${RUNNER_TEMP}/design-brief-last.txt" \
-            "$(cat "${RUNNER_TEMP}/design-brief-prompt.txt")" \
-            > "${RUNNER_TEMP}/design-brief-raw.txt" 2>&1
+            - < "${RUNNER_TEMP}/design-brief-prompt.txt" \
+            > "${RUNNER_TEMP}/design-brief-raw.txt" \
+            2> "${RUNNER_TEMP}/design-brief-stderr.txt"
+          CODEX_STATUS=$?
+          set -e
+          if [[ "${CODEX_STATUS}" -ne 0 ]]; then
+            PROMPT_CHARS="$(wc -m < "${RUNNER_TEMP}/design-brief-prompt.txt" | tr -d '[:space:]')"
+            echo "::error::Codex design brief failed with exit ${CODEX_STATUS}; prompt characters=${PROMPT_CHARS}."
+            exit "${CODEX_STATUS}"
+          fi
 
-      - name: Validate human design-review brief
+      - name: Validate initial human design-review brief
+        id: brief_validation
         if: needs.reaffirm.outputs.reaffirmed != 'true'
         run: |
           python3 scripts/footgun_review_gate.py extract \
             --raw "${RUNNER_TEMP}/design-brief-last.txt" \
+            --output "${REVIEW_DIR}/human-design-brief-result.json"
+          python3 scripts/footgun_review_gate.py attempt-brief \
+            --scope "${SCOPE_FILE}" \
+            --diff "${DIFF_FILE}" \
+            --bundle "${REVIEW_DIR}/validated/review-bundle.json" \
+            --result "${REVIEW_DIR}/human-design-brief-result.json" \
+            --output "${REVIEW_DIR}/validated/human-design-brief.json" \
+            --feedback "${RUNNER_TEMP}/design-brief-validation.txt" \
+            --github-output "${GITHUB_OUTPUT}"
+
+      - name: Materialize bounded design-brief correction
+        if: >-
+          needs.reaffirm.outputs.reaffirmed != 'true' &&
+          steps.brief_validation.outputs.valid != 'true'
+        run: |
+          python3 scripts/footgun_review_gate.py brief-retry-prompt \
+            --prompt "${RUNNER_TEMP}/design-brief-prompt.txt" \
+            --result "${REVIEW_DIR}/human-design-brief-result.json" \
+            --feedback "${RUNNER_TEMP}/design-brief-validation.txt" \
+            --output "${RUNNER_TEMP}/design-brief-retry-prompt.txt"
+          RETRY_CHARS="$(wc -m < "${RUNNER_TEMP}/design-brief-retry-prompt.txt" | tr -d '[:space:]')"
+          echo "Design brief retry prompt size: ${RETRY_CHARS} characters."
+
+      - name: Correct human design-review brief (Codex)
+        if: >-
+          needs.reaffirm.outputs.reaffirmed != 'true' &&
+          steps.brief_validation.outputs.valid != 'true'
+        timeout-minutes: 20
+        run: |
+          export CODEX_HOME="${RUNNER_TEMP}/codex-home"
+          set +e
+          codex exec \
+            -m gpt-5.6-luna \
+            -s read-only \
+            --disable shell_tool \
+            --disable multi_agent \
+            --ephemeral \
+            --ignore-user-config \
+            --color never \
+            -C "${GITHUB_WORKSPACE}" \
+            --output-schema "${RUNNER_TEMP}/design-brief-schema.json" \
+            -o "${RUNNER_TEMP}/design-brief-retry-last.txt" \
+            - < "${RUNNER_TEMP}/design-brief-retry-prompt.txt" \
+            > "${RUNNER_TEMP}/design-brief-retry-raw.txt" \
+            2> "${RUNNER_TEMP}/design-brief-retry-stderr.txt"
+          CODEX_STATUS=$?
+          set -e
+          if [[ "${CODEX_STATUS}" -ne 0 ]]; then
+            RETRY_CHARS="$(wc -m < "${RUNNER_TEMP}/design-brief-retry-prompt.txt" | tr -d '[:space:]')"
+            echo "::error::Codex design-brief correction failed with exit ${CODEX_STATUS}; prompt characters=${RETRY_CHARS}."
+            exit "${CODEX_STATUS}"
+          fi
+
+      - name: Validate corrected human design-review brief
+        if: >-
+          needs.reaffirm.outputs.reaffirmed != 'true' &&
+          steps.brief_validation.outputs.valid != 'true'
+        run: |
+          python3 scripts/footgun_review_gate.py extract \
+            --raw "${RUNNER_TEMP}/design-brief-retry-last.txt" \
             --output "${REVIEW_DIR}/human-design-brief-result.json"
           python3 scripts/footgun_review_gate.py normalize-brief \
             --scope "${SCOPE_FILE}" \
@@ -1071,6 +1220,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           {
@@ -1080,4 +1230,5 @@ jobs:
             echo
             echo "[Inspect the failed workflow run](${RUN_URL})"
           } > "${RUNNER_TEMP}/review-failed.md"
-          gh pr comment "${PR_NUMBER}" --body-file "${RUNNER_TEMP}/review-failed.md" || true
+          gh pr comment "${PR_NUMBER}" --repo "${REPOSITORY}" \
+            --body-file "${RUNNER_TEMP}/review-failed.md" || true

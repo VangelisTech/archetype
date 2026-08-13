@@ -96,6 +96,7 @@ def scope() -> dict[str, Any]:
 def raw_result(*, findings: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     return {
         "head_sha": HEAD_SHA,
+        "review_status": "complete",
         "summary": (
             "The complete review inspected both changed files through the assigned lens "
             "and compared their behavior with the relevant protected-base contracts."

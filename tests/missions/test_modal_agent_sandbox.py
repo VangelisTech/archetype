@@ -268,6 +268,7 @@ def test_default_modal_image_installs_the_exact_codex_inventory_pin() -> None:
 
         def apt_install(self, *packages: str):
             assert "nodejs" in packages and "npm" in packages
+            assert "tmux" in packages
             return self
 
         def run_commands(self, *commands: str):
@@ -302,6 +303,9 @@ def test_default_modal_image_installs_the_exact_codex_inventory_pin() -> None:
     assert image is builder
     assert any("@openai/codex@0.144.6" in command for command in builder.commands)
     assert any("sha512sum --check --strict" in command for command in builder.commands)
+    assert any("ttyd.x86_64" in command for command in builder.commands)
+    assert any("ttyd.aarch64" in command for command in builder.commands)
+    assert any("sha256sum --check --strict" in command for command in builder.commands)
     assert not any("chatgpt.com/codex/install.sh" in command for command in builder.commands)
 
 
@@ -459,29 +463,47 @@ def _lifecycle_session(
 
 
 @pytest.mark.asyncio
-async def test_modal_agent_exec_persists_oauth_and_durable_events() -> None:
+async def test_modal_generic_exec_cannot_request_codex_or_github_credentials() -> None:
     payload = '{"access_token":"credential-canary"}'
     sandbox = _LifecycleSandbox("sb-agent")
     auth = _LifecycleSandbox("sb-auth")
     auth.filesystem.values["/auth/auth.json"] = payload
     session = _lifecycle_session(sandbox, auth)
 
+    for secret_name in ("codex_oauth", "github"):
+        with pytest.raises(ValueError, match="unsupported Modal sandbox secret"):
+            await session.exec(
+                ProcessRequest(
+                    ("true",),
+                    workdir="/workspace/repo",
+                    secret_names=(secret_name,),
+                )
+            )
+
+    assert await session.status() is SandboxStatus.READY
+    assert sandbox.commands == []
+    assert "/root/.codex/auth.json" not in sandbox.filesystem.values
+    assert auth.filesystem.values == {"/auth/auth.json": payload}
+
+
+@pytest.mark.asyncio
+async def test_modal_agent_exec_records_durable_events_without_credentials() -> None:
+    sandbox = _LifecycleSandbox("sb-agent")
+    session = _lifecycle_session(sandbox)
+
     result = await session.exec(
         ProcessRequest(
-            ("codex", "exec", "fix it"),
+            ("agent", "run", "fix it"),
             workdir="/workspace/repo",
-            secret_names=("codex_oauth", "github"),
             close_stdin=True,
         )
     )
 
     assert result.returncode == 0
-    assert result.argv == ("codex", "exec", "fix it")
+    assert result.argv == ("agent", "run", "fix it")
     assert await session.status() is SandboxStatus.READY
     events = sandbox.filesystem.values["/tmp/archetype-agent-missions/live/events.jsonl"]
     assert "process_started" in events and "process_finished" in events
-    assert "/root/.codex/auth.json" not in sandbox.filesystem.values
-    assert auth.filesystem.values["/auth/auth.json"] == payload
     assert any(command[0] == "bash" for command in sandbox.commands)
     assert result.trace_uri.startswith("modal-sandbox://sb-agent/")
     trace_path = result.trace_uri.removeprefix("modal-sandbox://sb-agent")
@@ -667,8 +689,17 @@ async def test_modal_session_error_checkpoint_and_close_states(
 
     with pytest.raises(ValueError, match="unsupported"):
         await session.exec(ProcessRequest(("true",), secret_names=("unknown",)))
-    with pytest.raises(RuntimeError, match="no Codex credential"):
+    with pytest.raises(ValueError, match="unsupported"):
         await session.exec(ProcessRequest(("true",), secret_names=("codex_oauth",)))
+    assert await session.status() is SandboxStatus.READY
+
+    async def fail_exec(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("remote failed")
+
+    monkeypatch.setattr(session, "_exec_on", fail_exec)
+    with pytest.raises(RuntimeError, match="remote failed"):
+        await session.exec(ProcessRequest(("true",)))
     assert await session.status() is SandboxStatus.ERRORED
     with pytest.raises(RuntimeError, match="errored"):
         await session.exec(ProcessRequest(("true",)))
@@ -810,85 +841,47 @@ async def test_modal_checkpoint_observation_failure_does_not_mask_provider_failu
 
 
 @pytest.mark.asyncio
-async def test_modal_oauth_persistence_failure_still_removes_all_codex_state(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_modal_thread_admission_scrubs_only_exact_oauth_file_without_broker_write() -> None:
     payload = '{"access_token":"credential-canary"}'
     sandbox = _LifecycleSandbox("sb-agent")
+    auth = _LifecycleSandbox("sb-auth")
     sandbox.filesystem.values["/root/.codex/auth.json"] = payload
-    sandbox.filesystem.values["/root/.codex/sessions/history.jsonl"] = "sensitive transcript"
-    session = _lifecycle_session(sandbox)
+    sandbox.filesystem.values["/root/.codex/sessions/thread.jsonl"] = "rollout"
+    auth.filesystem.values["/auth/auth.json"] = payload
+    session = _lifecycle_session(sandbox, auth)
 
-    async def auth_failure(*arguments: str) -> ProcessResult:
-        raise RuntimeError(f"cannot persist {arguments[0]}")
+    await session._scrub_mission_oauth()
 
-    monkeypatch.setattr(session, "_auth_checked", auth_failure)
-    with pytest.raises(RuntimeError, match="cannot persist"):
-        await session._persist_and_remove_oauth()
+    assert sandbox.commands[-2:] == [
+        ("rm", "-f", "--", "/root/.codex/auth.json"),
+        ("test", "!", "-e", "/root/.codex/auth.json"),
+    ]
+    assert "/root/.codex/auth.json" not in sandbox.filesystem.values
+    assert sandbox.filesystem.values["/root/.codex/sessions/thread.jsonl"] == "rollout"
+    assert auth.filesystem.values == {"/auth/auth.json": payload}
+    assert auth.commands == []
+
+
+@pytest.mark.asyncio
+async def test_modal_final_oauth_cleanup_removes_all_codex_state_without_broker_write() -> None:
+    payload = '{"access_token":"credential-canary"}'
+    sandbox = _LifecycleSandbox("sb-agent")
+    auth = _LifecycleSandbox("sb-auth")
+    sandbox.filesystem.values["/root/.codex/auth.json"] = payload
+    sandbox.filesystem.values["/root/.codex/sessions/thread.jsonl"] = "rollout"
+    auth.filesystem.values["/auth/auth.json"] = payload
+    session = _lifecycle_session(sandbox, auth)
+
+    await session._remove_oauth()
+
     assert ("rm", "-rf", "/root/.codex") in sandbox.commands
     assert not any(path.startswith("/root/.codex/") for path in sandbox.filesystem.values)
+    assert auth.filesystem.values == {"/auth/auth.json": payload}
+    assert auth.commands == []
 
     for value, error in (("not-json", "valid JSON"), ("[]", "non-empty"), ("{}", "non-empty")):
         with pytest.raises(RuntimeError, match=error):
             ModalSandboxSession._validate_oauth(value)
-
-
-@pytest.mark.asyncio
-async def test_modal_oauth_reports_persistence_and_removal_failures(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    payload = '{"access_token":"credential-canary"}'
-    sandbox = _LifecycleSandbox("sb-agent")
-    sandbox.filesystem.values["/root/.codex/auth.json"] = payload
-    session = _lifecycle_session(sandbox)
-
-    async def persistence_failure(*arguments: str) -> ProcessResult:
-        raise RuntimeError(f"cannot persist {arguments[0]}")
-
-    async def removal_failure(_request: ProcessRequest) -> ProcessResult:
-        raise RuntimeError("cannot remove staged credential")
-
-    monkeypatch.setattr(session, "_auth_checked", persistence_failure)
-    monkeypatch.setattr(session, "_checked", removal_failure)
-
-    with pytest.raises(BaseExceptionGroup) as raised:
-        await session._persist_and_remove_oauth()
-
-    assert "cannot persist" in str(raised.value.exceptions[0])
-    assert "cannot remove" in str(raised.value.exceptions[1])
-
-
-@pytest.mark.asyncio
-async def test_modal_oauth_stage_failure_marks_errored_and_cleans_partial_state(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    session = _lifecycle_session(_LifecycleSandbox("sb-agent"))
-    removed = 0
-    executed = False
-
-    async def fail_stage() -> None:
-        raise RuntimeError("stage failed")
-
-    async def remove() -> None:
-        nonlocal removed
-        removed += 1
-
-    async def execute(*args, **kwargs) -> ProcessResult:
-        nonlocal executed
-        del args, kwargs
-        executed = True
-        return ProcessResult(("true",), 0)
-
-    monkeypatch.setattr(session, "_stage_oauth", fail_stage)
-    monkeypatch.setattr(session, "_remove_oauth", remove)
-    monkeypatch.setattr(session, "_exec_on", execute)
-
-    with pytest.raises(RuntimeError, match="stage failed"):
-        await session.exec(ProcessRequest(("true",), secret_names=("codex_oauth",)))
-
-    assert await session.status() is SandboxStatus.ERRORED
-    assert removed == 1
-    assert executed is False
 
 
 @pytest.mark.asyncio
@@ -1185,3 +1178,156 @@ async def test_modal_login_failure_still_sanitizes_and_closes_broker(
         await backend.login_codex()
     assert broker.commands[-1][0] == "sh"
     assert broker.detach.result is None
+
+
+@pytest.mark.asyncio
+async def test_modal_login_rejects_ambient_workspace_mismatch_before_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broker = _LifecycleSandbox("sb-login")
+    fake_modal = _fake_modal([broker])
+    workspace = type(
+        "Workspace",
+        (),
+        {
+            "name": "ambient-workspace",
+            "hydrate": _AsyncMethod(),
+        },
+    )()
+    fake_modal.Workspace = type(
+        "Workspace",
+        (),
+        {"from_context": staticmethod(lambda: workspace)},
+    )
+    monkeypatch.setitem(sys.modules, "modal", fake_modal)
+    backend = ModalSandboxBackend(
+        ModalSandboxConfig(
+            image_id="im-reviewed",
+            workspace_name="configured-workspace",
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="workspace identity does not match"):
+        await backend.login_codex()
+
+    assert fake_modal.Sandbox.create.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("observed_workspace", "observed_environment", "message"),
+    (
+        ("wrong-workspace", "main", "workspace identity"),
+        ("configured-workspace", "wrong-environment", "environment identity"),
+    ),
+)
+async def test_modal_ordinary_create_rejects_ambient_namespace_mismatch_before_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    observed_workspace: str,
+    observed_environment: str,
+    message: str,
+) -> None:
+    fake_modal = _fake_modal([_LifecycleSandbox("sb-auth"), _LifecycleSandbox("sb-mission")])
+    client = object()
+    workspace = type(
+        "Workspace",
+        (),
+        {
+            "name": observed_workspace,
+            "client": client,
+            "hydrate": _AsyncMethod(),
+        },
+    )()
+    environment = type(
+        "Environment",
+        (),
+        {
+            "name": observed_environment,
+            "client": client,
+            "hydrate": _AsyncMethod(),
+        },
+    )()
+    fake_modal.Workspace = type(
+        "Workspace",
+        (),
+        {"from_context": staticmethod(lambda: workspace)},
+    )
+    fake_modal.Environment = type(
+        "Environment",
+        (),
+        {"from_context": staticmethod(lambda **_kwargs: environment)},
+    )
+    monkeypatch.setitem(sys.modules, "modal", fake_modal)
+    backend = ModalSandboxBackend(
+        ModalSandboxConfig(
+            image_id="im-reviewed",
+            workspace_name="configured-workspace",
+            environment_name="main",
+        )
+    )
+
+    with pytest.raises(RuntimeError, match=message):
+        await backend.create(SandboxSpec("modal", backend.environment, "/workspace/repo"))
+
+    assert fake_modal.Sandbox.create.calls == []
+
+
+@pytest.mark.asyncio
+async def test_modal_ordinary_create_binds_provider_objects_to_verified_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resources = [_LifecycleSandbox("sb-auth"), _LifecycleSandbox("sb-mission")]
+    fake_modal = _fake_modal(resources)
+    client = object()
+    workspace = type(
+        "Workspace",
+        (),
+        {
+            "name": "configured-workspace",
+            "client": client,
+            "hydrate": _AsyncMethod(),
+        },
+    )()
+    environment = type(
+        "Environment",
+        (),
+        {
+            "name": "main",
+            "client": client,
+            "hydrate": _AsyncMethod(),
+        },
+    )()
+    fake_modal.Workspace = type(
+        "Workspace",
+        (),
+        {"from_context": staticmethod(lambda: workspace)},
+    )
+    fake_modal.Environment = type(
+        "Environment",
+        (),
+        {"from_context": staticmethod(lambda **_kwargs: environment)},
+    )
+    monkeypatch.setitem(sys.modules, "modal", fake_modal)
+
+    async def verified(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "archetype.missions.sandboxes.modal.verify_coding_agent_environment",
+        verified,
+    )
+    backend = ModalSandboxBackend(
+        ModalSandboxConfig(
+            image_id="im-reviewed",
+            workspace_name="configured-workspace",
+            environment_name="main",
+        )
+    )
+    session = await backend.create(SandboxSpec("modal", backend.environment, "/workspace/repo"))
+
+    assert len(fake_modal.Sandbox.create.calls) == 2
+    assert all(call["client"] is client for call in fake_modal.Sandbox.create.calls)
+    # Modal derives Sandbox environment from the explicitly looked-up App.
+    # Passing environment_name here is deprecated in Modal 1.5.2.
+    assert all("environment_name" not in call for call in fake_modal.Sandbox.create.calls)
+    await session.close()

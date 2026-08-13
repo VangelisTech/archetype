@@ -176,6 +176,20 @@ reason = "Fail-closed admission gate: after the Daft current-candidate join, a p
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
+symbol = "project_pending_review_exhaustion"
+expr = "current.to_pylist"
+method = "to_pylist"
+reason = "Committed run-boundary projection: after Daft selects the current candidate for this mission, its bounded identities and policy budget become the diagnostic returned instead of spending the caller's remaining tick budget."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "project_pending_review_exhaustion"
+expr = "attempts_frame.to_pylist"
+method = "to_pylist"
+reason = "Committed domain-budget boundary at the run boundary: Daft aggregates finite CriticExecution facts by candidate before their counts are compared with max_reviews."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
 symbol = "project_critic_activity_intents"
 expr = "author_latest.to_pylist"
 method = "to_pylist"
@@ -201,6 +215,27 @@ symbol = "project_critic_activity_intents"
 expr = "attempts_frame.to_pylist"
 method = "to_pylist"
 reason = "Committed domain-budget boundary: finite CriticExecution facts are aggregated in Daft then materialized as attempt counts to assign the next semantic review attempt; generic Activity lease attempts cannot consume this budget."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "_TaskDispatchProjection.on_post_tick"
+expr = "_daft_latest(task_frame, label='task dispatch state', allow_updates=True).to_pylist"
+method = "to_pylist"
+reason = "Post-commit branch-lineage boundary: Daft has reduced the component-scoped task history to one row per identity; those bounded identities bind a fresh external author sandbox to the latest accepted head on its serialized mission branch."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "_TaskDispatchProjection.on_post_tick"
+expr = "mission_edges.select(f'{membership}source', f'{membership}target').distinct().to_pylist"
+method = "to_pylist"
+reason = "Post-commit external-author boundary: Daft selects distinct mission-membership identities before the finite index enters Python so each dispatched process hydrates the latest accepted head from its own serialized mission branch."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "_TaskDispatchProjection.on_post_tick"
+expr = "_daft_latest(candidate_history, label='candidate').to_pylist"
+method = "to_pylist"
+reason = "Post-commit branch-lineage boundary: Daft validates immutable candidate history and retains one row per identity; their accepted head revisions become scalar checkout coordinates for the next external author sandbox."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
@@ -274,6 +309,48 @@ reason = "Managed-write boundary: the admitted world append materializes its pla
 
 [[entries]]
 path = "src/archetype/storage/service.py"
+symbol = "_frame_fingerprint"
+expr = "frame.to_arrow"
+method = "to_arrow"
+reason = "Replay-detection boundary: the frame is the already-collected append_table payload, so this is an in-memory Arrow conversion hashed to recognize an identical batch resubmitted after a cancellation-landed commit; no plan re-executes."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "_AdmittedAsyncStore._payload_identities"
+expr = "unique['world_id'].to_pylist"
+method = "to_pylist"
+reason = "Durability bookkeeping on the already-materialized Arrow payload: the distinct managed identity keys (bounded by ticks per batch, normally one) enter Python so cancellation-landed commits are never replayed and merged cached retries never acknowledge unwritten rows."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "_AdmittedAsyncStore._payload_identities"
+expr = "unique['run_id'].to_pylist"
+method = "to_pylist"
+reason = "Durability bookkeeping on the already-materialized Arrow payload: the distinct managed identity keys (bounded by ticks per batch, normally one) enter Python so cancellation-landed commits are never replayed and merged cached retries never acknowledge unwritten rows."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "_AdmittedAsyncStore._payload_identities"
+expr = "unique['tick'].to_pylist"
+method = "to_pylist"
+reason = "Durability bookkeeping on the already-materialized Arrow payload: the distinct managed identity keys (bounded by ticks per batch, normally one) enter Python so cancellation-landed commits are never replayed and merged cached retries never acknowledge unwritten rows."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "_AdmittedAsyncStore._payload_identities"
+expr = "unique['commit_token'].to_pylist"
+method = "to_pylist"
+reason = "Durability bookkeeping on the already-materialized Arrow payload: the distinct managed identity keys (bounded by ticks per batch, normally one) enter Python so cancellation-landed commits are never replayed and merged cached retries never acknowledge unwritten rows."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "_AdmittedAsyncStore._payload_identities"
+expr = "unique['writer_epoch'].to_pylist"
+method = "to_pylist"
+reason = "Durability bookkeeping on the already-materialized Arrow payload: the distinct managed identity keys (bounded by ticks per batch, normally one) enter Python so cancellation-landed commits are never replayed and merged cached retries never acknowledge unwritten rows."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
 symbol = "StorageService.append_missing"
 expr = "aligned.collect"
 method = "collect"
@@ -299,6 +376,69 @@ symbol = "StorageService.materialize"
 expr = "frame.collect"
 method = "collect"
 reason = "Central application execution boundary: StorageService admits the caller's lazy Daft plan through its shared execution gate, materializes it off the event loop, and returns the completed frame."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.capture_table_snapshot"
+expr = "frame.collect"
+method = "collect"
+reason = "Offline whole-storage migration boundary: StorageService pins one Iceberg snapshot and materializes its complete local-v1 contents exactly once so the immutable plan can bind an exact schema, row count, and order-independent duplicate-preserving digest; those durable facts cannot be recovered from an unexecuted lazy plan."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.capture_table_snapshot"
+expr = "frozen.to_arrow"
+method = "to_arrow"
+reason = "Offline migration evidence boundary: the pinned frame was already collected under StorageService admission, and its in-memory Arrow values are required by the versioned schema-bound row-multiset digest without executing a second plan."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.export_table_snapshot"
+expr = "frame.collect"
+method = "collect"
+reason = "Offline migration transfer boundary: StorageService executes the exact plan-pinned Iceberg snapshot once and freezes the full local-v1 payload so source drift validation and destination commit retries cannot re-read a different snapshot."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.export_table_snapshot"
+expr = "frozen.to_arrow"
+method = "to_arrow"
+reason = "Offline migration transfer boundary: the pinned source frame is already collected and must cross as an exact Arrow table for Artifact URI relocation, deterministic digest verification, and one destination Iceberg commit."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.import_table_snapshot"
+expr = "aligned.collect"
+method = "collect"
+reason = "Conflict-safe migration commit boundary: the caller supplied one already-materialized Arrow snapshot; StorageService freezes its schema-aligned Daft wrapper once so optimistic Iceberg retries never re-evaluate or change the exact destination payload."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.import_table_snapshot"
+expr = "frozen.to_arrow"
+method = "to_arrow"
+reason = "Empty-table migration verification boundary: the aligned payload is already collected in memory and must be converted back to Arrow to prove the created zero-snapshot table has the exact planned schema and logical digest."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.import_table_snapshot"
+expr = "frozen.write_iceberg"
+method = "write_iceberg"
+reason = "Physical migration commit boundary: the exact verified full-table payload must enter the destination Iceberg authority as one optimistic append; commit failures retry the same frozen frame and unknown outcomes are reconciled by digest before any replay."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService._capture_native_table"
+expr = "frame.collect"
+method = "collect"
+reason = "Migration read-back boundary: StorageService materializes one exact current or historical Iceberg snapshot to prove a destination commit, reconcile an unknown outcome, or recover the imported snapshot after a cold-verification tick advanced the table."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService._capture_native_table"
+expr = "frozen.to_arrow"
+method = "to_arrow"
+reason = "Migration read-back evidence boundary: the selected Iceberg snapshot is already collected, and its in-memory Arrow values are required to compare exact schema, count, and multiset digest without executing another plan."
 
 [[entries]]
 path = "src/archetype/world/resume.py"

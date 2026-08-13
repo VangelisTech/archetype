@@ -30,6 +30,7 @@ class SandboxEventType(StrEnum):
     """Structured, provider-neutral operational events with no workflow authority."""
 
     READY = "sandbox_ready"
+    SESSION_READY = "session_ready"
     PROCESS_STARTED = "process_started"
     HEARTBEAT = "heartbeat"
     PROCESS_FINISHED = "process_finished"
@@ -157,6 +158,7 @@ class SandboxCapabilities:
 
     checkpoints: bool = False
     live_output: bool = False
+    interactive_sessions: bool = False
     secret_names: tuple[str, ...] = ()
     home_directory: str = "/root"
     observation_directory: str = "/tmp/archetype-agent-missions/live"
@@ -215,6 +217,41 @@ class ProcessResult:
     stdout: str = ""
     stderr: str = ""
     trace_uri: str = ""
+
+
+@dataclass(frozen=True)
+class RepositoryPublicationRequest:
+    """Exact validated Git revision to publish outside the agent process boundary."""
+
+    repository: str
+    branch_ref: str
+    revision: str
+    worktree: str
+    timeout_seconds: int
+    secret_name: str = "github"
+
+    def __post_init__(self) -> None:
+        if not re.fullmatch(
+            r"https://github\.com/[A-Za-z0-9][A-Za-z0-9_.-]*/"
+            r"[A-Za-z0-9][A-Za-z0-9_.-]*\.git",
+            self.repository,
+        ):
+            raise ValueError("repository publication requires a canonical GitHub HTTPS URL")
+        if (
+            not self.branch_ref.startswith("refs/heads/")
+            or any(character.isspace() for character in self.branch_ref)
+            or ".." in self.branch_ref
+        ):
+            raise ValueError("repository publication requires a full branch ref")
+        if not re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", self.revision):
+            raise ValueError("repository publication requires a full Git object ID")
+        worktree = PurePosixPath(self.worktree)
+        if not worktree.is_absolute() or str(worktree) in {"/", "."}:
+            raise ValueError("repository publication worktree must be a non-root absolute path")
+        if self.timeout_seconds < 1:
+            raise ValueError("repository publication timeout must be positive")
+        if not self.secret_name.strip():
+            raise ValueError("repository publication requires a symbolic secret name")
 
 
 @dataclass(frozen=True)
@@ -319,6 +356,16 @@ class SandboxSession(Protocol):
 
 
 @runtime_checkable
+class RepositoryPublisher(Protocol):
+    """Provider-owned publisher isolated from all agent-controlled processes."""
+
+    async def publish_repository(
+        self,
+        request: RepositoryPublicationRequest,
+    ) -> ProcessResult: ...
+
+
+@runtime_checkable
 class SandboxBackend(Protocol):
     """Provider adapter that creates or restores sandbox sessions."""
 
@@ -355,6 +402,8 @@ __all__ = [
     "live_observation_paths",
     "ProcessRequest",
     "ProcessResult",
+    "RepositoryPublicationRequest",
+    "RepositoryPublisher",
     "SandboxBackend",
     "SandboxCapabilities",
     "SandboxEvent",

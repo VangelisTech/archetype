@@ -200,30 +200,28 @@ The CLI (except `serve`) is an HTTP client against the running server. See `READ
 ## Tests and CI
 
 ```bash
-make ci          # complete PR verification profile
-make verify-full # PR profile + process/reliability evidence
-make verify-release # installed-artifact release profile
+make ci          # required PR profile: static checks + fast tests
+make verify-full # coverage, eval, package, example, operational + docs evidence
+make verify-release # exact-wheel release profile
 make test        # fast tests, no coverage
 make static      # format/lint/type/lock/registry checks
 make test-cov    # coverage report
 ```
 
-PR flow: open the PR and stop — never run `gh pr merge --auto`. The
-automerge workflow arms only when the head is queue-ready: latest
-`review-complete` succeeded and every non-outdated review thread is
-resolved (premature arms are auto-reverted; arming early only skips the
-review, it never merges sooner). Reply to footgun review threads with
-what you changed, then resolve them. GitHub Actions cannot observe thread
-resolution, so once the last thread is resolved, submit a review
-(`gh pr review --comment`) to re-evaluate arming — the one arming signal
-Actions delivers without re-reviewing the head. Do not re-run
-**Deterministic Review Gate** to re-arm: on a head whose findings were
-all advisory the gate succeeds again and republishes those same findings
-as fresh unresolved threads, putting the PR back where it started.
-Pushing also works, since a new head earns a fresh review. The reverse
-also holds: a
-review submitted on an armed PR that is no longer queue-ready disarms it
-(best-effort — the merge queue may already hold the PR).
+PR flow: open the PR, wait for required `Static` and `Tests (3.12)`, address
+concrete Codex and Cursor Bugbot findings, then squash merge manually. The
+AI review gate, automatic merge workflow, and merge queue are disabled.
+Heavy coverage, eval, external infrastructure, example, package, and
+compatibility evidence runs at release cadence instead of blocking every PR.
+
+### Rerun policy
+
+- A required-check failure gets **one** authorized rerun, and only after a
+  concrete classification (read the log or receipt first — never
+  rerun-and-hope). A second failure of the same kind is a harness defect:
+  stop, file it, do not keep rerunning.
+- Treat Codex and Cursor Bugbot review as advisory evidence. Fix concrete
+  findings; do not invent a second merge gate around them.
 
 ## Application flow
 

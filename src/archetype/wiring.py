@@ -47,6 +47,8 @@ from archetype.evaluation.models import (
     RunGraders,
     summarize_evaluation_operation,
 )
+from archetype.migration.contracts import MigrationEndpoint
+from archetype.migration.interfaces import ColdMigrationVerifier
 from archetype.missions.activity_binding import MissionActivityBinding
 from archetype.missions.activity_coordinator import (
     MissionAuthorActivityCoordinator,
@@ -56,8 +58,8 @@ from archetype.missions.activity_world import (
     StorageMissionCommittedIntentReader,
     WorldMissionAuthorObservationStager,
 )
+from archetype.missions.coding_agents.app_server import CodexAppServerDriver
 from archetype.missions.coding_agents.harness import (
-    CodexDriver,
     CodingAgentHarness,
     CodingAgentHarnessConfig,
 )
@@ -69,7 +71,7 @@ from archetype.missions.critic_activity_world import (
     WorldMissionCriticObservationStager,
 )
 from archetype.missions.critics import (
-    CodexCriticDriver,
+    CodexAppServerCriticDriver,
     CriticActivityCodec,
     CriticHarness,
     CriticHarnessConfig,
@@ -95,6 +97,7 @@ from archetype.missions.models import (
     summarize_mission_operation,
 )
 from archetype.missions.sandboxes.modal import (
+    ModalCodexAppServerConnector,
     ModalSandboxBackend,
     ModalSandboxOperationCapability,
 )
@@ -128,6 +131,7 @@ from archetype.storage.activity_catalog import (
     SqliteActivityCatalog,
     activity_catalog_path_for,
 )
+from archetype.storage.catalog import SqliteControlCatalog
 from archetype.storage.config import ControlCatalogConfig
 from archetype.storage.service import StorageService
 from archetype.world import mutation, query, simulation
@@ -533,18 +537,29 @@ async def _handle_grade_trajectory(
     )
 
 
-def _runtime_world_factory(resources: RuntimeResources) -> Callable[..., Any]:
+def _runtime_world_factory(
+    resources: RuntimeResources,
+    *,
+    world_id: str | None = None,
+    install_initializers: bool = False,
+) -> Callable[..., Any]:
     """Resolve the runtime-owned mission-world constructor without import cycles."""
 
     def create(*args: Any, **kwargs: Any) -> Any:
         from archetype.runtime.runtime import _runtime_world_for_resources
 
-        return _runtime_world_for_resources(resources, *args, **kwargs)
+        return _runtime_world_for_resources(
+            resources,
+            *args,
+            world_id=world_id,
+            install_initializers=install_initializers,
+            **kwargs,
+        )
 
     return create
 
 
-async def _handle_submit_mission(
+async def _handle_mission(
     resources: RuntimeResources,
     worlds: WorldRegistry,
     lifecycle: WorldLifecycle,
@@ -553,15 +568,23 @@ async def _handle_submit_mission(
     redaction: RedactionService,
     control_catalog_config: ControlCatalogConfig,
     unsettled_worlds: RequiredProjectorFanout,
-    operation: SubmitMission,
+    operation: SubmitMission | RunMission,
 ) -> Any:
     backend = operation.config.sandbox_backend
     if not isinstance(backend, ModalSandboxBackend):
         raise ValueError("Agent Mission admission requires the Modal sandbox backend in v0.5.0")
     reservation = resources.owner(operation.owner_id)
     async with resources.admit_owner_operation(reservation):
+        cold_constructed = False
 
         async def construct() -> MissionService:
+            nonlocal cold_constructed
+            cold_world_id: str | None = None
+            if isinstance(operation, RunMission):
+                cold_world_id = operation.mission.world_id.strip()
+                if not cold_world_id:
+                    raise ValueError("cold Mission run requires SubmittedMission.world_id")
+                cold_constructed = True
             sandbox = SandboxService((backend,))
             reservation.bind(sandbox, close=sandbox.shutdown)
             capability = ModalSandboxOperationCapability(backend)
@@ -575,7 +598,8 @@ async def _handle_submit_mission(
                 app_name=backend_config.app_name,
                 protocol_epoch=backend_config.operation_protocol_epoch,
             )
-            author_driver = operation.config.driver or CodexDriver(
+            author_driver = operation.config.driver or CodexAppServerDriver(
+                connector=ModalCodexAppServerConnector(),
                 model=operation.config.model,
                 workspace=operation.config.workspace,
             )
@@ -596,7 +620,8 @@ async def _handle_submit_mission(
                 ),
                 observer=operation.config.on_sandbox_event,
             )
-            critic_driver = operation.config.critic_driver or CodexCriticDriver(
+            critic_driver = operation.config.critic_driver or CodexAppServerCriticDriver(
+                connector=ModalCodexAppServerConnector(),
                 workspace=operation.config.critic_workspace,
             )
             critic_executor = ModalMissionCriticExecutor(
@@ -678,7 +703,10 @@ async def _handle_submit_mission(
                 await unsettled_worlds.bind(world_id, binding)
                 try:
                     routed = unsettled_worlds.required_projector_for(world_id)
-                    if worlds.required_projector(world_id) is not routed:
+                    if (
+                        await worlds.live_world(world_id) is not None
+                        and worlds.required_projector(world_id) is not routed
+                    ):
                         await worlds.bind_required_projector(
                             world_id,
                             routed,
@@ -700,7 +728,11 @@ async def _handle_submit_mission(
                 )
 
             return MissionService(
-                world_factory=_runtime_world_factory(resources),
+                world_factory=_runtime_world_factory(
+                    resources,
+                    world_id=cold_world_id,
+                    install_initializers=cold_world_id is not None,
+                ),
                 name=operation.name,
                 config=operation.config,
                 sandbox_service=sandbox,
@@ -711,23 +743,26 @@ async def _handle_submit_mission(
             )
 
         service = await reservation.construct(construct)
-        submission = operation.submission
-        return await service.submit(
-            repository=submission.repository,
-            branch=submission.branch,
-            tasks=submission.tasks,
-            name=submission.name,
-            base_ref=submission.base_ref,
-        )
+        if cold_constructed:
+            from archetype.runtime._config import coerce_storage
 
-
-async def _handle_run_mission(
-    resources: RuntimeResources,
-    operation: RunMission,
-) -> Any:
-    reservation = resources.owner(operation.owner_id)
-    async with resources.admit_owner_operation(reservation):
-        service = cast(MissionService, reservation.require_bound())
+            assert isinstance(operation, RunMission)
+            world_id = operation.mission.world_id
+            storage_config = coerce_storage(operation.storage) or StorageConfig()
+            await worlds.remember_storage_identity(world_id, storage_config)
+            # Bind the exact required projector before mutable reconstruction,
+            # so lifecycle recovery retains and projects the committed head.
+            await service.bind_activity()
+            await lifecycle.open_world_mutable(storage_config, world_id)
+        if isinstance(operation, SubmitMission):
+            submission = operation.submission
+            return await service.submit(
+                repository=submission.repository,
+                branch=submission.branch,
+                tasks=submission.tasks,
+                name=submission.name,
+                base_ref=submission.base_ref,
+            )
         return await service.run(operation.mission, max_ticks=operation.max_ticks)
 
 
@@ -904,7 +939,7 @@ def _pull_forward_handler(
         SubmitMission: cast(
             Any,
             partial(
-                _handle_submit_mission,
+                _handle_mission,
                 resources,
                 worlds,
                 lifecycle,
@@ -915,7 +950,20 @@ def _pull_forward_handler(
                 unsettled_worlds,
             ),
         ),
-        RunMission: cast(Any, partial(_handle_run_mission, resources)),
+        RunMission: cast(
+            Any,
+            partial(
+                _handle_mission,
+                resources,
+                worlds,
+                lifecycle,
+                scheduler,
+                storage,
+                redaction,
+                control_catalog_config,
+                unsettled_worlds,
+            ),
+        ),
         RestoreMissionSandbox: cast(
             Any,
             partial(_handle_restore_mission_sandbox, resources),
@@ -1252,7 +1300,43 @@ def build_runtime_resources(config: RuntimeBootstrapConfig) -> RuntimeResources:
     return resources
 
 
+def build_local_migration_endpoint(
+    storage_config: StorageConfig,
+    storage_service: StorageService,
+    *,
+    audit_storage_config: StorageConfig,
+    artifact_store_config: ArtifactStoreConfig | None = None,
+    cold_verifier: ColdMigrationVerifier | None = None,
+) -> MigrationEndpoint:
+    """Bind migration capabilities to one caller-owned local storage service.
+
+    The caller owns the service lifetime.  The explicit audit configuration
+    proves that audit rows share this same storage identity; omission cannot
+    silently stand for Archetype's separate default audit lakehouse.  Local v1
+    deliberately refuses a remote control catalog; the remote administrative
+    protocol remains a separate implementation slice.
+    """
+
+    storage_service.require_iceberg_identity(storage_config)
+    control = storage_service.get_control_catalog(storage_config)
+    if not isinstance(control, SqliteControlCatalog):
+        raise TypeError("local migration v1 requires a SQLite control catalog")
+    activity_path = control.path.with_name(
+        f"{control.path.stem}-activities{control.path.suffix}"
+    ).resolve()
+    return MigrationEndpoint(
+        storage_config=storage_config,
+        storage_service=storage_service,
+        control_catalog=control,
+        artifact_store_config=artifact_store_config or ArtifactStoreConfig(),
+        activity_catalog_path=activity_path,
+        audit_storage_config=audit_storage_config,
+        cold_verifier=cold_verifier,
+    )
+
+
 __all__ = [
     "RuntimeBootstrapConfig",
+    "build_local_migration_endpoint",
     "build_runtime_resources",
 ]

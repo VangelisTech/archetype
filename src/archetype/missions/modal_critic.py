@@ -35,6 +35,7 @@ from archetype.missions.sandboxes import SandboxSpec
 from archetype.missions.sandboxes.modal import (
     MODAL_ACTIVITY_PROTOCOL_EPOCH,
     ModalSandboxOperationCapability,
+    ModalSandboxOperationCleanup,
     ModalSandboxOperationIdentity,
 )
 from archetype.missions.sandboxes.modal_barrier import (
@@ -48,7 +49,8 @@ from archetype.missions.sandboxes.modal_barrier import (
 _DICT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _PROVIDER_RESULT_KIND = "missions.critic.modal-result"
-_PROVIDER_RESULT_SCHEMA_VERSION = 1
+_LEGACY_PROVIDER_RESULT_SCHEMA_VERSION = 1
+_PROVIDER_RESULT_SCHEMA_VERSION = 2
 _RESULT_KEY_PREFIX = "critic-result-v1-"
 _RETRY_REF_PREFIX = "modal-critic-retry+json:sha256:"
 _MAX_RESULT_BYTES = 1 << 20
@@ -90,6 +92,20 @@ class ModalCriticExecutionUnknown(AvailabilityError):
         super().__init__(f"Modal critic operation {operation_id!r} is Unknown: {self.reason}")
 
 
+class ModalCriticRecoveryRequired(ModalCriticExecutionUnknown):
+    """A durable critic result exists but its exact cleanup remains unknown."""
+
+    def __init__(self, operation_id: str, recovery: CriticRecoveryUnknown) -> None:
+        self.recovery = recovery
+        super().__init__(operation_id, recovery.reason)
+
+
+@dataclass(frozen=True, slots=True)
+class _StoredCriticResult:
+    result: CriticActivityResult
+    cleanup: ModalSandboxOperationCleanup | None
+
+
 class _ModalCriticResultCatalog:
     """One provider-native first-result register backed by a named Modal Dict."""
 
@@ -117,7 +133,7 @@ class _ModalCriticResultCatalog:
         *,
         identity: ModalSandboxOperationIdentity,
         request_digest: str,
-    ) -> CriticActivityResult | None:
+    ) -> _StoredCriticResult | None:
         dictionary = await self._dictionary()
         try:
             value = await dictionary.get.aio(self._key(identity))
@@ -147,11 +163,13 @@ class _ModalCriticResultCatalog:
         identity: ModalSandboxOperationIdentity,
         request_digest: str,
         result: CriticActivityResult,
-    ) -> CriticActivityResult:
+        cleanup: ModalSandboxOperationCleanup,
+    ) -> _StoredCriticResult:
+        stored = _StoredCriticResult(result=result, cleanup=cleanup)
         encoded = self._encode(
             identity=identity,
             request_digest=request_digest,
-            result=result,
+            stored=stored,
         )
         dictionary = await self._dictionary()
         try:
@@ -173,18 +191,11 @@ class _ModalCriticResultCatalog:
                     "provider first-result write outcome is ambiguous and no result is visible "
                     f"({type(exc).__name__[:128]})",
                 ) from exc
-            if (
-                self._encode(
-                    identity=identity,
-                    request_digest=request_digest,
-                    result=existing,
-                )
-                != encoded
-            ):
+            if not self._matches_first_result(existing, stored):
                 raise RuntimeError("Modal critic operation has a conflicting first result") from exc
             return existing
         if added:
-            return result
+            return stored
         existing = await self.get(
             identity=identity,
             request_digest=request_digest,
@@ -194,18 +205,58 @@ class _ModalCriticResultCatalog:
                 identity.operation_id,
                 "provider rejected first result but no result is visible",
             )
-        if (
-            self._encode(
-                identity=identity,
-                request_digest=request_digest,
-                result=existing,
-            )
-            != encoded
-        ):
+        if not self._matches_first_result(existing, stored):
             raise RuntimeError("Modal critic operation has a conflicting first result")
         return existing
 
+    @staticmethod
+    def _matches_first_result(
+        existing: _StoredCriticResult,
+        expected: _StoredCriticResult,
+    ) -> bool:
+        # A schema-1 result is already the immutable winner. The current
+        # execute path still closes its own session in ``finally``; without
+        # legacy object IDs, replacing or inventing cleanup authority is unsafe.
+        return existing.result == expected.result and (
+            existing.cleanup is None or existing.cleanup == expected.cleanup
+        )
+
     def _encode(
+        self,
+        *,
+        identity: ModalSandboxOperationIdentity,
+        request_digest: str,
+        stored: _StoredCriticResult,
+    ) -> bytes:
+        self._validate_identity(identity)
+        if not _DIGEST.fullmatch(request_digest):
+            raise ValueError("Modal critic request digest is invalid")
+        cleanup = stored.cleanup
+        if cleanup is None:
+            raise ValueError("Modal critic schema-2 result requires cleanup metadata")
+        if cleanup.identity != identity:
+            raise ValueError("Modal critic cleanup belongs to another operation")
+        result_payload = json.loads(self._codec.encode_result(stored.result).payload)
+        encoded = json.dumps(
+            {
+                "cleanup": cleanup.to_payload(),
+                "kind": _PROVIDER_RESULT_KIND,
+                "operation_digest": identity.digest,
+                "request_digest": request_digest,
+                "result": result_payload,
+                "schema_version": _PROVIDER_RESULT_SCHEMA_VERSION,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        if len(encoded) > self._max_result_bytes:
+            raise ValueError(
+                f"Modal critic provider result exceeds the {self._max_result_bytes}-byte limit"
+            )
+        return encoded
+
+    def _encode_legacy(
         self,
         *,
         identity: ModalSandboxOperationIdentity,
@@ -222,7 +273,7 @@ class _ModalCriticResultCatalog:
                 "operation_digest": identity.digest,
                 "request_digest": request_digest,
                 "result": result_payload,
-                "schema_version": _PROVIDER_RESULT_SCHEMA_VERSION,
+                "schema_version": _LEGACY_PROVIDER_RESULT_SCHEMA_VERSION,
             },
             ensure_ascii=False,
             separators=(",", ":"),
@@ -240,7 +291,7 @@ class _ModalCriticResultCatalog:
         *,
         identity: ModalSandboxOperationIdentity,
         request_digest: str,
-    ) -> CriticActivityResult:
+    ) -> _StoredCriticResult:
         if len(encoded) > self._max_result_bytes:
             raise ModalCriticExecutionUnknown(
                 identity.operation_id,
@@ -253,18 +304,30 @@ class _ModalCriticResultCatalog:
                 identity.operation_id,
                 "provider result is not canonical JSON",
             ) from exc
-        if (
-            not isinstance(envelope, dict)
-            or set(envelope)
-            != {
+        schema_version = envelope.get("schema_version") if isinstance(envelope, dict) else None
+        if schema_version == _LEGACY_PROVIDER_RESULT_SCHEMA_VERSION:
+            expected_fields = {
                 "kind",
                 "operation_digest",
                 "request_digest",
                 "result",
                 "schema_version",
             }
+        elif schema_version == _PROVIDER_RESULT_SCHEMA_VERSION:
+            expected_fields = {
+                "cleanup",
+                "kind",
+                "operation_digest",
+                "request_digest",
+                "result",
+                "schema_version",
+            }
+        else:
+            expected_fields = set()
+        if (
+            not isinstance(envelope, dict)
+            or set(envelope) != expected_fields
             or envelope.get("kind") != _PROVIDER_RESULT_KIND
-            or envelope.get("schema_version") != _PROVIDER_RESULT_SCHEMA_VERSION
             or envelope.get("operation_digest") != identity.digest
             or envelope.get("request_digest") != request_digest
         ):
@@ -280,24 +343,39 @@ class _ModalCriticResultCatalog:
         ).encode()
         try:
             result = self._codec.decode_result(result_encoded)
+            cleanup = (
+                None
+                if schema_version == _LEGACY_PROVIDER_RESULT_SCHEMA_VERSION
+                else ModalSandboxOperationCleanup.from_payload(
+                    identity,
+                    envelope["cleanup"],
+                )
+            )
         except (TypeError, ValueError) as exc:
             raise ModalCriticExecutionUnknown(
                 identity.operation_id,
                 "provider result contains an invalid critic observation",
             ) from exc
-        if (
-            self._encode(
+        stored = _StoredCriticResult(result=result, cleanup=cleanup)
+        canonical = (
+            self._encode_legacy(
                 identity=identity,
                 request_digest=request_digest,
                 result=result,
             )
-            != encoded
-        ):
+            if schema_version == _LEGACY_PROVIDER_RESULT_SCHEMA_VERSION
+            else self._encode(
+                identity=identity,
+                request_digest=request_digest,
+                stored=stored,
+            )
+        )
+        if canonical != encoded:
             raise ModalCriticExecutionUnknown(
                 identity.operation_id,
                 "provider result is not canonically encoded",
             )
-        return result
+        return stored
 
     async def _dictionary(self) -> Any:
         modal = self._load_modal()
@@ -428,7 +506,11 @@ class ModalMissionCriticExecutor:
             request_digest=request_digest,
         )
         if existing is not None:
-            return self._execution_result(request, existing)
+            await self._require_cleanup_before_recovered_result(
+                existing,
+                spec=self._sandbox_spec(request),
+            )
+            return self._execution_result(request, existing.result)
 
         provision_started_at_ms = int(time.time() * 1000)
         spec = self._sandbox_spec(request)
@@ -450,7 +532,11 @@ class ModalMissionCriticExecutor:
                 request_digest=request_digest,
             )
             if recovered is not None:
-                return self._execution_result(request, recovered)
+                await self._require_cleanup_before_recovered_result(
+                    recovered,
+                    spec=spec,
+                )
+                return self._execution_result(request, recovered.result)
             if isinstance(outcome, ModalProviderMarkerExists):
                 reason = f"permanent {outcome.phase} marker exists without a durable result"
             elif isinstance(outcome, ModalProviderBarrierUnknown):
@@ -490,8 +576,9 @@ class ModalMissionCriticExecutor:
                 identity=identity,
                 request_digest=request_digest,
                 result=durable,
+                cleanup=session.operation_cleanup,
             )
-            return self._execution_result(request, stored)
+            return self._execution_result(request, stored.result)
         finally:
             await session.close()
 
@@ -514,7 +601,13 @@ class ModalMissionCriticExecutor:
         except ModalCriticExecutionUnknown as exc:
             return CriticRecoveryUnknown(exc.reason)
         if existing is not None:
-            return CriticRecovered(self._execution_result(request, existing))
+            recovery = await self._cleanup_recovery(
+                existing,
+                spec=self._sandbox_spec(request),
+            )
+            if recovery is not None:
+                return recovery
+            return CriticRecovered(self._execution_result(request, existing.result))
 
         marker = await self._barrier.observe_operation_marker(identity=identity)
         if isinstance(marker, ModalProviderOperationMissing):
@@ -528,7 +621,13 @@ class ModalMissionCriticExecutor:
         except ModalCriticExecutionUnknown as exc:
             return CriticRecoveryUnknown(exc.reason)
         if existing is not None:
-            return CriticRecovered(self._execution_result(request, existing))
+            recovery = await self._cleanup_recovery(
+                existing,
+                spec=self._sandbox_spec(request),
+            )
+            if recovery is not None:
+                return recovery
+            return CriticRecovered(self._execution_result(request, existing.result))
         if isinstance(marker, ModalProviderMarkerExists):
             return CriticRecoveryUnknown(
                 f"permanent {marker.phase} marker exists without a durable result"
@@ -536,6 +635,56 @@ class ModalMissionCriticExecutor:
         if isinstance(marker, ModalProviderBarrierUnknown):
             return CriticRecoveryUnknown(marker.reason)
         return CriticRecoveryUnknown("provider marker observation returned an invalid outcome")
+
+    async def _require_cleanup_before_recovered_result(
+        self,
+        stored: _StoredCriticResult,
+        *,
+        spec: SandboxSpec,
+    ) -> None:
+        recovery = await self._cleanup_recovery(stored, spec=spec)
+        if recovery is not None:
+            cleanup = stored.cleanup
+            operation_id = (
+                cleanup.identity.operation_id if cleanup is not None else "unknown-critic-operation"
+            )
+            raise ModalCriticRecoveryRequired(operation_id, recovery)
+
+    async def _cleanup_recovery(
+        self,
+        stored: _StoredCriticResult,
+        *,
+        spec: SandboxSpec,
+    ) -> CriticRecoveryUnknown | None:
+        try:
+            await self._cleanup_completed(stored, spec=spec)
+        except ModalCriticExecutionUnknown as exc:
+            return CriticRecoveryUnknown(exc.reason)
+        return None
+
+    async def _cleanup_completed(
+        self,
+        stored: _StoredCriticResult,
+        *,
+        spec: SandboxSpec,
+    ) -> None:
+        cleanup = stored.cleanup
+        if cleanup is None:
+            # Schema 1 made the result authoritative before exact teardown
+            # identities existed. Never invent provider cleanup authority.
+            return
+        try:
+            await self._capability.cleanup_completed(
+                cleanup=cleanup,
+                spec=spec,
+            )
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:
+            raise ModalCriticExecutionUnknown(
+                cleanup.identity.operation_id,
+                f"exact provider cleanup failed ({type(exc).__name__[:128]})",
+            ) from exc
 
     def _sandbox_spec(self, request: CriticActivityRequest) -> SandboxSpec:
         return SandboxSpec(
@@ -676,6 +825,7 @@ class ModalMissionCriticExecutor:
 
 __all__ = [
     "ModalCriticExecutionUnknown",
+    "ModalCriticRecoveryRequired",
     "ModalMissionCriticExecutor",
     "ModalMissionCriticExecutorConfig",
 ]

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,7 +21,9 @@ from archetype import (
     ModalHostedEpisodeConfig,
     StorageConfig,
 )
+from archetype.activities import ActivityAdmission, ActivityCoordinator
 from archetype.core.config import StorageBackend
+from archetype.core.interfaces import CommittedTickReceipt
 from archetype.physical_ai import hosted_modal
 from archetype.physical_ai.hosted_activity_contracts import HostedEpisodeProviderResult
 from archetype.physical_ai.hosted_activity_values import SeededHostedEpisodeRunner
@@ -29,6 +32,10 @@ from archetype.physical_ai.hosted_episode import (
     build_hosted_episode_results,
 )
 from archetype.physical_ai.hosted_modal import ModalHostedEpisodeProvider
+from archetype.storage.activity_catalog import (
+    SqliteActivityCatalog,
+    activity_catalog_path_for,
+)
 from archetype.storage.config import ControlCatalogConfig
 from archetype.wiring import RuntimeBootstrapConfig
 from archetype.world.registry import WorldRegistry
@@ -153,6 +160,68 @@ def _request() -> HostedEpisodeRequest:
 
 
 @pytest.mark.asyncio
+async def test_public_hosted_episode_ignores_unrelated_unsettled_activity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = StorageConfig(
+        uri=str(tmp_path / "worlds"),
+        namespace="hosted-runtime",
+        backend=StorageBackend.ICEBERG,
+    )
+    catalog_config = ControlCatalogConfig(catalog_dir=tmp_path / "catalogs")
+    registry = WorldRegistry()
+    state = _ModalState(tmp_path / "modal", registry, crash_once=False)
+
+    def provider_factory(config: ModalHostedEpisodeConfig):
+        return ModalHostedEpisodeProvider(config, runtime=_ModalRuntime(state))
+
+    monkeypatch.setattr(
+        "archetype.runtime.runtime._bootstrap_config",
+        lambda **_kwargs: RuntimeBootstrapConfig(
+            control_catalog_config=catalog_config,
+            world_registry=registry,
+            audit_storage_config=storage,
+            hosted_episode_provider_factory=provider_factory,
+        ),
+    )
+
+    async with ArchetypeRuntime() as runtime:
+        world = runtime.world("hosted-with-mission-work", storage=storage)
+        info = await world.info()
+        state.world_id = str(info.world_id)
+        physical = SqliteActivityCatalog(activity_catalog_path_for(storage, catalog_config))
+        coordinator = ActivityCoordinator(physical)
+        await coordinator.admit(
+            ActivityAdmission(
+                activity_id="unrelated-mission",
+                kind="missions.author",
+                source=CommittedTickReceipt(
+                    state.world_id,
+                    str(info.run_id),
+                    info.tick,
+                    "unrelated-visible-receipt",
+                    0,
+                ),
+                input_ref="mission-request:unrelated",
+                input_digest="unrelated-mission-request",
+            )
+        )
+        await physical.close()
+
+        observation = await world.run_hosted_episode(
+            [_request()],
+            provider=_provider_config(),
+            activity_id="requested-hosted-episode",
+        )
+
+        assert observation.activity_id == "requested-hosted-episode"
+        check = SqliteActivityCatalog(activity_catalog_path_for(storage, catalog_config))
+        assert await ActivityCoordinator(check).has_unsettled(state.world_id)
+        await check.close()
+
+
+@pytest.mark.asyncio
 async def test_public_hosted_episode_recovers_without_replay_and_isolates_fork(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -177,19 +246,29 @@ async def test_public_hosted_episode_recovers_without_replay_and_isolates_fork(
             world_registry=first_registry,
             audit_storage_config=storage,
             hosted_episode_provider_factory=provider_factory,
-            hosted_activity_lease_seconds=0.5,
+            hosted_activity_lease_seconds=300,
         ),
         RuntimeBootstrapConfig(
             control_catalog_config=catalog,
             world_registry=second_registry,
             audit_storage_config=storage,
             hosted_episode_provider_factory=provider_factory,
-            hosted_activity_lease_seconds=0.5,
+            hosted_activity_lease_seconds=300,
         ),
     ]
     monkeypatch.setattr(
         "archetype.runtime.runtime._bootstrap_config",
         lambda **_kwargs: configs.pop(0),
+    )
+    # Lease expiry between the two runtime generations is driven by this
+    # manual clock instead of racing a sub-second wall-clock lease against
+    # runner load (issue #720): within a phase the clock is frozen, so the
+    # crashed generation's claim cannot expire while its episode is still
+    # running.
+    clock = [time.time()]
+    monkeypatch.setattr(
+        "archetype.wiring.SqliteActivityCatalog",
+        lambda path: SqliteActivityCatalog(path, now_seconds=lambda: clock[0]),
     )
 
     activity_id = "restart-proof"
@@ -206,7 +285,7 @@ async def test_public_hosted_episode_recovers_without_replay_and_isolates_fork(
             )
 
     assert state.execution_count == 1
-    await asyncio.sleep(0.55)
+    clock[0] += 301.0
 
     state.registry = second_registry
     async with ArchetypeRuntime() as runtime:
@@ -230,3 +309,114 @@ async def test_public_hosted_episode_recovers_without_replay_and_isolates_fork(
         assert child_observation.activity_id == activity_id
         assert child_observation.operation_id != observation.operation_id
         assert state.execution_count == 2
+
+
+def _single_bootstrap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    namespace: str,
+    crash_once: bool,
+) -> tuple[StorageConfig, _ModalState]:
+    storage = StorageConfig(
+        uri=str(tmp_path / "worlds"),
+        namespace=namespace,
+        backend=StorageBackend.ICEBERG,
+    )
+    catalog = ControlCatalogConfig(catalog_dir=tmp_path / "catalogs")
+    registry = WorldRegistry()
+    state = _ModalState(tmp_path / "modal", registry, crash_once=crash_once)
+
+    def provider_factory(config: ModalHostedEpisodeConfig):
+        provider = ModalHostedEpisodeProvider(config, runtime=_ModalRuntime(state))
+        if crash_once:
+            return _CrashAfterProviderPublication(provider, state)
+        return provider
+
+    bootstrap = RuntimeBootstrapConfig(
+        control_catalog_config=catalog,
+        world_registry=registry,
+        audit_storage_config=storage,
+        hosted_episode_provider_factory=provider_factory,
+        hosted_activity_lease_seconds=30,
+    )
+    monkeypatch.setattr(
+        "archetype.runtime.runtime._bootstrap_config",
+        lambda **_kwargs: bootstrap,
+    )
+    return storage, state
+
+
+@pytest.mark.asyncio
+async def test_concurrent_hosted_episodes_each_complete_their_own_activity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two in-flight episodes must not claim or settle across each other."""
+
+    storage, state = _single_bootstrap(
+        tmp_path,
+        monkeypatch,
+        namespace="hosted-concurrent",
+        crash_once=False,
+    )
+    provider_config = _provider_config()
+    async with ArchetypeRuntime() as runtime:
+        world = runtime.world("hosted-concurrent", storage=storage)
+        state.world_id = str((await world.info()).world_id)
+        first, second = await asyncio.gather(
+            world.run_hosted_episode(
+                [_request()],
+                provider=provider_config,
+                activity_id="episode-one",
+            ),
+            world.run_hosted_episode(
+                [_request()],
+                provider=provider_config,
+                activity_id="episode-two",
+            ),
+        )
+
+    assert first.activity_id == "episode-one"
+    assert second.activity_id == "episode-two"
+    assert first.operation_id != second.operation_id
+    assert state.execution_count == 2
+
+
+@pytest.mark.asyncio
+async def test_stale_unsettled_episode_does_not_fail_a_completed_operation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A leftover unsettled Activity is not a later operation's failure.
+
+    The stale episode's worker dies before generic result recording, so its
+    Activity stays unsettled.  A subsequent episode must complete on its own
+    activity's settlement rather than requiring a globally quiet world.
+    """
+
+    storage, state = _single_bootstrap(
+        tmp_path,
+        monkeypatch,
+        namespace="hosted-stale",
+        crash_once=True,
+    )
+    provider_config = _provider_config()
+    async with ArchetypeRuntime() as runtime:
+        world = runtime.world("hosted-stale", storage=storage)
+        state.world_id = str((await world.info()).world_id)
+        with pytest.raises(RuntimeError, match="before generic result"):
+            await world.run_hosted_episode(
+                [_request()],
+                provider=provider_config,
+                activity_id="episode-stale",
+            )
+
+        observation = await world.run_hosted_episode(
+            [_request()],
+            provider=provider_config,
+            activity_id="episode-fresh",
+        )
+
+    assert observation.activity_id == "episode-fresh"
+    assert state.execution_count == 2

@@ -125,32 +125,20 @@ Before writing processors or Daft UDFs, `LEARNINGS.md` is also mandatory; it
 records execution-model footguns that are too implementation-specific for the
 normative contracts.
 
-## Deterministic review fan-out
+## Advisory AI review
 
-The PR review gate runs six named lenses with two independent reviewers per
-lens. Five lenses cover the footgun rulebook; `design-coherence` separately
-covers clean code, local pattern consistency, and concrete-over-abstract
-design. Design-coherence findings are advisory-only.
+Codex and Cursor Bugbot can provide review suggestions on pull requests.
+Their findings are advisory inputs to maintainer judgment: neither reviewer is
+a required status context, and provider failure cannot block a merge. Convert
+confirmed behavioral findings into deterministic tests, lints, audits, or
+operational scenarios so the same issue class does not require repeated model
+review.
 
-The review surface is intentionally split by ownership:
-
-- `.github/review/prompts/` contains the exact model prompts as plain Markdown.
-- `scripts/review_contracts.py` contains lens assignments, reviewer policy,
-  typed model return values, adjacent JSON Schemas, and normalizers.
-- `scripts/review_aggregation.py` clusters only exact
-  `(lens, category, path, side, line)` matches and preserves every original
-  finding in its reviewer receipt.
-- `scripts/footgun_review_gate.py` binds evidence to the exact PR scope,
-  orchestrates selective adjudication, and renders GitHub evidence.
-
-Two distinct reviewers reporting the same exact anchor corroborate a claim.
-Silence from the other reviewer is not disagreement. A singleton blocking
-claim or severity conflict receives a targeted falsification pass.
-Adjudication may confirm, refute, or leave the claim unresolved; it never
-deletes the original evidence. Refuted and unresolved claims become explicit
-human-decision threads. The final human design-review brief organizes the
-change into a suggested reading order and presents design notes, affected
-invariants, validation evidence, and decisions without claiming approval.
+The retired deterministic multi-lens gate and merge-queue orchestration are
+preserved only as historical incident evidence under
+`quality/quarantine/review-gate/`. Do not move those files back into active
+workflow or test paths. Any future review automation requires a new,
+cost-bounded design and explicit approval.
 
 ## Contribution Policy
 
@@ -272,7 +260,7 @@ make static           # format, lint, types, lock, contracts, benchmarks
 make eval-conformance # blocking regression + specification evidence
 make eval-reliability # blocking retry/replay/crash/recovery evidence
 make eval-capability  # blocking architectural capability evidence
-make verify-pr        # local equivalent of the required PR profile
+make verify-pr        # static checks + fast tests required on pull requests
 make verify-release   # installed-artifact release profile
 make bench            # record one local ECS microbenchmark report
 make bench-query      # record materialized durable-world read latency

@@ -102,7 +102,7 @@ source_path = "examples/04_messaging.py"
 source_command = ["python", "examples/04_messaging.py"]
 required_extras = []
 tier = 1
-applicability = ["source"]
+applicability = ["source", "wheel"]
 timeout_seconds = 180
 prerequisites = []
 missing_prerequisite = "fail"
@@ -122,7 +122,7 @@ source_path = "examples/05_llm_agents.py"
 source_command = ["python", "examples/05_llm_agents.py"]
 required_extras = []
 tier = 6
-applicability = ["source"]
+applicability = ["source", "wheel"]
 timeout_seconds = 900
 prerequisites = ["credential:OPENAI_API_KEY"]
 missing_prerequisite = "not_run"
@@ -164,7 +164,7 @@ source_path = "examples/07_hooks.py"
 source_command = ["python", "examples/07_hooks.py"]
 required_extras = []
 tier = 1
-applicability = ["source"]
+applicability = ["source", "wheel"]
 timeout_seconds = 120
 prerequisites = []
 missing_prerequisite = "fail"
@@ -184,7 +184,7 @@ source_path = "examples/08_htn_resolution.py"
 source_command = ["python", "examples/08_htn_resolution.py"]
 required_extras = []
 tier = 1
-applicability = ["source"]
+applicability = ["source", "wheel"]
 timeout_seconds = 180
 prerequisites = []
 missing_prerequisite = "fail"
@@ -204,7 +204,7 @@ source_path = "examples/09_cloud_storage.py"
 source_command = ["python", "examples/09_cloud_storage.py", "--smoke-local"]
 required_extras = []
 tier = 1
-applicability = ["source"]
+applicability = ["source", "wheel"]
 timeout_seconds = 180
 prerequisites = []
 missing_prerequisite = "fail"
@@ -246,11 +246,11 @@ source_command = [
   "examples/11_coding_agent_mission.py",
   "--dry-run",
   "--backend",
-  "docker",
+  "modal",
 ]
 required_extras = ["coding-agent"]
 tier = 1
-applicability = ["source"]
+applicability = ["source", "wheel"]
 timeout_seconds = 120
 prerequisites = []
 missing_prerequisite = "fail"
@@ -270,7 +270,7 @@ source_path = "examples/11_graph_relationships.py"
 source_command = ["python", "examples/11_graph_relationships.py"]
 required_extras = []
 tier = 1
-applicability = ["source"]
+applicability = ["source", "wheel"]
 timeout_seconds = 120
 prerequisites = []
 missing_prerequisite = "fail"
@@ -290,7 +290,7 @@ source_path = "examples/12_prefabs.py"
 source_command = ["python", "examples/12_prefabs.py"]
 required_extras = []
 tier = 1
-applicability = ["source"]
+applicability = ["source", "wheel"]
 timeout_seconds = 180
 prerequisites = []
 missing_prerequisite = "fail"
@@ -310,7 +310,7 @@ source_path = "examples/13_biome_rts.py"
 source_command = ["python", "examples/13_biome_rts.py"]
 required_extras = []
 tier = 1
-applicability = ["source"]
+applicability = ["source", "wheel"]
 timeout_seconds = 300
 prerequisites = []
 missing_prerequisite = "fail"
@@ -446,7 +446,7 @@ artifact_schema = "archetype.operational-results/v1"
 required_cadence = ["pr", "main", "release"]
 
 [[scenario]]
-id = "dogfood.agent_mission.modal_activities"
+id = "dogfood.agent_mission.modal_activity_contracts"
 kind = "dogfood"
 owner = "missions"
 owner_paths = [
@@ -465,7 +465,7 @@ source_command = [
 ]
 required_extras = []
 tier = 1
-applicability = ["source"]
+applicability = ["source", "wheel"]
 timeout_seconds = 300
 prerequisites = []
 missing_prerequisite = "fail"
@@ -479,6 +479,147 @@ cleanup_policy = "isolated"
 artifact_policy = "receipt"
 artifact_schema = "archetype.operational-results/v1"
 required_cadence = ["pr", "main", "release"]
+
+[[scenario]]
+id = "dogfood.runtime.shutdown"
+kind = "dogfood"
+owner = "runtime"
+owner_paths = [
+  "src/archetype/runtime",
+  "src/archetype/runtime_resources.py",
+  "src/archetype/wiring.py",
+]
+source_path = "tests/app/test_runtime_contracts.py"
+source_command = [
+  "pytest",
+  "-q",
+  "tests/app/test_runtime_contracts.py::TestShutdownIdempotency",
+]
+required_extras = []
+tier = 1
+applicability = ["source", "wheel"]
+timeout_seconds = 600
+prerequisites = []
+missing_prerequisite = "fail"
+semantic_oracle = { kind = "pytest", ref = "tests/app/test_runtime_contracts.py::TestShutdownIdempotency" }
+contracts = [
+  "runtime.lifecycle.single_flight_and_drain",
+  "runtime.lifecycle.retryable_teardown",
+]
+cleanup_policy = "isolated"
+artifact_policy = "receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["release"]
+
+[[scenario]]
+id = "dogfood.agent_mission.modal_live"
+kind = "dogfood"
+owner = "missions"
+owner_paths = [
+  "src/archetype/missions",
+  "tests/infrastructure/test_modal_agent_mission_live.py",
+]
+source_path = "tests/infrastructure/test_modal_agent_mission_live.py"
+source_command = [
+  "pytest",
+  "-q",
+  "tests/infrastructure/test_modal_agent_mission_live.py",
+]
+required_extras = ["coding-agent"]
+tier = 6
+applicability = ["source", "wheel"]
+timeout_seconds = 1500
+prerequisites = [
+  "credential:MODAL_TOKEN_ID",
+  "credential:MODAL_TOKEN_SECRET",
+  "infrastructure:CODING_AGENT_MODAL_WORKSPACE",
+  "infrastructure:CODING_AGENT_MODAL_ENVIRONMENT",
+  "infrastructure:CODEX_AUTH_VOLUME",
+  "infrastructure:CODING_AGENT_GITHUB_SECRET",
+]
+missing_prerequisite = "not_run"
+semantic_oracle = { kind = "pytest", ref = "tests/infrastructure/test_modal_agent_mission_live.py" }
+contracts = [
+  "missions.environment.pinned",
+  "missions.sandbox.cleanup_ownership",
+]
+cleanup_policy = "provider"
+artifact_policy = "redacted_receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["release"]
+
+[[scenario]]
+id = "dogfood.physical_ai.hosted_episode"
+kind = "dogfood"
+owner = "physical_ai"
+owner_paths = [
+  "src/archetype/physical_ai",
+  "src/archetype/activities",
+  "src/archetype/runtime",
+  "src/archetype/wiring.py",
+]
+source_path = "tests/integration/test_hosted_physical_runtime.py"
+source_command = [
+  "pytest",
+  "-q",
+  "tests/integration/test_hosted_physical_runtime.py",
+]
+required_extras = []
+tier = 1
+applicability = ["source", "wheel"]
+timeout_seconds = 600
+prerequisites = []
+missing_prerequisite = "fail"
+semantic_oracle = { kind = "pytest", ref = "tests/integration/test_hosted_physical_runtime.py" }
+contracts = [
+  "physical_ai.workflow.evidence",
+]
+cleanup_policy = "isolated"
+artifact_policy = "receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["release"]
+
+[[scenario]]
+id = "dogfood.physical_ai.modal_r2_live"
+kind = "dogfood"
+owner = "physical_ai"
+owner_paths = [
+  "src/archetype/physical_ai",
+  "src/archetype/activities",
+  "src/archetype/runtime",
+  "src/archetype/wiring.py",
+  "tests/infrastructure/test_modal_physical_r2_live.py",
+]
+source_path = "tests/infrastructure/test_modal_physical_r2_live.py"
+source_command = [
+  "pytest",
+  "-q",
+  "tests/infrastructure/test_modal_physical_r2_live.py",
+]
+required_extras = ["coding-agent"]
+tier = 6
+applicability = ["source", "wheel"]
+timeout_seconds = 900
+prerequisites = [
+  "credential:MODAL_TOKEN_ID",
+  "credential:MODAL_TOKEN_SECRET",
+  "credential:R2_ACCESS_KEY_ID",
+  "credential:R2_SECRET_ACCESS_KEY",
+  "infrastructure:CODING_AGENT_MODAL_WORKSPACE",
+  "infrastructure:CODING_AGENT_MODAL_ENVIRONMENT",
+  "infrastructure:R2_API_ENDPOINT",
+  "infrastructure:R2_BUCKET",
+]
+missing_prerequisite = "not_run"
+semantic_oracle = { kind = "pytest", ref = "tests/infrastructure/test_modal_physical_r2_live.py" }
+contracts = [
+  "physical_ai.workflow.evidence",
+  "world.run_identity.cold_resume",
+]
+cleanup_policy = "provider"
+artifact_policy = "redacted_receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["release"]
 
 [[scenario]]
 id = "dogfood.sandbox.docker"
@@ -503,7 +644,7 @@ source_path = "tests/integration/test_docker_sandbox_parity.py"
 source_command = ["pytest", "-q", "tests/integration/test_docker_sandbox_parity.py"]
 required_extras = ["coding-agent"]
 tier = 5
-applicability = ["source"]
+applicability = ["source", "wheel"]
 timeout_seconds = 1500
 prerequisites = ["binary:docker", "service:docker"]
 missing_prerequisite = "not_run"
@@ -551,7 +692,7 @@ source_path = "tests/infrastructure/test_r2_artifact_context.py"
 source_command = ["pytest", "-q", "tests/infrastructure/test_r2_artifact_context.py"]
 required_extras = []
 tier = 5
-applicability = ["source"]
+applicability = ["source", "wheel"]
 timeout_seconds = 600
 prerequisites = [
   "credential:R2_ACCESS_KEY_ID",
@@ -589,7 +730,7 @@ source_path = "tests/integration/test_apple_container_sandbox_parity.py"
 source_command = ["pytest", "-q", "tests/integration/test_apple_container_sandbox_parity.py"]
 required_extras = ["coding-agent"]
 tier = 6
-applicability = ["source"]
+applicability = ["source", "wheel"]
 timeout_seconds = 1500
 prerequisites = ["binary:container", "platform:darwin", "service:apple-container"]
 missing_prerequisite = "not_run"

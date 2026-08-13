@@ -133,6 +133,9 @@ class RuntimeMissions:
         return await self._dispatcher.apply(
             RunMission(
                 owner_id=self._owner_id,
+                name=self._name,
+                config=self._config,
+                storage=self._storage,
                 mission=mission,
                 max_ticks=max_ticks,
             )
@@ -144,7 +147,7 @@ class RuntimeMissions:
         mission: SubmittedMission,
         checkpoint: CheckpointRef,
     ) -> SandboxIdentity:
-        """Explicitly restore the mission's process-local sandbox before running."""
+        """Fail explicitly until checkpoint identity is bound into Activity admission."""
 
         self._ensure_open()
         return await self._dispatcher.apply(

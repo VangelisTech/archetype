@@ -18,7 +18,10 @@ CLI -> API -> authentication -> CommandDispatcher.apply_as / defer_as
 CommandDispatcher -> registered family handler -> world/storage/core
 ```
 
-Dependencies point downward. Core does not import app. The CLI does not import app except for `serve`; it talks to the server over HTTP.
+Dependencies point downward. Core does not import domain families, runtime, or
+adapters. The removed `archetype.app` migration root is not a reserved package
+and may not be recreated as a parallel workflow authority. The CLI talks to
+the server over HTTP except for `serve`.
 
 ## What Core Does Not Do
 
@@ -39,7 +42,7 @@ It does not know about:
 - REST routes
 - multi-world API hosting
 
-The world, commands, application, and API families above core add those
+The world and commands families, runtime, and API adapter above core add those
 concerns according to their ownership boundaries.
 
 ## World family boundary
@@ -88,11 +91,11 @@ into the analytical audit table. The command ledger and tick manifest remain
 authoritative.
 
 **MissionService** composes the mission family's task entities,
-relationships, processors, committed-intent outbox, and sandbox resource. The
-processors own transitions; the service owns graph materialization and the
-tick-to-external-I/O loop. Process wiring registers exact submit, run, and
-restore handlers. `RuntimeMissions` constructs those models and retains no
-concrete service.
+relationships, processors, committed-intent projection, Activity bindings, and
+sandbox resource. The processors own transitions; the service owns graph
+materialization and mission-world orchestration. Process wiring registers
+exact submit, run, and fail-closed restore operations. `RuntimeMissions`
+constructs those models and retains no concrete service.
 
 **Physical-AI handlers** turn typed task-evaluation and instruction-sweep
 operations into one batched world, drive a bounded episode, and project
@@ -183,6 +186,8 @@ See [API Layer](api-layer.md).
 - Process composition: `src/archetype/wiring.py`
 - Process lifetime: `src/archetype/runtime_resources.py`
 - Governed entry, scheduler, policy, and audit: `src/archetype/commands/`
+- Generic between-tick delivery: `src/archetype/activities/`
+- Agent Mission workflow authority: `src/archetype/missions/`
 - Physical-AI models, state, views, and handlers: `src/archetype/physical_ai/`
 - Family protocols: `src/archetype/<family>/interfaces.py` or another focused family module
 - World ports: `src/archetype/world/interfaces.py`

@@ -43,6 +43,8 @@ class _ProbeSession:
             'printf %s "$HOME"': ProcessResult(request.argv, 0, stdout=f"{AGENT_HOME}\n"),
             "pwd": ProcessResult(request.argv, 0, stdout="/workspace\n"),
             "codex": ProcessResult(request.argv, 0, stdout="codex-cli 0.144.6\n"),
+            "tmux": ProcessResult(request.argv, 0, stdout="tmux 3.3a\n"),
+            "ttyd": ProcessResult(request.argv, 0, stdout="ttyd version 1.7.7-40e79c7\n"),
             'printf %s "$ARCHETYPE_SANDBOX_ENVIRONMENT"': ProcessResult(
                 request.argv,
                 0,

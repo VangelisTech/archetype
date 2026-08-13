@@ -15,6 +15,7 @@ from daft import DataFrame, Expression, col
 
 from archetype.core.component import Component
 from archetype.core.hooks import PostTick
+from archetype.errors import AvailabilityError
 from archetype.graph import GraphView
 from archetype.missions.activities import (
     AuthorActivityEntityFact,
@@ -155,6 +156,41 @@ def _critic_subject_bounds(event: PostTick) -> dict[int, int]:
     }
 
 
+def _latest_accepted_mission_checkout_revision(
+    *,
+    mission_id: int,
+    mission_task_ids: Sequence[int],
+    task_rows: Mapping[int, Mapping[str, Any]],
+    candidate_rows: Sequence[Mapping[str, Any]],
+) -> str:
+    """Resolve the latest accepted head on one serialized mission branch."""
+
+    state = TaskState.get_prefix()
+    dispatch = TaskDispatch.get_prefix()
+    candidate = Candidate.get_prefix()
+    accepted: list[Mapping[str, Any]] = []
+    for task_id in mission_task_ids:
+        task = task_rows.get(task_id)
+        if task is None or str(task[f"{state}status"]) != TaskStatus.ACCEPTED.value:
+            continue
+        task_candidates = [
+            row
+            for row in candidate_rows
+            if int(row[f"{candidate}mission_id"]) == mission_id
+            and int(row[f"{candidate}task_id"]) == task_id
+            and str(row[f"{candidate}dispatch_id"]) == str(task[f"{dispatch}dispatch_id"])
+        ]
+        if len(task_candidates) != 1:
+            raise ValueError("accepted mission task has no unique published candidate")
+        accepted.extend(task_candidates)
+    if not accepted:
+        return ""
+    # One outstanding task plus monotonic world allocation makes candidate
+    # identity the durable branch-order authority; wall clocks are not.
+    latest = max(accepted, key=lambda row: int(row["entity_id"]))
+    return str(latest[f"{candidate}head_revision"])
+
+
 class _TaskDispatchProjection:
     """Build bounded author requests from one committed snapshot."""
 
@@ -254,6 +290,7 @@ class _TaskDispatchProjection:
             col(f"{candidate_prefix}task_id").alias("_prior_candidate_task_id"),
             col(f"{candidate_prefix}dispatch_sequence").alias("_prior_candidate_sequence"),
             col(f"{candidate_prefix}candidate_id").alias("_prior_candidate_id"),
+            col(f"{candidate_prefix}head_revision").alias("_prior_candidate_head_revision"),
         )
         prior = _latest_prior_sequence(
             task_keys,
@@ -306,13 +343,31 @@ class _TaskDispatchProjection:
 
         state = TaskState.get_prefix()
         dispatch = TaskDispatch.get_prefix()
+        all_task_rows = {
+            int(row["entity_id"]): row
+            for row in _daft_latest(
+                task_frame,
+                label="task dispatch state",
+                allow_updates=True,
+            ).to_pylist()
+        }
+        membership = PartOfMission.get_prefix()
+        mission_task_ids: dict[int, set[int]] = defaultdict(set)
+        for row in (
+            mission_edges.select(
+                f"{membership}source",
+                f"{membership}target",
+            )
+            .distinct()
+            .to_pylist()
+        ):
+            mission_task_ids[int(row[f"{membership}target"])].add(int(row[f"{membership}source"]))
         dispatched = task_frame.where(
             cast(
                 Expression,
                 col(f"{state}status") == TaskStatus.DISPATCHED.value,
             )
         )
-        membership = PartOfMission.get_prefix()
         dispatched = dispatched.join(
             mission_edges.select(f"{membership}source", f"{membership}target"),
             left_on="entity_id",
@@ -398,6 +453,11 @@ class _TaskDispatchProjection:
         finding_history = _live_frame(event, CriticFinding)
         candidate_record = Candidate.get_prefix()
         finding_record = CriticFinding.get_prefix()
+        candidate_rows = (
+            _daft_latest(candidate_history, label="candidate").to_pylist()
+            if candidate_history is not None
+            else []
+        )
 
         previous_execution_by_task = self._previous_executions(task_keys, observations)
         previous_validations_by_task = self._previous_validations(
@@ -435,6 +495,16 @@ class _TaskDispatchProjection:
                 sorted(validators_by_task[task_id], key=lambda item: item.validator_id)
             )
             prior_candidate = prior_candidate_by_task.get(task_id)
+            checkout_revision = (
+                str(prior_candidate["_prior_candidate_head_revision"])
+                if prior_candidate is not None
+                else _latest_accepted_mission_checkout_revision(
+                    mission_id=int(row[f"{membership}target"]),
+                    mission_task_ids=tuple(mission_task_ids[int(row[f"{membership}target"])]),
+                    task_rows=all_task_rows,
+                    candidate_rows=candidate_rows,
+                )
+            )
             previous_critic_findings = (
                 tuple(
                     CriticRepairFinding(
@@ -494,6 +564,7 @@ class _TaskDispatchProjection:
                     task_base_revision=(
                         str(previous["_prior_starting_revision"]) if previous is not None else ""
                     ),
+                    checkout_revision=checkout_revision,
                     previous_agent_session_id=(
                         str(previous["_prior_agent_session_id"]) if previous is not None else ""
                     ),
@@ -926,6 +997,29 @@ class CriticReviewBudgetExhausted:
     max_reviews: int
 
 
+class CriticReviewBudgetExhaustedError(AvailabilityError):
+    """Candidates remain pending review after their whole independent budget."""
+
+    public_detail = "Independent review is still pending; the review budget is exhausted"
+
+    def __init__(
+        self,
+        mission_id: int,
+        pending: tuple[CriticReviewBudgetExhausted, ...],
+    ) -> None:
+        self.mission_id = mission_id
+        self.pending = pending
+        described = ", ".join(
+            f"task {item.task_id} candidate {item.candidate_id!r} "
+            f"({item.attempts}/{item.max_reviews} reviews)"
+            for item in pending
+        )
+        super().__init__(
+            f"mission {mission_id} candidates remain pending independent review "
+            f"after their whole review budget: {described}"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class CriticActivityIntentProjection:
     """Pure committed-snapshot projection of critic requests and exhaustion."""
@@ -1218,6 +1312,75 @@ def _settled_candidate_ids(
     }
 
 
+def project_pending_review_exhaustion(
+    view: GraphView,
+    mission_id: int,
+) -> tuple[CriticReviewBudgetExhausted, ...]:
+    """Report candidates that cannot admit another independent review."""
+
+    tasks = view.frame(Task, TaskCriticPolicy, TaskState)
+    candidates = view.frame(Candidate)
+    if tasks is None or candidates is None:
+        return ()
+
+    state = TaskState.get_prefix()
+    candidate = Candidate.get_prefix()
+    policy = TaskCriticPolicy.get_prefix()
+    current = _current_candidate_frame(
+        tasks=tasks,
+        candidates=candidates,
+        state_prefix=state,
+        candidate_prefix=candidate,
+    ).where(cast(Expression, col(f"{candidate}mission_id") == mission_id))
+    current_rows = current.to_pylist()
+    if not current_rows:
+        return ()
+
+    critic_execution = CriticExecution.get_prefix()
+    critic_executions = view.frame(CriticExecution)
+    attempt_counts: dict[int, int] = {}
+    if critic_executions is not None:
+        attempts_frame = (
+            _daft_latest(critic_executions, label="critic execution")
+            .groupby(f"{critic_execution}candidate_entity_id")
+            .agg(col("entity_id").count_distinct().alias("_attempts"))
+        )
+        attempt_counts = {
+            int(row[f"{critic_execution}candidate_entity_id"]): int(row["_attempts"])
+            for row in attempts_frame.to_pylist()
+        }
+
+    receipt = CriticReceipt.get_prefix()
+    critic_receipts = view.frame(CriticReceipt)
+    settled_candidate_ids: set[int] = set()
+    if critic_receipts is not None:
+        settled_candidate_ids = _settled_candidate_ids(
+            current,
+            _daft_latest(critic_receipts, label="critic receipt"),
+            candidate_prefix=candidate,
+            receipt_prefix=receipt,
+        )
+
+    exhausted: list[CriticReviewBudgetExhausted] = []
+    for row in current_rows:
+        candidate_entity_id = int(row["_candidate_entity_id"])
+        if candidate_entity_id in settled_candidate_ids:
+            continue
+        attempts = attempt_counts.get(candidate_entity_id, 0)
+        max_reviews = int(row[f"{policy}max_reviews"])
+        if attempts >= max_reviews:
+            exhausted.append(
+                CriticReviewBudgetExhausted(
+                    mission_id=mission_id,
+                    task_id=int(row[f"{candidate}task_id"]),
+                    candidate_id=str(row[f"{candidate}candidate_id"]),
+                    attempts=attempts,
+                    max_reviews=max_reviews,
+                )
+            )
+    return tuple(sorted(exhausted, key=lambda item: item.task_id))
+
+
 async def project_critic_activity_intents(
     event: PostTick,
 ) -> CriticActivityIntentProjection:
@@ -1443,8 +1606,12 @@ def project_mission_result(
     )
     mission = Mission.get_prefix()
     mission_state = MissionState.get_prefix()
+    episode_id = str(mission_row[f"{mission}episode_id"])
+    if not episode_id or episode_id != submitted.episode_id:
+        raise RuntimeError("terminal mission episode identity does not match its submission")
     return MissionResult(
         mission_id=submitted.mission_id,
+        episode_id=episode_id,
         status=str(mission_row[f"{mission_state}status"]),
         repository=str(mission_row[f"{mission}repository"]),
         branch=str(mission_row[f"{mission}branch"]),

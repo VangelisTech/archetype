@@ -28,6 +28,10 @@ def test_error_taxonomy_governs_registered_family_exceptions() -> None:
         "archetype.world.simulation.PostCommitProjectionError",
     } <= classes.keys()
     assert set(checker.INTERNAL_ONLY_EXCEPTIONS) == {
+        "archetype.missions.coding_agents.app_server.CodexAppServerError",
+        "archetype.missions.coding_agents.app_server.CodexTurnCompletionBarrierError",
         "archetype.missions.critics.harness._UnverifiableReview",
+        "archetype.missions.sandboxes._subprocess._CleanupTimeout",
+        "archetype.missions.sandboxes._subprocess._JoinTimeout",
     }
     assert checker.check_error_taxonomy() == []

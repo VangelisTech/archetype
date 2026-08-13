@@ -34,7 +34,6 @@ reserved_infrastructure = [
   "archetype._obs",
   "archetype._storage_uri",
   "archetype.api",
-  "archetype.app",
   "archetype.cli",
   "archetype.core",
   "archetype.runtime",

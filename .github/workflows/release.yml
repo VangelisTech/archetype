@@ -1,29 +1,70 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing immutable release tag (for example, v0.5.0)"
+        required: true
+        type: string
 
 permissions: {}
 
+# The Modal lane uses one static CODEX_AUTH_VOLUME. Keep release workflows
+# single-flight because that credential broker has no concurrent-owner contract.
+concurrency:
+  group: archetype-release
+  cancel-in-progress: false
+
 jobs:
+  authorize-release:
+    name: Authorize release operator
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Require everettVT and an exact release tag
+        env:
+          RELEASE_ACTOR: ${{ github.actor }}
+          RELEASE_EVENT: ${{ github.event_name }}
+          RELEASE_INPUT_TAG: ${{ inputs.tag }}
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        run: |
+          test "$RELEASE_REPOSITORY" = "VangelisTech/archetype"
+          test "$RELEASE_EVENT" = "workflow_dispatch"
+          test "$RELEASE_ACTOR" = "everettVT"
+          test "$RELEASE_TRIGGERING_ACTOR" = "everettVT"
+          test "$RELEASE_REF_TYPE" = "tag"
+          test "$RELEASE_INPUT_TAG" = "$RELEASE_REF_NAME"
+          case "$RELEASE_REF_NAME" in
+            v*) ;;
+            *) echo "release ref must be a v* tag" >&2; exit 1 ;;
+          esac
+
   release-profile:
     name: Release verification
+    needs: authorize-release
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
         with:
           version: "latest"
-      - run: uv sync --group dev --extra docs
+      - run: uv sync --group dev --extra docs --extra coding-agent
       - name: Verify tag and package version agree
-        run: test "${GITHUB_REF_NAME#v}" = "$(make --no-print-directory version)"
+        run: |
+          test "${GITHUB_REF_NAME#v}" = "$(make --no-print-directory version)"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "${GITHUB_REF_NAME}^{commit}" origin/main
       - run: make verify-release
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -38,13 +79,175 @@ jobs:
             coverage.xml
             eval-conformance-results.json
             eval-reliability-results.json
+            release-artifact.json
+            operational-release-results.json
+            operational-release-results.d/
           if-no-files-found: error
+
+  external-evidence:
+    name: Release evidence (${{ matrix.name }})
+    needs: release-profile
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: OpenAI
+            runner: '["ubuntu-latest"]'
+            target: operational-release-openai
+            receipt: operational-release-openai-results.json
+          - name: Docker
+            runner: '["ubuntu-latest"]'
+            target: operational-release-docker
+            receipt: operational-release-docker-results.json
+          - name: Cloudflare R2
+            runner: '["ubuntu-latest"]'
+            target: operational-release-r2
+            receipt: operational-release-r2-results.json
+          - name: Modal Agent Mission
+            runner: '["ubuntu-latest"]'
+            target: operational-release-modal
+            receipt: operational-release-modal-results.json
+          - name: Physical AI (Modal + R2)
+            runner: '["ubuntu-latest"]'
+            target: operational-release-physical-modal-r2
+            receipt: operational-release-physical-modal-r2-results.json
+    runs-on: ${{ fromJSON(matrix.runner) }}
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    env:
+      OPENAI_API_KEY: ${{ matrix.target == 'operational-release-openai' && secrets.OPENAI_API_KEY || '' }}
+      R2_ACCESS_KEY_ID: ${{ (matrix.target == 'operational-release-r2' || matrix.target == 'operational-release-physical-modal-r2') && secrets.R2_ACCESS_KEY_ID || '' }}
+      R2_SECRET_ACCESS_KEY: ${{ (matrix.target == 'operational-release-r2' || matrix.target == 'operational-release-physical-modal-r2') && secrets.R2_SECRET_ACCESS_KEY || '' }}
+      R2_API_ENDPOINT: ${{ (matrix.target == 'operational-release-r2' || matrix.target == 'operational-release-physical-modal-r2') && vars.R2_API_ENDPOINT || '' }}
+      R2_BUCKET: ${{ (matrix.target == 'operational-release-r2' || matrix.target == 'operational-release-physical-modal-r2') && vars.R2_BUCKET || '' }}
+      MODAL_TOKEN_ID: ${{ (matrix.target == 'operational-release-modal' || matrix.target == 'operational-release-physical-modal-r2') && secrets.MODAL_TOKEN_ID || '' }}
+      MODAL_TOKEN_SECRET: ${{ (matrix.target == 'operational-release-modal' || matrix.target == 'operational-release-physical-modal-r2') && secrets.MODAL_TOKEN_SECRET || '' }}
+      MODAL_PROFILE: ${{ matrix.target == 'operational-release-modal' && vars.CODING_AGENT_MODAL_PROFILE || '' }}
+      CODING_AGENT_MODAL_WORKSPACE: ${{ (matrix.target == 'operational-release-modal' || matrix.target == 'operational-release-physical-modal-r2') && vars.CODING_AGENT_MODAL_WORKSPACE || '' }}
+      CODING_AGENT_MODAL_ENVIRONMENT: ${{ (matrix.target == 'operational-release-modal' || matrix.target == 'operational-release-physical-modal-r2') && vars.CODING_AGENT_MODAL_ENVIRONMENT || '' }}
+      MODAL_ENVIRONMENT: ${{ (matrix.target == 'operational-release-modal' || matrix.target == 'operational-release-physical-modal-r2') && vars.CODING_AGENT_MODAL_ENVIRONMENT || '' }}
+      CODING_AGENT_MODAL_APP: ${{ matrix.target == 'operational-release-modal' && vars.CODING_AGENT_MODAL_APP || '' }}
+      CODING_AGENT_MODAL_IMAGE_ID: ${{ matrix.target == 'operational-release-modal' && vars.CODING_AGENT_MODAL_IMAGE_ID || '' }}
+      CODEX_AUTH_VOLUME: ${{ matrix.target == 'operational-release-modal' && vars.CODEX_AUTH_VOLUME || '' }}
+      CODING_AGENT_GITHUB_SECRET: ${{ matrix.target == 'operational-release-modal' && vars.CODING_AGENT_GITHUB_SECRET || '' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
+        with:
+          version: "latest"
+      - run: uv sync --group dev --extra coding-agent
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist/
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-evidence
+          path: .context/downloaded-release-evidence/
+      - name: Restore exact artifact manifest
+        run: cp .context/downloaded-release-evidence/release-artifact.json release-artifact.json
+      - name: Verify Docker service
+        if: matrix.target == 'operational-release-docker'
+        run: docker info
+      - name: Require release R2 configuration
+        if: matrix.target == 'operational-release-r2' || matrix.target == 'operational-release-physical-modal-r2'
+        run: |
+          test -n "$R2_ACCESS_KEY_ID"
+          test -n "$R2_SECRET_ACCESS_KEY"
+          test -n "$R2_API_ENDPOINT"
+          test -n "$R2_BUCKET"
+          case "$R2_BUCKET" in
+            */*) echo "R2_BUCKET must be a bucket name, not a path" >&2; exit 1 ;;
+          esac
+      - name: Verify physical retry visibility
+        if: matrix.target == 'operational-release-r2'
+        run: >-
+          PYTHONPATH="${PYTHONPATH:-}:."
+          uv run pytest -q tests/infrastructure/test_r2_idempotency.py
+      - name: Run exact installed-artifact scenario
+        run: make "${{ matrix.target }}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: release-${{ matrix.target }}-evidence
+          path: |
+            ${{ matrix.receipt }}
+            operational-release-*-results.d/
+          if-no-files-found: error
+
+  apple-evidence:
+    name: Release evidence (Apple Container)
+    needs: release-profile
+    env:
+      # actions/setup-python's macOS distributions are non-relocatable and
+      # require the hosted-runner-only /Users/runner/hostedtoolcache path.
+      # Let uv provision Python in the current ephemeral runner user's cache.
+      UV_PYTHON: "3.12"
+    runs-on:
+      group: archetype-release-macos
+      labels:
+        - self-hosted
+        - macOS
+        - ARM64
+        - archetype-apple-container-macos-26
+    environment: release-apple-macos
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
+        with:
+          version: "latest"
+      - name: Provision Python 3.12 with uv
+        run: |
+          uv sync --python "3.12" --group dev --extra coding-agent
+          uv run python -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist/
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-evidence
+          path: .context/downloaded-release-evidence/
+      - name: Restore exact artifact manifest
+        run: cp .context/downloaded-release-evidence/release-artifact.json release-artifact.json
+      - name: Start Apple Container service
+        run: |
+          test "$(uname -m)" = "arm64"
+          test "$(sw_vers -productVersion | cut -d. -f1)" -ge 26
+          command -v container
+          container system start
+          container system status
+      - name: Run exact installed-artifact scenario
+        run: make operational-release-apple
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: release-operational-release-apple-evidence
+          path: |
+            operational-release-apple-results.json
+            operational-release-*-results.d/
+          if-no-files-found: error
+      - name: Stop Apple Container service
+        if: always()
+        run: container system stop
 
   python-compatibility:
     name: Python 3.13 compatibility
+    needs: authorize-release
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      # Keep later `uv run` calls on 3.13 despite the developer-default
+      # .python-version checked into the repository.
+      UV_PYTHON: "3.13"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -53,11 +256,54 @@ jobs:
       - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
         with:
           version: "latest"
-      - run: uv sync --group dev
+      - run: uv sync --python "3.13" --group dev
+      - name: Verify Python 3.13 interpreter
+        run: >-
+          uv run python -c
+          'import sys;
+          assert sys.version_info[:2] == (3, 13), sys.version'
       - run: make test
 
+  release-evidence-gate:
+    name: Exact release evidence
+    needs: [release-profile, external-evidence, apple-evidence]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-evidence
+          path: evidence/
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-operational-release-*-evidence
+          path: evidence/
+          merge-multiple: true
+      - name: Verify complete exact-wheel evidence
+        run: >-
+          python scripts/verify_release_evidence.py
+          --manifest evidence/release-artifact.json
+          --out release-evidence-summary.json
+          evidence/operational-release-results.json
+          evidence/operational-release-openai-results.json
+          evidence/operational-release-docker-results.json
+          evidence/operational-release-r2-results.json
+          evidence/operational-release-apple-results.json
+          evidence/operational-release-modal-results.json
+          evidence/operational-release-physical-modal-r2-results.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-evidence-summary
+          path: release-evidence-summary.json
+          if-no-files-found: error
+
   publish:
-    needs: [release-profile, python-compatibility]
+    needs: [release-evidence-gate, python-compatibility]
     runs-on: ubuntu-latest
     environment: release-pypi
     permissions:
@@ -83,6 +329,7 @@ jobs:
           path: dist/
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
+          tag_name: ${{ github.ref_name }}
           files: dist/*
           generate_release_notes: true
           draft: false

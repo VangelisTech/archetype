@@ -9,10 +9,17 @@ machine authority; this page is its review surface.
 | --- | --- | --- | --- | --- | --- |
 | `observability.signals.safe` | `observability` | high | [docs/guide/observability.md](../guide/observability.md) — 1. Safe signal contract | pytest: 2 | `pr`, `main`, `release` |
 | `observability.logging.correlated` | `observability` | medium | [docs/guide/observability.md](../guide/observability.md) — 5. Process-host ownership | pytest: 2 | `pr`, `main`, `release` |
-| `observability.repository.enforced` | `observability` | high | [docs/guide/observability.md](../guide/observability.md) — 6. Family dispositions | pytest: 2; static: 1 | `pr`, `main`, `release` |
+| `observability.repository.enforced` | `observability` | high | [docs/guide/observability.md](../guide/observability.md) — 6. Family dispositions | pytest: 1; static: 1 | `pr`, `main`, `release` |
 | `missions.environment.pinned` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 5. Sandbox and validator protocol | pytest: 3; static: 1 | `pr`, `main`, `release` |
 | `architecture.dependencies.enforced` | `app` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 11. Static enforcement | pytest: 1; static: 1; eval: 2 | `pr`, `main`, `release` |
 | `architecture.v0_5.target_dag` | `architecture` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 13. Accepted v0.5 target architecture | pytest: 1 | `pr`, `main`, `release` |
+| `architecture.migration.family_edges` | `architecture` | high | [docs/guide/storage-migration.md](../guide/storage-migration.md) — 10. Architecture and executable evidence | pytest: 1; static: 1 | `pr`, `main`, `release` |
+| `migration.local_v1.whole_identity` | `migration` | high | [docs/guide/storage-migration.md](../guide/storage-migration.md) — 1. Local v1 profile | pytest: 1 | `pr`, `main`, `release` |
+| `migration.local_v1.fail_closed` | `migration` | high | [docs/guide/storage-migration.md](../guide/storage-migration.md) — 3. Preflight, quiescence, and destination emptiness | pytest: 1 | `pr`, `main`, `release` |
+| `migration.tables.deterministic_evidence` | `storage` | high | [docs/guide/storage-migration.md](../guide/storage-migration.md) — 4. Data-plane transfer | pytest: 2 | `pr`, `main`, `release` |
+| `migration.artifacts.occurrence_relocation` | `artifacts` | high | [docs/guide/storage-migration.md](../guide/storage-migration.md) — 5. Artifact relocation without re-ingestion | pytest: 1 | `pr`, `main`, `release` |
+| `migration.control.exact_activation` | `storage` | high | [docs/guide/storage-migration.md](../guide/storage-migration.md) — 6. Control import and writer fencing | pytest: 1 | `pr`, `main`, `release` |
+| `migration.activities.empty_only` | `migration` | high | [docs/guide/storage-migration.md](../guide/storage-migration.md) — 3. Preflight, quiescence, and destination emptiness | pytest: 2 | `pr`, `main`, `release` |
 | `architecture.protocols.complete` | `app` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 8. Protocol policy and wiring | pytest: 1; static: 1; eval: 1 | `pr`, `main`, `release` |
 | `storage.execution.single_authority` | `storage` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — Storage execution authority | pytest: 3; static: 2 | `pr`, `main`, `release` |
 | `runtime.trust.actor_free` | `runtime` | high | [docs/guide/runtime.md](../guide/runtime.md) — R3 — Runtime is actor-free | pytest: 1; static: 1; eval: 1 | `pr`, `main`, `release` |

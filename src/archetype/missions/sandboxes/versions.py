@@ -22,31 +22,42 @@ from importlib import resources
 from typing import Any
 
 _RESOURCE_NAME = "versions.toml"
-_SUPPORTED_SCHEMA_VERSION = 1
+_SUPPORTED_SCHEMA_VERSION = 2
 _SUPPORTED_HARNESSES = ("codex",)
 
 _STATUSES = frozenset({"pinned", "planned"})
 _ROLES = frozenset(
     {"agent-harness", "sandbox-sdk", "sandbox-runtime", "collector", "proxy", "evaluation"}
 )
-_KINDS = frozenset({"npm-package", "python-package", "macos-installer", "container-image"})
+_KINDS = frozenset(
+    {
+        "npm-package",
+        "python-package",
+        "macos-installer",
+        "container-image",
+        "release-binary",
+    }
+)
 
 _ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _VERSION_RE = re.compile(r"^[0-9][0-9A-Za-z.+-]*$")
 _CONSUMER_RE = re.compile(r"^#[0-9]+$")
 _SOURCE_RE = re.compile(r"^https://[a-z0-9.-]+/[A-Za-z0-9._/@+-]*$")
 _INTERFACE_TOKEN_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_INTERFACE_EVENT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]*(?:/[A-Za-z][A-Za-z0-9._-]*)*$")
 _NAME_RES: dict[str, re.Pattern[str]] = {
     "npm-package": re.compile(r"^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$"),
     "python-package": re.compile(r"^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$"),
     "macos-installer": re.compile(r"^[a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)?$"),
     "container-image": re.compile(r"^[a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)+$"),
+    "release-binary": re.compile(r"^[a-z0-9][a-z0-9._-]*$"),
 }
 _IMMUTABLE_REF_RES: dict[str, re.Pattern[str]] = {
     "npm-package": re.compile(r"^sha512-[A-Za-z0-9+/]{86}={0,2}$"),
     "python-package": re.compile(r"^sha256:[0-9a-f]{64}$"),
     "macos-installer": re.compile(r"^sha256:[0-9a-f]{64}$"),
     "container-image": re.compile(r"^[a-z0-9.-]+(?:/[a-z0-9._-]+)+@sha256:[0-9a-f]{64}$"),
+    "release-binary": re.compile(r"^sha256:[0-9a-f]{64}$"),
 }
 
 # Deny patterns mirror the redaction authority's credential rule set; the
@@ -71,9 +82,11 @@ _CREDENTIAL_RES: tuple[re.Pattern[str], ...] = (
 _PINNED_KEYS = frozenset(
     {"id", "status", "role", "kind", "name", "version", "source", "immutable_ref", "consumers"}
 )
-_HARNESS_KEYS = _PINNED_KEYS | {"harness", "harness_interface"}
+_HARNESS_KEYS = _PINNED_KEYS | {"harness", "harness_interfaces"}
 _PLANNED_KEYS = frozenset({"id", "status", "role", "consumers"})
-_INTERFACE_KEYS = frozenset({"invoke", "output_flags", "resume", "session_event", "session_fields"})
+_INTERFACE_KEYS = frozenset(
+    {"id", "invoke", "output_flags", "resume", "session_event", "session_fields"}
+)
 
 
 class VersionPinError(ValueError):
@@ -84,6 +97,7 @@ class VersionPinError(ValueError):
 class HarnessInterface:
     """Command, machine-output, and session contract of one pinned agent CLI."""
 
+    interface_id: str
     invoke: tuple[str, ...]
     output_flags: tuple[str, ...]
     resume: tuple[str, ...]
@@ -105,7 +119,13 @@ class PinnedArtifact:
     immutable_ref: str
     consumers: tuple[str, ...]
     harness: str = ""
-    harness_interface: HarnessInterface | None = None
+    harness_interfaces: tuple[HarnessInterface, ...] = ()
+
+    @property
+    def harness_interface(self) -> HarnessInterface | None:
+        """Return the supported primary interface for compatibility."""
+
+        return self.harness_interfaces[0] if self.harness_interfaces else None
 
 
 @dataclass(frozen=True)
@@ -174,16 +194,22 @@ def _string_tuple(
 def _harness_interface(value: Any, label: str) -> HarnessInterface:
     if not isinstance(value, dict) or set(value) != _INTERFACE_KEYS:
         raise VersionPinError(f"{label} requires exactly the keys {sorted(_INTERFACE_KEYS)}")
+    interface_id = value["id"]
+    if not isinstance(interface_id, str) or not _INTERFACE_TOKEN_RE.fullmatch(interface_id):
+        raise VersionPinError(f"{label}.id must be an interface token")
     session_event = value["session_event"]
     if not isinstance(session_event, str) or (
-        session_event and not _INTERFACE_TOKEN_RE.fullmatch(session_event)
+        session_event and not _INTERFACE_EVENT_RE.fullmatch(session_event)
     ):
-        raise VersionPinError(f"{label}.session_event must be an interface token or empty")
+        raise VersionPinError(
+            f"{label}.session_event must be a JSON-RPC method/event token or empty"
+        )
     token = _INTERFACE_TOKEN_RE
     return HarnessInterface(
+        interface_id=_scan_value(interface_id, f"{label}.id"),
         invoke=_string_tuple(value["invoke"], f"{label}.invoke", token),
         output_flags=_string_tuple(value["output_flags"], f"{label}.output_flags", token),
-        resume=_string_tuple(value["resume"], f"{label}.resume", token),
+        resume=_string_tuple(value["resume"], f"{label}.resume", _INTERFACE_EVENT_RE),
         session_event=_scan_value(session_event, f"{label}.session_event"),
         session_fields=_string_tuple(value["session_fields"], f"{label}.session_fields", token),
     )
@@ -247,12 +273,21 @@ def _parse_artifact(row: Any, index: int) -> PinnedArtifact:
         )
 
     harness = ""
-    interface: HarnessInterface | None = None
+    interfaces: tuple[HarnessInterface, ...] = ()
     if role == "agent-harness":
         harness = _string(row, "harness", label)
         if harness not in _SUPPORTED_HARNESSES:
             raise VersionPinError(f"{label}: unknown agent harness {harness!r}")
-        interface = _harness_interface(row["harness_interface"], f"{label}.harness_interface")
+        raw_interfaces = row["harness_interfaces"]
+        if not isinstance(raw_interfaces, list) or not raw_interfaces:
+            raise VersionPinError(f"{label}.harness_interfaces requires at least one row")
+        interfaces = tuple(
+            _harness_interface(value, f"{label}.harness_interfaces[{interface_index}]")
+            for interface_index, value in enumerate(raw_interfaces)
+        )
+        interface_ids = [interface.interface_id for interface in interfaces]
+        if len(interface_ids) != len(set(interface_ids)):
+            raise VersionPinError(f"{label}.harness_interfaces contains duplicate ids")
 
     return PinnedArtifact(
         artifact_id=artifact_id,
@@ -265,7 +300,7 @@ def _parse_artifact(row: Any, index: int) -> PinnedArtifact:
         immutable_ref=immutable_ref,
         consumers=consumers,
         harness=harness,
-        harness_interface=interface,
+        harness_interfaces=interfaces,
     )
 
 

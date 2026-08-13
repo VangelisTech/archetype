@@ -132,7 +132,7 @@ df = df.with_columns({
 
 #### Images
 
-Prefer standalone `daft.functions.*` or direct Expression methods for image operations. The legacy `.image.*` accessor still works but is deprecated.
+Prefer standalone `daft.functions.*` or direct Expression methods for image operations. The legacy `.image.*` accessor is removed in the pinned daft 0.7.x — it raises `AttributeError`.
 
 ```python
 from daft.functions import download, decode_image, resize, crop, encode_image
@@ -215,7 +215,7 @@ df = df.unnest("decision")
 
 ### String, numeric, and utility functions
 
-Replaces: most simple `@daft.func` string/math UDFs. Prefer standalone `daft.functions.*` or direct Expression methods. The legacy `.str.*` accessor still works but is deprecated — use the flat API instead.
+Replaces: most simple `@daft.func` string/math UDFs. Prefer standalone `daft.functions.*` or direct Expression methods. The legacy `.str.*` accessor is removed in the pinned daft 0.7.x (`AttributeError`) — use the flat API.
 
 ```python
 from daft.functions import (
@@ -399,7 +399,7 @@ false-flag `_EnvStepper` / `_PolicyCaller` / `_CartpoleStepper` style UDFs.
 ### 3. Struct access
 
 ```python
-# WRONG — deprecated
+# WRONG — removed in daft 0.7.x; raises AttributeError at plan build
 col("result").struct.get("field")
 
 # RIGHT
@@ -420,7 +420,9 @@ UDFs are the escape hatch, not the default.
 
 ### 5. `with_columns` over chained `with_column`
 
-Use `with_columns(dict)` for multiple column updates. Chained `with_column` can cause Daft plan dependency issues.
+Use `with_columns(dict)` for multiple independent column updates. Positional
+args (`with_columns(expr1, expr2)`) raise `TypeError` in Daft 0.7.x — the dict
+form is the fix, not one call per column.
 
 ```python
 # Prefer
@@ -429,6 +431,10 @@ df = df.with_columns({
     "col_b": col("y") * 2,
 })
 ```
+
+Chained `with_column` is appropriate when a later column genuinely reads an
+earlier one's new value. For the narrower read-then-overwrite UDF hazard, see
+Rule 10.9 and LEARNINGS "UDF column args resolve to the column's FINAL value".
 
 ### 6. UDF patterns reference
 

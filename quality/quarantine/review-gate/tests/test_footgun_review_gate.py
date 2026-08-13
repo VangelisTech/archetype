@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""End-to-end contracts for deterministic scope, rendering, and workflow wiring."""
+"""Quarantined contracts for the retired deterministic review workflow."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from typing import Any
 
 import pytest
 
-_ROOT = Path(__file__).resolve().parents[2]
+_ROOT = Path(__file__).resolve().parents[4]
 _SCRIPTS = _ROOT / "scripts"
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
@@ -42,6 +42,7 @@ from footgun_review_gate import (  # noqa: E402
     render_evidence,
     render_human_design_brief,
     review_payload,
+    reviewer_reported_blocked,
     validate_result,
     verify_posted_evidence,
 )
@@ -50,7 +51,7 @@ from review_aggregation import (  # noqa: E402
     finalize_review_bundle,
     make_infra_failure_receipt,
 )
-from review_contracts import artifact_digest  # noqa: E402
+from review_contracts import MODEL_RESULT_SCHEMA_VERSION, artifact_digest  # noqa: E402
 from review_test_support import (  # noqa: E402
     ANCHORS,
     BASE_SHA,
@@ -62,6 +63,7 @@ from review_test_support import (  # noqa: E402
     footgun_finding,
     normalized_design_brief,
     preliminary_bundle,
+    raw_design_brief,
     raw_result,
     reviewer_receipts,
     scope,
@@ -140,10 +142,11 @@ def test_github_scope_fails_closed_when_head_changes_during_fetch():
 def test_lens_validation_uses_exact_model_contract_without_provenance_echoes():
     normalized = validate_result(raw_result(), scope(), DIFF, lens="authority")
 
-    assert normalized["schema_version"] == 2
+    assert normalized["schema_version"] == MODEL_RESULT_SCHEMA_VERSION
     assert set(normalized) == {
         "schema_version",
         "head_sha",
+        "review_status",
         "summary",
         "review_context",
         "findings",
@@ -338,6 +341,220 @@ def test_cli_normalize_stamps_reviewer_and_prompt_provenance(tmp_path):
     assert "reviewer_id" not in receipt["result"]
 
 
+def test_cli_attempt_routes_blocked_inspection_to_retry_without_a_verdict(tmp_path):
+    scope_path = tmp_path / "scope.json"
+    diff_path = tmp_path / "review.diff"
+    result_path = tmp_path / "result.json"
+    prompt_path = tmp_path / "prompt.md"
+    output_path = tmp_path / "receipt.json"
+    feedback_path = tmp_path / "feedback.txt"
+    github_output_path = tmp_path / "github-output.txt"
+    blocked = raw_result()
+    blocked["review_status"] = "blocked"
+    blocked["summary"] = (
+        "The read-only sandbox blocked every repository read, so this attempt could "
+        "not inspect the changed files and cannot provide a reviewer verdict."
+    )
+    blocked["review_context"][0]["assessment"] = (
+        "The manifest paths identify the attempted scope, but sandbox admission "
+        "failed before their source contents could be inspected."
+    )
+    scope_path.write_text(json.dumps(scope()), encoding="utf-8")
+    diff_path.write_text(DIFF, encoding="utf-8")
+    result_path.write_text(json.dumps(blocked), encoding="utf-8")
+    prompt_path.write_text("trusted prompt\n", encoding="utf-8")
+
+    assert (
+        gate.main(
+            [
+                "attempt",
+                "--scope",
+                str(scope_path),
+                "--diff",
+                str(diff_path),
+                "--result",
+                str(result_path),
+                "--prompt",
+                str(prompt_path),
+                "--output",
+                str(output_path),
+                "--feedback",
+                str(feedback_path),
+                "--github-output",
+                str(github_output_path),
+                "--lens",
+                "authority",
+                "--reviewer",
+                "codex",
+            ]
+        )
+        == 0
+    )
+
+    assert not output_path.exists()
+    assert github_output_path.read_text(encoding="utf-8") == "valid=false\n"
+    feedback = feedback_path.read_text(encoding="utf-8")
+    assert "repository inspection must complete" in feedback
+    assert "keep it blocked rather than fabricating a verdict" in feedback
+
+
+def test_blocked_failure_classification_reads_structured_status_without_model_prose(
+    tmp_path,
+):
+    first_path = tmp_path / "first.json"
+    retry_path = tmp_path / "retry.json"
+    blocked_path = tmp_path / "blocked.json"
+    malformed_path = tmp_path / "malformed.json"
+    blocked = raw_result()
+    blocked["review_status"] = "blocked"
+    blocked["summary"] = "candidate-controlled text that must never become workflow output"
+    blocked_path.write_text(json.dumps(blocked), encoding="utf-8")
+    malformed_path.write_text("{not-json", encoding="utf-8")
+
+    assert reviewer_reported_blocked([tmp_path / "missing.json", malformed_path, blocked_path])
+    blocked["review_status"] = "complete"
+    blocked_path.write_text(json.dumps(blocked), encoding="utf-8")
+    assert not reviewer_reported_blocked([malformed_path, blocked_path])
+
+    first = raw_result()
+    first["review_status"] = "blocked"
+    first_path.write_text(json.dumps(first), encoding="utf-8")
+    retry = raw_result()
+    retry["review_status"] = "complete"
+    retry_path.write_text(json.dumps(retry), encoding="utf-8")
+    assert not reviewer_reported_blocked([first_path, retry_path])
+
+    retry_path.write_text("{not-json", encoding="utf-8")
+    assert reviewer_reported_blocked([first_path, retry_path])
+
+    retry["review_status"] = "blocked"
+    retry_path.write_text(json.dumps(retry), encoding="utf-8")
+    first["review_status"] = "complete"
+    first_path.write_text(json.dumps(first), encoding="utf-8")
+    assert reviewer_reported_blocked([first_path, retry_path])
+
+
+def test_cli_materializes_one_bounded_design_brief_correction(tmp_path):
+    prompt_path = tmp_path / "design-brief-prompt.txt"
+    result_path = tmp_path / "design-brief-result.json"
+    feedback_path = tmp_path / "design-brief-validation.txt"
+    output_path = tmp_path / "design-brief-retry-prompt.txt"
+    prompt_path.write_text("Original reviewed contract.\n", encoding="utf-8")
+    result_path.write_text(json.dumps({"change_cohorts": []}), encoding="utf-8")
+    feedback_path.write_text(
+        "change_cohorts do not cover every changed file: ['old.py']\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        gate.main(
+            [
+                "brief-retry-prompt",
+                "--prompt",
+                str(prompt_path),
+                "--result",
+                str(result_path),
+                "--feedback",
+                str(feedback_path),
+                "--output",
+                str(output_path),
+            ]
+        )
+        == 0
+    )
+    rendered = output_path.read_text(encoding="utf-8")
+
+    assert rendered.startswith("Original reviewed contract.")
+    assert "one bounded correction" in rendered
+    assert "change_cohorts do not cover every changed file" in rendered
+
+
+def test_cli_attempt_brief_retries_only_model_semantic_failures(tmp_path):
+    scope_path = tmp_path / "scope.json"
+    diff_path = tmp_path / "review.diff"
+    bundle_path = tmp_path / "review-bundle.json"
+    result_path = tmp_path / "design-brief-result.json"
+    output_path = tmp_path / "human-design-brief.json"
+    feedback_path = tmp_path / "design-brief-validation.txt"
+    github_output = tmp_path / "github-output.txt"
+    bundle = _final_with()
+    rejected = raw_design_brief(artifact_digest(bundle))
+    rejected["change_cohorts"][0]["files"] = ["old.py"]
+    scope_path.write_text(json.dumps(scope()), encoding="utf-8")
+    diff_path.write_text(DIFF, encoding="utf-8")
+    bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+    result_path.write_text(json.dumps(rejected), encoding="utf-8")
+
+    assert (
+        gate.main(
+            [
+                "attempt-brief",
+                "--scope",
+                str(scope_path),
+                "--diff",
+                str(diff_path),
+                "--bundle",
+                str(bundle_path),
+                "--result",
+                str(result_path),
+                "--output",
+                str(output_path),
+                "--feedback",
+                str(feedback_path),
+                "--github-output",
+                str(github_output),
+            ]
+        )
+        == 0
+    )
+
+    assert github_output.read_text(encoding="utf-8") == "valid=false\n"
+    assert "do not cover every changed file" in feedback_path.read_text(encoding="utf-8")
+    assert not output_path.exists()
+
+
+def test_cli_attempt_brief_fails_directly_on_untrusted_bundle_inputs(tmp_path):
+    scope_path = tmp_path / "scope.json"
+    diff_path = tmp_path / "review.diff"
+    bundle_path = tmp_path / "review-bundle.json"
+    result_path = tmp_path / "design-brief-result.json"
+    output_path = tmp_path / "human-design-brief.json"
+    feedback_path = tmp_path / "design-brief-validation.txt"
+    github_output = tmp_path / "github-output.txt"
+    bundle = _final_with()
+    rejected = raw_design_brief(artifact_digest(bundle))
+    bundle["head_sha"] = "f" * 40
+    scope_path.write_text(json.dumps(scope()), encoding="utf-8")
+    diff_path.write_text(DIFF, encoding="utf-8")
+    bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+    result_path.write_text(json.dumps(rejected), encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="review bundle is bound to a different head"):
+        gate.main(
+            [
+                "attempt-brief",
+                "--scope",
+                str(scope_path),
+                "--diff",
+                str(diff_path),
+                "--bundle",
+                str(bundle_path),
+                "--result",
+                str(result_path),
+                "--output",
+                str(output_path),
+                "--feedback",
+                str(feedback_path),
+                "--github-output",
+                str(github_output),
+            ]
+        )
+
+    assert not feedback_path.exists()
+    assert not github_output.exists()
+    assert not output_path.exists()
+
+
 def test_workflow_uses_reviewed_prompts_and_typed_dynamic_fan_out():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
@@ -347,6 +564,7 @@ def test_workflow_uses_reviewed_prompts_and_typed_dynamic_fan_out():
     assert "--kind lens-retry" in workflow
     assert "--kind adjudication" in workflow
     assert "--kind design-brief" in workflow
+    assert "brief-retry-prompt" in workflow
     assert '--prompt "${RUNNER_TEMP}/lens-prompt.txt"' in workflow
     assert '--reviewer "${REVIEWER_ID}"' in workflow
     assert "lists every scoped file exactly once" not in workflow
@@ -369,6 +587,123 @@ def test_workflow_has_aggregation_adjudication_and_human_review_jobs():
     assert "Publish human design-review brief" in workflow
     assert "name: footgun-review" in workflow
     assert "name: review-complete" in workflow
+
+
+def test_every_codex_reviewer_uses_the_pinned_cli():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert workflow.count('CODEX_VERSION: "0.144.0"') == 1
+    assert workflow.count('npm install -g "@openai/codex@${CODEX_VERSION}"') == 3
+
+
+def test_codex_lens_retry_resumes_the_job_scoped_read_only_session():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    first = workflow.split("- name: Run read-only reviewer (Codex)", 1)[1]
+    first = first.split("- name: Validate first reviewer result", 1)[0]
+    retry = workflow.split(
+        "- name: Retry reviewer with validator feedback (Codex)",
+        1,
+    )[1]
+    retry = retry.split("- name: Validate bounded retry", 1)[0]
+
+    for step in (first, retry):
+        assert 'export CODEX_HOME="${RUNNER_TEMP}/codex-home"' in step
+        assert "--ignore-user-config \\" in step
+        assert '--output-schema "${RUNNER_TEMP}/lens-schema.json" \\' in step
+        assert "--ephemeral" not in step
+
+    assert "codex exec \\" in first
+    assert "-s read-only \\" in first
+    assert "codex exec resume \\" in retry
+    assert "--last \\" in retry
+    assert "-c 'sandbox_mode=\"read-only\"' \\" in retry
+    assert '- < "${RUNNER_TEMP}/lens-retry-prompt.txt" \\' in retry
+
+
+def test_shell_enabled_codex_reviews_require_verified_bubblewrap():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    first = workflow.split("- name: Run read-only reviewer (Codex)", 1)[1]
+    first = first.split("- name: Validate first reviewer result", 1)[0]
+    retry = workflow.split(
+        "- name: Retry reviewer with validator feedback (Codex)",
+        1,
+    )[1]
+    retry = retry.split("- name: Validate bounded retry", 1)[0]
+    adjudication = workflow.split("- name: Falsify disputed claim (Codex)", 1)[1]
+    adjudication = adjudication.split("- name: Validate adjudication receipt", 1)[0]
+
+    for step in (first, retry, adjudication):
+        assert "--disable use_legacy_landlock \\" in step
+        assert "read-only" in step
+
+    preflights = workflow.split("- name: Prepare Codex bubblewrap sandbox")[1:]
+    assert len(preflights) == 2
+    for preflight in preflights:
+        preflight = preflight.split("\n      - name:", 1)[0]
+        assert "kernel.unprivileged_userns_clone=1" in preflight
+        assert "kernel.apparmor_restrict_unprivileged_userns=0" in preflight
+        assert preflight.count("--disable use_legacy_landlock \\") == 2
+        assert "-c 'sandbox_mode=\"read-only\"' sandbox -- /usr/bin/true" in preflight
+        assert "-c 'sandbox_mode=\"read-only\"' sandbox -- /usr/bin/touch" in preflight
+        assert "CODEX_AUTH_JSON" not in preflight
+
+    assert "--enable use_legacy_landlock" not in workflow
+    assert workflow.count("--disable use_legacy_landlock \\") == 7
+
+
+def test_incomplete_review_comment_does_not_require_a_checkout():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    report = workflow.split("- name: Report incomplete review", 1)[1]
+
+    assert "REPOSITORY: ${{ github.repository }}" in report
+    assert 'gh pr comment "${PR_NUMBER}" --repo "${REPOSITORY}" \\' in report
+
+
+def test_human_design_brief_is_grounded_without_secret_read_capabilities():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    materialize = workflow.split(
+        "- name: Materialize human design-review contract",
+        1,
+    )[1]
+    materialize = materialize.split(
+        "- name: Generate human design-review brief (Codex)",
+        1,
+    )[0]
+    step = workflow.split("- name: Generate human design-review brief (Codex)", 1)[1]
+    step = step.split("- name: Validate initial human design-review brief", 1)[0]
+
+    assert "--disable shell_tool \\" in step
+    assert "--disable multi_agent \\" in step
+    assert '- < "${RUNNER_TEMP}/design-brief-prompt.txt" \\' in step
+    assert '--bundle "${REVIEW_DIR}/validated/review-bundle.json" \\' in materialize
+    assert '--scope "${SCOPE_FILE}" \\' in materialize
+    assert '--diff "${DIFF_FILE}" \\' in materialize
+    assert "<finalized-review-bundle>" not in materialize
+    assert "for path in \\" not in materialize
+    assert 'wc -m < "${RUNNER_TEMP}/design-brief-prompt.txt"' in materialize
+    assert '> "${RUNNER_TEMP}/design-brief-raw.txt" \\' in step
+    assert '2> "${RUNNER_TEMP}/design-brief-stderr.txt"' in step
+    assert "Codex diagnostic: " not in step
+    assert "grep -E" not in step
+    assert "tail -c" not in step
+    assert workflow.count("- name: Correct human design-review brief (Codex)") == 1
+    correction = workflow.split("- name: Correct human design-review brief (Codex)", 1)[1]
+    correction = correction.split(
+        "- name: Validate corrected human design-review brief",
+        1,
+    )[0]
+    assert "--disable shell_tool \\" in correction
+    assert "--disable multi_agent \\" in correction
+
+
+def test_human_design_brief_job_budgets_time_for_one_correction():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    footgun_job = workflow.split("  footgun-review:", 1)[1]
+    footgun_job = footgun_job.split("  review-complete:", 1)[0]
+    timeouts = [int(value) for value in re.findall(r"timeout-minutes: (\d+)", footgun_job)]
+
+    assert timeouts == [60, 25, 20]
+    assert timeouts[0] >= sum(timeouts[1:]) + 10
 
 
 def test_workflow_preserves_inert_candidate_and_fail_closed_publication():
@@ -549,5 +884,22 @@ def test_lens_seat_failure_records_an_infra_receipt_instead_of_failing():
     assert "infra-receipt" in workflow
     # Quota classification must recognize the exact 2026-07-26 error shape.
     assert "usage limit|spend limit|rate.?limit" in workflow
+    # A schema-valid admission failure is runner infrastructure, never a
+    # schema failure or an accepted clean verdict. Classification reads the
+    # structured files and emits only a constant bounded detail.
+    assert "footgun_review_gate.py reported-blocked" in workflow
+    assert "failure_class=runner" in workflow
+    assert (
+        'detail="reviewer reported blocked required repository inspection '
+        'after the bounded retry"' in workflow
+    )
+    classification = workflow.split('if [[ "$reported_blocked" == "true" ]]', 1)[1]
+    classification = classification.split(
+        "python3 scripts/footgun_review_gate.py infra-receipt",
+        1,
+    )[0]
+    assert classification.index("else") < classification.index("failure_class=quota")
+    assert 'detail="provider reported a quota or rate limit after the bounded retry"' in workflow
+    assert "provider quota/rate limit: $(" not in workflow
     # The bounded retry no longer hard-fails the job; the receipt decides.
     assert "Require retry completion" not in workflow

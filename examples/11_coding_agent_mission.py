@@ -10,20 +10,17 @@ Inspect the mission without external work:
 
     uv run --extra coding-agent python examples/11_coding_agent_mission.py --dry-run
 
-Apple Container is the macOS operational backend. Initialize its subscription
-credential once, then run the mission (``container system start`` must be up):
-
-    uv run --extra coding-agent python examples/11_coding_agent_mission.py \
-        --backend apple-container --login
-    uv run --extra coding-agent python examples/11_coding_agent_mission.py \
-        --backend apple-container
-
-Modal uses the same Codex subscription through a named remote Volume. Its
-device-login flow is separate from an OpenAI API key and from the local Codex
-session running this script. Initialize it once, then run and optionally stream
-the sandbox's durable live output in the same terminal:
+Modal is the supported end-to-end Mission backend in v0.5; mission admission
+deterministically rejects every other configured backend. Modal uses a Codex
+subscription through a named remote Volume; its device-login flow is separate
+from an OpenAI API key and from the local Codex session running this script.
+Durable author/critic Activity identity additionally needs your Modal
+workspace and environment names. Initialize once, then run and optionally
+stream the sandbox's durable live output in the same terminal:
 
     modal token set --token-id "$MODAL_TOKEN_ID" --token-secret "$MODAL_TOKEN_SECRET"
+    export CODING_AGENT_MODAL_WORKSPACE=my-workspace
+    export CODING_AGENT_MODAL_ENVIRONMENT=main
     uv run --extra coding-agent python examples/11_coding_agent_mission.py \
         --backend modal --login
     uv run --extra coding-agent python examples/11_coding_agent_mission.py \
@@ -34,12 +31,12 @@ To attach from another terminal, copy the printed ``sb-...`` identity:
     uv run --extra coding-agent python examples/11_coding_agent_mission.py \
         --backend modal --monitor sb-...
 
-Docker is the Linux/CI compatibility backend, not the macOS recommendation:
-
-    uv run --extra coding-agent python examples/11_coding_agent_mission.py \
-        --backend docker --login
-    uv run --extra coding-agent python examples/11_coding_agent_mission.py \
-        --backend docker
+Apple Container (macOS) and Docker (Linux/CI) remain sandbox capabilities
+only: their Codex login and checkpoint/restore lanes work, and ``--dry-run``
+inspects their typed configuration, but submitting an end-to-end mission with
+either backend fails closed before admission. Initialize their subscription
+credentials with ``--backend apple-container --login`` (``container system
+start`` must be up) or ``--backend docker --login``.
 
 The subscription credential lives only in a dedicated broker volume. It is
 copied into a mission immediately around Codex, refreshed back to the broker,
@@ -56,7 +53,6 @@ import os
 import re
 import sys
 import time
-from pathlib import Path
 
 from archetype import ArchetypeRuntime
 from archetype.core.config import StorageConfig
@@ -73,10 +69,10 @@ from archetype.missions.sandboxes import (
     SandboxEvent,
     SandboxEventType,
 )
+from archetype.missions.sandboxes.modal import MODAL_ACTIVITY_PROTOCOL_EPOCH
 
 ISSUE = "https://github.com/VangelisTech/archetype/issues/543"
 REPOSITORY = "VangelisTech/archetype"
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 REGRESSION_TEST = "tests/world/test_query_schema_evolution.py"
 QUERY_SOURCE = "src/archetype/world/query.py"
 
@@ -204,18 +200,21 @@ def _arguments() -> argparse.Namespace:
 
 
 def _host_default_backend() -> str:
-    return "apple-container" if sys.platform == "darwin" else "docker"
+    # Modal is the only backend admitted for end-to-end missions in v0.5;
+    # apple-container and docker stay selectable for their sandbox-capability
+    # lanes (login, dry-run inspection, checkpoint/restore parity).
+    return "modal"
 
 
 def _backend(name: str) -> tuple[SandboxBackend, str]:
     auth_volume = os.environ.get("CODEX_AUTH_VOLUME", "archetype-codex-auth")
     if name == "apple-container":
-        backend = AppleContainerSandboxBackend(
-            AppleContainerSandboxConfig(auth_volume_name=auth_volume)
-        )
+        # Sandbox-capability lane only: the parity adapters expose no Codex
+        # auth-volume or login surface in v0.5.
+        backend = AppleContainerSandboxBackend(AppleContainerSandboxConfig())
         return backend, backend.environment
     if name == "docker":
-        backend = DockerSandboxBackend(DockerSandboxConfig(auth_volume_name=auth_volume))
+        backend = DockerSandboxBackend(DockerSandboxConfig())
         return backend, backend.environment
     image_id = os.environ.get("CODING_AGENT_MODAL_IMAGE_ID", "")
     backend = ModalSandboxBackend(
@@ -224,6 +223,9 @@ def _backend(name: str) -> tuple[SandboxBackend, str]:
             image_id=image_id,
             auth_volume_name=auth_volume,
             github_secret_name=os.environ.get("CODING_AGENT_GITHUB_SECRET", "archetype-github"),
+            workspace_name=os.environ.get("CODING_AGENT_MODAL_WORKSPACE") or None,
+            environment_name=os.environ.get("CODING_AGENT_MODAL_ENVIRONMENT") or None,
+            operation_protocol_epoch=MODAL_ACTIVITY_PROTOCOL_EPOCH,
         )
     )
     return backend, backend.environment
@@ -232,7 +234,7 @@ def _backend(name: str) -> tuple[SandboxBackend, str]:
 async def run_demo(
     storage_uri: str,
     *,
-    backend_name: str = "docker",
+    backend_name: str = "modal",
 ) -> dict[str, object]:
     """Return the credential-free typed authoring receipt without external work."""
     if not storage_uri:
@@ -261,11 +263,9 @@ async def run_demo(
         "task_paths": {
             "implementation": {
                 "path": QUERY_SOURCE,
-                "exists": (REPOSITORY_ROOT / QUERY_SOURCE).is_file(),
             },
             "regression": {
                 "path": REGRESSION_TEST,
-                "parent_exists": (REPOSITORY_ROOT / REGRESSION_TEST).parent.is_dir(),
             },
         },
         "external_work_started": False,
@@ -303,6 +303,13 @@ async def main() -> None:
         print(f"  {task.name}{dependency}")
     if arguments.dry_run:
         return
+    if isinstance(backend, ModalSandboxBackend) and (
+        backend.config.workspace_name is None or backend.config.environment_name is None
+    ):
+        raise RuntimeError(
+            "live Modal missions require CODING_AGENT_MODAL_WORKSPACE and "
+            "CODING_AGENT_MODAL_ENVIRONMENT to name the durable Activity namespace"
+        )
 
     monitor_task: asyncio.Task[dict[str, object]] | None = None
 

@@ -773,21 +773,35 @@ current architecture.
 
 ---
 
-## Daft 0.7.x: `with_column` Not `with_columns` (Apr 2026)
+## Daft 0.7.x: `with_columns` takes a dict, not positional args (Apr 2026, corrected Jul 2026)
 
-`DataFrame.with_columns(expr1, expr2)` raises `TypeError: too many positional arguments` in Daft 0.7.x. The method accepts **one expression at a time**. Chain calls instead:
+`DataFrame.with_columns(expr1, expr2)` raises `TypeError: too many positional
+arguments` in Daft 0.7.x. The fix is the **dict form**, not one call per column:
 
 ```python
-# ❌ WRONG — multiple positional args
+# ❌ WRONG — multiple positional args, raises TypeError
 df = df.with_columns(
     (col("position__x") + col("velocity__vx")).alias("position__x"),
     (col("position__y") + col("velocity__vy")).alias("position__y"),
 )
 
-# ✅ RIGHT — chain single expressions
-df = df.with_column("position__x", col("position__x") + col("velocity__vx"))
-df = df.with_column("position__y", col("position__y") + col("velocity__vy"))
+# ✅ RIGHT — one dict, one projection
+df = df.with_columns({
+    "position__x": col("position__x") + col("velocity__vx"),
+    "position__y": col("position__y") + col("velocity__vy"),
+})
 ```
+
+An earlier revision of this section concluded "the method accepts one
+expression at a time" and prescribed chained `with_column`. That was wrong
+about the signature: the `TypeError` is about *positional* args, and the dict
+form has always been available.
+
+Chained `with_column` remains correct for an intentional dependency on an
+earlier update; prefer the dict form for independent columns. See
+`daft-patterns` Rule 5. The separate read-then-overwrite UDF hazard retains one
+canonical explanation above under "UDF column args resolve to the column's
+FINAL value".
 
 ---
 

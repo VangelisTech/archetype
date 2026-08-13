@@ -89,7 +89,12 @@ Serialized component dictionaries passed to `Component.from_dict()` require a
 the correct Component subclass.
 
 #### Private API coupling
-Code outside `core/` accessing private attributes: `_live`, `_spawn_cache`, `_despawn_cache`, `_entity2sig`, `_next_entity_id`. Use the public API (`get_components()`, `spawn()`, `despawn()`).
+Code outside `core/` accessing private world internals — the commit machinery
+(`_commit_coordinator`, `_commit_ctx`, `_prepared_tick_commit`) or interning
+state (`_sig_intern`, `_querier_caps`). Reads go through `get_components()` /
+`query_archetype()`; mutation goes through `spawn()` / `despawn()` and the
+command path. The `entity2sig` / `spawn_cache` / `despawn_cache` caches are
+public to read, but mutating them directly bypasses that path.
 
 #### Monotonic state
 Boolean or filter columns that AND onto existing state instead of recomputing from config each tick. This causes state to monotonically narrow (e.g., once `sampled=False`, always False). The fix: recompute predicates from source data each tick.
@@ -102,12 +107,16 @@ source's `Resources` container. Confusing those lifetimes causes cross-world
 mutation, incorrect visibility, or duplicate cleanup.
 
 #### Store vs live reads
-Querying the persistent store when `_live` / `get_components()` has the correct
-in-memory data. After `fork_world`, pre-fork ticks resolve through the fork's
-`lineage` (ancestor world/run segments), but only on lineage-aware paths such
-as `AsyncWorld.query_archetype`, `get_components`, and
-`archetype.world.query`. Raw reads by the fork's `(world_id, run_id)` alone
-still miss pre-fork history.
+Reading committed component values through raw `(world_id, run_id)` storage
+queries instead of the lineage-aware world facade. `AsyncWorld.get_components`
+and `query_archetype` delegate to the world's querier and resolve pre-fork
+ticks through the fork's `lineage` (ancestor world/run segments); raw reads by
+the fork's `(world_id, run_id)` alone miss pre-fork history. The facade paths
+are NOT in-memory caches: `spawn_cache` / `despawn_cache` hold only pending
+mutations and `entity2sig` holds only signatures, so none of them is a
+complete source of committed values — flag code that treats a pending cache
+as one, and flag raw storage reads where the lineage-aware facade is the
+correct source.
 
 #### Governance bypass
 Runtime or API code invoking lifecycle, mutation, simulation, or an application
@@ -148,7 +157,10 @@ Returning indices, booleans, or placeholder values instead of actual identifiers
 Using `df.with_columns(expr1, expr2)` with multiple positional args — raises `TypeError` in Daft 0.7.x. Use `df.with_columns({...})` dict form or chain `df.with_column()`.
 
 #### Deprecated Daft APIs
-Using `@daft.udf` (removed in 0.8.0), `.struct.get()` (use `[]` indexing), or `Expression.if_else()` (use `@daft.func`).
+Using `@daft.udf` — deprecated, removed in 0.8.0; migrate to `@daft.func` /
+`@daft.cls`. Do not report `.struct.get()` or `Expression.if_else()`: both are
+already removed in the pinned daft 0.7.x and raise `AttributeError` when the
+plan is built — loud build failures, not footguns.
 
 #### Arrow serialization violations
 Component fields containing `dict`, `list[dict]`, custom objects, or other non-Arrow types without JSON encoding. Must use `_json: str` suffix pattern.
@@ -207,7 +219,16 @@ No footguns detected in this diff.
 ## Rules for this skill
 
 - **No style nits.** No "consider adding tests." No "this could be cleaner."
-- **No false positives.** If you're not confident it's a real footgun, don't report it. Uncertainty destroys trust.
+- **Report it, then rank it.** Do not suppress a finding because you are unsure
+  of it — severity is the filter, not silence. Anything you can state as a
+  concrete runtime consequence belongs in the output, graded `blocking` or
+  `advisory` by the contract above. The merge gate blocks on `blocking` only,
+  so an uncertain finding costs receipt-comment noise, not a red build; a
+  suppressed one costs a runtime bug. What does not belong is a finding you
+  cannot name a runtime consequence for at all — that is a style nit, and the
+  rule above already excludes it.
 - **Diff-only.** Only report issues in changed lines (with enough context to confirm). Don't audit the entire codebase.
 - **Concrete fixes.** Every finding must include a specific fix, not "consider refactoring."
-- **Fast.** This should take seconds, not minutes. Don't read files you don't need.
+- **Read what the lens needs.** Spend turns on surrounding context and on the
+  sibling sweep; skip files your lens's categories cannot reach. Depth on the
+  changed surface beats a fast pass.

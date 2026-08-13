@@ -52,6 +52,26 @@ def render(inventory: VersionInventory | None = None) -> str:
         "| --- | --- | --- | --- | --- | --- | --- |",
         *(_pin_row(artifact) for artifact in pinned),
         "",
+        "## Agent harness interfaces",
+        "",
+        "One pinned CLI may have more than one checked consumer contract. The first",
+        "interface is the admitted workflow path; later interfaces are explicitly",
+        "capability-only compatibility paths.",
+        "",
+        "| Harness | Interface | Invocation | Output | Resume | Completion | Fields |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+        *(
+            "| "
+            f"`{artifact.harness}` | `{interface.interface_id}` | "
+            f"`{' '.join(interface.invoke)}` | "
+            f"`{', '.join(interface.output_flags)}` | "
+            f"`{' '.join(interface.resume)}` | "
+            f"`{interface.session_event}` | "
+            f"`{', '.join(interface.session_fields)}` |"
+            for artifact in pinned
+            for interface in artifact.harness_interfaces
+        ),
+        "",
         "## Planned artifacts",
         "",
         "Planned rows declare a pinning obligation whose concrete artifact is not",
