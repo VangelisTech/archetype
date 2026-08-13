@@ -649,6 +649,14 @@ jobs:
         with:
           name: dist
           path: dist/
+      - name: Reauthorize the immutable release ref before GitHub Release creation
+        run: >-
+          python scripts/verify_release_ref.py
+          --tag "$GITHUB_REF_NAME"
+          --expected-commit "$GITHUB_SHA"
+          --repository "$GITHUB_REPOSITORY"
+          --actor "$GITHUB_ACTOR"
+          --triggering-actor "$GITHUB_TRIGGERING_ACTOR"
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ github.ref_name }}

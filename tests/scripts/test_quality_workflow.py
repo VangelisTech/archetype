@@ -569,6 +569,11 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
         assert "github.triggering_actor == 'everettVT'" in coordinator
 
     assert "github.triggering_actor == 'everettVT'" in github_release
+    assert "scripts/verify_release_ref.py" in github_release
+    assert '--expected-commit "$GITHUB_SHA"' in github_release
+    assert github_release.index("scripts/verify_release_ref.py") < github_release.index(
+        "softprops/action-gh-release@"
+    )
     assert 'version: "latest"' not in workflow
     assert workflow.count('version: "0.9.28"') == 8
     assert workflow.count("persist-credentials: false") == 12
@@ -604,8 +609,10 @@ def test_release_workflow_is_operator_dispatched_from_an_immutable_tag() -> None
     assert "needs: authorize-release" in profile
     assert "needs: authorize-release" in compatibility
     assert 'git merge-base --is-ancestor "${GITHUB_REF_NAME}^{commit}" origin/main' in profile
-    assert "scripts/verify_release_ref.py" in _job(workflow, "testpypi-preflight")
-    assert "scripts/verify_release_ref.py" in _job(workflow, "pypi-preflight")
+    for job_id in ("testpypi-preflight", "pypi-preflight", "github-release"):
+        job = _job(workflow, job_id)
+        assert "scripts/verify_release_ref.py" in job
+        assert '--expected-commit "$GITHUB_SHA"' in job
     assert "tag_name: ${{ github.ref_name }}" in github_release
 
 
