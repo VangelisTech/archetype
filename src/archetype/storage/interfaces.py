@@ -13,9 +13,12 @@ from archetype.core.config import CacheConfig, StorageConfig
 from archetype.storage.catalog import ControlCatalog
 
 if TYPE_CHECKING:
+    import pyarrow as pa
+
     from archetype.storage.catalog import WorldRecord
     from archetype.storage.commit import CatalogCommitCoordinator
     from archetype.storage.service import PinnedVisibility, VisibleWorldRows
+    from archetype.storage.transfer import ImportedTableReceipt, TableSnapshotEvidence
 
 
 @runtime_checkable
@@ -26,6 +29,11 @@ class iStorageService(Protocol):
     def has_injected_session(self) -> bool: ...
 
     def require_iceberg_identity(self, storage_config: StorageConfig) -> None: ...
+
+    def require_local_sqlite_iceberg_identity(
+        self,
+        storage_config: StorageConfig,
+    ) -> None: ...
 
     def get_control_catalog(self, storage_config: StorageConfig) -> ControlCatalog: ...
 
@@ -78,6 +86,35 @@ class iStorageService(Protocol):
     ) -> Any: ...
 
     async def materialize(self, frame: DataFrame) -> DataFrame: ...
+
+    async def list_table_names(self, storage_config: StorageConfig) -> tuple[str, ...]: ...
+
+    async def capture_table_snapshot(
+        self,
+        storage_config: StorageConfig,
+        table_name: str,
+    ) -> TableSnapshotEvidence: ...
+
+    async def export_table_snapshot(
+        self,
+        storage_config: StorageConfig,
+        expected: TableSnapshotEvidence,
+    ) -> pa.Table: ...
+
+    async def find_table_snapshot(
+        self,
+        storage_config: StorageConfig,
+        expected: TableSnapshotEvidence,
+    ) -> TableSnapshotEvidence | None: ...
+
+    async def import_table_snapshot(
+        self,
+        storage_config: StorageConfig,
+        source_evidence: TableSnapshotEvidence,
+        payload: pa.Table,
+        *,
+        destination_evidence: TableSnapshotEvidence | None = None,
+    ) -> ImportedTableReceipt: ...
 
     async def read_table(
         self,

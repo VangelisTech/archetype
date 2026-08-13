@@ -82,25 +82,43 @@ id_map)` plus per-relation copy policies distinguishing:
 
 ---
 
-## 5. The one core ask: processor negative matching
+## 5. Core matching asks: inherited capabilities and template exclusion
+
+An INHERIT instance stores no physical row for the inherited component. That
+means today's archetype-signature matching cannot see the capability:
+`AsyncQueryManager.query()` will omit the instance, and `AsyncSystem` will not
+run a processor that requires the inherited type. A family-side value overlay
+after selection is too late to repair either decision.
+
+Before INHERIT can be ruled implementable, the engine design must therefore
+choose one of two explicit strategies:
+
+- make query and processor eligibility operate on an effective signature that
+  includes version-pinned inherited component types; or
+- materialize a durable instance-side capability footprint that participates
+  in matching while the component value itself remains inherited.
+
+The selected strategy must preserve lazy, snapshot-pinned reads and must not
+turn a template edit into a retroactive signature change.
 
 Library entities must not execute. Today a template carrying `Depth` will be
 processed by `DepthProcessor` — inertness is a convention, not an
 enforcement. Proposed: `excludes: tuple[type[Component], ...]` on processor
 declarations, honored by archetype matching, with `Prefab` excluded by
-default for domain processors. This is the only engine change this design
-needs; everything else is family-level.
+default for domain processors. Negative matching and inherited positive
+matching are both engine-level requirements; everything else can remain
+family-level.
 
 ---
 
 ## 6. Open questions for the ruling
 
 1. INHERIT-as-pinned-projection: confirm the semantic, then decide where the
-   effective-state join lives (a projection helper family-side, or
-   query-service sugar).
+   effective-state join and effective-signature matching live. A family-only
+   projection helper is insufficient for processor/query eligibility.
 2. `InstantiationPolicy` declaration site and default (proposed: class
    attribute, default COPY).
 3. Whether variant derivation (§3) lands before or after `PrefabLibrary` —
    it reshapes the authoring surface.
-4. Negative matching (§5): engine feature now, or documented convention
-   until the first real incident.
+4. Matching (§5): choose effective signatures versus a materialized capability
+   footprint, and decide whether negative matching lands in the same change.

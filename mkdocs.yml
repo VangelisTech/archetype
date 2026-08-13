@@ -58,6 +58,7 @@ nav:
       - History and Forks: guide/history-and-forks.md
       - Prefab Libraries: guide/prefab-libraries.md
       - Authoring Prefab Libraries: guide/authoring-prefab-libraries.md
+      - Mission Factory Assets: guide/mission-factory-assets.md
       - Resources: guide/resources.md
       - Lifecycle Hooks: guide/hooks.md
       - Storage: guide/stores.md
@@ -107,6 +108,7 @@ nav:
       - World Lifecycle: guide/world-lifecycle.md
       - Durable Discovery: guide/durable-discovery.md
       - Atomic Visibility: guide/atomic-visibility.md
+      - Storage Migration: guide/storage-migration.md
       - Artifacts: guide/artifacts.md
       - Dataset and Evaluation Ontology: guide/dataset-eval-ontology.md
       - Audit Log: guide/audit-log.md

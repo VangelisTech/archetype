@@ -2,7 +2,9 @@
 
 A hands-on walkthrough of writing a prefab library with what ships today.
 [Prefab Libraries](prefab-libraries.md) covers the two-layer model and the
-theory; this page is the craft. Every call below is current public API.
+theory; this page is the craft. Every call below is current public API. The
+step snippets are sequential excerpts from one `async` function; the complete
+runtime, storage, library, and consumer setup is shown in Step 2.
 
 ## The mental model
 
@@ -45,23 +47,37 @@ class AssignedTo(Relation):    # runtime-only; never authored on templates
 ## Step 2 — Open the library world with a view
 
 ```python
+from archetype import ArchetypeRuntime
+from archetype.core.config import StorageConfig
 from archetype.core.hooks import PostTick
 from archetype.graph import GraphView
 
-view = GraphView()
-library = runtime.world(
-    "mission-library",
-    storage=storage,
-    resources=[view],
-    hooks=[(PostTick, view.on_post_tick)],
-)
+
+async def author_and_instantiate() -> None:
+    storage = StorageConfig(uri="./archetype_data", namespace="mission-prefabs")
+    view = GraphView()
+
+    async with ArchetypeRuntime() as runtime:
+        library = runtime.world(
+            "mission-library",
+            storage=storage,
+            resources=[view],
+            hooks=[(PostTick, view.on_post_tick)],
+        )
+        consumer = runtime.world("mission-consumer", storage=storage)
+
+        # Run the Step 3 and Step 4 bodies here, inside this context.
 ```
 
 The view is both your reading instrument and `instantiate`'s source. The
 tick law applies: nothing exists until a step persists it — authoring stages
-rows, and the step mints the version.
+rows, and the step mints the version. `consumer` is a distinct world handle;
+passing the library's view to `instantiate` is the explicit cross-world import.
 
 ## Step 3 — Author templates as entities
+
+The following body belongs inside `author_and_instantiate()` after the setup
+above:
 
 ```python
 from archetype.graph import ChildOf, Prefab, link
@@ -84,6 +100,9 @@ exists — a five-line query makes a fine check today. Every edit plus a step
 is a new version; the old one stays on the ledger.
 
 ## Step 4 — Instantiate into a consumer world
+
+Continue in the same runtime context, where `consumer`, `view`, and `mission`
+are already defined:
 
 ```python
 from archetype.graph import instantiate

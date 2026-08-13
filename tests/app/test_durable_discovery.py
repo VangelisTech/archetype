@@ -242,7 +242,7 @@ async def test_catalog_migrates_legacy_worlds_to_resumable_writer_mode(tmp_path)
             "SELECT value FROM catalog_meta WHERE key='schema_version'"
         ).fetchone()[0]
     assert "writer_mode" in columns
-    assert version == "10"
+    assert version == "11"
 
 
 def _register_world_proc(path: str, result_queue) -> None:

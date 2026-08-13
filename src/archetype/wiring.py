@@ -47,6 +47,8 @@ from archetype.evaluation.models import (
     RunGraders,
     summarize_evaluation_operation,
 )
+from archetype.migration.contracts import MigrationEndpoint
+from archetype.migration.interfaces import ColdMigrationVerifier
 from archetype.missions.activity_binding import MissionActivityBinding
 from archetype.missions.activity_coordinator import (
     MissionAuthorActivityCoordinator,
@@ -129,6 +131,7 @@ from archetype.storage.activity_catalog import (
     SqliteActivityCatalog,
     activity_catalog_path_for,
 )
+from archetype.storage.catalog import SqliteControlCatalog
 from archetype.storage.config import ControlCatalogConfig
 from archetype.storage.service import StorageService
 from archetype.world import mutation, query, simulation
@@ -1297,7 +1300,43 @@ def build_runtime_resources(config: RuntimeBootstrapConfig) -> RuntimeResources:
     return resources
 
 
+def build_local_migration_endpoint(
+    storage_config: StorageConfig,
+    storage_service: StorageService,
+    *,
+    audit_storage_config: StorageConfig,
+    artifact_store_config: ArtifactStoreConfig | None = None,
+    cold_verifier: ColdMigrationVerifier | None = None,
+) -> MigrationEndpoint:
+    """Bind migration capabilities to one caller-owned local storage service.
+
+    The caller owns the service lifetime.  The explicit audit configuration
+    proves that audit rows share this same storage identity; omission cannot
+    silently stand for Archetype's separate default audit lakehouse.  Local v1
+    deliberately refuses a remote control catalog; the remote administrative
+    protocol remains a separate implementation slice.
+    """
+
+    storage_service.require_iceberg_identity(storage_config)
+    control = storage_service.get_control_catalog(storage_config)
+    if not isinstance(control, SqliteControlCatalog):
+        raise TypeError("local migration v1 requires a SQLite control catalog")
+    activity_path = control.path.with_name(
+        f"{control.path.stem}-activities{control.path.suffix}"
+    ).resolve()
+    return MigrationEndpoint(
+        storage_config=storage_config,
+        storage_service=storage_service,
+        control_catalog=control,
+        artifact_store_config=artifact_store_config or ArtifactStoreConfig(),
+        activity_catalog_path=activity_path,
+        audit_storage_config=audit_storage_config,
+        cold_verifier=cold_verifier,
+    )
+
+
 __all__ = [
     "RuntimeBootstrapConfig",
+    "build_local_migration_endpoint",
     "build_runtime_resources",
 ]

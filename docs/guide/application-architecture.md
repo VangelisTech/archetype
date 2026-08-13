@@ -89,6 +89,7 @@ Repository package ownership is normative:
 | Capability-scoped resources and provider adapters implementing a family-owned protocol | A named subpackage of `archetype.<family>` |
 | Generic Activity identity, claims, attempts, fences, result references, and settlement | `archetype.activities` |
 | Physical storage, control catalogs, commit coordination, and generic durable world/run envelopes | `archetype.storage` |
+| Offline whole-storage planning, ordering, convergence, verification, and receipts | `archetype.migration` |
 | Family-owned workflows and internal lower-family ports | `archetype.<family>` |
 | Transport and authentication | `archetype.api` |
 | Process composition and lifetime | `archetype.wiring` and `archetype.runtime_resources` |
@@ -115,6 +116,13 @@ execution, control-catalog implementations and records, physical visibility,
 commit coordination, and the generic durable world/run envelope. Application
 families consume that substrate through the staged `iStorageService` port and
 retain workflow meaning and orchestration.
+
+`archetype.migration` owns the offline whole-storage administrative workflow.
+It consumes the declared lower `archetype.storage` and `archetype.artifacts`
+families; storage never imports artifacts. Local v1 is whole-identity local
+Iceberg-to-Iceberg and SQLite-to-SQLite into an empty destination, and rejects
+any Activity history. Remote migration is deferred. See
+[Storage Migration](storage-migration.md).
 
 A reviewed family may own a capability-scoped `Resource` implementation or
 provider adapter when the protocol and lifecycle vocabulary belong to that
@@ -178,6 +186,7 @@ src/archetype/
   redaction/         canonical pre-durability scanning, receipts and quarantine
   evaluation/        grading, snapshot pinning, leases and durable receipts
   artifacts/         file values, scans, immutable objects, indexes, views and handlers
+  migration/         whole-storage plans, ordering, convergence and receipts
   research/          AutoResearch values, ledger state, views and free workflow handler
   physical_ai/       physical state, models, views and free workflow handlers
   missions/          mission state, resources, Activities and family workflows
@@ -311,6 +320,7 @@ or CLI boundary.
 | Durable world reads | Module functions for persisted ECS state, lineage, and signature discovery without a live world | Storage port |
 | Redaction | Provider-neutral secret scanning, deterministic text redaction, safe receipts and quarantine | None |
 | Artifacts | File values, discovery, metadata scans, immutable content-addressed objects, common/media indexes, storage-backed views, and exact free handlers | Storage port; operations carry explicit durable world and storage coordinates |
+| Migration | Offline whole-storage planning, quiescence, ordered transfer, retry convergence, activation-last verification, and immutable receipts | Storage table/control administration plus the artifacts migration participant; local v1 only |
 | Evaluation | Snapshot pinning, grader contracts, grading, leasing, recovery, evidence and durable results | Storage port plus world-query functions; operations carry explicit world and storage coordinates |
 | Commands | Exact registration, authorization policy, governed direct/deferred entry, durable admission, order, leasing, lock-held materialization, retry, settlement, dead letters, transactional outbox and analytical audit projection | Storage/control catalog plus exact world handlers |
 | Activities | Generic immutable admission, claims, attempts, leases, fences, provider-operation binding, bounded result references/digests, and later-receipt settlement; no family recovery policy | Storage-owned Activity catalog |
@@ -370,6 +380,7 @@ Durability is family-specific rather than one service-level flag:
 | Hosted Physical-AI Activity | Physical-AI hosted workflow, Activity coordinator, durable Arrow/artifact publication, and later physical tick | The complete hosted result is durable by stable operation identity before its bounded reference is observed; a seeded simulator reuses that result rather than assuming GPU replay determinism |
 | Typed family rows | Owning family workflow plus `StorageService` and Iceberg | Storage resolves and stamps the durable world/run envelope, the registered schema accepts the rows, and one Iceberg append makes the selected rows visible |
 | Artifact ingestion | Artifacts-family handler plus `StorageService` | The published durable tick is selected before file effects; the immutable object and any media-specific rows are durable before the common `artifact_files` occurrence becomes visible |
+| Whole-storage migration | Migration workflow plus storage/artifacts administrative participants | Every local table and referenced object is read back, source stability is rechecked, exact control state is staged, destination Worlds activate last, and a fresh destination-only process verifies recovery |
 | Coding-agent transcript | Redaction, artifacts-family handler, and storage authority | Raw narrative never becomes durable; the sanitized artifact is indexed and its digest verified before normalized rows keyed to its `artifact_id` are appended |
 | Evaluation | Family handler plus `StorageService` and its control catalog | Subject and grader contract are pinned, one key-conditional result append is durable, and the evaluation lease is settled |
 | Audit | Transactional outbox plus projection | Authoritative event is durable; analytical Iceberg projection may lag |
@@ -407,6 +418,14 @@ storage port with redaction and the pure missions parser; it creates no third
 storage authority.
 Durable external material is described as an artifact, evidence object, typed
 dataset row, or evaluation receipt—never as a universal fact.
+
+Whole-storage migration uses separate administrative primitives on those same
+owners. Storage enumerates and pins every table, imports exact verified table
+contents, and exports/stages/activates versioned SQLite control state. Artifacts
+verifies and relocates referenced objects and transforms only
+`artifact_files.object_uri`. The migration family owns ordering and meaning; it
+does not collect Daft plans, write Iceberg directly, replay ordinary catalog
+operations, or ingest new Artifact occurrences.
 
 ### Storage execution authority
 
@@ -597,8 +616,8 @@ resources within the mission family.
 `quality/architecture.toml` contains the scalar policy and family
 DAG. Per-family fragments under `quality/architecture.d/` register the
 top-level dispositions for `activities`, `artifacts`, `commands`, `episodes`,
-`evaluation`, `graph`, `missions`, `physical_ai`, `projections`, `redaction`,
-`research`, `storage`, and `world`.
+`evaluation`, `graph`, `migration`, `missions`, `physical_ai`, `projections`,
+`redaction`, `research`, `storage`, and `world`.
 `scripts/check_architecture.py` enforces their package direction, protocol
 imports, concrete construction, concrete inheritance, and persistent
 Component placement.
@@ -635,6 +654,12 @@ its PR4 registration is not actor-aware. It does not implicitly spawn mission
 Components. The provisional
 `archetype.experiments` package and its two unsafe logging exceptions are gone.
 The architecture manifest currently has no owned migration exceptions.
+
+The storage-migration family is registered with exactly the `artifacts` and
+`storage` dependencies. Its local v1 administrative profile is offline,
+whole-identity, local Iceberg/SQLite only, empty-destination, and
+Activity-history-free. Remote migration remains deferred rather than hidden
+behind a permissive family edge.
 
 Independent manifests under `quality/observability/` declare each family's
 operation dispositions. `scripts/check_observability.py` enforces their exact
@@ -677,6 +702,7 @@ dependency. `errors` is the exact common-family module; `runtime`, `api`,
 | `commands` | `storage`, `world` |
 | `activities` | `storage` |
 | `artifacts` | `storage` |
+| `migration` | `artifacts`, `storage` |
 | `redaction` | none |
 | `evaluation` | `storage`, `world` |
 | `research` | `storage`, `world` |
@@ -720,6 +746,7 @@ src/archetype/
   research/
   physical_ai/
   artifacts/
+  migration/
   episodes/
   missions/
   redaction/

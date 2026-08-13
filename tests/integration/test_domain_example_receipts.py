@@ -42,6 +42,7 @@ coding_agent_mission = _load_example("11_coding_agent_mission.py")
 graph_relationships = _load_example("11_graph_relationships.py")
 prefabs = _load_example("12_prefabs.py")
 biome_rts = _load_example("13_biome_rts.py")
+mission_factory = _load_example("15_mission_factory_assets.py")
 
 
 @pytest.mark.asyncio
@@ -335,4 +336,59 @@ async def test_biome_receipt_pins_composed_scene_outcome(tmp_path: Path) -> None
             "lineage_recorded": True,
         },
         "cascade_deleted_count": 4,
+    }
+
+
+@pytest.mark.asyncio
+async def test_mission_factory_receipt_compiles_real_agent_authoring(tmp_path: Path) -> None:
+    result = await captured_receipt_or_run(
+        mission_factory.run_demo,
+        str(tmp_path / "mission-factory"),
+    )
+
+    assert result == {
+        "library": "mission_factory",
+        "visual_assets": [
+            "agent_unit",
+            "agent_workcell",
+            "artifact_depot",
+            "critic_gate",
+            "dependency_conduit",
+            "evidence_capsule",
+            "mission_core",
+            "publication_uplink",
+            "validator_gate",
+        ],
+        "line": "bugfix_line",
+        "copied_entities": 18,
+        "tasks": [
+            {
+                "name": "reproduction",
+                "depends_on": [],
+                "validators": ["regression_is_red", "regression_diff_check"],
+                "max_dispatches": 2,
+            },
+            {
+                "name": "implementation",
+                "depends_on": ["reproduction"],
+                "validators": [
+                    "focused_contract",
+                    "architecture",
+                    "implementation_diff_check",
+                ],
+                "max_dispatches": 3,
+            },
+        ],
+        "relation_rules": ["DependsOn", "Guards"],
+        "model_contract": {
+            "format": ["glb"],
+            "status": ["brief"],
+            "coordinate_system": ["y_up"],
+            "origin": ["ground_center"],
+        },
+        "protected_interactions": [
+            "checkpoint.restore",
+            "mission.submit",
+            "terminal.takeover",
+        ],
     }

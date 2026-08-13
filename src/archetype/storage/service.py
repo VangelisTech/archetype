@@ -51,6 +51,7 @@ from archetype.core.paths import (
 )
 from archetype.errors import AvailabilityError
 from archetype.storage.catalog import (
+    CatalogConflictError,
     ControlCatalog,
     RemoteControlCatalog,
     SignatureRecord,
@@ -61,6 +62,12 @@ from archetype.storage.catalog import (
 )
 from archetype.storage.commit import CatalogCommitCoordinator
 from archetype.storage.config import ControlCatalogConfig
+from archetype.storage.transfer import (
+    ImportedTableReceipt,
+    TableSnapshotEvidence,
+    logical_arrow_schemas_equal,
+    table_evidence,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -668,6 +675,52 @@ class StorageService:
             )
         self._required_session_identity = requested
 
+    def require_local_sqlite_iceberg_identity(
+        self,
+        storage_config: StorageConfig,
+    ) -> None:
+        """Require the concrete local SQLite-backed Iceberg catalog.
+
+        A local-looking ``StorageConfig`` is not evidence about a caller-owned
+        Daft session.  Migration uses this stronger check so it cannot admit a
+        remote or managed catalog while deriving its identity from an
+        unrelated local URI.
+        """
+
+        self.require_iceberg_identity(storage_config)
+        if self._session is None:
+            # Store construction for an uninjected service is exclusively the
+            # local SqlCatalog path in ``configure_session``.
+            return
+
+        from pyiceberg.catalog.sql import SqlCatalog
+
+        catalog = self._session.current_catalog()
+        inner = getattr(catalog, "_inner", None)
+        if not isinstance(inner, SqlCatalog):
+            raise ValueError("migration v1 requires a local SQLite-backed Iceberg catalog")
+
+        properties = inner.properties
+        catalog_uri = properties.get("uri")
+        warehouse_uri = properties.get("warehouse")
+        if not isinstance(catalog_uri, str) or not catalog_uri.startswith("sqlite:///"):
+            raise ValueError("migration v1 requires a local SQLite-backed Iceberg catalog")
+        catalog_path = local_storage_path(catalog_uri.removeprefix("sqlite://"))
+        warehouse_path = (
+            local_storage_path(warehouse_uri) if isinstance(warehouse_uri, str) else None
+        )
+        requested_root = local_storage_path(str(storage_config.uri))
+        if catalog_path is None or warehouse_path is None or requested_root is None:
+            raise ValueError("migration v1 requires a local SQLite-backed Iceberg catalog")
+        requested_root = requested_root.resolve()
+        if (
+            catalog_path.resolve() != requested_root / "catalog.db"
+            or warehouse_path.resolve() != requested_root
+        ):
+            raise ValueError(
+                "migration v1 Iceberg catalog does not match the configured local identity"
+            )
+
     def get_control_catalog(self, storage_config: StorageConfig) -> ControlCatalog:
         """The durable control catalog for a storage location (pooled).
 
@@ -1020,6 +1073,271 @@ class StorageService:
         self._require_frame(frame)
         async with self._execution_gate.admit():
             return await self._blocking(frame.collect, num_preview_rows=0)
+
+    async def list_table_names(self, storage_config: StorageConfig) -> tuple[str, ...]:
+        """Enumerate every physical table in the configured Iceberg namespace."""
+
+        store = await self._iceberg_store(storage_config)
+        async with self._execution_gate.admit():
+            catalog, _identifier = self._catalog_identity(store, "__migration_probe__")
+            namespace = str(store.session.current_namespace())
+            prefix = f"{namespace}."
+            names: list[str] = []
+            for identifier in catalog.list_tables():
+                qualified = str(identifier)
+                if qualified.startswith(prefix):
+                    names.append(qualified[len(prefix) :])
+            return tuple(sorted(names))
+
+    async def capture_table_snapshot(
+        self,
+        storage_config: StorageConfig,
+        table_name: str,
+    ) -> TableSnapshotEvidence:
+        """Pin, materialize, and digest one current complete table snapshot."""
+
+        store = await self._iceberg_store(storage_config)
+        async with self._execution_gate.admit():
+            catalog, identifier = self._catalog_identity(store, table_name)
+            if not catalog.has_table(identifier):
+                raise KeyError(f"Iceberg table {table_name!r} does not exist")
+            table = catalog.get_table(identifier)
+            native = self._native_table(table)
+            native.refresh()
+            snapshot = native.current_snapshot()
+            snapshot_id = int(snapshot.snapshot_id) if snapshot is not None else None
+            frame = read_iceberg(
+                native,
+                snapshot_id=snapshot_id,
+                io_config=store.io_config,
+            )
+            frozen = await self._blocking(frame.collect, num_preview_rows=0)
+            arrow = frozen.to_arrow()
+            return table_evidence(table_name, snapshot_id, arrow)
+
+    async def export_table_snapshot(
+        self,
+        storage_config: StorageConfig,
+        expected: TableSnapshotEvidence,
+    ) -> pa.Table:
+        """Read one frozen source snapshot and require its recorded evidence."""
+
+        store = await self._iceberg_store(storage_config)
+        async with self._execution_gate.admit():
+            catalog, identifier = self._catalog_identity(store, expected.name)
+            if not catalog.has_table(identifier):
+                raise RuntimeError(f"source table {expected.name!r} disappeared after planning")
+            native = self._native_table(catalog.get_table(identifier))
+            frame = read_iceberg(
+                native,
+                snapshot_id=expected.snapshot_id,
+                io_config=store.io_config,
+            )
+            frozen = await self._blocking(frame.collect, num_preview_rows=0)
+            arrow = frozen.to_arrow()
+            observed = table_evidence(expected.name, expected.snapshot_id, arrow)
+            self._require_matching_table_evidence(expected, observed, role="source")
+            return arrow
+
+    async def find_table_snapshot(
+        self,
+        storage_config: StorageConfig,
+        expected: TableSnapshotEvidence,
+    ) -> TableSnapshotEvidence | None:
+        """Find exact logical evidence in a destination table's snapshot history.
+
+        A cold verification tick is allowed to advance activated destination
+        tables before the final receipt is recorded.  Historical lookup makes
+        that narrow crash window resumable without treating later rows as the
+        imported snapshot or replaying the migration append.
+        """
+
+        store = await self._iceberg_store(storage_config)
+        async with self._execution_gate.admit():
+            catalog, identifier = self._catalog_identity(store, expected.name)
+            if not catalog.has_table(identifier):
+                return None
+            native = self._native_table(catalog.get_table(identifier))
+            native.refresh()
+            snapshots = tuple(native.snapshots())
+            if not snapshots:
+                observed = await self._capture_native_table(
+                    store,
+                    expected.name,
+                    native,
+                    None,
+                )
+                return observed if self._same_logical_table(expected, observed) else None
+            for snapshot in reversed(snapshots):
+                observed = await self._capture_native_table(
+                    store,
+                    expected.name,
+                    native,
+                    int(snapshot.snapshot_id),
+                )
+                if self._same_logical_table(expected, observed):
+                    return observed
+            return None
+
+    async def import_table_snapshot(
+        self,
+        storage_config: StorageConfig,
+        source_evidence: TableSnapshotEvidence,
+        payload: pa.Table,
+        *,
+        destination_evidence: TableSnapshotEvidence | None = None,
+    ) -> ImportedTableReceipt:
+        """Create or resume one exact destination table snapshot.
+
+        A present exact table is verified and skipped.  A matching empty table
+        is the resumable residue of a crash after table creation.  Any other
+        present content conflicts instead of being merged or overwritten.
+        """
+
+        if not isinstance(payload, pa.Table):
+            raise TypeError("migration table payload must be a pyarrow.Table")
+        expected = destination_evidence or source_evidence
+        if expected.name != source_evidence.name:
+            raise ValueError("source and destination migration table names must match")
+        if expected.row_count != source_evidence.row_count:
+            raise ValueError("migration table relocation cannot change row count")
+        supplied = table_evidence(expected.name, expected.snapshot_id, payload)
+        self._require_matching_table_evidence(expected, supplied, role="payload")
+        store = await self._iceberg_store(storage_config)
+        rows = daft.from_arrow(payload)
+
+        for attempt in range(_MAX_COMMIT_ATTEMPTS):
+            async with self._execution_gate.admit():
+                catalog, identifier = self._catalog_identity(store, expected.name)
+                table = (
+                    catalog.get_table(identifier)
+                    if catalog.has_table(identifier)
+                    else self._ensure_table(store, expected.name, rows.schema())
+                )
+                native = self._native_table(table)
+                if attempt:
+                    native.refresh()
+                current = native.current_snapshot()
+                if current is not None:
+                    observed = await self._capture_native_table(
+                        store,
+                        expected.name,
+                        native,
+                        int(current.snapshot_id),
+                    )
+                    if self._same_logical_table(expected, observed):
+                        return self._table_receipt(source_evidence, expected, observed)
+                    raise CatalogConflictError(
+                        f"destination table {expected.name!r} already contains different content"
+                    )
+
+                aligned = self._align_table_schema(table, rows, expected.name)
+                frozen = await self._blocking(aligned.collect, num_preview_rows=0)
+                if not expected.row_count:
+                    observed = table_evidence(expected.name, None, frozen.to_arrow())
+                    self._require_matching_table_evidence(expected, observed, role="destination")
+                    return self._table_receipt(source_evidence, expected, observed)
+                try:
+                    commit = asyncio.ensure_future(
+                        asyncio.to_thread(
+                            frozen.write_iceberg,
+                            native,
+                            mode="append",
+                            io_config=store.io_config,
+                        )
+                    )
+                    await _join_worker(commit)
+                except CommitFailedException:
+                    if attempt + 1 == _MAX_COMMIT_ATTEMPTS:
+                        raise
+                    await asyncio.sleep(min(0.005 * (2**attempt), 0.1))
+                    continue
+                except CommitStateUnknownException:
+                    native.refresh()
+                    uncertain = native.current_snapshot()
+                    if uncertain is not None:
+                        observed = await self._capture_native_table(
+                            store,
+                            expected.name,
+                            native,
+                            int(uncertain.snapshot_id),
+                        )
+                        if self._same_logical_table(expected, observed):
+                            return self._table_receipt(source_evidence, expected, observed)
+                    raise
+
+                native.refresh()
+                committed = native.current_snapshot()
+                if committed is None:
+                    raise RuntimeError(
+                        f"destination table {expected.name!r} append returned without a snapshot"
+                    )
+                observed = await self._capture_native_table(
+                    store,
+                    expected.name,
+                    native,
+                    int(committed.snapshot_id),
+                )
+                self._require_matching_table_evidence(expected, observed, role="destination")
+                return self._table_receipt(source_evidence, expected, observed)
+
+        raise AssertionError("unreachable migration table retry state")
+
+    async def _capture_native_table(
+        self,
+        store: AsyncStore,
+        table_name: str,
+        native: Any,
+        snapshot_id: int | None,
+    ) -> TableSnapshotEvidence:
+        frame = read_iceberg(native, snapshot_id=snapshot_id, io_config=store.io_config)
+        frozen = await self._blocking(frame.collect, num_preview_rows=0)
+        return table_evidence(table_name, snapshot_id, frozen.to_arrow())
+
+    @staticmethod
+    def _same_logical_table(
+        expected: TableSnapshotEvidence,
+        observed: TableSnapshotEvidence,
+    ) -> bool:
+        return logical_arrow_schemas_equal(expected.arrow_schema, observed.arrow_schema) and (
+            expected.schema_fingerprint,
+            expected.row_count,
+            expected.content_digest,
+        ) == (
+            observed.schema_fingerprint,
+            observed.row_count,
+            observed.content_digest,
+        )
+
+    @classmethod
+    def _require_matching_table_evidence(
+        cls,
+        expected: TableSnapshotEvidence,
+        observed: TableSnapshotEvidence,
+        *,
+        role: str,
+    ) -> None:
+        if not cls._same_logical_table(expected, observed):
+            raise CatalogConflictError(
+                f"{role} table {expected.name!r} does not match its frozen migration evidence"
+            )
+
+    @staticmethod
+    def _table_receipt(
+        source: TableSnapshotEvidence,
+        expected_destination: TableSnapshotEvidence,
+        destination: TableSnapshotEvidence,
+    ) -> ImportedTableReceipt:
+        return ImportedTableReceipt(
+            name=source.name,
+            source_snapshot_id=source.snapshot_id,
+            destination_snapshot_id=destination.snapshot_id,
+            source_schema_fingerprint=source.schema_fingerprint,
+            destination_schema_fingerprint=expected_destination.schema_fingerprint,
+            row_count=source.row_count,
+            source_content_digest=source.content_digest,
+            destination_content_digest=expected_destination.content_digest,
+        )
 
     async def read_table(
         self,

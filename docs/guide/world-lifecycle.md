@@ -272,6 +272,19 @@ Readonly cold open is separate:
 `iWorldLifecycle.open_world_readonly(...)` returns durable `WorldInfo` without
 acquiring a writer fence or constructing a live world.
 
+### 6.1. Whole-storage migration
+
+Local whole-storage migration is not `fork_world` and mints no World or run
+identity. It preserves World IDs, run IDs, statuses, writer modes, ticks,
+lineage, manifests, and durable history. It imports only a writer-epoch floor,
+never the source process's active fence holder, so the first destination
+mutable resume acquires a strictly higher epoch.
+
+Processors, hooks, Resources, provider clients, and other executable Python
+capabilities are not durable state and do not migrate. Callers must reinstall
+the code and capabilities required by a resumed World. See
+[Storage Migration](storage-migration.md).
+
 ## 7. Boundary-safe information
 
 Lifecycle primitives may return an internal `AsyncWorld`. Neither
