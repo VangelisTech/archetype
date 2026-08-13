@@ -15,6 +15,7 @@ from archetype.artifacts.models import (
     ArtifactStoreConfig,
     IngestArtifacts,
     QueryArtifacts,
+    resolve_artifact_object_root,
 )
 from archetype.artifacts.pipeline import (
     ARTIFACT_FILES,
@@ -71,18 +72,6 @@ def _effective_store_config(
     if store_config.io_config is not None or storage_config.io_config is None:
         return store_config
     return store_config.model_copy(update={"io_config": storage_config.io_config})
-
-
-def _object_root(
-    storage_config: StorageConfig,
-    store_config: ArtifactStoreConfig,
-) -> str:
-    if store_config.object_uri is not None:
-        return str(store_config.object_uri)
-    local = local_storage_path(str(storage_config.uri))
-    if local is not None:
-        return str(local / "artifacts")
-    return str(storage_config.uri).rstrip("/") + "/artifacts"
 
 
 def _validate_discovery(
@@ -156,7 +145,7 @@ async def ingest_artifacts(
         storage,
         store_config or ArtifactStoreConfig(),
     )
-    object_uri = _object_root(storage, configured_store)
+    object_uri = resolve_artifact_object_root(storage, configured_store)
     local_object_root = local_storage_path(object_uri)
     pipeline = FileIngestionPipeline(
         io_config=configured_store.io_config,

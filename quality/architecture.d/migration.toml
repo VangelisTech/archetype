@@ -1,0 +1,8 @@
+# Architecture policy fragment: offline whole-storage migration.
+# Merged into quality/architecture.toml by scripts/check_architecture.py;
+# fragments may declare only rule/exception arrays, never scalar policy.
+
+[[top_level_family_rule]]
+name = "migration-domain-family"
+consumer = "archetype.migration"
+allowed_families = ["archetype.artifacts", "archetype.storage"]

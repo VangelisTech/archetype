@@ -52,6 +52,9 @@ commands.CommandDispatcher -> OperationRegistry -> exact family handler
 
 evaluation.handlers -> iStorageService + archetype.world.query
 artifacts.handlers + artifacts.views -> iStorageService
+migration.workflow
+  -> iStorageService + storage.MigrationControlCatalog
+  -> artifacts migration participant + composition-supplied cold verifier
 missions.TranscriptIngestionService
   -> artifacts.handlers + redaction structural port + iStorageService
 iWorldLifecycle    -> iWorldRegistry + iStorageService
@@ -84,10 +87,12 @@ through those handlers and its exact pre-reserved owner.
 
 | Port | Implementation | Principal consumers | Responsibility |
 |---|---|---|---|
-| `iStorageService` | `StorageService` | world, commands, artifacts, evaluation, transcripts, research, physical AI | Store/session lifetime, control authority, physical visibility, world/run row envelope, terminal Daft execution, and app-table catalog/read/write/retry authority |
+| `iStorageService` | `StorageService` | world, commands, artifacts, evaluation, transcripts, research, physical AI, migration | Store/session lifetime, control authority, physical visibility, world/run row envelope, terminal Daft execution, app-table catalog/read/write/retry authority, and pinned table-transfer evidence |
 | `iWorldRegistry` | `WorldRegistry` | lifecycle, mutation, simulation, research, physical AI | Live identity, storage coordinates, exact-world synchronization, retryable close ownership, and committed-receipt retention |
 | `iWorldLifecycle` | `WorldLifecycle` | wiring, research, physical AI | Managed construction, durable discovery, readonly open, fenced mutable resume, fork, and close |
 | `iWorldCleanup` | `WorldCleanup` | reservation-owned mission cleanup | Exact-world, close-lease-bound retained updates, teardown staging, commit, and finish |
+| `MigrationControlCatalog` | local `SqliteControlCatalog` | local v1 storage migration | Versioned exact control export, immutable-plan reservation, hidden staging, fence-floor import, World activation last, and receipt completion |
+| `ColdMigrationVerifier` | composition-supplied fresh destination verifier | local v1 storage migration | Reopen destination-only resources and return bounded discovery, table, Artifact, resume, fence, and later-tick evidence |
 | Structural `MissionRedactor` / `TranscriptRedactor` | canonical `archetype.redaction.RedactionService` | mission execution and transcript ingestion | Provider-neutral pre-durability scanning, deterministic redaction, safe receipts, and quarantine |
 | Family resource service `missions.SandboxService` | `missions.SandboxService` | `MissionService` | Select a configured backend and acquire, reuse, close, and shut down mission-keyed sessions; no task-transition authority |
 | Family resource port `missions.SandboxBackend` | configured Apple Container, Docker, or Modal adapter | `missions.SandboxService` | Create or restore provider-owned isolated sessions |
@@ -161,6 +166,19 @@ media-specific indexes, and publish the common file index last.
 catalog-derived world/run envelope, plain or caller-keyed conditional append,
 terminal Daft admission, `daft.Catalog` table registration, schema alignment,
 lazy table reads, Iceberg writes, and optimistic-conflict retry.
+
+The migration family likewise exposes a free administrative workflow rather
+than an application service facade. It consumes `iStorageService` for namespace
+enumeration and pinned table transfer, the storage-owned
+`MigrationControlCatalog` for exact SQLite state transfer and activation, and
+the artifacts-family migration participant for verified object relocation and
+the one permitted `artifact_files.object_uri` transformation. A narrow
+`ColdMigrationVerifier` callable is injected by composition so the final proof
+uses fresh destination-only resources. None of these ports makes migration a
+World operation, deferred command, or second storage authority. Local v1 is
+offline Iceberg-to-Iceberg and SQLite-to-SQLite into an empty destination;
+remote endpoints and any Activity history fail closed. See
+[Storage Migration](storage-migration.md).
 
 There is no artifact claim, lease, receipt, reconciliation protocol, generic
 ingestion facade, or live-registry fallback around that path.
@@ -313,6 +331,14 @@ issue #586: schemas, authoring values, and structural transforms live under
 `archetype.missions.trajectories`; `TrajectoryService` composes durable query
 with the evaluation family's pure grader runner.
 
+The migration family owns invocation-scoped endpoint bindings plus
+credential-free immutable plans, ordered orchestration, retry convergence,
+cold-verification requests/evidence, and receipts. Storage owns table and
+control snapshot values; artifacts owns object-inventory and relocation values.
+These contracts preserve the direction `migration -> artifacts -> storage`
+plus the direct `migration -> storage` edge without promoting endpoint
+capabilities or credentials into persistent values.
+
 The physical-AI family owns the hosted operation, request and observation
 values, provider recovery, content contracts, and free workflow over declared
 world and storage ports. The former app mirror, direct per-step distributed
@@ -367,4 +393,5 @@ owned storage. Failed phases retain exact ownership for retry.
 - [Audit Log](audit-log.md)
 - [Execution Hierarchy](execution-hierarchy.md)
 - [Artifacts](artifacts.md)
+- [Storage Migration](storage-migration.md)
 - [Agent Missions V1](agent-missions.md)

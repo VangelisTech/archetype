@@ -421,6 +421,27 @@ credential-bearing external check; the deterministic contract tests validate
 the task anchoring and source attribution without pretending that a mocked
 provider is model evidence.
 
+## Whole-storage relocation preserves occurrences
+
+Local whole-storage migration treats `artifact_files` as the authoritative
+visible occurrence inventory. It verifies each referenced source object,
+copies each distinct content identity once, reads the destination object back,
+and then writes the relocated common index. This path does not call
+`ingest_artifacts()` and does not mint a new occurrence.
+
+Only `artifact_files.object_uri` changes. `artifact_id`, `ingested_at`,
+`source_uri`, logical path, World/run/tick attribution, hashes, size, media
+classification, typed-index joins, and downstream `source_artifact_id` joins
+remain exact. Source-table evidence and relocated-destination evidence are
+therefore separate: the permitted URI transformation intentionally changes
+the common table's content digest. Existing destination content-addressed
+objects are reusable only after full verification and are never overwritten
+with conflicting bytes.
+
+Local v1 supports local Artifact roots only. See
+[Storage Migration](storage-migration.md) for destination ordering, failure,
+and receipt requirements.
+
 ## 12. Migration from the 0.4 artifact surface
 
 This refactor is an intentional breaking change from the artifact API shipped
