@@ -193,6 +193,7 @@ def test_smoke_runs_full_stack_probe_against_rebuilt_sdist_wheels(
     ]
     assert len(probes) == 6
     assert probes[-1]["matrix"] == "all"
+    assert all(probe["version"] == "0.6.0" for probe in probes)
     assert probes[-1]["wheels"] == rebuilt
     assert probes[-1]["dist_dir"] == rebuilt_root
     assert probes[-1]["root"].name == "sdist-probe"
