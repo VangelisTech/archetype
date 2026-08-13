@@ -116,6 +116,9 @@ resources and may create its structural world. Physical AI and Research use
 world-scoped adapters. The generic `runtime.library(name, ...)` and
 `world.library(name)` lookup exists for hosts that cannot statically import an
 optional library; ordinary application code SHOULD import the typed adapter.
+Both lookup forms and all current world-library adapters are async-only. The
+synchronous runtime deliberately exposes only the domain-free framework
+surface instead of returning adapters whose methods would leak coroutines.
 
 API routers are contributed by manifest factories and are mounted by the base
 FastAPI host in the same deterministic order. A base-only server exposes only

@@ -261,9 +261,8 @@ class TestMultiRuntimeIsolation:
 
 
 class TestSyncAsyncSurfaceParity:
-    def test_every_public_method_on_runtime_world_exists_on_sync(self):
-        """Every public (non-dunder) method on RuntimeWorld must have a
-        matching method on SyncRuntimeWorld."""
+    def test_framework_world_methods_have_sync_parity(self):
+        """Framework operations have sync parity; typed extensions stay async."""
         async_methods = {
             name
             for name in dir(RuntimeWorld)
@@ -275,10 +274,8 @@ class TestSyncAsyncSurfaceParity:
             if not name.startswith("_") and callable(getattr(SyncRuntimeWorld, name))
         }
 
-        missing = async_methods - sync_methods
-        assert not missing, (
-            f"SyncRuntimeWorld is missing public methods present on RuntimeWorld: {sorted(missing)}"
-        )
+        assert async_methods - sync_methods == {"library"}
+        assert sync_methods == async_methods - {"library"}
 
 
 # ── 5. Viewer override raises on mutation ──────────────────────────────
