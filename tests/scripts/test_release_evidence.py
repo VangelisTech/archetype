@@ -7,13 +7,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from scripts.release_artifact import DISTRIBUTIONS, _distribution_files, publish_verified, record
+from scripts.release_artifact import DISTRIBUTIONS, _distribution_files, record
 from scripts.release_artifact import SCHEMA as ARTIFACT_SCHEMA
 from scripts.release_artifact import verify as verify_artifact
 from scripts.verify_release_evidence import RESULT_SCHEMA, SUMMARY_SCHEMA, verify
@@ -273,63 +272,6 @@ def test_release_artifact_verification_requires_exact_checkout_commit(
 
     with pytest.raises(ValueError, match="release artifact commit mismatch"):
         verify_artifact(manifest, dist, expected_commit="a" * 40)
-
-
-@pytest.mark.parametrize(
-    "publish_url",
-    [None, "https://test.pypi.org/legacy/"],
-)
-def test_manual_publish_uploads_only_the_verified_recorded_artifacts(
-    tmp_path: Path,
-    publish_url: str | None,
-) -> None:
-    dist, manifest_path, _wheels = _artifact(tmp_path)
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    calls: list[tuple[list[str], dict[str, object]]] = []
-
-    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        calls.append((command, kwargs))
-        return subprocess.CompletedProcess(command, 0)
-
-    assert (
-        publish_verified(
-            manifest,
-            dist,
-            expected_commit="a" * 40,
-            publish_url=publish_url,
-            run=run,
-        )
-        is manifest
-    )
-
-    prefix = ["uv", "publish"]
-    if publish_url is not None:
-        prefix.extend(("--publish-url", publish_url))
-    expected_paths = [
-        str((dist / artifact["name"]).resolve()) for artifact in manifest["artifacts"]
-    ]
-    assert calls == [(prefix + expected_paths, {"check": True})]
-
-
-def test_manual_publish_refuses_changed_bytes_before_upload(tmp_path: Path) -> None:
-    dist, manifest_path, _wheels = _artifact(tmp_path)
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    (dist / "archetype_research-0.6.0.tar.gz").write_bytes(b"changed")
-    called = False
-
-    def run(_command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        nonlocal called
-        called = True
-        return subprocess.CompletedProcess([], 0)
-
-    with pytest.raises(ValueError, match="archetype-research sdist .* mismatch"):
-        publish_verified(
-            manifest,
-            dist,
-            expected_commit="a" * 40,
-            run=run,
-        )
-    assert called is False
 
 
 def test_release_evidence_requires_every_scenario_on_framework_wheel(tmp_path: Path) -> None:

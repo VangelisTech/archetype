@@ -200,11 +200,14 @@ publisher matrix. Configure or verify these identities for each of
 | PyPI | `VangelisTech/archetype` | `release.yml` | `release-pypi` |
 
 Use pending Trusted Publishers to reserve project names that do not yet exist.
-Both GitHub environments permit only `v*` tags and require approval from
-`everettVT`. The publisher action emits PEP 740 attestations by default. Index
+Configure both GitHub environments to permit only `v*` tags, require approval
+from `everettVT`, and disable administrator bypass. The publisher action emits
+PEP 740 attestations. Index
 preflight permits an exact partial retry only when every existing file has the
 expected publisher identity and digest-bound publish attestation; token or
-manual uploads cannot satisfy that recovery path.
+manual uploads cannot satisfy that recovery path. The gate then uses pinned
+`pypi-attestations` tooling to verify the Sigstore signature and transparency
+evidence against the served artifact.
 
 Release execution is operator-only. The `Release tags — everettVT only`
 repository ruleset permits only `everettVT` to create `v*` tags; the separate
