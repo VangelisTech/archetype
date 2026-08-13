@@ -28,6 +28,9 @@ _ROOT = Path(__file__).resolve().parents[2]
 _SCRIPTS = _ROOT / "scripts"
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
+_TEST_SUPPORT = Path(__file__).resolve().parent
+if str(_TEST_SUPPORT) not in sys.path:
+    sys.path.insert(0, str(_TEST_SUPPORT))
 
 from review_contracts import (  # noqa: E402
     DESIGN_BRIEF_PROMPT_CHAR_LIMIT,

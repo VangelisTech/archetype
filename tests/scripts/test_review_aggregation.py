@@ -26,6 +26,9 @@ import pytest
 _SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
+_TEST_SUPPORT = Path(__file__).resolve().parent
+if str(_TEST_SUPPORT) not in sys.path:
+    sys.path.insert(0, str(_TEST_SUPPORT))
 
 from review_aggregation import (  # noqa: E402
     assemble_preliminary_bundle,

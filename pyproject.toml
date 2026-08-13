@@ -8,6 +8,7 @@ dependencies = [
 ]
 
 [tool.pytest.ini_options]
+addopts = ["--import-mode=importlib"]
 testpaths = [
     "tests",
     "packages/archetype-ecs/tests",
