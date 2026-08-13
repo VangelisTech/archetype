@@ -1012,6 +1012,7 @@ def test_ratified_v0_5_family_dag_is_complete_acyclic_and_exact(tmp_path: Path) 
         "redaction": (),
         "evaluation": ("storage", "world"),
         "research": ("storage", "world"),
+        "migration": ("artifacts", "storage"),
         "physical_ai": ("storage", "world"),
         "episodes": ("storage", "world", "artifacts", "redaction", "evaluation"),
         "graph": (),
@@ -1067,6 +1068,81 @@ def test_ratified_v0_5_family_dag_is_complete_acyclic_and_exact(tmp_path: Path) 
     )
 
     assert result.ok
+
+
+def test_migration_family_allows_only_artifacts_and_storage(tmp_path: Path) -> None:
+    package = tmp_path / "src" / "archetype"
+    for family in ("activities", "artifacts", "commands", "migration", "storage", "world"):
+        module = package / family / "contracts.py"
+        module.parent.mkdir(parents=True, exist_ok=True)
+        module.write_text("value = 1\n", encoding="utf-8")
+
+    (package / "migration" / "contracts.py").write_text(
+        "from archetype.artifacts import contracts as artifact_contracts\n"
+        "from archetype.storage import contracts as storage_contracts\n"
+        "from archetype.activities import contracts as activity_contracts\n"
+        "from archetype.commands import contracts as command_contracts\n"
+        "from archetype.world import contracts as world_contracts\n",
+        encoding="utf-8",
+    )
+    rules = """
+
+[[top_level_family_rule]]
+name = "storage"
+consumer = "archetype.storage"
+allowed_families = []
+
+[[top_level_family_rule]]
+name = "artifacts"
+consumer = "archetype.artifacts"
+allowed_families = ["archetype.storage"]
+
+[[top_level_family_rule]]
+name = "world"
+consumer = "archetype.world"
+allowed_families = ["archetype.storage"]
+
+[[top_level_family_rule]]
+name = "commands"
+consumer = "archetype.commands"
+allowed_families = ["archetype.storage", "archetype.world"]
+
+[[top_level_family_rule]]
+name = "activities"
+consumer = "archetype.activities"
+allowed_families = ["archetype.storage"]
+
+[[top_level_family_rule]]
+name = "migration"
+consumer = "archetype.migration"
+allowed_families = ["archetype.artifacts", "archetype.storage"]
+"""
+
+    result = checker.audit_repository(
+        _write_family_policy(tmp_path, rules=rules),
+        repo_root=tmp_path,
+    )
+
+    assert not result.policy_errors
+    assert [
+        (violation.rule, violation.consumer, violation.target) for violation in result.violations
+    ] == [
+        (
+            "top_level_family_dependency",
+            "archetype.migration.contracts",
+            "archetype.activities",
+        ),
+        (
+            "top_level_family_dependency",
+            "archetype.migration.contracts",
+            "archetype.commands",
+        ),
+        (
+            "top_level_family_dependency",
+            "archetype.migration.contracts",
+            "archetype.world",
+        ),
+    ]
 
 
 def test_declared_family_edge_and_app_contract_import_pass(tmp_path: Path) -> None:

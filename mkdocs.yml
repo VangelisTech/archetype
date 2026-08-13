@@ -107,6 +107,7 @@ nav:
       - World Lifecycle: guide/world-lifecycle.md
       - Durable Discovery: guide/durable-discovery.md
       - Atomic Visibility: guide/atomic-visibility.md
+      - Storage Migration: guide/storage-migration.md
       - Artifacts: guide/artifacts.md
       - Dataset and Evaluation Ontology: guide/dataset-eval-ontology.md
       - Audit Log: guide/audit-log.md
