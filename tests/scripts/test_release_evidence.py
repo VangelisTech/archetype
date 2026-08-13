@@ -7,12 +7,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from scripts.release_artifact import DISTRIBUTIONS, _distribution_files, record
+from scripts.release_artifact import DISTRIBUTIONS, _distribution_files, publish_verified, record
 from scripts.release_artifact import SCHEMA as ARTIFACT_SCHEMA
 from scripts.release_artifact import verify as verify_artifact
 from scripts.verify_release_evidence import RESULT_SCHEMA, SUMMARY_SCHEMA, verify
@@ -56,6 +57,7 @@ def _artifact(tmp_path: Path) -> tuple[Path, Path, dict[str, dict[str, str]]]:
         }
     manifest = {
         "schema": ARTIFACT_SCHEMA,
+        "version": "0.6.0",
         "commit": "a" * 40,
         "clean_checkout": True,
         "artifacts": records,
@@ -82,7 +84,7 @@ def _receipt(
     scenario: str,
     wheels: dict[str, dict[str, str]],
     *,
-    include_matrix: bool = False,
+    include_matrix: bool = True,
 ) -> None:
     framework = wheels["archetype-ecs"]
     wheel: dict[str, Any] = {
@@ -200,6 +202,7 @@ def test_release_artifact_record_emits_distribution_coordinates(
     manifest = record(tmp_path, dist)
 
     assert manifest["schema"] == ARTIFACT_SCHEMA
+    assert manifest["version"] == "0.6.0"
     assert [(artifact["distribution"], artifact["kind"]) for artifact in manifest["artifacts"]] == [
         (distribution, kind) for distribution in DISTRIBUTIONS for kind in ("wheel", "sdist")
     ]
@@ -215,6 +218,36 @@ def test_release_artifact_verification_requires_clean_build(tmp_path: Path) -> N
 
     manifest.pop("clean_checkout")
     with pytest.raises(ValueError, match="not built from a clean checkout"):
+        verify_artifact(manifest, dist, expected_commit="a" * 40)
+
+
+@pytest.mark.parametrize(
+    "version",
+    [None, "", "not a version", "0.6.0.0"],
+)
+def test_release_artifact_manifest_requires_one_canonical_version(
+    tmp_path: Path,
+    version: object,
+) -> None:
+    dist, manifest_path, _wheels = _artifact(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if version is None:
+        manifest.pop("version")
+    else:
+        manifest["version"] = version
+
+    with pytest.raises(ValueError, match="version"):
+        verify_artifact(manifest, dist, expected_commit="a" * 40)
+
+
+def test_release_artifact_manifest_binds_every_filename_to_its_version(
+    tmp_path: Path,
+) -> None:
+    dist, manifest_path, _wheels = _artifact(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifacts"][-1]["name"] = "archetype_research-0.6.1.tar.gz"
+
+    with pytest.raises(ValueError, match="not bound to manifest version 0.6.0"):
         verify_artifact(manifest, dist, expected_commit="a" * 40)
 
 
@@ -242,6 +275,63 @@ def test_release_artifact_verification_requires_exact_checkout_commit(
         verify_artifact(manifest, dist, expected_commit="a" * 40)
 
 
+@pytest.mark.parametrize(
+    "publish_url",
+    [None, "https://test.pypi.org/legacy/"],
+)
+def test_manual_publish_uploads_only_the_verified_recorded_artifacts(
+    tmp_path: Path,
+    publish_url: str | None,
+) -> None:
+    dist, manifest_path, _wheels = _artifact(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0)
+
+    assert (
+        publish_verified(
+            manifest,
+            dist,
+            expected_commit="a" * 40,
+            publish_url=publish_url,
+            run=run,
+        )
+        is manifest
+    )
+
+    prefix = ["uv", "publish"]
+    if publish_url is not None:
+        prefix.extend(("--publish-url", publish_url))
+    expected_paths = [
+        str((dist / artifact["name"]).resolve()) for artifact in manifest["artifacts"]
+    ]
+    assert calls == [(prefix + expected_paths, {"check": True})]
+
+
+def test_manual_publish_refuses_changed_bytes_before_upload(tmp_path: Path) -> None:
+    dist, manifest_path, _wheels = _artifact(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    (dist / "archetype_research-0.6.0.tar.gz").write_bytes(b"changed")
+    called = False
+
+    def run(_command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        nonlocal called
+        called = True
+        return subprocess.CompletedProcess([], 0)
+
+    with pytest.raises(ValueError, match="archetype-research sdist .* mismatch"):
+        publish_verified(
+            manifest,
+            dist,
+            expected_commit="a" * 40,
+            run=run,
+        )
+    assert called is False
+
+
 def test_release_evidence_requires_every_scenario_on_framework_wheel(tmp_path: Path) -> None:
     _dist, manifest_path, wheels = _artifact(tmp_path)
     registry = _registry(tmp_path, "one", "two")
@@ -259,12 +349,13 @@ def test_release_evidence_requires_every_scenario_on_framework_wheel(tmp_path: P
         receipt_paths=[first, second],
     )
     assert summary["schema"] == SUMMARY_SCHEMA
+    assert summary["version"] == "0.6.0"
     assert summary["passed_scenarios"] == 2
     assert summary["framework_wheel_sha256"] == wheels["archetype-ecs"]["digest"].split(":")[1]
     assert len(summary["wheel_artifacts"]) == 4
 
 
-def test_release_evidence_verifies_optional_exact_wheel_artifact_set(tmp_path: Path) -> None:
+def test_release_evidence_requires_exact_wheel_artifact_set(tmp_path: Path) -> None:
     _dist, manifest_path, wheels = _artifact(tmp_path)
     registry = _registry(tmp_path, "one")
     receipt = tmp_path / "receipt.json"
@@ -273,6 +364,16 @@ def test_release_evidence_verifies_optional_exact_wheel_artifact_set(tmp_path: P
     summary = verify(registry=registry, manifest_path=manifest_path, receipt_paths=[receipt])
 
     assert summary["receipts_with_artifact_matrix"] == 1
+
+
+def test_release_evidence_rejects_legacy_single_wheel_anchor(tmp_path: Path) -> None:
+    _dist, manifest_path, wheels = _artifact(tmp_path)
+    registry = _registry(tmp_path, "one")
+    receipt = tmp_path / "receipt.json"
+    _receipt(receipt, "one", wheels, include_matrix=False)
+
+    with pytest.raises(ValueError, match="artifact set must contain all four distributions"):
+        verify(registry=registry, manifest_path=manifest_path, receipt_paths=[receipt])
 
 
 @pytest.mark.parametrize("field", ["filename", "digest"])

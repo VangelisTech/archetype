@@ -2,7 +2,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Record and verify the immutable distribution matrix used by releases."""
+"""Record, verify, and publish the immutable distribution matrix used by releases."""
 
 from __future__ import annotations
 
@@ -11,8 +11,12 @@ import hashlib
 import json
 import re
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+from packaging.utils import canonicalize_name, parse_sdist_filename, parse_wheel_filename
+from packaging.version import InvalidVersion, Version
 
 SCHEMA = "archetype.release-artifact/v2"
 DISTRIBUTIONS = (
@@ -30,6 +34,7 @@ _PACKAGE_PREFIXES = {
 }
 _KINDS = ("wheel", "sdist")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+Run = Callable[..., subprocess.CompletedProcess[str]]
 
 
 def _sha256(path: Path) -> str:
@@ -93,6 +98,31 @@ def _artifact_record(distribution: str, kind: str, path: Path) -> dict[str, Any]
     }
 
 
+def _filename_coordinate(name: str, kind: str) -> tuple[str, str]:
+    try:
+        if kind == "wheel":
+            distribution, version, _build, _tags = parse_wheel_filename(name)
+        else:
+            distribution, version = parse_sdist_filename(name)
+    except ValueError as exc:
+        raise ValueError(f"invalid {kind} filename {name!r}") from exc
+    return str(distribution), str(version)
+
+
+def _artifact_version(artifacts: dict[tuple[str, str], Path]) -> str:
+    versions: set[str] = set()
+    for (distribution, kind), path in artifacts.items():
+        parsed_distribution, version = _filename_coordinate(path.name, kind)
+        if parsed_distribution != canonicalize_name(distribution):
+            raise ValueError(
+                f"release {distribution} {kind} filename identifies {parsed_distribution!r}"
+            )
+        versions.add(version)
+    if len(versions) != 1:
+        raise ValueError(f"release artifacts do not share one version: {sorted(versions)!r}")
+    return versions.pop()
+
+
 def record(root: Path, dist: Path) -> dict[str, Any]:
     artifacts = _distribution_files(dist)
     dirty = bool(_git(root, "status", "--porcelain", "--untracked-files=all"))
@@ -103,6 +133,7 @@ def record(root: Path, dist: Path) -> dict[str, Any]:
     ]
     return {
         "schema": SCHEMA,
+        "version": _artifact_version(artifacts),
         "commit": _git(root, "rev-parse", "HEAD"),
         "clean_checkout": not dirty,
         "artifacts": records,
@@ -111,6 +142,16 @@ def record(root: Path, dist: Path) -> dict[str, Any]:
 
 def artifact_records(manifest: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
     """Validate and index the exact manifest record inventory."""
+
+    version = manifest.get("version")
+    if not isinstance(version, str) or not version:
+        raise ValueError("release artifact manifest must name one version")
+    try:
+        parsed_version = str(Version(version))
+    except InvalidVersion as exc:
+        raise ValueError("release artifact manifest has an invalid version") from exc
+    if parsed_version != version:
+        raise ValueError("release artifact manifest version must be canonical")
 
     raw_records = manifest.get("artifacts")
     expected = {(distribution, kind) for distribution in DISTRIBUTIONS for kind in _KINDS}
@@ -133,6 +174,11 @@ def artifact_records(manifest: dict[str, Any]) -> dict[tuple[str, str], dict[str
         size_bytes = value.get("size_bytes")
         if not isinstance(name, str) or not name or Path(name).name != name:
             raise ValueError(f"release artifact {key!r} has an invalid filename")
+        parsed_distribution, filename_version = _filename_coordinate(name, kind)
+        if parsed_distribution != canonicalize_name(distribution) or filename_version != version:
+            raise ValueError(
+                f"release artifact {key!r} filename is not bound to manifest version {version}"
+            )
         if not isinstance(sha256, str) or _SHA256.fullmatch(sha256) is None:
             raise ValueError(f"release artifact {key!r} has an invalid sha256")
         if not isinstance(size_bytes, int) or isinstance(size_bytes, bool) or size_bytes < 0:
@@ -179,6 +225,31 @@ def verify(
     return manifest
 
 
+def publish_verified(
+    manifest: dict[str, Any],
+    dist: Path,
+    *,
+    expected_commit: str,
+    publish_url: str | None = None,
+    run: Run = subprocess.run,
+) -> dict[str, Any]:
+    """Verify and upload only the eight immutable files named by the manifest."""
+
+    verified = verify(manifest, dist, expected_commit=expected_commit)
+    records = artifact_records(verified)
+    paths = [
+        (dist / str(records[(distribution, kind)]["name"])).resolve()
+        for distribution in DISTRIBUTIONS
+        for kind in _KINDS
+    ]
+    command = ["uv", "publish"]
+    if publish_url is not None:
+        command.extend(("--publish-url", publish_url))
+    command.extend(str(path) for path in paths)
+    run(command, check=True)
+    return verified
+
+
 def _load(path: Path) -> dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
@@ -188,10 +259,11 @@ def _load(path: Path) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("record", "verify"))
+    parser.add_argument("command", choices=("record", "verify", "publish"))
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--dist", type=Path, default=Path("dist"))
     parser.add_argument("--manifest", type=Path, default=Path("release-artifact.json"))
+    parser.add_argument("--publish-url")
     args = parser.parse_args(argv)
     root = args.root.resolve()
     dist = args.dist.resolve()
@@ -202,11 +274,18 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(value, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-    else:
+    elif args.command == "verify":
         value = verify(
             _load(manifest_path),
             dist,
             expected_commit=_git(root, "rev-parse", "HEAD"),
+        )
+    else:
+        value = publish_verified(
+            _load(manifest_path),
+            dist,
+            expected_commit=_git(root, "rev-parse", "HEAD"),
+            publish_url=args.publish_url,
         )
     framework_wheel = artifact_records(value)[(FRAMEWORK_DISTRIBUTION, "wheel")]
     print(f"Release framework wheel sha256:{framework_wheel['sha256']}")

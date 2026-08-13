@@ -237,6 +237,32 @@ def test_release_profile_builds_and_tests_one_exact_artifact_matrix() -> None:
     assert '--wheel-dir "$(OPERATIONAL_DIST_DIR)"' in release_runner.group("body")
 
 
+def test_manual_publish_targets_upload_only_the_recorded_artifact_matrix() -> None:
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    for target in ("publish-test", "publish"):
+        match = re.search(
+            rf"^{target}:(?P<dependencies>[^\n]*)\n(?P<body>(?:\t.*\n)+)",
+            makefile,
+            re.MULTILINE,
+        )
+        assert match is not None
+        assert match.group("dependencies").strip() == ""
+        body = match.group("body")
+        assert "scripts/release_artifact.py publish" in body
+        assert '--dist "$(OPERATIONAL_DIST_DIR)"' in body
+        assert '--manifest "$(RELEASE_ARTIFACT_MANIFEST)"' in body
+        assert "make build" not in body
+        assert "uv publish" not in body
+
+    test_target = re.search(
+        r"^publish-test:[^\n]*\n(?P<body>(?:\t.*\n)+)",
+        makefile,
+        re.MULTILINE,
+    )
+    assert test_target is not None
+    assert "--publish-url https://test.pypi.org/legacy/" in test_target.group("body")
+
+
 def test_every_release_scenario_is_installed_wheel_applicable() -> None:
     with OPERATIONAL_SCENARIOS.open("rb") as stream:
         scenarios = tomllib.load(stream)["scenario"]
@@ -363,6 +389,11 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
     assert 'uv sync --python "3.13" --all-packages --all-extras --group dev' in compatibility
     assert "sys.version_info[:2] == (3, 13)" in compatibility
     assert "needs: [release-evidence-gate, python-compatibility]" in publish
+    assert "name: dist" in publish
+    assert "pypa/gh-action-pypi-publish@" in publish
+    assert "actions/checkout@" not in publish
+    assert "uv build" not in publish
+    assert "make build" not in publish
 
 
 def test_release_workflow_is_operator_dispatched_from_an_immutable_tag() -> None:

@@ -68,11 +68,9 @@ def _verify_receipt_artifact_set(
     wheel: dict[str, Any],
     release_wheels: dict[str, dict[str, str]],
 ) -> None:
-    """Verify the optional exact matrix emitted by the operational runner."""
+    """Verify the exact four-wheel matrix emitted by the operational runner."""
 
     raw = wheel.get("artifacts")
-    if raw is None:
-        return
     if not isinstance(raw, list) or len(raw) != len(DISTRIBUTIONS):
         raise ValueError(f"{path} wheel artifact set must contain all four distributions")
 
@@ -133,16 +131,14 @@ def verify(
         wheel = receipt.get("wheel")
         if not isinstance(wheel, dict) or wheel.get("digest") != framework_wheel["digest"]:
             raise ValueError(f"{path} is not bound to the archetype-ecs release wheel digest")
-        filename = wheel.get("filename")
-        if filename is not None and filename != framework_wheel["filename"]:
+        if wheel.get("filename") != framework_wheel["filename"]:
             raise ValueError(f"{path} names a different archetype-ecs release wheel")
-        if wheel.get("artifacts") is not None:
-            receipts_with_matrix += 1
         _verify_receipt_artifact_set(
             path=path,
             wheel=wheel,
             release_wheels=release_wheels,
         )
+        receipts_with_matrix += 1
         cleanup = receipt.get("cleanup")
         if not isinstance(cleanup, dict) or cleanup.get("status") != "closed":
             raise ValueError(f"{path} did not close its isolated filesystem")
@@ -164,6 +160,7 @@ def verify(
         raise ValueError("release evidence is missing required scenario(s): " + ", ".join(missing))
     return {
         "schema": SUMMARY_SCHEMA,
+        "version": manifest["version"],
         "commit": commit,
         "framework_wheel_sha256": framework_wheel["digest"].removeprefix("sha256:"),
         "wheel_artifacts": [

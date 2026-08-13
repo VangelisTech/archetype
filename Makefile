@@ -79,8 +79,8 @@ help:
 	@echo "  make verify-full    Main-branch profile"
 	@echo "  make verify-release Source profile plus exact installed-artifact release evidence"
 	@echo "  make release-check  Full pre-release validation"
-	@echo "  make publish-test   Publish to TestPyPI"
-	@echo "  make publish        Publish to PyPI"
+	@echo "  make publish-test   Verify and publish the recorded artifacts to TestPyPI"
+	@echo "  make publish        Verify and publish the recorded artifacts to PyPI"
 	@echo "  make version        Show current version"
 	@echo ""
 	@echo "Docs:"
@@ -527,17 +527,21 @@ release-check: sync-dev verify-release
 	@echo "Next steps:"
 	@echo "  1. git tag v$(VERSION)"
 	@echo "  2. git push origin v$(VERSION)"
-	@echo "  3. make publish (or let CI handle it)"
+	@echo "  3. Dispatch the Release workflow for v$(VERSION) (preferred)"
+	@echo "     or run make publish to upload these exact recorded artifacts"
 
 .PHONY: publish-test
-publish-test: build
-	@echo "Publishing to TestPyPI..."
-	@uv publish --publish-url https://test.pypi.org/legacy/
+publish-test:
+	@echo "Verifying and publishing the recorded artifacts to TestPyPI..."
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/release_artifact.py publish \
+		--dist "$(OPERATIONAL_DIST_DIR)" --manifest "$(RELEASE_ARTIFACT_MANIFEST)" \
+		--publish-url https://test.pypi.org/legacy/
 
 .PHONY: publish
-publish: build
-	@echo "Publishing to PyPI..."
-	@uv publish
+publish:
+	@echo "Verifying and publishing the recorded artifacts to PyPI..."
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/release_artifact.py publish \
+		--dist "$(OPERATIONAL_DIST_DIR)" --manifest "$(RELEASE_ARTIFACT_MANIFEST)"
 
 # ------------------------------------------------------------------------------
 # Docs (Material for MkDocs)

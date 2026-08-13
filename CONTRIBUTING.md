@@ -122,9 +122,17 @@ the same two targets as the required GitHub Actions jobs.
 | `make version` | reads `packages/archetype-ecs/pyproject.toml` | Print current release-line version |
 | `make lock-check` | `uv lock --check` | Verify lockfile is in sync |
 | `make build` | `uv build --all-packages --no-sources` | Build all four sdists and wheels into `dist/` |
-| `make release-check` | `sync-dev` + `check` + `test-cov` + `lock-check` + `build` | Full pre-release validation |
-| `make publish-test` | `uv publish` to TestPyPI | Publish to TestPyPI |
-| `make publish` | `uv publish` to PyPI | Publish to PyPI |
+| `make release-artifact` | build + package smoke + immutable manifest | Record the exact four-wheel/four-sdist matrix |
+| `make verify-release-artifact` | verify `dist/` against `release-artifact.json` | Reject changed, missing, or extra release artifacts |
+| `make verify-release` | full source profile + installed release-artifact evidence | Run the release verification profile |
+| `make release-check` | sync development dependencies + `verify-release` | Prepare and verify a manual release candidate |
+| `make publish-test` | verify manifest + upload its eight named files | Publish the existing recorded bytes to TestPyPI |
+| `make publish` | verify manifest + upload its eight named files | Publish the existing recorded bytes to PyPI |
+
+The publish targets deliberately have no build dependency. They refuse a dirty-build
+manifest, a different checkout commit, an incomplete distribution matrix, or any byte
+whose size or digest differs from `release-artifact.json`. Run `make release-check`
+first; never rebuild between attestation and publication.
 
 ### Docs
 
@@ -160,14 +168,22 @@ compatibility evidence are not part of the PR merge path. They remain in the
 full and release profiles. The retired deterministic review and merge-queue
 workflows are preserved under `quality/quarantine/review-gate/`.
 
-### `release.yml` (Release) — on `v*` tags
+### `release.yml` (Release) — operator dispatch from an immutable `v*` tag
 
-Triggered by pushing a version tag (e.g. `git tag v0.6.0 && git push origin v0.6.0`).
+Create and push a version tag, select that tag in GitHub Actions, then dispatch the
+Release workflow with the same tag as its input. The workflow authorizes the release
+operator, requires the tag commit to be on `main`, and verifies that the tag agrees
+with the package version.
 
-Pipeline: `test` → `build` → `publish-testpypi` → `publish-pypi` → `github-release`
+The release profile builds the four wheels and four sdists once, package-smokes them,
+records every digest, and runs installed-artifact evidence. The external-provider and
+Apple lanes download that same matrix; Python 3.13 compatibility runs alongside them.
+The evidence gate requires every release receipt to name all four wheel digests before
+the trusted-publishing job uploads the original `dist/` artifact to PyPI. Only then is
+the GitHub Release created with those same eight files and generated release notes.
 
-Uses trusted publishing (OIDC `id-token: write`) for both PyPI and TestPyPI.
-GitHub Release is auto-created with generated release notes.
+TestPyPI is an explicit manual rehearsal through `make publish-test`; it is not a stage
+in the hosted production workflow.
 
 ### `claude.yml` (Claude Code) — on issue/PR comments
 
