@@ -35,10 +35,10 @@ _PULL_FORWARD_MODELS = (
     ("archetype.evaluation.models", "Evaluate"),
     ("archetype.research.models", "AutoResearch"),
     ("archetype.physical_ai.models", "RunHostedEpisode"),
-    ("archetype.episodes.models", "IngestClaudeTranscript"),
-    ("archetype.episodes.models", "QueryTranscriptRows"),
-    ("archetype.episodes.models", "QueryTrajectory"),
-    ("archetype.episodes.models", "GradeTrajectory"),
+    ("archetype.missions.trajectories.models", "IngestClaudeTranscript"),
+    ("archetype.missions.trajectories.models", "QueryTranscriptRows"),
+    ("archetype.missions.trajectories.models", "QueryTrajectory"),
+    ("archetype.missions.trajectories.models", "GradeTrajectory"),
     ("archetype.missions.models", "SubmitMission"),
     ("archetype.missions.models", "RunMission"),
     ("archetype.missions.models", "RestoreMissionSandbox"),
@@ -86,8 +86,28 @@ class _DispatchProbe:
 
 class _AdmissionResources:
     def __init__(self, dispatcher: _DispatchProbe) -> None:
+        from archetype.missions._extension import get_manifest as missions_manifest
+        from archetype.missions.runtime import MissionWorld
+        from archetype.physical_ai._extension import get_manifest as physical_ai_manifest
+        from archetype.physical_ai.runtime import PhysicalAI
+        from archetype.research._extension import get_manifest as research_manifest
+        from archetype.research.runtime import Research
+
         self.dispatcher = dispatcher
+        self.world_library_manifests = (
+            missions_manifest(),
+            physical_ai_manifest(),
+            research_manifest(),
+        )
+        self._world_libraries = {
+            "missions": SimpleNamespace(world_adapter=MissionWorld),
+            "physical-ai": SimpleNamespace(world_adapter=PhysicalAI),
+            "research": SimpleNamespace(world_adapter=Research),
+        }
         self._operations = OperationAdmission(closed_message="runtime is closed")
+
+    def world_library(self, name: str) -> object:
+        return self._world_libraries[name]
 
     def admit_operation(self):
         return self._operations.admit()
@@ -307,7 +327,7 @@ async def test_attached_transcript_operations_without_storage_fail_before_dispat
 ) -> None:
     """Transcript capabilities cannot recover coordinates through live state."""
 
-    from archetype.episodes.contracts import ClaudeTranscriptSource
+    from archetype.missions.trajectories.contracts import ClaudeTranscriptSource
 
     dispatcher = _DispatchProbe()
     world, _state = _runtime_world(dispatcher)
@@ -380,7 +400,7 @@ def _mission_shell(
     config: object,
     storage: StorageConfig,
 ) -> Any:
-    mission_type = import_module("archetype.runtime.missions").RuntimeMissions
+    mission_type = import_module("archetype.missions.runtime").Missions
     handle = object.__new__(mission_type)
     handle._runtime = runtime
     handle._resources = runtime._resources

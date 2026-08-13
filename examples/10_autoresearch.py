@@ -27,10 +27,10 @@ import asyncio
 
 from daft import col
 
-from archetype import ArchetypeRuntime, AutoResearchConfig, EpisodeConfig, EvaluationResult
+from archetype import ArchetypeRuntime, EpisodeConfig
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
-from archetype.research import Run
+from archetype.research import AutoResearchConfig, EvaluationResult, Research, Run
 
 TARGET = 3.0
 
@@ -87,7 +87,11 @@ async def run_demo(storage_uri: str = "./archetype_data") -> dict[str, object]:
             max_iterations=4,
         )
 
-        result = await base.autoresearch(config, evaluate, prepare_candidate=prepare)
+        result = await Research(base).autoresearch(
+            config,
+            evaluate,
+            prepare_candidate=prepare,
+        )
 
         # The search itself is a simulation: load the ledger save and audit it.
         lab = runtime.attach(result.lab_world_id, name="lab")

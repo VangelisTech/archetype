@@ -45,13 +45,17 @@ _PULL_FORWARD_MODEL_BOUNDARIES = (
         "run_hosted_episode",
     ),
     (
-        "archetype.episodes.models",
+        "archetype.missions.trajectories.models",
         "IngestClaudeTranscript",
         "ingest_claude_transcript",
     ),
-    ("archetype.episodes.models", "QueryTranscriptRows", "query_transcript_rows"),
-    ("archetype.episodes.models", "QueryTrajectory", "query_trajectory"),
-    ("archetype.episodes.models", "GradeTrajectory", "grade_trajectory"),
+    (
+        "archetype.missions.trajectories.models",
+        "QueryTranscriptRows",
+        "query_transcript_rows",
+    ),
+    ("archetype.missions.trajectories.models", "QueryTrajectory", "query_trajectory"),
+    ("archetype.missions.trajectories.models", "GradeTrajectory", "grade_trajectory"),
     ("archetype.missions.models", "SubmitMission", "submit_mission"),
     ("archetype.missions.models", "RunMission", "run_mission"),
     (
@@ -283,9 +287,18 @@ async def test_actor_aware_ingress_uses_apply_as_for_exact_four_pull_forward_mod
     from archetype.storage.config import ControlCatalogConfig
 
     models = _canonical_pull_forward_models()
+    from archetype.missions._extension import get_manifest as missions_manifest
+    from archetype.physical_ai._extension import get_manifest as physical_ai_manifest
+    from archetype.research._extension import get_manifest as research_manifest
+
     config = wiring.RuntimeBootstrapConfig(
         control_catalog_config=ControlCatalogConfig(
             catalog_dir=tmp_path / "catalogs",
+        ),
+        world_libraries=(
+            missions_manifest(),
+            physical_ai_manifest(),
+            research_manifest(),
         ),
     )
     resources = wiring.build_runtime_resources(config)
@@ -788,11 +801,12 @@ _EXPECTED_DECLARED_ROUTES = {
 
 
 def test_supported_paths_statuses_and_response_shapes_are_unchanged() -> None:
-    """PR-4 does not manufacture REST routes for the thirteen pull-forwards."""
+    """The base is domain-free and Missions contributes only its declared routes."""
 
     from fastapi.routing import APIRoute
 
-    app = import_module("archetype.api.app").create_app()
+    api_app = import_module("archetype.api.app")
+    app = api_app.create_app(world_libraries=())
     generated_paths = {
         "/openapi.json",
         "/docs",
@@ -809,9 +823,28 @@ def test_supported_paths_statuses_and_response_shapes_are_unchanged() -> None:
         method = methods.pop()
         actual[(method, route.path)] = route.status_code or 200
 
-    assert len(app.routes) == 34
-    assert len(actual) == 30
-    assert actual == _EXPECTED_DECLARED_ROUTES
+    mission_routes = {
+        key: value
+        for key, value in _EXPECTED_DECLARED_ROUTES.items()
+        if "/missions" in key[1] or "/tasks/{task_id}" in key[1]
+    }
+    framework_routes = {
+        key: value for key, value in _EXPECTED_DECLARED_ROUTES.items() if key not in mission_routes
+    }
+    assert len(app.routes) == 31
+    assert len(actual) == 27
+    assert actual == framework_routes
+
+    from archetype.missions._extension import get_manifest as missions_manifest
+
+    missions_app = api_app.create_app(world_libraries=(missions_manifest(),))
+    declared_missions = {
+        (next(iter(set(route.methods or ()) - {"HEAD", "OPTIONS"})), route.path): route.status_code
+        or 200
+        for route in missions_app.routes
+        if isinstance(route, APIRoute) and route.path in {path for _method, path in mission_routes}
+    }
+    assert declared_missions == mission_routes
     assert not any(
         literal.replace("_", "-") in path or literal in path
         for _method, path in actual

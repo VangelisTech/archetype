@@ -230,7 +230,7 @@ Extend an entity with components. Requires operator or admin.
 GET /worlds/{world_id}/missions
 ```
 
-List mission entities with their current rollup state. Requires viewer or above.
+List mission entities with their current rollup state.
 
 **Path parameters:**
 
@@ -248,7 +248,7 @@ List mission entities with their current rollup state. Requires viewer or above.
 GET /worlds/{world_id}/missions/{mission_id}/tasks
 ```
 
-Project one mission's task DAG: task rows plus DependsOn edges. Requires viewer or above.
+Project one mission's task DAG and dependency edges.
 
 **Path parameters:**
 
@@ -267,8 +267,7 @@ Project one mission's task DAG: task rows plus DependsOn edges. Requires viewer 
 GET /worlds/{world_id}/tasks/{task_id}
 ```
 
-Project one task card: task state, guarding validators, executions, and
-validation results. Requires viewer or above.
+Project one task's state, validators, executions, and results.
 
 **Path parameters:**
 

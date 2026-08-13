@@ -147,7 +147,7 @@ df = df.exclude("eff")
 
 Plain projections (no UDF, e.g. a column swap via `with_columns({"a": col("b"), "b": col("a")})`)
 *do* read input values atomically — the folding hazard is specific to UDF arguments.
-Discovered building `src/archetype/missions/planning/` (see `EffectProcessor` /
+Discovered building `packages/archetype-missions/src/archetype/missions/planning/` (see `EffectProcessor` /
 `udfs.apply_effect`).
 
 ---

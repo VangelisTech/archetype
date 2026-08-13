@@ -3,19 +3,21 @@ version = 1
 [[import_surface]]
 name = "api-composition"
 targets = [
-  "src/archetype/api/app.py",
-  "src/archetype/api/deps.py",
+  "packages/archetype-ecs/src/archetype/api/app.py",
+  "packages/archetype-ecs/src/archetype/api/deps.py",
 ]
 dependency_roots = [
   "archetype.app",
   "archetype.commands",
   "archetype.wiring",
   "archetype.world",
+  "archetype.world_libraries",
 ]
 allowed_dependencies = [
   "archetype.commands.dispatch",
   "archetype.commands.models",
   "archetype.wiring",
+  "archetype.world_libraries",
 ]
 forbidden_dependencies = [
   "archetype.commands.scheduler",
@@ -31,18 +33,15 @@ rationale = "The ASGI lifespan may construct one RuntimeResources owner and expo
 
 [[import_surface]]
 name = "api-routes"
-targets = ["src/archetype/api/routes/*.py"]
+targets = ["packages/archetype-ecs/src/archetype/api/routes/*.py"]
 dependency_roots = [
   "archetype.app",
   "archetype.commands",
-  "archetype.missions",
   "archetype.world",
 ]
 allowed_dependencies = [
   "archetype.commands.dispatch",
   "archetype.commands.models",
-  "archetype.missions.components",
-  "archetype.missions.relations",
   "archetype.world.models",
 ]
 forbidden_dependencies = [
@@ -57,8 +56,40 @@ forbidden_dependencies = [
 ]
 rationale = "API routes translate transport directly into exact family operations and enter only the actor-aware dispatcher boundary"
 
+[[import_surface]]
+name = "missions-api-router"
+targets = ["packages/archetype-missions/src/archetype/missions/api.py"]
+dependency_roots = [
+  "archetype.api",
+  "archetype.commands",
+  "archetype.missions",
+  "archetype.world",
+]
+allowed_dependencies = [
+  "archetype.api.deps",
+  "archetype.api.errors",
+  "archetype.api.models",
+  "archetype.commands.dispatch",
+  "archetype.commands.models",
+  "archetype.missions.components",
+  "archetype.missions.relations",
+  "archetype.world.models",
+]
+forbidden_dependencies = [
+  "archetype.commands.scheduler",
+  "archetype.missions.service",
+  "archetype.world.handlers",
+  "archetype.world.interfaces",
+  "archetype.world.lifecycle",
+  "archetype.world.mutation",
+  "archetype.world.query",
+  "archetype.world.registry",
+  "archetype.world.simulation",
+]
+rationale = "The optional Missions transport adapter projects family state through framework API dependencies and the actor-aware dispatcher without acquiring workflow or composition authority"
+
 [public_api]
-targets = ["src/archetype/**/*.py"]
+targets = ["packages/archetype-ecs/src/archetype/**/*.py"]
 forbidden_owner_types_from = "quality/architecture.toml"
 forbidden_parameter_names = [
   "broker",

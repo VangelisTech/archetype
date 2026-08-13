@@ -8,7 +8,7 @@ version = 1
 id = "example.00_quickstart"
 kind = "example"
 owner = "runtime"
-owner_paths = ["src/archetype/runtime"]
+owner_paths = ["packages/archetype-ecs/src/archetype/runtime"]
 source_path = "examples/00_quickstart.py"
 source_command = ["python", "examples/00_quickstart.py"]
 required_extras = []
@@ -31,7 +31,7 @@ required_cadence = ["pr", "main", "release"]
 id = "example.01_world_mutations"
 kind = "example"
 owner = "world"
-owner_paths = ["src/archetype/runtime", "src/archetype/world"]
+owner_paths = ["packages/archetype-ecs/src/archetype/runtime", "packages/archetype-ecs/src/archetype/world"]
 source_path = "examples/01_world_mutations.py"
 source_command = ["python", "examples/01_world_mutations.py"]
 required_extras = []
@@ -53,7 +53,7 @@ required_cadence = ["pr", "main", "release"]
 id = "example.02_fork_counterfactual"
 kind = "example"
 owner = "world"
-owner_paths = ["src/archetype/runtime", "src/archetype/world"]
+owner_paths = ["packages/archetype-ecs/src/archetype/runtime", "packages/archetype-ecs/src/archetype/world"]
 source_path = "examples/02_fork_counterfactual.py"
 source_command = ["python", "examples/02_fork_counterfactual.py"]
 required_extras = []
@@ -74,9 +74,9 @@ id = "example.03_time_travel"
 kind = "example"
 owner = "world"
 owner_paths = [
-  "src/archetype/runtime",
-  "src/archetype/world",
-  "src/archetype/storage",
+  "packages/archetype-ecs/src/archetype/runtime",
+  "packages/archetype-ecs/src/archetype/world",
+  "packages/archetype-ecs/src/archetype/storage",
 ]
 source_path = "examples/03_time_travel.py"
 source_command = ["python", "examples/03_time_travel.py"]
@@ -97,7 +97,7 @@ required_cadence = ["pr", "main", "release"]
 id = "example.04_messaging"
 kind = "example"
 owner = "world"
-owner_paths = ["src/archetype/world", "src/archetype/core/hooks.py"]
+owner_paths = ["packages/archetype-ecs/src/archetype/world", "packages/archetype-ecs/src/archetype/core/hooks.py"]
 source_path = "examples/04_messaging.py"
 source_command = ["python", "examples/04_messaging.py"]
 required_extras = []
@@ -117,7 +117,7 @@ required_cadence = ["pr", "main", "release"]
 id = "example.05_llm_agents"
 kind = "example"
 owner = "core"
-owner_paths = ["src/archetype/core/aio", "src/archetype/runtime"]
+owner_paths = ["packages/archetype-ecs/src/archetype/core/aio", "packages/archetype-ecs/src/archetype/runtime"]
 source_path = "examples/05_llm_agents.py"
 source_command = ["python", "examples/05_llm_agents.py"]
 required_extras = []
@@ -137,7 +137,7 @@ required_cadence = ["release"]
 id = "example.06_trajectory_analysis"
 kind = "example"
 owner = "missions"
-owner_paths = ["src/archetype/missions"]
+owner_paths = ["packages/archetype-missions/src/archetype/missions"]
 source_path = "examples/06_trajectory_analysis.py"
 source_command = ["python", "examples/06_trajectory_analysis.py"]
 required_extras = []
@@ -159,7 +159,7 @@ required_cadence = ["pr", "main", "release"]
 id = "example.07_hooks"
 kind = "example"
 owner = "core"
-owner_paths = ["src/archetype/core/hooks.py", "src/archetype/world"]
+owner_paths = ["packages/archetype-ecs/src/archetype/core/hooks.py", "packages/archetype-ecs/src/archetype/world"]
 source_path = "examples/07_hooks.py"
 source_command = ["python", "examples/07_hooks.py"]
 required_extras = []
@@ -179,7 +179,7 @@ required_cadence = ["pr", "main", "release"]
 id = "example.08_htn_resolution"
 kind = "example"
 owner = "missions"
-owner_paths = ["src/archetype/missions/planning"]
+owner_paths = ["packages/archetype-missions/src/archetype/missions/planning"]
 source_path = "examples/08_htn_resolution.py"
 source_command = ["python", "examples/08_htn_resolution.py"]
 required_extras = []
@@ -199,7 +199,7 @@ required_cadence = ["pr", "main", "release"]
 id = "example.09_cloud_storage"
 kind = "example"
 owner = "storage"
-owner_paths = ["src/archetype/storage", "src/archetype/runtime"]
+owner_paths = ["packages/archetype-ecs/src/archetype/storage", "packages/archetype-ecs/src/archetype/runtime"]
 source_path = "examples/09_cloud_storage.py"
 source_command = ["python", "examples/09_cloud_storage.py", "--smoke-local"]
 required_extras = []
@@ -219,7 +219,7 @@ required_cadence = ["pr", "main", "release"]
 id = "example.10_autoresearch"
 kind = "example"
 owner = "research"
-owner_paths = ["src/archetype/research"]
+owner_paths = ["packages/archetype-research/src/archetype/research"]
 source_path = "examples/10_autoresearch.py"
 source_command = ["python", "examples/10_autoresearch.py"]
 required_extras = []
@@ -240,8 +240,8 @@ id = "example.problem_definition_autoresearch.offline"
 kind = "example"
 owner = "research"
 owner_paths = [
-  "src/archetype/research",
-  "src/archetype/runtime",
+  "packages/archetype-research/src/archetype/research",
+  "packages/archetype-ecs/src/archetype/runtime",
   "examples/problem_definition_mission",
 ]
 source_path = "examples/problem_definition_autoresearch.py"
@@ -277,7 +277,7 @@ required_cadence = ["pr", "main"]
 id = "example.11_coding_agent_mission.dry_run"
 kind = "example"
 owner = "missions"
-owner_paths = ["src/archetype/missions"]
+owner_paths = ["packages/archetype-missions/src/archetype/missions"]
 source_path = "examples/11_coding_agent_mission.py"
 source_command = [
   "python",
@@ -303,7 +303,7 @@ required_cadence = ["pr", "main", "release"]
 id = "example.11_graph_relationships"
 kind = "example"
 owner = "graph"
-owner_paths = ["src/archetype/graph"]
+owner_paths = ["packages/archetype-ecs/src/archetype/graph"]
 source_path = "examples/11_graph_relationships.py"
 source_command = ["python", "examples/11_graph_relationships.py"]
 required_extras = []
@@ -323,7 +323,7 @@ required_cadence = ["pr", "main", "release"]
 id = "example.12_prefabs"
 kind = "example"
 owner = "graph"
-owner_paths = ["src/archetype/graph"]
+owner_paths = ["packages/archetype-ecs/src/archetype/graph"]
 source_path = "examples/12_prefabs.py"
 source_command = ["python", "examples/12_prefabs.py"]
 required_extras = []
@@ -343,7 +343,7 @@ required_cadence = ["pr", "main", "release"]
 id = "example.13_biome_rts"
 kind = "example"
 owner = "graph"
-owner_paths = ["src/archetype/graph", "examples/biome_rts"]
+owner_paths = ["packages/archetype-ecs/src/archetype/graph", "examples/biome_rts"]
 source_path = "examples/13_biome_rts.py"
 source_command = ["python", "examples/13_biome_rts.py"]
 required_extras = []
@@ -387,8 +387,8 @@ id = "example.15_mission_factory_assets"
 kind = "example"
 owner = "missions"
 owner_paths = [
-  "src/archetype/graph",
-  "src/archetype/missions",
+  "packages/archetype-ecs/src/archetype/graph",
+  "packages/archetype-missions/src/archetype/missions",
   "examples/mission_factory",
 ]
 source_path = "examples/15_mission_factory_assets.py"
@@ -414,11 +414,11 @@ id = "dogfood.runtime.loopback"
 kind = "dogfood"
 owner = "runtime"
 owner_paths = [
-  "src/archetype/runtime",
-  "src/archetype/runtime_resources.py",
-  "src/archetype/wiring.py",
-  "src/archetype/api",
-  "src/archetype/commands",
+  "packages/archetype-ecs/src/archetype/runtime",
+  "packages/archetype-ecs/src/archetype/runtime_resources.py",
+  "packages/archetype-ecs/src/archetype/wiring.py",
+  "packages/archetype-ecs/src/archetype/api",
+  "packages/archetype-ecs/src/archetype/commands",
 ]
 source_path = "scripts/run_runtime_loopback.py"
 source_command = ["python", "scripts/run_runtime_loopback.py"]
@@ -446,11 +446,11 @@ id = "dogfood.commands.local"
 kind = "dogfood"
 owner = "commands"
 owner_paths = [
-  "src/archetype/commands",
-  "src/archetype/runtime_resources.py",
-  "src/archetype/wiring.py",
-  "src/archetype/api",
-  "src/archetype/world",
+  "packages/archetype-ecs/src/archetype/commands",
+  "packages/archetype-ecs/src/archetype/runtime_resources.py",
+  "packages/archetype-ecs/src/archetype/wiring.py",
+  "packages/archetype-ecs/src/archetype/api",
+  "packages/archetype-ecs/src/archetype/world",
   "tests/integration/test_commands_operational.py",
 ]
 source_path = "tests/integration/test_commands_operational.py"
@@ -478,9 +478,9 @@ id = "dogfood.evaluation.durable_receipt"
 kind = "dogfood"
 owner = "evaluation"
 owner_paths = [
-  "src/archetype/evaluation",
-  "src/archetype/runtime",
-  "src/archetype/wiring.py",
+  "packages/archetype-ecs/src/archetype/evaluation",
+  "packages/archetype-ecs/src/archetype/runtime",
+  "packages/archetype-ecs/src/archetype/wiring.py",
   "tests/integration/test_evaluation_operational.py",
 ]
 source_path = "tests/integration/test_evaluation_operational.py"
@@ -506,9 +506,9 @@ id = "dogfood.artifacts.local"
 kind = "dogfood"
 owner = "artifacts"
 owner_paths = [
-  "src/archetype/artifacts",
-  "src/archetype/runtime",
-  "src/archetype/wiring.py",
+  "packages/archetype-ecs/src/archetype/artifacts",
+  "packages/archetype-ecs/src/archetype/runtime",
+  "packages/archetype-ecs/src/archetype/wiring.py",
   "tests/integration/test_artifacts_operational.py",
 ]
 source_path = "tests/integration/test_artifacts_operational.py"
@@ -535,9 +535,9 @@ id = "dogfood.agent_mission.modal_activity_contracts"
 kind = "dogfood"
 owner = "missions"
 owner_paths = [
-  "src/archetype/missions",
-  "src/archetype/runtime_resources.py",
-  "src/archetype/wiring.py",
+  "packages/archetype-missions/src/archetype/missions",
+  "packages/archetype-ecs/src/archetype/runtime_resources.py",
+  "packages/archetype-ecs/src/archetype/wiring.py",
   "tests/missions/test_modal_activity_executors.py",
   "tests/missions/test_mission_author_world_integration.py",
 ]
@@ -570,9 +570,9 @@ id = "dogfood.runtime.shutdown"
 kind = "dogfood"
 owner = "runtime"
 owner_paths = [
-  "src/archetype/runtime",
-  "src/archetype/runtime_resources.py",
-  "src/archetype/wiring.py",
+  "packages/archetype-ecs/src/archetype/runtime",
+  "packages/archetype-ecs/src/archetype/runtime_resources.py",
+  "packages/archetype-ecs/src/archetype/wiring.py",
 ]
 source_path = "tests/app/test_runtime_contracts.py"
 source_command = [
@@ -601,7 +601,7 @@ id = "dogfood.agent_mission.modal_live"
 kind = "dogfood"
 owner = "missions"
 owner_paths = [
-  "src/archetype/missions",
+  "packages/archetype-missions/src/archetype/missions",
   "tests/infrastructure/test_modal_agent_mission_live.py",
 ]
 source_path = "tests/infrastructure/test_modal_agent_mission_live.py"
@@ -638,10 +638,10 @@ id = "dogfood.physical_ai.hosted_episode"
 kind = "dogfood"
 owner = "physical_ai"
 owner_paths = [
-  "src/archetype/physical_ai",
-  "src/archetype/activities",
-  "src/archetype/runtime",
-  "src/archetype/wiring.py",
+  "packages/archetype-physical-ai/src/archetype/physical_ai",
+  "packages/archetype-ecs/src/archetype/activities",
+  "packages/archetype-ecs/src/archetype/runtime",
+  "packages/archetype-ecs/src/archetype/wiring.py",
 ]
 source_path = "tests/integration/test_hosted_physical_runtime.py"
 source_command = [
@@ -669,10 +669,10 @@ id = "dogfood.physical_ai.modal_r2_live"
 kind = "dogfood"
 owner = "physical_ai"
 owner_paths = [
-  "src/archetype/physical_ai",
-  "src/archetype/activities",
-  "src/archetype/runtime",
-  "src/archetype/wiring.py",
+  "packages/archetype-physical-ai/src/archetype/physical_ai",
+  "packages/archetype-ecs/src/archetype/activities",
+  "packages/archetype-ecs/src/archetype/runtime",
+  "packages/archetype-ecs/src/archetype/wiring.py",
   "tests/infrastructure/test_modal_physical_r2_live.py",
 ]
 source_path = "tests/infrastructure/test_modal_physical_r2_live.py"
@@ -711,13 +711,13 @@ id = "dogfood.sandbox.docker"
 kind = "dogfood"
 owner = "missions"
 owner_paths = [
-  "src/archetype/missions",
-  "src/archetype/runtime",
-  "src/archetype/commands",
-  "src/archetype/world",
-  "src/archetype/graph",
-  "src/archetype/core/hooks.py",
-  "src/archetype/wiring.py",
+  "packages/archetype-missions/src/archetype/missions",
+  "packages/archetype-ecs/src/archetype/runtime",
+  "packages/archetype-ecs/src/archetype/commands",
+  "packages/archetype-ecs/src/archetype/world",
+  "packages/archetype-ecs/src/archetype/graph",
+  "packages/archetype-ecs/src/archetype/core/hooks.py",
+  "packages/archetype-ecs/src/archetype/wiring.py",
   "examples/11_coding_agent_mission.py",
   "tests/missions",
   "tests/integration/test_docker_sandbox_parity.py",
@@ -747,14 +747,14 @@ required_cadence = ["release"]
 [scenario.workflow]
 path = ".github/workflows/sandbox-backend-parity.yml"
 trigger_paths = [
-  "src/archetype/missions/**",
-  "src/archetype/runtime/**",
-  "src/archetype/runtime_resources.py",
-  "src/archetype/commands/**",
-  "src/archetype/world/**",
-  "src/archetype/graph/**",
-  "src/archetype/core/hooks.py",
-  "src/archetype/wiring.py",
+  "packages/archetype-missions/src/archetype/missions/**",
+  "packages/archetype-ecs/src/archetype/runtime/**",
+  "packages/archetype-ecs/src/archetype/runtime_resources.py",
+  "packages/archetype-ecs/src/archetype/commands/**",
+  "packages/archetype-ecs/src/archetype/world/**",
+  "packages/archetype-ecs/src/archetype/graph/**",
+  "packages/archetype-ecs/src/archetype/core/hooks.py",
+  "packages/archetype-ecs/src/archetype/wiring.py",
   "examples/11_coding_agent_mission.py",
   "tests/missions/**",
   "tests/integration/test_docker_sandbox_parity.py",
@@ -768,9 +768,9 @@ id = "dogfood.storage.r2"
 kind = "dogfood"
 owner = "storage"
 owner_paths = [
-  "src/archetype/storage",
-  "src/archetype/artifacts",
-  "src/archetype/runtime",
+  "packages/archetype-ecs/src/archetype/storage",
+  "packages/archetype-ecs/src/archetype/artifacts",
+  "packages/archetype-ecs/src/archetype/runtime",
   "tests/infrastructure",
 ]
 source_path = "tests/infrastructure/test_r2_artifact_context.py"
@@ -810,7 +810,7 @@ trigger_paths = []
 id = "dogfood.sandbox.apple_container"
 kind = "dogfood"
 owner = "missions"
-owner_paths = ["src/archetype/missions/sandboxes", "src/archetype/runtime"]
+owner_paths = ["packages/archetype-missions/src/archetype/missions/sandboxes", "packages/archetype-ecs/src/archetype/runtime"]
 source_path = "tests/integration/test_apple_container_sandbox_parity.py"
 source_command = ["pytest", "-q", "tests/integration/test_apple_container_sandbox_parity.py"]
 required_extras = ["coding-agent"]

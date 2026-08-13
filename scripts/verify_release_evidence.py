@@ -2,7 +2,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Verify complete release-scenario evidence against one immutable wheel."""
+"""Verify complete release-scenario evidence against one artifact matrix."""
 
 from __future__ import annotations
 
@@ -14,11 +14,27 @@ from pathlib import Path
 from typing import Any
 
 if __package__:
-    from .release_artifact import SCHEMA as ARTIFACT_SCHEMA
+    from .release_artifact import (
+        DISTRIBUTIONS,
+        FRAMEWORK_DISTRIBUTION,
+        artifact_records,
+    )
+    from .release_artifact import (
+        SCHEMA as ARTIFACT_SCHEMA,
+    )
 else:  # pragma: no cover - exercised by the command-line entry point
-    from release_artifact import SCHEMA as ARTIFACT_SCHEMA
+    from release_artifact import (  # type: ignore[no-redef]
+        DISTRIBUTIONS,
+        FRAMEWORK_DISTRIBUTION,
+        artifact_records,
+    )
+    from release_artifact import (
+        SCHEMA as ARTIFACT_SCHEMA,
+    )
 
 RESULT_SCHEMA = "archetype.operational-results/v1"
+SUMMARY_SCHEMA = "archetype.release-evidence-summary/v2"
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def _object(path: Path) -> dict[str, Any]:
@@ -26,6 +42,57 @@ def _object(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise TypeError(f"{path} must contain one JSON object")
     return value
+
+
+def _wheel_manifest(manifest: dict[str, Any]) -> dict[str, dict[str, str]]:
+    records = artifact_records(manifest)
+    result: dict[str, dict[str, str]] = {}
+    for distribution in DISTRIBUTIONS:
+        record = records[(distribution, "wheel")]
+        name = record.get("name")
+        sha256 = record.get("sha256")
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"release artifact manifest has invalid {distribution} wheel name")
+        if not isinstance(sha256, str) or _SHA256.fullmatch(sha256) is None:
+            raise ValueError(f"release artifact manifest has invalid {distribution} wheel sha256")
+        result[distribution] = {
+            "filename": name,
+            "digest": f"sha256:{sha256}",
+        }
+    return result
+
+
+def _verify_receipt_artifact_set(
+    *,
+    path: Path,
+    wheel: dict[str, Any],
+    release_wheels: dict[str, dict[str, str]],
+) -> None:
+    """Verify the optional exact matrix emitted by the operational runner."""
+
+    raw = wheel.get("artifacts")
+    if raw is None:
+        return
+    if not isinstance(raw, list) or len(raw) != len(DISTRIBUTIONS):
+        raise ValueError(f"{path} wheel artifact set must contain all four distributions")
+
+    observed: dict[str, dict[str, str]] = {}
+    for value in raw:
+        if not isinstance(value, dict):
+            raise TypeError(f"{path} wheel artifact record must be an object")
+        distribution = value.get("distribution")
+        filename = value.get("filename")
+        digest = value.get("digest")
+        if not all(isinstance(item, str) and item for item in (distribution, filename, digest)):
+            raise ValueError(f"{path} wheel artifact record has invalid fields")
+        assert isinstance(distribution, str)
+        if distribution not in release_wheels or distribution in observed:
+            raise ValueError(
+                f"{path} wheel artifact set has invalid or duplicate distribution {distribution!r}"
+            )
+        observed[distribution] = {"filename": str(filename), "digest": str(digest)}
+    if observed != release_wheels:
+        raise ValueError(f"{path} wheel artifact set does not match release manifest digests")
 
 
 def verify(
@@ -40,17 +107,8 @@ def verify(
     if manifest.get("clean_checkout") is not True:
         raise ValueError("release artifact was not built from a clean checkout")
     commit = str(manifest.get("commit", ""))
-    wheel_records = [
-        item
-        for item in manifest.get("artifacts", [])
-        if isinstance(item, dict) and item.get("kind") == "wheel"
-    ]
-    if len(wheel_records) != 1:
-        raise ValueError("release artifact manifest has no unique wheel")
-    wheel_sha256 = str(wheel_records[0].get("sha256", ""))
-    if not re.fullmatch(r"[0-9a-f]{64}", wheel_sha256):
-        raise ValueError("release artifact manifest has an invalid wheel sha256")
-    wheel_digest = f"sha256:{wheel_sha256}"
+    release_wheels = _wheel_manifest(manifest)
+    framework_wheel = release_wheels[FRAMEWORK_DISTRIBUTION]
 
     with registry.open("rb") as stream:
         rows = tomllib.load(stream).get("scenario", [])
@@ -60,6 +118,7 @@ def verify(
         if isinstance(row, dict) and "release" in row.get("required_cadence", [])
     }
     passed: set[str] = set()
+    receipts_with_matrix = 0
     for path in receipt_paths:
         receipt = _object(path)
         if receipt.get("schema") != RESULT_SCHEMA:
@@ -72,9 +131,20 @@ def verify(
         if receipt.get("revision") != commit or receipt.get("clean_checkout") is not True:
             raise ValueError(f"{path} is not bound to the clean release commit")
         wheel = receipt.get("wheel")
-        if not isinstance(wheel, dict) or wheel.get("digest") != wheel_digest:
-            raise ValueError(f"{path} is not bound to the release wheel digest")
-        if receipt.get("cleanup", {}).get("status") != "closed":
+        if not isinstance(wheel, dict) or wheel.get("digest") != framework_wheel["digest"]:
+            raise ValueError(f"{path} is not bound to the archetype-ecs release wheel digest")
+        filename = wheel.get("filename")
+        if filename is not None and filename != framework_wheel["filename"]:
+            raise ValueError(f"{path} names a different archetype-ecs release wheel")
+        if wheel.get("artifacts") is not None:
+            receipts_with_matrix += 1
+        _verify_receipt_artifact_set(
+            path=path,
+            wheel=wheel,
+            release_wheels=release_wheels,
+        )
+        cleanup = receipt.get("cleanup")
+        if not isinstance(cleanup, dict) or cleanup.get("status") != "closed":
             raise ValueError(f"{path} did not close its isolated filesystem")
         results = receipt.get("results")
         if not isinstance(results, list):
@@ -93,9 +163,14 @@ def verify(
     if missing:
         raise ValueError("release evidence is missing required scenario(s): " + ", ".join(missing))
     return {
-        "schema": "archetype.release-evidence-summary/v1",
+        "schema": SUMMARY_SCHEMA,
         "commit": commit,
-        "wheel_sha256": wheel_sha256,
+        "framework_wheel_sha256": framework_wheel["digest"].removeprefix("sha256:"),
+        "wheel_artifacts": [
+            {"distribution": distribution, **release_wheels[distribution]}
+            for distribution in DISTRIBUTIONS
+        ],
+        "receipts_with_artifact_matrix": receipts_with_matrix,
         "required_scenarios": len(required),
         "passed_scenarios": len(passed),
     }
@@ -116,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
     args.out.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(
         f"Release evidence passed: {summary['passed_scenarios']} scenarios "
-        f"for sha256:{summary['wheel_sha256']}"
+        f"for archetype-ecs sha256:{summary['framework_wheel_sha256']}"
     )
     return 0
 

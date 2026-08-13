@@ -499,9 +499,9 @@ Pass `CacheConfig` through runtime/world creation or `StorageService.get_or_crea
 
 ## Source Reference
 
-- Store (Iceberg): `src/archetype/core/aio/async_store.py`
-- Store (LanceDB): `src/archetype/core/storage/lancedb.py`
-- Storage service/builders: `src/archetype/storage/service.py`
-- Durable catalog contract and implementations: `src/archetype/storage/catalog/`
-- Storage bootstrap configuration: `src/archetype/storage/config.py`
-- Cached store: `src/archetype/core/aio/async_cached_store.py`
+- Store (Iceberg): `packages/archetype-ecs/src/archetype/core/aio/async_store.py`
+- Store (LanceDB): `packages/archetype-ecs/src/archetype/core/storage/lancedb.py`
+- Storage service/builders: `packages/archetype-ecs/src/archetype/storage/service.py`
+- Durable catalog contract and implementations: `packages/archetype-ecs/src/archetype/storage/catalog/`
+- Storage bootstrap configuration: `packages/archetype-ecs/src/archetype/storage/config.py`
+- Cached store: `packages/archetype-ecs/src/archetype/core/aio/async_cached_store.py`

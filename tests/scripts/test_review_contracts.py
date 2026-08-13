@@ -452,7 +452,10 @@ def test_design_brief_renderer_selects_only_whole_relevant_guidance_under_budget
 
 
 def test_design_brief_projects_real_size_lens_evidence_under_budget():
-    files = [f"src/archetype/missions/path_{index:03}.py" for index in range(91)]
+    files = [
+        f"packages/archetype-missions/src/archetype/missions/path_{index:03}.py"
+        for index in range(91)
+    ]
     lenses = [
         {
             "lens": "authority",
@@ -640,7 +643,7 @@ def test_adjudication_evidence_paths_must_be_real():
         "recommended_severity": "advisory",
         "evidence": [
             {
-                "path": "src/archetype/definitely_not_a_real_module.py",
+                "path": "packages/archetype-ecs/src/archetype/definitely_not_a_real_module.py",
                 "explanation": (
                     "This confidently cited file does not exist anywhere in the "
                     "repository or the scoped diff."

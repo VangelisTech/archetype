@@ -6,7 +6,7 @@ Archetype has two evaluation surfaces with opposite dependency directions.
 
 | Surface | Location | What it evaluates |
 |---|---|---|
-| Product evaluation | `src/archetype/` | Work performed inside Archetype: persisted trajectories, dataset episodes, graders, and receipts |
+| Product evaluation | `packages/archetype-ecs/src/archetype/` | Work performed inside Archetype: persisted trajectories, dataset episodes, graders, and receipts |
 | Repository harness | `tests/`, `evals/`, `bench/`, and development tooling | Archetype itself: correctness, architecture, robustness, and cost |
 
 The product surface ships in the wheel. The repository harness does not. It is
@@ -14,7 +14,7 @@ an outer consumer of the library and MAY exercise any public boundary needed
 to prove a contract. Production code MUST NOT import it.
 
 This is why the self-harness stays at the repository root. Moving it into
-`src/archetype/core/` would reverse the dependency graph: the lowest engine
+`packages/archetype-ecs/src/archetype/core/` would reverse the dependency graph: the lowest engine
 layer would own code that depends on the whole stack, developer tooling, and
 test-only infrastructure. “Harness” is the composition of the evidence below,
 not one runtime package.

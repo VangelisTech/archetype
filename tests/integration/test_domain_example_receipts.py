@@ -196,10 +196,10 @@ async def test_autoresearch_receipt_pins_improvement_and_ledger_order(tmp_path: 
         "final_score": 0.0,
         "improved": True,
         "ledger": [
-            {"run_id": "knob-tuning-demo:iter0", "status": "stopped"},
-            {"run_id": "knob-tuning-demo:iter1", "status": "stopped"},
-            {"run_id": "knob-tuning-demo:iter2", "status": "stopped"},
-            {"run_id": "knob-tuning-demo:iter3", "status": "stopped"},
+            {"run_id": "knob-tuning-demo:iter0", "status": "succeeded"},
+            {"run_id": "knob-tuning-demo:iter1", "status": "succeeded"},
+            {"run_id": "knob-tuning-demo:iter2", "status": "succeeded"},
+            {"run_id": "knob-tuning-demo:iter3", "status": "succeeded"},
         ],
         "ledger_tick": 8,
     }
@@ -243,7 +243,7 @@ async def test_coding_agent_dry_run_receipt_is_typed_and_starts_no_work(
         ],
         "task_paths": {
             "implementation": {
-                "path": "src/archetype/world/query.py",
+                "path": "packages/archetype-ecs/src/archetype/world/query.py",
             },
             "regression": {
                 "path": "tests/world/test_query_schema_evolution.py",

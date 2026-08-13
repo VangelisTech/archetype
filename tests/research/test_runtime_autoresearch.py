@@ -90,7 +90,7 @@ async def test_world_autoresearch_optimizes_and_ledgers(tmp_path):
         assert sorted(r["run__run_id"] for r in attempts) == [
             f"runtime-exp-id:iter{i}" for i in range(4)
         ]
-        assert all(r["run__status"] == RunStatus.STOPPED.value for r in attempts)
+        assert all(r["run__status"] == RunStatus.SUCCEEDED.value for r in attempts)
 
 
 @pytest.mark.asyncio

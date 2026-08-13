@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-_ROOT = Path(__file__).resolve().parents[2] / "src" / "archetype"
+_ROOT = Path(__file__).resolve().parents[2] / "packages" / "archetype-ecs" / "src" / "archetype"
 _RUNTIME_DIR = _ROOT / "runtime"
 _API_DIR = _ROOT / "api"
 

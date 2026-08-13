@@ -16,9 +16,13 @@ from uuid_utils import uuid7
 from archetype import ArchetypeRuntime
 from archetype.artifacts.models import ArtifactRef, QueryArtifacts
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
-from archetype.episodes.models import IngestClaudeTranscript, QueryTranscriptRows
+from archetype.missions._extension import get_manifest
 from archetype.missions.trajectories import (
     ClaudeTranscriptSource,
+)
+from archetype.missions.trajectories.models import (
+    IngestClaudeTranscript,
+    QueryTranscriptRows,
 )
 from archetype.missions.transcript_service import TranscriptIngestionService
 from archetype.redaction import RedactionService, SecretQuarantineError
@@ -223,7 +227,7 @@ async def test_transcript_persists_sanitized_artifact_and_normalized_rows(
     raw_digest = hashlib.sha256(transcript.read_bytes()).hexdigest()
     source = ClaudeTranscriptSource(path=transcript, mission_id="mission-7")
     storage = _storage(tmp_path, "transcripts")
-    resources = build_test_runtime(tmp_path)
+    resources = build_test_runtime(tmp_path, world_libraries=(get_manifest(),))
     dispatcher = resources.dispatcher
     try:
         world = await dispatcher.apply(
@@ -298,7 +302,7 @@ async def test_quarantine_and_parse_failure_publish_nothing(tmp_path: Path) -> N
     symlink.parent.mkdir()
     symlink.symlink_to(target)
 
-    async with ArchetypeRuntime() as runtime:
+    async with ArchetypeRuntime(world_libraries=(get_manifest(),)) as runtime:
         world = runtime.world("quarantined-transcript", storage=_storage(tmp_path, "quarantine"))
         await world.run(steps=1)
         with pytest.raises(SecretQuarantineError, match="unsupported-source-file"):
@@ -321,7 +325,7 @@ async def test_reingestion_records_a_new_artifact_occurrence(tmp_path: Path) -> 
     _write_transcript(transcript)
     source = ClaudeTranscriptSource(path=transcript)
     storage = _storage(tmp_path, "retry")
-    resources = build_test_runtime(tmp_path)
+    resources = build_test_runtime(tmp_path, world_libraries=(get_manifest(),))
     dispatcher = resources.dispatcher
     try:
         world = await dispatcher.apply(
@@ -367,7 +371,7 @@ def test_sync_runtime_mirrors_transcript_ingestion(tmp_path: Path) -> None:
     transcript = tmp_path / "project-d" / "sync.jsonl"
     _write_transcript(transcript)
 
-    with ArchetypeRuntime.sync() as runtime:
+    with ArchetypeRuntime.sync(world_libraries=(get_manifest(),)) as runtime:
         world = runtime.world("sync-transcript", storage=_storage(tmp_path, "sync_transcript"))
         world.run(steps=1)
         result = world.ingest_claude_transcript(ClaudeTranscriptSource(path=transcript))

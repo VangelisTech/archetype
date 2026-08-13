@@ -50,6 +50,7 @@ nav:
       - Overview: index.md
       - Quickstart: guide/quickstart.md
       - Core Architecture: guide/core-architecture.md
+      - Install World Libraries: guide/world-libraries.md
       - Choose an Example: guide/examples.md
   - USER GUIDE:
       - Building Simulations: guide/building-simulations.md
@@ -164,8 +165,11 @@ plugins:
   - mkdocstrings:
       handlers:
         python:
-          paths: [src]
+          paths:
+            - packages/archetype-ecs/src
           options:
+            extensions:
+              - scripts/griffe_world_libraries.py:WorldLibraryPackages
             show_source: false
             show_root_heading: true
             show_root_full_path: false

@@ -42,6 +42,29 @@ def test_lockfile_audit_fails_on_known_bad_injection(
     assert status == 1
     assert len(calls) == 2
     assert "--locked" in calls[0]
-    assert "--no-emit-project" in calls[0]
+    assert "--no-emit-workspace" in calls[0]
     assert "--no-deps" in calls[1]
     assert "Found 1 known vulnerability" in capsys.readouterr().out
+
+
+def test_lockfile_audit_rejects_editables_after_workspace_exclusion(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    calls: list[list[str]] = []
+
+    def run(
+        command: list[str],
+        **_kwargs,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        output = Path(command[command.index("--output-file") + 1])
+        output.write_text("-e ../unexpected-local-project\n", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    status = audit_lockfile(root=tmp_path, run=run)
+
+    assert status == 1
+    assert len(calls) == 1
+    assert "--no-emit-workspace" in calls[0]
+    assert "refused an editable project requirement" in capsys.readouterr().err

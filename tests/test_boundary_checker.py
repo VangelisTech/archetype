@@ -29,6 +29,9 @@ _API_COMPOSITION_SURFACE = next(
 _API_ROUTES_SURFACE = next(
     surface for surface in _POLICY.import_surfaces if surface.name == "api-routes"
 )
+_MISSIONS_API_SURFACE = next(
+    surface for surface in _POLICY.import_surfaces if surface.name == "missions-api-router"
+)
 
 
 def _write(tmp_path: Path, body: str) -> Path:
@@ -48,13 +51,11 @@ def test_policy_loads_surface_dependencies_and_owner_types_from_data():
     assert _API_ROUTES_SURFACE.dependency_roots == {
         "archetype.app",
         "archetype.commands",
-        "archetype.missions",
         "archetype.world",
     }
     assert "archetype.commands.dispatch" in _API_ROUTES_SURFACE.allowed_dependencies
     assert "archetype.commands.models" in _API_ROUTES_SURFACE.allowed_dependencies
-    assert "archetype.missions.components" in _API_ROUTES_SURFACE.allowed_dependencies
-    assert "archetype.missions.relations" in _API_ROUTES_SURFACE.allowed_dependencies
+    assert "archetype.missions" not in _API_ROUTES_SURFACE.dependency_roots
     assert "archetype.commands.scheduler" in _API_ROUTES_SURFACE.forbidden_dependencies
     assert "archetype.world.models" in _API_ROUTES_SURFACE.allowed_dependencies
     assert "archetype.world.simulation" in _API_ROUTES_SURFACE.forbidden_dependencies
@@ -63,16 +64,23 @@ def test_policy_loads_surface_dependencies_and_owner_types_from_data():
         "archetype.commands",
         "archetype.wiring",
         "archetype.world",
+        "archetype.world_libraries",
     }
     assert set(_API_COMPOSITION_SURFACE.targets) == {
-        "src/archetype/api/app.py",
-        "src/archetype/api/deps.py",
+        "packages/archetype-ecs/src/archetype/api/app.py",
+        "packages/archetype-ecs/src/archetype/api/deps.py",
     }
     assert {
         "archetype.commands.dispatch",
         "archetype.commands.models",
         "archetype.wiring",
+        "archetype.world_libraries",
     } <= _API_COMPOSITION_SURFACE.allowed_dependencies
+    assert _MISSIONS_API_SURFACE.targets == (
+        "packages/archetype-missions/src/archetype/missions/api.py",
+    )
+    assert "archetype.missions.components" in _MISSIONS_API_SURFACE.allowed_dependencies
+    assert "archetype.missions.service" in _MISSIONS_API_SURFACE.forbidden_dependencies
     assert "WorldLifecycle" in _POLICY.public_api.forbidden_owner_types
     assert "MissionService" in _POLICY.public_api.forbidden_owner_types
     assert "mission_service" in _POLICY.public_api.forbidden_parameter_names
@@ -191,7 +199,6 @@ def test_composition_surface_governs_process_wiring(tmp_path: Path) -> None:
             (
                 "archetype.app",
                 "archetype.commands",
-                "archetype.missions",
                 "archetype.world",
             ),
         ),
@@ -355,3 +362,28 @@ def test_public_api_class_constructor_is_checked(tmp_path):
     violations = checker._public_api_violations(path, _POLICY.public_api, root=tmp_path)
     assert len(violations) == 1
     assert "Bad.__init__" in violations[0]
+
+
+def test_workspace_source_module_identity_covers_each_distribution() -> None:
+    targets = {
+        "packages/archetype-ecs/src/archetype/api/app.py": "archetype.api.app",
+        "packages/archetype-missions/src/archetype/missions/api.py": "archetype.missions.api",
+        "packages/archetype-physical-ai/src/archetype/physical_ai/runtime.py": (
+            "archetype.physical_ai.runtime"
+        ),
+        "packages/archetype-research/src/archetype/research/runtime.py": (
+            "archetype.research.runtime"
+        ),
+    }
+
+    for relative, expected in targets.items():
+        assert checker._source_module(_ROOT / relative, _ROOT) == (expected, False)
+
+
+def test_missions_router_surface_rejects_workflow_service_import(tmp_path: Path) -> None:
+    path = _write(tmp_path, "from archetype.missions.service import MissionService\n")
+
+    violations = checker._import_violations(path, _MISSIONS_API_SURFACE, root=tmp_path)
+
+    assert len(violations) == 1
+    assert "imports forbidden archetype.missions.service" in violations[0]

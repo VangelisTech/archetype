@@ -23,8 +23,10 @@ Three checks keep the command gate's claim-vs-effect surface honest:
    ``WorldNotFoundError`` extended ``LookupError``, missed the ``KeyError``
    branch, and fell through to the 500 fallback while tests stayed green).
 
-Run via ``make lint`` (PYTHONPATH=src). Exits non-zero with a specific
-message on any drift.
+Run via ``make lint``. The checker inserts every package source root for local
+execution, then verifies the three first-party world-library distributions are
+installed and discovered before treating the composed registry as complete.
+It exits non-zero with a specific message on any drift.
 """
 
 from __future__ import annotations
@@ -39,14 +41,32 @@ from tempfile import TemporaryDirectory
 from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parents[1]
-COMMAND_SCHEDULER = ROOT / "src/archetype/commands/scheduler.py"
-API_ERRORS = ROOT / "src/archetype/api/errors.py"
+SOURCE_ROOTS = (
+    ROOT / "packages/archetype-ecs/src",
+    ROOT / "packages/archetype-missions/src",
+    ROOT / "packages/archetype-physical-ai/src",
+    ROOT / "packages/archetype-research/src",
+)
+EXPECTED_WORLD_LIBRARIES = ("missions", "physical-ai", "research")
+COMMAND_SCHEDULER = ROOT / "packages/archetype-ecs/src/archetype/commands/scheduler.py"
+API_ERRORS = ROOT / "packages/archetype-ecs/src/archetype/api/errors.py"
 
 # ── Check 1: exact operation registry ────────────────────────────────────────
 
 
-def _composed_registry() -> Any:
-    """Build and close the real explicit process graph, retaining its registry."""
+def _configure_source_paths() -> None:
+    """Make all workspace packages importable for direct script execution."""
+
+    for source_root in reversed(SOURCE_ROOTS):
+        if not source_root.is_dir():
+            raise FileNotFoundError(f"workspace source root does not exist: {source_root}")
+        value = str(source_root)
+        if value not in sys.path:
+            sys.path.insert(0, value)
+
+
+def _composed_registry() -> tuple[Any, tuple[str, ...]]:
+    """Build and close the installed process graph, retaining its inventory."""
     from archetype.storage.config import ControlCatalogConfig
     from archetype.wiring import RuntimeBootstrapConfig, build_runtime_resources
 
@@ -57,7 +77,8 @@ def _composed_registry() -> Any:
             )
         )
         try:
-            return cast("Any", resources.dispatcher)._registry
+            registry = cast("Any", resources.dispatcher)._registry
+            return registry, tuple(resources.world_libraries)
         finally:
             await resources.aclose()
 
@@ -73,17 +94,17 @@ def check_registry_coverage() -> list[str]:
     """Require one exact registration and one exact durable disposition."""
     from archetype.artifacts.models import IngestArtifacts, QueryArtifacts
     from archetype.commands.models import GetAuditHistory
-    from archetype.episodes.models import (
-        GradeTrajectory,
-        IngestClaudeTranscript,
-        QueryTrajectory,
-        QueryTranscriptRows,
-    )
     from archetype.evaluation.models import Evaluate, RunGraders
     from archetype.missions.models import (
         RestoreMissionSandbox,
         RunMission,
         SubmitMission,
+    )
+    from archetype.missions.trajectories.models import (
+        GradeTrajectory,
+        IngestClaudeTranscript,
+        QueryTrajectory,
+        QueryTranscriptRows,
     )
     from archetype.physical_ai.models import RunHostedEpisode
     from archetype.research.models import AutoResearch
@@ -93,15 +114,18 @@ def check_registry_coverage() -> list[str]:
     )
 
     problems: list[str] = []
-    registry = _composed_registry()
+    registry, installed_libraries = _composed_registry()
+    if installed_libraries != EXPECTED_WORLD_LIBRARIES:
+        problems.append(
+            "installed world-library set differs from the full first-party composition: "
+            f"expected {EXPECTED_WORLD_LIBRARIES!r}, found {installed_libraries!r}"
+        )
     specs = registry.specs
     pull_forward_models = (
         IngestArtifacts,
         QueryArtifacts,
         RunGraders,
         Evaluate,
-        AutoResearch,
-        RunHostedEpisode,
         IngestClaudeTranscript,
         QueryTranscriptRows,
         QueryTrajectory,
@@ -109,6 +133,8 @@ def check_registry_coverage() -> list[str]:
         SubmitMission,
         RunMission,
         RestoreMissionSandbox,
+        RunHostedEpisode,
+        AutoResearch,
     )
     expected_models = (*WORLD_OPERATION_TYPES, GetAuditHistory, *pull_forward_models)
     actual_models = tuple(spec.model for spec in specs)
@@ -132,7 +158,7 @@ def check_registry_coverage() -> list[str]:
         )
     if actual_set == expected_set and actual_models != expected_models:
         problems.append(
-            "operation registry order differs from world + audit + pull-forward inventory"
+            "operation registry order differs from framework + canonical world-library inventory"
         )
 
     for spec in specs:
@@ -205,7 +231,6 @@ def check_scheduler_dispatch_shape() -> list[str]:
 ERROR_SURFACE_PACKAGES = (
     "archetype.artifacts",
     "archetype.commands",
-    "archetype.episodes",
     "archetype.evaluation",
     "archetype.missions",
     "archetype.physical_ai",
@@ -313,7 +338,7 @@ def check_error_taxonomy() -> list[str]:
         if not mapped and not declared and not internal_only:
             problems.append(
                 f"{qualname} is not a subclass of any base raise_api_error maps — "
-                "it will surface as HTTP 500. Map it in src/archetype/api/errors.py, "
+                "it will surface as HTTP 500. Map it in packages/archetype-ecs/src/archetype/api/errors.py, "
                 "subclass a mapped base, or declare it in INTENTIONAL_UNMAPPED "
                 "with a rationale and issue. Use INTERNAL_ONLY_EXCEPTIONS only "
                 "when the exception is caught before every registered boundary."
@@ -341,7 +366,7 @@ def check_error_taxonomy() -> list[str]:
 
 
 def main() -> int:
-    sys.path.insert(0, str(ROOT / "src"))
+    _configure_source_paths()
     problems = check_registry_coverage() + check_scheduler_dispatch_shape() + check_error_taxonomy()
     if problems:
         print("Gate coverage audit FAILED:")

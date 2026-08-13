@@ -8,9 +8,9 @@ components, relationship edges, transition processors, and sandbox lifecycle.
 
 Inspect the mission without external work:
 
-    uv run --extra coding-agent python examples/11_coding_agent_mission.py --dry-run
+    uv run python examples/11_coding_agent_mission.py --dry-run
 
-Modal is the supported end-to-end Mission backend in v0.5; mission admission
+Modal is the supported end-to-end Mission backend in V1; mission admission
 deterministically rejects every other configured backend. Modal uses a Codex
 subscription through a named remote Volume; its device-login flow is separate
 from an OpenAI API key and from the local Codex session running this script.
@@ -21,14 +21,14 @@ stream the sandbox's durable live output in the same terminal:
     modal token set --token-id "$MODAL_TOKEN_ID" --token-secret "$MODAL_TOKEN_SECRET"
     export CODING_AGENT_MODAL_WORKSPACE=my-workspace
     export CODING_AGENT_MODAL_ENVIRONMENT=main
-    uv run --extra coding-agent python examples/11_coding_agent_mission.py \
+    uv run python examples/11_coding_agent_mission.py \
         --backend modal --login
-    uv run --extra coding-agent python examples/11_coding_agent_mission.py \
+    uv run python examples/11_coding_agent_mission.py \
         --backend modal --follow
 
 To attach from another terminal, copy the printed ``sb-...`` identity:
 
-    uv run --extra coding-agent python examples/11_coding_agent_mission.py \
+    uv run python examples/11_coding_agent_mission.py \
         --backend modal --monitor sb-...
 
 Apple Container (macOS) and Docker (Linux/CI) remain sandbox capabilities
@@ -56,7 +56,7 @@ import time
 
 from archetype import ArchetypeRuntime
 from archetype.core.config import StorageConfig
-from archetype.missions import AgentMissionConfig, AgentTask, CommandValidator
+from archetype.missions import AgentMissionConfig, AgentTask, CommandValidator, Missions
 from archetype.missions.sandboxes import (
     AppleContainerSandboxBackend,
     AppleContainerSandboxConfig,
@@ -74,7 +74,7 @@ from archetype.missions.sandboxes.modal import MODAL_ACTIVITY_PROTOCOL_EPOCH
 ISSUE = "https://github.com/VangelisTech/archetype/issues/543"
 REPOSITORY = "VangelisTech/archetype"
 REGRESSION_TEST = "tests/world/test_query_schema_evolution.py"
-QUERY_SOURCE = "src/archetype/world/query.py"
+QUERY_SOURCE = "packages/archetype-ecs/src/archetype/world/query.py"
 
 TASKS = (
     AgentTask(
@@ -200,7 +200,7 @@ def _arguments() -> argparse.Namespace:
 
 
 def _host_default_backend() -> str:
-    # Modal is the only backend admitted for end-to-end missions in v0.5;
+    # Modal is the only backend admitted for end-to-end missions in V1;
     # apple-container and docker stay selectable for their sandbox-capability
     # lanes (login, dry-run inspection, checkpoint/restore parity).
     return "modal"
@@ -210,7 +210,7 @@ def _backend(name: str) -> tuple[SandboxBackend, str]:
     auth_volume = os.environ.get("CODEX_AUTH_VOLUME", "archetype-codex-auth")
     if name == "apple-container":
         # Sandbox-capability lane only: the parity adapters expose no Codex
-        # auth-volume or login surface in v0.5.
+        # auth-volume or login surface in V1.
         backend = AppleContainerSandboxBackend(AppleContainerSandboxConfig())
         return backend, backend.environment
     if name == "docker":
@@ -321,7 +321,7 @@ async def main() -> None:
         print(f"Sandbox: {identity.provider}/{identity.sandbox_id}", flush=True)
         if identity.provider == "modal":
             print(
-                "Attach:  uv run --extra coding-agent python "
+                "Attach:  uv run python "
                 "examples/11_coding_agent_mission.py --backend modal "
                 f"--monitor {identity.sandbox_id}",
                 flush=True,
@@ -346,7 +346,8 @@ async def main() -> None:
 
     try:
         async with ArchetypeRuntime() as runtime:
-            async with runtime.missions(
+            async with Missions(
+                runtime,
                 "dogfood-issue-543",
                 config=mission_config,
                 storage=_storage(branch),

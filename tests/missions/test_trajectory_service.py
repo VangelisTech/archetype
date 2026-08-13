@@ -10,13 +10,14 @@ from daft import DataFrame
 
 from archetype import ArchetypeRuntime
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
-from archetype.episodes.models import GradeTrajectory, QueryTrajectory
+from archetype.missions._extension import get_manifest
 from archetype.missions.trajectories import (
     TrajectoryReward,
     TrajectorySelection,
     TrajectoryTurn,
     trajectory,
 )
+from archetype.missions.trajectories.models import GradeTrajectory, QueryTrajectory
 from archetype.world.models import CreateWorld, Run, Spawn
 from evals.graders import exact_match, state_check
 from evals.types import GraderResult
@@ -29,7 +30,7 @@ def _rows(frame: DataFrame) -> list[dict]:
 
 @pytest.mark.asyncio
 async def test_service_filters_one_persisted_evidence_table(tmp_path) -> None:
-    resources = build_test_runtime(tmp_path)
+    resources = build_test_runtime(tmp_path, world_libraries=(get_manifest(),))
     dispatcher = resources.dispatcher
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="trajectory")
@@ -70,7 +71,7 @@ async def test_service_filters_one_persisted_evidence_table(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_service_composes_query_with_evaluation_graders(tmp_path) -> None:
-    resources = build_test_runtime(tmp_path)
+    resources = build_test_runtime(tmp_path, world_libraries=(get_manifest(),))
     dispatcher = resources.dispatcher
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="rewards")
@@ -123,7 +124,7 @@ async def test_service_composes_query_with_evaluation_graders(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_runtime_world_exposes_trajectory_query_and_grading(tmp_path) -> None:
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="runtime_trajectory")
-    async with ArchetypeRuntime() as runtime:
+    async with ArchetypeRuntime(world_libraries=(get_manifest(),)) as runtime:
         world = runtime.world("runtime-trajectory", storage=storage)
         await world.spawn(TrajectoryReward(episode_id="episode-a", seq=0, reward=0.25))
         await world.spawn(TrajectoryReward(episode_id="episode-a", seq=1, reward=1.0))
@@ -155,7 +156,7 @@ async def test_runtime_world_exposes_trajectory_query_and_grading(tmp_path) -> N
 @pytest.mark.asyncio
 async def test_derived_trajectory_view_orders_persisted_evidence(tmp_path) -> None:
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="derived_view")
-    async with ArchetypeRuntime() as runtime:
+    async with ArchetypeRuntime(world_libraries=(get_manifest(),)) as runtime:
         world = runtime.world("derived-view", storage=storage)
         # Spawn out of seq order; the derived view must restore evidence order.
         await world.spawn(TrajectoryTurn(episode_id="episode-a", seq=1, role="assistant"))
@@ -173,7 +174,7 @@ async def test_derived_trajectory_view_orders_persisted_evidence(tmp_path) -> No
 
 def test_sync_runtime_world_mirrors_trajectory_query(tmp_path) -> None:
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="sync_trajectory")
-    with ArchetypeRuntime.sync() as runtime:
+    with ArchetypeRuntime.sync(world_libraries=(get_manifest(),)) as runtime:
         world = runtime.world("sync-trajectory", storage=storage)
         world.spawn(TrajectoryReward(episode_id="episode-a", seq=0, reward=2.0))
         world.run(steps=1)

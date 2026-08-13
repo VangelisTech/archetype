@@ -21,9 +21,12 @@ import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NoReturn, cast
+
+from packaging.utils import canonicalize_name, parse_wheel_filename
 
 if __package__:
     from scripts.run_example_receipt import CAPTURED_RECEIPT_ENV, RECEIPT_PREFIX
@@ -46,8 +49,27 @@ else:
     )
 
 RESULT_SCHEMA = "archetype.operational-results/v1"
+WORKSPACE_DISTRIBUTIONS: tuple[tuple[str, str, str], ...] = (
+    ("archetype-ecs", "packages/archetype-ecs/src", "archetype"),
+    ("archetype-missions", "packages/archetype-missions/src", "archetype.missions"),
+    (
+        "archetype-physical-ai",
+        "packages/archetype-physical-ai/src",
+        "archetype.physical_ai",
+    ),
+    ("archetype-research", "packages/archetype-research/src", "archetype.research"),
+)
 _PROCESS_TERM_GRACE_SECONDS = 2.0
 _PROCESS_KILL_GRACE_SECONDS = 2.0
+
+
+@dataclass(frozen=True)
+class WheelArtifact:
+    """One exact first-party wheel selected for an installed scenario."""
+
+    distribution: str
+    path: Path
+    version: str
 
 
 def _utc_now() -> str:
@@ -160,6 +182,81 @@ def _validate_distinct_wheel_location(
             "a distinct tested-checkout wheel must be located under that checkout: "
             f"{wheel.resolve()} is outside {resolved_tested}"
         )
+
+
+def _workspace_source_roots(checkout: Path) -> tuple[Path, ...]:
+    """Return every first-party source root in deterministic distribution order."""
+
+    return tuple((checkout / relative).resolve() for _, relative, _ in WORKSPACE_DISTRIBUTIONS)
+
+
+def _resolve_wheel_artifacts(
+    *,
+    wheel: Path,
+    wheel_dir: Path | None,
+) -> tuple[WheelArtifact, ...]:
+    """Resolve exactly one same-version local wheel for each first-party distribution."""
+
+    anchor = wheel.resolve()
+    if not anchor.is_file():
+        raise ValueError("--wheel must name the built archetype-ecs wheel in wheel mode")
+    try:
+        anchor_name, anchor_version, _anchor_build, _anchor_tags = parse_wheel_filename(anchor.name)
+    except ValueError as exc:
+        raise ValueError(f"--wheel is not a valid wheel filename: {anchor.name}") from exc
+    if canonicalize_name(anchor_name) != "archetype-ecs":
+        raise ValueError("--wheel must name the archetype-ecs wheel anchor")
+
+    artifact_root = (wheel_dir or anchor.parent).resolve()
+    if not artifact_root.is_dir():
+        raise ValueError(f"--wheel-dir must name a directory: {artifact_root}")
+
+    expected = tuple(distribution for distribution, _source, _module in WORKSPACE_DISTRIBUTIONS)
+    candidates: dict[str, list[tuple[Path, str]]] = {name: [] for name in expected}
+    for candidate in sorted(artifact_root.glob("*.whl")):
+        try:
+            distribution, version, _build, _tags = parse_wheel_filename(candidate.name)
+        except ValueError:
+            continue
+        canonical = canonicalize_name(distribution)
+        if canonical in candidates:
+            candidates[canonical].append((candidate.resolve(), str(version)))
+
+    artifacts: list[WheelArtifact] = []
+    for distribution in expected:
+        matches = candidates[distribution]
+        if len(matches) != 1:
+            raise ValueError(
+                "wheel mode requires exactly one local wheel for "
+                f"{distribution} under {artifact_root}; found {len(matches)}"
+            )
+        path, version = matches[0]
+        if version != str(anchor_version):
+            raise ValueError(
+                "wheel mode requires one same-version first-party artifact set; "
+                f"{distribution} is {version}, archetype-ecs is {anchor_version}"
+            )
+        artifacts.append(WheelArtifact(distribution, path, version))
+
+    framework = artifacts[0]
+    if framework.path != anchor:
+        raise ValueError(
+            "--wheel must be the exact archetype-ecs artifact selected from --wheel-dir"
+        )
+    return tuple(artifacts)
+
+
+def _wheel_artifact_records(
+    artifacts: tuple[WheelArtifact, ...],
+) -> list[dict[str, str]]:
+    return [
+        {
+            "distribution": artifact.distribution,
+            "filename": artifact.path.name,
+            "digest": _sha256_file(artifact.path),
+        }
+        for artifact in artifacts
+    ]
 
 
 def _has_run_demo(path: Path) -> bool:
@@ -491,11 +588,18 @@ def _base_environment(
     env["PYTHONNOUSERSITE"] = "1"
     if mode == "source":
         subject_root = (tested_checkout or root).resolve()
-        env["PYTHONPATH"] = os.pathsep.join((str(subject_root / "src"), str(root.resolve())))
+        env["PYTHONPATH"] = os.pathsep.join(
+            str(path) for path in (*_workspace_source_roots(subject_root), root.resolve())
+        )
     return env
 
 
-def _prepare_wheel_python(wheel: Path, destination: Path) -> tuple[Path, dict[str, str]]:
+def _prepare_wheel_python(
+    wheels: tuple[Path, ...],
+    destination: Path,
+) -> tuple[Path, dict[str, str]]:
+    if len(wheels) != len(WORKSPACE_DISTRIBUTIONS):
+        raise ValueError("installed-wheel scenarios require all four first-party wheels")
     uv = shutil.which("uv")
     if uv is None:
         raise RuntimeError("installed-wheel scenarios require uv")
@@ -509,7 +613,15 @@ def _prepare_wheel_python(wheel: Path, destination: Path) -> tuple[Path, dict[st
     )
     python = environment / "bin" / "python"
     subprocess.run(
-        [uv, "pip", "install", "--python", str(python), "--no-deps", str(wheel.resolve())],
+        [
+            uv,
+            "pip",
+            "install",
+            "--python",
+            str(python),
+            "--no-deps",
+            *(str(wheel.resolve()) for wheel in wheels),
+        ],
         cwd=destination,
         check=True,
         capture_output=True,
@@ -543,10 +655,14 @@ def _package_probe(
     mode: str,
 ) -> dict[str, object]:
     probe = (
-        "import json, pathlib, sys, archetype;"
+        "import importlib.util, json, pathlib, sys, archetype;"
+        "modules=('archetype.missions','archetype.physical_ai','archetype.research');"
+        "specs={name: importlib.util.find_spec(name) for name in modules};"
         "print(json.dumps({'version': archetype.__version__,"
         "'path': str(pathlib.Path(archetype.__file__).resolve()),"
-        "'sys_path': sys.path}))"
+        "'library_paths': {name: (str(pathlib.Path(spec.origin).resolve()) "
+        "if spec is not None and spec.origin is not None else None) "
+        "for name, spec in specs.items()},'sys_path': sys.path}))"
     )
     completed = subprocess.run(
         [str(python), "-c", probe],
@@ -559,17 +675,36 @@ def _package_probe(
     )
     payload = json.loads(completed.stdout.strip().splitlines()[-1])
     package_path = Path(payload["path"]).resolve()
-    harness_source_root = (root / "src").resolve()
-    tested_source_root = (tested_checkout / "src").resolve()
-    tested_source_package = (tested_source_root / "archetype").resolve()
+    harness_source_roots = _workspace_source_roots(root)
+    tested_source_roots = _workspace_source_roots(tested_checkout)
+    tested_source_package = (tested_source_roots[0] / "archetype").resolve()
     from_tested_source = package_path.is_relative_to(tested_source_package)
     if mode == "source" and not from_tested_source:
         raise RuntimeError(
             f"source scenario imported package outside tested checkout: {package_path}"
         )
+
+    library_paths = payload.get("library_paths")
+    if not isinstance(library_paths, dict):
+        raise RuntimeError("package probe did not return world-library paths")
+    resolved_libraries: dict[str, str] = {}
+    for index, (_distribution, _relative, module) in enumerate(
+        WORKSPACE_DISTRIBUTIONS[1:],
+        start=1,
+    ):
+        encoded = library_paths.get(module)
+        if not isinstance(encoded, str) or not encoded:
+            raise RuntimeError(f"package probe could not resolve installed world library {module}")
+        library_path = Path(encoded).resolve()
+        if mode == "source" and not library_path.is_relative_to(tested_source_roots[index]):
+            raise RuntimeError(
+                f"source scenario imported {module} outside tested checkout: {library_path}"
+            )
+        resolved_libraries[module] = str(library_path)
+
     if mode == "wheel":
         wheel_environment = python.parent.parent.resolve()
-        source_roots = {harness_source_root, tested_source_root}
+        source_roots = set(harness_source_roots) | set(tested_source_roots)
         from_checkout_source = any(
             package_path.is_relative_to(source_root / "archetype") for source_root in source_roots
         )
@@ -577,18 +712,41 @@ def _package_probe(
             raise RuntimeError(
                 f"wheel scenario did not import from its isolated environment: {package_path}"
             )
+        for module, encoded in resolved_libraries.items():
+            library_path = Path(encoded)
+            if any(library_path.is_relative_to(source_root) for source_root in source_roots):
+                raise RuntimeError(
+                    f"wheel scenario imported {module} from checkout source: {library_path}"
+                )
+            if not library_path.is_relative_to(wheel_environment):
+                raise RuntimeError(
+                    f"wheel scenario did not import {module} from its isolated environment: "
+                    f"{library_path}"
+                )
         resolved_sys_path = {
             Path(value).resolve()
             for value in payload.get("sys_path", [])
             if isinstance(value, str) and value
         }
-        leaked_source_roots = sorted(str(path) for path in source_roots & resolved_sys_path)
+        leaked_source_roots = sorted(
+            str(path)
+            for path in resolved_sys_path
+            if any(
+                path == source_root or path.is_relative_to(source_root)
+                for source_root in source_roots
+            )
+        )
         if leaked_source_roots:
             raise RuntimeError(
                 "wheel scenario leaked checkout source paths through sys.path: "
                 f"{leaked_source_roots}"
             )
-    return {"version": payload["version"], "path": str(package_path), "origin": mode}
+    return {
+        "version": payload["version"],
+        "path": str(package_path),
+        "world_libraries": resolved_libraries,
+        "origin": mode,
+    }
 
 
 def _adapt_command(
@@ -1306,6 +1464,7 @@ def run_scenarios(
     tested_checkout: Path | None = None,
     expected_tested_revision: str | None = None,
     require_tested_clean: bool = False,
+    wheel_dir: Path | None = None,
 ) -> tuple[dict[str, object], bool]:
     errors = validate_operational_scenarios(root=root, registry_path=registry)
     if errors:
@@ -1352,21 +1511,28 @@ def run_scenarios(
     started_at = _utc_now()
     started = time.perf_counter()
     wheel_digest: str | None = None
+    installed_artifacts: list[dict[str, str]] = []
     isolated_cleanup: dict[str, object] = {
         "status": "closed",
         "path": "<isolated-run>",
     }
     try:
         if mode == "wheel":
-            if wheel is None or not wheel.is_file():
-                raise ValueError("--wheel must name one built wheel in wheel mode")
-            _validate_distinct_wheel_location(
-                wheel=wheel,
-                root=root,
-                tested_checkout=tested_root,
+            if wheel is None:
+                raise ValueError("--wheel must name the built archetype-ecs wheel in wheel mode")
+            wheel_artifacts = _resolve_wheel_artifacts(wheel=wheel, wheel_dir=wheel_dir)
+            for artifact in wheel_artifacts:
+                _validate_distinct_wheel_location(
+                    wheel=artifact.path,
+                    root=root,
+                    tested_checkout=tested_root,
+                )
+            python, wheel_env = _prepare_wheel_python(
+                tuple(artifact.path for artifact in wheel_artifacts),
+                run_root,
             )
-            python, wheel_env = _prepare_wheel_python(wheel, run_root)
-            wheel_digest = _sha256_file(wheel)
+            installed_artifacts = _wheel_artifact_records(wheel_artifacts)
+            wheel_digest = installed_artifacts[0]["digest"]
             package = _package_probe(
                 python,
                 cwd=run_root,
@@ -1376,8 +1542,11 @@ def run_scenarios(
                 mode=mode,
             )
             package["artifact_digest"] = wheel_digest
+            package["artifacts"] = installed_artifacts
             base_env = wheel_env
         else:
+            if wheel is not None or wheel_dir is not None:
+                raise ValueError("--wheel and --wheel-dir are valid only in wheel mode")
             python = Path(sys.executable)
             base_env = _base_environment(
                 root,
@@ -1482,7 +1651,14 @@ def run_scenarios(
         "tested_subject": tested_subject,
         "mode": mode,
         "wheel": (
-            {"path": str(wheel.resolve()), "digest": wheel_digest} if wheel is not None else None
+            {
+                "path": str(wheel.resolve()),
+                "filename": wheel.name,
+                "digest": wheel_digest,
+                "artifacts": installed_artifacts,
+            }
+            if wheel is not None
+            else None
         ),
         "python": {
             "version": platform.python_version(),
@@ -1541,6 +1717,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=Path("operational-results.json"))
     parser.add_argument("--mode", choices=("source", "wheel"), default="source")
     parser.add_argument("--wheel", type=Path)
+    parser.add_argument("--wheel-dir", type=Path)
     parser.add_argument("--cadence", choices=("pr", "main", "release"), default="pr")
     parser.add_argument("--scenario", action="append", default=[])
     parser.add_argument("--kind", choices=("example", "dogfood"))
@@ -1577,6 +1754,7 @@ def main(argv: list[str] | None = None) -> int:
             tested_checkout=tested_root,
             expected_tested_revision=args.expected_tested_revision,
             require_tested_clean=args.require_tested_clean,
+            wheel_dir=args.wheel_dir.resolve() if args.wheel_dir else None,
         )
     except Exception as exc:
         try:

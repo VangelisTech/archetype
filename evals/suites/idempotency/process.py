@@ -23,7 +23,13 @@ _READY_TIMEOUT_SECONDS = 90.0
 
 def _env() -> dict[str, str]:
     env = os.environ.copy()
-    roots = [str(ROOT / "src"), str(ROOT)]
+    roots = [
+        str(ROOT / "packages" / "archetype-ecs" / "src"),
+        str(ROOT / "packages" / "archetype-missions" / "src"),
+        str(ROOT / "packages" / "archetype-physical-ai" / "src"),
+        str(ROOT / "packages" / "archetype-research" / "src"),
+        str(ROOT),
+    ]
     if env.get("PYTHONPATH"):
         roots.append(env["PYTHONPATH"])
     env["PYTHONPATH"] = os.pathsep.join(roots)

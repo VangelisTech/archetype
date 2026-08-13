@@ -144,12 +144,12 @@ See [Audit Log](audit-log.md).
 
 ## Source Reference
 
-- Runtime adapter: `src/archetype/runtime/`
-- Actor-aware transport: `src/archetype/api/`
-- Governed dispatcher and durable scheduler: `src/archetype/commands/`
-- Managed simulation: `src/archetype/world/simulation.py`
-- Durable world reads: `src/archetype/world/query.py`
-- World mutation adapters: `src/archetype/world/mutation.py`
-- Instance-owned RBAC and quotas: `src/archetype/commands/policy.py`
-- Querier: `src/archetype/core/aio/async_querier.py`
-- Updater: `src/archetype/core/aio/async_updater.py`
+- Runtime adapter: `packages/archetype-ecs/src/archetype/runtime/`
+- Actor-aware transport: `packages/archetype-ecs/src/archetype/api/`
+- Governed dispatcher and durable scheduler: `packages/archetype-ecs/src/archetype/commands/`
+- Managed simulation: `packages/archetype-ecs/src/archetype/world/simulation.py`
+- Durable world reads: `packages/archetype-ecs/src/archetype/world/query.py`
+- World mutation adapters: `packages/archetype-ecs/src/archetype/world/mutation.py`
+- Instance-owned RBAC and quotas: `packages/archetype-ecs/src/archetype/commands/policy.py`
+- Querier: `packages/archetype-ecs/src/archetype/core/aio/async_querier.py`
+- Updater: `packages/archetype-ecs/src/archetype/core/aio/async_updater.py`

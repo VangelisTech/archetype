@@ -3,7 +3,7 @@ owner = "api"
 
 [[legacy]]
 rule = "raw_exception_logging"
-path = "src/archetype/api/errors.py"
+path = "packages/archetype-ecs/src/archetype/api/errors.py"
 qualified_scope = "archetype.api.errors.raise_api_error"
 target = "log:exception:'Unhandled API exception':exception"
 owner = "api"

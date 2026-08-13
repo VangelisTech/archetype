@@ -33,7 +33,6 @@ from typing import Any
 import pytest
 
 from archetype import ArchetypeRuntime
-from archetype import wiring as wiring_module
 from archetype.core.config import StorageConfig
 from archetype.errors import RuntimeShutdownError
 from archetype.missions import (
@@ -46,6 +45,7 @@ from archetype.missions import (
     TaskState,
     ValidationResult,
 )
+from archetype.missions import _extension as missions_extension
 from archetype.missions.activities import AuthorExecutionObservation, AuthorRecovered
 from archetype.missions.coding_agents.contracts import (
     AgentExecutionResult,
@@ -703,7 +703,7 @@ async def test_replacement_runtime_recovers_cancelled_mission_without_provider_r
 
     clock = [0.0]
     monkeypatch.setattr(
-        wiring_module,
+        missions_extension,
         "SqliteActivityCatalog",
         lambda path: SqliteActivityCatalog(path, now_seconds=lambda: clock[0]),
     )
@@ -737,12 +737,12 @@ async def test_replacement_runtime_recovers_cancelled_mission_without_provider_r
     # run a second time for the author Activity.
     clock[0] = 301.0
     monkeypatch.setattr(
-        wiring_module,
+        missions_extension,
         "ModalMissionAuthorExecutor",
         lambda **kwargs: author,
     )
     monkeypatch.setattr(
-        wiring_module,
+        missions_extension,
         "ModalMissionCriticExecutor",
         lambda **kwargs: critic,
     )

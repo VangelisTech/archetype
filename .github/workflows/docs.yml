@@ -9,7 +9,7 @@ on:
       - "mkdocs.yml"
       - "scripts/**"
       # The generated Python, CLI, and REST references derive from source.
-      - "src/archetype/**"
+      - "packages/*/src/archetype/**"
       - ".github/workflows/docs.yml"
   pull_request:
     branches: [main]
@@ -95,7 +95,7 @@ jobs:
           cache-dependency-glob: "uv.lock"
 
       - name: Install dependencies
-        run: uv sync --extra docs
+        run: uv sync --all-packages --all-extras --group docs
 
       - name: Build docs site
         run: make docs

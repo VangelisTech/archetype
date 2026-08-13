@@ -209,4 +209,4 @@ When you add or remove components from an entity, it migrates to a different arc
 
 ## Source Reference
 
-The archetype system is defined in `src/archetype/core/archetype.py`.
+The archetype system is defined in `packages/archetype-ecs/src/archetype/core/archetype.py`.

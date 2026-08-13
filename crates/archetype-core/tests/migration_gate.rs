@@ -562,7 +562,7 @@ async fn contract4_despawn_tombstone_at_current_tick_active_only_excludes_it() {
 // Contract 5: update / overlay semantics
 //
 // Python reference: AsyncWorld.update_entity overlays values without changing
-//   archetype/table identity (src/archetype/core/aio/async_world.py).
+//   archetype/table identity (packages/archetype-ecs/src/archetype/core/aio/async_world.py).
 //
 // Status: NOT IMPLEMENTED in the Rust kernel.
 //   The Rust WorldState has no `update_entity` or equivalent overlay

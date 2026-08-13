@@ -719,7 +719,7 @@ class TestQueryRoutes:
 
 
 def test_route_modules_do_not_import_forbidden_services():
-    route_dir = __import__("pathlib").Path("src/archetype/api/routes")
+    route_dir = __import__("pathlib").Path("packages/archetype-ecs/src/archetype/api/routes")
     forbidden = (
         "archetype.app.world.mutation",
         "archetype.app.world.simulation",

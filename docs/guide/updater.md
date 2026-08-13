@@ -126,4 +126,4 @@ df = await world.update(df, sig, run_config)
 
 ## Source Reference
 
-The updater is defined in `src/archetype/core/aio/async_updater.py`.
+The updater is defined in `packages/archetype-ecs/src/archetype/core/aio/async_updater.py`.

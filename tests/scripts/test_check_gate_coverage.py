@@ -35,3 +35,12 @@ def test_error_taxonomy_governs_registered_family_exceptions() -> None:
         "archetype.missions.sandboxes._subprocess._JoinTimeout",
     }
     assert checker.check_error_taxonomy() == []
+
+
+def test_full_composition_discovers_every_first_party_world_library() -> None:
+    checker._configure_source_paths()
+
+    registry, installed = checker._composed_registry()
+
+    assert installed == checker.EXPECTED_WORLD_LIBRARIES
+    assert len(registry.specs) == 46

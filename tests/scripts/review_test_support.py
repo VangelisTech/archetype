@@ -153,7 +153,7 @@ def design_finding(**overrides: Any) -> dict[str, Any]:
         "line": 1,
         "repository_evidence": [
             {
-                "path": "src/archetype/storage/service.py",
+                "path": "packages/archetype-ecs/src/archetype/storage/service.py",
                 "symbol": "StorageService",
                 "explanation": (
                     "The comparable family uses the concrete service directly until a "

@@ -1,5 +1,10 @@
-version = 3
-source_root = "src"
+version = 4
+source_roots = [
+  "packages/archetype-ecs/src",
+  "packages/archetype-missions/src",
+  "packages/archetype-physical-ai/src",
+  "packages/archetype-research/src",
+]
 
 [concrete_services]
 types = [
@@ -17,6 +22,9 @@ types = [
 ]
 composition_roots = [
   "archetype.wiring",
+  "archetype.missions._extension",
+  "archetype.physical_ai._extension",
+  "archetype.research._extension",
 ]
 
 [top_level_family_policy]
@@ -39,8 +47,51 @@ reserved_infrastructure = [
   "archetype.runtime",
   "archetype.runtime_resources",
   "archetype.wiring",
+  "archetype.world_libraries",
 ]
 common_family_imports = ["archetype.errors"]
+
+[world_library_policy]
+families = [
+  "archetype.missions",
+  "archetype.physical_ai",
+  "archetype.research",
+]
+
+[[world_library_adapter]]
+module = "archetype.missions._extension"
+family = "archetype.missions"
+role = "composition"
+
+[[world_library_adapter]]
+module = "archetype.missions.runtime"
+family = "archetype.missions"
+role = "runtime"
+
+[[world_library_adapter]]
+module = "archetype.missions.api"
+family = "archetype.missions"
+role = "api"
+
+[[world_library_adapter]]
+module = "archetype.physical_ai._extension"
+family = "archetype.physical_ai"
+role = "composition"
+
+[[world_library_adapter]]
+module = "archetype.physical_ai.runtime"
+family = "archetype.physical_ai"
+role = "runtime"
+
+[[world_library_adapter]]
+module = "archetype.research._extension"
+family = "archetype.research"
+role = "composition"
+
+[[world_library_adapter]]
+module = "archetype.research.runtime"
+family = "archetype.research"
+role = "runtime"
 
 # Every first-party top-level package or module is classified above or
 # registered as a domain family in quality/architecture.d/<family>.toml.

@@ -163,5 +163,5 @@ See [Execution Hierarchy](execution-hierarchy.md).
 
 ## Source Reference
 
-- RunConfig, WorldConfig, StorageConfig, CacheConfig: `src/archetype/core/config.py`
-- EpisodeConfig, RolloutConfig: `src/archetype/world/models.py`
+- RunConfig, WorldConfig, StorageConfig, CacheConfig: `packages/archetype-ecs/src/archetype/core/config.py`
+- EpisodeConfig, RolloutConfig: `packages/archetype-ecs/src/archetype/world/models.py`

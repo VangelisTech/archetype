@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 
 _REPOSITORY_ROOT = Path(__file__).parents[2]
-_SOURCE_ROOT = _REPOSITORY_ROOT / "src" / "archetype"
+_SOURCE_ROOT = _REPOSITORY_ROOT / "packages" / "archetype-ecs" / "src" / "archetype"
 _DELETED_PATHS = (
     "app/application",
     "app/container.py",
@@ -107,6 +107,7 @@ def _current_guidance_files(root: Path) -> tuple[Path, ...]:
     paths.update((root / ".claude" / "skills").rglob("SKILL.md"))
     paths.update((root / ".claude" / "agents").glob("*.md"))
     paths.add(root / "src" / "archetype" / "__init__.py")
+    paths.add(root / "packages" / "archetype-ecs" / "src" / "archetype" / "__init__.py")
     return tuple(sorted(path for path in paths if path.is_file()))
 
 

@@ -1,12 +1,12 @@
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.9.2
+    rev: v0.15.10
     hooks:
       - id: ruff
         args: ["--fix"]
-        files: "^(src|tests|evals|bench|scripts|quality|experiments|examples)/.*\\.py$"
+        files: "^(packages|tests|evals|bench|scripts|quality|experiments|examples)/.*\\.py$"
       - id: ruff-format
-        files: "^(src|tests|evals|bench|scripts|quality|experiments|examples)/.*\\.py$"
+        files: "^(packages|tests|evals|bench|scripts|quality|experiments|examples)/.*\\.py$"
 
   - repo: https://github.com/astral-sh/ty-pre-commit
     rev: v0.0.48
@@ -14,8 +14,9 @@ repos:
       - id: ty
         # Scope is controlled by [tool.ty.src] in pyproject.toml (ty follows
         # imports from the project root, not pre-commit's file list), so run a
-        # full configured check rather than per-file. Trigger on src/ + config.
-        files: '^(src/.*\.py|pyproject\.toml)$'
+        # full configured check rather than per-file. Trigger on any package
+        # source or workspace/package configuration change.
+        files: '^(packages/[^/]+/src/.*\.py|(packages/[^/]+/)?pyproject\.toml)$'
         pass_filenames: false
 
   - repo: local
@@ -30,14 +31,14 @@ repos:
         name: Check Apache 2.0 license headers
         entry: python3 scripts/check_license_headers.py
         language: system
-        files: '^src/.*\.py$'
+        files: '^packages/[^/]+/src/.*\.py$'
         pass_filenames: true
 
       - id: lazy-audit
         name: Lazy-evaluation audit (.collect / .to_pylist gating)
         entry: uv run python scripts/check_lazy_audit.py
         language: system
-        files: '^src/.*\.py$|^lazy_audit\.toml$'
+        files: '^packages/[^/]+/src/.*\.py$|^lazy_audit\.toml$'
         pass_filenames: false
 
   - repo: https://github.com/pre-commit/pre-commit-hooks

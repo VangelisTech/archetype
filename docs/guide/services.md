@@ -193,15 +193,15 @@ The CLI remains an HTTP client.
 
 ## Source reference
 
-- composition root: `src/archetype/wiring.py`
-- process lifetime: `src/archetype/runtime_resources.py`
-- trusted runtime: `src/archetype/runtime/`
-- actor-aware transport: `src/archetype/api/`
-- governed and durable commands: `src/archetype/commands/`
-- world family: `src/archetype/world/`
-- physical storage family: `src/archetype/storage/`
-- artifact values, pipeline, scanners, views, and handlers: `src/archetype/artifacts/`
-- evaluation values, grading, pinned views, handlers, and receipt schema: `src/archetype/evaluation/`
-- research values, ledger, views, admission, and handler: `src/archetype/research/`
-- physical-AI models, state, views, and handlers: `src/archetype/physical_ai/`
-- command/access audit projection: `src/archetype/commands/audit.py`
+- composition root: `packages/archetype-ecs/src/archetype/wiring.py`
+- process lifetime: `packages/archetype-ecs/src/archetype/runtime_resources.py`
+- trusted runtime: `packages/archetype-ecs/src/archetype/runtime/`
+- actor-aware transport: `packages/archetype-ecs/src/archetype/api/`
+- governed and durable commands: `packages/archetype-ecs/src/archetype/commands/`
+- world family: `packages/archetype-ecs/src/archetype/world/`
+- physical storage family: `packages/archetype-ecs/src/archetype/storage/`
+- artifact values, pipeline, scanners, views, and handlers: `packages/archetype-ecs/src/archetype/artifacts/`
+- evaluation values, grading, pinned views, handlers, and receipt schema: `packages/archetype-ecs/src/archetype/evaluation/`
+- research values, ledger, views, admission, and handler: `packages/archetype-research/src/archetype/research/`
+- physical-AI models, state, views, and handlers: `packages/archetype-physical-ai/src/archetype/physical_ai/`
+- command/access audit projection: `packages/archetype-ecs/src/archetype/commands/audit.py`

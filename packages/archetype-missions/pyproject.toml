@@ -1,0 +1,46 @@
+[project]
+name = "archetype-missions"
+version = "0.6.0"
+description = "Coding-agent missions, sandboxes, transcripts, and trajectories for Archetype."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Vangelis Technologies Inc.", email = "everett@vangelis.tech" },
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+dependencies = [
+    "archetype-ecs>=0.6,<0.7",
+    "daft>=0.7.19",
+    "pydantic>=2.0",
+    "fastapi>=0.110",
+    "uuid-utils>=0.11.0",
+]
+
+[project.optional-dependencies]
+modal = ["modal==1.5.2"]
+
+[project.entry-points."archetype.world_libraries"]
+missions = "archetype.missions._extension:get_manifest"
+
+[build-system]
+requires = ["setuptools>=83.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["archetype.missions*"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"archetype.missions.sandboxes" = ["versions.toml"]

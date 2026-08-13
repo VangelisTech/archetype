@@ -30,7 +30,7 @@ rationale = "Family-owned free handlers and views have no approved direct signal
 
 [[legacy]]
 rule = "raw_exception_logging"
-path = "src/archetype/research/handlers.py"
+path = "packages/archetype-research/src/archetype/research/handlers.py"
 qualified_scope = "archetype.research.handlers._run_autoresearch"
 target = "log:exception:'failed to persist autoresearch crash transition for %s':exception"
 owner = "research"

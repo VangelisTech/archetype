@@ -27,12 +27,6 @@ from archetype.api.deps import get_dispatcher
 from archetype.artifacts.models import ArtifactSource, IngestArtifacts, QueryArtifacts
 from archetype.commands.models import AccessSummary, ActorCtx, DeferredItem, DurableOptions
 from archetype.core.config import StorageConfig
-from archetype.episodes.models import (
-    GradeTrajectory,
-    IngestClaudeTranscript,
-    QueryTrajectory,
-    QueryTranscriptRows,
-)
 from archetype.errors import RuntimeShutdownError
 from archetype.evaluation.contracts import GraderContract
 from archetype.evaluation.models import Evaluate, RunGraders
@@ -46,6 +40,12 @@ from archetype.missions.contracts import (
 from archetype.missions.models import RestoreMissionSandbox, RunMission, SubmitMission
 from archetype.missions.sandboxes import CheckpointRef
 from archetype.missions.trajectories import ClaudeTranscriptSource, TrajectorySelection
+from archetype.missions.trajectories.models import (
+    GradeTrajectory,
+    IngestClaudeTranscript,
+    QueryTrajectory,
+    QueryTranscriptRows,
+)
 from archetype.physical_ai.models import (
     HostedEpisodeRequest,
     ModalHostedEpisodeConfig,

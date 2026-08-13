@@ -8,61 +8,205 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from scripts.release_artifact import DISTRIBUTIONS, _distribution_files, record
 from scripts.release_artifact import SCHEMA as ARTIFACT_SCHEMA
 from scripts.release_artifact import verify as verify_artifact
-from scripts.verify_release_evidence import RESULT_SCHEMA, verify
+from scripts.verify_release_evidence import RESULT_SCHEMA, SUMMARY_SCHEMA, verify
+
+_PREFIXES = {
+    "archetype-ecs": "archetype_ecs",
+    "archetype-missions": "archetype_missions",
+    "archetype-physical-ai": "archetype_physical_ai",
+    "archetype-research": "archetype_research",
+}
 
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _artifact(tmp_path: Path) -> tuple[Path, Path, str]:
+def _artifact(tmp_path: Path) -> tuple[Path, Path, dict[str, dict[str, str]]]:
     dist = tmp_path / "dist"
     dist.mkdir()
-    wheel = dist / "archetype.whl"
-    sdist = dist / "archetype.tar.gz"
-    wheel.write_bytes(b"wheel")
-    sdist.write_bytes(b"sdist")
+    wheel_records: dict[str, dict[str, str]] = {}
+    records: list[dict[str, Any]] = []
+    for distribution in DISTRIBUTIONS:
+        prefix = _PREFIXES[distribution]
+        wheel = dist / f"{prefix}-0.6.0-py3-none-any.whl"
+        sdist = dist / f"{prefix}-0.6.0.tar.gz"
+        wheel.write_bytes(f"wheel:{distribution}".encode())
+        sdist.write_bytes(f"sdist:{distribution}".encode())
+        for kind, path in (("wheel", wheel), ("sdist", sdist)):
+            records.append(
+                {
+                    "distribution": distribution,
+                    "kind": kind,
+                    "name": path.name,
+                    "sha256": _sha256(path),
+                    "size_bytes": path.stat().st_size,
+                }
+            )
+        wheel_records[distribution] = {
+            "filename": wheel.name,
+            "digest": f"sha256:{_sha256(wheel)}",
+        }
     manifest = {
         "schema": ARTIFACT_SCHEMA,
         "commit": "a" * 40,
         "clean_checkout": True,
-        "artifacts": [
-            {
-                "kind": "wheel",
-                "name": wheel.name,
-                "sha256": _sha256(wheel),
-                "size_bytes": wheel.stat().st_size,
-            },
-            {
-                "kind": "sdist",
-                "name": sdist.name,
-                "sha256": _sha256(sdist),
-                "size_bytes": sdist.stat().st_size,
-            },
-        ],
+        "artifacts": records,
     }
     path = tmp_path / "release-artifact.json"
     path.write_text(json.dumps(manifest), encoding="utf-8")
-    return dist, path, f"sha256:{_sha256(wheel)}"
+    return dist, path, wheel_records
 
 
-def test_release_artifact_verification_rejects_changed_bytes(tmp_path: Path) -> None:
-    dist, manifest_path, _digest_value = _artifact(tmp_path)
+def _registry(tmp_path: Path, *scenarios: str) -> Path:
+    registry = tmp_path / "scenarios.toml"
+    registry.write_text(
+        "\n".join(
+            f'[[scenario]]\nid = "{scenario}"\nrequired_cadence = ["release"]\n'
+            for scenario in scenarios
+        ),
+        encoding="utf-8",
+    )
+    return registry
+
+
+def _receipt(
+    path: Path,
+    scenario: str,
+    wheels: dict[str, dict[str, str]],
+    *,
+    include_matrix: bool = False,
+) -> None:
+    framework = wheels["archetype-ecs"]
+    wheel: dict[str, Any] = {
+        "filename": framework["filename"],
+        "digest": framework["digest"],
+    }
+    if include_matrix:
+        wheel["artifacts"] = [
+            {"distribution": distribution, **wheels[distribution]} for distribution in DISTRIBUTIONS
+        ]
+    path.write_text(
+        json.dumps(
+            {
+                "schema": RESULT_SCHEMA,
+                "profile": "release:wheel:tier-0-6",
+                "mode": "wheel",
+                "outcome": "passed",
+                "revision": "a" * 40,
+                "clean_checkout": True,
+                "wheel": wheel,
+                "cleanup": {"status": "closed"},
+                "results": [{"scenario": scenario, "status": "passed"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_release_artifact_verification_accepts_exact_four_distribution_matrix(
+    tmp_path: Path,
+) -> None:
+    dist, manifest_path, _wheels = _artifact(tmp_path)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    verify_artifact(manifest, dist, expected_commit="a" * 40)
 
-    (dist / "archetype.whl").write_bytes(b"other")
-    with pytest.raises(ValueError, match="mismatch"):
+    assert len(_distribution_files(dist)) == 8
+    assert verify_artifact(manifest, dist, expected_commit="a" * 40) is manifest
+
+
+@pytest.mark.parametrize("extra_kind", ["wheel", "sdist"])
+def test_release_artifact_verification_rejects_extra_artifact(
+    tmp_path: Path,
+    extra_kind: str,
+) -> None:
+    dist, manifest_path, _wheels = _artifact(tmp_path)
+    suffix = ".whl" if extra_kind == "wheel" else ".tar.gz"
+    (dist / f"unrelated-1.0{suffix}").write_bytes(b"extra")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    with pytest.raises(RuntimeError, match="unexpected distribution artifacts"):
         verify_artifact(manifest, dist, expected_commit="a" * 40)
 
 
+def test_release_artifact_verification_rejects_missing_distribution_kind(
+    tmp_path: Path,
+) -> None:
+    dist, manifest_path, _wheels = _artifact(tmp_path)
+    (dist / "archetype_research-0.6.0.tar.gz").unlink()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    with pytest.raises(RuntimeError, match="exactly one archetype-research sdist"):
+        verify_artifact(manifest, dist, expected_commit="a" * 40)
+
+
+def test_release_artifact_verification_rejects_changed_bytes(tmp_path: Path) -> None:
+    dist, manifest_path, _wheels = _artifact(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    verify_artifact(manifest, dist, expected_commit="a" * 40)
+
+    (dist / "archetype_missions-0.6.0-py3-none-any.whl").write_bytes(b"other")
+    with pytest.raises(ValueError, match="archetype-missions wheel sha256 mismatch"):
+        verify_artifact(manifest, dist, expected_commit="a" * 40)
+
+
+def test_release_artifact_verification_rejects_duplicate_manifest_coordinate(
+    tmp_path: Path,
+) -> None:
+    dist, manifest_path, _wheels = _artifact(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifacts"][-1] = dict(manifest["artifacts"][0])
+
+    with pytest.raises(ValueError, match="invalid or duplicate.*coordinate"):
+        verify_artifact(manifest, dist, expected_commit="a" * 40)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        pytest.param("name", "../wheel.whl", id="filename"),
+        ("sha256", "not-a-digest"),
+        ("size_bytes", -1),
+    ],
+)
+def test_release_artifact_verification_rejects_malformed_record_fields(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    dist, manifest_path, _wheels = _artifact(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifacts"][0][field] = value
+
+    expected_label = "filename" if field == "name" else field
+    with pytest.raises(ValueError, match=f"invalid {expected_label}"):
+        verify_artifact(manifest, dist, expected_commit="a" * 40)
+
+
+def test_release_artifact_record_emits_distribution_coordinates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dist, _manifest_path, _wheels = _artifact(tmp_path)
+    values = iter(("", "a" * 40))
+    monkeypatch.setattr("scripts.release_artifact._git", lambda *args: next(values))
+
+    manifest = record(tmp_path, dist)
+
+    assert manifest["schema"] == ARTIFACT_SCHEMA
+    assert [(artifact["distribution"], artifact["kind"]) for artifact in manifest["artifacts"]] == [
+        (distribution, kind) for distribution in DISTRIBUTIONS for kind in ("wheel", "sdist")
+    ]
+
+
 def test_release_artifact_verification_requires_clean_build(tmp_path: Path) -> None:
-    dist, manifest_path, _digest_value = _artifact(tmp_path)
+    dist, manifest_path, _wheels = _artifact(tmp_path)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
     manifest["clean_checkout"] = False
@@ -87,7 +231,7 @@ def test_release_artifact_verification_requires_exact_checkout_commit(
     tmp_path: Path,
     commit: object,
 ) -> None:
-    dist, manifest_path, _digest_value = _artifact(tmp_path)
+    dist, manifest_path, _wheels = _artifact(tmp_path)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if commit is None:
         manifest.pop("commit")
@@ -98,117 +242,83 @@ def test_release_artifact_verification_requires_exact_checkout_commit(
         verify_artifact(manifest, dist, expected_commit="a" * 40)
 
 
-def test_release_evidence_requires_every_scenario_on_exact_wheel(tmp_path: Path) -> None:
-    _dist, manifest_path, wheel_digest = _artifact(tmp_path)
-    registry = tmp_path / "scenarios.toml"
-    registry.write_text(
-        """
-[[scenario]]
-id = "one"
-required_cadence = ["release"]
-
-[[scenario]]
-id = "two"
-required_cadence = ["release"]
-""",
-        encoding="utf-8",
-    )
-
-    def receipt(path: Path, scenario: str) -> None:
-        path.write_text(
-            json.dumps(
-                {
-                    "schema": RESULT_SCHEMA,
-                    "profile": "release:wheel:tier-0-6",
-                    "mode": "wheel",
-                    "outcome": "passed",
-                    "revision": "a" * 40,
-                    "clean_checkout": True,
-                    "wheel": {"digest": wheel_digest},
-                    "cleanup": {"status": "closed"},
-                    "results": [{"scenario": scenario, "status": "passed"}],
-                }
-            ),
-            encoding="utf-8",
-        )
-
+def test_release_evidence_requires_every_scenario_on_framework_wheel(tmp_path: Path) -> None:
+    _dist, manifest_path, wheels = _artifact(tmp_path)
+    registry = _registry(tmp_path, "one", "two")
     first = tmp_path / "first.json"
     second = tmp_path / "second.json"
-    receipt(first, "one")
+    _receipt(first, "one", wheels)
+
     with pytest.raises(ValueError, match="missing required scenario.*two"):
         verify(registry=registry, manifest_path=manifest_path, receipt_paths=[first])
 
-    receipt(second, "two")
+    _receipt(second, "two", wheels)
     summary = verify(
         registry=registry,
         manifest_path=manifest_path,
         receipt_paths=[first, second],
     )
+    assert summary["schema"] == SUMMARY_SCHEMA
     assert summary["passed_scenarios"] == 2
+    assert summary["framework_wheel_sha256"] == wheels["archetype-ecs"]["digest"].split(":")[1]
+    assert len(summary["wheel_artifacts"]) == 4
 
 
-def test_release_evidence_rejects_another_wheel_digest(tmp_path: Path) -> None:
-    _dist, manifest_path, _wheel_digest = _artifact(tmp_path)
-    registry = tmp_path / "scenarios.toml"
-    registry.write_text(
-        '[[scenario]]\nid = "one"\nrequired_cadence = ["release"]\n',
-        encoding="utf-8",
-    )
+def test_release_evidence_verifies_optional_exact_wheel_artifact_set(tmp_path: Path) -> None:
+    _dist, manifest_path, wheels = _artifact(tmp_path)
+    registry = _registry(tmp_path, "one")
     receipt = tmp_path / "receipt.json"
-    receipt.write_text(
-        json.dumps(
-            {
-                "schema": RESULT_SCHEMA,
-                "profile": "release:wheel:tier-0-6",
-                "mode": "wheel",
-                "outcome": "passed",
-                "revision": "a" * 40,
-                "clean_checkout": True,
-                "wheel": {"digest": "b" * 64},
-                "cleanup": {"status": "closed"},
-                "results": [{"scenario": "one", "status": "passed"}],
-            }
-        ),
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="release wheel digest"):
+    _receipt(receipt, "one", wheels, include_matrix=True)
+
+    summary = verify(registry=registry, manifest_path=manifest_path, receipt_paths=[receipt])
+
+    assert summary["receipts_with_artifact_matrix"] == 1
+
+
+@pytest.mark.parametrize("field", ["filename", "digest"])
+def test_release_evidence_rejects_mismatched_wheel_artifact_set(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    _dist, manifest_path, wheels = _artifact(tmp_path)
+    registry = _registry(tmp_path, "one")
+    receipt = tmp_path / "receipt.json"
+    _receipt(receipt, "one", wheels, include_matrix=True)
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    payload["wheel"]["artifacts"][1][field] = "wrong"
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="artifact set does not match release manifest digests"):
+        verify(registry=registry, manifest_path=manifest_path, receipt_paths=[receipt])
+
+
+def test_release_evidence_rejects_another_framework_wheel_digest(tmp_path: Path) -> None:
+    _dist, manifest_path, wheels = _artifact(tmp_path)
+    registry = _registry(tmp_path, "one")
+    receipt = tmp_path / "receipt.json"
+    _receipt(receipt, "one", wheels)
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    payload["wheel"]["digest"] = "sha256:" + "b" * 64
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="archetype-ecs release wheel digest"):
         verify(registry=registry, manifest_path=manifest_path, receipt_paths=[receipt])
 
 
 def test_release_evidence_rejects_non_release_or_duplicate_receipts(tmp_path: Path) -> None:
-    _dist, manifest_path, wheel_digest = _artifact(tmp_path)
-    registry = tmp_path / "scenarios.toml"
-    registry.write_text(
-        '[[scenario]]\nid = "one"\nrequired_cadence = ["release"]\n',
-        encoding="utf-8",
-    )
-
-    def receipt(path: Path, profile: str) -> None:
-        path.write_text(
-            json.dumps(
-                {
-                    "schema": RESULT_SCHEMA,
-                    "profile": profile,
-                    "mode": "wheel",
-                    "outcome": "passed",
-                    "revision": "a" * 40,
-                    "clean_checkout": True,
-                    "wheel": {"digest": wheel_digest},
-                    "cleanup": {"status": "closed"},
-                    "results": [{"scenario": "one", "status": "passed"}],
-                }
-            ),
-            encoding="utf-8",
-        )
-
+    _dist, manifest_path, wheels = _artifact(tmp_path)
+    registry = _registry(tmp_path, "one")
     first = tmp_path / "first.json"
     second = tmp_path / "second.json"
-    receipt(first, "pr:wheel:tier-0-6")
+    _receipt(first, "one", wheels)
+    payload = json.loads(first.read_text(encoding="utf-8"))
+    payload["profile"] = "pr:wheel:tier-0-6"
+    first.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ValueError, match="not release-cadence"):
         verify(registry=registry, manifest_path=manifest_path, receipt_paths=[first])
 
-    receipt(first, "release:wheel:tier-0-6")
-    receipt(second, "release:wheel:tier-0-6")
+    _receipt(first, "one", wheels)
+    _receipt(second, "one", wheels)
     with pytest.raises(ValueError, match="duplicates release scenario"):
         verify(
             registry=registry,

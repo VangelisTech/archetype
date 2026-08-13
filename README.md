@@ -4,10 +4,10 @@
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://python.org)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
-Archetype is a dataframe-first ECS runtime for simulations and agent workflows.
-Define state with components, transform populations with processors, and keep
-each tick as queryable history. Use a fork to continue from an earlier state
-without overwriting the original run.
+Archetype is a dataframe-first ECS framework for simulations and agent
+workflows. Define state with components, transform populations with processors,
+and keep each tick as queryable history. Use a fork to continue from an earlier
+state without overwriting the original run.
 
 It is built on [Daft](https://www.daft.ai/) and Iceberg/LanceDB. The default Python
 entry point is `ArchetypeRuntime`; HTTP services and the CLI use the same
@@ -15,11 +15,38 @@ command layer when you need a multi-user host.
 
 ## Install
 
+Install only the generic ECS framework for simulations, storage, evaluation,
+the runtime, API, and CLI:
+
 ```bash
-pip install archetype-ecs
+uv add archetype-ecs
 ```
 
+World libraries are separate distributions that preserve their
+`archetype.<family>` imports. Installing one also installs a compatible
+`archetype-ecs`:
+
+```bash
+uv add archetype-missions
+uv add archetype-physical-ai
+uv add archetype-research
+```
+
+Install all three first-party libraries through the framework convenience
+extra:
+
+```bash
+uv add "archetype-ecs[all]"
+```
+
+The same package specifiers work with `pip install`. Selective framework extras
+are also available as `missions`, `physical-ai`, and `research`, for example
+`uv add "archetype-ecs[missions,research]"`. Installed libraries are discovered
+when an `ArchetypeRuntime` or API host is composed; the base framework starts
+with none installed.
+
 For a checkout, install the development environment with `make sync-dev`.
+The repository is one uv workspace containing all four distributions.
 
 ## Run a simulation
 
@@ -122,14 +149,16 @@ runtime:` and omit `await`.
 - Forks inherit source history and create an independent future.
 - Agents are entities: an LLM call is one more columnar processor writing to
   the same history.
-- Agent Missions turns repository work into a typed task graph whose
-  transitions are gated by the repository's own validators.
+- The optional Agent Missions library turns repository work into a typed task
+  graph whose transitions are gated by the repository's own validators.
 - The service layer can authorize and audit mutations before a tick applies
   them.
 
 ## Documentation
 
 Start with the [quickstart](https://archetype.vangelis.tech/docs/guide/quickstart/),
+then read [World Libraries](https://archetype.vangelis.tech/docs/guide/world-libraries/)
+to choose an installation,
 then use the guides for [components](https://archetype.vangelis.tech/docs/guide/components/),
 [processors](https://archetype.vangelis.tech/docs/guide/processors/), and
 [worlds](https://archetype.vangelis.tech/docs/guide/working-with-worlds/).
@@ -149,7 +178,7 @@ uv run python examples/02_fork_counterfactual.py
 uv run python examples/03_time_travel.py
 uv run python examples/04_messaging.py
 uv run python examples/07_hooks.py
-uv run --extra coding-agent python examples/11_coding_agent_mission.py --dry-run
+uv run python examples/11_coding_agent_mission.py --dry-run
 ```
 
 `examples/05_llm_agents.py` and parts of `examples/06_trajectory_analysis.py`

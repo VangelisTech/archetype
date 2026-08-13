@@ -32,7 +32,7 @@ The actual problem: `WorldService` accumulated cross-cutting concerns (broker, r
 
 ## Proposed structure
 
-### Service interfaces (new file: `src/archetype/app/interfaces.py`)
+### Service interfaces (new file: `packages/archetype-ecs/src/archetype/app/interfaces.py`)
 
 ```python
 class iStorageService(Protocol):
@@ -301,7 +301,7 @@ After step 9, `world_service.py` is ~80 lines, every service has a Protocol, con
 
 ### What ships with this PR
 
-- Add `src/archetype/app/interfaces.py` containing the Protocols above.
+- Add `packages/archetype-ecs/src/archetype/app/interfaces.py` containing the Protocols above.
   Capture the *current* contracts, not aspirational ones. Existing concretes
   satisfy them structurally.
 - Type the container slots to interfaces (cosmetic in this PR; foundational
@@ -401,7 +401,7 @@ sliced off with a typed boundary on either side.
 
 2. **Should `WorldCreationHook` get the storage_config too?** Registry needs it. Choice: (a) closure capture, (b) `Callable[[iWorld, StorageConfig], Awaitable[None]]`. Pick (b) — explicit beats closure magic.
 
-3. **Where does `AuthGuard` live?** New file `src/archetype/app/auth/guard.py` already exists with `guardrail_allow`. Wrap it in a class implementing `iAuthGuard`.
+3. **Where does `AuthGuard` live?** New file `packages/archetype-ecs/src/archetype/app/auth/guard.py` already exists with `guardrail_allow`. Wrap it in a class implementing `iAuthGuard`.
 
 4. **`run_id` persistence in registry** (the bug we identified): falls naturally out of step 6 — `WorldRegistryService.attach_tick_sync_hook` writes both `tick` and `run_id`.
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import types
+from collections.abc import Iterable, Mapping
 from dataclasses import MISSING, dataclass, fields, is_dataclass
 from enum import Enum
 from importlib import import_module
@@ -332,13 +333,70 @@ COMPATIBILITY_CLASSES = frozenset(
 HIDDEN_SIGNATURES = frozenset({"RuntimeWorld", "SyncRuntimeWorld"})
 
 
+def _manifest_root_exports(
+    manifests: Iterable[object],
+    *,
+    framework_locations: Mapping[str, tuple[str, str]],
+) -> dict[str, tuple[str, str]]:
+    """Merge deterministic compatibility exports without weakening collisions."""
+
+    exports: dict[str, tuple[str, str]] = {}
+    owners: dict[str, str] = {}
+    for manifest in manifests:
+        library = str(getattr(manifest, "name", ""))
+        root_exports = getattr(manifest, "root_exports", None)
+        if not isinstance(root_exports, Mapping):
+            raise TypeError(f"world library {library!r} has no root-export mapping")
+        for name, target in root_exports.items():
+            if name in framework_locations:
+                raise RuntimeError(
+                    f"world library {library!r} root export {name!r} collides with the framework"
+                )
+            previous = owners.get(name)
+            if previous is not None:
+                raise RuntimeError(
+                    f"duplicate world-library root export {name!r} from "
+                    f"{previous!r} and {library!r}"
+                )
+            if not (
+                isinstance(name, str)
+                and isinstance(target, tuple)
+                and len(target) == 2
+                and all(isinstance(value, str) and value for value in target)
+            ):
+                raise TypeError(f"world library {library!r} has an invalid root-export location")
+            owners[name] = library
+            exports[name] = target
+    return exports
+
+
 def _validate_coverage() -> dict[str, tuple[str, str]]:
     """Return export locations after checking classification and alias coverage."""
     import archetype
+    from archetype.world_libraries import discover_world_libraries
+
+    framework_locations = dict(archetype._EXPORTS)
+    framework_exports = set(archetype.__all__)
+    if framework_exports != set(framework_locations):
+        raise RuntimeError("framework __all__ and _EXPORTS disagree")
+    manifests = discover_world_libraries(framework_version=archetype.__version__)
+    compatibility_locations = _manifest_root_exports(
+        manifests,
+        framework_locations=framework_locations,
+    )
+    compatibility_exports = set(compatibility_locations)
+    supplemental_collisions = sorted(
+        set(SUPPLEMENTAL) & (framework_exports | compatibility_exports)
+    )
+    if supplemental_collisions:
+        raise RuntimeError(
+            "supplemental locations collide with root exports: "
+            + ", ".join(supplemental_collisions)
+        )
 
     documented = {name for page in PAGES for name in page.names}
     top_level_documented = (documented - set(SUPPLEMENTAL)) | set(ALIASES)
-    actual = set(archetype.__all__)
+    actual = framework_exports | compatibility_exports
     missing = sorted(actual - top_level_documented)
     stale = sorted(top_level_documented - actual)
     duplicates = sorted(
@@ -356,7 +414,7 @@ def _validate_coverage() -> dict[str, tuple[str, str]]:
             problems.append(f"exports assigned more than once: {', '.join(duplicates)}")
         raise RuntimeError("; ".join(problems))
 
-    return {**archetype._EXPORTS, **SUPPLEMENTAL}
+    return {**framework_locations, **compatibility_locations, **SUPPLEMENTAL}
 
 
 def _type_name(annotation: object) -> str:
@@ -519,6 +577,11 @@ def _render_index() -> str:
             "on each reference page and the focused specifications classify its stability. "
             "Types exposed by supported "
             "signatures are part of those contracts even when they are not top-level exports.",
+            "",
+            "Installed world libraries may contribute Compatibility-tier root attributes through "
+            "their deterministic manifests. Those names remain deliberately absent from the "
+            "domain-free framework `archetype.__all__`; new code should import the owning "
+            "`archetype.<family>` module or its typed adapter explicitly.",
             "",
             "The container and concrete application services are internal and are not "
             "top-level exports. Repository wiring imports them from their owning family "

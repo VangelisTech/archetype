@@ -18,6 +18,7 @@ The current contract set is split across design docs and executable tests.
 | [Runtime](runtime.md) | Trusted script boundary | `ArchetypeRuntime`, `RuntimeWorld`, sync parity, exact-operation dispatch, and process lifetime. |
 | [Observability](observability.md) | Safe advisory signals | Vendor-neutral trace/metric vocabulary, bounded failure semantics, context, and process-host provider ownership. |
 | [Application Architecture](application-architecture.md) | Supported boundaries and dependency policy | Normative current ownership plus the accepted v0.5 target family DAG, composition, encapsulation, and lint inputs. |
+| [World Libraries](world-libraries.md) | Framework and distribution extension boundary | Separately installed library manifests, deterministic discovery, typed adapters, packaging compatibility, and release evidence. |
 | [Service Protocols](service-protocols.md) | Internal application ports | Active family interfaces composed by wiring and consumed by registered handlers. |
 | [Command Gate](command-gate.md) | Authorization and roles | Four-role model, permissions matrix, audit emission shape. |
 | [Execution Hierarchy](execution-hierarchy.md) | Step/run/episode/rollout | Simulation levels and rollout fork semantics. |
@@ -99,8 +100,9 @@ This specification covers:
 - typed external artifacts and dataset/evaluation identity
 - offline whole-storage identity migration and destination-only verification
 - typed coding-agent task graphs, committed dispatch, and validator-gated transitions
+- deterministic installation of compatible, separately distributed world libraries
 
-This specification does not authorize direct edits to `src/archetype/core/`.
+This specification does not authorize direct edits to `packages/archetype-ecs/src/archetype/core/`.
 It defines the behavior that higher layers must preserve and that future
 implementation work must satisfy.
 
@@ -139,8 +141,10 @@ outer consumers.
 
 The complete allowed service edges, composition rules, and public/internal
 classification are normative in
-[Application Architecture](application-architecture.md). Diagrams are
-explanatory views of those written rules.
+[Application Architecture](application-architecture.md). The separately
+released framework/library boundary is normative in
+[World Libraries](world-libraries.md). Diagrams are explanatory views of those
+written rules.
 
 Whole-storage migration is an administrative free workflow owned by
 `archetype.migration` over the declared lower storage and artifacts families.
@@ -857,7 +861,7 @@ These requirements apply to:
 - Any wrapper over the internal dispatcher and resource graph
 - Any re-export change that alters the default public API surface
 
-These requirements do not authorize changes to `src/archetype/core/`, which
+These requirements do not authorize changes to `packages/archetype-ecs/src/archetype/core/`, which
 remains read-only unless separately approved.
 
 ### Core Principle

@@ -8,7 +8,6 @@ consumer = "archetype.missions"
 allowed_families = [
   "archetype.activities",
   "archetype.artifacts",
-  "archetype.episodes",
   "archetype.evaluation",
   "archetype.graph",
   "archetype.projections",

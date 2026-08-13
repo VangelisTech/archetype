@@ -33,8 +33,8 @@ from archetype.artifacts.pipeline import (
     ARTIFACT_VIDEO,
 )
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
-from archetype.episodes.models import IngestClaudeTranscript, QueryTranscriptRows
 from archetype.missions.trajectories import CLAUDE_TRANSCRIPT_TABLE, ClaudeTranscriptSource
+from archetype.missions.trajectories.models import IngestClaudeTranscript, QueryTranscriptRows
 from archetype.storage.service import StorageService
 from archetype.world.models import CreateWorld, Step
 from tests._runtime import build_test_runtime

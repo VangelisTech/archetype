@@ -34,14 +34,17 @@ and `pr-gate.yml`).
 | Components, processors, pure DataFrame transforms, transition graphs, and reusable projections | `archetype.<family>` |
 | Supported family value contracts | `archetype.<family>.contracts` or another specifically named family module |
 | Capability-scoped resources and provider adapters implementing a family-owned protocol | A named subpackage of `archetype.<family>` |
-| Durable authority, cross-family orchestration, internal service ports, and concrete application services | `archetype.app.<family>` |
+| Generic durable authority and framework orchestration | The owning framework family under `packages/archetype-ecs/src/archetype/` |
+| Missions, Physical AI, or Research behavior | The owning world-library distribution under `packages/archetype-<library>/` |
+| A library's trusted framework composition adapter | Its private `archetype.<family>._extension` module only |
 | Transport and authentication | `archetype.api` |
 | Concrete composition and process lifetime | `archetype.wiring` and `archetype.runtime_resources` |
 
 Top-level domain families depend inward on core and only explicitly declared
-lower family contracts. They never import app, runtime, runtime-resources,
-wiring, API, or CLI packages; application authority may consume their
-contracts in the other direction.
+lower family contracts. Ordinary domain modules never import runtime,
+runtime-resources, wiring, API, or CLI packages. A world library depends on
+`archetype-ecs`, never on another world library; only its private extension
+adapter receives the reviewed framework composition context.
 Every first-party top-level package or module is classified explicitly, and the
 declared family graph must remain acyclic. Importing a root-facade name has the
 same architectural disposition as importing its owning module. Package
@@ -80,8 +83,8 @@ Every target below is a `.PHONY` rule. Run `make help` for the quick version.
 
 | Target | What it does | Purpose |
 |--------|-------------|---------|
-| `make sync` | `uv sync` | Install runtime deps only |
-| `make sync-dev` | `uv sync --group dev` | Install runtime + dev deps |
+| `make sync` | `uv sync --all-packages --all-extras` | Install all workspace distributions and runtime extras |
+| `make sync-dev` | the same workspace sync plus `--group dev` | Install workspace, runtime extras, and dev deps |
 | `make precommit-install` | `uv run pre-commit install` | Install git hooks |
 | `make precommit-run` | `uv run pre-commit run --all-files` | Run all hooks manually |
 
@@ -89,19 +92,19 @@ Every target below is a `.PHONY` rule. Run `make help` for the quick version.
 
 | Target | What it does | Purpose |
 |--------|-------------|---------|
-| `make format` | `uv run ruff format src tests` | Auto-format code (writes files) |
-| `make format-check` | `uv run ruff format --check src tests` | Check formatting (read-only) |
-| `make lint` | `uv run ruff check src tests` | Lint code (read-only) |
-| `make lint-fix` | `uv run ruff check src tests --fix` | Lint + auto-fix |
+| `make format` | `uv run ruff format` over package and harness roots | Auto-format code (writes files) |
+| `make format-check` | `uv run ruff format --check` over package and harness roots | Check formatting (read-only) |
+| `make lint` | architecture/static audits, then `ruff check` over package and harness roots | Lint and validate package boundaries (read-only) |
+| `make lint-fix` | `ruff check --fix` over package and harness roots | Lint + auto-fix |
 | `make check` | `format` + `lint` | Auto-format then lint (writes files) |
 
 ### Tests
 
 | Target | What it does | Purpose |
 |--------|-------------|---------|
-| `make test` | `PYTHONPATH=src uv run pytest -q` | Fast test run, no coverage |
-| `make test-cov` | `PYTHONPATH=src uv run pytest --cov --cov-branch --cov-fail-under=70` | Tests with 70% branch coverage gate |
-| `make test-all` | `PYTHONPATH=src uv run pytest -v --tb=short` | Verbose test run |
+| `make test` | `pytest -q -n auto` with all four package source roots | Fast test run, no coverage |
+| `make test-cov` | `pytest --cov --cov-branch --cov-fail-under=70` with all package roots | Tests with 70% branch coverage gate |
+| `make test-all` | `pytest -v --tb=short` with all package roots | Verbose test run |
 
 ### CI Gate
 
@@ -116,9 +119,9 @@ the same two targets as the required GitHub Actions jobs.
 
 | Target | Command | Purpose |
 |--------|---------|---------|
-| `make version` | reads `pyproject.toml` | Print current version |
+| `make version` | reads `packages/archetype-ecs/pyproject.toml` | Print current release-line version |
 | `make lock-check` | `uv lock --check` | Verify lockfile is in sync |
-| `make build` | `uv build` | Build sdist + wheel into `dist/` |
+| `make build` | `uv build --all-packages --no-sources` | Build all four sdists and wheels into `dist/` |
 | `make release-check` | `sync-dev` + `check` + `test-cov` + `lock-check` + `build` | Full pre-release validation |
 | `make publish-test` | `uv publish` to TestPyPI | Publish to TestPyPI |
 | `make publish` | `uv publish` to PyPI | Publish to PyPI |
@@ -159,7 +162,7 @@ workflows are preserved under `quality/quarantine/review-gate/`.
 
 ### `release.yml` (Release) — on `v*` tags
 
-Triggered by pushing a version tag (e.g. `git tag v0.5.0 && git push origin v0.5.0`).
+Triggered by pushing a version tag (e.g. `git tag v0.6.0 && git push origin v0.6.0`).
 
 Pipeline: `test` → `build` → `publish-testpypi` → `publish-pypi` → `github-release`
 
@@ -210,7 +213,7 @@ what to run locally to reproduce a CI failure.
 | `link-check` | `lychee` (via `make docs-lint`) | Requires lychee installed locally |
 | `build` | `make docs` | Generates references before building |
 | Release `test` | `make test-all` | Uses `pytest -v --tb=short` |
-| Release `build` | `make build` | Builds sdist + wheel |
+| Release `build` | `make build` | Builds all four sdists and wheels without workspace source overrides |
 
 ## Pre-commit Hooks
 
@@ -218,10 +221,10 @@ Installed via `make precommit-install`. Runs automatically on `git commit`:
 
 | Hook | Source | What it checks |
 |------|--------|----------------|
-| `ruff` | `ruff-pre-commit` | Lint + auto-fix (`--fix`) on `src/` and `tests/` |
-| `ruff-format` | `ruff-pre-commit` | Format check on `src/` and `tests/` |
+| `ruff` | `ruff-pre-commit` | Lint + auto-fix (`--fix`) on package and harness Python files |
+| `ruff-format` | `ruff-pre-commit` | Format check on package and harness Python files |
 | `uv-lock-check` | local | `uv lock --check` — lockfile in sync |
-| `check-license-headers` | local | Apache 2.0 headers on `src/**/*.py` |
+| `check-license-headers` | local | Apache 2.0 headers on first-party package Python files |
 | `trailing-whitespace` | `pre-commit-hooks` | No trailing whitespace |
 | `end-of-file-fixer` | `pre-commit-hooks` | Files end with newline |
 | `check-yaml` | `pre-commit-hooks` | Valid YAML syntax |
@@ -240,25 +243,48 @@ Installed via `make precommit-install`. Runs automatically on `git commit`:
 ## Project Structure & Modification Zones
 
 ```text
-src/archetype/
-  core/     # ECS engine — READ-ONLY. Do not modify without explicit approval.
-  app/      # Service layer — extend carefully, always add tests.
-  api/      # REST API — safe to modify freely.
-  cli/      # CLI — safe to modify freely.
+packages/
+  archetype-ecs/src/archetype/
+    core/             # ECS engine — discuss before modifying.
+    storage/          # Physical data and control authority.
+    world/            # Generic world lifecycle and operations.
+    commands/         # Dispatch, policy, scheduling, and audit.
+    world_libraries/  # Trusted manifest contracts and discovery.
+    runtime/          # Generic supported scripting API.
+    api/              # Domain-free REST host.
+    cli/              # Domain-free HTTP client and server startup.
+  archetype-missions/src/archetype/missions/
+    _extension.py     # Private trusted composition adapter.
+    ...               # Coding agents, sandboxes, transcripts, trajectories.
+  archetype-physical-ai/src/archetype/physical_ai/
+    _extension.py     # Private trusted composition adapter.
+    ...               # Physical state, policies, hosted episodes.
+  archetype-research/src/archetype/research/
+    _extension.py     # Private trusted composition adapter.
+    ...               # AutoResearch values, ledger, and workflow.
 
 tests/
-  core/     app/     api/     cli/
-  integration/   aio/   storage/   sync/
+  # Repository-level cross-package and contract harness.
+
+packages/archetype-*/tests/
+  # Distribution-owned focused tests.
 
 examples/   # Load-bearing documentation — must run against current API.
 bench/      # Benchmarks.
 docs/       # MkDocs site — deployed at archetype.vangelis.tech/docs
 ```
 
+The checkout is one uv workspace and one lockfile, but release artifacts are
+four independently installable distributions. See
+[World Libraries](docs/guide/world-libraries.md) before adding a domain package,
+manifest contribution, adapter, or compatibility alias.
+
 ## Testing
 
 - **Coverage threshold:** 70% branch coverage (enforced by `make test-cov`)
-- **Test layout:** mirrors `src/` structure under `tests/`
+- **Test layout:** package-owned tests live beside their distribution;
+  repository-level contract, integration, process, and packaging evidence stays
+  under `tests/`.
 - **Every new feature needs tests.** Every bug fix needs a regression test.
 - `make ci` is the single gate — always run it before pushing
 
@@ -286,8 +312,13 @@ chore:     Build process, CI, deps
 
 ## Dependencies
 
-- Add runtime deps to `[project.dependencies]` in `pyproject.toml`
-- Add dev deps to `[dependency-groups.dev]` in `pyproject.toml`
+- Add a shipped dependency to `[project.dependencies]` in the owning
+  `packages/archetype-*/pyproject.toml`.
+- Add optional provider dependencies to the owning distribution's
+  `[project.optional-dependencies]`; do not make the framework depend directly
+  on a world library except through its installation convenience extras.
+- Add repository-only dev or docs dependencies to `[dependency-groups]` in the
+  root `pyproject.toml`.
 - After changing deps: `uv lock` then verify with `uv lock --check`
 - **Never** commit a lockfile that fails `uv lock --check`
 

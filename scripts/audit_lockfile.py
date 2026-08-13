@@ -37,7 +37,7 @@ def audit_lockfile(
                 "--locked",
                 "--all-extras",
                 "--all-groups",
-                "--no-emit-project",
+                "--no-emit-workspace",
                 "--format",
                 "requirements-txt",
                 "--output-file",

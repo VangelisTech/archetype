@@ -86,11 +86,12 @@ jobs:
             Begin with these current sources:
             - docs/reports/2026-03-28-security-program-review.md
             - docs/guide/api-layer.md
-            - current ingress and authentication code in src/archetype/api/deps.py, src/archetype/api/errors.py, and src/archetype/api/routes/
-            - authorization and audit boundaries in src/archetype/commands/policy.py, src/archetype/commands/dispatch.py, and src/archetype/commands/audit.py
-            - durability and artifact boundaries in src/archetype/storage/ and src/archetype/artifacts/
-            - concrete composition in src/archetype/wiring.py and src/archetype/runtime_resources.py
-            - the pinned execution-environment inventory at src/archetype/missions/sandboxes/versions.toml
+            - current ingress and authentication code in packages/archetype-ecs/src/archetype/api/deps.py, packages/archetype-ecs/src/archetype/api/errors.py, and packages/archetype-ecs/src/archetype/api/routes/
+            - authorization and audit boundaries in packages/archetype-ecs/src/archetype/commands/policy.py, packages/archetype-ecs/src/archetype/commands/dispatch.py, and packages/archetype-ecs/src/archetype/commands/audit.py
+            - security-relevant durability, redaction, and audit boundaries under packages/archetype-ecs/src/archetype/storage/, packages/archetype-ecs/src/archetype/artifacts/, packages/archetype-ecs/src/archetype/activities/, and packages/archetype-ecs/src/archetype/redaction/
+            - concrete composition in packages/archetype-ecs/src/archetype/wiring.py and packages/archetype-ecs/src/archetype/runtime_resources.py
+            - trusted extension discovery under packages/archetype-ecs/src/archetype/world_libraries/ and each packages/archetype-*/src/archetype/*/_extension.py manifest adapter
+            - the pinned execution-environment inventory at packages/archetype-missions/src/archetype/missions/sandboxes/versions.toml
             - dependency evidence under .github/security-artifacts/, including the pinned-artifact OSV scan
 
             Requirements:

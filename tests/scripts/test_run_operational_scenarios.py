@@ -34,12 +34,14 @@ from scripts.run_operational_scenarios import (
     _parse_eval_receipt,
     _parse_pytest_junit,
     _pytest_command,
+    _resolve_wheel_artifacts,
     _run_process,
     _scenario_environment,
     _select_scenarios,
     _semantic_receipt,
     _tested_subject_record,
     _validate_distinct_wheel_location,
+    _workspace_source_roots,
     missing_prerequisites,
     run_scenarios,
 )
@@ -94,7 +96,14 @@ def test_source_quickstart_records_semantics_provenance_and_cleanup(tmp_path: Pa
         "status": "closed",
         "process_group_leaked": False,
     }
-    assert Path(result["package"]["path"]).is_relative_to(ROOT / "src")
+    assert Path(result["package"]["path"]).is_relative_to(
+        ROOT / "packages" / "archetype-ecs" / "src"
+    )
+    assert set(result["package"]["world_libraries"]) == {
+        "archetype.missions",
+        "archetype.physical_ai",
+        "archetype.research",
+    }
     assert result["package"]["tested_subject"] == {
         "commit": envelope["revision"],
         "dirty": not envelope["clean_checkout"],
@@ -233,7 +242,9 @@ def test_example_oracle_rejects_wrong_captured_semantics(tmp_path: Path) -> None
     receipt.write_text('{"value": 17}\n', encoding="utf-8")
     environment = os.environ.copy()
     environment[CAPTURED_RECEIPT_ENV] = str(receipt)
-    environment["PYTHONPATH"] = os.pathsep.join((str(ROOT / "src"), str(ROOT)))
+    environment["PYTHONPATH"] = os.pathsep.join(
+        str(path) for path in (*_workspace_source_roots(ROOT), ROOT)
+    )
 
     completed = subprocess.run(
         [
@@ -356,7 +367,9 @@ def test_redacted_log_retains_only_digest_and_size(tmp_path: Path) -> None:
 def test_setup_failure_still_writes_a_failed_receipt(tmp_path: Path) -> None:
     output = tmp_path / "failed.json"
     env = os.environ.copy()
-    env["PYTHONPATH"] = os.pathsep.join((str(ROOT / "src"), str(ROOT)))
+    env["PYTHONPATH"] = os.pathsep.join(
+        str(path) for path in (*_workspace_source_roots(ROOT), ROOT)
+    )
 
     completed = subprocess.run(
         [
@@ -491,12 +504,22 @@ def test_distinct_source_environment_and_probe_bind_to_tested_checkout(
     tmp_path: Path,
 ) -> None:
     tested_checkout = tmp_path / "tested"
-    package_dir = tested_checkout / "src" / "archetype"
+    package_dir = tested_checkout / "packages" / "archetype-ecs" / "src" / "archetype"
     package_dir.mkdir(parents=True)
     (package_dir / "__init__.py").write_text(
+        "from pkgutil import extend_path\n"
+        "__path__ = extend_path(__path__, __name__)\n"
         "__version__ = 'baseline-test'\n",
         encoding="utf-8",
     )
+    for package, module in (
+        ("archetype-missions", "missions"),
+        ("archetype-physical-ai", "physical_ai"),
+        ("archetype-research", "research"),
+    ):
+        library = tested_checkout / "packages" / package / "src" / "archetype" / module
+        library.mkdir(parents=True)
+        (library / "__init__.py").write_text("value = 1\n", encoding="utf-8")
     environment = _base_environment(
         ROOT,
         mode="source",
@@ -513,7 +536,7 @@ def test_distinct_source_environment_and_probe_bind_to_tested_checkout(
     )
 
     assert environment["PYTHONPATH"].split(os.pathsep) == [
-        str(tested_checkout.resolve() / "src"),
+        *(str(path) for path in _workspace_source_roots(tested_checkout)),
         str(ROOT),
     ]
     assert package["version"] == "baseline-test"
@@ -557,6 +580,155 @@ def test_tested_subject_relationship_and_distinct_wheel_location_are_explicit(
         root=ROOT,
         tested_checkout=ROOT,
     )
+
+
+def _write_first_party_wheel_set(directory: Path) -> dict[str, Path]:
+    wheels = {
+        "archetype-ecs": directory / "archetype_ecs-0.6.0-py3-none-any.whl",
+        "archetype-missions": directory / "archetype_missions-0.6.0-py3-none-any.whl",
+        "archetype-physical-ai": directory / "archetype_physical_ai-0.6.0-py3-none-any.whl",
+        "archetype-research": directory / "archetype_research-0.6.0-py3-none-any.whl",
+    }
+    directory.mkdir(parents=True, exist_ok=True)
+    for distribution, path in wheels.items():
+        path.write_bytes(f"exact artifact for {distribution}\n".encode())
+    return wheels
+
+
+def test_wheel_mode_installs_and_records_the_exact_four_artifact_set(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wheels = _write_first_party_wheel_set(tmp_path / "dist")
+    anchor = wheels["archetype-ecs"]
+    installed: list[Path] = []
+
+    def prepare(selected: tuple[Path, ...], destination: Path):
+        del destination
+        installed.extend(selected)
+        return Path(sys.executable), _base_environment(tmp_path, mode="wheel")
+
+    monkeypatch.setattr(operational_runner, "_prepare_wheel_python", prepare)
+    monkeypatch.setattr(
+        operational_runner,
+        "_package_probe",
+        lambda *args, **kwargs: {
+            "version": "0.6.0",
+            "path": "/isolated/archetype/__init__.py",
+            "world_libraries": {},
+            "origin": "wheel",
+        },
+    )
+    monkeypatch.setattr(
+        operational_runner,
+        "_run_one",
+        lambda *args, **kwargs: {
+            "status": "passed",
+            "cleanup": {"status": "closed"},
+        },
+    )
+
+    envelope, passed = run_scenarios(
+        root=ROOT,
+        registry=REGISTRY,
+        output=tmp_path / "operational.json",
+        mode="wheel",
+        wheel=anchor,
+        wheel_dir=tmp_path / "dist",
+        cadence="pr",
+        scenario_ids={"example.00_quickstart"},
+        kind="example",
+        min_tier=1,
+        max_tier=1,
+        expected_revision=None,
+        require_clean=False,
+        require_run=True,
+    )
+
+    assert passed
+    assert installed == list(wheels.values())
+    wheel_record = cast(dict[str, Any], envelope["wheel"])
+    assert wheel_record["filename"] == anchor.name
+    assert wheel_record["digest"].startswith("sha256:")
+    assert [artifact["distribution"] for artifact in wheel_record["artifacts"]] == list(wheels)
+    assert [artifact["filename"] for artifact in wheel_record["artifacts"]] == [
+        path.name for path in wheels.values()
+    ]
+    assert all(artifact["digest"].startswith("sha256:") for artifact in wheel_record["artifacts"])
+
+
+def test_wheel_set_resolution_rejects_missing_duplicate_and_mixed_versions(
+    tmp_path: Path,
+) -> None:
+    wheels = _write_first_party_wheel_set(tmp_path)
+    anchor = wheels["archetype-ecs"]
+
+    assert [
+        artifact.distribution
+        for artifact in _resolve_wheel_artifacts(
+            wheel=anchor,
+            wheel_dir=tmp_path,
+        )
+    ] == list(wheels)
+
+    wheels["archetype-research"].unlink()
+    with pytest.raises(ValueError, match="exactly one local wheel for archetype-research"):
+        _resolve_wheel_artifacts(wheel=anchor, wheel_dir=tmp_path)
+
+    mixed = tmp_path / "archetype_research-0.6.1-py3-none-any.whl"
+    mixed.write_bytes(b"mixed version")
+    with pytest.raises(ValueError, match="same-version first-party artifact set"):
+        _resolve_wheel_artifacts(wheel=anchor, wheel_dir=tmp_path)
+
+    expected = tmp_path / "archetype_research-0.6.0-py3-none-any.whl"
+    expected.write_bytes(b"expected version")
+    with pytest.raises(ValueError, match="exactly one local wheel for archetype-research"):
+        _resolve_wheel_artifacts(wheel=anchor, wheel_dir=tmp_path)
+
+
+def test_wheel_probe_rejects_leakage_from_any_world_library_source_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = tmp_path / "wheel-venv"
+    python = environment / "bin" / "python"
+    research_source = (
+        ROOT / "packages" / "archetype-research" / "src" / "archetype" / "research" / "__init__.py"
+    )
+    payload = {
+        "version": "0.6.0",
+        "path": str(environment / "lib" / "archetype" / "__init__.py"),
+        "library_paths": {
+            "archetype.missions": str(
+                environment / "lib" / "archetype" / "missions" / "__init__.py"
+            ),
+            "archetype.physical_ai": str(
+                environment / "lib" / "archetype" / "physical_ai" / "__init__.py"
+            ),
+            "archetype.research": str(research_source),
+        },
+        "sys_path": [],
+    }
+    monkeypatch.setattr(
+        operational_runner.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout=json.dumps(payload) + "\n",
+            stderr="",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="imported archetype.research from checkout source"):
+        _package_probe(
+            python,
+            cwd=tmp_path,
+            env={},
+            root=ROOT,
+            tested_checkout=ROOT,
+            mode="wheel",
+        )
 
 
 def test_external_service_prerequisites_enable_dedicated_test_lanes() -> None:

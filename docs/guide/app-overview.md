@@ -286,18 +286,27 @@ registered operations.
 
 ## Source reference
 
-- World state and behavior: `src/archetype/world/`
-- Process composition: `src/archetype/wiring.py`
-- Process lifetime: `src/archetype/runtime_resources.py`
-- Governed entry, scheduler, policy, and audit: `src/archetype/commands/`
-- Generic between-tick delivery: `src/archetype/activities/`
-- Agent Mission workflow authority: `src/archetype/missions/`
-- Physical-AI models, state, views, and handlers: `src/archetype/physical_ai/`
-- Core interfaces: `src/archetype/core/interfaces.py`
+- World state and behavior: `packages/archetype-ecs/src/archetype/world/`
+- Process composition: `packages/archetype-ecs/src/archetype/wiring.py`
+- Process lifetime: `packages/archetype-ecs/src/archetype/runtime_resources.py`
+- Governed entry, scheduler, policy, and audit: `packages/archetype-ecs/src/archetype/commands/`
+- Generic between-tick delivery: `packages/archetype-ecs/src/archetype/activities/`
+- Agent Mission workflow authority: `packages/archetype-missions/src/archetype/missions/`
+- Physical-AI models, state, views, and handlers: `packages/archetype-physical-ai/src/archetype/physical_ai/`
+- Family protocols: `packages/archetype-ecs/src/archetype/<family>/interfaces.py` or another focused family module
+- World ports: `packages/archetype-ecs/src/archetype/world/interfaces.py`
+- Storage port: `packages/archetype-ecs/src/archetype/storage/interfaces.py`
+- Core interfaces: `packages/archetype-ecs/src/archetype/core/interfaces.py`
+
+The framework wheel is complete without a domain library. Agent Missions,
+Physical AI, and Research are separate distributions installed through their
+private trusted extension adapters; ordinary domain modules do not gain
+framework composition authority.
 
 ## Next steps
 
 - [Core architecture](core-architecture.md) — engine boxes under this layer
 - [Architecture Overview](architecture.md) — mental model, Activities, authority
 - [Application Architecture](application-architecture.md) — normative rules
+- [World Libraries](world-libraries.md) — distribution and installation contract
 - [Agent Missions](agent-missions.md) — software-factory family poster

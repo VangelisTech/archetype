@@ -59,7 +59,7 @@ jobs:
       - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
         with:
           version: "latest"
-      - run: uv sync --group dev --extra docs --extra coding-agent
+      - run: uv sync --all-packages --all-extras --group dev --group docs
       - name: Verify tag and package version agree
         run: |
           test "${GITHUB_REF_NAME#v}" = "$(make --no-print-directory version)"
@@ -139,7 +139,7 @@ jobs:
       - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
         with:
           version: "latest"
-      - run: uv sync --group dev --extra coding-agent
+      - run: uv sync --all-packages --all-extras --group dev
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: dist
@@ -205,7 +205,7 @@ jobs:
           version: "latest"
       - name: Provision Python 3.12 with uv
         run: |
-          uv sync --python "3.12" --group dev --extra coding-agent
+          uv sync --python "3.12" --all-packages --all-extras --group dev
           uv run python -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version'
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -256,7 +256,7 @@ jobs:
       - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
         with:
           version: "latest"
-      - run: uv sync --python "3.13" --group dev
+      - run: uv sync --python "3.13" --all-packages --all-extras --group dev
       - name: Verify Python 3.13 interpreter
         run: >-
           uv run python -c

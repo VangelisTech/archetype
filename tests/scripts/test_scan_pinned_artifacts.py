@@ -15,6 +15,13 @@ from scripts.scan_pinned_artifacts import build_queries, load_pinned_artifacts, 
 pytestmark = pytest.mark.contract("missions.environment.pinned")
 
 
+def test_default_inventory_tracks_the_missions_distribution() -> None:
+    assert scan_module.INVENTORY.relative_to(scan_module.ROOT).as_posix() == (
+        "packages/archetype-missions/src/archetype/missions/sandboxes/versions.toml"
+    )
+    assert scan_module.INVENTORY.is_file()
+
+
 def _fake_fetch(vulnerable_names: set[str]) -> Any:
     def fetch(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
         results = []

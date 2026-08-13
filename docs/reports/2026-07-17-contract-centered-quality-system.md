@@ -66,7 +66,7 @@ different subjects:
 
 - The top-level repository harness (`tests/`, `evals/`, `bench/`, static
   scripts, documentation checks, and CI) evaluates Archetype itself.
-- Product evaluation under `src/archetype/` evaluates work performed by a
+- Product evaluation under `packages/archetype-ecs/src/archetype/` evaluates work performed by a
   simulation or application built with Archetype.
 
 Shared vocabulary or report primitives do not make these the same subsystem.

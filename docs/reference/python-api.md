@@ -24,6 +24,8 @@ Archetype's Python reference inventories and classifies the supported top-level 
 
 Presence in `archetype.__all__` is an intentional supported exposure. The tier on each reference page and the focused specifications classify its stability. Types exposed by supported signatures are part of those contracts even when they are not top-level exports.
 
+Installed world libraries may contribute Compatibility-tier root attributes through their deterministic manifests. Those names remain deliberately absent from the domain-free framework `archetype.__all__`; new code should import the owning `archetype.<family>` module or its typed adapter explicitly.
+
 The container and concrete application services are internal and are not top-level exports. Repository wiring imports them from their owning family modules; applications use the runtime or an adapter.
 
 See [API stability and docstrings](../guide/api-stability.md) for the full policy.

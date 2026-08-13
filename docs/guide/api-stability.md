@@ -21,6 +21,10 @@ application services, app protocols, process wiring, and `RuntimeResources`
 are internal. The synchronous
 educational engine remains a compatibility interface.
 
+Separately installed world libraries expose supported family-qualified imports
+and typed adapters. The base framework root does not own their API. See
+[World Libraries](world-libraries.md).
+
 ## What counts as public
 
 A supported name is one classified by the generated Python API manifest or a
@@ -38,6 +42,16 @@ Names beginning with an underscore are internal. Modules explicitly labeled
 experimental may change without the compatibility guarantees of the main API.
 
 ### Reviewed capability packages
+
+The 0.6 distribution split preserves `archetype.missions`,
+`archetype.physical_ai`, and `archetype.research` while moving them to separate
+wheels. New code imports domain values and adapters from those namespaces.
+Dynamic root and runtime-method aliases are one-release Compatibility-tier
+bridges only; they do not make domain code part of `archetype-ecs`.
+
+`archetype.episodes` has been removed. Execution episodes remain under
+`archetype.world`; coding-session transcript and trajectory contracts are
+canonical under `archetype.missions.trajectories`.
 
 The provisional production `archetype.experiments` package has been removed.
 Standalone scripts under the repository-root `experiments/` directory are

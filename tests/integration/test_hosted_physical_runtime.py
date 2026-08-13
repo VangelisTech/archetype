@@ -25,6 +25,8 @@ from archetype.activities import ActivityAdmission, ActivityCoordinator
 from archetype.core.config import StorageBackend
 from archetype.core.interfaces import CommittedTickReceipt
 from archetype.physical_ai import hosted_modal
+from archetype.physical_ai._extension import get_manifest as physical_ai_manifest
+from archetype.physical_ai.config import PhysicalAIExtensionConfig
 from archetype.physical_ai.hosted_activity_contracts import HostedEpisodeProviderResult
 from archetype.physical_ai.hosted_activity_values import SeededHostedEpisodeRunner
 from archetype.physical_ai.hosted_episode import (
@@ -39,6 +41,22 @@ from archetype.storage.activity_catalog import (
 from archetype.storage.config import ControlCatalogConfig
 from archetype.wiring import RuntimeBootstrapConfig
 from archetype.world.registry import WorldRegistry
+
+
+def _physical_ai_extension(
+    provider_factory: object,
+    *,
+    lease_seconds: float = 300.0,
+) -> dict[str, object]:
+    return {
+        "world_libraries": (physical_ai_manifest(),),
+        "world_library_configs": {
+            "physical-ai": PhysicalAIExtensionConfig(
+                hosted_episode_provider_factory=cast(Any, provider_factory),
+                hosted_activity_lease_seconds=lease_seconds,
+            )
+        },
+    }
 
 
 @dataclass
@@ -182,7 +200,7 @@ async def test_public_hosted_episode_ignores_unrelated_unsettled_activity(
             control_catalog_config=catalog_config,
             world_registry=registry,
             audit_storage_config=storage,
-            hosted_episode_provider_factory=provider_factory,
+            **_physical_ai_extension(provider_factory),
         ),
     )
 
@@ -245,15 +263,13 @@ async def test_public_hosted_episode_recovers_without_replay_and_isolates_fork(
             control_catalog_config=catalog,
             world_registry=first_registry,
             audit_storage_config=storage,
-            hosted_episode_provider_factory=provider_factory,
-            hosted_activity_lease_seconds=300,
+            **_physical_ai_extension(provider_factory),
         ),
         RuntimeBootstrapConfig(
             control_catalog_config=catalog,
             world_registry=second_registry,
             audit_storage_config=storage,
-            hosted_episode_provider_factory=provider_factory,
-            hosted_activity_lease_seconds=300,
+            **_physical_ai_extension(provider_factory),
         ),
     ]
     monkeypatch.setattr(
@@ -267,7 +283,7 @@ async def test_public_hosted_episode_recovers_without_replay_and_isolates_fork(
     # running.
     clock = [time.time()]
     monkeypatch.setattr(
-        "archetype.wiring.SqliteActivityCatalog",
+        "archetype.physical_ai._extension.SqliteActivityCatalog",
         lambda path: SqliteActivityCatalog(path, now_seconds=lambda: clock[0]),
     )
 
@@ -337,8 +353,7 @@ def _single_bootstrap(
         control_catalog_config=catalog,
         world_registry=registry,
         audit_storage_config=storage,
-        hosted_episode_provider_factory=provider_factory,
-        hosted_activity_lease_seconds=30,
+        **_physical_ai_extension(provider_factory, lease_seconds=30),
     )
     monkeypatch.setattr(
         "archetype.runtime.runtime._bootstrap_config",

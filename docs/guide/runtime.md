@@ -1,14 +1,15 @@
 # Runtime
 
 **Document type:** Normative.
-**Scope:** `src/archetype/runtime/` — the trusted Python scripting boundary.
+**Scope:** `packages/archetype-ecs/src/archetype/runtime/` — the trusted Python
+scripting boundary, plus typed adapters supplied by installed world libraries.
 
 Ordinary runtime/world operations construct exact family operation models and
 enter the process-owned `CommandDispatcher` through `apply()` or `defer()`.
-They never import authentication or actor models. Agent Missions follows the
-same boundary: its specialized handle dispatches exact mission operations, and
-the wiring root constructs the internal workflow only inside its pre-reserved
-resource owner.
+They never import authentication or actor models. World-library adapters follow
+the same boundary: they dispatch exact family operations, while each library's
+private extension composes its internal workflow only inside process ownership
+provided by the framework.
 
 ## 1. Purpose
 
@@ -107,6 +108,11 @@ and does not reuse an outer event loop. A retryable teardown failure retains
 that runner and the supported `shutdown()` method retries the same process
 owner; the runner is released only after successful finalization.
 
+This requirement covers the generic framework surface. A separately installed
+world library may publish an async-only typed adapter and must document that
+gap explicitly; temporary sync aliases do not promote the adapter into the
+framework contract.
+
 ### R6 — World handles are declarative and lazy
 
 ```python
@@ -163,7 +169,7 @@ credential, or backend client.
 accepted at the scripting boundary. A string or path becomes
 `StorageConfig(uri=str(value))`; richer backend policy remains below runtime.
 
-### R11 — Evaluation and research
+### R11 — Evaluation and world-library adapters
 
 `world.grade(...)` queries the handle's append-only history and dispatches
 `RunGraders` over that lazy frame; its outputs are ephemeral.
@@ -178,12 +184,15 @@ explicit `StorageConfig(..., backend=StorageBackend.ICEBERG)`. Omitted, string,
 and path storage forms select LanceDB and cannot persist evaluation receipts;
 use `world.grade(...)` when persistence is not required.
 
-`world.autoresearch(...)` dispatches the exact direct-only `AutoResearch`
+`Research(world).autoresearch(...)` dispatches the exact direct-only `AutoResearch`
 operation to the research-family handler. Trusted and actor-aware immediate
 entry share that handler; actor-aware use requires `operator`, resolves a
 `live_world` quota coordinate, and charges
 `200 * max(max_iterations, 1)`. Deferred entry rejects before catalog effects
 because evaluator, preparer, and iteration callbacks are live capabilities.
+The typed Research adapter is async. For the 0.6 migration only, the installed
+manifest supplies the former `SyncRuntimeWorld.autoresearch` alias and forwards
+synchronous callbacks through the sync runner.
 
 The dispatcher synchronously awaits the entire outer workflow inside one
 process admission. Callback execution does not hold a runtime handle or named
@@ -196,13 +205,17 @@ same experiment only after the outer call returns. Runtime shutdown therefore
 joins an admitted AutoResearch call before closing shared dependencies, without
 a research-owned task, owner reservation, or finalizer.
 
-Physical evaluation enters through `world.run_hosted_episode(...)`, which
+Physical evaluation enters through
+`PhysicalAI(world).run_hosted_episode(...)`, which
 dispatches the exact `RunHostedEpisode` operation to the registered
-physical-AI handler. The handle must retain explicit storage coordinates. The
+physical-AI handler. The world handle must retain explicit storage coordinates. The
 handler owns hosted Activity admission, remote Modal execution or
 reconciliation by stable operation identity, and durable result publication;
-the runtime does not run episodes or collect terminal rows itself. The sync
-world handle exposes the same operation. See [Physical AI](physical-ai.md).
+the runtime does not run episodes or collect terminal rows itself. The typed
+world-library adapter is async. During the 0.6 migration, `SyncRuntimeWorld`
+offers manifest-driven compatibility forwarding for the former world method;
+the framework does not import Physical AI. See [Physical AI](physical-ai.md)
+and [World Libraries](world-libraries.md).
 
 ### R12 — Typed artifacts and transcript evidence
 
@@ -224,7 +237,7 @@ substrate reached through the artifacts-family view. The runtime neither
 inspects `daft.Catalog` nor exposes the storage service, family handlers, or
 process wiring.
 
-`world.ingest_claude_transcript(source)` is the recommended coding-agent
+`MissionWorld(world).ingest_claude_transcript(source)` is the recommended coding-agent
 transcript boundary. `ClaudeTranscriptSource` carries local input configuration
 and stable project/session identity. The application workflow snapshots and
 redacts the file, parses only the sanitized copy, ingests that copy as an
@@ -232,9 +245,10 @@ artifact, and appends normalized rows to the Iceberg transcript table. The
 returned `TranscriptIngestionResult` identifies the sanitized `ArtifactRef`,
 row count, trajectory linkage, and redaction outcome. The runtime does not open
 the source file, write
-narrative Components, or coordinate those steps itself. Sync world handles
-expose the same operation. `world.transcript_rows()` returns the normalized
-session and turn rows for the current run.
+narrative Components, or coordinate those steps itself. The Missions adapter
+has synchronous parity. `MissionWorld(world).transcript_rows()` returns the
+normalized session and turn rows for the current run. Compatibility forwarding
+through the former world methods is manifest-driven and temporary.
 
 Artifact and transcript capabilities require the handle to retain explicit
 storage coordinates. A handle created with `runtime.attach(world_id)` without
@@ -290,11 +304,11 @@ interchange boundary.
 
 ### R16 — Agent Missions V1
 
-`runtime.missions(name, config=..., storage=...)` returns an async
-`RuntimeMissions` handle. It configures one mission-capable world with the
+`Missions(runtime, name, config=..., storage=...)` returns an async Missions
+handle. It configures one mission-capable world with the
 built-in Components, graph view, transition processors, durable
 author-and-critic Activity binding, and injected Sandbox Backend plus
-coding-agent and critic drivers. v0.5 admits only the Modal sandbox backend
+coding-agent and critic drivers. The V1 workflow admits only the Modal sandbox backend
 for end-to-end missions; submission rejects any other configured backend
 deterministically before admission. The family-owned
 Sandbox Service retains the author Session and owns fresh candidate-scoped
@@ -330,17 +344,22 @@ handles close before ordinary world handles during runtime teardown. Once
 exact-world cleanup finishes, a later mission-world close failure retries only
 the world-close stage rather than reusing the consumed cleanup lease.
 
-`RuntimeMissions` imports no concrete application service. It dispatches
+`Missions` imports no concrete application service. It dispatches
 `SubmitMission`, `RunMission`, and `RestoreMissionSandbox`; wiring constructs
-the handler-side service with the same reservation. V1 is still async-only, so
-sync parity under R5 remains a hardening gap. See
+the handler-side service with the same reservation. `RuntimeMissions` remains
+a 0.6 import alias for source compatibility. V1 is still async-only, so sync
+parity under R5 remains a hardening gap. See
 [Agent Missions V1, current hardening gaps](agent-missions.md#current-hardening-gaps).
 
 ## 3. Canonical surface
 
-The async surface below has sync parity:
+Generic world operations below have sync parity. The installed Missions and
+Research adapters shown here are async-only:
 
 ```python
+from archetype.missions import AgentMissionConfig, AgentTask, Missions
+from archetype.research import AutoResearchConfig, Research
+
 world = runtime.world(
     name,
     storage=...,
@@ -351,7 +370,8 @@ world = runtime.world(
 )
 world = runtime.attach(world_id, storage=...)
 
-missions = runtime.missions(
+missions = Missions(
+    runtime,
     "software-factory",
     config=AgentMissionConfig(
         sandbox_backend=my_backend,
@@ -365,7 +385,7 @@ submitted = await missions.submit(
     tasks=(AgentTask(...),),
 )
 mission_result = await missions.run(submitted)
-# v0.5 checkpoint references are evidence only. Workflow restore fails
+# Checkpoint references are evidence only. Workflow restore fails
 # explicitly until a checkpoint is bound into immutable Activity admission.
 
 eid = await world.spawn(Position(x=0), Velocity(dx=1))
@@ -385,7 +405,7 @@ await world.step()
 result = await world.run(steps=10)
 episode = await world.run_episode(EpisodeConfig(...))
 rollout = await world.run_rollout(RolloutConfig(...))
-research = await world.autoresearch(AutoResearchConfig(...), evaluator)
+research = await Research(world).autoresearch(AutoResearchConfig(...), evaluator)
 
 branch = await world.fork(name="branch-a")
 await world.destroy()
@@ -419,17 +439,26 @@ entity's archetype. These intents remain distinct.
 ## 5. Module layout
 
 ```text
-src/archetype/runtime/
+packages/archetype-ecs/src/archetype/runtime/
   __init__.py
   runtime.py       ArchetypeRuntime and SyncArchetypeRuntime
-  missions.py      async Agent Missions authoring/lifecycle handle
   world.py         RuntimeWorld and SyncRuntimeWorld
   entrypoint.py    managed script decorator
   _config.py       scripting-boundary coercion
+
+packages/archetype-missions/src/archetype/missions/runtime.py
+  Missions and MissionWorld typed adapters
+
+packages/archetype-physical-ai/src/archetype/physical_ai/runtime.py
+  PhysicalAI typed adapter
+
+packages/archetype-research/src/archetype/research/runtime.py
+  Research typed adapter
 ```
 
-Storage session construction lives below runtime so the app layer never imports
-outward from this package.
+Storage session construction lives below runtime. World-library adapters live
+with the behavior they expose, and the framework never imports those packages
+by name.
 
 ## 6. Canonical example
 

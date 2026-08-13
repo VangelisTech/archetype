@@ -110,7 +110,7 @@ on. Equivalent mutants are an inherent noise floor in mutation testing.
 
 - **Don't add to `make ci`.** Mutation testing is too slow to gate every
   PR. Treat it like `make complexity` — an on-demand quality probe.
-- **Keep `paths_to_mutate` narrow.** Pointing it at `src/archetype/`
+- **Keep `paths_to_mutate` narrow.** Pointing it at `packages/archetype-ecs/src/archetype/`
   whole would generate thousands of mutants. Pick one module at a time.
 - **Tests must be deterministic and fast.** Flaky tests poison the
   signal; slow tests blow up the wall clock.

@@ -263,10 +263,10 @@ implement the fix only after that predecessor is accepted.
 
 ```bash
 # Inspect the typed graph without creating Modal resources.
-uv run --extra coding-agent python examples/11_coding_agent_mission.py --dry-run
+uv run python examples/11_coding_agent_mission.py --dry-run
 
 # Run the credentialed dogfood.
-uv run --extra coding-agent python examples/11_coding_agent_mission.py
+uv run python examples/11_coding_agent_mission.py
 ```
 
 Source: [`examples/11_coding_agent_mission.py`](https://github.com/VangelisTech/archetype/blob/main/examples/11_coding_agent_mission.py)

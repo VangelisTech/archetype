@@ -16,7 +16,7 @@ needs a GPU moves; anything any benchmark needs stays.**
 - `bench/libero/instruction_sweep.py` → `archetype.experiments.instruction_sweep`
 - their tests → `tests/experiments/`
 - `EnvClient`/`PolicyClient` protocols, processors, Manip components were
-  already in `src/archetype/experiments/`.
+  already in `packages/archetype-ecs/src/archetype/experiments/`.
 
 ## Phase 2 — extract — DONE 2026-07-16
 
