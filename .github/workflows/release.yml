@@ -386,6 +386,49 @@ jobs:
         with:
           name: dist-archetype-ecs
           path: dist/
+      - name: Reauthorize the remote release tag
+        shell: bash
+        env:
+          RELEASE_INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          fail() { echo "release tag check failed: $*" >&2; exit 1; }
+
+          [[ "$GITHUB_REPOSITORY" == "VangelisTech/archetype" ]] || fail "wrong repository"
+          [[ "$GITHUB_REF_TYPE" == "tag" ]] || fail "workflow ref is not a tag"
+          [[ "$GITHUB_REF_NAME" == "$RELEASE_INPUT_TAG" ]] || fail "input and ref differ"
+          [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail "tag must be canonical vMAJOR.MINOR.PATCH"
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "GITHUB_SHA is not 40-hex"
+
+          tag_ref="refs/tags/$GITHUB_REF_NAME"
+          [[ "$GITHUB_REF" == "$tag_ref" ]] || fail "workflow ref is not the exact tag ref"
+          remote="https://github.com/VangelisTech/archetype.git"
+          output="$(git ls-remote --exit-code "$remote" "$tag_ref" "$tag_ref^{}")"
+          direct_sha=
+          peeled_sha=
+          while IFS= read -r line; do
+            sha=
+            ref=
+            extra=
+            IFS=$'\t' read -r sha ref extra <<< "$line"
+            [[ -z "$extra" ]] || fail "malformed ls-remote output"
+            [[ "$line" == "$sha"$'\t'"$ref" ]] || fail "malformed ls-remote output"
+            [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || fail "remote SHA is not 40-hex"
+            case "$ref" in
+              "$tag_ref")
+                [[ -z "$direct_sha" ]] || fail "duplicate direct tag ref"
+                direct_sha="$sha"
+                ;;
+              "$tag_ref^{}")
+                [[ -z "$peeled_sha" ]] || fail "duplicate peeled tag ref"
+                peeled_sha="$sha"
+                ;;
+              *) fail "unexpected remote ref $ref" ;;
+            esac
+          done <<< "$output"
+          [[ -n "$direct_sha" ]] || fail "direct tag ref is absent"
+          resolved_sha="${peeled_sha:-$direct_sha}"
+          [[ "$resolved_sha" == "$GITHUB_SHA" ]] || fail "remote tag commit differs"
       - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
         with:
           repository-url: https://test.pypi.org/legacy/
@@ -539,6 +582,49 @@ jobs:
         with:
           name: dist-archetype-ecs
           path: dist/
+      - name: Reauthorize the remote release tag
+        shell: bash
+        env:
+          RELEASE_INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          fail() { echo "release tag check failed: $*" >&2; exit 1; }
+
+          [[ "$GITHUB_REPOSITORY" == "VangelisTech/archetype" ]] || fail "wrong repository"
+          [[ "$GITHUB_REF_TYPE" == "tag" ]] || fail "workflow ref is not a tag"
+          [[ "$GITHUB_REF_NAME" == "$RELEASE_INPUT_TAG" ]] || fail "input and ref differ"
+          [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail "tag must be canonical vMAJOR.MINOR.PATCH"
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "GITHUB_SHA is not 40-hex"
+
+          tag_ref="refs/tags/$GITHUB_REF_NAME"
+          [[ "$GITHUB_REF" == "$tag_ref" ]] || fail "workflow ref is not the exact tag ref"
+          remote="https://github.com/VangelisTech/archetype.git"
+          output="$(git ls-remote --exit-code "$remote" "$tag_ref" "$tag_ref^{}")"
+          direct_sha=
+          peeled_sha=
+          while IFS= read -r line; do
+            sha=
+            ref=
+            extra=
+            IFS=$'\t' read -r sha ref extra <<< "$line"
+            [[ -z "$extra" ]] || fail "malformed ls-remote output"
+            [[ "$line" == "$sha"$'\t'"$ref" ]] || fail "malformed ls-remote output"
+            [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || fail "remote SHA is not 40-hex"
+            case "$ref" in
+              "$tag_ref")
+                [[ -z "$direct_sha" ]] || fail "duplicate direct tag ref"
+                direct_sha="$sha"
+                ;;
+              "$tag_ref^{}")
+                [[ -z "$peeled_sha" ]] || fail "duplicate peeled tag ref"
+                peeled_sha="$sha"
+                ;;
+              *) fail "unexpected remote ref $ref" ;;
+            esac
+          done <<< "$output"
+          [[ -n "$direct_sha" ]] || fail "direct tag ref is absent"
+          resolved_sha="${peeled_sha:-$direct_sha}"
+          [[ "$resolved_sha" == "$GITHUB_SHA" ]] || fail "remote tag commit differs"
       - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
         with:
           skip-existing: true

@@ -540,7 +540,7 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
         assert "attestations: true" in publishing_job
         assert "id-token: write" in publishing_job
         assert "actions/checkout@" not in publishing_job
-        assert "run:" not in publishing_job
+        assert publishing_job.count("run:") == 1
         assert "uv build" not in publishing_job
         assert "make build" not in publishing_job
         assert "github.triggering_actor == 'everettVT'" in publishing_job
@@ -567,6 +567,39 @@ def test_release_workflow_aggregates_platform_evidence_before_publish() -> None:
             < coordinator.index("dispatch_release_publishers.py await")
         )
         assert "github.triggering_actor == 'everettVT'" in coordinator
+
+    publisher_check = re.compile(
+        r"      - name: Reauthorize the remote release tag\n"
+        r"(?P<step>.*?)(?=      - uses: pypa/gh-action-pypi-publish@)",
+        re.DOTALL,
+    )
+    publish_test_check = publisher_check.search(publish_test)
+    publish_check = publisher_check.search(publish)
+    assert publish_test_check is not None
+    assert publish_check is not None
+    assert publish_test_check.group("step") == publish_check.group("step")
+    check = publish_test_check.group("step")
+    assert "shell: bash" in check
+    assert "set -euo pipefail" in check
+    assert "RELEASE_INPUT_TAG: ${{ inputs.tag }}" in check
+    assert '[[ "$GITHUB_REPOSITORY" == "VangelisTech/archetype" ]]' in check
+    assert '[[ "$GITHUB_REF" == "$tag_ref" ]]' in check
+    assert "^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$" in check
+    assert "git ls-remote --exit-code" in check
+    assert 'remote="https://github.com/VangelisTech/archetype.git"' in check
+    assert '"$tag_ref" "$tag_ref^{}"' in check
+    assert '[[ "$sha" =~ ^[0-9a-f]{40}$ ]]' in check
+    assert 'resolved_sha="${peeled_sha:-$direct_sha}"' in check
+    assert '[[ "$resolved_sha" == "$GITHUB_SHA" ]]' in check
+    assert "scripts/" not in check
+    assert "uses:" not in check
+    for publishing_job in (publish_test, publish):
+        assert (
+            publishing_job.index("actions/download-artifact@")
+            < publishing_job.index("name: Reauthorize the remote release tag")
+            < publishing_job.index("pypa/gh-action-pypi-publish@")
+        )
+        assert publishing_job.count("- uses:") == 2
 
     assert "github.triggering_actor == 'everettVT'" in github_release
     assert "scripts/verify_release_ref.py" in github_release

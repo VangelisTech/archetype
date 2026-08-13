@@ -229,6 +229,13 @@ already-fetched provenance to the pinned verifier. The pinned publisher action
 signs uploads to both registries with production Sigstore trust, so TestPyPI
 verification MUST NOT select the Sigstore staging roots.
 
+Each OIDC publisher remains checkout-free. Immediately before publication it
+runs one inline `git ls-remote` check against the literal canonical repository
+without checking out or executing repository files or scripts. The exact
+canonical `vMAJOR.MINOR.PATCH` tag must still
+resolve to the workflow's original `GITHUB_SHA`; annotated tags are compared by
+their peeled commit. No repository script executes with the publish identity.
+
 Release execution is operator-only. The `Release tags — everettVT only`
 repository ruleset permits only `everettVT` to create `v*` tags; the separate
 immutable-tag ruleset continues to deny tag updates and deletion for everyone.
