@@ -14,6 +14,7 @@ import pytest
 
 from scripts.release_artifact import DISTRIBUTIONS, SCHEMA
 from scripts.verify_release_index import (
+    CryptographicVerificationError,
     IncompleteIndexError,
     verify_attestation,
     verify_index,
@@ -339,6 +340,104 @@ def test_complete_index_retries_provenance_propagation() -> None:
     assert result["provenance"]["artifact_count"] == 8
     assert result["index_api_template"].startswith("https://index.invalid/")
     assert sleeps == [3]
+
+
+def test_complete_index_retries_transient_staging_crypto_propagation() -> None:
+    manifest = _manifest()
+    payloads = _payloads(manifest)
+    publisher = _publisher("release-testpypi")
+    records = {record["name"]: record for record in manifest["artifacts"]}
+    calls: list[tuple[str, str, bool]] = []
+    sleeps: list[float] = []
+
+    def fetch(url: str) -> dict[str, Any]:
+        if "/pypi/" in url:
+            return payloads[url.split("/")[-3]]
+        filename = url.split("/")[-2]
+        return _provenance(records[filename], publisher)
+
+    def verify_crypto(filename: str, repository: str, staging: bool) -> None:
+        calls.append((filename, repository, staging))
+        if len(calls) == 1:
+            raise CryptographicVerificationError("staging provenance is still propagating")
+
+    result = verify_index(
+        manifest,
+        api_template="https://index.invalid/pypi/{distribution}/{version}/json",
+        integrity_template=(
+            "https://index.invalid/integrity/{distribution}/{version}/{filename}/provenance"
+        ),
+        publisher=publisher,
+        attestation_repository="https://github.com/VangelisTech/archetype",
+        attestation_staging=True,
+        require_complete=True,
+        expected_commit=COMMIT,
+        fetch=fetch,
+        verify_cryptographic_attestation=verify_crypto,
+        attempts=2,
+        interval_seconds=4,
+        sleep=sleeps.append,
+    )
+
+    assert result["cryptographic_provenance"]["staging"] is True
+    assert result["cryptographic_provenance"]["artifact_count"] == 8
+    assert len(calls) == 9
+    assert all(
+        repository == "https://github.com/VangelisTech/archetype" and staging is True
+        for _filename, repository, staging in calls
+    )
+    assert sleeps == [4]
+
+
+def test_complete_index_exhausts_persistent_crypto_failure_with_diagnostics() -> None:
+    manifest = _manifest()
+    payloads = _payloads(manifest)
+    publisher = _publisher()
+    records = {record["name"]: record for record in manifest["artifacts"]}
+    calls: list[tuple[str, str, bool]] = []
+    sleeps: list[float] = []
+
+    def fetch(url: str) -> dict[str, Any]:
+        if "/pypi/" in url:
+            return payloads[url.split("/")[-3]]
+        filename = url.split("/")[-2]
+        return _provenance(records[filename], publisher)
+
+    def verify_crypto(filename: str, repository: str, staging: bool) -> None:
+        calls.append((filename, repository, staging))
+        raise CryptographicVerificationError(
+            f"cryptographic provenance verification failed for {filename!r}\n"
+            "stdout:\nregistry response\nstderr:\nbad signature"
+        )
+
+    with pytest.raises(
+        CryptographicVerificationError,
+        match=(
+            r"(?s)exhausted 3 attempt\(s\).*cryptographic provenance verification failed"
+            r".*registry response.*bad signature"
+        ),
+    ):
+        verify_index(
+            manifest,
+            api_template="https://index.invalid/pypi/{distribution}/{version}/json",
+            integrity_template=(
+                "https://index.invalid/integrity/{distribution}/{version}/{filename}/provenance"
+            ),
+            publisher=publisher,
+            attestation_repository="https://github.com/VangelisTech/archetype",
+            require_complete=True,
+            expected_commit=COMMIT,
+            fetch=fetch,
+            verify_cryptographic_attestation=verify_crypto,
+            attempts=3,
+            interval_seconds=2,
+            sleep=sleeps.append,
+        )
+
+    assert len(calls) == 3
+    assert len({filename for filename, _repository, _staging in calls}) == 1
+    assert all(staging is False for _filename, _repository, staging in calls)
+    assert sleeps == [2, 2]
 
 
 def test_remote_verifier_rejects_non_https_templates() -> None:

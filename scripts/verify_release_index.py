@@ -40,6 +40,10 @@ class IncompleteIndexError(ValueError):
     """The index has not yet made all required release evidence visible."""
 
 
+class CryptographicVerificationError(RuntimeError):
+    """The registry artifact could not yet be cryptographically verified."""
+
+
 def _load(path: Path) -> dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
@@ -316,7 +320,7 @@ def verify_attestation(
     command.append(f"pypi:{filename}")
     process = run(command, check=False, capture_output=True, text=True)
     if process.returncode:
-        raise RuntimeError(
+        raise CryptographicVerificationError(
             f"cryptographic provenance verification failed for {filename!r}\n"
             f"stdout:\n{process.stdout}\nstderr:\n{process.stderr}"
         )
@@ -412,6 +416,13 @@ def verify_index(
                     "artifacts": sorted(str(artifact["name"]) for artifact in result["artifacts"]),
                 }
             return result
+        except CryptographicVerificationError as error:
+            if attempt + 1 == attempts:
+                raise CryptographicVerificationError(
+                    "cryptographic provenance verification exhausted "
+                    f"{attempts} attempt(s)\n{error}"
+                ) from error
+            sleep(interval_seconds)
         except IncompleteIndexError:
             if not require_complete:
                 raise
