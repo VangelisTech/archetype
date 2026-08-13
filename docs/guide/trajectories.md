@@ -31,9 +31,9 @@ mission graph.
 | `archetype.missions.trajectories.transforms` | Pure row transforms and the derived `trajectory(...)` view; no service access. |
 | `archetype.missions.trajectory_service` | Internal composition of persisted query access and evaluation graders. |
 | `archetype.missions.transcript_service` | Internal snapshot, redaction, sanitized-file ingestion, and normalized-row workflow. |
-| `RuntimeWorld.query_trajectory()` | Recommended filtered read path. |
-| `RuntimeWorld.grade_trajectory()` | Recommended query-then-grade path. |
-| `RuntimeWorld.ingest_claude_transcript()` | Recommended source-to-artifact workflow. |
+| `MissionWorld.query_trajectory()` | Recommended filtered read path. |
+| `MissionWorld.grade_trajectory()` | Recommended query-then-grade path. |
+| `MissionWorld.ingest_claude_transcript()` | Recommended source-to-artifact workflow. |
 
 The app service owns no evidence truth. Query storage remains authoritative
 for rows, evaluation remains authoritative for grader execution and receipts,
@@ -95,13 +95,15 @@ large, externally sourced, or potentially secret-bearing material.
 evidence table by `episode_id`. Archetype does not perform an implicit join.
 
 ```python
+from archetype.missions import MissionWorld
 from archetype.missions.trajectories import (
     TrajectoryReward,
     TrajectorySelection,
 )
 
+evidence = MissionWorld(world)
 selection = TrajectorySelection(episode_ids=("episode-auth-1",))
-rewards = await world.query_trajectory(
+rewards = await evidence.query_trajectory(
     TrajectoryReward,
     selection=selection,
 )
@@ -120,7 +122,7 @@ reconstructed lazily from a persisted evidence table.
 ```python
 from archetype.missions.trajectories import TrajectoryTurn, trajectory
 
-turns = await world.query_trajectory(TrajectoryTurn)
+turns = await evidence.query_trajectory(TrajectoryTurn)
 ordered = trajectory(turns, TrajectoryTurn, episode_id="episode-auth-1")
 ```
 
@@ -136,7 +138,7 @@ def total_reward(frame):
     rows = frame.collect().to_pylist()  # the grader chooses its execution boundary
     return sum(row["trajectoryreward__reward"] for row in rows)
 
-outputs = await world.grade_trajectory(
+outputs = await evidence.grade_trajectory(
     TrajectoryReward,
     selection=selection,
     graders=[total_reward],
@@ -146,7 +148,8 @@ outputs = await world.grade_trajectory(
 Those outputs are ephemeral analysis. Use `world.evaluate()` with a
 `GraderContract` when the result must become a durable evaluation receipt.
 
-Sync scripts use the same names through `ArchetypeRuntime.sync()`.
+`MissionWorld` is an async typed adapter. Installing Missions does not add
+trajectory methods to generic async or sync world handles.
 
 ## Pure transforms
 
@@ -173,9 +176,10 @@ content identity, and typed ingestion.
 ```python
 from pathlib import Path
 
+from archetype.missions import MissionWorld
 from archetype.missions.trajectories import ClaudeTranscriptSource
 
-result = await world.ingest_claude_transcript(
+result = await MissionWorld(world).ingest_claude_transcript(
     ClaudeTranscriptSource(
         path=Path("session.jsonl"),
         mission_id="mission-42",
@@ -199,7 +203,7 @@ one session row plus ordered turn rows linked by the same canonical
 `episode_id` and `source_artifact_id`. The submitted local path is absent
 from both durable tables. `TranscriptIngestionResult` returns the portable
 `ArtifactRef`, linkage, row count, and redaction outcome;
-`world.transcript_rows()` reads the normalized rows for analysis.
+`MissionWorld(world).transcript_rows()` reads the normalized rows for analysis.
 
 `TrajectoryTurn` remains the one class identity for deliberate safe authoring;
 transcript ingestion does not write it. See

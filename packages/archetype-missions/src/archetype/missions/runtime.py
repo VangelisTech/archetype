@@ -118,6 +118,8 @@ class Missions:
         name: str = "agent-mission",
         base_ref: str = "main",
     ) -> SubmittedMission:
+        """Persist one coding mission and return its durable identity."""
+
         return await self._dispatcher.apply(
             SubmitMission(
                 owner_id=self._owner_id,
@@ -141,6 +143,8 @@ class Missions:
         *,
         max_ticks: int | None = None,
     ) -> MissionResult:
+        """Run a submitted mission to a terminal result."""
+
         return await self._dispatcher.apply(
             RunMission(
                 owner_id=self._owner_id,
@@ -184,6 +188,8 @@ class Missions:
         return service.world_id
 
     async def close(self) -> None:
+        """Release this mission workflow handle and its world reservation."""
+
         if self._reservation.operation_admitted():
             raise RuntimeError("Agent Missions handle cannot close from an admitted operation")
         self._reservation.ensure_close_allowed()

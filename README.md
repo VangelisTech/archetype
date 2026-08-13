@@ -45,6 +45,11 @@ are also available as `missions`, `physical-ai`, and `research`, for example
 when an `ArchetypeRuntime` or API host is composed; the base framework starts
 with none installed.
 
+Version 0.6 is a clean pre-1.0 split with no world-library import or
+runtime-method shims and no automatic migration for older Research ledgers.
+See the [0.6 release note](docs/guide/release-0.6.md) for the exact source and
+storage changes.
+
 For a checkout, install the development environment with `make sync-dev`.
 The repository is one uv workspace containing all four distributions.
 

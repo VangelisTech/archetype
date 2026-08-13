@@ -267,9 +267,10 @@ Coding-agent transcripts are a mission workflow, not an artifact backend.
 
 Every normalized row carries `source_artifact_id`, so queries can join the
 narrative data to the common file index without persisting a duplicate asset
-component. `world.transcript_rows()` returns the current run's normalized
-session and turn rows. The original source digest may identify the input, while the
-artifact SHA-256 always describes the sanitized bytes actually stored.
+component. `MissionWorld(world).transcript_rows()` returns the current run's
+normalized session and turn rows. The original source digest may identify the
+input, while the artifact SHA-256 always describes the sanitized bytes actually
+stored.
 
 Quarantine, parse, and row-redaction failures occur before artifact
 publication and publish nothing. A digest mismatch occurs after the honest

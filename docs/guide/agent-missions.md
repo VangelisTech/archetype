@@ -20,7 +20,7 @@ start, which observations may advance it, and why every transition occurred**.
 
 ```mermaid
 graph TB
-    Author["Mission author"] --> RT["RuntimeMissions"]
+    Author["Mission author"] --> RT["Missions"]
     RT --> App["MissionService"]
     App --> World["Mission world<br/>core ECS + relations"]
 

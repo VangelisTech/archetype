@@ -116,10 +116,10 @@ on. Equivalent mutants are an inherent noise floor in mutation testing.
   signal; slow tests blow up the wall clock.
 - **`also_copy` stages the rest of the package.** mutmut copies only
   `paths_to_mutate` into `mutants/` by default, but our pytest
-  `pythonpath = ["src", "."]` makes `mutants/src` the import root.
-  Without the `also_copy = ["src/archetype"]` entry, `tests/conftest.py`
-  fails to import the full package. The unmutated copy is harmlessly
-  overwritten when mutmut writes each mutant.
+  `pythonpath` makes the staged package source root importable. Without the
+  `also_copy = ["packages/archetype-ecs/src/archetype"]` entry,
+  `tests/conftest.py` fails to import the full package. The unmutated copy is
+  harmlessly overwritten when mutmut writes each mutant.
 - **LanceDB fork warning.** `lance is not fork-safe`. The pilot module
   doesn't touch LanceDB during import, so the warning is benign. If
   you expand the scope into modules that do, switch the multiprocessing

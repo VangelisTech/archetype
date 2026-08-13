@@ -2,8 +2,9 @@
 
 **Document type:** Normative.
 
-**Scope:** Distribution boundaries, trusted extension discovery, compatibility,
-installation order, adapters, and release policy for Archetype world libraries.
+**Scope:** Distribution boundaries, trusted extension discovery, framework
+version ranges, installation order, adapters, and release policy for Archetype
+world libraries.
 
 ## 1. Framework and library distributions
 
@@ -25,7 +26,7 @@ surfaces.
 
 The `archetype` import package is intentionally extensible. The framework owns
 `archetype/__init__.py`; separately built wheels contribute only their named
-subpackages. Supported family imports remain stable even though their code is
+subpackages. Family-qualified imports are canonical even though their code is
 released from another distribution.
 
 ## 2. Trusted Python extension boundary
@@ -69,9 +70,7 @@ An installed world library advertises one entry point in the
 - its library version and compatible `archetype-ecs` version range;
 - every exact operation model/discriminator it will install;
 - one private synchronous installation function;
-- optional typed runtime and world adapters;
-- optional API router factories; and
-- bounded compatibility aliases for the pre-1.0 migration.
+- optional API router factories.
 
 Discovery sorts manifests by canonical library name. Before any library
 installer runs, composition MUST reject:
@@ -79,13 +78,12 @@ installer runs, composition MUST reject:
 - duplicate library names;
 - duplicate operation discriminators or exact model types;
 - conflicts with framework-owned operations;
-- duplicate adapter or compatibility names;
 - a malformed manifest; or
 - a framework version outside the declared compatibility range.
 
 The installer receives a `WorldLibraryContext` containing the already composed
 framework capabilities. It may register only the operations declared by its
-manifest. It returns the installed adapter/router surface; it does not replace
+manifest. It returns the installed typed-adapter surface; it does not replace
 the framework registry, dispatcher, process owner, storage authority, world
 registry, or shutdown protocol. Installation is complete before the runtime or
 API host becomes visible to callers.
@@ -155,7 +153,7 @@ artifact and `archetype-ffi` ABI range, but that native artifact remains a
 nested implementation capability of a library or the ECS framework. It is not
 the discovery or lifecycle protocol for the library itself.
 
-## 6. Packaging and compatibility policy
+## 6. Packaging and release policy
 
 The repository is one uv workspace with one lock and four independently built
 projects. Published dependencies use normal version ranges; uv workspace source
@@ -169,18 +167,20 @@ in package metadata is intentional and benign: each library requires a
 compatible already selected framework version, while the extra selects the
 library at the same release line.
 
-The split is an intentional pre-1.0 packaging break for the 0.6 line:
+The split is an intentional pre-1.0 packaging break for the 0.6 line. It has no
+compatibility layer:
 
 - `archetype.<family>` imports remain the supported family paths;
 - domain types are no longer owned by the framework root facade;
-- bounded dynamic method/root aliases may ease one release of migration but
-  are Compatibility-tier only; and
+- installed libraries do not add dynamic methods to runtime/world handles;
+- installed libraries do not add domain values to the framework root; and
 - `archetype.episodes` is removed without a replacement shim.
 
-Each distribution is released and tested independently. A release set MUST
-also pass a full-stack matrix proving deterministic composition, operation
-dispatch, router installation, process teardown, and duplicate/incompatible
-manifest failure.
+Each distribution is built and tested independently. The 0.6 distributions are
+published as one coordinated release set, which MUST also pass a full-stack
+matrix proving deterministic composition, operation dispatch, router
+installation, process teardown, and duplicate/incompatible manifest failure.
+See [Archetype 0.6](release-0.6.md) for the exact clean-break upgrade contract.
 
 ## 7. Executable evidence
 
@@ -192,7 +192,7 @@ Required evidence includes:
 - exact operation inventories for each installation set;
 - base runtime and API startup with zero extensions;
 - deterministic manifest ordering independent of entry-point order;
-- fail-closed duplicate names, models, discriminators, aliases, and incompatible
+- fail-closed duplicate names, models, discriminators, and incompatible
   framework ranges;
 - extension-owned runtime behavior and API routes; and
 - clean framework plus extension-owner teardown.

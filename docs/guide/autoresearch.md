@@ -5,7 +5,7 @@
 AutoResearch is a minimal world-library pattern for autonomous optimization:
 track one candidate frontier, evaluate forked world lines against it, and
 advance the head only when a run improves a user-defined metric. The shape —
-experiment, run, result, keep / discard / crash — applies whether the candidate
+experiment, run, result, keep / discard / fail — applies whether the candidate
 is code, a policy, a prompt, or another world-library configuration.
 
 It is a separately installed [application-layer](app-overview.md) loop.
@@ -16,8 +16,8 @@ code. Coding-agent sessions, transcripts, and trajectories remain owned by
 **Document type:** Contract and user guide.
 
 **Status: attempts run on the ledger.** The research-family handler records a
-`RUNNING` row before candidate preparation or rollout, then records `STOPPED`
-with an evaluation or `CRASHED` with failure metadata. The loop is itself an
+`RUNNING` row before candidate preparation or rollout, then records `SUCCEEDED`
+with an evaluation or `FAILED` with failure metadata. The loop is itself an
 archetype simulation.
 
 ```mermaid
@@ -45,7 +45,7 @@ graph TB
 | **Worlds as save states** | Fork / attach episode worlds; inspect any attempt afterward |
 | **Ledgered attempts** | `RUNNING` → `STOPPED` / `CRASHED` rows before and after work |
 | **User-defined better** | `Result` and `BranchHead` stay opaque; your eval scores |
-| **Runtime entry** | `world.autoresearch(...)` — not assembling internal services |
+| **Runtime entry** | `Research(world).autoresearch(...)` — not assembling internal services |
 | **Governed admission** | Registered `AutoResearch` model through `CommandDispatcher` |
 
 ## Runtime quick path
@@ -56,6 +56,9 @@ Install the Research world library with `uv add archetype-research` (or
 scores each one, and keeps the best route; every attempt — including crashes —
 lands on the experiment's own ledger. Episode worlds are kept by default so
 you can load any of them afterward and inspect what actually happened.
+
+The 0.6 ledger is a clean generic schema. Pre-0.6 Research ledgers are not
+migrated or opened as 0.6 experiments; see [Archetype 0.6](release-0.6.md).
 
 ```python
 from archetype import ArchetypeRuntime
@@ -143,8 +146,8 @@ storage:
   seed `BranchHead`, persisted as raw initial conditions
 - **first attempt tick** — a `Run` in `RUNNING` state, written before candidate
   preparation or rollout
-- **terminal attempt tick** — the same `Run` transitions to `STOPPED` or
-  `CRASHED`; a stopped attempt adds the typed `Result` and any `BranchHead`
+- **terminal attempt tick** — the same `Run` transitions to `SUCCEEDED` or
+  `FAILED`; a successful attempt adds the typed `Result` and any `BranchHead`
   advance
 - **resume validates identity** — the stored experiment id, base world, display
   name, evaluator contract, and semantic configuration must match before
@@ -207,11 +210,10 @@ async with ArchetypeRuntime() as runtime:
 `prepare_candidate` receives a `ResearchCandidateContext` with deterministic
 experiment, iteration, and run identities. Returning `None` evaluates the
 original base world. Candidate worlds remain caller-owned.
-`CandidateContext` is a one-release import alias for that exact class; new
-code and documentation use the qualified name. The transient callback value
-is distinct from the persisted `archetype.missions.Candidate` review subject:
-it has no candidate/head/diff/validator/critic receipt identity and does not
-share the mission component schema or relations.
+The transient callback value is distinct from the persisted
+`archetype.missions.Candidate` review subject: it has no
+candidate/head/diff/validator/critic receipt identity and does not share the
+mission component schema or relations.
 
 Because the lab world is an ordinary world, the experiment itself is forkable:
 fork the lab at any tick and replay "what if a different run had advanced the

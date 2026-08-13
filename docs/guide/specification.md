@@ -18,7 +18,7 @@ The current contract set is split across design docs and executable tests.
 | [Runtime](runtime.md) | Trusted script boundary | `ArchetypeRuntime`, `RuntimeWorld`, sync parity, exact-operation dispatch, and process lifetime. |
 | [Observability](observability.md) | Safe advisory signals | Vendor-neutral trace/metric vocabulary, bounded failure semantics, context, and process-host provider ownership. |
 | [Application Architecture](application-architecture.md) | Supported boundaries and dependency policy | Normative current ownership plus the accepted v0.5 target family DAG, composition, encapsulation, and lint inputs. |
-| [World Libraries](world-libraries.md) | Framework and distribution extension boundary | Separately installed library manifests, deterministic discovery, typed adapters, packaging compatibility, and release evidence. |
+| [World Libraries](world-libraries.md) | Framework and distribution extension boundary | Separately installed library manifests, deterministic discovery, typed adapters, framework version ranges, and release evidence. |
 | [Service Protocols](service-protocols.md) | Internal application ports | Active family interfaces composed by wiring and consumed by registered handlers. |
 | [Command Gate](command-gate.md) | Authorization and roles | Four-role model, permissions matrix, audit emission shape. |
 | [Execution Hierarchy](execution-hierarchy.md) | Step/run/episode/rollout | Simulation levels and rollout fork semantics. |

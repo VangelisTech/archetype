@@ -2,7 +2,7 @@
 
 # Python API
 
-Archetype's Python reference inventories and classifies the supported top-level surface. Most applications only need the runtime, world-handle, and building-block pages.
+Archetype's Python reference inventories and classifies the supported framework and world-library surfaces. Most applications only need the runtime, world-handle, and building-block pages.
 
 | Surface | Use it for |
 | --- | --- |
@@ -10,6 +10,7 @@ Archetype's Python reference inventories and classifies the supported top-level 
 | [World handle](python/world-handle.md) | Create entities, run simulations, query history, and manage one world. |
 | [Runtime models](python/runtime-models.md) | Configuration, result, and introspection records returned by world operations. |
 | [File artifacts](python/artifacts.md) | Declare files, configure content-addressed storage, retain portable references to indexed artifact occurrences, and anchor interpretation to a task. |
+| [Agent Missions](python/missions.md) | Run coding-agent missions and inspect mission-owned transcript and trajectory evidence. |
 | [Coding-agent transcripts](python/transcripts.md) | Ingest Claude Code JSONL through a redacted artifact boundary and append normalized mission rows linked to the sanitized file occurrence. |
 | [Building blocks](python/building-blocks.md) | Use these types to define component data, processors, and processor resources. |
 | [Hooks and ingress identity](python/hooks.md) | React to world lifecycle events and define the identity record used by trusted ingress adapters. |
@@ -24,7 +25,7 @@ Archetype's Python reference inventories and classifies the supported top-level 
 
 Presence in `archetype.__all__` is an intentional supported exposure. The tier on each reference page and the focused specifications classify its stability. Types exposed by supported signatures are part of those contracts even when they are not top-level exports.
 
-Installed world libraries may contribute Compatibility-tier root attributes through their deterministic manifests. Those names remain deliberately absent from the domain-free framework `archetype.__all__`; new code should import the owning `archetype.<family>` module or its typed adapter explicitly.
+World-library APIs are family-qualified and remain deliberately absent from the domain-free framework `archetype.__all__`. Import `Missions` and `MissionWorld` from `archetype.missions`, `PhysicalAI` from `archetype.physical_ai`, and `Research` from `archetype.research`.
 
 The container and concrete application services are internal and are not top-level exports. Repository wiring imports them from their owning family modules; applications use the runtime or an adapter.
 
@@ -32,7 +33,6 @@ See [API stability and docstrings](../guide/api-stability.md) for the full polic
 
 ## Compatibility aliases
 
-- `CandidateContext` is an alias for `ResearchCandidateContext`.
 - `Processor` is an alias for `SyncProcessor`.
 - `World` is an alias for `SyncWorld`.
 - `System` is an alias for `SyncSystem`.

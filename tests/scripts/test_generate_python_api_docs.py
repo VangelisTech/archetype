@@ -5,27 +5,33 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
-import pytest
-
 import archetype
 from scripts.generate_python_api_docs import (
     PAGES_DIR,
-    _manifest_root_exports,
     _validate_coverage,
     main,
 )
 
-DYNAMIC_ROOT_EXPORTS = {
+WORLD_LIBRARY_EXPORTS = {
+    "AgentMissionConfig",
+    "AgentTask",
     "AutoResearchConfig",
     "AutoResearchResult",
-    "CandidateContext",
+    "CommandValidator",
+    "CriticPolicy",
     "EvaluationResult",
     "HostedEpisodeObservation",
     "HostedEpisodeRequest",
+    "MissionResult",
+    "MissionWorld",
+    "Missions",
     "ModalHostedEpisodeConfig",
+    "PhysicalAI",
+    "Research",
+    "RepositoryPublicationPolicy",
     "ResearchCandidateContext",
+    "SubmittedMission",
+    "TaskResult",
 }
 
 
@@ -42,45 +48,25 @@ def test_artifact_context_reference_names_selected_evidence() -> None:
     ) in reference
 
 
-def test_installed_manifest_exports_are_documented_without_entering_framework_all() -> None:
+def test_world_library_exports_are_documented_without_entering_framework_all() -> None:
     locations = _validate_coverage()
 
-    assert DYNAMIC_ROOT_EXPORTS.isdisjoint(archetype.__all__)
-    assert DYNAMIC_ROOT_EXPORTS <= set(locations)
+    assert WORLD_LIBRARY_EXPORTS.isdisjoint(archetype.__all__)
+    assert WORLD_LIBRARY_EXPORTS <= set(locations)
     assert locations["AutoResearchConfig"] == (
-        "archetype.research.models",
+        "archetype.research",
         "AutoResearchConfig",
     )
     assert locations["HostedEpisodeRequest"] == (
-        "archetype.physical_ai.models",
+        "archetype.physical_ai",
         "HostedEpisodeRequest",
     )
+    assert locations["IterationResult"] == ("archetype.research", "IterationResult")
 
+    missions = (PAGES_DIR / "missions.md").read_text(encoding="utf-8")
+    for name in ("CriticPolicy", "RepositoryPublicationPolicy", "TaskResult"):
+        assert f"::: archetype.missions.{name}" in missions
 
-def test_manifest_root_export_merge_preserves_framework_and_library_collisions() -> None:
-    framework = {"Component": ("archetype.core", "Component")}
-    with pytest.raises(RuntimeError, match="collides with the framework"):
-        _manifest_root_exports(
-            [
-                SimpleNamespace(
-                    name="rogue",
-                    root_exports={"Component": ("rogue", "Component")},
-                )
-            ],
-            framework_locations=framework,
-        )
-
-    with pytest.raises(RuntimeError, match="duplicate world-library root export"):
-        _manifest_root_exports(
-            [
-                SimpleNamespace(
-                    name="alpha",
-                    root_exports={"Shared": ("alpha", "Shared")},
-                ),
-                SimpleNamespace(
-                    name="beta",
-                    root_exports={"Shared": ("beta", "Shared")},
-                ),
-            ],
-            framework_locations=framework,
-        )
+    reference = (PAGES_DIR.parent / "python-api.md").read_text(encoding="utf-8")
+    assert "CandidateContext" not in reference
+    assert "Compatibility-tier root attributes" not in reference

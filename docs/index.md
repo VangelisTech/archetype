@@ -13,6 +13,10 @@ project — `ArchetypeRuntime`, the HTTP service, command gate, agent missions,
 prefabs, graphs — sits on top of this model. Learn the core first; the product
 layers are easier once the boxes below are solid.
 
+[Start the quickstart](guide/quickstart.md) ·
+[Choose world libraries](guide/world-libraries.md) ·
+[Browse examples](guide/examples.md)
+
 For installation and a first run, see [Quickstart](guide/quickstart.md).
 For the normative application contracts, see
 [Architecture Overview](guide/architecture.md).
@@ -26,6 +30,22 @@ For the normative application contracts, see
 | **Append-only history** | Each tick writes new rows; past state is a query, not a replay hack |
 | **Read/write split** | `QueryManager` reads; `UpdateManager` appends; the world orchestrates |
 | **Pluggable storage** | Stores sit under the same query/update facades (LanceDB by default) |
+
+## Where to go
+
+| Goal | Guide |
+|---|---|
+| Run your first world | [Quickstart](guide/quickstart.md) |
+| Build a simulation | [Building simulations](guide/building-simulations.md) |
+| Model state | [Components](guide/components.md) |
+| Write behavior | [Processors](guide/processors.md) |
+| Spawn, query, and fork | [Working with worlds](guide/working-with-worlds.md) |
+| Inspect past state | [History and forks](guide/history-and-forks.md) |
+| Install Missions, Physical AI, or Research | [World libraries](guide/world-libraries.md) |
+| Run a coding-agent software factory | [Agent Missions](guide/agent-missions.md) |
+| Upgrade to the clean 0.6 split | [Archetype 0.6](guide/release-0.6.md) |
+| Run a service over HTTP | [Service hosting](guide/app-overview.md) |
+| Find an exact method or endpoint | [Reference](reference/python-api.md) |
 
 ## System Architecture
 

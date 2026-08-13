@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import types
-from collections.abc import Iterable, Mapping
 from dataclasses import MISSING, dataclass, fields, is_dataclass
 from enum import Enum
 from importlib import import_module
@@ -79,6 +78,24 @@ PAGES: tuple[ReferencePage, ...] = (
         ),
     ),
     ReferencePage(
+        "missions",
+        "Agent Missions",
+        "Recommended API",
+        "Run coding-agent missions and inspect mission-owned transcript and trajectory evidence.",
+        (
+            "Missions",
+            "MissionWorld",
+            "AgentMissionConfig",
+            "AgentTask",
+            "CommandValidator",
+            "CriticPolicy",
+            "RepositoryPublicationPolicy",
+            "SubmittedMission",
+            "MissionResult",
+            "TaskResult",
+        ),
+    ),
+    ReferencePage(
         "transcripts",
         "Coding-agent transcripts",
         "Recommended API",
@@ -128,6 +145,7 @@ PAGES: tuple[ReferencePage, ...] = (
         "Extension API",
         "Configure optimization loops and persist evaluation evidence with explicit identities.",
         (
+            "Research",
             "AutoResearchConfig",
             "AutoResearchResult",
             "ResearchCandidateContext",
@@ -145,6 +163,7 @@ PAGES: tuple[ReferencePage, ...] = (
         "Recommended API",
         "Run or recover complete Modal-hosted episode batches through a World.",
         (
+            "PhysicalAI",
             "HostedEpisodeRequest",
             "HostedEpisodeObservation",
             "ModalHostedEpisodeConfig",
@@ -202,7 +221,6 @@ PAGES: tuple[ReferencePage, ...] = (
 )
 
 ALIASES: dict[str, str] = {
-    "CandidateContext": "ResearchCandidateContext",
     "Processor": "SyncProcessor",
     "World": "SyncWorld",
     "System": "SyncSystem",
@@ -231,7 +249,41 @@ SUPPLEMENTAL: dict[str, tuple[str, str]] = {
         "archetype.missions.trajectories",
         "TranscriptIngestionResult",
     ),
-    "IterationResult": ("archetype.research.models", "IterationResult"),
+    "Missions": ("archetype.missions", "Missions"),
+    "MissionWorld": ("archetype.missions", "MissionWorld"),
+    "AgentMissionConfig": ("archetype.missions", "AgentMissionConfig"),
+    "AgentTask": ("archetype.missions", "AgentTask"),
+    "CommandValidator": ("archetype.missions", "CommandValidator"),
+    "CriticPolicy": ("archetype.missions", "CriticPolicy"),
+    "RepositoryPublicationPolicy": (
+        "archetype.missions",
+        "RepositoryPublicationPolicy",
+    ),
+    "SubmittedMission": ("archetype.missions", "SubmittedMission"),
+    "MissionResult": ("archetype.missions", "MissionResult"),
+    "TaskResult": ("archetype.missions", "TaskResult"),
+    "Research": ("archetype.research", "Research"),
+    "AutoResearchConfig": ("archetype.research", "AutoResearchConfig"),
+    "AutoResearchResult": ("archetype.research", "AutoResearchResult"),
+    "ResearchCandidateContext": (
+        "archetype.research",
+        "ResearchCandidateContext",
+    ),
+    "EvaluationResult": ("archetype.research", "EvaluationResult"),
+    "IterationResult": ("archetype.research", "IterationResult"),
+    "PhysicalAI": ("archetype.physical_ai", "PhysicalAI"),
+    "HostedEpisodeRequest": (
+        "archetype.physical_ai",
+        "HostedEpisodeRequest",
+    ),
+    "HostedEpisodeObservation": (
+        "archetype.physical_ai",
+        "HostedEpisodeObservation",
+    ),
+    "ModalHostedEpisodeConfig": (
+        "archetype.physical_ai",
+        "ModalHostedEpisodeConfig",
+    ),
     "EnvClient": ("archetype.physical_ai.interfaces", "EnvClient"),
     "OptimizationResult": ("archetype.physical_ai.optimization", "OptimizationResult"),
     "PerturbationStrategy": (
@@ -281,6 +333,14 @@ RECORDS = frozenset(
         "ArtifactStoreConfig",
         "ClaudeTranscriptSource",
         "TranscriptIngestionResult",
+        "AgentMissionConfig",
+        "AgentTask",
+        "CommandValidator",
+        "CriticPolicy",
+        "RepositoryPublicationPolicy",
+        "SubmittedMission",
+        "MissionResult",
+        "TaskResult",
         "ProcessorInfo",
         "HookInfo",
         "ResourceInfo",
@@ -333,61 +393,15 @@ COMPATIBILITY_CLASSES = frozenset(
 HIDDEN_SIGNATURES = frozenset({"RuntimeWorld", "SyncRuntimeWorld"})
 
 
-def _manifest_root_exports(
-    manifests: Iterable[object],
-    *,
-    framework_locations: Mapping[str, tuple[str, str]],
-) -> dict[str, tuple[str, str]]:
-    """Merge deterministic compatibility exports without weakening collisions."""
-
-    exports: dict[str, tuple[str, str]] = {}
-    owners: dict[str, str] = {}
-    for manifest in manifests:
-        library = str(getattr(manifest, "name", ""))
-        root_exports = getattr(manifest, "root_exports", None)
-        if not isinstance(root_exports, Mapping):
-            raise TypeError(f"world library {library!r} has no root-export mapping")
-        for name, target in root_exports.items():
-            if name in framework_locations:
-                raise RuntimeError(
-                    f"world library {library!r} root export {name!r} collides with the framework"
-                )
-            previous = owners.get(name)
-            if previous is not None:
-                raise RuntimeError(
-                    f"duplicate world-library root export {name!r} from "
-                    f"{previous!r} and {library!r}"
-                )
-            if not (
-                isinstance(name, str)
-                and isinstance(target, tuple)
-                and len(target) == 2
-                and all(isinstance(value, str) and value for value in target)
-            ):
-                raise TypeError(f"world library {library!r} has an invalid root-export location")
-            owners[name] = library
-            exports[name] = target
-    return exports
-
-
 def _validate_coverage() -> dict[str, tuple[str, str]]:
     """Return export locations after checking classification and alias coverage."""
     import archetype
-    from archetype.world_libraries import discover_world_libraries
 
     framework_locations = dict(archetype._EXPORTS)
     framework_exports = set(archetype.__all__)
     if framework_exports != set(framework_locations):
         raise RuntimeError("framework __all__ and _EXPORTS disagree")
-    manifests = discover_world_libraries(framework_version=archetype.__version__)
-    compatibility_locations = _manifest_root_exports(
-        manifests,
-        framework_locations=framework_locations,
-    )
-    compatibility_exports = set(compatibility_locations)
-    supplemental_collisions = sorted(
-        set(SUPPLEMENTAL) & (framework_exports | compatibility_exports)
-    )
+    supplemental_collisions = sorted(set(SUPPLEMENTAL) & framework_exports)
     if supplemental_collisions:
         raise RuntimeError(
             "supplemental locations collide with root exports: "
@@ -396,7 +410,7 @@ def _validate_coverage() -> dict[str, tuple[str, str]]:
 
     documented = {name for page in PAGES for name in page.names}
     top_level_documented = (documented - set(SUPPLEMENTAL)) | set(ALIASES)
-    actual = framework_exports | compatibility_exports
+    actual = framework_exports
     missing = sorted(actual - top_level_documented)
     stale = sorted(top_level_documented - actual)
     duplicates = sorted(
@@ -414,7 +428,7 @@ def _validate_coverage() -> dict[str, tuple[str, str]]:
             problems.append(f"exports assigned more than once: {', '.join(duplicates)}")
         raise RuntimeError("; ".join(problems))
 
-    return {**framework_locations, **compatibility_locations, **SUPPLEMENTAL}
+    return {**framework_locations, **SUPPLEMENTAL}
 
 
 def _type_name(annotation: object) -> str:
@@ -560,7 +574,7 @@ def _render_index() -> str:
         "# Python API",
         "",
         "Archetype's Python reference inventories and classifies the supported "
-        "top-level surface. Most "
+        "framework and world-library surfaces. Most "
         "applications only need the runtime, world-handle, and building-block pages.",
         "",
         "| Surface | Use it for |",
@@ -578,10 +592,10 @@ def _render_index() -> str:
             "Types exposed by supported "
             "signatures are part of those contracts even when they are not top-level exports.",
             "",
-            "Installed world libraries may contribute Compatibility-tier root attributes through "
-            "their deterministic manifests. Those names remain deliberately absent from the "
-            "domain-free framework `archetype.__all__`; new code should import the owning "
-            "`archetype.<family>` module or its typed adapter explicitly.",
+            "World-library APIs are family-qualified and remain deliberately absent from the "
+            "domain-free framework `archetype.__all__`. Import `Missions` and `MissionWorld` "
+            "from `archetype.missions`, `PhysicalAI` from `archetype.physical_ai`, and "
+            "`Research` from `archetype.research`.",
             "",
             "The container and concrete application services are internal and are not "
             "top-level exports. Repository wiring imports them from their owning family "

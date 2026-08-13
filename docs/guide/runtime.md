@@ -110,8 +110,8 @@ owner; the runner is released only after successful finalization.
 
 This requirement covers the generic framework surface. A separately installed
 world library may publish an async-only typed adapter and must document that
-gap explicitly; temporary sync aliases do not promote the adapter into the
-framework contract.
+gap explicitly. Installing the library does not add a synchronous domain method
+to the framework contract.
 
 ### R6 — World handles are declarative and lazy
 
@@ -190,9 +190,9 @@ entry share that handler; actor-aware use requires `operator`, resolves a
 `live_world` quota coordinate, and charges
 `200 * max(max_iterations, 1)`. Deferred entry rejects before catalog effects
 because evaluator, preparer, and iteration callbacks are live capabilities.
-The typed Research adapter is async. For the 0.6 migration only, the installed
-manifest supplies the former `SyncRuntimeWorld.autoresearch` alias and forwards
-synchronous callbacks through the sync runner.
+The typed Research adapter is async. Its installed manifest registers only the
+exact operation and typed adapter; it does not add AutoResearch methods to
+generic async or sync world handles.
 
 The dispatcher synchronously awaits the entire outer workflow inside one
 process admission. Callback execution does not hold a runtime handle or named
@@ -212,10 +212,9 @@ physical-AI handler. The world handle must retain explicit storage coordinates. 
 handler owns hosted Activity admission, remote Modal execution or
 reconciliation by stable operation identity, and durable result publication;
 the runtime does not run episodes or collect terminal rows itself. The typed
-world-library adapter is async. During the 0.6 migration, `SyncRuntimeWorld`
-offers manifest-driven compatibility forwarding for the former world method;
-the framework does not import Physical AI. See [Physical AI](physical-ai.md)
-and [World Libraries](world-libraries.md).
+world-library adapter is async, and the framework does not import Physical AI
+or add the operation to generic world handles. See
+[Physical AI](physical-ai.md) and [World Libraries](world-libraries.md).
 
 ### R12 — Typed artifacts and transcript evidence
 
@@ -246,9 +245,9 @@ returned `TranscriptIngestionResult` identifies the sanitized `ArtifactRef`,
 row count, trajectory linkage, and redaction outcome. The runtime does not open
 the source file, write
 narrative Components, or coordinate those steps itself. The Missions adapter
-has synchronous parity. `MissionWorld(world).transcript_rows()` returns the
-normalized session and turn rows for the current run. Compatibility forwarding
-through the former world methods is manifest-driven and temporary.
+is async. `MissionWorld(world).transcript_rows()` returns the normalized
+session and turn rows for the current run. Installing Missions does not add
+these methods to generic world handles.
 
 Artifact and transcript capabilities require the handle to retain explicit
 storage coordinates. A handle created with `runtime.attach(world_id)` without
@@ -346,18 +345,18 @@ the world-close stage rather than reusing the consumed cleanup lease.
 
 `Missions` imports no concrete application service. It dispatches
 `SubmitMission`, `RunMission`, and `RestoreMissionSandbox`; wiring constructs
-the handler-side service with the same reservation. `RuntimeMissions` remains
-a 0.6 import alias for source compatibility. V1 is still async-only, so sync
-parity under R5 remains a hardening gap. See
-[Agent Missions V1, current hardening gaps](agent-missions.md#current-hardening-gaps).
+the handler-side service with the same reservation. V1 is async-only, so sync
+parity is outside the 0.6 world-library contract permitted by R5.
 
 ## 3. Canonical surface
 
-Generic world operations below have sync parity. The installed Missions and
-Research adapters shown here are async-only:
+Generic world operations below have sync parity. The installed Missions,
+Physical AI, and Research adapters shown here are async-only:
 
 ```python
-from archetype.missions import AgentMissionConfig, AgentTask, Missions
+from archetype.missions import AgentMissionConfig, AgentTask, MissionWorld, Missions
+from archetype.missions.trajectories import TrajectoryTurn
+from archetype.physical_ai import PhysicalAI
 from archetype.research import AutoResearchConfig, Research
 
 world = runtime.world(
@@ -397,6 +396,8 @@ await world.add_components(eid, Health(hp=100))
 await world.remove_components(eid, Velocity)
 
 refs = await world.ingest_artifacts(ArtifactSource(...))
+mission_rows = await MissionWorld(world).query_trajectory(TrajectoryTurn)
+hosted = await PhysicalAI(world).run_hosted_episode([...], provider=...)
 
 await world.add_processor(MyProcessor())
 await world.remove_processor(MyProcessor)

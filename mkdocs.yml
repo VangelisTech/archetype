@@ -51,6 +51,7 @@ nav:
       - Quickstart: guide/quickstart.md
       - Core Architecture: guide/core-architecture.md
       - Install World Libraries: guide/world-libraries.md
+      - Archetype 0.6: guide/release-0.6.md
       - Choose an Example: guide/examples.md
   - USER GUIDE:
       - Building Simulations: guide/building-simulations.md
@@ -84,6 +85,7 @@ nav:
           - World Handle: reference/python/world-handle.md
           - Runtime Models: reference/python/runtime-models.md
           - File Artifacts: reference/python/artifacts.md
+          - Agent Missions: reference/python/missions.md
           - Coding-Agent Transcripts: reference/python/transcripts.md
           - Building Blocks: reference/python/building-blocks.md
           - Hooks and Identity: reference/python/hooks.md
