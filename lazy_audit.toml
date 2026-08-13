@@ -128,51 +128,16 @@ reason = "Mutation-planning boundary for instantiation: spawning copies requires
 [[entries]]
 path = "src/archetype/missions/projections.py"
 symbol = "project_critic_activity_intents"
-expr = "author_executions.to_pylist"
+expr = "current.to_pylist"
 method = "to_pylist"
-reason = "Durable critic-Activity admission boundary: persisted author execution identities and sandbox ids become bounded scalar fields in the exact-candidate request admitted only after the source tick commits."
-
-[[entries]]
-path = "src/archetype/missions/projections.py"
-symbol = "_critic_subject_bounds"
-expr = "frame.to_pylist"
-method = "to_pylist"
-reason = "Durable critic-Activity admission boundary: the task-scoped companion policy is already component-filtered and its one bounded integer becomes part of the immutable exact-subject request rather than provider process state."
+reason = "Durable critic-Activity admission boundary: after Daft joins CANDIDATE tasks to candidates and keeps the current dispatch sequence, the finite current-candidate rows become immutable request fields that the generic Activity catalog and external provider cannot consume as a lazy DataFrame."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
 symbol = "project_complete_author_activity_observations"
-expr = "executions.to_pylist"
+expr = "complete_markers.to_pylist"
 method = "to_pylist"
-reason = "Exact post-commit activity-settlement boundary: finite committed AgentExecution facts become scalar identities used to verify that an author result bundle is complete before acknowledging its bounded durable result."
-
-[[entries]]
-path = "src/archetype/missions/projections.py"
-symbol = "project_complete_author_activity_observations"
-expr = "validations.to_pylist"
-method = "to_pylist"
-reason = "Exact post-commit activity-settlement boundary: finite committed ValidationResult facts are counted against the result-bound completeness marker before the activity catalog can acknowledge observation."
-
-[[entries]]
-path = "src/archetype/missions/projections.py"
-symbol = "project_complete_author_activity_observations"
-expr = "commits.to_pylist"
-method = "to_pylist"
-reason = "Exact post-commit activity-settlement boundary: finite committed Commit facts are counted against the result-bound completeness marker before the activity catalog can acknowledge observation."
-
-[[entries]]
-path = "src/archetype/missions/projections.py"
-symbol = "project_complete_author_activity_observations"
-expr = "friction.to_pylist"
-method = "to_pylist"
-reason = "Exact post-commit activity-settlement boundary: finite committed FrictionLog facts are counted against the result-bound completeness marker before the activity catalog can acknowledge observation."
-
-[[entries]]
-path = "src/archetype/missions/projections.py"
-symbol = "project_complete_author_activity_observations"
-expr = "markers.to_pylist"
-method = "to_pylist"
-reason = "Exact post-commit activity-settlement boundary: bounded AuthorActivityObservation markers become scalar result references, digests, identities, and expected fact counts for catalog settlement."
+reason = "Exact post-commit activity-settlement boundary: Daft has already joined the marker to its execution and verified related-row counts; surviving marker rows become scalar identities for digest verification and AuthorActivityObservation construction."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
@@ -204,80 +169,73 @@ reason = "Exact post-commit critic-Activity fact boundary: each already componen
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
-symbol = "_current_candidate_rows"
-expr = "candidate_tasks.to_pylist"
-method = "to_pylist"
-reason = "Durable critic-Activity admission boundary (shared by intent projection and run-boundary exhaustion): the frame is already restricted to committed CANDIDATE task rows, whose bounded histories must be reduced independently before matching immutable candidates; a Daft join of the two snapshot histories crashes the native runtime during the real closed-loop mission."
-
-[[entries]]
-path = "src/archetype/missions/projections.py"
-symbol = "_current_candidate_rows"
-expr = "candidates.to_pylist"
-method = "to_pylist"
-reason = "Durable critic-Activity admission boundary (shared by intent projection and run-boundary exhaustion): bounded committed candidate histories must retain their entity identities while they are reduced and matched to current task rows; provider execution occurs only after the resulting exact request is admitted."
+symbol = "_current_candidate_frame"
+expr = "id_counts.where(ambiguous).count_rows"
+method = "count_rows"
+reason = "Fail-closed admission gate: after the Daft current-candidate join, a positive distinct-id count is the only way to raise the documented multi-current-candidate ValueError before any provider work is admitted."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
 symbol = "project_pending_review_exhaustion"
-expr = "critic_executions.to_pylist"
+expr = "current.to_pylist"
 method = "to_pylist"
-reason = "Committed domain-budget boundary at the run boundary: finite CriticExecution facts are counted against max_reviews so an exhausted, receipt-less candidate is reported as still pending review instead of waiting out the caller's tick budget."
+reason = "Committed run-boundary projection: after Daft selects the current candidate for this mission, its bounded identities and policy budget become the diagnostic returned instead of spending the caller's remaining tick budget."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
 symbol = "project_pending_review_exhaustion"
-expr = "critic_receipts.to_pylist"
+expr = "attempts_frame.to_pylist"
 method = "to_pylist"
-reason = "Durable review-evidence boundary at the run boundary: bounded committed CriticReceipt identities are compared with the exact candidate so a matched receipt is never misreported as reviewer-budget exhaustion."
+reason = "Committed domain-budget boundary at the run boundary: Daft aggregates finite CriticExecution facts by candidate before their counts are compared with max_reviews."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
 symbol = "project_critic_activity_intents"
-expr = "critic_executions.to_pylist"
+expr = "author_latest.to_pylist"
 method = "to_pylist"
-reason = "Committed domain-budget boundary: finite CriticExecution facts are counted to assign the next semantic review attempt; generic Activity lease attempts are intentionally absent and cannot consume this budget."
+reason = "Durable critic-Activity admission boundary: persisted author execution identities and sandbox ids become bounded scalar fields in the exact-candidate request admitted only after the source tick commits."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
 symbol = "project_critic_activity_intents"
-expr = "critic_receipts.to_pylist"
+expr = "validator_latest.to_pylist"
 method = "to_pylist"
-reason = "Durable review-admission boundary: bounded committed CriticReceipt identities are compared with the exact candidate before admitting more consequential work, preventing a completed review from being invoked twice."
+reason = "Durable critic-Activity admission boundary: finite TaskValidator definitions become concrete command tuples in the immutable request; the generic catalog and external provider cannot consume a lazy DataFrame."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
 symbol = "project_critic_activity_intents"
-expr = "validation_results.to_pylist"
+expr = "validation_latest.to_pylist"
 method = "to_pylist"
 reason = "Durable critic-Activity admission boundary: exact-revision ValidationResult observations become bounded immutable evidence in the request value after candidate state has committed."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
 symbol = "project_critic_activity_intents"
-expr = "validators.to_pylist"
+expr = "attempts_frame.to_pylist"
 method = "to_pylist"
-reason = "Durable critic-Activity admission boundary: finite TaskValidator definitions become concrete command tuples in the immutable request; the generic catalog and external provider cannot consume a lazy DataFrame."
+reason = "Committed domain-budget boundary: finite CriticExecution facts are aggregated in Daft then materialized as attempt counts to assign the next semantic review attempt; generic Activity lease attempts cannot consume this budget."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
 symbol = "_TaskDispatchProjection.on_post_tick"
-expr = "candidate_history.to_pylist"
+expr = "_daft_latest(task_frame, label='task dispatch state', allow_updates=True).to_pylist"
 method = "to_pylist"
-reason = "Repair-dispatch external-I/O boundary: persisted candidate identities are materialized after the committed DISPATCHED-task projection so the application can select the immediately superseded candidate whose durable critic findings belong in the next coding-agent request."
+reason = "Post-commit branch-lineage boundary: Daft has reduced the component-scoped task history to one row per identity; those bounded identities bind a fresh external author sandbox to the latest accepted head on its serialized mission branch."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
 symbol = "_TaskDispatchProjection.on_post_tick"
-expr = "task_frame.to_pylist"
+expr = "mission_edges.select(f'{membership}source', f'{membership}target').distinct().to_pylist"
 method = "to_pylist"
-reason = "Post-commit branch-lineage boundary: the already component-scoped finite task snapshot becomes an identity-indexed map so a fresh external author sandbox can bind its checkout to the latest accepted head on its serialized mission branch rather than silently restarting from the original base."
+reason = "Post-commit external-author boundary: Daft selects distinct mission-membership identities before the finite index enters Python so each dispatched process hydrates the latest accepted head from its own serialized mission branch."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
 symbol = "_TaskDispatchProjection.on_post_tick"
-expr = "mission_edges.to_pylist"
+expr = "_daft_latest(candidate_history, label='candidate').to_pylist"
 method = "to_pylist"
-reason = "Post-commit external-author boundary: finite persisted mission-membership edges become a bounded mission-to-task identity index so each dispatched process hydrates the latest accepted head from its own serialized mission branch without crossing mission authority."
+reason = "Post-commit branch-lineage boundary: Daft validates immutable candidate history and retains one row per identity; their accepted head revisions become scalar checkout coordinates for the next external author sandbox."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
@@ -289,23 +247,9 @@ reason = "Post-commit external-I/O boundary: the lazy frame is restricted to com
 [[entries]]
 path = "src/archetype/missions/projections.py"
 symbol = "_TaskDispatchProjection.on_post_tick"
-expr = "finding_history.to_pylist"
-method = "to_pylist"
-reason = "Repair-dispatch external-I/O boundary: bounded redacted CriticFinding values must become concrete typed prompt input for the next author process; an external coding-agent request cannot consume a lazy Daft frame."
-
-[[entries]]
-path = "src/archetype/missions/projections.py"
-symbol = "_TaskDispatchProjection.on_post_tick"
 expr = "guarded_validators.to_pylist"
 method = "to_pylist"
 reason = "Post-commit validator-command boundary: Guards and TaskValidator entities are joined lazily first, then the finite validators attached to dispatchable tasks become argv tuples consumed by the repository harness; process argv cannot remain a DataFrame value."
-
-[[entries]]
-path = "src/archetype/missions/projections.py"
-symbol = "_TaskDispatchProjection.on_post_tick"
-expr = "observations.to_pylist"
-method = "to_pylist"
-reason = "Repair-turn boundary: prior AgentExecution and ValidationResult entities are joined lazily by execution before the finite previous-dispatch observations become a coding-agent prompt and session-resume request; the external driver requires concrete typed observations."
 
 [[entries]]
 path = "src/archetype/missions/projections.py"
@@ -432,6 +376,69 @@ symbol = "StorageService.materialize"
 expr = "frame.collect"
 method = "collect"
 reason = "Central application execution boundary: StorageService admits the caller's lazy Daft plan through its shared execution gate, materializes it off the event loop, and returns the completed frame."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.capture_table_snapshot"
+expr = "frame.collect"
+method = "collect"
+reason = "Offline whole-storage migration boundary: StorageService pins one Iceberg snapshot and materializes its complete local-v1 contents exactly once so the immutable plan can bind an exact schema, row count, and order-independent duplicate-preserving digest; those durable facts cannot be recovered from an unexecuted lazy plan."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.capture_table_snapshot"
+expr = "frozen.to_arrow"
+method = "to_arrow"
+reason = "Offline migration evidence boundary: the pinned frame was already collected under StorageService admission, and its in-memory Arrow values are required by the versioned schema-bound row-multiset digest without executing a second plan."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.export_table_snapshot"
+expr = "frame.collect"
+method = "collect"
+reason = "Offline migration transfer boundary: StorageService executes the exact plan-pinned Iceberg snapshot once and freezes the full local-v1 payload so source drift validation and destination commit retries cannot re-read a different snapshot."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.export_table_snapshot"
+expr = "frozen.to_arrow"
+method = "to_arrow"
+reason = "Offline migration transfer boundary: the pinned source frame is already collected and must cross as an exact Arrow table for Artifact URI relocation, deterministic digest verification, and one destination Iceberg commit."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.import_table_snapshot"
+expr = "aligned.collect"
+method = "collect"
+reason = "Conflict-safe migration commit boundary: the caller supplied one already-materialized Arrow snapshot; StorageService freezes its schema-aligned Daft wrapper once so optimistic Iceberg retries never re-evaluate or change the exact destination payload."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.import_table_snapshot"
+expr = "frozen.to_arrow"
+method = "to_arrow"
+reason = "Empty-table migration verification boundary: the aligned payload is already collected in memory and must be converted back to Arrow to prove the created zero-snapshot table has the exact planned schema and logical digest."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.import_table_snapshot"
+expr = "frozen.write_iceberg"
+method = "write_iceberg"
+reason = "Physical migration commit boundary: the exact verified full-table payload must enter the destination Iceberg authority as one optimistic append; commit failures retry the same frozen frame and unknown outcomes are reconciled by digest before any replay."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService._capture_native_table"
+expr = "frame.collect"
+method = "collect"
+reason = "Migration read-back boundary: StorageService materializes one exact current or historical Iceberg snapshot to prove a destination commit, reconcile an unknown outcome, or recover the imported snapshot after a cold-verification tick advanced the table."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService._capture_native_table"
+expr = "frozen.to_arrow"
+method = "to_arrow"
+reason = "Migration read-back evidence boundary: the selected Iceberg snapshot is already collected, and its in-memory Arrow values are required to compare exact schema, count, and multiset digest without executing another plan."
 
 [[entries]]
 path = "src/archetype/world/resume.py"
@@ -579,3 +586,59 @@ symbol = "StorageService.append_missing"
 expr = "pending.write_iceberg"
 method = "write_iceberg"
 reason = "StorageService-owned conditional Iceberg sink: write the frozen anti-joined rows under the execution gate and bounded optimistic commit retry."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "_critic_subject_bounds"
+expr = "bounds.to_pylist"
+method = "to_pylist"
+reason = "Durable critic-Activity admission boundary: after Daft reduces the committed policy history to one row per task, the bounded integer becomes part of the immutable exact-subject request value rather than provider process state."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "_outputs_by_activity"
+expr = "kept.to_pylist"
+method = "to_pylist"
+reason = "Exact post-commit activity-settlement boundary: the semi-join has already discarded every output row no admitted marker names, and the survivors must become typed Component values because the family-owned bundle digest is computed over their canonical JSON, which no Daft expression reproduces."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "_reject_ambiguous_history"
+expr = "values.count_rows"
+method = "count_rows"
+reason = "Fail-closed immutability gate: comparing the distinct committed values against the identities that index them is the only way to raise on an entity that committed two values before any projection consumes the snapshot."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "_TaskDispatchProjection._previous_executions"
+expr = "winners.to_pylist"
+method = "to_pylist"
+reason = "Repair-turn boundary: Daft has already reduced the execution history to the one row each dispatched task ran most recently, and the surviving starting revision and agent session id become concrete fields of an external coding-agent request that cannot consume a lazy frame."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "_TaskDispatchProjection._previous_validations"
+expr = "settled.to_pylist"
+method = "to_pylist"
+reason = "Repair-turn boundary: the join to each task's previous dispatch sequence has already discarded every unrelated observation, and the remaining validator outcomes become typed prompt input for the next author process."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "_TaskDispatchProjection._prior_candidates"
+expr = "winners.to_pylist"
+method = "to_pylist"
+reason = "Repair-dispatch boundary: Daft selects the single immediately superseded candidate per task, whose entity identity and candidate id are required as scalar fields of the next coding-agent request."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "_TaskDispatchProjection._prior_candidates"
+expr = "kept.to_pylist"
+method = "to_pylist"
+reason = "Repair-dispatch boundary: the semi-join keeps only findings owned by the superseded candidates, and those bounded redacted values must become concrete typed prompt input because an external coding-agent request cannot consume a lazy Daft frame."
+
+[[entries]]
+path = "src/archetype/missions/projections.py"
+symbol = "_settled_candidate_ids"
+expr = "settled.select('_candidate_entity_id').distinct().to_pylist"
+method = "to_pylist"
+reason = "Durable review-admission boundary: Daft joins exact CriticReceipt identities to the current candidate frame and filters author-sandbox receipts, so only the settled candidate identities need to become a Python set that gates admitting more consequential provider work."

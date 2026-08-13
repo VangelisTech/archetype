@@ -239,6 +239,7 @@ def test_every_release_scenario_is_installed_wheel_applicable() -> None:
     core_ids = {row["id"] for row in required if int(row["tier"]) <= 4}
     assert ids - core_ids == {
         "example.05_llm_agents",
+        "example.14_biome_agent",
         "dogfood.agent_mission.modal_live",
         "dogfood.physical_ai.modal_r2_live",
         "dogfood.sandbox.docker",

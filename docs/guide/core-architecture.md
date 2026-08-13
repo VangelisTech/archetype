@@ -62,23 +62,30 @@ sequenceDiagram
     participant QM as QueryManager
     participant UM as UpdateManager
     participant Store as Store
+    participant Commit as CommitCoordinator
 
     App->>World: step() / run(steps=N)
-    World->>System: execute per active archetype
+    World->>QM: query prior frame per active archetype
+    QM->>Store: load archetype DataFrame
+    Store-->>World: prior DataFrame
+    World->>System: execute(prior DataFrame)
     loop Eligible processors by priority
-        System->>QM: query declared components
-        QM->>Store: load archetype DataFrame(s)
-        Store-->>System: Dict[signature, DataFrame]
         System->>System: process(df, resources, tick, ...)
     end
     System-->>World: transformed archetype data
     World->>UM: update(...)
-    UM->>Store: append rows for this tick
-    World->>World: advance tick
+    UM->>Store: append rows under tick commit token
+    World->>Store: flush all staged appends
+    World->>Commit: publish tick manifest last
+    Commit-->>World: durable visibility receipt
+    World->>World: consume mutation caches; advance tick
 ```
 
-Teaching model: **query → transform → append → advance**. The async world fans
-work out per active archetype table; the read/write split stays fixed.
+Teaching model: **query → transform → append → flush → publish → advance**.
+The async world fans work out per active archetype table; the read/write split
+stays fixed. For runtime-managed worlds, appended rows remain invisible until
+the manifest publishes, and mutation caches are consumed only after that
+durable visibility boundary.
 
 ## World and simulation management
 

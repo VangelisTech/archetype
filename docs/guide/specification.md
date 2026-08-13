@@ -24,6 +24,7 @@ The current contract set is split across design docs and executable tests.
 | [World Lifecycle](world-lifecycle.md) | Create/fork/destroy | Append-only lifecycle, info-class downgrade, fork sharing/copy rules. |
 | [Durable Discovery](durable-discovery.md) | Control catalog and cold reads | Catalog authority, `discover_worlds`/`open_world_readonly`, fail-closed cold queries. |
 | [Atomic Visibility](atomic-visibility.md) | Tick commit identity | Manifest-published ticks, commit tokens, writer fencing, epoch-0 legacy reads. |
+| [Storage Migration](storage-migration.md) | Local whole-storage administration | Offline Iceberg-to-Iceberg and SQLite-to-SQLite migration, empty-destination activation, Artifact relocation, exact identity preservation, and cold verification. |
 | [Activities](activities.md) | Work between committed states | Resource/Activity boundary, post-commit admission, fenced attempts, provider reconciliation, result references, and later-receipt settlement. |
 | [Artifacts](artifacts.md) | External-artifact ingestion | Family-owned file/media scans and handlers over explicit durable coordinates, storage-owned typed Iceberg tables, occurrence identity, and content-addressed objects. |
 | [Agent Missions V1](agent-missions.md) | Coding-agent software factory | Typed task graphs, revision-bound validators, immutable candidates, independent exact-head critic receipts, durable repair findings, and terminal mission rollup. |
@@ -61,6 +62,10 @@ The current specification set covers the following contract families:
 - Adapter contracts:
   service and CLI layers must preserve the underlying engine/runtime semantics
   rather than invent new ones.
+- Storage-migration contracts:
+  local v1 moves one complete offline storage identity into an empty local
+  destination, preserves every admitted durable plane, and rejects any
+  Activity history before destination mutation.
 
 ## Status
 
@@ -92,6 +97,7 @@ This specification covers:
 - Resources available during a tick and Activities coordinated between
   committed ticks
 - typed external artifacts and dataset/evaluation identity
+- offline whole-storage identity migration and destination-only verification
 - typed coding-agent task graphs, committed dispatch, and validator-gated transitions
 
 This specification does not authorize direct edits to `src/archetype/core/`.
@@ -114,6 +120,7 @@ implementation work must satisfy.
 | `Activity` | Durably coordinated work admitted from one committed tick and observed by a later committed tick |
 | `RuntimeResources` | Explicit process owner for dispatcher admission, supervised work, handles, audit, and storage |
 | `Runtime` | Trusted scripting facade and process-lifetime owner |
+| `Storage migration` | Offline transfer of one complete storage identity between already-composed endpoints, with destination activation last |
 
 ## Layer Boundaries
 
@@ -134,6 +141,12 @@ The complete allowed service edges, composition rules, and public/internal
 classification are normative in
 [Application Architecture](application-architecture.md). Diagrams are
 explanatory views of those written rules.
+
+Whole-storage migration is an administrative free workflow owned by
+`archetype.migration` over the declared lower storage and artifacts families.
+Its exact local v1 profile is normative in
+[Storage Migration](storage-migration.md); it is not a World operation or a
+deferred command.
 
 ## Data Model Contracts
 

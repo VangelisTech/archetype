@@ -51,7 +51,7 @@ graph TB
 | **Processor authority** | Readiness, dispatch, retry, failure, acceptance, mission rollup |
 | **Committed intent** | `TaskDispatch` is permission recorded on the ledger, not a live job object |
 | **Post-commit I/O** | Sandboxes see work only after the tick that dispatched it commits |
-| **Harness vs acceptance** | Agent/sandbox observations never accept a task; validators do |
+| **Harness vs acceptance** | Agent/sandbox observations never accept a task; validator-green publication creates a candidate, and processors accept it only after complete independent critic evidence is bound to that exact candidate |
 
 ## 1. The contract in one view
 
