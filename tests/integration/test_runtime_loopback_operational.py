@@ -38,6 +38,7 @@ from archetype.missions.contracts import (
     SubmittedMission,
 )
 from archetype.missions.models import RestoreMissionSandbox, RunMission, SubmitMission
+from archetype.missions.runtime import Missions, MissionWorld
 from archetype.missions.sandboxes import CheckpointRef
 from archetype.missions.trajectories import ClaudeTranscriptSource, TrajectorySelection
 from archetype.missions.trajectories.models import (
@@ -51,7 +52,9 @@ from archetype.physical_ai.models import (
     ModalHostedEpisodeConfig,
     RunHostedEpisode,
 )
+from archetype.physical_ai.runtime import PhysicalAI
 from archetype.research.models import AutoResearch, AutoResearchConfig
+from archetype.research.runtime import Research
 from archetype.runtime_resources import RuntimeCloseState, RuntimeResources
 from scripts.run_runtime_loopback import (
     RECEIPT_FILENAME,
@@ -288,21 +291,22 @@ async def test_trusted_runtime_reaches_all_thirteen_models_and_reserved_spawn(
             grader=grader,
             evaluation_id="evaluation-1",
         )
-        await world.autoresearch(
+        await Research(world).autoresearch(
             research,
             evaluator,
             prepare_candidate=prepare_candidate,
             lab_world_id="lab-world",
         )
-        await world.run_hosted_episode(
+        await PhysicalAI(world).run_hosted_episode(
             [physical],
             provider=provider,
             activity_id="activity-1",
         )
-        await world.ingest_claude_transcript(transcript)
-        await world.transcript_rows()
-        await world.query_trajectory(Mission, selection=selection)
-        await world.grade_trajectory(
+        mission_world = MissionWorld(world)
+        await mission_world.ingest_claude_transcript(transcript)
+        await mission_world.transcript_rows()
+        await mission_world.query_trajectory(Mission, selection=selection)
+        await mission_world.grade_trajectory(
             Mission,
             graders=(grader,),
             selection=selection,
@@ -312,7 +316,8 @@ async def test_trusted_runtime_reaches_all_thirteen_models_and_reserved_spawn(
             sandbox_backend=cast(Any, object()),
             sandbox_environment="runtime-loopback:v1",
         )
-        missions = runtime.missions(
+        missions = Missions(
+            runtime,
             "runtime-loopback-mission",
             config=mission_config,
             storage=storage,

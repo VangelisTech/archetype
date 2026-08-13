@@ -353,25 +353,6 @@ class ArchetypeRuntime:
         if (self._shutdown_started or self._closed) and not self._resources.operation_admitted():
             raise RuntimeError("ArchetypeRuntime is closed")
 
-    def __getattr__(self, name: str) -> Any:
-        try:
-            resources = object.__getattribute__(self, "_resources")
-        except AttributeError:
-            raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}") from None
-        for manifest in getattr(resources, "world_library_manifests", ()):
-            if name not in manifest.runtime_method_aliases:
-                continue
-
-            def compatibility_alias(
-                *args: Any,
-                _library: str = manifest.name,
-                **kwargs: Any,
-            ) -> Any:
-                return self.library(_library, *args, **kwargs)
-
-            return compatibility_alias
-        raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
-
 
 class SyncArchetypeRuntime:
     """Synchronous facade over `ArchetypeRuntime`.
@@ -463,11 +444,6 @@ class SyncArchetypeRuntime:
             hooks=hooks,
         )
         return SyncRuntimeWorld(rw, self)
-
-    def library(self, name: str, *args: Any, **kwargs: Any) -> Any:
-        """Return a runtime-scoped adapter over the asynchronous runtime."""
-
-        return self._runtime.library(name, *args, **kwargs)
 
     def discover(self, storage=None) -> list[WorldInfo]:
         """List durable worlds through the synchronous facade."""

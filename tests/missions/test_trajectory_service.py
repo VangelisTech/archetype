@@ -11,6 +11,7 @@ from daft import DataFrame
 from archetype import ArchetypeRuntime
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.missions._extension import get_manifest
+from archetype.missions.runtime import MissionWorld
 from archetype.missions.trajectories import (
     TrajectoryReward,
     TrajectorySelection,
@@ -132,7 +133,8 @@ async def test_runtime_world_exposes_trajectory_query_and_grading(tmp_path) -> N
         await world.run(steps=1)
         selection = TrajectorySelection(episode_ids=("episode-a",))
 
-        frame = await world.query_trajectory(TrajectoryReward, selection=selection)
+        missions = MissionWorld(world)
+        frame = await missions.query_trajectory(TrajectoryReward, selection=selection)
 
         def grade_reward(rows: DataFrame) -> GraderResult:
             return state_check(
@@ -143,7 +145,7 @@ async def test_runtime_world_exposes_trajectory_query_and_grading(tmp_path) -> N
                 name="runtime_trajectory",
             )
 
-        results = await world.grade_trajectory(
+        results = await missions.grade_trajectory(
             TrajectoryReward,
             selection=selection,
             graders=[grade_reward],
@@ -164,24 +166,9 @@ async def test_derived_trajectory_view_orders_persisted_evidence(tmp_path) -> No
         await world.spawn(TrajectoryTurn(episode_id="episode-b", seq=0, role="user"))
         await world.run(steps=1)
 
-        frame = await world.query_trajectory(TrajectoryTurn)
+        frame = await MissionWorld(world).query_trajectory(TrajectoryTurn)
         view = trajectory(frame, TrajectoryTurn, episode_id="episode-a")
         rows = _rows(view)
 
         assert [row["trajectoryturn__seq"] for row in rows] == [0, 1]
         assert [row["trajectoryturn__role"] for row in rows] == ["user", "assistant"]
-
-
-def test_sync_runtime_world_mirrors_trajectory_query(tmp_path) -> None:
-    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="sync_trajectory")
-    with ArchetypeRuntime.sync(world_libraries=(get_manifest(),)) as runtime:
-        world = runtime.world("sync-trajectory", storage=storage)
-        world.spawn(TrajectoryReward(episode_id="episode-a", seq=0, reward=2.0))
-        world.run(steps=1)
-
-        frame = world.query_trajectory(
-            TrajectoryReward,
-            selection=TrajectorySelection(episode_ids=("episode-a",)),
-        )
-
-        assert _rows(frame)[0]["trajectoryreward__reward"] == 2.0

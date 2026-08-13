@@ -15,16 +15,16 @@ from typing import Any, cast
 
 import pytest
 
-from archetype import (
-    ArchetypeRuntime,
-    HostedEpisodeRequest,
-    ModalHostedEpisodeConfig,
-    StorageConfig,
-)
+from archetype import ArchetypeRuntime, StorageConfig
 from archetype.activities import ActivityAdmission, ActivityCoordinator
 from archetype.core.config import StorageBackend
 from archetype.core.interfaces import CommittedTickReceipt
-from archetype.physical_ai import hosted_modal
+from archetype.physical_ai import (
+    HostedEpisodeRequest,
+    ModalHostedEpisodeConfig,
+    PhysicalAI,
+    hosted_modal,
+)
 from archetype.physical_ai._extension import get_manifest as physical_ai_manifest
 from archetype.physical_ai.config import PhysicalAIExtensionConfig
 from archetype.physical_ai.hosted_activity_contracts import HostedEpisodeProviderResult
@@ -227,7 +227,7 @@ async def test_public_hosted_episode_ignores_unrelated_unsettled_activity(
         )
         await physical.close()
 
-        observation = await world.run_hosted_episode(
+        observation = await PhysicalAI(world).run_hosted_episode(
             [_request()],
             provider=_provider_config(),
             activity_id="requested-hosted-episode",
@@ -294,7 +294,7 @@ async def test_public_hosted_episode_recovers_without_replay_and_isolates_fork(
         parent_id = str((await world.info()).world_id)
         state.world_id = parent_id
         with pytest.raises(RuntimeError, match="before generic result"):
-            await world.run_hosted_episode(
+            await PhysicalAI(world).run_hosted_episode(
                 [_request()],
                 provider=provider_config,
                 activity_id=activity_id,
@@ -307,7 +307,7 @@ async def test_public_hosted_episode_recovers_without_replay_and_isolates_fork(
     async with ArchetypeRuntime() as runtime:
         parent = await runtime.resume(parent_id, storage=storage)
         state.world_id = parent_id
-        observation = await parent.run_hosted_episode(
+        observation = await PhysicalAI(parent).run_hosted_episode(
             [_request()],
             provider=provider_config,
             activity_id=activity_id,
@@ -317,7 +317,7 @@ async def test_public_hosted_episode_recovers_without_replay_and_isolates_fork(
 
         child = await parent.fork("hosted-child")
         state.world_id = str(child.world_id)
-        child_observation = await child.run_hosted_episode(
+        child_observation = await PhysicalAI(child).run_hosted_episode(
             [_request()],
             provider=provider_config,
             activity_id=activity_id,
@@ -380,12 +380,12 @@ async def test_concurrent_hosted_episodes_each_complete_their_own_activity(
         world = runtime.world("hosted-concurrent", storage=storage)
         state.world_id = str((await world.info()).world_id)
         first, second = await asyncio.gather(
-            world.run_hosted_episode(
+            PhysicalAI(world).run_hosted_episode(
                 [_request()],
                 provider=provider_config,
                 activity_id="episode-one",
             ),
-            world.run_hosted_episode(
+            PhysicalAI(world).run_hosted_episode(
                 [_request()],
                 provider=provider_config,
                 activity_id="episode-two",
@@ -421,13 +421,13 @@ async def test_stale_unsettled_episode_does_not_fail_a_completed_operation(
         world = runtime.world("hosted-stale", storage=storage)
         state.world_id = str((await world.info()).world_id)
         with pytest.raises(RuntimeError, match="before generic result"):
-            await world.run_hosted_episode(
+            await PhysicalAI(world).run_hosted_episode(
                 [_request()],
                 provider=provider_config,
                 activity_id="episode-stale",
             )
 
-        observation = await world.run_hosted_episode(
+        observation = await PhysicalAI(world).run_hosted_episode(
             [_request()],
             provider=provider_config,
             activity_id="episode-fresh",

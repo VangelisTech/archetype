@@ -15,7 +15,7 @@ import pytest
 from archetype.commands.registry import OperationRegistry
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
-from archetype.missions import Missions, MissionWorld, RuntimeMissions
+from archetype.missions import Missions, MissionWorld
 from archetype.missions._extension import MISSION_OPERATION_MODELS, get_manifest
 from archetype.missions.trajectories import ClaudeTranscriptSource, TrajectorySelection
 from archetype.missions.trajectories.models import (
@@ -97,16 +97,7 @@ def test_manifest_declares_exact_missions_surface() -> None:
         "run_mission",
         "restore_mission_sandbox",
     )
-    assert first.runtime_method_aliases == {"missions": "Missions"}
-    assert first.world_method_aliases == {
-        "ingest_claude_transcript": "ingest_claude_transcript",
-        "transcript_rows": "transcript_rows",
-        "query_trajectory": "query_trajectory",
-        "grade_trajectory": "grade_trajectory",
-    }
-    assert not first.root_exports
     assert len(first.api_router_factories) == 1
-    assert Missions is RuntimeMissions
 
 
 def test_install_registers_only_the_seven_declared_operations(tmp_path: Path) -> None:
@@ -117,7 +108,7 @@ def test_install_registers_only_the_seven_declared_operations(tmp_path: Path) ->
     assert installed.name == "missions"
     assert installed.runtime_adapter is Missions
     assert installed.world_adapter is MissionWorld
-    assert len(installed.api_routers) == 1
+    assert not hasattr(installed, "api_routers")
     assert tuple(spec.model for spec in context.registry.specs) == MISSION_OPERATION_MODELS
     assert tuple(spec.name for spec in context.registry.specs) == get_manifest().operation_names
     assert all(spec.trusted and not spec.untrusted for spec in context.registry.specs)

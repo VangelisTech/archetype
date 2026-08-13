@@ -38,6 +38,47 @@ def test_private_root_probe_never_discovers_extensions(
         archetype.__getattr__("_private_import_probe")
 
 
+def test_framework_facades_do_not_expose_world_library_aliases() -> None:
+    import archetype
+    from archetype.runtime import (
+        ArchetypeRuntime,
+        RuntimeWorld,
+        SyncArchetypeRuntime,
+        SyncRuntimeWorld,
+    )
+
+    for name in (
+        "AutoResearchConfig",
+        "AutoResearchResult",
+        "CandidateContext",
+        "EvaluationResult",
+        "HostedEpisodeObservation",
+        "HostedEpisodeRequest",
+        "ModalHostedEpisodeConfig",
+        "ResearchCandidateContext",
+    ):
+        assert name not in dir(archetype)
+        with pytest.raises(AttributeError):
+            getattr(archetype, name)
+
+    assert not hasattr(ArchetypeRuntime, "missions")
+    assert "__getattr__" not in ArchetypeRuntime.__dict__
+    assert "__getattr__" not in RuntimeWorld.__dict__
+    assert "__getattr__" not in SyncRuntimeWorld.__dict__
+    assert "library" not in SyncRuntimeWorld.__dict__
+    assert "library" not in SyncArchetypeRuntime.__dict__
+    for name in (
+        "autoresearch",
+        "run_hosted_episode",
+        "ingest_claude_transcript",
+        "transcript_rows",
+        "query_trajectory",
+        "grade_trajectory",
+    ):
+        assert not hasattr(RuntimeWorld, name)
+        assert not hasattr(SyncRuntimeWorld, name)
+
+
 class Alpha(BaseModel):
     operation: Literal["alpha"] = "alpha"
 
@@ -52,10 +93,6 @@ def _manifest(
     *,
     distribution: str | None = None,
     framework: str = ">=0.6,<0.7",
-    root_exports: dict[str, tuple[str, str]] | None = None,
-    runtime_aliases: dict[str, str] | None = None,
-    world_aliases: dict[str, str] | None = None,
-    sync_world_aliases: dict[str, str] | None = None,
 ) -> WorldLibraryManifest:
     return WorldLibraryManifest(
         name=name,
@@ -64,10 +101,6 @@ def _manifest(
         requires_framework=framework,
         operation_models=(model,),
         install=lambda _context: InstalledWorldLibrary(name=name),
-        root_exports=root_exports or {},
-        runtime_method_aliases=runtime_aliases or {},
-        world_method_aliases=world_aliases or {},
-        sync_world_method_aliases=sync_world_aliases or {},
     )
 
 
@@ -81,8 +114,15 @@ def test_explicit_manifests_are_immutable_and_sorted() -> None:
     )
     with pytest.raises(FrozenInstanceError):
         alpha.name = "changed"  # type: ignore[misc]
-    with pytest.raises(TypeError):
-        alpha.root_exports["Late"] = ("late", "Late")  # type: ignore[index]
+
+
+def test_manifest_has_no_facade_alias_authority() -> None:
+    manifest = _manifest("alpha", Alpha)
+
+    assert not hasattr(manifest, "root_exports")
+    assert not hasattr(manifest, "runtime_method_aliases")
+    assert not hasattr(manifest, "world_method_aliases")
+    assert not hasattr(manifest, "sync_world_method_aliases")
 
 
 @pytest.mark.parametrize(
@@ -93,21 +133,6 @@ def test_explicit_manifests_are_immutable_and_sorted() -> None:
             _manifest("first", Alpha),
             _manifest("second", Alpha),
             "operation name 'alpha'",
-        ),
-        (
-            _manifest("first", Alpha, root_exports={"Shared": ("one", "Shared")}),
-            _manifest("second", Beta, root_exports={"Shared": ("two", "Shared")}),
-            "duplicate root export",
-        ),
-        (
-            _manifest("first", Alpha, runtime_aliases={"shared": "build"}),
-            _manifest("second", Beta, runtime_aliases={"shared": "build"}),
-            "duplicate runtime method alias",
-        ),
-        (
-            _manifest("first", Alpha, world_aliases={"shared": "run"}),
-            _manifest("second", Beta, world_aliases={"shared": "run"}),
-            "duplicate world method alias",
         ),
     ],
 )
@@ -129,15 +154,6 @@ def test_incompatible_framework_range_fails_closed() -> None:
 
 def test_zero_extension_set_is_valid() -> None:
     assert resolve_world_libraries((), framework_version="0.6.0") == ()
-
-
-def test_sync_world_alias_must_refine_an_async_compatibility_alias() -> None:
-    with pytest.raises(ValueError, match="must refine declared world aliases"):
-        _manifest(
-            "alpha",
-            Alpha,
-            sync_world_aliases={"autoresearch": "_sync_autoresearch"},
-        )
 
 
 def test_entry_point_discovery_is_stable_and_checks_distribution(

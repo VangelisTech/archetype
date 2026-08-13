@@ -52,14 +52,7 @@ def test_physical_ai_manifest_is_complete_and_side_effect_free() -> None:
     assert first.requires_framework == ">=0.6,<0.7"
     assert first.operation_models == (RunHostedEpisode,)
     assert first.operation_names == ("run_hosted_episode",)
-    assert dict(first.world_method_aliases) == {"run_hosted_episode": "run_hosted_episode"}
-    assert not first.runtime_method_aliases
     assert not first.api_router_factories
-    assert set(first.root_exports) == {
-        "HostedEpisodeObservation",
-        "HostedEpisodeRequest",
-        "ModalHostedEpisodeConfig",
-    }
 
 
 def test_physical_ai_install_registers_its_exact_operation() -> None:
@@ -69,7 +62,7 @@ def test_physical_ai_install_registers_its_exact_operation() -> None:
     assert installed.name == "physical-ai"
     assert installed.world_adapter is PhysicalAI
     assert installed.runtime_adapter is None
-    assert not installed.api_routers
+    assert not hasattr(installed, "api_routers")
     assert len(registry.specs) == 1
     spec = registry.resolve_name("run_hosted_episode")
     assert spec.model is RunHostedEpisode

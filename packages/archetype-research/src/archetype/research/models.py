@@ -82,11 +82,6 @@ class ResearchCandidateContext:
     base_world_id: str
 
 
-# One-release compatibility identity. This is deliberately an alias, not a
-# subclass or a second persisted candidate vocabulary.
-CandidateContext = ResearchCandidateContext
-
-
 @dataclass(frozen=True)
 class EvaluationResult:
     """Return a finite score with evaluator identity and supporting evidence."""
@@ -210,7 +205,6 @@ __all__ = [
     "AutoResearch",
     "AutoResearchConfig",
     "AutoResearchResult",
-    "CandidateContext",
     "CandidatePreparer",
     "Evaluation",
     "EvaluationResult",

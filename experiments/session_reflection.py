@@ -26,6 +26,7 @@ from daft.functions import lower, startswith
 
 from archetype import ArchetypeRuntime, StorageConfig
 from archetype.core.config import StorageBackend
+from archetype.missions import MissionWorld
 from archetype.missions.trajectories import ClaudeTranscriptSource
 
 CORRECTION_OPENERS = (
@@ -88,9 +89,10 @@ async def main() -> None:
 
     async with ArchetypeRuntime() as runtime:
         world = runtime.world("claude-sessions", storage=storage)
+        missions = MissionWorld(world)
         for path in paths:
             try:
-                receipt = await world.ingest_claude_transcript(
+                receipt = await missions.ingest_claude_transcript(
                     ClaudeTranscriptSource(
                         path=path,
                         max_content_chars=args.max_content_chars,
@@ -108,7 +110,7 @@ async def main() -> None:
             print(f"No dialogue sessions found ({skipped} empty/noise files skipped).")
             return
 
-        rows = await world.transcript_rows()
+        rows = await missions.transcript_rows()
         sessions = rows.where(col("row_kind") == "session")
         turns = rows.where(col("row_kind") == "turn")
 

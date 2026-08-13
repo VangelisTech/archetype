@@ -92,9 +92,6 @@ def _validate_unique(manifests: tuple[WorldLibraryManifest, ...]) -> None:
     libraries: dict[str, WorldLibraryManifest] = {}
     operation_names: dict[str, str] = {}
     operation_models: dict[type[Any], str] = {}
-    root_exports: dict[str, str] = {}
-    runtime_aliases: dict[str, str] = {}
-    world_aliases: dict[str, str] = {}
     for manifest in manifests:
         previous = libraries.get(manifest.name)
         if previous is not None:
@@ -117,32 +114,6 @@ def _validate_unique(manifests: tuple[WorldLibraryManifest, ...]) -> None:
                 )
             operation_names[name] = manifest.name
             operation_models[model] = manifest.name
-        _claim_names(root_exports, manifest.root_exports, manifest.name, "root export")
-        _claim_names(
-            runtime_aliases,
-            manifest.runtime_method_aliases,
-            manifest.name,
-            "runtime method alias",
-        )
-        _claim_names(
-            world_aliases,
-            manifest.world_method_aliases,
-            manifest.name,
-            "world method alias",
-        )
-
-
-def _claim_names(
-    claimed: dict[str, str],
-    values: Iterable[str],
-    library: str,
-    kind: str,
-) -> None:
-    for name in values:
-        owner = claimed.get(name)
-        if owner is not None:
-            raise ValueError(f"duplicate {kind} {name!r} from {owner!r} and {library!r}")
-        claimed[name] = library
 
 
 def _validate_compatibility(

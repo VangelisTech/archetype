@@ -34,7 +34,7 @@ def test_strategy_payload_preserves_domain_kind() -> None:
 
 
 @pytest.mark.asyncio
-async def test_experiment_uses_supported_world_autoresearch_handle(
+async def test_experiment_uses_research_adapter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     experiment = _load_experiment()
@@ -46,6 +46,10 @@ async def test_experiment_uses_supported_world_autoresearch_handle(
 
         async def step(self) -> None:
             return None
+
+    class FakeResearch:
+        def __init__(self, world: FakeFork) -> None:
+            assert isinstance(world, FakeFork)
 
         async def autoresearch(self, config: Any, evaluator: object) -> Any:
             autoresearch_calls.append((config, evaluator))
@@ -83,6 +87,7 @@ async def test_experiment_uses_supported_world_autoresearch_handle(
             return FakeWorld()
 
     monkeypatch.setattr(experiment, "ArchetypeRuntime", FakeRuntime)
+    monkeypatch.setattr(experiment, "Research", FakeResearch)
 
     await experiment.main()
 

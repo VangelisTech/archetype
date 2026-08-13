@@ -60,16 +60,7 @@ def test_research_manifest_is_complete_and_side_effect_free() -> None:
     assert first.requires_framework == ">=0.6,<0.7"
     assert first.operation_models == (AutoResearch,)
     assert first.operation_names == ("autoresearch",)
-    assert dict(first.world_method_aliases) == {"autoresearch": "autoresearch"}
-    assert not first.runtime_method_aliases
     assert not first.api_router_factories
-    assert set(first.root_exports) == {
-        "AutoResearchConfig",
-        "AutoResearchResult",
-        "CandidateContext",
-        "EvaluationResult",
-        "ResearchCandidateContext",
-    }
 
 
 def test_research_install_registers_its_exact_operation_and_cost() -> None:
@@ -79,7 +70,7 @@ def test_research_install_registers_its_exact_operation_and_cost() -> None:
     assert installed.name == "research"
     assert installed.world_adapter is Research
     assert installed.runtime_adapter is None
-    assert not installed.api_routers
+    assert not hasattr(installed, "api_routers")
     assert len(registry.specs) == 1
     spec = registry.resolve_name("autoresearch")
     assert spec.model is AutoResearch

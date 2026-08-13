@@ -344,10 +344,4 @@ async def _world_info(dispatcher: Any, world_id: Any, storage_config: Any) -> An
         )
 
 
-# One release of compatibility for the old canonical class name. The alias is
-# intentionally object-identical so type checks, pickling, and ownership probes
-# do not observe a shadow subclass.
-RuntimeMissions = Missions
-
-
-__all__ = ["MissionWorld", "Missions", "RuntimeMissions"]
+__all__ = ["MissionWorld", "Missions"]

@@ -817,33 +817,6 @@ class RuntimeWorld:
         wid = await self._ensure_id()
         return await self._dispatcher.apply(ListResources(world_id=wid))
 
-    # ── Aliasing ──────────────────────────────────────────────────────────
-
-    def __getattr__(self, name: str) -> Any:
-        resources = self._state.runtime._resources
-        for manifest in getattr(resources, "world_library_manifests", ()):
-            target = manifest.world_method_aliases.get(name)
-            if target is None:
-                continue
-
-            async def compatibility_alias(
-                *args: Any,
-                _library: str = manifest.name,
-                _target: str = target,
-                **kwargs: Any,
-            ) -> Any:
-                adapter = self.library(_library)
-                method = getattr(adapter, _target)
-                result = method(*args, **kwargs)
-                if not inspect.isawaitable(result):
-                    raise TypeError(
-                        f"world-library compatibility method {_target!r} must return an awaitable"
-                    )
-                return await result
-
-            return compatibility_alias
-        raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SyncRuntimeWorld
@@ -992,32 +965,6 @@ class SyncRuntimeWorld:
 
     def remove_hook(self, handle: HookHandle) -> None:
         self._run(lambda: self._world.remove_hook(handle))
-
-    def library(self, name: str, *args: Any, **kwargs: Any) -> Any:
-        """Return the library's typed adapter over the asynchronous world."""
-
-        return self._world.library(name, *args, **kwargs)
-
-    def __getattr__(self, name: str) -> Any:
-        resources = self._world._state.runtime._resources
-        for manifest in getattr(resources, "world_library_manifests", ()):
-            target = manifest.world_method_aliases.get(name)
-            if target is None:
-                continue
-            sync_target = manifest.sync_world_method_aliases.get(name, target)
-            adapter = self._world.library(manifest.name)
-            alias = getattr(adapter, sync_target)
-
-            def synchronous_alias(
-                *args: Any,
-                _alias: Callable[..., Any] = alias,
-                **kwargs: Any,
-            ) -> Any:
-                return self._runtime._dispatch(_alias(*args, **kwargs))
-
-            return synchronous_alias
-
-        raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
 
     def shutdown(self) -> None:
         self._run(lambda: self._world.shutdown())

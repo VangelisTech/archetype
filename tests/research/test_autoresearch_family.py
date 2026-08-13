@@ -17,16 +17,13 @@ from typing import get_type_hints
 
 from pydantic import TypeAdapter
 
-from archetype.missions import Candidate
 from archetype.research import contracts, models
 from archetype.research.handlers import _config_identity
 from archetype.research.models import (
     AutoResearch,
     AutoResearchConfig,
-    CandidateContext,
     CandidatePreparer,
     Evaluator,
-    ResearchCandidateContext,
 )
 from archetype.world.models import EpisodeConfig, RolloutResult
 
@@ -53,23 +50,22 @@ def _imports(path: Path) -> set[str]:
     return modules
 
 
-def test_models_are_canonical_and_compatibility_exports_are_object_identical() -> None:
-    assert CandidateContext is ResearchCandidateContext
-    assert CandidateContext is not Candidate
-
+def test_models_and_contract_exports_are_canonical() -> None:
     names = (
         "AutoResearchConfig",
         "AutoResearchResult",
-        "CandidateContext",
         "CandidatePreparer",
         "Evaluation",
         "EvaluationResult",
         "Evaluator",
         "IterationResult",
+        "ResearchCandidateContext",
     )
     for name in names:
         canonical = getattr(models, name)
         assert getattr(contracts, name) is canonical
+    assert not hasattr(models, "CandidateContext")
+    assert not hasattr(contracts, "CandidateContext")
 
 
 def test_callback_contracts_are_structural_protocols() -> None:

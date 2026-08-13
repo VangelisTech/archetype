@@ -83,30 +83,6 @@ def get_manifest() -> WorldLibraryManifest:
         requires_framework=">=0.6,<0.7",
         operation_models=(AutoResearch,),
         install=_install,
-        root_exports={
-            "AutoResearchConfig": (
-                "archetype.research.models",
-                "AutoResearchConfig",
-            ),
-            "AutoResearchResult": (
-                "archetype.research.models",
-                "AutoResearchResult",
-            ),
-            "CandidateContext": (
-                "archetype.research.models",
-                "CandidateContext",
-            ),
-            "EvaluationResult": (
-                "archetype.research.models",
-                "EvaluationResult",
-            ),
-            "ResearchCandidateContext": (
-                "archetype.research.models",
-                "ResearchCandidateContext",
-            ),
-        },
-        world_method_aliases={"autoresearch": "autoresearch"},
-        sync_world_method_aliases={"autoresearch": "_sync_autoresearch"},
     )
 
 

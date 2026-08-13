@@ -17,6 +17,7 @@ from archetype import ArchetypeRuntime
 from archetype.artifacts.models import ArtifactRef, QueryArtifacts
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
 from archetype.missions._extension import get_manifest
+from archetype.missions.runtime import MissionWorld
 from archetype.missions.trajectories import (
     ClaudeTranscriptSource,
 )
@@ -305,15 +306,16 @@ async def test_quarantine_and_parse_failure_publish_nothing(tmp_path: Path) -> N
     async with ArchetypeRuntime(world_libraries=(get_manifest(),)) as runtime:
         world = runtime.world("quarantined-transcript", storage=_storage(tmp_path, "quarantine"))
         await world.run(steps=1)
+        missions = MissionWorld(world)
         with pytest.raises(SecretQuarantineError, match="unsupported-source-file"):
-            await world.ingest_claude_transcript(ClaudeTranscriptSource(path=symlink))
+            await missions.ingest_claude_transcript(ClaudeTranscriptSource(path=symlink))
         with pytest.raises(KeyError):
             await world.artifacts()
 
         noise = tmp_path / "project-b" / "noise.jsonl"
         noise.write_text('{"type":"queue-operation"}\nnot json', encoding="utf-8")
         with pytest.raises(ValueError, match="contains no dialogue turns"):
-            await world.ingest_claude_transcript(ClaudeTranscriptSource(path=noise))
+            await missions.ingest_claude_transcript(ClaudeTranscriptSource(path=noise))
         with pytest.raises(KeyError):
             await world.artifacts()
 
@@ -365,17 +367,3 @@ async def test_reingestion_records_a_new_artifact_occurrence(tmp_path: Path) -> 
         ).count_rows() == 2
     finally:
         await resources.aclose()
-
-
-def test_sync_runtime_mirrors_transcript_ingestion(tmp_path: Path) -> None:
-    transcript = tmp_path / "project-d" / "sync.jsonl"
-    _write_transcript(transcript)
-
-    with ArchetypeRuntime.sync(world_libraries=(get_manifest(),)) as runtime:
-        world = runtime.world("sync-transcript", storage=_storage(tmp_path, "sync_transcript"))
-        world.run(steps=1)
-        result = world.ingest_claude_transcript(ClaudeTranscriptSource(path=transcript))
-
-        assert result.rows_written == 3
-        assert world.artifacts().count_rows() == 1
-        assert world.transcript_rows().count_rows() == 3

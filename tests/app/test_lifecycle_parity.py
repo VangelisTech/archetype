@@ -20,6 +20,7 @@ from archetype.errors import RuntimeShutdownError
 from archetype.evaluation import handlers as evaluation_handlers
 from archetype.evaluation.models import RunGraders
 from archetype.research.models import AutoResearchConfig
+from archetype.research.runtime import Research
 from archetype.runtime import SyncRuntimeWorld
 from archetype.runtime.world import RuntimeWorld
 
@@ -137,7 +138,7 @@ class TestShutdownErrorAggregation:
             await release.wait()
 
         operation = asyncio.create_task(
-            world.autoresearch(
+            Research(world).autoresearch(
                 AutoResearchConfig(
                     experiment_name="lifecycle-parity",
                     experiment_id="autoresearch-drain",

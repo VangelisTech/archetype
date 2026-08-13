@@ -15,6 +15,7 @@ from daft import col
 
 from archetype import ArchetypeRuntime
 from archetype.core.config import StorageConfig
+from archetype.missions.runtime import MissionWorld
 from archetype.missions.trajectories import TrajectoryTurn, turns_to_components
 from archetype.physical_ai.hosted_episode import hosted_episode_id
 
@@ -56,7 +57,7 @@ async def test_fresh_world_mission_and_hosted_evidence_join_on_episode_id(tmp_pa
         world = runtime.world("episode-join", storage=storage)
         await world.spawn(TrajectoryTurn(episode_id=episode_id, seq=0, role="user", content="pick"))
         await world.run(steps=1)
-        mission_frame = await world.query_trajectory(TrajectoryTurn)
+        mission_frame = await MissionWorld(world).query_trajectory(TrajectoryTurn)
 
         hosted_frame = daft.from_pylist(
             [

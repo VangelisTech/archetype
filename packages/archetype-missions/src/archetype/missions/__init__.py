@@ -57,7 +57,7 @@ from archetype.missions.relations import (
     RunsIn,
     Supersedes,
 )
-from archetype.missions.runtime import Missions, MissionWorld, RuntimeMissions
+from archetype.missions.runtime import Missions, MissionWorld
 from archetype.missions.sessions import RunnerSession, load_runner_sessions
 from archetype.missions.transitions import (
     MISSION_TRANSITIONS,
@@ -115,7 +115,6 @@ __all__ = [
     "RepositoryPublicationPolicy",
     "Reviews",
     "RunsIn",
-    "RuntimeMissions",
     "RunnerSession",
     "Sandbox",
     "SubmittedMission",

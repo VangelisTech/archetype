@@ -189,21 +189,6 @@ def get_manifest() -> WorldLibraryManifest:
         requires_framework=">=0.6,<0.7",
         operation_models=(RunHostedEpisode,),
         install=_install,
-        root_exports={
-            "HostedEpisodeObservation": (
-                "archetype.physical_ai.models",
-                "HostedEpisodeObservation",
-            ),
-            "HostedEpisodeRequest": (
-                "archetype.physical_ai.models",
-                "HostedEpisodeRequest",
-            ),
-            "ModalHostedEpisodeConfig": (
-                "archetype.physical_ai.models",
-                "ModalHostedEpisodeConfig",
-            ),
-        },
-        world_method_aliases={"run_hosted_episode": "run_hosted_episode"},
     )
 
 

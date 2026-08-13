@@ -529,7 +529,6 @@ def install(context: WorldLibraryContext) -> InstalledWorldLibrary:
         name="missions",
         runtime_adapter=Missions,
         world_adapter=MissionWorld,
-        api_routers=(create_router(),),
     )
 
 
@@ -540,13 +539,6 @@ MANIFEST = WorldLibraryManifest(
     requires_framework=">=0.6,<0.7",
     operation_models=MISSION_OPERATION_MODELS,
     install=install,
-    runtime_method_aliases={"missions": "Missions"},
-    world_method_aliases={
-        "ingest_claude_transcript": "ingest_claude_transcript",
-        "transcript_rows": "transcript_rows",
-        "query_trajectory": "query_trajectory",
-        "grade_trajectory": "grade_trajectory",
-    },
     api_router_factories=(create_router,),
 )
 

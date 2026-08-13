@@ -29,7 +29,7 @@ from archetype import (
 )
 from archetype.core.config import RunConfig
 from archetype.core.hooks import PostTick
-from archetype.research.models import AutoResearchConfig
+from archetype.research import AutoResearchConfig, Research
 
 # ── Components ────────────────────────────────────────────────────────────
 
@@ -264,7 +264,7 @@ async def main():
                 destroy_forks_on_complete=True,
             )
 
-            result = await fork.autoresearch(
+            result = await Research(fork).autoresearch(
                 config,
                 make_cooperation_score(max_steps),
             )

@@ -87,7 +87,7 @@ class _DispatchProbe:
 class _AdmissionResources:
     def __init__(self, dispatcher: _DispatchProbe) -> None:
         from archetype.missions._extension import get_manifest as missions_manifest
-        from archetype.missions.runtime import MissionWorld
+        from archetype.missions.runtime import Missions, MissionWorld
         from archetype.physical_ai._extension import get_manifest as physical_ai_manifest
         from archetype.physical_ai.runtime import PhysicalAI
         from archetype.research._extension import get_manifest as research_manifest
@@ -100,9 +100,12 @@ class _AdmissionResources:
             research_manifest(),
         )
         self._world_libraries = {
-            "missions": SimpleNamespace(world_adapter=MissionWorld),
-            "physical-ai": SimpleNamespace(world_adapter=PhysicalAI),
-            "research": SimpleNamespace(world_adapter=Research),
+            "missions": SimpleNamespace(
+                runtime_adapter=Missions,
+                world_adapter=MissionWorld,
+            ),
+            "physical-ai": SimpleNamespace(runtime_adapter=None, world_adapter=PhysicalAI),
+            "research": SimpleNamespace(runtime_adapter=None, world_adapter=Research),
         }
         self._operations = OperationAdmission(closed_message="runtime is closed")
 
@@ -243,6 +246,34 @@ def _runtime_shell(dispatcher: _DispatchProbe) -> Any:
     return runtime
 
 
+def test_generic_library_lookup_constructs_installed_typed_adapters() -> None:
+    from archetype.missions import AgentMissionConfig, Missions, MissionWorld
+    from archetype.physical_ai import PhysicalAI
+    from archetype.research import Research
+
+    dispatcher = _DispatchProbe()
+    runtime = _runtime_shell(dispatcher)
+    world, _state = _runtime_world(dispatcher)
+
+    config = AgentMissionConfig(
+        sandbox_backend=cast("Any", object()),
+        sandbox_environment="lookup-contract",
+    )
+    assert isinstance(
+        runtime.library(
+            "missions",
+            config=config,
+            reservation=_MissionReservationProbe(),
+        ),
+        Missions,
+    )
+    assert isinstance(world.library("missions"), MissionWorld)
+    assert isinstance(world.library("physical-ai"), PhysicalAI)
+    assert isinstance(world.library("research"), Research)
+    with pytest.raises(TypeError, match="has no runtime adapter"):
+        runtime.library("research")
+
+
 @pytest.mark.asyncio
 async def test_lazy_world_activation_retains_the_effective_default_storage() -> None:
     """A default-created handle must remember the coordinates creation used."""
@@ -327,6 +358,7 @@ async def test_attached_transcript_operations_without_storage_fail_before_dispat
 ) -> None:
     """Transcript capabilities cannot recover coordinates through live state."""
 
+    from archetype.missions.runtime import MissionWorld
     from archetype.missions.trajectories.contracts import ClaudeTranscriptSource
 
     dispatcher = _DispatchProbe()
@@ -341,12 +373,12 @@ async def test_attached_transcript_operations_without_storage_fail_before_dispat
         ValueError,
         match="ingest_claude_transcript requires explicit storage coordinates",
     ):
-        await world.ingest_claude_transcript(source)
+        await MissionWorld(world).ingest_claude_transcript(source)
     with pytest.raises(
         ValueError,
         match="query_transcript_rows requires explicit storage coordinates",
     ):
-        await world.transcript_rows()
+        await MissionWorld(world).transcript_rows()
 
     assert dispatcher.trusted == []
     assert not source.path.exists()
@@ -511,6 +543,7 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
         CommandValidator,
         SubmittedMission,
     )
+    from archetype.missions.runtime import MissionWorld
     from archetype.missions.sandboxes import CheckpointRef
     from archetype.missions.trajectories import (
         ClaudeTranscriptSource,
@@ -520,7 +553,9 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
         HostedEpisodeRequest,
         ModalHostedEpisodeConfig,
     )
+    from archetype.physical_ai.runtime import PhysicalAI
     from archetype.research.models import AutoResearchConfig
+    from archetype.research.runtime import Research
     from archetype.world.models import GetWorldInfo, QueryComponents
 
     models = _canonical_pull_forward_models()
@@ -607,7 +642,7 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
         is results["evaluate"]
     )
     assert (
-        await world.autoresearch(
+        await Research(world).autoresearch(
             research_config,
             evaluator,
             prepare_candidate=prepare_candidate,
@@ -617,17 +652,21 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
         is results["autoresearch"]
     )
     assert (
-        await world.run_hosted_episode(
+        await PhysicalAI(world).run_hosted_episode(
             [hosted_request],
             provider=provider_config,
             activity_id="activity-1",
         )
         is results["run_hosted_episode"]
     )
-    assert await world.ingest_claude_transcript(transcript) is results["ingest_claude_transcript"]
-    assert await world.transcript_rows() is results["query_transcript_rows"]
+    missions_world = MissionWorld(world)
     assert (
-        await world.query_trajectory(
+        await missions_world.ingest_claude_transcript(transcript)
+        is results["ingest_claude_transcript"]
+    )
+    assert await missions_world.transcript_rows() is results["query_transcript_rows"]
+    assert (
+        await missions_world.query_trajectory(
             DispatchMetric,
             selection=selection,
             ticks=[4],
@@ -636,7 +675,7 @@ async def test_pull_forward_runtime_methods_reach_exact_nondurable_specs(
         is results["query_trajectory"]
     )
     assert (
-        await world.grade_trajectory(
+        await missions_world.grade_trajectory(
             DispatchMetric,
             graders=(grader,),
             selection=selection,
@@ -805,6 +844,7 @@ async def test_runtime_has_no_actor_or_access_decision_evidence() -> None:
         HostedEpisodeRequest,
         ModalHostedEpisodeConfig,
     )
+    from archetype.physical_ai.runtime import PhysicalAI
 
     models = _canonical_pull_forward_models()
     dispatcher = _DispatchProbe()
@@ -831,7 +871,7 @@ async def test_runtime_has_no_actor_or_access_decision_evidence() -> None:
     )
 
     assert (
-        await world.run_hosted_episode(
+        await PhysicalAI(world).run_hosted_episode(
             [request],
             provider=provider,
             activity_id="activity-1",

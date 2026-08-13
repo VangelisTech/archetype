@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any
 from archetype.research.models import (
     AutoResearchConfig,
     AutoResearchResult,
-    CandidateContext,
     CandidatePreparer,
     Evaluation,
     EvaluationResult,
@@ -33,7 +32,6 @@ __all__ = [
     "AutoResearchConfig",
     "AutoResearchResult",
     "BranchHead",
-    "CandidateContext",
     "CandidatePreparer",
     "Evaluation",
     "EvaluationResult",

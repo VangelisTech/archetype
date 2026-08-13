@@ -227,8 +227,6 @@ def __getattr__(name: str) -> Any:
         )
 
     target = _EXPORTS.get(name)
-    if target is None:
-        target = _world_library_exports().get(name)
     if not target:
         raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
     module_name, attr_name = target
@@ -239,23 +237,4 @@ def __getattr__(name: str) -> Any:
 
 
 def __dir__() -> list[str]:
-    return sorted(
-        set(list(globals().keys()) + list(_EXPORTS.keys()) + list(_world_library_exports()))
-    )
-
-
-def _world_library_exports() -> dict[str, tuple[str, str]]:
-    """Resolve Compatibility-tier root exports without named domain imports."""
-
-    from archetype.world_libraries import discover_world_libraries
-
-    exports: dict[str, tuple[str, str]] = {}
-    for manifest in discover_world_libraries(framework_version=__version__):
-        for name, target in manifest.root_exports.items():
-            if name in _EXPORTS:
-                raise ValueError(
-                    f"world library {manifest.name!r} root export {name!r} "
-                    "collides with the framework"
-                )
-            exports[name] = target
-    return exports
+    return sorted(set(globals()) | set(_EXPORTS))

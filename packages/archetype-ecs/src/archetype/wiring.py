@@ -467,37 +467,6 @@ def _preflight_library_operations(
                 )
 
 
-def _preflight_library_compatibility(
-    manifests: tuple[WorldLibraryManifest, ...],
-) -> None:
-    """Reject compatibility names already owned by a framework facade."""
-
-    import archetype
-    from archetype.runtime.runtime import ArchetypeRuntime
-    from archetype.runtime.world import RuntimeWorld
-
-    framework_exports = cast(dict[str, object], getattr(archetype, "_EXPORTS", {}))
-    for manifest in manifests:
-        for name in manifest.root_exports:
-            if name in framework_exports:
-                raise ValueError(
-                    f"world library {manifest.name!r} root export {name!r} "
-                    "collides with the framework"
-                )
-        for name in manifest.runtime_method_aliases:
-            if hasattr(ArchetypeRuntime, name):
-                raise ValueError(
-                    f"world library {manifest.name!r} runtime alias {name!r} "
-                    "collides with the framework"
-                )
-        for name in manifest.world_method_aliases:
-            if hasattr(RuntimeWorld, name):
-                raise ValueError(
-                    f"world library {manifest.name!r} world alias {name!r} "
-                    "collides with the framework"
-                )
-
-
 def _install_world_library(
     manifest: WorldLibraryManifest,
     context: WorldLibraryContext,
@@ -645,8 +614,6 @@ def build_runtime_resources(config: RuntimeBootstrapConfig) -> RuntimeResources:
             f"{_FRAMEWORK_OPERATION_COUNT} operations"
         )
     _preflight_library_operations(registry, manifests)
-    _preflight_library_compatibility(manifests)
-
     dispatcher = CommandDispatcher(
         registry=registry,
         policy=Policy(),

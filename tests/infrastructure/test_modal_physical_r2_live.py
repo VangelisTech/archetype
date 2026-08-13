@@ -14,13 +14,14 @@ import pytest
 from pyarrow.fs import FileSelector, S3FileSystem
 from uuid_utils import uuid7
 
-from archetype import (
-    ArchetypeRuntime,
+from archetype import ArchetypeRuntime
+from archetype.core.config import StorageBackend, StorageConfig
+from archetype.physical_ai import (
     HostedEpisodeObservation,
     HostedEpisodeRequest,
     ModalHostedEpisodeConfig,
+    PhysicalAI,
 )
-from archetype.core.config import StorageBackend, StorageConfig
 from archetype.physical_ai.hosted_modal import (
     ModalHostedEpisodeProvider,
     ModalNamedHostedEpisodeRuntime,
@@ -171,7 +172,7 @@ async def test_modal_episode_round_trips_durable_evidence_through_r2(
         ):
             async with ArchetypeRuntime() as runtime:
                 world = runtime.world("physical-modal-r2-live", storage=storage)
-                first = await world.run_hosted_episode(
+                first = await PhysicalAI(world).run_hosted_episode(
                     [_request()],
                     provider=provider_config,
                     activity_id="v050-live-episode",
@@ -190,7 +191,7 @@ async def test_modal_episode_round_trips_durable_evidence_through_r2(
             async with ArchetypeRuntime() as cold_runtime:
                 resumed = await cold_runtime.resume(world_id, storage=storage)
                 rows = (await resumed.query(HostedEpisodeObservation)).to_pylist()
-                recovered = await resumed.run_hosted_episode(
+                recovered = await PhysicalAI(resumed).run_hosted_episode(
                     [_request()],
                     provider=provider_config,
                     activity_id="v050-live-episode",
