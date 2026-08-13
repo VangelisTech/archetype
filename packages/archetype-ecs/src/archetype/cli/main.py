@@ -363,17 +363,6 @@ def world_destroy(
     typer.echo(f"Destroyed world: {world_id} (storage retained)")
 
 
-@world_app.command("remove", hidden=True)
-def world_remove_alias(
-    world_id: str = typer.Argument(..., help="World ID"),
-    url: str | None = typer.Option(None, "--url", help="Override ARCHETYPE_URL for this command"),
-    role: Role | None = ROLE_OPTION,
-    token: str | None = typer.Option(None, "--token"),
-):
-    """Deprecated alias for world destroy."""
-    world_destroy(world_id, url=url, role=role, token=token)
-
-
 # ── Entity subcommands ───────────────────────────────────────────────────
 
 

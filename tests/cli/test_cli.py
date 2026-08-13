@@ -77,6 +77,10 @@ class TestCLI:
         assert "create" in result.output.lower()
         assert "list" in result.output.lower()
         assert "destroy" in result.output.lower()
+        assert "remove" not in result.output.lower()
+
+        removed = runner.invoke(app, ["world", "remove", "world-1"])
+        assert removed.exit_code != 0
 
     def test_world_create_help(self):
         result = runner.invoke(app, ["world", "create", "--help"])
