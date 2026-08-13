@@ -31,6 +31,23 @@ The container and concrete application services are internal and are not top-lev
 
 See [API stability and docstrings](../guide/api-stability.md) for the full policy.
 
+## World-library facade classifications
+
+Every name in a world-library facade is assigned exactly one tier. The docs build fails when an export is added or removed without updating this inventory.
+
+### `archetype.missions`
+
+- **Recommended:** `Missions`, `MissionWorld`, `AgentMissionConfig`, `AgentTask`, `CommandValidator`, `CriticPolicy`, `RepositoryPublicationPolicy`, `SubmittedMission`, `MissionResult`, `TaskResult`
+- **Extension:** `MISSION_COMPONENTS`, `MISSION_TRANSITIONS`, `OUTPUT_COMPONENTS`, `TASK_COMPONENTS`, `TASK_TRANSITIONS`, `AgentArtifact`, `AgentExecution`, `AgentExecutionStatus`, `AuthoredBy`, `AuthorActivityObservation`, `Candidate`, `CandidateFor`, `Checkpoint`, `Commit`, `CompleteAuthorActivityObservation`, `CompleteCriticActivityObservation`, `CriticConclusion`, `CriticExecution`, `CriticExecutionStatus`, `CriticFinding`, `CriticReceipt`, `DependsOn`, `Executes`, `FilesystemManifest`, `FrictionLog`, `Guards`, `Mission`, `MissionState`, `MissionStatus`, `MissionSubmission`, `mission_episode_id`, `PartOfMission`, `ProducedBy`, `Reviews`, `RunsIn`, `RunnerSession`, `Sandbox`, `Task`, `TaskCriticPolicy`, `TaskCriticSubjectPolicy`, `TaskDispatch`, `TaskPolicy`, `TaskState`, `TaskStatus`, `TaskValidator`, `TaskWorkspace`, `ValidationResult`, `Supersedes`, `require_mission_transition`, `require_task_transition`, `load_runner_sessions`
+
+### `archetype.physical_ai`
+
+- **Recommended:** `PhysicalAI`, `HostedEpisodeRequest`, `HostedEpisodeObservation`, `ModalHostedEpisodeConfig`, `PhysicalAIExtensionConfig`, `PerturbationStrategy`, `TemplatePerturbation`, `RoundRecord`, `OptimizationResult`, `optimize_instruction`
+
+### `archetype.research`
+
+- **Extension:** `Research`, `AutoResearchConfig`, `AutoResearchResult`, `ResearchCandidateContext`, `Evaluation`, `EvaluationResult`, `Evaluator`, `CandidatePreparer`, `IterationResult`, `Experiment`, `Run`, `RunStatus`, `Result`, `BranchHead`
+
 ## Compatibility aliases
 
 - `Processor` is an alias for `SyncProcessor`.
