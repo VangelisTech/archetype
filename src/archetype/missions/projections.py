@@ -97,7 +97,7 @@ def _latest_prior_sequence(
 
     return (
         task_keys.join(history, left_on="_task_id", right_on=task_column)
-        .where(cast(Expression, col(sequence_column) < col("_task_sequence")))
+        .where(col(sequence_column) < col("_task_sequence"))
         .groupby("_task_id")
         .agg(col(sequence_column).max().alias(alias))
     )
@@ -611,8 +611,12 @@ def _outputs_by_activity(
 
     if frame is None:
         return {}
-    fact_keys = [f"{prefix}execution_id", f"{prefix}task_id", f"{prefix}dispatch_id"]
-    marker_keys = [
+    fact_keys: list[Expression | str] = [
+        f"{prefix}execution_id",
+        f"{prefix}task_id",
+        f"{prefix}dispatch_id",
+    ]
+    marker_keys: list[str] = [
         f"{marker_prefix}execution_id",
         f"{marker_prefix}task_id",
         f"{marker_prefix}activity_id",
@@ -675,7 +679,12 @@ def project_complete_author_activity_observations(
             execution_keys,
             keys=("_execution_entity_id",),
             count_alias="_execution_versions",
-        ).where(cast(Expression, col("_execution_versions") > 1)),
+        ).where(
+            cast(
+                Expression,
+                col("_execution_versions") > 1,  # ty: ignore[unsupported-operator]
+            )
+        ),
         on="_execution_entity_id",
         how="anti",
     )
@@ -693,12 +702,7 @@ def project_complete_author_activity_observations(
             "_execution_dispatch_id",
             "_execution_dispatch_sequence",
         ],
-    ).where(
-        cast(
-            Expression,
-            col("_execution_redaction_policy_id") == col(f"{marker}redaction_policy_id"),
-        )
-    )
+    ).where(col("_execution_redaction_policy_id") == col(f"{marker}redaction_policy_id"))
 
     validation_counts = _count_by_keys(
         None
@@ -1098,7 +1102,11 @@ def _current_candidate_frame(
     id_counts = distinct_ids.groupby("_task_entity_id").agg(
         col("_candidate_entity_id").count().alias("_n_current_ids")
     )
-    if id_counts.where(cast(Expression, col("_n_current_ids") > 1)).count_rows() > 0:
+    ambiguous = cast(
+        Expression,
+        col("_n_current_ids") > 1,  # ty: ignore[unsupported-operator]
+    )
+    if id_counts.where(ambiguous).count_rows() > 0:
         raise ValueError("task has multiple current candidates at one dispatch sequence")
     return current
 
@@ -1300,11 +1308,7 @@ def _settled_candidate_ids(
             f"{receipt_prefix}validator_bundle_digest",
         ],
     ).where(
-        cast(
-            Expression,
-            col(f"{receipt_prefix}critic_sandbox_id")
-            != col(f"{candidate_prefix}author_sandbox_id"),
-        )
+        col(f"{receipt_prefix}critic_sandbox_id") != col(f"{candidate_prefix}author_sandbox_id")
     )
     return {
         int(row["_candidate_entity_id"])

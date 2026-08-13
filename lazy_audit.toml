@@ -170,7 +170,7 @@ reason = "Exact post-commit critic-Activity fact boundary: each already componen
 [[entries]]
 path = "src/archetype/missions/projections.py"
 symbol = "_current_candidate_frame"
-expr = "id_counts.where(cast(Expression, col('_n_current_ids') > 1)).count_rows"
+expr = "id_counts.where(ambiguous).count_rows"
 method = "count_rows"
 reason = "Fail-closed admission gate: after the Daft current-candidate join, a positive distinct-id count is the only way to raise the documented multi-current-candidate ValueError before any provider work is admitted."
 

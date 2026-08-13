@@ -80,11 +80,11 @@ COMPLETE_CRITIC_ACTIVITY_FACT_TYPES: tuple[type[Component], ...] = (
 type _ActivityFact = AuthorActivityEntityFact | CriticActivityEntityFact
 
 
-def _fact_by_entity_id(
-    facts: Sequence[_ActivityFact],
+def _fact_by_entity_id[FactT: _ActivityFact](
+    facts: Sequence[FactT],
     component_type: type[Component],
     entity_id: int,
-) -> _ActivityFact | None:
+) -> FactT | None:
     """Return the one staged fact of this exact type at this entity identity."""
 
     for fact in facts:
@@ -93,11 +93,11 @@ def _fact_by_entity_id(
     return None
 
 
-def _edges_from(
-    facts: Sequence[_ActivityFact],
+def _edges_from[FactT: _ActivityFact](
+    facts: Sequence[FactT],
     relation_type: type[Relation],
     source: int,
-) -> tuple[_ActivityFact, ...]:
+) -> tuple[FactT, ...]:
     """Return the staged edges of one relation type leaving one entity."""
 
     return tuple(
@@ -107,13 +107,13 @@ def _edges_from(
     )
 
 
-def _edges_by_source(
-    facts: Sequence[_ActivityFact],
+def _edges_by_source[FactT: _ActivityFact](
+    facts: Sequence[FactT],
     relation_type: type[Relation],
-) -> dict[int, list[_ActivityFact]]:
+) -> dict[int, list[FactT]]:
     """Index staged edges of one relation type by their source entity."""
 
-    indexed: dict[int, list[_ActivityFact]] = defaultdict(list)
+    indexed: dict[int, list[FactT]] = defaultdict(list)
     for fact in facts:
         component = fact.component
         if isinstance(component, relation_type):
