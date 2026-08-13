@@ -160,7 +160,12 @@ def _require_endpoint_scope(endpoint: MigrationEndpoint, *, role: str) -> str:
         raise MigrationPreflightError(
             f"{role} Iceberg authority is not local; remote migration is deferred"
         )
-    endpoint.storage_service.require_iceberg_identity(config)
+    try:
+        endpoint.storage_service.require_local_sqlite_iceberg_identity(config)
+    except (TypeError, ValueError):
+        raise MigrationPreflightError(
+            f"{role} migration endpoint must use its configured local SQLite-backed Iceberg catalog"
+        ) from None
     if not endpoint.activity_catalog_path.is_absolute():
         raise MigrationPreflightError(f"{role} Activity catalog path must be absolute")
     root = resolve_artifact_object_root(config, endpoint.artifact_store_config)
@@ -377,7 +382,7 @@ async def _resume_reserved_plan(
     source: MigrationEndpoint,
     destination: MigrationEndpoint,
     migration_id: str,
-    source_fingerprint: str,
+    source_fingerprint: str | None,
     destination_fingerprint: str,
 ) -> MigrationPlan | None:
     admin = destination.migration_control_catalog
@@ -394,10 +399,11 @@ async def _resume_reserved_plan(
         destination=destination,
         expected_digest=reservation.plan_digest,
     )
-    if (
-        plan.source_storage_fingerprint != source_fingerprint
-        or plan.destination_storage_fingerprint != destination_fingerprint
-    ):
+    if plan.destination_storage_fingerprint != destination_fingerprint:
+        raise MigrationPreflightError("reserved migration is bound to different endpoints")
+    if source_fingerprint is None and reservation.status not in {"ACTIVATED", "COMPLETE"}:
+        return None
+    if source_fingerprint is not None and plan.source_storage_fingerprint != source_fingerprint:
         raise MigrationPreflightError("reserved migration is bound to different endpoints")
     actual_tables = set(
         await destination.storage_service.list_table_names(destination.storage_config)
@@ -431,8 +437,18 @@ async def plan_storage_migration(
 
     if not isinstance(migration_id, str) or not _MIGRATION_ID.fullmatch(migration_id):
         raise ValueError("migration_id must be 1-128 portable identifier characters")
-    source_fingerprint = _require_endpoint_scope(source, role="source")
     destination_fingerprint = _require_endpoint_scope(destination, role="destination")
+    destination_only_resume = await _resume_reserved_plan(
+        source=source,
+        destination=destination,
+        migration_id=migration_id,
+        source_fingerprint=None,
+        destination_fingerprint=destination_fingerprint,
+    )
+    if destination_only_resume is not None:
+        return destination_only_resume
+
+    source_fingerprint = _require_endpoint_scope(source, role="source")
     if source_fingerprint == destination_fingerprint:
         raise MigrationPreflightError("source and destination storage identities are identical")
     _require_disjoint_artifact_authorities(source, destination)
@@ -667,14 +683,12 @@ async def migrate_storage(plan: MigrationPlan) -> MigrationReceipt:
     if observed_plan_digest != plan.plan_digest:
         raise MigrationPreflightError("migration plan content does not match its digest")
 
-    source = plan.source_endpoint
     destination = plan.destination_endpoint
     if (
         _require_endpoint_scope(destination, role="destination")
         != plan.destination_storage_fingerprint
     ):
         raise MigrationPreflightError("destination endpoint no longer matches the plan")
-    _require_disjoint_artifact_authorities(source, destination)
     admin = destination.migration_control_catalog
     reservation = await admin.get_migration_reservation(plan.migration_id)
     if (
@@ -703,19 +717,27 @@ async def migrate_storage(plan: MigrationPlan) -> MigrationReceipt:
         raise MigrationPreflightError("destination migration has an unknown durable status")
     if reservation.status == "COMPLETE":
         return _completed_receipt(reservation, plan)
-    if _require_endpoint_scope(source, role="source") != plan.source_storage_fingerprint:
-        raise MigrationPreflightError("source endpoint no longer matches the plan")
-    await _require_empty_activity_history(source, role="source")
-    await _require_empty_activity_history(destination, role="destination")
     if destination.cold_verifier is None:
         raise MigrationPreflightError("destination requires a fresh destination-only cold verifier")
     activated_resume = reservation.status == "ACTIVATED"
 
-    artifact_inventory = _empty_artifact_inventory()
-    artifact_receipt = ArtifactMigrationReceipt(0, 0, 0, artifact_inventory.inventory_digest)
+    source = plan.source_endpoint
+    if not activated_resume:
+        if _require_endpoint_scope(source, role="source") != plan.source_storage_fingerprint:
+            raise MigrationPreflightError("source endpoint no longer matches the plan")
+        _require_disjoint_artifact_authorities(source, destination)
+        await _require_empty_activity_history(source, role="source")
+        await _require_empty_activity_history(destination, role="destination")
+
+    artifact_receipt = ArtifactMigrationReceipt(
+        occurrence_count=plan.artifacts.occurrence_count,
+        distinct_content_count=plan.artifacts.distinct_content_count,
+        total_verified_bytes=plan.artifacts.total_bytes,
+        inventory_digest=plan.artifacts.inventory_digest,
+    )
     artifact_payload: pa.Table | None = None
     artifact_table = next((table for table in plan.tables if table.name == ARTIFACT_FILES), None)
-    if artifact_table is not None:
+    if artifact_table is not None and not activated_resume:
         artifact_payload = await source.storage_service.export_table_snapshot(
             source.storage_config,
             artifact_table.source,
@@ -802,7 +824,9 @@ async def migrate_storage(plan: MigrationPlan) -> MigrationReceipt:
                     f"destination table {table.name!r} failed read-back verification"
                 )
 
-    stability = await _require_source_stability(plan)
+    stability = (
+        plan.source_stability_digest if activated_resume else await _require_source_stability(plan)
+    )
     if not activated_resume:
         await admin.stage_migration_control(plan.migration_id, plan.plan_digest, plan.control)
         await admin.activate_migration(plan.migration_id, plan.plan_digest, plan.control)

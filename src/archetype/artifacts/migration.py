@@ -376,6 +376,28 @@ def _destination_path(root: Path, sha256: str) -> Path:
     return destination
 
 
+def _require_safe_destination_parents(root: Path, parent: Path) -> None:
+    """Reject any existing symlink or non-directory below the authority root."""
+
+    if not parent.is_relative_to(root):
+        raise ArtifactObjectConflictError("destination Artifact path escaped its authority")
+    relative_parts = parent.relative_to(root).parts
+    candidates = [root]
+    for index in range(1, len(relative_parts) + 1):
+        candidates.append(root / Path(*relative_parts[:index]))
+    for current in candidates:
+        try:
+            mode = os.lstat(current).st_mode
+        except FileNotFoundError:
+            # Descendants cannot exist until this missing directory is
+            # created.  The caller validates again immediately before use.
+            break
+        if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+            raise ArtifactObjectConflictError(
+                "destination Artifact content-address parent is not a real directory"
+            )
+
+
 def relocate_artifact_table(
     table: pa.Table,
     destination_object_root: str | Path,
@@ -448,7 +470,9 @@ def _stage_object(
     source_root: Path | None,
 ) -> Path:
     staging = root / "objects" / ".staging"
+    _require_safe_destination_parents(root, staging)
     staging.mkdir(parents=True, exist_ok=True)
+    _require_safe_destination_parents(root, staging)
     temporary: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -525,6 +549,7 @@ def relocate_artifact_objects(
     for sha256 in sorted(groups):
         identity, rows = groups[sha256]
         destination = _destination_path(root, sha256)
+        _require_safe_destination_parents(root, destination.parent)
         if destination.exists():
             _verify_destination(destination, identity)
             reused_count += 1
@@ -544,7 +569,9 @@ def relocate_artifact_objects(
 
         copied_count = 0
         for identity, temporary, destination in staged:
+            _require_safe_destination_parents(root, destination.parent)
             destination.parent.mkdir(parents=True, exist_ok=True)
+            _require_safe_destination_parents(root, destination.parent)
             try:
                 os.link(temporary, destination)
             except FileExistsError:

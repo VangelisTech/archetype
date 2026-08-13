@@ -12,6 +12,8 @@ from pathlib import Path
 import daft
 import pytest
 import xxhash
+from daft.catalog import Catalog
+from daft.session import Session
 
 from archetype.artifacts.migration import ArtifactIntegrityError
 from archetype.artifacts.models import ArtifactStoreConfig
@@ -197,6 +199,28 @@ async def test_remote_iceberg_and_separate_audit_identity_fail_local_v1(
             )
         await _assert_no_reservation(destination)
     finally:
+        await _close(source, destination)
+
+
+async def test_local_config_with_non_sqlite_injected_catalog_fails_local_v1(
+    tmp_path: Path,
+) -> None:
+    source = _endpoint(tmp_path, "source")
+    destination = _endpoint(tmp_path, "destination")
+    session = Session()
+    session.attach_catalog(Catalog.from_pydict({}))
+    session.set_namespace("migration")
+    managed = replace(source, storage_service=StorageService(session=session))
+    try:
+        with pytest.raises(MigrationPreflightError, match="SQLite-backed Iceberg catalog"):
+            await plan_storage_migration(
+                source=managed,
+                destination=destination,
+                migration_id="managed-catalog",
+            )
+        await _assert_no_reservation(destination)
+    finally:
+        await managed.storage_service.shutdown()
         await _close(source, destination)
 
 
@@ -512,6 +536,67 @@ async def test_retry_after_activation_recovers_imported_historical_snapshot(
             "events",
         )
         assert sorted(rows.to_pydict()["value"]) == [1, 2]
+        reservation = await admin.get_migration_reservation(plan.migration_id)
+        assert reservation is not None
+        assert reservation.status == "COMPLETE"
+    finally:
+        await _close(source, destination)
+
+
+async def test_retry_after_activation_needs_only_the_destination(
+    tmp_path: Path,
+) -> None:
+    verifier = _ColdVerifier()
+    source = _endpoint(tmp_path, "source")
+    destination = _endpoint(tmp_path, "destination", verifier=verifier)
+    try:
+        await source.storage_service.append_table(
+            source.storage_config,
+            "events",
+            daft.from_pydict({"value": [1]}),
+        )
+        plan = await plan_storage_migration(
+            source=source,
+            destination=destination,
+            migration_id="destination-only-activated-recovery",
+        )
+        table = plan.tables[0]
+        payload = await source.storage_service.export_table_snapshot(
+            source.storage_config,
+            table.source,
+        )
+        await destination.storage_service.import_table_snapshot(
+            destination.storage_config,
+            table.source,
+            payload,
+            destination_evidence=table.destination,
+        )
+        admin = destination.migration_control_catalog
+        await admin.stage_migration_control(plan.migration_id, plan.plan_digest, plan.control)
+        await admin.activate_migration(plan.migration_id, plan.plan_digest, plan.control)
+
+        unavailable_source = replace(
+            source,
+            storage_config=StorageConfig(
+                uri="s3://unavailable/source",
+                namespace="unavailable",
+                backend=StorageBackend.ICEBERG,
+            ),
+            storage_service=object(),  # type: ignore[arg-type]
+            control_catalog=object(),  # type: ignore[arg-type]
+            artifact_store_config=ArtifactStoreConfig(object_uri="s3://unavailable/objects"),
+            activity_catalog_path=Path("relative-unavailable"),
+            audit_storage_config=None,  # type: ignore[arg-type]
+        )
+        resumed = await plan_storage_migration(
+            source=unavailable_source,
+            destination=destination,
+            migration_id=plan.migration_id,
+        )
+        receipt = await migrate_storage(resumed)
+
+        assert receipt.source_stability_digest == plan.source_stability_digest
+        assert receipt.tables[0].destination_content_digest == table.destination.content_digest
         reservation = await admin.get_migration_reservation(plan.migration_id)
         assert reservation is not None
         assert reservation.status == "COMPLETE"

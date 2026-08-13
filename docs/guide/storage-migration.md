@@ -215,6 +215,13 @@ read and verify durable evidence, skip matching work, complete missing work,
 and reject conflicting work. No success receipt exists until every World is
 activated and cold verification succeeds.
 
+Once the reservation records `ACTIVATED`, the destination is the complete
+recovery authority. A retry MUST rehydrate the exact reserved plan, recover
+the imported historical table snapshots, run destination-only cold
+verification, and complete the receipt without reading or validating the
+source endpoint, its Activity catalog, or its Artifact authority. Source
+availability remains required through activation, but not afterward.
+
 Completion MUST atomically store the canonical credential-free receipt and its
 digest with the destination reservation. If that commit succeeds but its
 response is lost, retrying the completed plan MUST return the exact stored

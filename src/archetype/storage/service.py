@@ -675,6 +675,52 @@ class StorageService:
             )
         self._required_session_identity = requested
 
+    def require_local_sqlite_iceberg_identity(
+        self,
+        storage_config: StorageConfig,
+    ) -> None:
+        """Require the concrete local SQLite-backed Iceberg catalog.
+
+        A local-looking ``StorageConfig`` is not evidence about a caller-owned
+        Daft session.  Migration uses this stronger check so it cannot admit a
+        remote or managed catalog while deriving its identity from an
+        unrelated local URI.
+        """
+
+        self.require_iceberg_identity(storage_config)
+        if self._session is None:
+            # Store construction for an uninjected service is exclusively the
+            # local SqlCatalog path in ``configure_session``.
+            return
+
+        from pyiceberg.catalog.sql import SqlCatalog
+
+        catalog = self._session.current_catalog()
+        inner = getattr(catalog, "_inner", None)
+        if not isinstance(inner, SqlCatalog):
+            raise ValueError("migration v1 requires a local SQLite-backed Iceberg catalog")
+
+        properties = inner.properties
+        catalog_uri = properties.get("uri")
+        warehouse_uri = properties.get("warehouse")
+        if not isinstance(catalog_uri, str) or not catalog_uri.startswith("sqlite:///"):
+            raise ValueError("migration v1 requires a local SQLite-backed Iceberg catalog")
+        catalog_path = local_storage_path(catalog_uri.removeprefix("sqlite://"))
+        warehouse_path = (
+            local_storage_path(warehouse_uri) if isinstance(warehouse_uri, str) else None
+        )
+        requested_root = local_storage_path(str(storage_config.uri))
+        if catalog_path is None or warehouse_path is None or requested_root is None:
+            raise ValueError("migration v1 requires a local SQLite-backed Iceberg catalog")
+        requested_root = requested_root.resolve()
+        if (
+            catalog_path.resolve() != requested_root / "catalog.db"
+            or warehouse_path.resolve() != requested_root
+        ):
+            raise ValueError(
+                "migration v1 Iceberg catalog does not match the configured local identity"
+            )
+
     def get_control_catalog(self, storage_config: StorageConfig) -> ControlCatalog:
         """The durable control catalog for a storage location (pooled).
 
