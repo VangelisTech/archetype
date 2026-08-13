@@ -25,6 +25,7 @@ help:
 	@echo "  make format         Format code (ruff)"
 	@echo "  make lint           Lint code (ruff)"
 	@echo "  make static         All version-independent blocking validation"
+	@echo "  make actionlint-audit  Validate active GitHub Actions workflows"
 	@echo "  make contract-audit Validate normative sources and executable oracles"
 	@echo "  make benchmark-audit Validate benchmark ownership and policies"
 	@echo "  make operational-audit Validate operational scenario ownership and policies"
@@ -145,8 +146,12 @@ operational-audit:
 	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/validate_operational_scenarios.py
 
 .PHONY: static
-static: format-check lint typecheck lock-check contract-audit benchmark-audit
+static: format-check lint typecheck lock-check contract-audit benchmark-audit actionlint-audit
 	@echo "Static validation passed"
+
+.PHONY: actionlint-audit
+actionlint-audit:
+	@uv run python scripts/run_actionlint.py
 
 .PHONY: lockfile-audit
 lockfile-audit:
