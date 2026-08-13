@@ -63,7 +63,7 @@ concerns start at the dispatcher and the families above core.
 
 ## System architecture
 
-**Families around the dispatcher**
+### Families around the dispatcher
 
 ```mermaid
 graph TB
@@ -173,7 +173,7 @@ Repository tests and composition modules may, because those are internal seams.
 
 ## Request and tick paths
 
-**Direct operation**
+### Direct operation
 
 ```mermaid
 sequenceDiagram
@@ -191,7 +191,7 @@ sequenceDiagram
     Fam-->>Host: WorldInfo / RunResult / …
 ```
 
-**Tick-deferred command**
+### Tick-deferred command
 
 ```mermaid
 sequenceDiagram
@@ -207,7 +207,7 @@ sequenceDiagram
     Sched->>World: lock-held materializer + settlement
 ```
 
-**Activity (between ticks)**
+### Activity (between ticks)
 
 ```mermaid
 sequenceDiagram

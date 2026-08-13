@@ -29,7 +29,7 @@ For the normative application contracts, see
 
 ## System Architecture
 
-**High-level component relationships**
+### High-level component relationships
 
 ```mermaid
 graph TB
@@ -70,7 +70,7 @@ through `QueryManager`, writes through `UpdateManager`, and behavior through
 
 ## Core ECS Components
 
-**Code entity mapping**
+### Code entity mapping
 
 ```mermaid
 graph LR
@@ -124,7 +124,7 @@ actually moves through.
 
 ## Processing Pipeline
 
-**One simulation step**
+### One simulation step
 
 ```mermaid
 sequenceDiagram
