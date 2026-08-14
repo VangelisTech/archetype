@@ -434,6 +434,69 @@ method = "collect"
 reason = "Central application execution boundary: StorageService admits the caller's lazy Daft plan through its shared execution gate, materializes it off the event loop, and returns the completed frame."
 
 [[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.capture_table_snapshot"
+expr = "frame.collect"
+method = "collect"
+reason = "Offline whole-storage migration boundary: StorageService pins one Iceberg snapshot and materializes its complete local-v1 contents exactly once so the immutable plan can bind an exact schema, row count, and order-independent duplicate-preserving digest; those durable facts cannot be recovered from an unexecuted lazy plan."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.capture_table_snapshot"
+expr = "frozen.to_arrow"
+method = "to_arrow"
+reason = "Offline migration evidence boundary: the pinned frame was already collected under StorageService admission, and its in-memory Arrow values are required by the versioned schema-bound row-multiset digest without executing a second plan."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.export_table_snapshot"
+expr = "frame.collect"
+method = "collect"
+reason = "Offline migration transfer boundary: StorageService executes the exact plan-pinned Iceberg snapshot once and freezes the full local-v1 payload so source drift validation and destination commit retries cannot re-read a different snapshot."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.export_table_snapshot"
+expr = "frozen.to_arrow"
+method = "to_arrow"
+reason = "Offline migration transfer boundary: the pinned source frame is already collected and must cross as an exact Arrow table for Artifact URI relocation, deterministic digest verification, and one destination Iceberg commit."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.import_table_snapshot"
+expr = "aligned.collect"
+method = "collect"
+reason = "Conflict-safe migration commit boundary: the caller supplied one already-materialized Arrow snapshot; StorageService freezes its schema-aligned Daft wrapper once so optimistic Iceberg retries never re-evaluate or change the exact destination payload."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.import_table_snapshot"
+expr = "frozen.to_arrow"
+method = "to_arrow"
+reason = "Empty-table migration verification boundary: the aligned payload is already collected in memory and must be converted back to Arrow to prove the created zero-snapshot table has the exact planned schema and logical digest."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService.import_table_snapshot"
+expr = "frozen.write_iceberg"
+method = "write_iceberg"
+reason = "Physical migration commit boundary: the exact verified full-table payload must enter the destination Iceberg authority as one optimistic append; commit failures retry the same frozen frame and unknown outcomes are reconciled by digest before any replay."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService._capture_native_table"
+expr = "frame.collect"
+method = "collect"
+reason = "Migration read-back boundary: StorageService materializes one exact current or historical Iceberg snapshot to prove a destination commit, reconcile an unknown outcome, or recover the imported snapshot after a cold-verification tick advanced the table."
+
+[[entries]]
+path = "src/archetype/storage/service.py"
+symbol = "StorageService._capture_native_table"
+expr = "frozen.to_arrow"
+method = "to_arrow"
+reason = "Migration read-back evidence boundary: the selected Iceberg snapshot is already collected, and its in-memory Arrow values are required to compare exact schema, count, and multiset digest without executing another plan."
+
+[[entries]]
 path = "src/archetype/world/resume.py"
 symbol = "_merge_visible_segment"
 expr = "materialized.to_pylist"

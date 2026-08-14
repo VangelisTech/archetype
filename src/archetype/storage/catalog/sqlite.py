@@ -56,6 +56,15 @@ from uuid_utils import uuid7
 from archetype.core.config import StorageConfig
 from archetype.core.interfaces import StaleWriterError
 from archetype.core.paths import local_storage_path, require_safe_namespace, resolve_local_root
+from archetype.storage.catalog.migration import (
+    CONTROL_CATALOG_PROTOCOL_VERSION,
+    CONTROL_SNAPSHOT_FORMAT_VERSION,
+    ControlCatalogSnapshot,
+    EvaluationRecord,
+    FenceFloorRecord,
+    MigrationReservation,
+    control_snapshot_digest,
+)
 from archetype.storage.catalog.records import (
     CatalogConflictError,
     CatalogSchemaMismatchError,
@@ -74,7 +83,7 @@ from archetype.storage.config import ControlCatalogConfig
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 10
+_SCHEMA_VERSION = 11
 
 
 def catalog_path_for(
@@ -135,6 +144,11 @@ CREATE TABLE IF NOT EXISTS writer_fence (
     holder TEXT NOT NULL,
     acquired_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS writer_fence_floor (
+    world_id TEXT PRIMARY KEY,
+    epoch INTEGER NOT NULL,
+    migration_id TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS commands (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
     command_id TEXT NOT NULL UNIQUE,
@@ -191,6 +205,28 @@ CREATE TABLE IF NOT EXISTS outbox (
 );
 CREATE INDEX IF NOT EXISTS outbox_pending_idx
     ON outbox (world_id, projected_at, sequence);
+CREATE TABLE IF NOT EXISTS migration_reservations (
+    migration_id TEXT PRIMARY KEY,
+    plan_digest TEXT NOT NULL,
+    plan_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    control_snapshot_digest TEXT,
+    receipt_digest TEXT,
+    receipt_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS migration_staged_worlds (
+    migration_id TEXT NOT NULL,
+    world_id TEXT NOT NULL,
+    name TEXT,
+    run_id TEXT,
+    parent_world_id TEXT,
+    status TEXT NOT NULL,
+    tick_head INTEGER NOT NULL,
+    writer_mode TEXT NOT NULL,
+    PRIMARY KEY (migration_id, world_id)
+);
 INSERT OR IGNORE INTO catalog_meta (key, value) VALUES ('schema_version', '{_SCHEMA_VERSION}');
 """
 
@@ -260,6 +296,18 @@ class SqliteControlCatalog:
                             f"catalog {self.path} schema_version={version} "
                             "does not contain worlds.writer_mode"
                         )
+                    migration_columns = {
+                        str(row["name"])
+                        for row in conn.execute(
+                            "PRAGMA table_info(migration_reservations)"
+                        ).fetchall()
+                    }
+                    if "receipt_json" not in migration_columns:
+                        # Schema v11 is not released yet. Keep the version stable
+                        # while making receipt recovery additive for early v11 DBs.
+                        conn.execute(
+                            "ALTER TABLE migration_reservations ADD COLUMN receipt_json TEXT"
+                        )
                     if version < _SCHEMA_VERSION:
                         conn.execute(
                             "UPDATE catalog_meta SET value=? WHERE key='schema_version'",
@@ -288,6 +336,22 @@ class SqliteControlCatalog:
         async with self._lock:
             return await asyncio.to_thread(fn, *args)
 
+    async def _run_admin(self, fn, *args):
+        """Finish an administrative transaction before propagating cancellation."""
+
+        async with self._lock:
+            task = asyncio.create_task(asyncio.to_thread(fn, *args))
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                try:
+                    await task
+                except BaseException:
+                    logger.error(
+                        "control catalog administrative transaction failed after cancellation"
+                    )
+                raise
+
     async def close(self) -> None:
         def _close() -> None:
             if self._conn is not None:
@@ -295,6 +359,393 @@ class SqliteControlCatalog:
                 self._conn = None
 
         await self._run(_close)
+
+    # ── whole-catalog migration administration ────────────────────────────
+
+    async def export_migration_snapshot(self) -> ControlCatalogSnapshot:
+        """Freeze all logical control state in one coherent read transaction."""
+
+        def _export() -> ControlCatalogSnapshot:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                return _export_control_snapshot(conn)
+
+        return await self._run_admin(_export)
+
+    async def get_migration_reservation(
+        self,
+        migration_id: str,
+    ) -> MigrationReservation | None:
+        def _get() -> MigrationReservation | None:
+            row = (
+                self._connect_sync()
+                .execute(
+                    "SELECT * FROM migration_reservations WHERE migration_id=?",
+                    (migration_id,),
+                )
+                .fetchone()
+            )
+            return _migration_reservation_from_row(row) if row is not None else None
+
+        return await self._run(_get)
+
+    async def list_migration_reservations(self) -> tuple[MigrationReservation, ...]:
+        def _list() -> tuple[MigrationReservation, ...]:
+            rows = (
+                self._connect_sync()
+                .execute("SELECT * FROM migration_reservations ORDER BY migration_id")
+                .fetchall()
+            )
+            return tuple(_migration_reservation_from_row(row) for row in rows)
+
+        return await self._run(_list)
+
+    async def reserve_migration(
+        self,
+        migration_id: str,
+        plan_digest: str,
+        plan_json: str,
+    ) -> MigrationReservation:
+        """Reserve an empty destination for one immutable migration plan."""
+
+        _require_nonempty_migration_value("migration_id", migration_id)
+        _require_nonempty_migration_value("plan_digest", plan_digest)
+        _require_nonempty_migration_value("plan_json", plan_json)
+
+        def _reserve() -> MigrationReservation:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT * FROM migration_reservations WHERE migration_id=?",
+                    (migration_id,),
+                ).fetchone()
+                if row is not None:
+                    reservation = _migration_reservation_from_row(row)
+                    _require_reservation_plan(reservation, plan_digest, plan_json)
+                    return reservation
+                competing = conn.execute(
+                    "SELECT migration_id FROM migration_reservations ORDER BY migration_id LIMIT 1"
+                ).fetchone()
+                if competing is not None:
+                    raise CatalogConflictError(
+                        "control catalog is already reserved by migration "
+                        f"{competing['migration_id']}"
+                    )
+                if _catalog_has_operational_state(conn):
+                    raise CatalogConflictError("migration destination control catalog is not empty")
+                now = _utcnow()
+                conn.execute(
+                    "INSERT INTO migration_reservations "
+                    "(migration_id, plan_digest, plan_json, status, created_at, updated_at) "
+                    "VALUES (?, ?, ?, 'RESERVED', ?, ?)",
+                    (migration_id, plan_digest, plan_json, now, now),
+                )
+                inserted = conn.execute(
+                    "SELECT * FROM migration_reservations WHERE migration_id=?",
+                    (migration_id,),
+                ).fetchone()
+                assert inserted is not None
+                return _migration_reservation_from_row(inserted)
+
+        return await self._run_admin(_reserve)
+
+    async def stage_migration_control(
+        self,
+        migration_id: str,
+        plan_digest: str,
+        snapshot: ControlCatalogSnapshot,
+    ) -> None:
+        """Import exact control rows while keeping every World undiscoverable."""
+
+        _validate_control_snapshot(snapshot)
+        snapshot_digest = control_snapshot_digest(snapshot)
+
+        def _stage() -> None:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                reservation = _require_migration_reservation(
+                    conn,
+                    migration_id,
+                    plan_digest,
+                )
+                if reservation.status in {"STAGED", "ACTIVATED", "COMPLETE"}:
+                    if reservation.control_snapshot_digest != snapshot_digest:
+                        raise CatalogConflictError(
+                            f"migration {migration_id} is bound to a different control snapshot"
+                        )
+                    if reservation.status != "STAGED":
+                        return
+                    current = _export_control_snapshot(
+                        conn,
+                        staged_migration_id=migration_id,
+                    )
+                    if control_snapshot_digest(current) != snapshot_digest:
+                        raise CatalogSchemaMismatchError(
+                            f"migration {migration_id} staged control state failed verification"
+                        )
+                    return
+                if reservation.status != "RESERVED":
+                    raise CatalogConflictError(
+                        f"migration {migration_id} cannot stage from {reservation.status}"
+                    )
+                if _catalog_has_operational_state(conn):
+                    raise CatalogConflictError(
+                        "migration destination changed after it was reserved"
+                    )
+
+                conn.executemany(
+                    "INSERT INTO migration_staged_worlds "
+                    "(migration_id, world_id, name, run_id, parent_world_id, status, "
+                    "tick_head, writer_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        (
+                            migration_id,
+                            record.world_id,
+                            record.name,
+                            record.run_id,
+                            record.parent_world_id,
+                            record.status,
+                            record.tick_head,
+                            record.writer_mode,
+                        )
+                        for record in snapshot.worlds
+                    ],
+                )
+                conn.executemany(
+                    "INSERT INTO signatures "
+                    "(table_id, component_names, schema_json, fingerprint) "
+                    "VALUES (?, ?, ?, ?)",
+                    [
+                        (
+                            record.table_id,
+                            json.dumps(list(record.component_names)),
+                            record.schema_json,
+                            record.fingerprint,
+                        )
+                        for record in snapshot.signatures
+                    ],
+                )
+                conn.executemany(
+                    "INSERT INTO manifests "
+                    "(world_id, run_id, tick, commit_token, writer_epoch, tables_json, "
+                    "created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        (
+                            record.world_id,
+                            record.run_id,
+                            record.tick,
+                            record.commit_token,
+                            record.writer_epoch,
+                            json.dumps(list(record.table_ids)),
+                            record.created_at,
+                        )
+                        for record in snapshot.manifests
+                    ],
+                )
+                conn.executemany(
+                    "INSERT INTO commands "
+                    "(sequence, command_id, world_id, scheduled_tick, priority, command_type, "
+                    "payload_json, payload_digest, version, principal_id, origin, "
+                    "reserved_entity_id, status, attempts, max_attempts, lease_owner, "
+                    "lease_expires_at, last_error_code, last_error_detail, accepted_at, "
+                    "updated_at, applied_tick, commit_token) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                    "?, ?, ?)",
+                    [
+                        (
+                            record.sequence,
+                            record.command_id,
+                            record.world_id,
+                            record.scheduled_tick,
+                            record.priority,
+                            record.command_type,
+                            record.payload_json,
+                            record.payload_digest,
+                            record.version,
+                            record.principal_id,
+                            record.origin,
+                            record.reserved_entity_id,
+                            record.status,
+                            record.attempts,
+                            record.max_attempts,
+                            record.lease_owner,
+                            record.lease_expires_at,
+                            record.last_error_code,
+                            record.last_error_detail,
+                            record.accepted_at,
+                            record.updated_at,
+                            record.applied_tick,
+                            record.commit_token,
+                        )
+                        for record in snapshot.commands
+                    ],
+                )
+                conn.executemany(
+                    "INSERT INTO evaluation_leases "
+                    "(world_id, run_id, evaluation_id, subject_digest, contract_digest, "
+                    "status, owner, lease_expires_at, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        (
+                            record.world_id,
+                            record.run_id,
+                            record.evaluation_id,
+                            record.subject_digest,
+                            record.contract_digest,
+                            record.status,
+                            record.owner,
+                            record.lease_expires_at,
+                            record.created_at,
+                            record.updated_at,
+                        )
+                        for record in snapshot.evaluations
+                    ],
+                )
+                conn.executemany(
+                    "INSERT INTO outbox "
+                    "(sequence, event_id, world_id, aggregate_type, aggregate_id, event_type, "
+                    "command_type, status, actor_id, payload_json, occurred_at, projected_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        (
+                            record.sequence,
+                            record.event_id,
+                            record.world_id,
+                            record.aggregate_type,
+                            record.aggregate_id,
+                            record.event_type,
+                            record.command_type,
+                            record.status,
+                            record.actor_id,
+                            record.payload_json,
+                            record.occurred_at,
+                            record.projected_at,
+                        )
+                        for record in snapshot.outbox
+                    ],
+                )
+                conn.executemany(
+                    "INSERT INTO writer_fence_floor (world_id, epoch, migration_id) "
+                    "VALUES (?, ?, ?)",
+                    [
+                        (record.world_id, record.epoch, migration_id)
+                        for record in snapshot.fence_floors
+                    ],
+                )
+                conn.execute(
+                    "UPDATE migration_reservations SET status='STAGED', "
+                    "control_snapshot_digest=?, updated_at=? WHERE migration_id=?",
+                    (snapshot_digest, _utcnow(), migration_id),
+                )
+
+                staged = _export_control_snapshot(
+                    conn,
+                    staged_migration_id=migration_id,
+                )
+                if control_snapshot_digest(staged) != snapshot_digest:
+                    raise CatalogSchemaMismatchError(
+                        f"migration {migration_id} staged control state failed verification"
+                    )
+
+        await self._run_admin(_stage)
+
+    async def activate_migration(
+        self,
+        migration_id: str,
+        plan_digest: str,
+        snapshot: ControlCatalogSnapshot,
+    ) -> None:
+        """Activate the staged World directory as the final local control step."""
+
+        _validate_control_snapshot(snapshot)
+        snapshot_digest = control_snapshot_digest(snapshot)
+
+        def _activate() -> None:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                reservation = _require_migration_reservation(
+                    conn,
+                    migration_id,
+                    plan_digest,
+                )
+                if reservation.control_snapshot_digest != snapshot_digest:
+                    raise CatalogConflictError(
+                        f"migration {migration_id} is bound to a different control snapshot"
+                    )
+                if reservation.status in {"ACTIVATED", "COMPLETE"}:
+                    return
+                if reservation.status != "STAGED":
+                    raise CatalogConflictError(
+                        f"migration {migration_id} cannot activate from {reservation.status}"
+                    )
+                staged = _export_control_snapshot(
+                    conn,
+                    staged_migration_id=migration_id,
+                )
+                if control_snapshot_digest(staged) != snapshot_digest:
+                    raise CatalogSchemaMismatchError(
+                        f"migration {migration_id} staged control state failed verification"
+                    )
+                conn.execute(
+                    "INSERT INTO worlds "
+                    "(world_id, name, run_id, parent_world_id, status, tick_head, writer_mode) "
+                    "SELECT world_id, name, run_id, parent_world_id, status, tick_head, "
+                    "writer_mode FROM migration_staged_worlds WHERE migration_id=?",
+                    (migration_id,),
+                )
+                conn.execute(
+                    "UPDATE migration_reservations SET status='ACTIVATED', updated_at=? "
+                    "WHERE migration_id=?",
+                    (_utcnow(), migration_id),
+                )
+
+        await self._run_admin(_activate)
+
+    async def complete_migration(
+        self,
+        migration_id: str,
+        plan_digest: str,
+        receipt_digest: str,
+        receipt_json: str,
+    ) -> None:
+        """Record final verified migration evidence idempotently."""
+
+        _require_nonempty_migration_value("receipt_digest", receipt_digest)
+        _require_nonempty_migration_value("receipt_json", receipt_json)
+
+        def _complete() -> None:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                reservation = _require_migration_reservation(
+                    conn,
+                    migration_id,
+                    plan_digest,
+                )
+                if reservation.status == "COMPLETE":
+                    if (reservation.receipt_digest, reservation.receipt_json) != (
+                        receipt_digest,
+                        receipt_json,
+                    ):
+                        raise CatalogConflictError(
+                            f"migration {migration_id} has a different completion receipt"
+                        )
+                    return
+                if reservation.status != "ACTIVATED":
+                    raise CatalogConflictError(
+                        f"migration {migration_id} cannot complete from {reservation.status}"
+                    )
+                conn.execute(
+                    "UPDATE migration_reservations SET status='COMPLETE', receipt_digest=?, "
+                    "receipt_json=?, updated_at=? WHERE migration_id=?",
+                    (receipt_digest, receipt_json, _utcnow(), migration_id),
+                )
+
+        await self._run_admin(_complete)
 
     # ── worlds ───────────────────────────────────────────────────────────────
 
@@ -1044,9 +1495,13 @@ class SqliteControlCatalog:
             with conn:
                 conn.execute("BEGIN IMMEDIATE")
                 row = conn.execute(
-                    "SELECT epoch FROM writer_fence WHERE world_id=?", (world_id,)
+                    "SELECT MAX(epoch) AS epoch FROM ("
+                    "SELECT epoch FROM writer_fence WHERE world_id=? "
+                    "UNION ALL SELECT epoch FROM writer_fence_floor WHERE world_id=?"
+                    ")",
+                    (world_id, world_id),
                 ).fetchone()
-                epoch = (int(row["epoch"]) if row is not None else 0) + 1
+                epoch = (int(row["epoch"]) if row["epoch"] is not None else 0) + 1
                 conn.execute(
                     "INSERT INTO writer_fence (world_id, epoch, holder, acquired_at) "
                     "VALUES (?, ?, ?, ?) "
@@ -1063,9 +1518,13 @@ class SqliteControlCatalog:
         def _get() -> int | None:
             conn = self._connect_sync()
             row = conn.execute(
-                "SELECT epoch FROM writer_fence WHERE world_id=?", (world_id,)
+                "SELECT MAX(epoch) AS epoch FROM ("
+                "SELECT epoch FROM writer_fence WHERE world_id=? "
+                "UNION ALL SELECT epoch FROM writer_fence_floor WHERE world_id=?"
+                ")",
+                (world_id, world_id),
             ).fetchone()
-            return int(row["epoch"]) if row is not None else None
+            return int(row["epoch"]) if row["epoch"] is not None else None
 
         return await self._run(_get)
 
@@ -1212,7 +1671,9 @@ class SqliteControlCatalog:
                 (world_id, run_id),
             ).fetchone()
             fence = conn.execute(
-                "SELECT 1 FROM writer_fence WHERE world_id=?", (world_id,)
+                "SELECT 1 FROM writer_fence WHERE world_id=? "
+                "UNION ALL SELECT 1 FROM writer_fence_floor WHERE world_id=? LIMIT 1",
+                (world_id, world_id),
             ).fetchone()
             if any_manifest is None:
                 return None if fence is None else {}
@@ -1262,6 +1723,278 @@ class SqliteControlCatalog:
             ]
 
         return await self._run(_list)
+
+
+def _export_control_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    staged_migration_id: str | None = None,
+) -> ControlCatalogSnapshot:
+    if staged_migration_id is None:
+        world_rows = conn.execute("SELECT * FROM worlds ORDER BY world_id").fetchall()
+    else:
+        world_rows = conn.execute(
+            "SELECT world_id, name, run_id, parent_world_id, status, tick_head, writer_mode "
+            "FROM migration_staged_worlds WHERE migration_id=? ORDER BY world_id",
+            (staged_migration_id,),
+        ).fetchall()
+    signature_rows = conn.execute("SELECT * FROM signatures ORDER BY table_id").fetchall()
+    manifest_rows = conn.execute(
+        "SELECT * FROM manifests ORDER BY world_id, run_id, tick"
+    ).fetchall()
+    command_rows = conn.execute("SELECT * FROM commands ORDER BY world_id, sequence").fetchall()
+    evaluation_rows = conn.execute(
+        "SELECT * FROM evaluation_leases ORDER BY world_id, run_id, evaluation_id"
+    ).fetchall()
+    outbox_rows = conn.execute("SELECT * FROM outbox ORDER BY world_id, sequence").fetchall()
+    floor_rows = conn.execute(
+        "SELECT world_id, MAX(epoch) AS epoch FROM ("
+        "SELECT world_id, epoch FROM writer_fence "
+        "UNION ALL SELECT world_id, epoch FROM writer_fence_floor "
+        "UNION ALL SELECT world_id, writer_epoch AS epoch FROM manifests"
+        ") GROUP BY world_id ORDER BY world_id"
+    ).fetchall()
+    version_row = conn.execute(
+        "SELECT value FROM catalog_meta WHERE key='schema_version'"
+    ).fetchone()
+    if version_row is None:
+        raise CatalogSchemaMismatchError("control catalog has no schema version")
+    return ControlCatalogSnapshot(
+        format_version=CONTROL_SNAPSHOT_FORMAT_VERSION,
+        catalog_schema_version=int(version_row["value"]),
+        catalog_protocol_version=CONTROL_CATALOG_PROTOCOL_VERSION,
+        worlds=tuple(_world_from_row(row) for row in world_rows),
+        signatures=tuple(_signature_from_row(row) for row in signature_rows),
+        manifests=tuple(_manifest_from_row(row) for row in manifest_rows),
+        commands=tuple(_command_from_row(row) for row in command_rows),
+        evaluations=tuple(_evaluation_record_from_row(row) for row in evaluation_rows),
+        outbox=tuple(_outbox_from_row(row) for row in outbox_rows),
+        fence_floors=tuple(
+            FenceFloorRecord(world_id=row["world_id"], epoch=int(row["epoch"]))
+            for row in floor_rows
+        ),
+    )
+
+
+def _validate_control_snapshot(snapshot: ControlCatalogSnapshot) -> None:
+    if snapshot.format_version != CONTROL_SNAPSHOT_FORMAT_VERSION:
+        raise ValueError(f"unsupported control snapshot format_version={snapshot.format_version}")
+    if snapshot.catalog_schema_version != _SCHEMA_VERSION:
+        raise ValueError(
+            "local control migration requires catalog_schema_version="
+            f"{_SCHEMA_VERSION}, got {snapshot.catalog_schema_version}"
+        )
+    if snapshot.catalog_protocol_version != CONTROL_CATALOG_PROTOCOL_VERSION:
+        raise ValueError(
+            f"unsupported control catalog protocol_version={snapshot.catalog_protocol_version}"
+        )
+
+    world_ids = _require_unique(
+        (record.world_id for record in snapshot.worlds),
+        "world_id",
+    )
+    for record in snapshot.worlds:
+        require_world_writer_mode(record.writer_mode)
+        if record.status not in {"active", "destroyed"}:
+            raise ValueError(f"world {record.world_id} has invalid status {record.status!r}")
+        if record.tick_head < 0:
+            raise ValueError(f"world {record.world_id} has a negative tick head")
+
+    _require_unique(
+        (record.table_id for record in snapshot.signatures),
+        "signature table_id",
+    )
+    _require_unique(
+        ((record.world_id, record.run_id, record.tick) for record in snapshot.manifests),
+        "manifest identity",
+    )
+    manifest_epoch_by_world: dict[str, int] = {}
+    for record in snapshot.manifests:
+        _require_snapshot_world(world_ids, record.world_id, "manifest")
+        if record.tick < 0 or record.writer_epoch < 0:
+            raise ValueError(
+                f"manifest {record.world_id}/{record.run_id}/{record.tick} has negative state"
+            )
+        manifest_epoch_by_world[record.world_id] = max(
+            manifest_epoch_by_world.get(record.world_id, 0),
+            record.writer_epoch,
+        )
+
+    _require_unique((record.command_id for record in snapshot.commands), "command_id")
+    _require_unique((record.sequence for record in snapshot.commands), "command sequence")
+    for record in snapshot.commands:
+        _require_snapshot_world(world_ids, record.world_id, "command")
+        if record.sequence < 1:
+            raise ValueError(f"command {record.command_id} has invalid sequence")
+        if record.status not in {"APPLIED", "REJECTED", "DEAD_LETTER"}:
+            raise ValueError(
+                f"command {record.command_id} is unsettled ({record.status}); "
+                "migration requires terminal commands"
+            )
+        if record.lease_owner is not None or record.lease_expires_at is not None:
+            raise ValueError(f"terminal command {record.command_id} retains a lease")
+        if record.status == "APPLIED":
+            if record.applied_tick is None or record.commit_token is None:
+                raise ValueError(f"applied command {record.command_id} lacks commit evidence")
+        elif record.applied_tick is not None or record.commit_token is not None:
+            raise ValueError(f"unapplied command {record.command_id} has commit evidence")
+
+    _require_unique(
+        ((record.world_id, record.run_id, record.evaluation_id) for record in snapshot.evaluations),
+        "evaluation identity",
+    )
+    for record in snapshot.evaluations:
+        _require_snapshot_world(world_ids, record.world_id, "evaluation")
+        if record.status not in {"COMPLETE", "RETRYABLE"}:
+            raise ValueError(f"evaluation {record.evaluation_id} is unsettled ({record.status})")
+        if record.owner is not None or record.lease_expires_at is not None:
+            raise ValueError(f"settled evaluation {record.evaluation_id} retains a lease")
+
+    _require_unique((record.event_id for record in snapshot.outbox), "outbox event_id")
+    _require_unique((record.sequence for record in snapshot.outbox), "outbox sequence")
+    for record in snapshot.outbox:
+        _require_snapshot_world(world_ids, record.world_id, "outbox row")
+        if record.sequence < 1:
+            raise ValueError(f"outbox event {record.event_id} has invalid sequence")
+
+    floor_by_world: dict[str, int] = {}
+    _require_unique(
+        (record.world_id for record in snapshot.fence_floors),
+        "fence-floor world_id",
+    )
+    for record in snapshot.fence_floors:
+        _require_snapshot_world(world_ids, record.world_id, "fence floor")
+        if record.epoch < 0:
+            raise ValueError(f"fence floor for {record.world_id} is negative")
+        floor_by_world[record.world_id] = record.epoch
+    for world_id, manifest_epoch in manifest_epoch_by_world.items():
+        if floor_by_world.get(world_id, -1) < manifest_epoch:
+            raise ValueError(f"fence floor for {world_id} is below its manifest writer epoch")
+
+
+def _require_unique(values, label: str) -> set:
+    result: set = set()
+    for value in values:
+        if value in result:
+            raise ValueError(f"duplicate {label}: {value!r}")
+        result.add(value)
+    return result
+
+
+def _require_snapshot_world(world_ids: set[str], world_id: str, kind: str) -> None:
+    if world_id not in world_ids:
+        raise ValueError(f"{kind} references unknown world {world_id}")
+
+
+def _require_nonempty_migration_value(name: str, value: str) -> None:
+    if not value.strip():
+        raise ValueError(f"{name} must be non-empty")
+
+
+def _catalog_has_operational_state(conn: sqlite3.Connection) -> bool:
+    for table in (
+        "worlds",
+        "signatures",
+        "manifests",
+        "writer_fence",
+        "writer_fence_floor",
+        "commands",
+        "evaluation_leases",
+        "outbox",
+        "migration_staged_worlds",
+    ):
+        if conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is not None:
+            return True
+    stale_sequence = conn.execute(
+        "SELECT 1 FROM sqlite_sequence WHERE name IN ('commands', 'outbox') AND seq > 0 LIMIT 1"
+    ).fetchone()
+    if stale_sequence is not None:
+        return True
+    return False
+
+
+def _require_reservation_plan(
+    reservation: MigrationReservation,
+    plan_digest: str,
+    plan_json: str,
+) -> None:
+    if (reservation.plan_digest, reservation.plan_json) != (plan_digest, plan_json):
+        raise CatalogConflictError(
+            f"migration {reservation.migration_id} was reserved with a different plan"
+        )
+
+
+def _require_migration_reservation(
+    conn: sqlite3.Connection,
+    migration_id: str,
+    plan_digest: str,
+) -> MigrationReservation:
+    _require_nonempty_migration_value("migration_id", migration_id)
+    _require_nonempty_migration_value("plan_digest", plan_digest)
+    row = conn.execute(
+        "SELECT * FROM migration_reservations WHERE migration_id=?",
+        (migration_id,),
+    ).fetchone()
+    if row is None:
+        raise CatalogConflictError(f"migration {migration_id} is not reserved")
+    reservation = _migration_reservation_from_row(row)
+    if reservation.plan_digest != plan_digest:
+        raise CatalogConflictError(
+            f"migration {migration_id} was reserved with a different plan digest"
+        )
+    return reservation
+
+
+def _migration_reservation_from_row(row: sqlite3.Row) -> MigrationReservation:
+    return MigrationReservation(
+        migration_id=row["migration_id"],
+        plan_digest=row["plan_digest"],
+        plan_json=row["plan_json"],
+        status=row["status"],
+        control_snapshot_digest=row["control_snapshot_digest"],
+        receipt_digest=row["receipt_digest"],
+        receipt_json=row["receipt_json"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _signature_from_row(row: sqlite3.Row) -> SignatureRecord:
+    return SignatureRecord(
+        table_id=row["table_id"],
+        component_names=tuple(json.loads(row["component_names"])),
+        schema_json=row["schema_json"],
+        fingerprint=row["fingerprint"],
+    )
+
+
+def _manifest_from_row(row: sqlite3.Row) -> ManifestRecord:
+    return ManifestRecord(
+        world_id=row["world_id"],
+        run_id=row["run_id"],
+        tick=int(row["tick"]),
+        commit_token=row["commit_token"],
+        writer_epoch=int(row["writer_epoch"]),
+        table_ids=tuple(json.loads(row["tables_json"])),
+        created_at=row["created_at"],
+    )
+
+
+def _evaluation_record_from_row(row: sqlite3.Row) -> EvaluationRecord:
+    return EvaluationRecord(
+        world_id=row["world_id"],
+        run_id=row["run_id"],
+        evaluation_id=row["evaluation_id"],
+        subject_digest=row["subject_digest"],
+        contract_digest=row["contract_digest"],
+        status=row["status"],
+        owner=row["owner"],
+        lease_expires_at=(
+            float(row["lease_expires_at"]) if row["lease_expires_at"] is not None else None
+        ),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
 
 
 def _evaluation_lease_from_row(

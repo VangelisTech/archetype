@@ -19,6 +19,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from archetype.core.config import StorageConfig
+from archetype.storage.activity_catalog.migration import (
+    ActivityCatalogInspectionError,
+    ActivityCatalogInventory,
+)
 from archetype.storage.activity_catalog.records import (
     ActivityAdmissionRecord,
     ActivityCatalogClaimError,
@@ -31,6 +35,64 @@ from archetype.storage.catalog.sqlite import catalog_path_for
 from archetype.storage.config import ControlCatalogConfig
 
 _SCHEMA_VERSION = 1
+
+_MIGRATION_TABLE_COLUMNS = {
+    "activity_catalog_meta": ("key", "value"),
+    "activities": (
+        "sequence",
+        "source_world_id",
+        "activity_id",
+        "kind",
+        "source_run_id",
+        "source_tick",
+        "source_visibility_token",
+        "input_ref",
+        "input_digest",
+        "result_ref",
+        "result_digest",
+        "result_media_type",
+        "result_size_bytes",
+        "result_attempt",
+        "result_fence",
+        "result_recorded_at",
+        "observed_world_id",
+        "observed_run_id",
+        "observed_tick",
+        "observed_visibility_token",
+        "observed_result_digest",
+        "observed_at",
+        "created_at",
+        "updated_at",
+    ),
+    "activity_provider_operations": (
+        "provider",
+        "provider_operation_id",
+        "source_world_id",
+        "kind",
+        "activity_id",
+        "bound_at",
+    ),
+    "activity_attempts": (
+        "source_world_id",
+        "kind",
+        "activity_id",
+        "attempt",
+        "fence",
+        "owner",
+        "lease_expires_at",
+        "provider",
+        "provider_operation_id",
+        "provider_bound_at",
+        "reconciles_attempt",
+        "provider_absence_confirmed_at",
+        "retry_guard_ref",
+        "retry_guard_digest",
+        "authorized_by_reconciliation_attempt",
+        "released_at",
+        "created_at",
+        "updated_at",
+    ),
+}
 
 _DDL = f"""
 CREATE TABLE IF NOT EXISTS activity_catalog_meta (
@@ -115,6 +177,123 @@ def activity_catalog_path_for(
 
     control_path = catalog_path_for(config, catalog_config)
     return control_path.with_name(f"{control_path.stem}-activities{control_path.suffix}")
+
+
+def inspect_sqlite_activity_catalog(path: Path) -> ActivityCatalogInventory:
+    """Inventory all local Activity history without creating or changing a DB.
+
+    Absence is the one valid uninitialized state.  Once a file exists, an
+    unknown schema, missing table, corrupt database, or broken relationship
+    fails closed because migration cannot prove the catalog is empty.
+    """
+
+    candidate = Path(path)
+    if not candidate.exists():
+        return ActivityCatalogInventory(
+            catalog_present=False,
+            schema_version=None,
+            activity_count=0,
+            attempt_count=0,
+            provider_operation_count=0,
+        )
+    expected_tables = set(_MIGRATION_TABLE_COLUMNS)
+    try:
+        connection = sqlite3.connect(
+            candidate.resolve().as_uri() + "?mode=ro",
+            uri=True,
+            timeout=0,
+            check_same_thread=False,
+        )
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA query_only=ON")
+            connection.execute("PRAGMA foreign_keys=ON")
+            quick_check = connection.execute("PRAGMA quick_check").fetchall()
+            if [str(row[0]) for row in quick_check] != ["ok"]:
+                raise ActivityCatalogInspectionError(
+                    "existing Activity catalog failed SQLite integrity validation"
+                )
+            observed_tables = {
+                str(row["name"])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                ).fetchall()
+            }
+            if observed_tables != expected_tables:
+                raise ActivityCatalogInspectionError(
+                    "existing Activity catalog has an unsupported table inventory"
+                )
+            for table_name, expected_columns in _MIGRATION_TABLE_COLUMNS.items():
+                observed_columns = tuple(
+                    str(row["name"])
+                    for row in connection.execute(
+                        "SELECT name FROM pragma_table_info(?) ORDER BY cid",
+                        (table_name,),
+                    ).fetchall()
+                )
+                if observed_columns != expected_columns:
+                    raise ActivityCatalogInspectionError(
+                        "existing Activity catalog has an unsupported table schema"
+                    )
+            version_row = connection.execute(
+                "SELECT value FROM activity_catalog_meta WHERE key='schema_version'"
+            ).fetchone()
+            if version_row is None:
+                raise ActivityCatalogInspectionError(
+                    "existing Activity catalog has no schema version"
+                )
+            try:
+                schema_version = int(version_row["value"])
+            except (TypeError, ValueError):
+                raise ActivityCatalogInspectionError(
+                    "existing Activity catalog has an invalid schema version"
+                ) from None
+            if schema_version != _SCHEMA_VERSION:
+                raise ActivityCatalogInspectionError(
+                    "existing Activity catalog has an unsupported schema version"
+                )
+            violations = connection.execute("PRAGMA foreign_key_check").fetchone()
+            if violations is not None:
+                raise ActivityCatalogInspectionError(
+                    "existing Activity catalog has invalid record relationships"
+                )
+
+            activity_row = connection.execute("SELECT COUNT(*) AS count FROM activities").fetchone()
+            attempt_row = connection.execute(
+                "SELECT COUNT(*) AS count FROM activity_attempts"
+            ).fetchone()
+            provider_row = connection.execute(
+                "SELECT COUNT(*) AS count FROM activity_provider_operations"
+            ).fetchone()
+            assert activity_row is not None
+            assert attempt_row is not None
+            assert provider_row is not None
+
+            return ActivityCatalogInventory(
+                catalog_present=True,
+                schema_version=schema_version,
+                activity_count=int(activity_row["count"]),
+                attempt_count=int(attempt_row["count"]),
+                provider_operation_count=int(provider_row["count"]),
+            )
+        finally:
+            connection.close()
+    except ActivityCatalogInspectionError:
+        raise
+    except (OSError, sqlite3.Error):
+        raise ActivityCatalogInspectionError(
+            "existing Activity catalog could not be inspected read-only"
+        ) from None
+
+
+class SqliteActivityCatalogMigrationInspector:
+    """Async endpoint wrapper around the read-only SQLite inventory."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+
+    async def inspect_activity_catalog(self) -> ActivityCatalogInventory:
+        return await asyncio.to_thread(inspect_sqlite_activity_catalog, self.path)
 
 
 class SqliteActivityCatalog:
@@ -1365,4 +1544,9 @@ def _utcnow() -> str:
     return datetime.now(UTC).isoformat()
 
 
-__all__ = ["SqliteActivityCatalog", "activity_catalog_path_for"]
+__all__ = [
+    "SqliteActivityCatalog",
+    "SqliteActivityCatalogMigrationInspector",
+    "activity_catalog_path_for",
+    "inspect_sqlite_activity_catalog",
+]
