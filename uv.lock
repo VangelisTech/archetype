@@ -259,6 +259,7 @@ sim = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "gepa" },
     { name = "httpx" },
     { name = "logfire", extra = ["fastapi"] },
     { name = "mujoco" },
@@ -272,6 +273,9 @@ dev = [
     { name = "python-dotenv" },
     { name = "ruff" },
     { name = "setuptools" },
+]
+problem-definition = [
+    { name = "gepa" },
 ]
 
 [package.metadata]
@@ -320,6 +324,7 @@ provides-extras = ["benchmark", "sim", "otlp", "logfire", "coding-agent", "dev",
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "gepa", specifier = "==0.1.1" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "logfire", extras = ["fastapi"], specifier = ">=4.32.0" },
     { name = "mujoco", specifier = ">=3.2" },
@@ -334,6 +339,7 @@ dev = [
     { name = "ruff", specifier = ">=0.15,<0.16" },
     { name = "setuptools", specifier = ">=83.0.0" },
 ]
+problem-definition = [{ name = "gepa", specifier = "==0.1.1" }]
 
 [[package]]
 name = "asgiref"
@@ -1246,6 +1252,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/51/7c/f60c259dcbf4f0c47cc4ddb8f7720d2dcdc8888c8e5ad84c73ea4531cc5b/fsspec-2026.2.0.tar.gz", hash = "sha256:6544e34b16869f5aacd5b90bdf1a71acb37792ea3ddf6125ee69a22a53fb8bff", size = 313441, upload-time = "2026-02-05T21:50:53.743Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e6/ab/fb21f4c939bb440104cc2b396d3be1d9b7a9fd3c6c2a53d98c45b3d7c954/fsspec-2026.2.0-py3-none-any.whl", hash = "sha256:98de475b5cb3bd66bedd5c4679e87b4fdfe1a3bf4d707b151b3c07e58c9a2437", size = 202505, upload-time = "2026-02-05T21:50:51.819Z" },
+]
+
+[[package]]
+name = "gepa"
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e4/62/10f5a8f24c075e3b64f952be73ba8e15f0055584bbcdf9ce48d754a36679/gepa-0.1.1.tar.gz", hash = "sha256:643fda01c23de4c9f01306e01305dd69facc29bcb34ad59e4cd07e6621d34aa1", size = 272251, upload-time = "2026-03-16T10:17:53.131Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/dc/b7/8c72dedbb950d88a6f64588fcbc590d2a21e2b9f19b36aa6c5016c54ec75/gepa-0.1.1-py3-none-any.whl", hash = "sha256:71ead7c591eafcc727b83509cdc4182f20264800a6ddf8520d61419daeb47466", size = 244246, upload-time = "2026-03-16T10:17:51.922Z" },
 ]
 
 [[package]]

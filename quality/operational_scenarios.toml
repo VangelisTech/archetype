@@ -236,6 +236,44 @@ artifact_schema = "archetype.operational-results/v1"
 required_cadence = ["pr", "main", "release"]
 
 [[scenario]]
+id = "example.problem_definition_autoresearch.offline"
+kind = "example"
+owner = "research"
+owner_paths = [
+  "src/archetype/research",
+  "src/archetype/runtime",
+  "examples/problem_definition_mission",
+]
+source_path = "examples/problem_definition_autoresearch.py"
+source_command = [
+  "python",
+  "examples/problem_definition_autoresearch.py",
+  "--provider",
+  "offline",
+  "--max-metric-calls",
+  "2",
+  "--max-candidate-proposals",
+  "1",
+  "--patience",
+  "1",
+]
+required_extras = []
+tier = 1
+applicability = ["source"]
+timeout_seconds = 180
+prerequisites = []
+missing_prerequisite = "fail"
+semantic_oracle = { kind = "pytest", ref = "tests/examples/problem_definition/test_mission.py::test_problem_definition_example_improves_ratifies_and_orders_ledger" }
+contracts = [
+  "research.autoresearch.ledger",
+  "runtime.trust.actor_free",
+]
+cleanup_policy = "isolated"
+artifact_policy = "receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["pr", "main"]
+
+[[scenario]]
 id = "example.11_coding_agent_mission.dry_run"
 kind = "example"
 owner = "missions"

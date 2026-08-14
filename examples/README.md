@@ -28,7 +28,8 @@ uv run python examples/<filename>.py
 
 ## Supplementary
 
-| Example | Description |
-|---------|-------------|
-| [`pr_triage.py`](pr_triage.py) | PR triage agent that dogfoods Archetype |
-| [`simulation_script.py`](simulation_script.py) | Standalone simulation script for quick prototyping |
+| Example | Description | Requires |
+|---------|-------------|----------|
+| [`problem_definition_autoresearch.py`](problem_definition_autoresearch.py) | [Example-local](problem_definition_mission/README.md), counterexample-guided agent mission with durable evidence, three-perspective ratification, and GEPA prompt search | `problem-definition` dependency group; Codex login or `OPENAI_API_KEY` for live mode; offline needs neither |
+| [`pr_triage.py`](pr_triage.py) | PR triage agent that dogfoods Archetype | Authenticated `gh` CLI |
+| [`simulation_script.py`](simulation_script.py) | Standalone simulation script for quick prototyping | None |
