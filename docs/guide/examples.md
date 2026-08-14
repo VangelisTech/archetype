@@ -334,3 +334,56 @@ Source: [`examples/13_biome_rts.py`](https://github.com/VangelisTech/archetype/b
 
 The hosted physical-AI episode path has no numbered example script; its
 runnable snippet and contract live in [Physical AI](physical-ai.md).
+
+---
+
+## 14. Live Biome Agent
+
+Run a closed-loop mission against Sander Mertens' actual Biome executable.
+The agent observes reflected deposits, selects a requested resource and a free
+power cell, composes Biome's real `buildings.Drill` and `buildings.Solar`
+prefabs through Flecs REST, and waits for native power/mining systems to prove
+the result. Archetype persists the goal, decision, and terminal evidence.
+
+```bash
+# Clone pinned upstream sources into .context, build, launch, act, and verify.
+uv run python examples/14_biome_agent.py --launch --keep-open
+
+# Or control a Biome process already listening on port 27750.
+uv run python examples/14_biome_agent.py --require-live
+```
+
+Source: [`examples/14_biome_agent.py`](https://github.com/VangelisTech/archetype/blob/main/examples/14_biome_agent.py)
+
+This example is opt-in external dogfood, not a local simulation stand-in. In
+ordinary example smoke runs it exits with an explicit skip when no Biome
+server is present. See [Prefab Libraries](prefab-libraries.md#literal-biome-dogfood)
+for the ownership boundary, upstream pins, and reproducibility notes.
+
+---
+
+## 15. Mission Factory Assets
+
+Author a software factory as an ECS prefab library, instantiate its reusable
+`BugFixLine`, and compile the copied recipe entities into the same
+`MissionSubmission`, `AgentTask`, validators, publication policy, and critic
+policy accepted by Agent Missions. No agent, provider, or 3D renderer is
+started.
+
+```bash
+# Prove the semantic composition and print a compact receipt.
+uv run python examples/15_mission_factory_assets.py
+
+# Export all nine committed AI-ready object briefs.
+uv run python examples/15_mission_factory_assets.py --briefs-json
+```
+
+Source: [`examples/15_mission_factory_assets.py`](https://github.com/VangelisTech/archetype/blob/main/examples/15_mission_factory_assets.py)
+
+The example is deliberately not a new production family or a simulated game.
+Agent Missions remains the transition authority. The prefab world contains
+queryable task, validator, connection, geometry, socket, presentation, and
+interaction recipes; a trusted example-local compiler turns only the
+allowlisted `DependsOn` and `Guards` rules into supported authoring values.
+See the [Mission Factory Asset Bible](mission-factory-assets.md) for the
+factory grammar and 3D generation contract.

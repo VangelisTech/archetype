@@ -325,6 +325,53 @@ artifact_schema = "archetype.operational-results/v1"
 required_cadence = ["pr", "main", "release"]
 
 [[scenario]]
+id = "example.14_biome_agent"
+kind = "example"
+owner = "missions"
+owner_paths = ["examples/biome_agent"]
+source_path = "examples/14_biome_agent.py"
+source_command = ["python", "examples/14_biome_agent.py", "--require-live"]
+required_extras = []
+tier = 6
+applicability = ["source", "wheel"]
+timeout_seconds = 900
+prerequisites = ["infrastructure:ARCHETYPE_BIOME_LIVE"]
+missing_prerequisite = "not_run"
+semantic_oracle = { kind = "pytest", ref = "tests/examples/test_biome_agent_contract.py::test_monitor_requires_native_power_targeting_and_deposit_delta" }
+contracts = ["missions.environment.pinned"]
+cleanup_policy = "isolated"
+artifact_policy = "receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["release"]
+
+[[scenario]]
+id = "example.15_mission_factory_assets"
+kind = "example"
+owner = "missions"
+owner_paths = [
+  "src/archetype/graph",
+  "src/archetype/missions",
+  "examples/mission_factory",
+]
+source_path = "examples/15_mission_factory_assets.py"
+source_command = ["python", "examples/15_mission_factory_assets.py"]
+required_extras = []
+tier = 1
+applicability = ["source", "wheel"]
+timeout_seconds = 300
+prerequisites = []
+missing_prerequisite = "fail"
+semantic_oracle = { kind = "pytest", ref = "tests/integration/test_domain_example_receipts.py::test_mission_factory_receipt_compiles_real_agent_authoring" }
+contracts = [
+  "graph.prefabs.copy_on_instantiate",
+  "missions.agent_v1.public_authoring",
+]
+cleanup_policy = "isolated"
+artifact_policy = "receipt"
+artifact_schema = "archetype.operational-results/v1"
+required_cadence = ["pr", "main", "release"]
+
+[[scenario]]
 id = "dogfood.runtime.loopback"
 kind = "dogfood"
 owner = "runtime"

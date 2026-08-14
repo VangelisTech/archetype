@@ -774,6 +774,7 @@ pytest = [
   "tests/graph/test_prefab_contract.py",
   "tests/integration/test_domain_example_receipts.py::test_prefab_receipt_pins_lineage_and_copy_semantics",
   "tests/integration/test_domain_example_receipts.py::test_biome_receipt_pins_composed_scene_outcome",
+  "tests/integration/test_domain_example_receipts.py::test_mission_factory_receipt_compiles_real_agent_authoring",
 ]
 static = []
 evals = []
@@ -828,6 +829,7 @@ owner = "missions"
 risk = "medium"
 pytest = [
   "tests/integration/test_domain_example_receipts.py::test_coding_agent_dry_run_receipt_is_typed_and_starts_no_work",
+  "tests/integration/test_domain_example_receipts.py::test_mission_factory_receipt_compiles_real_agent_authoring",
 ]
 static = []
 evals = []
