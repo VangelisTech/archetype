@@ -195,13 +195,21 @@ synchronicity = "2026-07-11T00:00:00Z"
 starlette = "2026-06-13T00:00:00Z"
 # Security releases admitted past the quarantine ceiling for the next release:
 # Dependabot alerts #116-117 (pypdf), #112 (msgpack), and #98-110 (Pillow).
-pypdf = "2026-06-24T00:00:00Z"
+# PYSEC-2026-3655 and PYSEC-2026-3656.
+pypdf = "2026-08-07T00:00:00Z"
 msgpack = "2026-06-19T00:00:00Z"
 # Security releases admitted for the blocking lockfile audit:
 # GHSA-9xwg-3r6f-jcx2 and PYSEC-2026-3447.
-pymdown-extensions = "2026-06-24T00:00:00Z"
+# PYSEC-2026-3654.
+pymdown-extensions = "2026-07-03T00:00:00Z"
 setuptools = "2026-07-05T00:00:00Z"
 pillow = "2026-07-02T00:00:00Z"
+# PYSEC-2026-3545, PYSEC-2026-3546, and PYSEC-2026-3547.
+aiohttp = "2026-07-24T00:00:00Z"
+# PYSEC-2026-3628.
+h2 = "2026-08-04T00:00:00Z"
+# Required by h2 4.4.1.
+hpack = "2026-06-24T00:00:00Z"
 
 [tool.ruff]
 target-version = "py312"
