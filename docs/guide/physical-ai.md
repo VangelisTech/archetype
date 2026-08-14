@@ -2,15 +2,39 @@
 
 **Document type:** Contract and user guide.
 
-Archetype supports two deliberately different physical-execution shapes:
+## Purpose and Scope
+
+Physical AI is an [application-layer](app-overview.md) family for evaluating
+embodied policies against environments. Archetype supports two deliberately
+different execution shapes:
 
 - pure in-process processors, such as the MuJoCo cart-pole example; and
 - one public distributed operation: a complete episode batch executed through
-  a Modal-hosted Activity.
+  a Modal-hosted [Activity](activities.md).
 
 Remote environment and policy clients are not installed in retryable ticks.
 The hosted contract crosses committed World state as immutable episode intent
 and returns only complete, content-addressed episode evidence.
+
+```mermaid
+graph TB
+    Req["HostedEpisodeRequest batch"] --> RT["ArchetypeRuntime"]
+    RT --> World["RuntimeWorld"]
+    World --> Act["Modal-hosted Activity"]
+    Act --> Obs["HostedEpisodeObservation<br/>result_ref + digests"]
+    World --> Evidence["Committed world evidence"]
+    Obs -.-> Evidence
+```
+
+## Key Capabilities
+
+| Capability | Implementation |
+|---|---|
+| **In-process evals** | Processors + env/policy resources inside ordinary ticks |
+| **Hosted episodes** | Activity admits intent at tick T; observation commits at tick U |
+| **Stable activity IDs** | Caller-stable within a world; content mismatch fails closed |
+| **Fork-safe identity** | Provider identity includes `world_id`; parent/child stay independent |
+| **Ledger evidence** | Complete payloads referenced by digest, not live attachable clients |
 
 ## Run a hosted episode
 

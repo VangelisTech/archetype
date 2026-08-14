@@ -1,83 +1,232 @@
-# Build simulations that keep their history
+# Overview
 
-Archetype is an opinionated pythonic runtime for massively parallel simulations and agent workflows.
+## Purpose and Scope
 
-It leverages the Entity-Component-System (ECS) pattern to simplify data management at scale.
+Archetype is a dataframe-first Entity-Component-System (ECS) simulation
+engine. Components hold typed state. Processors transform matching entities as
+Daft DataFrames. A world runs ticks and appends each result to columnar
+storage, so history, forks, and audit come from the same write path as the
+simulation.
 
-The same primitives you use to write scripts are also used to query previous runs. Stop worrying about building datasets or managing tables, Archetype lets you focus on the code, with Components, Processors, and World's as the first class citizens.
+This page is the map of the **core primitives**. Everything else in the
+project — `ArchetypeRuntime`, the HTTP service, command gate, agent missions,
+prefabs, graphs — sits on top of this model. Learn the core first; the product
+layers are easier once the boxes below are solid.
 
-```bash
-uv add archetype-ecs
-```
+For installation and a first run, see [Quickstart](guide/quickstart.md).
+For the normative application contracts, see
+[Architecture Overview](guide/architecture.md).
 
-[Start the quickstart](guide/quickstart.md) ·
-[Browse examples](guide/examples.md)
+## Key Capabilities
 
-## The model
-
-```text
-components  +  processors  +  world
-    state       behavior       history
-```
-
-- A **component** is typed entity data, such as `Position` or `Task`.
-- A **processor** is a DataFrame transform that runs on entities with the
-  components it declares.
-- A **world** owns entities, runs ticks, and persists the resulting rows.
-
-The Python runtime is the usual entry point. It owns the process-level
-services and gives you world handles that are lazy until first use.
-
-## Pick a path
-
-| If you want to… | Start here |
+| Capability | What it means |
 |---|---|
-| Run your first world | [Quickstart](guide/quickstart.md) |
-| Build a simulation | [Building simulations](guide/building-simulations.md) |
-| Model state | [Components](guide/components.md) |
-| Write behavior | [Processors](guide/processors.md) |
-| Spawn, query, and fork | [Working with worlds](guide/working-with-worlds.md) |
-| Inspect past state | [History and forks](guide/history-and-forks.md) |
-| Run a coding-agent software factory | [Agent Missions](guide/agent-missions.md) |
-| Run a service over HTTP | [Service hosting](guide/app-overview.md) |
-| Find an exact method or endpoint | [Reference](reference/python-api.md) |
+| **Columnar ECS** | Entities that share a component set live in one archetype table |
+| **Lazy DataFrames** | Processors are Daft transforms over populations, not per-entity loops |
+| **Append-only history** | Each tick writes new rows; past state is a query, not a replay hack |
+| **Read/write split** | `QueryManager` reads; `UpdateManager` appends; the world orchestrates |
+| **Pluggable storage** | Stores sit under the same query/update facades (LanceDB by default) |
 
-## A complete tick
+## System Architecture
 
-```python
-await world.spawn(Position(x=0), Velocity(dx=1))
-await world.run(steps=10)
+### High-level component relationships
 
-history = await world.query(Position)
-fork = await world.fork("faster-model")
+```mermaid
+graph TB
+    App["Application / ArchetypeRuntime"]
+    World["World"]
+    System["System"]
+    QM["QueryManager"]
+    UM["UpdateManager"]
+    Store["Store"]
+
+    subgraph "Storage backends"
+        Lance["LanceDB"]
+        Other["Other stores"]
+    end
+
+    subgraph "Data processing"
+        Daft["Daft DataFrames"]
+        Arrow["PyArrow"]
+    end
+
+    App --> World
+    World --> System
+    World --> QM
+    World --> UM
+    QM --> Store
+    UM --> Store
+    System --> QM
+
+    Store --> Daft
+    Daft --> Arrow
+    Daft --> Lance
+    Daft --> Other
 ```
 
-`query()` returns the append-only history for the requested components. A fork
-inherits the source history through lineage and writes its later ticks to its
-own branch.
+The world is the orchestrator. It does not touch tables directly: reads go
+through `QueryManager`, writes through `UpdateManager`, and behavior through
+`System` + processors.
 
-## Use it from a script or a service
+## Core ECS Components
 
-For scripts, use `ArchetypeRuntime`:
+### Code entity mapping
 
-```python
-async with ArchetypeRuntime() as runtime:
-    world = runtime.world("experiment", processors=[MyProcessor()])
-    await world.run(steps=10)
+```mermaid
+graph LR
+    subgraph "World management"
+        Runtime["ArchetypeRuntime"]
+        World["World"]
+    end
+
+    subgraph "ECS processing"
+        System["System"]
+        Processor["Processor / AsyncProcessor"]
+    end
+
+    subgraph "Data management"
+        QM["QueryManager"]
+        UM["UpdateManager"]
+        Store["Store"]
+    end
+
+    subgraph "Base types"
+        Component["Component"]
+        Archetype["Archetype / signature"]
+    end
+
+    Runtime --> World
+    World --> System
+    World --> QM
+    World --> UM
+    QM --> Store
+    UM --> Store
+    System --> Processor
+    Processor --> Component
+    Component --> Archetype
+    Store --> Archetype
 ```
 
-For a long-running service, start `archetype serve` and use the REST API or
-CLI. Both enter through the command gate, which can authorize and audit a
-multi-user host.
+| Primitive | Role |
+|---|---|
+| `Component` | Typed fields on an entity (`Position`, `Velocity`, …) |
+| `Processor` | Declares required components; transforms their DataFrame |
+| `System` | Runs eligible processors in priority order for an archetype |
+| `World` | Spawns entities, steps/runs ticks, owns the live simulation |
+| `QueryManager` | Read facade over the store |
+| `UpdateManager` | Append facade over the store |
+| `Store` | Physical tables keyed by archetype signature |
+| `Archetype` | The component-set → table schema grouping |
 
-## Project status
+`ArchetypeRuntime` is the usual script entry point: it owns process lifetime
+and returns lazy world handles. The boxes above are still what a tick
+actually moves through.
 
-Archetype is alpha software. The core world, append-only history, and fork
-paths are the best-tested parts. The built-in HTTP server has development-mode
-authentication; add real authentication before exposing it to untrusted users.
+## Processing Pipeline
 
-## Development and design notes
+### One simulation step
 
-The [Development](guide/contributing.md) section contains the contribution
-workflow, architecture, and normative contracts. Those pages describe how the
-engine is built; the User Guide is the place to start when you are using it.
+```mermaid
+sequenceDiagram
+    participant App as Application
+    participant World as World
+    participant System as System
+    participant QM as QueryManager
+    participant UM as UpdateManager
+    participant Store as Store
+
+    App->>World: step() / run(steps=N)
+    World->>System: execute per active archetype
+    loop For each eligible processor
+        System->>QM: query required components
+        QM->>Store: load archetype DataFrame(s)
+        Store-->>QM: Dict[signature, DataFrame]
+        System->>System: processor.process(df, ...)
+    end
+    System-->>World: transformed archetype data
+    World->>UM: update(archetype data)
+    UM->>Store: append rows for this tick
+    World->>World: advance tick
+```
+
+Teaching model: query → transform → append → advance. The async world fans
+this out per active archetype table; the read/write split stays the same.
+
+## Entity-Component-System Pattern
+
+```mermaid
+graph LR
+    subgraph "Components"
+        Position["Position<br/>x: float"]
+        Velocity["Velocity<br/>dx: float"]
+    end
+
+    subgraph "Entities"
+        E1["Entity 1<br/>Position + Velocity"]
+        E2["Entity 2<br/>Position + Velocity"]
+    end
+
+    subgraph "Processors"
+        Move["Move<br/>components = (Position, Velocity)"]
+    end
+
+    subgraph "Processing"
+        DF["Daft DataFrame<br/>one archetype table"]
+        Transform["df.with_columns(...)<br/>position__x += velocity__dx"]
+    end
+
+    Position --> E1
+    Velocity --> E1
+    Position --> E2
+    Velocity --> E2
+    E1 --> DF
+    E2 --> DF
+    Move --> Transform
+    DF --> Transform
+```
+
+Entities are IDs. Components are data. Processors are bulk transforms over
+every entity that has the declared component set.
+
+## Archetypes
+
+Entities that share the same component types share an **archetype** — and
+therefore one table schema.
+
+```mermaid
+flowchart LR
+    E["Entity with components"] --> Sig["Signature<br/>(Position, Velocity)"]
+    Sig --> Table["Archetype table<br/>one schema, many rows"]
+    Table --> Tick["Rows keyed by<br/>world / run / tick"]
+```
+
+Different component sets → different signatures → different tables. That is
+why processors can assume their columns exist: the system only runs a
+processor when its components are a subset of the archetype signature.
+
+## Above the core
+
+The rest of Archetype layers product semantics on this engine:
+
+```mermaid
+graph TB
+    Product["Runtime, REST, CLI, missions, prefabs, graphs"]
+    Core["World · System · Processor · Query · Update · Store"]
+    Data["Daft DataFrames · columnar tables"]
+
+    Product --> Core
+    Core --> Data
+```
+
+When docs talk about command gates, forks, or agent missions, they are
+describing what sits on the top box — not a different storage model.
+
+## Next Steps
+
+- [Quickstart](guide/quickstart.md) — install and run your first world
+- [Core architecture](guide/core-architecture.md) — drill into each engine box
+- [Building simulations](guide/building-simulations.md) — components, processors, worlds in practice
+- [Application layer](guide/app-overview.md) — runtime, gateway, and product families
+- [Agent Missions](guide/agent-missions.md) — software-factory workflow on the same core
+- [Examples](guide/examples.md) — copy-and-run scripts
+- [History and forks](guide/history-and-forks.md) — query past ticks and branch a run

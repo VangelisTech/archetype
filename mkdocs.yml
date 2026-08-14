@@ -49,6 +49,7 @@ nav:
   - GETTING STARTED:
       - Overview: index.md
       - Quickstart: guide/quickstart.md
+      - Core Architecture: guide/core-architecture.md
       - Choose an Example: guide/examples.md
   - USER GUIDE:
       - Building Simulations: guide/building-simulations.md
@@ -63,17 +64,17 @@ nav:
       - Lifecycle Hooks: guide/hooks.md
       - Storage: guide/stores.md
       - Configuration: guide/run-config.md
-  - ADVANCED GUIDES:
-      - Application Internals: guide/app-overview.md
-      - Custom Commands: guide/custom-commands.md
+  - APPLICATION LAYER:
+      - Overview: guide/app-overview.md
       - Activities: guide/activities.md
       - Access Control and Audit: guide/command-gate.md
+      - Custom Commands: guide/custom-commands.md
       - Token Quotas: guide/token-quotas.md
       - Running a Server: guide/api-layer.md
+      - Agent Missions: guide/agent-missions.md
       - Trajectories: guide/trajectories.md
       - Physical AI: guide/physical-ai.md
       - AutoResearch: guide/autoresearch.md
-      - Agent Missions: guide/agent-missions.md
       - Tragedy of the Commons: experiments/tragedy-of-the-commons.md
   - REFERENCE:
       - PYTHON API:

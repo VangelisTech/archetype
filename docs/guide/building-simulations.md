@@ -1,6 +1,9 @@
 # Building Simulations
 
-This is the full workflow: define components, write processors, wire them into a world, run it.
+This is the full workflow: define components, write processors, wire them into a
+world, run it. For the diagram map of those boxes, see
+[Core Architecture](core-architecture.md). For product families above the
+engine, see [Application layer](app-overview.md).
 
 ## The Pattern
 

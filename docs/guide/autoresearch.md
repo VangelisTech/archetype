@@ -1,13 +1,50 @@
 # AutoResearch
 
-**Document type:** Contract and user guide.
+## Purpose and Scope
 
-AutoResearch is a pattern for autonomous software optimization: track a single branch head, evaluate candidate commits against it, and advance the head only when a run improves a user-defined metric. The shape — experiment, run, result, keep / discard / crash — follows Andrej Karpathy's framing of autonomous software optimization as a research direction.
+AutoResearch is autonomous software optimization on Archetype's ledger: track
+a branch head, evaluate candidate commits against it, and advance the head
+only when a run improves a user-defined metric. The shape — experiment, run,
+result, keep / discard / crash — follows Andrej Karpathy's framing of
+autonomous software optimization as a research direction.
+
+It is an [application-layer](app-overview.md) loop. Experiments and runs are
+ordinary components in a world; scoring stays in user code.
+
+**Document type:** Contract and user guide.
 
 **Status: attempts run on the ledger.** The research-family handler records a
 `RUNNING` row before candidate preparation or rollout, then records `STOPPED`
 with an evaluation or `CRASHED` with failure metadata. The loop is itself an
 archetype simulation.
+
+```mermaid
+graph TB
+    Base["Base world<br/>save state"] --> Loop["autoresearch(...)"]
+    Loop --> Lab["Lab world<br/>experiment ledger"]
+    Loop --> Ep0["Episode world 0"]
+    Loop --> EpN["Episode world N"]
+
+    subgraph "Per attempt"
+        Run["Run component"]
+        Result["Result envelope"]
+        Head["BranchHead<br/>best so far"]
+    end
+
+    Lab --> Run
+    Lab --> Result
+    Lab --> Head
+```
+
+## Key Capabilities
+
+| Capability | Implementation |
+|---|---|
+| **Worlds as save states** | Fork / attach episode worlds; inspect any attempt afterward |
+| **Ledgered attempts** | `RUNNING` → `STOPPED` / `CRASHED` rows before and after work |
+| **User-defined better** | `Result` and `BranchHead` stay opaque; your eval scores |
+| **Runtime entry** | `world.autoresearch(...)` — not assembling internal services |
+| **Governed admission** | Registered `AutoResearch` model through `CommandDispatcher` |
 
 ## Runtime quick path
 

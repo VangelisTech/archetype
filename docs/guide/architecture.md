@@ -11,6 +11,57 @@ forkable history of typed facts. A fork shares committed history and creates an
 independent future. This is the system's identity; Daft, ECS, and Iceberg are
 the mechanisms that make it practical.
 
+The [docs home](../index.md) and [Core architecture](core-architecture.md) are
+the visual maps of the **engine boxes**. This page is the product mental model
+that sits on that engine. Normative ownership rules live in
+[Application Architecture](application-architecture.md); visual layout is not
+law.
+
+## Core engine (the tick path)
+
+Before Activities, the dispatcher, and domain families, a tick still moves
+through these boxes:
+
+```mermaid
+graph TB
+    World["World"]
+    System["System"]
+    QM["QueryManager"]
+    UM["UpdateManager"]
+    Store["Store"]
+
+    World --> System
+    World --> QM
+    World --> UM
+    System --> QM
+    QM --> Store
+    UM --> Store
+```
+
+```mermaid
+sequenceDiagram
+    participant World as World
+    participant System as System
+    participant QM as QueryManager
+    participant UM as UpdateManager
+    participant Store as Store
+
+    World->>System: execute per active archetype
+    loop Eligible processors
+        System->>QM: query components
+        QM->>Store: load DataFrame(s)
+        System->>System: process(df)
+    end
+    System-->>World: transformed data
+    World->>UM: update
+    UM->>Store: append tick rows
+```
+
+`QueryManager` reads. `UpdateManager` appends. `World` orchestrates.
+`System` runs processors whose declared components are a subset of the
+archetype signature. Product features compose around this path; they do not
+replace it.
+
 ## The mental model
 
 | Concept | Meaning |
@@ -46,6 +97,21 @@ tick T commits intent
     -> stage factual observations
     -> tick U commits those facts
     -> later processors decide what they mean
+```
+
+```mermaid
+sequenceDiagram
+    participant T as Tick T
+    participant Act as Activity
+    participant U as Tick U
+    participant Proc as Processors
+
+    T->>T: commit intent
+    T->>Act: admit durable work
+    Act->>Act: execute / reconcile off-lock
+    Act->>U: stage observation + result ref
+    U->>U: commit facts
+    U->>Proc: decide meaning from evidence
 ```
 
 Activity execution does not declare domain success or advance a workflow
@@ -92,4 +158,4 @@ instead of only a log: forkable history, with the receipts.
 Deep contracts: [Runtime](runtime.md), [World lifecycle](world-lifecycle.md),
 [Atomic visibility](atomic-visibility.md), [Resources](resources.md),
 [Activities](activities.md), [Application architecture](application-architecture.md),
-and [Command gate](command-gate.md).
+[Application layer](app-overview.md), and [Command gate](command-gate.md).
