@@ -57,6 +57,7 @@ nav:
       - Worlds: guide/working-with-worlds.md
       - History and Forks: guide/history-and-forks.md
       - Prefab Libraries: guide/prefab-libraries.md
+      - Authoring Prefab Libraries: guide/authoring-prefab-libraries.md
       - Mission Factory Assets: guide/mission-factory-assets.md
       - Resources: guide/resources.md
       - Lifecycle Hooks: guide/hooks.md
