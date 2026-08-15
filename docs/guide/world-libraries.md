@@ -29,31 +29,62 @@ The `archetype` import package is intentionally extensible. The framework owns
 subpackages. Family-qualified imports are canonical even though their code is
 released from another distribution.
 
+`archetype-smol` is intentionally outside this framework/library graph. It is
+a separate synchronous in-memory teaching engine, has no dependency on
+`archetype-ecs`, publishes no extension manifest, and is never selected by an
+`archetype-ecs` extra. See [Smol](../smol/index.md).
+
 ## 2. Trusted Python extension boundary
 
 ### Installation
 
 Choose the smallest installation that owns the behavior your application uses:
 
-```bash
-# Generic framework only
-uv add archetype-ecs
+<!-- markdownlint-disable MD046 -->
 
-# One world library; each pulls in a compatible framework
-uv add archetype-missions
-uv add archetype-physical-ai
-uv add archetype-research
+=== "uv"
 
-# Every first-party world library
-uv add "archetype-ecs[all]"
-```
+    ```bash
+    # Generic framework only
+    uv add archetype-ecs
+
+    # One world library; each pulls in a compatible framework
+    uv add archetype-missions
+    uv add archetype-physical-ai
+    uv add archetype-research
+
+    # Every first-party world library
+    uv add "archetype-ecs[all]"
+
+    # A selective combination
+    uv add "archetype-ecs[missions,research]"
+    ```
+
+=== "pip"
+
+    ```bash
+    # Generic framework only
+    pip install archetype-ecs
+
+    # One world library; each pulls in a compatible framework
+    pip install archetype-missions
+    pip install archetype-physical-ai
+    pip install archetype-research
+
+    # Every first-party world library
+    pip install "archetype-ecs[all]"
+
+    # A selective combination
+    pip install "archetype-ecs[missions,research]"
+    ```
+
+<!-- markdownlint-enable MD046 -->
 
 The framework also exposes selective `missions`, `physical-ai`, and `research`
 extras, which may be combined, for example
-`uv add "archetype-ecs[missions,research]"`. Replace `uv add` with
-`pip install` when using pip. Provider-specific dependencies remain library
-extras: Missions exposes `modal`; Physical AI exposes `modal`, `sim`, and
-`all`.
+`archetype-ecs[missions,research]`. Provider-specific dependencies remain
+library extras: Missions exposes `modal`; Physical AI exposes `modal`, `sim`,
+and `all`.
 
 Installing a library is sufficient for ordinary process composition. Its wheel
 publishes an entry point, and `ArchetypeRuntime` and the FastAPI host discover
@@ -161,8 +192,9 @@ the discovery or lifecycle protocol for the library itself.
 
 ## 6. Packaging and release policy
 
-The repository is one uv workspace with one lock and four independently built
-projects. Published dependencies use normal version ranges; uv workspace source
+The repository is one uv workspace with one lock and five independently built
+projects: the framework, three world libraries, and the separate Smol teaching
+engine. Published dependencies use normal version ranges; uv workspace source
 overrides are development-only. Every wheel MUST build with workspace sources
 disabled and pass an isolated install/import smoke test.
 
@@ -186,6 +218,8 @@ Each distribution is built and tested independently. The 0.6 distributions are
 published as one coordinated release set, which MUST also pass a full-stack
 matrix proving deterministic composition, operation dispatch, router
 installation, process teardown, and duplicate/incompatible manifest failure.
+Smol receives its own isolated install and behavior proof; it is not inserted
+into the framework extension matrix.
 See [Archetype 0.6](release-0.6.md) for the exact clean-break upgrade contract.
 
 ## 7. Executable evidence
@@ -194,7 +228,7 @@ Required evidence includes:
 
 - base-only editable and wheel installs;
 - each library with the base, both editable and from wheels;
-- a full-stack install of all first-party libraries;
+- a full-stack install of all three first-party world libraries;
 - exact operation inventories for each installation set;
 - base runtime and API startup with zero extensions;
 - deterministic manifest ordering independent of entry-point order;

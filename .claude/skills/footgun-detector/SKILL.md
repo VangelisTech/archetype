@@ -44,12 +44,14 @@ Check every changed file in the diff against the categories below. For each file
 **Sibling sweep.** When the diff fixes or establishes an invariant — a guard,
 an unwind, a containment check, an ordering — enumerate the codebase's mirror
 implementations and verify each sibling upholds the same invariant in this
-same review: sync (`core/sync/`) vs async (`core/aio/`) worlds, LanceDB vs
-Iceberg storage paths, `create_world` vs `fork_world` vs `open_world_mutable`
-lifecycle. A sibling that violates the invariant is a finding even though its
-code is unchanged; anchor it to the changed line that establishes the
-invariant it breaks. This exists because serial rounds on one PR repeatedly
-found the fixed hunk's unfixed twin one round later.
+same review: the `AsyncWorld` engine vs the `ArchetypeRuntime.sync()` blocking
+facade, LanceDB vs Iceberg storage paths, and `create_world` vs `fork_world` vs
+`open_world_mutable` lifecycle. `archetype-smol` is an independent educational
+engine, not a production sibling unless the changed contract explicitly names
+it. A sibling that violates the invariant is a finding even though its code is
+unchanged; anchor it to the changed line that establishes the invariant it
+breaks. This exists because serial rounds on one PR repeatedly found the fixed
+hunk's unfixed twin one round later.
 
 In deterministic CI, the working tree is the protected base. Use it for
 surrounding context and `.footgun-review.diff` for the exact candidate changes;

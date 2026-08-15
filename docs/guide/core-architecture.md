@@ -2,9 +2,8 @@
 
 ## Purpose and Scope
 
-This page is the hub for Archetype's **engine**. Start with the
-[Runtime guide](runtime.md) for the supported application handles, then use
-this page to drill into each box.
+This page is the hub for Archetype's **engine**. It is the same mental model as
+the [Framework overview](../framework/index.md), expanded so you can drill into each box.
 
 Product features — HTTP hosting, command gate, agent missions, physical AI,
 prefabs — live in the [Application layer](app-overview.md). They compose on

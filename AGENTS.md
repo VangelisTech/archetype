@@ -393,4 +393,5 @@ change, and report the exact validation that ran. See
 | `packages/archetype-physical-ai/src/archetype/physical_ai/_extension.py` | Physical-AI manifest and installation |
 | `packages/archetype-research/src/archetype/research/_extension.py` | Research manifest and installation |
 | `tests/app/test_runtime_contracts.py` | Executable runtime contracts |
-| `tests/sync/test_sync_stack_contracts.py` | Executable sync engine contracts |
+| `tests/core/test_no_legacy_sync_kernel.py` | Parallel sync-kernel removal and supported blocking-runtime boundary |
+| `packages/archetype-smol/tests/test_smol.py` | Independent educational Smol engine contracts |

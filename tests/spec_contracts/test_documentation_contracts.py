@@ -9,6 +9,8 @@ import ast
 import re
 from pathlib import Path
 
+import yaml
+
 _GUIDE_ROOT = Path("docs/guide")
 _COMMAND_TOTAL_PATTERNS = (
     re.compile(r"\b(\d+)\s+command\s+types?\b", re.IGNORECASE),
@@ -28,6 +30,54 @@ _BEGINNER_EXAMPLES = (
     Path("examples/00_quickstart.py"),
     Path("examples/simulation_script.py"),
 )
+_PRODUCTION_ENGINE_DOCS = (
+    Path("AGENTS.md"),
+    Path("LEARNINGS.md"),
+    Path(".claude/skills/footgun-detector/SKILL.md"),
+    _GUIDE_ROOT / "api-stability.md",
+    _GUIDE_ROOT / "architecture.md",
+    _GUIDE_ROOT / "atomic-visibility.md",
+    _GUIDE_ROOT / "contributing.md",
+    _GUIDE_ROOT / "core-architecture.md",
+    _GUIDE_ROOT / "data-flow.md",
+    Path("docs/design/split-step-ffi.md"),
+    _GUIDE_ROOT / "hooks.md",
+    _GUIDE_ROOT / "mutation-testing.md",
+    _GUIDE_ROOT / "specification.md",
+    _GUIDE_ROOT / "system-execution.md",
+)
+_RETIRED_SYNC_SURFACE = re.compile(
+    r"\b(?:SyncWorld|SyncSystem|SyncProcessor|SyncStore|SyncHookHandler|"
+    r"QueryManager|UpdateManager)\b|core/sync/|tests/sync/"
+)
+
+
+class _MkDocsLoader(yaml.SafeLoader):
+    """Safe YAML loader that treats MkDocs callable references as inert text."""
+
+
+_MkDocsLoader.add_multi_constructor(
+    "tag:yaml.org,2002:python/name:",
+    lambda _loader, suffix, _node: suffix,
+)
+
+
+def _nav_paths(items: list[object]) -> list[str]:
+    """Return every Markdown path beneath one MkDocs navigation branch."""
+
+    paths: list[str] = []
+    for item in items:
+        if isinstance(item, str):
+            paths.append(item)
+            continue
+        if not isinstance(item, dict):
+            continue
+        for child in item.values():
+            if isinstance(child, str):
+                paths.append(child)
+            elif isinstance(child, list):
+                paths.extend(_nav_paths(child))
+    return paths
 
 
 def test_guides_do_not_freeze_numeric_command_type_claims() -> None:
@@ -42,6 +92,27 @@ def test_guides_do_not_freeze_numeric_command_type_claims() -> None:
                 stale.append(f"{guide}:{line} freezes a global command-type total")
 
     assert not stale, "global command-type totals are no longer a contract:\n" + "\n".join(stale)
+
+
+def test_production_docs_teach_one_async_engine_and_its_blocking_facade() -> None:
+    """Retired core-sync names cannot drift back into current reader guidance."""
+
+    stale: dict[str, list[str]] = {}
+    for path in _PRODUCTION_ENGINE_DOCS:
+        matches = sorted(set(_RETIRED_SYNC_SURFACE.findall(path.read_text())))
+        if matches:
+            stale[str(path)] = matches
+
+    assert stale == {}
+
+    system = (_GUIDE_ROOT / "system-execution.md").read_text()
+    specification = (_GUIDE_ROOT / "specification.md").read_text()
+    smol = Path("docs/smol/index.md").read_text()
+
+    assert "same `AsyncWorld`/`AsyncSystem` engine" in system
+    assert "with ArchetypeRuntime.sync()" in system
+    assert "`AsyncQueryManager.query_archetype()`" in specification
+    assert "separate engine, not a compatibility facade" in smol
 
 
 def test_trusted_runtime_example_keeps_rbac_at_the_adapter_boundary() -> None:
@@ -197,3 +268,109 @@ def test_mkdocs_resolves_all_distribution_source_roots() -> None:
         assert library_source_root in extension
 
     assert "- Install World Libraries: guide/world-libraries.md" in config
+
+
+def test_package_navigation_has_one_explicit_owner_per_page() -> None:
+    """The reader-facing information architecture mirrors distribution ownership."""
+
+    config = yaml.load(Path("mkdocs.yml").read_text(), Loader=_MkDocsLoader)
+    branches = {name: children for item in config["nav"] for name, children in item.items()}
+
+    assert tuple(branches) == (
+        "Start",
+        "Framework",
+        "Smol",
+        "Missions",
+        "Physical AI",
+        "Research",
+        "Maintainers",
+    )
+    assert branches["Framework"][0] == "framework/index.md"
+    assert branches["Smol"][0] == "smol/index.md"
+    assert branches["Missions"][0] == "missions/index.md"
+    assert branches["Physical AI"][0] == "physical-ai/index.md"
+    assert branches["Research"][0] == "research/index.md"
+    assert branches["Maintainers"][0] == "maintainers/index.md"
+
+    paths_by_branch = {name: _nav_paths(children) for name, children in branches.items()}
+    all_paths = [path for paths in paths_by_branch.values() for path in paths]
+    assert len(all_paths) == len(set(all_paths)), "a documentation page has multiple nav owners"
+
+    expected_package_paths = {
+        "Missions": {
+            "guide/agent-missions.md",
+            "guide/trajectories.md",
+            "guide/mission-factory-assets.md",
+            "missions/recovery.md",
+            "missions/transcripts.md",
+            "reference/python/missions.md",
+            "reference/python/transcripts.md",
+            "reference/rest-api-missions.md",
+        },
+        "Physical AI": {
+            "guide/physical-ai.md",
+            "reference/python/physical-ai.md",
+            "reference/python/physical-ai-optimization.md",
+            "reference/python/physical-ai-host.md",
+        },
+        "Research": {
+            "guide/autoresearch.md",
+            "reference/python/autoresearch.md",
+        },
+    }
+    assert "reference/python/evaluation.md" in paths_by_branch["Framework"]
+    assert paths_by_branch["Smol"] == ["smol/index.md"]
+    for owner, expected in expected_package_paths.items():
+        assert expected <= set(paths_by_branch[owner])
+        assert expected.isdisjoint(paths_by_branch["Framework"])
+
+
+def test_package_navigation_enables_native_and_content_tabs() -> None:
+    """Package switching and short equivalent variants use supported Material features."""
+
+    config = Path("mkdocs.yml").read_text()
+
+    for feature in (
+        "navigation.tabs",
+        "navigation.tabs.sticky",
+        "navigation.sections",
+        "navigation.indexes",
+        "content.tabs.link",
+    ):
+        assert f"- {feature}" in config
+    assert "- pymdownx.tabbed:" in config
+    assert "alternate_style: true" in config
+
+    for path in (
+        Path("docs/index.md"),
+        Path("docs/smol/index.md"),
+        _GUIDE_ROOT / "quickstart.md",
+        _GUIDE_ROOT / "world-libraries.md",
+    ):
+        page = path.read_text()
+        assert page.count('=== "uv"') == 1
+        assert page.count('=== "pip"') == 1
+        uv_block, pip_block = page.split('=== "pip"', maxsplit=1)
+        uv_commands = [
+            line.strip().removeprefix("uv add ")
+            for line in uv_block.splitlines()
+            if line.strip().startswith("uv add ")
+        ]
+        pip_commands = [
+            line.strip().removeprefix("pip install ")
+            for line in pip_block.splitlines()
+            if line.strip().startswith("pip install ")
+        ]
+        assert uv_commands
+        assert uv_commands == pip_commands
+
+
+def test_package_landings_link_framework_evaluation_to_its_owner() -> None:
+    """Research names the framework contract without absorbing its API reference."""
+
+    evaluation_link = "../reference/python/evaluation.md"
+    framework = Path("docs/framework/index.md").read_text()
+    research = Path("docs/research/index.md").read_text()
+
+    assert f"[Framework evaluation]({evaluation_link})" in framework
+    assert f"[Framework evaluation Python API]({evaluation_link})" in research

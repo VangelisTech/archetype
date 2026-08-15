@@ -227,7 +227,16 @@ packages/archetype-physical-ai/src/archetype/physical_ai/
 packages/archetype-research/src/archetype/research/
   _extension.py      private Research composition adapter
   ...                AutoResearch values, ledger, views and workflow
+
+packages/archetype-smol/src/archetype/smol/
+  ...                independent synchronous in-memory teaching engine
 ```
+
+`archetype-smol` shares vocabulary with the production ECS but is not a
+framework family, world library, compatibility facade, or composition adapter.
+It imports neither `archetype-ecs` nor any world library. Its independently
+bounded API keeps educational simplification from weakening production
+durability, concurrency, or lifecycle contracts.
 
 `activities/` is a top-level family over the storage-owned Activity catalog.
 Hosted whole-episode choreography is owned by `archetype.physical_ai`; no
@@ -827,6 +836,9 @@ packages/archetype-physical-ai/src/archetype/physical_ai/
 packages/archetype-research/src/archetype/research/
   _extension.py  private manifest and Research composition adapter
   AutoResearch values, ledger, views, workflow, typed runtime adapter
+
+packages/archetype-smol/src/archetype/smol/
+  independent synchronous in-memory teaching engine; no framework dependency
 ```
 
 Historical note (superseded): before PR4, the design used

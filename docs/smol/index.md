@@ -115,7 +115,7 @@ serialization policy.
 
 ## Choose the production framework when
 
-Use [`archetype-ecs`](../guide/runtime.md) when work needs durable worlds,
+Use [`archetype-ecs`](../framework/index.md) when work needs durable worlds,
 append-only storage, crash recovery, concurrent execution, commands,
 Activities, artifacts, evaluation, API hosting, or separately installed world
 libraries. There is no migration or alias promise between the two engines;
