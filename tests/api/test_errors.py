@@ -171,6 +171,22 @@ def test_payload_rejection_contract_maps_to_safe_unprocessable_content() -> None
     assert secret not in raised.value.detail
 
 
+def test_permission_denial_does_not_expose_actor_or_roles() -> None:
+    actor_id = "private-actor-id"
+    roles = "admin, operator"
+    error = PermissionError(
+        f"actor {actor_id} with roles [{roles}] cannot execute permission destroy_world"
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        raise_api_error(error)
+
+    assert raised.value.status_code == 403
+    assert raised.value.detail == "Permission denied"
+    assert actor_id not in raised.value.detail
+    assert roles not in raised.value.detail
+
+
 def test_catalog_schema_mismatch_remains_an_internal_error() -> None:
     with pytest.raises(HTTPException) as raised:
         raise_api_error(CatalogSchemaMismatchError("private schema detail"))

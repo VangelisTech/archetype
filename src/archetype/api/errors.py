@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 def raise_api_error(exc: Exception, *, conflict: bool = False) -> NoReturn:
     """Map service-layer exceptions to stable REST errors."""
     if isinstance(exc, PermissionError):
-        raise HTTPException(status_code=403, detail=str(exc)) from None
+        raise HTTPException(status_code=403, detail="Permission denied") from None
     # WorldNotFoundError extends LookupError, not KeyError; without the
     # explicit branch it fell through to the 500 fallback (issue #180).
     if isinstance(exc, WorldNotFoundError | KeyError):
