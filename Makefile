@@ -538,9 +538,10 @@ release-check: sync-dev verify-release
 	@echo "✅ Release check passed for v$(VERSION)"
 	@echo ""
 	@echo "Next steps:"
-	@echo "  1. git tag v$(VERSION)"
-	@echo "  2. git push origin v$(VERSION)"
-	@echo "  3. Dispatch the Release workflow for v$(VERSION)"
+	@echo "  1. git fetch origin main"
+	@echo "  2. git tag -a v$(VERSION) origin/main -m \"Release v$(VERSION)\""
+	@echo "  3. git push origin refs/tags/v$(VERSION):refs/tags/v$(VERSION)"
+	@echo "  4. Dispatch the Release workflow for v$(VERSION)"
 
 .PHONY: verify-test-index
 verify-test-index:

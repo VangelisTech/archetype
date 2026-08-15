@@ -88,6 +88,22 @@ def test_local_pr_profile_matches_the_two_ci_jobs() -> None:
     ]
 
 
+def test_release_check_emits_the_immutable_annotated_tag_recipe() -> None:
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    target = re.search(
+        r"^release-check:[^\n]*\n(?P<body>(?:\t.*\n)+)",
+        makefile,
+        re.MULTILINE,
+    )
+
+    assert target is not None
+    body = target.group("body")
+    assert "git fetch origin main" in body
+    assert 'git tag -a v$(VERSION) origin/main -m \\"Release v$(VERSION)\\"' in body
+    assert "git push origin refs/tags/v$(VERSION):refs/tags/v$(VERSION)" in body
+    assert 'git tag v$(VERSION)"' not in body
+
+
 def test_review_gate_and_merge_queue_are_not_executable_workflows() -> None:
     active = ROOT / ".github" / "workflows"
     for name in (
