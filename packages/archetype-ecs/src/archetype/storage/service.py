@@ -484,7 +484,7 @@ class _AdmittedAsyncStore(AsyncStore):
 
 
 class _AdmittedAsyncLancedbStore(AsyncLancedbStore):
-    """LanceDB ECS store whose terminal append shares StorageService admission."""
+    """LanceDB ECS store whose physical mutations share storage admission."""
 
     def __init__(
         self,
@@ -494,6 +494,18 @@ class _AdmittedAsyncLancedbStore(AsyncLancedbStore):
     ) -> None:
         super().__init__(uri, namespace)
         self._execution_gate = execution_gate
+
+    async def _ensure_table(self, sig: ArchetypeSignature) -> Any:
+        """Serialize first-use table/index creation with durable appends.
+
+        ``AsyncLancedbStore.get_archetype_df`` creates a missing table before
+        reading it. That first-use path performs Lance Overwrite transactions,
+        so it must share the same lane as Append transactions. Once the handle
+        is cached, the admitted section is only a dictionary lookup and the
+        query itself remains concurrent.
+        """
+        async with self._execution_gate.admit():
+            return await super()._ensure_table(sig)
 
     async def append(self, sig: ArchetypeSignature, df: DataFrame) -> AppendReceipt:
         async with self._execution_gate.admit():

@@ -12,11 +12,17 @@ import pytest
 from pyiceberg.exceptions import CommitFailedException, CommitStateUnknownException
 
 from archetype.core.aio import AsyncUpdateManager
+from archetype.core.aio.async_lancedb_store import AsyncLancedbStore
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import CacheConfig, RunConfig, StorageBackend, StorageConfig, WorldConfig
-from archetype.core.interfaces import CommitContext
-from archetype.storage.service import AmbiguousCommitError, StorageService
+from archetype.core.interfaces import AppendReceipt, CommitContext
+from archetype.storage.service import (
+    AmbiguousCommitError,
+    StorageService,
+    _AdmittedAsyncLancedbStore,
+    _DaftExecutionGate,
+)
 from archetype.storage.session import configure_session
 from archetype.world.lifecycle import WorldLifecycle
 from archetype.world.registry import WorldRegistry
@@ -81,6 +87,58 @@ async def test_terminal_materializations_share_one_execution_lane(monkeypatch):
         assert maximum == 1
     finally:
         await service.shutdown()
+
+
+@pytest.mark.contract("storage.execution.single_authority")
+@pytest.mark.asyncio
+async def test_lancedb_first_use_shares_the_append_execution_lane(monkeypatch, tmp_path):
+    """A read-side table Overwrite cannot race a durable Lance Append."""
+
+    first_ensure_entered = asyncio.Event()
+    release_first_ensure = asyncio.Event()
+    append_entered = asyncio.Event()
+    calls = 0
+
+    async def observed_ensure(self, sig):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            first_ensure_entered.set()
+            await release_first_ensure.wait()
+        return object()
+
+    async def observed_append(self, sig, df):
+        append_entered.set()
+        await self._ensure_table(sig)
+        return AppendReceipt(table_id="position", rows=1, durable=True)
+
+    monkeypatch.setattr(AsyncLancedbStore, "_ensure_table", observed_ensure)
+    monkeypatch.setattr(AsyncLancedbStore, "append", observed_append)
+    store = _AdmittedAsyncLancedbStore(
+        str(tmp_path / "store"),
+        "ns",
+        _DaftExecutionGate(),
+    )
+    sig = (Position,)
+    first_use = asyncio.create_task(store._ensure_table(sig))
+    append = None
+    try:
+        await asyncio.wait_for(first_ensure_entered.wait(), timeout=1)
+        append = asyncio.create_task(store.append(sig, daft.from_pydict({"value": [1]})))
+        await asyncio.sleep(0)
+
+        assert not append_entered.is_set()
+        assert not append.done()
+
+        release_first_ensure.set()
+        await asyncio.wait_for(first_use, timeout=1)
+        receipt = await asyncio.wait_for(append, timeout=1)
+        assert receipt.rows == 1
+        assert calls == 2
+    finally:
+        release_first_ensure.set()
+        pending = [first_use, append] if append is not None else [first_use]
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 @pytest.mark.contract("storage.execution.single_authority")
