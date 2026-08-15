@@ -99,13 +99,15 @@ pass `PhysicalAIExtensionConfig` through the generic runtime composition seam:
 from archetype import ArchetypeRuntime
 from archetype.physical_ai import PhysicalAIExtensionConfig
 
-runtime = ArchetypeRuntime(
+async with ArchetypeRuntime(
     world_library_configs={
         "physical-ai": PhysicalAIExtensionConfig(
             hosted_activity_lease_seconds=600,
         )
     }
-)
+) as runtime:
+    world = runtime.world("physical-eval")
+    # Run hosted episodes through PhysicalAI(world) while the runtime is open.
 ```
 
 This is trusted process-host configuration, not per-world state.

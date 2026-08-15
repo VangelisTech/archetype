@@ -5,3 +5,51 @@
 **Integration API.** Configure trusted hosted-episode providers at process composition time.
 
 ::: archetype.physical_ai.PhysicalAIExtensionConfig
+
+::: archetype.physical_ai.hosted_activity_contracts.HostedEpisodeProvider
+
+::: archetype.physical_ai.hosted_activity_contracts.HostedEpisodeProviderResult
+    options:
+      members: false
+
+| Field | Type | Default |
+| --- | --- | --- |
+| `request_ipc` | `bytes` | `required` |
+| `trajectory_ipc` | `bytes` | `required` |
+| `episode_results_ipc` | `bytes` | `required` |
+| `manifest_ipc` | `bytes` | `required` |
+
+::: archetype.physical_ai.hosted_activity_contracts.HostedEpisodeRetryGuard
+    options:
+      members: false
+
+| Field | Type | Default |
+| --- | --- | --- |
+| `ref` | `str` | `required` |
+| `digest` | `str` | `required` |
+
+::: archetype.physical_ai.hosted_activity_contracts.HostedEpisodeReconciliation
+
+::: archetype.physical_ai.hosted_activity_contracts.HostedEpisodeRecovered
+    options:
+      members: false
+
+| Field | Type | Default |
+| --- | --- | --- |
+| `result` | `HostedEpisodeProviderResult` | `required` |
+
+::: archetype.physical_ai.hosted_activity_contracts.HostedEpisodeConfirmedAbsent
+    options:
+      members: false
+
+| Field | Type | Default |
+| --- | --- | --- |
+| `guard` | `HostedEpisodeRetryGuard` | `required` |
+
+::: archetype.physical_ai.hosted_activity_contracts.HostedEpisodeRecoveryUnknown
+    options:
+      members: false
+
+| Field | Type | Default |
+| --- | --- | --- |
+| `reason` | `str` | `''` |

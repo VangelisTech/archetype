@@ -189,7 +189,16 @@ PAGES: tuple[ReferencePage, ...] = (
         "Physical AI host configuration",
         "Integration API",
         "Configure trusted hosted-episode providers at process composition time.",
-        ("PhysicalAIExtensionConfig",),
+        (
+            "PhysicalAIExtensionConfig",
+            "HostedEpisodeProvider",
+            "HostedEpisodeProviderResult",
+            "HostedEpisodeRetryGuard",
+            "HostedEpisodeReconciliation",
+            "HostedEpisodeRecovered",
+            "HostedEpisodeConfirmedAbsent",
+            "HostedEpisodeRecoveryUnknown",
+        ),
     ),
     ReferencePage(
         "core",
@@ -412,6 +421,34 @@ SUPPLEMENTAL: dict[str, tuple[str, str]] = {
         "archetype.physical_ai",
         "PhysicalAIExtensionConfig",
     ),
+    "HostedEpisodeProvider": (
+        "archetype.physical_ai.hosted_activity_contracts",
+        "HostedEpisodeProvider",
+    ),
+    "HostedEpisodeProviderResult": (
+        "archetype.physical_ai.hosted_activity_contracts",
+        "HostedEpisodeProviderResult",
+    ),
+    "HostedEpisodeRetryGuard": (
+        "archetype.physical_ai.hosted_activity_contracts",
+        "HostedEpisodeRetryGuard",
+    ),
+    "HostedEpisodeReconciliation": (
+        "archetype.physical_ai.hosted_activity_contracts",
+        "HostedEpisodeReconciliation",
+    ),
+    "HostedEpisodeRecovered": (
+        "archetype.physical_ai.hosted_activity_contracts",
+        "HostedEpisodeRecovered",
+    ),
+    "HostedEpisodeConfirmedAbsent": (
+        "archetype.physical_ai.hosted_activity_contracts",
+        "HostedEpisodeConfirmedAbsent",
+    ),
+    "HostedEpisodeRecoveryUnknown": (
+        "archetype.physical_ai.hosted_activity_contracts",
+        "HostedEpisodeRecoveryUnknown",
+    ),
     "OptimizationResult": ("archetype.physical_ai.optimization", "OptimizationResult"),
     "PerturbationStrategy": (
         "archetype.physical_ai.optimization",
@@ -491,6 +528,11 @@ RECORDS = frozenset(
         "HostedEpisodeRequest",
         "HostedEpisodeObservation",
         "ModalHostedEpisodeConfig",
+        "HostedEpisodeProviderResult",
+        "HostedEpisodeRetryGuard",
+        "HostedEpisodeRecovered",
+        "HostedEpisodeConfirmedAbsent",
+        "HostedEpisodeRecoveryUnknown",
         "OptimizationResult",
         "RoundRecord",
     }

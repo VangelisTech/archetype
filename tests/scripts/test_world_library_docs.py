@@ -104,6 +104,17 @@ def test_world_library_signature_contracts_are_in_the_reference_inventory() -> N
     assert "::: archetype.research.Evaluator" in research
     assert "::: archetype.research.CandidatePreparer" in research
     assert "::: archetype.physical_ai.PhysicalAIExtensionConfig" in host
+    assert "::: archetype.physical_ai.hosted_activity_contracts.HostedEpisodeProvider" in host
+    assert "::: archetype.physical_ai.hosted_activity_contracts.HostedEpisodeReconciliation" in host
     assert "::: archetype.physical_ai.optimization.PerturbationStrategy" in optimization
     assert "::: archetype.physical_ai.interfaces.EnvClient" not in physical
     assert "::: archetype.physical_ai.interfaces.PolicyClient" not in physical
+
+
+def test_embedded_physical_ai_host_example_closes_its_runtime() -> None:
+    guide = (ROOT / "docs/guide/physical-ai.md").read_text(encoding="utf-8")
+
+    section = guide.split("For an embedded host", maxsplit=1)[1].split(
+        "## Committed-state sequence", maxsplit=1
+    )[0]
+    assert "async with ArchetypeRuntime(" in section

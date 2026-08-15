@@ -77,6 +77,21 @@ def test_world_library_exports_are_documented_without_entering_framework_all() -
     assert "Compatibility-tier root attributes" not in reference
 
 
+def test_physical_ai_provider_factory_signature_is_documented() -> None:
+    reference = (PAGES_DIR / "physical-ai-host.md").read_text(encoding="utf-8")
+
+    for name in (
+        "HostedEpisodeProvider",
+        "HostedEpisodeProviderResult",
+        "HostedEpisodeRetryGuard",
+        "HostedEpisodeReconciliation",
+        "HostedEpisodeRecovered",
+        "HostedEpisodeConfirmedAbsent",
+        "HostedEpisodeRecoveryUnknown",
+    ):
+        assert f"::: archetype.physical_ai.hosted_activity_contracts.{name}" in reference
+
+
 def test_world_library_facade_exports_have_exact_stability_tiers() -> None:
     import importlib
 
