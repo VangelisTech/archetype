@@ -32,6 +32,7 @@ from archetype.runtime._config import coerce_cache, coerce_storage
 from archetype.runtime.world import (
     RuntimeWorld,
     SyncRuntimeWorld,
+    _adapt_sync_hook,
     _RuntimeWorldState,
 )
 from archetype.runtime_resources import RuntimeCloseState
@@ -439,13 +440,14 @@ class SyncArchetypeRuntime:
         resources: list | None = None,
         hooks: list[tuple[type[HookEvent], Any]] | None = None,
     ) -> SyncRuntimeWorld:
+        adapted_hooks = [(event_type, _adapt_sync_hook(fn)) for event_type, fn in hooks or []]
         rw = self._runtime.world(
             name,
             storage=storage,
             cache=cache,
             processors=processors,
             resources=resources,
-            hooks=hooks,
+            hooks=adapted_hooks,
         )
         return SyncRuntimeWorld(rw, self)
 
@@ -469,4 +471,5 @@ def run_sync(coro) -> Any:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coro)
+    coro.close()
     raise RuntimeError("run_sync() cannot be used from within a running event loop")

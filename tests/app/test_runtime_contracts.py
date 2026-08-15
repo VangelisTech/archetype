@@ -1852,6 +1852,44 @@ class TestPreActivationHookRaises:
             with pytest.raises(RuntimeError, match="Cannot add_hook before activation"):
                 await world.add_hook(PreTick, handler)
 
+    def test_sync_runtime_adapts_initial_and_dynamic_hooks(self, tmp_path):
+        events: list[tuple[str, int]] = []
+
+        def initial_handler(event: PreTick) -> None:
+            events.append(("initial", event.tick))
+
+        async def dynamic_handler(event: PreTick) -> None:
+            await asyncio.sleep(0)
+            events.append(("dynamic", event.tick))
+
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        with ArchetypeRuntime.sync() as runtime:
+            world = runtime.world(
+                "sync-hooks",
+                storage=storage,
+                hooks=[(PreTick, initial_handler)],
+            )
+            world.spawn(Pos())
+            world.add_hook(PreTick, dynamic_handler)
+            world.step()
+
+        assert events == [("initial", 0), ("dynamic", 0)]
+
+
+@pytest.mark.asyncio
+async def test_run_sync_closes_rejected_coroutine_without_warning(recwarn) -> None:
+    async def result() -> int:
+        return 1
+
+    coroutine = result()
+    with pytest.raises(RuntimeError, match="within a running event loop"):
+        runtime_module.run_sync(coroutine)
+
+    assert coroutine.cr_frame is None
+    del coroutine
+    gc.collect()
+    assert not [warning for warning in recwarn if issubclass(warning.category, RuntimeWarning)]
+
 
 # ── Observability vendor neutrality ──────────────────────────────────────
 
