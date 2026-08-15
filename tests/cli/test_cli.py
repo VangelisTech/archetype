@@ -17,8 +17,8 @@ from unittest.mock import patch
 import httpx
 import pytest
 from click import unstyle
-from click.exceptions import Exit as ClickExit
 from fastapi.testclient import TestClient
+from typer import Exit as ClickExit
 from typer.testing import CliRunner
 
 from archetype.api.app import create_app
